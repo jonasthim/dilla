@@ -91,10 +91,16 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: 'AFK snapshot includes silent occupants', call: r => r.getAFK(COMMUNITY),
+    name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [CHANNEL, 300, [[USER, DEVICE]]]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, occupants: [{ userId: USER, deviceId: DEVICE }] },
+    reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true },
+  },
+  {
+    name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [null, 300, []]),
+    expected: { channelId: null, timeoutSeconds: 300, pending: false },
   },
   {
     name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
@@ -102,9 +108,14 @@ const CASES: Case[] = [
     sent: encode([CHANNEL]), reply: () => noContent(), expected: undefined,
   },
   {
-    name: 'AFK setting writes an existing channel and timeout', call: r => r.setAFKSettings(COMMUNITY, CHANNEL, 60),
+    name: 'AFK activity of an exempt report sends [id, 1]', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL, true),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/afk/activity`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL, 1]), reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'AFK setting writes the timeout only', call: r => r.setAFKSettings(COMMUNITY, 300),
     method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/settings`, bucket: 'write', idempotent: true, auth: true,
-    sent: encode([CHANNEL, 60]), reply: () => noContent(), expected: undefined,
+    sent: encode([300]), reply: () => noContent(), expected: undefined,
   },
   {
     // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
@@ -200,6 +211,14 @@ const CASES: Case[] = [
     call: (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'general', position: 0 }),
     method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,
     sent: encode([0, 0, 0, null, 'general', '', 0, 0]),
+    reply: () => cborReply(201, [CHANNEL, 0, 0]),
+    expected: { id: CHANNEL, mode: 0, visibility: 0 },
+  },
+  {
+    name: 'createChannel inside a category sends the category as parent_id',
+    call: (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'plans', position: 2, parentId: CHANNEL }),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,
+    sent: encode([0, 0, 0, CHANNEL, 'plans', '', 2, 0]),
     reply: () => cborReply(201, [CHANNEL, 0, 0]),
     expected: { id: CHANNEL, mode: 0, visibility: 0 },
   },
@@ -1577,5 +1596,39 @@ describe('Routes: second-factor shapes and bounds', () => {
       expect(t.seen).toHaveLength(1);
       expect(t.sleeps).toEqual([]);
     }
+  });
+});
+
+describe('the built-in AFK channel routes (web3.9)', () => {
+  it('a 2-element snapshot is a decode error', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300]));
+    await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+  });
+  it('a pending of 2, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
+    const two = setup();
+    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 2]));
+    await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    for (const tail of [0xf5, 0xf4]) {
+      const head = encode([CHANNEL, 300, []]);
+      const raw = new Uint8Array([...head, tail]);
+      raw[0] = 0x84;
+      const raw1 = setup();
+      raw1.t.replies.push(bytesReply(200, raw));
+      await expect(raw1.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_TYPE' });
+    }
+  });
+  it('an exempt of false sends [id] like no flag', async () => {
+    const { routes, t } = setup();
+    t.replies.push(noContent());
+    await routes.sendAFKActivity(COMMUNITY, CHANNEL, false);
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([CHANNEL])));
+  });
+  it('moveToAFK and leaveAFK no longer exist', () => {
+    const { routes } = setup();
+    // @ts-expect-error retired in web3.9
+    expect(routes.moveToAFK).toBeUndefined();
+    // @ts-expect-error retired in web3.9
+    expect(routes.leaveAFK).toBeUndefined();
   });
 });

@@ -9,6 +9,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | state | shown | worker fact | announcement |
 |---|---|---|---|
 | idle | voice rows with `voice.join` on focus or hover; no dock | `call.phase` idle | none |
+| AFK (since v0.1.0-web3.9) | the AFK channel is an ordinary voice call, joined listen-only (see flow 14); every grant is listen-only, no share; a device idle in voice joins it muted and shows `mic-off` everywhere | `call.phase` in, listen-only (no publish grant) | none; the join is automatic or announced by the AFK move (flow 14) |
 | no one in voice | the row shows no sub-rows and no count; the stage says `voice.empty` | `voice[channel]` absent | none |
 | live, not joined | the row shows `voice.count` and one sub-row per person with their state words; `voice.join` / `call.join` | `voice[channel]` has participants, `call.phase` idle | none |
 | joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining | none |
@@ -83,6 +84,8 @@ Removed in v0.1.0-web3.8: the `ACTIVE VOICE` heading (`voice.heading.active`, sh
 │  │ web · online         │                                                                               │
 └──┴──────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Amended 2026-10-20 (web3.9, flow 14): **the AFK page is gone; the AFK channel is a built-in, listen-only voice channel.** Every server has a voice channel called "AFK" in the one channel list. It is joined like any voice channel (one click on a computer; on a phone, tap it and then join), and every grant in it is listen-only, so every tile and row shows `mic-off` and the stage header reads `afk.stage.muted`. There is no AFK picker in server settings, no "Move to AFK" or "Leave AFK", and no `afkMove` or `afkLeave` command: the server moves a device that was idle in another voice channel, and a person leaves by joining another voice channel. A phone is never moved. See `docs/afk-architecture.md`. In the same wave **the dock lost its microphone meter** (the meter is in Settings → Voice): it shows `layout.dock.connected`, where you are (`layout.dock.where`), then camera, share and leave; with push to talk on, the mute button carries the `layout.ptt.tag` tag. One click on a voice row joins it on a computer, and the speaking person's avatar has a ring.
 
 Amended 2026-10-15 (voice icons, plan 2026-10-15; founder): **the voice controls are icon buttons, and the dock holds all five.** The dock and the stage's toolbar show the same five controls in the same order: mute, deafen, camera, share screen and leave. Each is an icon-only button drawn from the vendored Lucide set (monoline, `currentColor`, so forced colours repaint it). Its accessible name is its label, unchanged (`voice.mute`, `voice.deafen`, `voice.cameraOn`, `voice.shareOn`, `voice.leave`), and every toggle keeps `aria-pressed`. The glyph carries the state, never colour alone: muted is `mic-off` (live `mic`), deafened `headphone-off` (`headphones`), a live camera `video` (off `video-off`), sharing `monitor-x` (not sharing `monitor-up`), and leave is always `phone-off` in the danger variant. On top of the glyph, mute and deafen take `--danger` on their glyph and edge while on, camera and share the accent, with a 2 px pressed underline and no fill (review round 1: a filled red mute read like leave). Under forced colours, where the underline is dropped, a pressed control has a 2 px `Highlight` edge. The voice toolbars drop the `[x]` / `[ ]` mark; other toggles keep it. An `aria-disabled` control dims its glyph and dashes its edge, and hover changes nothing on it. In the dock, camera and share follow the stage's rules: `aria-disabled` while paused or held, while joining, and share also without screen capture (no `getDisplayMedia`); mute, deafen and leave stay live while joining, as before. Pressing the dock's camera or share is the stage's toggle, one state for both.
 
@@ -336,6 +339,9 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `call.ring.notifyTitle='{name} is calling'`, `call.ring.notifyBody='Open dilla to answer.'`
 - `call.outgoing.ringing='ringing {names}'`, `call.outgoing.declined='{name} declined.'`, `call.outgoing.noAnswer='No answer.'`
 - `call.outgoing.notRung='{names} not rung: called too recently.'` (the participants the instance did not ring, its pair bound of 15 s and 20 an hour; added 2026-10-14, product walk I6)
+
+*AFK:*
+- `voice.afk.*` (`voice.afk.title`, `voice.afk.loading`, `voice.afk.silent`, `voice.afk.count`, `voice.afk.move`, `voice.afk.leave`) — unused since v0.1.0-web3.9 (the AFK channel is now an ordinary voice call; see flow 14)
 
 *Media players:*
 - `media.play='play {name}'`, `media.loading='loading'`

@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { SettingsRow } from './SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -23,6 +23,16 @@ describe('SettingsRow', () => {
     expect(within(group).getByRole('button', { name: 'turn on' })).toBeInTheDocument();
   });
 
+  it('renders its label as a heading of the given level, still naming the group, without a heading by default', () => {
+    const { rerender } = render(<SettingsRow id="a" label="passkeys" headingLevel={3}><span>x</span></SettingsRow>);
+    const heading = screen.getByRole('heading', { name: 'passkeys', level: 3 });
+    expect(heading).toHaveAttribute('id', 'a-label');
+    expect(heading).toHaveClass('d-settings-row__label');
+    expect(screen.getByRole('group', { name: 'passkeys' })).toBeInTheDocument();
+    rerender(<SettingsRow id="a" label="passkeys"><span>x</span></SettingsRow>);
+    expect(screen.queryByRole('heading')).toBeNull();
+  });
+
   it('has no description without a hint', () => {
     render(<SettingsRow id="notify-default" label="notify me about"><span>x</span></SettingsRow>);
     expect(screen.getByRole('group', { name: 'notify me about' })).not.toHaveAttribute('aria-describedby');
@@ -37,5 +47,45 @@ describe('SettingsRow', () => {
       </div>,
     );
     await expectNoAxeViolations(container);
+  });
+});
+
+// R17, I2: a two-column grid with a 16rem control column; on a phone the label stacks over a full-width control (H5).
+// jsdom computes no layout, so these read the rules themselves (the Settings/SettingsRow stories measure the result).
+describe('SettingsRow grammar (R17)', () => {
+  let row = '';
+  let base = '';
+  beforeAll(async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    row = fs.readFileSync(`${cwd}/src/SettingsRow/SettingsRow.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    base = fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  });
+
+  it('marks the row with data-row', () => {
+    render(<SettingsRow id="a" label="a"><span>x</span></SettingsRow>);
+    expect(screen.getByRole('group', { name: 'a' })).toHaveAttribute('data-row');
+  });
+
+  it('is a grid with a label column and a 16rem control column, a hairline under each row', () => {
+    const rule = /\.d-settings-row \{([^}]*)\}/.exec(row)?.[1] ?? '';
+    expect(rule).toMatch(/display: grid;/);
+    expect(rule).toMatch(/grid-template-columns: minmax\(0, 1fr\) 16rem;/);
+    expect(rule).toMatch(/border-bottom: 1px solid var\(--hairline\);/);
+  });
+
+  it('keeps one hairline under every row, whatever its parent, and lets a long button label grow its height', () => {
+    expect(row).not.toMatch(/\.d-settings-row:last-child/);
+    const button = /\.d-settings-row__control \.d-btn \{([^}]*)\}/.exec(row)?.[1] ?? '';
+    expect(button).toMatch(/height: auto;/);
+    expect(button).toMatch(/min-height: 1\.75rem;/);
+  });
+
+  it('stacks the label over a full-width control on a phone layout and when the frame is narrow', () => {
+    const phone = /\.d-settings-frame\[data-layout="phone"\] \.d-settings-row[^{]*\{([^}]*)\}/.exec(base)?.[1] ?? '';
+    expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
+    expect(base).toMatch(/\[data-phone\] \.d-settings-row/);
+    const narrow = /@container d-settings \(max-width: 44\.99rem\) \{([\s\S]*?)\n\}/.exec(base)?.[1] ?? '';
+    expect(narrow).toMatch(/\.d-settings-row \{ grid-template-columns: minmax\(0, 1fr\);/);
   });
 });

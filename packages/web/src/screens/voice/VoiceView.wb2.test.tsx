@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
-import { BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
+import { A, MUSIC, BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
@@ -150,7 +150,10 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
     expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
-    await waitFor(() => expect(sidebar().getAllByRole('img', { name: t('voice.state.speaking') }).length).toBeGreaterThan(0));
+    // web3.9: the ring is the mark (no glyph); the word stays for assistive technology.
+    await waitFor(() => expect(sidebar().getByText(t('voice.state.speaking'))).toBeInTheDocument());
+    expect(document.querySelector('.dw-sidebar .d-voice-row__person[data-speaking="true"]')).not.toBeNull();
+    expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
   });
 });
 
@@ -246,7 +249,8 @@ describe('the dock says where and how (product walk M7, M8)', () => {
     await app.user.click(await main().findByRole('button', { name: 'call' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     const where = t('call.where', { name: 'bob' });
-    await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('voice.dock.connected', { where })));
+    await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('layout.dock.connected')));
+    expect(document.querySelector('.d-voice-dock__where')).toHaveTextContent(where);
     expect(dockStatus()).toHaveTextContent(t('voice.announce.joined', { where }));
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.announce.left', { where })));
@@ -261,12 +265,13 @@ describe('removed from the server while in voice (product walk I8)', () => {
     expect(await main().findByText(t('voice.removedNotMember'))).toBeInTheDocument();
     expect(main().queryByText(t('voice.removed'))).toBeNull();
     expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
-    const row = [...document.querySelectorAll('.d-channel-list__voice')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
+    const row = [...document.querySelectorAll('.d-voice-item')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
     expect(row).toBeDefined();
-    expect(row!.querySelector('.d-channel-list__join')).toBeNull();
+    expect(row!.querySelector('.d-voice-row__join')).toBeNull();
     // A removal from the call alone (the channel still visible) keeps the join.
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
     expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(row!.querySelector('.d-voice-row__join')).not.toBeNull();
   });
 });
 
@@ -337,5 +342,19 @@ describe('fix round 3 (wave 2 client review m5)', () => {
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
       error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));
+  });
+  it('in a community with an AFK channel the hold changes the timing, not the words (WEB-AFK review I-2)', async () => {
+    const app = await inHarbour();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(screen.getByRole('button', { name: /^lobby/ }));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
+    await new Promise(r => setTimeout(r, 200));
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+      error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));
+    // The hold ends: the line stays the server line.
+    await new Promise(r => setTimeout(r, 2_400));
+    expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember'));
   });
 });

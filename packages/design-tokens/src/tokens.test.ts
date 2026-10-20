@@ -40,7 +40,7 @@ describe('structural tokens', () => {
   it('has the Mesh radii and layout dimensions', () => {
     expect(structural.radius.md).toBe('2px');
     expect(structural.radius.pill).toBe('999px');
-    expect(structural.layout.railW).toBe('60px');
+    expect(structural.layout.railW).toBe('72px');
   });
   it('states the type scale in rem at a 16px root, never px', () => {
     expect(structural.text).toEqual({
@@ -58,7 +58,14 @@ describe('structural tokens', () => {
     expect(structural.layout.topbarH).toBe('2rem');
     expect(structural.layout.bottombarH).toBe('1.625rem');
     expect(structural.layout.channelHeaderH).toBe('3rem');
-    expect(structural.layout.railW).toBe('60px');
+    expect(structural.layout.barH).toBe('3rem');
+    expect(structural.layout.rowH).toBe('2rem');
+    expect(structural.layout.rowHSub).toBe('2rem');
+    expect(structural.layout.rowH2).toBe('2.75rem');
+    expect(structural.layout.listGap).toBe('0.125rem');
+    expect(structural.layout.railTile).toBe('48px');
+    expect(structural.layout.slotW).toBe('32px');
+    expect(structural.layout.railW).toBe('72px');
     expect(structural.layout.sidebarW).toBe('240px');
     expect(structural.layout.membersW).toBe('232px');
     expect(structural.layout.threadW).toBe('380px');

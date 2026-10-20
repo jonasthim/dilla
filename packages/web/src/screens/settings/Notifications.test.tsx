@@ -190,3 +190,14 @@ describe('sounds (flow 06, R4)', () => {
     expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.ring', value: 'on' });
   });
 });
+
+// I1: guard, green at start (the section adopted SettingsRow in web3.8): every list item is one settings row.
+describe('the settings grammar', () => {
+  it('draws the permission, default, sounds and each server, channel and DM as settings rows', () => {
+    const { view } = setup();
+    const items = Array.from(view.container.querySelectorAll('.dw-notify-list > li'));
+    expect(items.length).toBeGreaterThan(2);
+    for (const item of items) expect(item.querySelectorAll('.d-settings-row')).toHaveLength(1);
+    expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(4 + items.length);
+  });
+});

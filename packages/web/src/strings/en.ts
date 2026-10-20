@@ -24,6 +24,9 @@ import { reload } from './reload.ts';
 import { pane } from './pane.ts';
 import { panel } from './panel.ts';
 import { stage } from './stage.ts';
+import { afk } from './afk.ts';
+import { layout } from './layout.ts';
+import { home } from './home.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
   ...storeNewer,
@@ -51,6 +54,9 @@ export const en = {
   ...pane,
   ...panel,
   ...stage,
+  ...afk,
+  ...layout,
+  ...home,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -557,11 +563,11 @@ export const en = {
   'settings.voice.pttPrompt': 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
   'settings.voice.pttRefused': 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
   'settings.voice.noise': 'noise suppression',
-  'settings.voice.automatic': 'Automatic',
-  'settings.voice.automaticBeta': 'Automatic (beta)',
+  'settings.voice.automatic': 'automatic',
+  'settings.voice.automaticBeta': 'automatic (beta)',
   'settings.voice.noiseBeta': 'Automatic is a beta. It may cause audio glitches or switch to Lightweight if processing cannot keep up. Choose Lightweight to leave the beta.',
-  'settings.voice.lightweight': 'Lightweight',
-  'settings.voice.off': 'Off',
+  'settings.voice.lightweight': 'lightweight',
+  'settings.voice.off': 'off',
   'settings.voice.noisePending': 'Automatic chooses the best available processor. Its effective mode appears during a call or microphone test.',
   'settings.voice.processor': 'Microphone processing: {processor}.',
   'settings.voice.processor.browser': 'browser suppression',
@@ -581,9 +587,9 @@ export const en = {
   'settings.voice.fallback.audio-suspended': 'Audio processing was suspended. Browser processing is in use.',
   'settings.voice.browserUnknown': 'The browser did not report its noise suppression setting.',
   'settings.voice.browserStillOn': 'Browser noise suppression remains enabled.',
-  'settings.voice.test': 'Test microphone',
-  'settings.voice.testStop': 'Stop recording',
-  'settings.voice.testClose': 'Close and discard',
+  'settings.voice.test': 'test microphone',
+  'settings.voice.testStop': 'stop recording',
+  'settings.voice.testClose': 'close and discard',
   'settings.voice.testHelp': 'Record up to ten seconds locally. Capture stops before playback. Closing discards the recording.',
   'settings.voice.testCall': 'Microphone testing is unavailable during a call.',
   'settings.voice.testRecording': 'Recording locally…',

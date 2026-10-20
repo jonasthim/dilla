@@ -2,7 +2,7 @@
 // member; the testkit's web-driver peer is the other, sends thread replies through its `thread_id`, and owns the server. The
 // 390 x 844 case is Chromium only (Firefox has no mobile emulation, R23). Its own host on 8503/8504.
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   CLASS, COPY, HEX32, TEST_TIMEOUT, WAIT, channelRow, composerBox, copy, deleteDialog, editorBox, expectAccessible,
   logRegion, openChannel, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
   type PeerMessage, type PeerReceived, type PeerSetup,
@@ -79,8 +79,7 @@ class ThreadPeer {
 }
 
 async function join(page: Page, community: string, setup: PeerSetup): Promise<void> {
-  const rail = railNav(page);
-  await rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = page.getByRole('dialog', { name: copy(COPY.joinTitle), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByLabel(copy(COPY.joinInvite), { exact: true }).fill(setup.invite_code);

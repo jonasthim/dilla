@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
@@ -72,8 +73,9 @@ func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 // card a human reads before following that link or pasting the code into a
 // client, and anything more is a phishing surface an instance hands out to
 // strangers by construction. The colours are the Mesh tokens as literals
-// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchMesh)
-// and the font is the system monospace, because default-src 'none' loads none.
+// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchMesh).
+// The font is the web client's JetBrains Mono when dillad serves one (Deps.LandingFont,
+// R43; font-src 'self' is the only thing the CSP widens), else the system monospace.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -83,21 +85,27 @@ var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <meta property="og:description" content="{{.Description}}">
 <meta property="og:type" content="website">
 <style>
-:root{color-scheme:dark;--bg:#070809;--surface:#0C0D0F;--fg:#E8ECE8;--fg-2:#A0A6A0;--accent:#7CFF8E;--accent-ink:#06150A;--hairline:#1F2226}
-@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#1B7334;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
+{{if .Font}}@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("{{.Font}}") format("woff2")}
+{{end}}:root{color-scheme:dark;--bg:#070809;--bg-2:#0C0D0F;--surface:#0C0D0F;--fg:#E8ECE8;--fg-2:#A0A6A0;--accent:#7CFF8E;--accent-ink:#06150A;--hairline:#1F2226}
+@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--bg-2:#ECEEEC;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#1B7334;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;background:var(--bg);color:var(--fg);font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;line-height:1.5}
-main{width:100%;max-width:32rem;border:1px solid var(--hairline);background:var(--bg);padding:1.5rem}
-h1{margin:0;font-size:1.25rem;line-height:1.3;overflow-wrap:anywhere}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:{{if .Font}}"JetBrains Mono",{{end}}ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:13.5px;line-height:1.5}
+.bar{display:flex;align-items:center;gap:7px;height:2rem;padding:0 12px;background:var(--bg-2);border-bottom:1px solid var(--hairline);font-weight:700;letter-spacing:.14em}
+.tile{display:inline-flex;align-items:center;justify-content:center;width:1.125rem;height:1.125rem;background:var(--accent);color:var(--accent-ink);border-radius:2px;font-size:.6875rem;letter-spacing:0}
+.caret{width:6px;height:12px;background:var(--accent)}
+main{width:100%;max-width:37rem;margin:0 auto;padding:3rem 1.5rem}
+h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.02em;overflow-wrap:anywhere}
 .on{margin:.25rem 0 0;color:var(--fg-2);overflow-wrap:anywhere}
 .label{margin:1.5rem 0 .25rem;color:var(--fg-2);font-size:.875rem}
 .code{display:block;padding:.75rem;background:var(--surface);border:1px solid var(--hairline);font-size:1.125rem;overflow-wrap:anywhere}
 .meta{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem}
-.open{display:flex;align-items:center;justify-content:center;min-height:2.75rem;margin-top:1.5rem;padding:0 1rem;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none}
+.open{display:inline-flex;align-items:center;min-height:2.25rem;margin-top:1.5rem;padding:0 1rem;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none}
+@media (pointer: coarse), (max-width: 40rem){.open{min-height:2.75rem}}
 .open:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
 .note{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem;overflow-wrap:anywhere}
 </style>
 </head><body>
+<header class="bar"><span class="tile" aria-hidden="true">D</span>DILLA<span class="caret" aria-hidden="true"></span></header>
 <main>
 {{if .Community}}<h1>You have been invited to {{.Community}}</h1>
 <p class="on">on {{.Instance}}</p>{{else}}<h1>You have been invited to {{.Instance}}</h1>{{end}}
@@ -119,6 +127,7 @@ type landingData struct {
 	ExpiresAt   string // the ISO instant, for <time datetime>
 	Expires     string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
 	Uses        string // "1 use left" or "2 uses left"
+	Font        string // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
 }
 
 // landingExpiry words an expiry for a reader: under 48 hours the rounded-down
@@ -144,6 +153,23 @@ func landingCount(n int, one, many string) string {
 	return strconv.Itoa(n) + " " + many
 }
 
+// landingFontGlob finds the JetBrains Mono latin variable woff2 in the served web client's tree.
+const landingFontGlob = "assets/jetbrains-mono-latin-wght-normal-*.woff2"
+
+// LandingFont is the same-origin path of the web client's JetBrains Mono latin woff2 (the first
+// match of landingFontGlob), or "" when the tree has none (the embedded placeholder) or is nil.
+// The composition root calls it once at start and hands the answer to Deps.LandingFont.
+func LandingFont(webFS fs.FS) string {
+	if webFS == nil {
+		return ""
+	}
+	matches, err := fs.Glob(webFS, landingFontGlob)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	return "/" + matches[0]
+}
+
 // InviteLanding is GET /i/{code}. It NEVER mutates: a link pasted into a chat
 // is fetched by every preview bot that sees it, and a landing page that spent a
 // use would burn every invite the moment it was shared. The use is spent by
@@ -155,7 +181,7 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'")
 
 	candidates, err := auth.CanonicalizeInviteCode(r.PathValue("code"))
 	if err != nil {
@@ -228,6 +254,7 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339),
 		Expires:     landingExpiry(invite.ExpiresAt, now),
 		Uses:        uses,
+		Font:        d.LandingFont,
 	}); err != nil {
 		d.logf(r, "api: render invite landing", "err", err)
 	}

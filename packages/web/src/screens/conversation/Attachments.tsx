@@ -105,7 +105,7 @@ function Card(p: { channelId: string; seq: string | null; summary: AttachmentSum
   const name = safeName(a.name, t('shell.attachment.unnamed'));
   return <div ref={el => { buttonRef.current = el?.querySelector('button') ?? null; }} data-doc-state={playable ? 'media-player' : undefined}>
     <AttachmentCard kind={a.kind} name={name} size={formatSize(a.size)} thumbUrl={thumbUrl} w={a.w} h={a.h}
-      openLabel={t('shell.attachment.open', { name })} saveLabel={t('shell.attachment.save', { name })}
+      openLabel={t('shell.attachment.open', { name })} saveLabel={t('shell.attachment.save', { name })} saveText={t('media.save')}
       {...(a.kind === 'image' && p.seq !== null && !a.tooLarge ? { onOpen: () => { if (buttonRef.current) p.onOpenImage(a.index, buttonRef.current); } } : {})}
       {...(p.seq !== null && !a.tooLarge ? { onSave: () => { void save(); } } : {})}
       state={a.tooLarge ? 'too-large' : state}

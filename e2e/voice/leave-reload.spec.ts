@@ -5,7 +5,7 @@ import type { Page } from '@playwright/test';
 import { expect, leaveControl, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  POLL, VoicePeer, WAIT, callSlice, connected, copy, dock, expectShellReady, heard, joinVoice, onboard, openVoice, self,
+  POLL, VoicePeer, WAIT, callSlice, connected, copy, dock, expectShellReady, heard, joinVoice, onboard, openVoiceOnly, self,
   snapshotDevices, stage, tile, voiceRow,
 } from './support/voice';
 
@@ -108,7 +108,7 @@ test('a rejoin whose Remove nobody has committed yet waits, says so, and joins t
     // The room saw her leave (its participant_left made the instance propose the Remove of her leaf); the peer has not
     // synced since, so nobody has committed it.
     await expect.poll(async () => (await peer.callRead(call)).participants.length, POLL).toBe(0);
-    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await openVoiceOnly(alice.page, peer.communityName, peer);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect.poll(async () => {
       const c = await callSlice(alice.page);

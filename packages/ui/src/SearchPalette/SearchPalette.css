@@ -1,4 +1,9 @@
 .d-search-palette { display: grid; gap: .75rem; width: min(100%, 42rem); min-width: 0; padding: 1rem; background: var(--surface); color: var(--fg); border: 1px solid var(--edge); border-radius: var(--r-md); font-family: var(--font-mono); }
+/* J1, R-S1: on a desktop the palette is a modal <dialog>: a centred box of at most 40rem over the app, which stays mounted and inert
+   behind a scrim. A phone keeps the inline palette (no dialog; data-layout="phone" comes from the shell's layout context). */
+.d-search-palette-dialog { width: min(calc(100vw - 2rem), 40rem); max-width: none; max-height: calc(100dvh - 12vh - 1rem); margin: 12vh auto auto; padding: 0; overflow: visible; color: var(--fg); background: transparent; border: 0; }
+.d-search-palette-dialog::backdrop { background: color-mix(in oklab, var(--bg) 70%, transparent); }
+.d-search-palette-dialog > .d-search-palette { width: 100%; max-height: calc(100dvh - 12vh - 1rem); overflow: auto; box-sizing: border-box; border-color: var(--accent); box-shadow: var(--shadow-2); }
 /* W-08: the textbox boundary is a text field's (--edge on --surface-2), not a hairline. */
 .d-search-palette input { width: 100%; min-width: 24px; min-height: 36px; padding: .5rem; font: inherit; color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-sm); }
 .d-search-palette__scopes { display: flex; flex-wrap: wrap; gap: .5rem; }
@@ -9,7 +14,13 @@
 .d-search-palette [role="option"] { min-height: 24px; padding: .5rem .75rem; overflow-wrap: anywhere; border-radius: var(--r-sm); cursor: pointer; }
 /* W-08: focus stays in the textbox, so the active result carries the active channel row's accent bar (≥3:1). */
 .d-search-palette [role="option"][aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 3px 0 0 var(--accent); }
-.d-search-palette small { display: block; color: var(--fg-3); }
+.d-search-palette [role="option"] { display: grid; gap: .125rem; }
+/* J1: one meta line (#channel, author, time) over the snippet; the meta is --fg-2, which holds 4.5:1 on --surface-hi in all three themes. */
+.d-search-palette__meta { display: flex; flex-wrap: wrap; column-gap: .5rem; min-width: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.d-search-palette__where { color: var(--fg); }
+.d-search-palette__snippet { min-width: 0; }
 .d-search-palette__status:empty { margin-top: -.75rem; }
-.d-search-palette__close { justify-self: end; }
+.d-search-palette__foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.d-search-palette__hints { display: flex; flex-wrap: wrap; gap: .25rem 1rem; color: var(--fg-2); font-size: var(--text-sm); }
+.d-search-palette__close { margin-left: auto; }
 .d-search-palette :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }

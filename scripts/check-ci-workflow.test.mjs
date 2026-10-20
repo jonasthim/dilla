@@ -60,8 +60,8 @@ test('Rust CI and release setup use the pinned rustup toolchain without third-pa
   }
 });
 
-// The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
-const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+// The go job's test step: every package but internal/ds and internal/api, which go-ds and go-api run (CI budget, fix wave).
+const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
 
 const GOOD_BASE = `name: ci
 on:
@@ -78,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: npm test
+      - run: npm run test:css-check
+      - run: npm run check:css
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -175,7 +177,7 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
       - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
@@ -302,10 +304,10 @@ jobs:
       - run: npm run test:e2e:core:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
@@ -358,6 +360,17 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
+
+  go-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...
 
   go-harness:
     runs-on: ubuntu-latest
@@ -413,6 +426,9 @@ jobs:
       - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+      - run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
   go-release:
     runs-on: ubuntu-latest
@@ -440,7 +456,7 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
-    needs: [go, go-ds, go-lint, rust-wasi, web-build]
+    needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
@@ -673,11 +689,42 @@ test('a go job whose test step is narrowed to a package list is reported', () =>
 });
 
 // CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
-test('a go job that leaves out more than internal/ds is reported', () => {
+test('a go job that leaves out more than internal/ds and internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('grep -vx github.com/jonasthim/dilla/internal/ds', 'grep -v -e /internal/ds -e /internal/api')),
+    fixture(GOOD.replace('-e github.com/jonasthim/dilla/internal/api)', '-e github.com/jonasthim/dilla/internal/api -e github.com/jonasthim/dilla/internal/store)')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+// web3.9: the css checker's own test and the check itself, and the AFK / channel-parent tests on Postgres.
+test('a node job without the css checker steps is reported', () => {
+  for (const step of ['npm run test:css-check', 'npm run check:css']) {
+    const problems = checkWorkflow(fixture(GOOD.replace(`      - run: ${step}\n`, '')));
+    assert.ok(problems.some((p) => p.includes('"node"') && p.includes(step)), problems.join('\n'));
+  }
+});
+
+test('a go-postgres job that stopped running the api AFK tests is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/      - run: go test -race -shuffle=on -timeout 20m -run 'AFK[^\n]*\n        env:\n[^\n]*\n/, '')));
+  assert.ok(problems.some((p) => p.includes('"go-postgres"') && p.includes('./internal/api/...')), problems.join('\n'));
+});
+
+function withAPITests(body) {
+  const dir = fixture(GOOD);
+  mkdirSync(join(dir, 'internal', 'api'), { recursive: true });
+  writeFileSync(join(dir, 'internal', 'api', 'afk_x_test.go'), body);
+  return dir;
+}
+
+test('an AFK test the go-postgres -run regex misses is reported', () => {
+  const problems = checkWorkflow(withAPITests('package api\n\nfunc TestAFKFine(t *testing.T) {}\nfunc TestSomethingUnmatched(t *testing.T) {}\n'));
+  assert.ok(problems.some((p) => p.includes('TestSomethingUnmatched') && p.includes('afk_x_test.go')), problems.join('\n'));
+  assert.ok(!problems.some((p) => p.includes('TestAFKFine')), problems.join('\n'));
+});
+
+test('AFK tests the go-postgres -run regex matches pass', () => {
+  const dir = withAPITests('package api\n\nfunc TestAFKFine(t *testing.T) {}\nfunc TestTheBuiltInCarriesTheMarker(t *testing.T) {}\n');
+  assert.deepEqual(checkWorkflow(dir), []);
 });
 
 test('a workflow without the go-ds job is reported', () => {
@@ -692,6 +739,37 @@ test('a go-ds job that stopped running internal/ds is reported', () => {
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
 });
 
+test('a workflow without the go-api job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go-api:[\s\S]*?\n\n/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go-api"')), problems.join('\n'));
+});
+
+test('a go-api job that stopped running internal/api is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('./internal/api/...')), problems.join('\n'));
+});
+
+test('a go-api job with a shorter budget is reported', () => {
+  const start = GOOD.indexOf('  go-api:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 30'))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
+});
+
+test('a go job that stopped leaving out internal/api is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(' -e github.com/jonasthim/dilla/internal/api', '')));
+  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+test('a go-api job without needs: rust-wasi is reported', () => {
+  const start = GOOD.indexOf('  go-api:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('rust-wasi')), problems.join('\n'));
+});
+
 test('a go-ds job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
@@ -700,7 +778,7 @@ test('a go-ds job without needs: rust-wasi is reported', () => {
 });
 
 test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
@@ -835,12 +913,12 @@ test('setup-qemu-action anywhere in the workflow is reported', () => {
 // `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
 // reported as not waiting for go.
 test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
 });
 
@@ -1146,6 +1224,19 @@ test('firefox-web must start an audio server before the voice suite', () => {
   assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
 });
 
+// Web3.9 CI2: the web suite has calls too (afk.spec's idle move, the layout's AFK preview). Without the audio server
+// Firefox's AudioContext stays suspended, so a fake microphone's tone reaches no local meter and counts as speech.
+test('firefox-web must start an audio server before the web suite', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const web = '      - run: npm run test:e2e:web:firefox -w @dilla/e2e\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
+  const late = body.replace(audio, '').replace(voice, audio + voice);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server must start before the web suite')), problems.join('\n'));
+});
+
 // Web-3 task 10 (review M10): the voice rules match steps, so a comment never satisfies them, and the voice step's own
 // env is required.
 for (const engine of ['chromium', 'firefox']) {
@@ -1173,8 +1264,8 @@ test('a comment naming the audio server above the voice step does not stand in f
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
   const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
   const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  assert.ok(body.includes(audio + voice + env), 'fixture sanity: the audio server, then the voice suite');
-  const sneaky = body.replace(audio + voice + env, `      # sh scripts/ci-audio-server.sh\n${voice}${env}${audio}`);
+  assert.ok(body.includes(audio) && body.includes(voice + env), 'fixture sanity: the audio server, then the voice suite');
+  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice + env, `${voice}${env}${audio}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
   assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
   const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
@@ -1220,7 +1311,7 @@ test('a go-release job without needs: web-build is reported', () => {
 });
 
 test('an image job that does not wait for web-build is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
 });
 

@@ -8,7 +8,6 @@ import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { Button } from '../Button/Button.tsx';
 
 const noop = () => {};
@@ -38,13 +37,13 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
       ring={ring}
       {...shell}
       banner={banner ? <Banner tone="warn" action={{ label: 'retry now', onAction: noop }}>offline · reconnecting to dilla.thim.dev</Banner> : shell?.banner}
-      rail={<CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" onJoin={noop}
+      rail={<CommunityRail label="servers" activeId={tab === 'dms' ? null : 'a1'} onSelect={() => setTab('channels')}
+        home={{ label: 'direct messages', itemLabel: 'direct messages, unread 2, mentions 0', selected: tab === 'dms', unread: 2, mentions: 0,
+          onSelect: () => setTab('dms') }} addLabel="add a server" onAdd={noop}
         settingsLabel="settings" onSettings={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />}
       sidebar={<ChannelList label={tab === 'channels' ? 'channels' : 'direct messages'} title="Midgard Crew"
         activeId={tab === 'channels' ? 'g' : null} onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
-        tabs={<SidebarTabs label="sidebar" activeId={tab} onSelect={setTab}
-          tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages', count: 2 }]} />}
         footer={tab === 'dms' ? <Button variant="ghost" size="sm">message someone</Button> : undefined}
         channels={tab === 'channels'
           ? [{ id: 'g', name: 'general', kind: 'text', readable: false }, { id: 'l', name: 'lfg', kind: 'text', readable: true, unread: 3 },

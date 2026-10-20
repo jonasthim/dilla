@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent } from 'storybook/test';
 import { VoiceChannelRow } from './VoiceChannelRow.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
@@ -19,34 +20,73 @@ export function expectGlyphLine(root: HTMLElement, story: string): void {
     if (name === null) throw new Error(`${story}: a row has no name`);
     const line = name.getBoundingClientRect();
     const box = row.getBoundingClientRect();
-    if (box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
-    for (const glyph of Array.from(row.querySelectorAll<HTMLElement>('svg.d-icon, .d-state-dot'))) {
+    // A caption is one line high. A sidebar person row is --row-h-sub high (R25): its glyphs sit on the name's centre line.
+    const sidebar = row.classList.contains('d-voice-row__person');
+    if (!sidebar && box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
+    for (const glyph of Array.from(row.querySelectorAll<HTMLElement>(':scope > svg.d-icon, :scope > .d-state-dot, .d-voice-row__state svg.d-icon, .d-voice-row__state .d-state-dot, .d-call-tile__state svg.d-icon, .d-call-tile__state .d-state-dot'))) {
       const r = glyph.getBoundingClientRect();
-      if (r.top < line.top - 2 || r.bottom > line.bottom + 2) {
+      const off = sidebar ? Math.abs((r.top + r.bottom) / 2 - (line.top + line.bottom) / 2) > 2 : r.top < line.top - 2 || r.bottom > line.bottom + 2;
+      if (off) {
         throw new Error(`${story}: a glyph at ${String(r.top)}-${String(r.bottom)} is off the name's line ${String(line.top)}-${String(line.bottom)}`);
       }
     }
   }
 }
 
+/** Every person row shares one avatar column, one name column and one state column (R25): each of the three starts at one x. */
+export function expectPeopleColumns(root: HTMLElement, story: string): void {
+  const people = Array.from(root.querySelectorAll<HTMLElement>('.d-voice-row__person'));
+  if (people.length < 2) throw new Error(`${story}: too few people to compare`);
+  for (const sel of ['.d-voice-row__avatar', '.d-voice-row__person-name', '.d-voice-row__states']) {
+    const lefts = people.map(p => p.querySelector<HTMLElement>(sel)?.getBoundingClientRect().left ?? Number.NaN);
+    if (lefts.some(Number.isNaN) || Math.max(...lefts) - Math.min(...lefts) > 0.5) throw new Error(`${story}: ${sel} starts at ${lefts.join(', ')}`);
+  }
+  // The first glyph or word of each state column starts at that column's x, whatever the state is.
+  const firsts = people.flatMap(p => { const f = p.querySelector<HTMLElement>('.d-voice-row__states > :first-child'); return f === null ? [] : [f.getBoundingClientRect().left]; });
+  if (firsts.length > 1 && Math.max(...firsts) - Math.min(...firsts) > 0.5) throw new Error(`${story}: the first state starts at ${firsts.join(', ')}`);
+}
+
+const rgb = (s: string): [number, number, number] => { const m = /rgba?\(([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/.exec(s); if (m === null) throw new Error(`cannot read colour ${s}`); return [Number(m[1]), Number(m[2]), Number(m[3])]; };
+const lum = ([r, g, b]: [number, number, number]) => { const f = (c: number) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+/** The first non-transparent background behind an element. */
+function backdrop(el: HTMLElement): string {
+  for (let n: HTMLElement | null = el; n !== null; n = n.parentElement) { const c = getComputedStyle(n).backgroundColor; if (!/rgba\(.*, 0\)$|transparent/.test(c)) return c; }
+  return 'rgb(0, 0, 0)';
+}
+/** Tab to the join icon and assert it shows a 2px inset ring at 3:1 or better against what is behind it. */
+async function expectJoinRing(root: HTMLElement, story: string): Promise<void> {
+  await userEvent.tab();
+  await userEvent.tab();
+  const join = root.querySelector<HTMLElement>('.d-voice-row__join button');
+  if (join === null || document.activeElement !== join) throw new Error(`${story}: the join icon does not take focus`);
+  await Promise.all(root.getAnimations({ subtree: true }).map(a => a.finished));
+  const s = getComputedStyle(join);
+  if (s.outlineStyle === 'none' || parseFloat(s.outlineWidth) < 2) throw new Error(`${story}: no focus ring (${s.outlineStyle} ${s.outlineWidth})`);
+  if (parseFloat(s.outlineOffset) >= 0) throw new Error(`${story}: the ring is not inset (${s.outlineOffset})`);
+  if (getComputedStyle(join.closest('.d-voice-row__join') as HTMLElement).opacity !== '1') throw new Error(`${story}: the join icon is not shown`);
+  const a = lum(rgb(s.outlineColor)); const b = lum(rgb(backdrop(join)));
+  const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  if (ratio < 3) throw new Error(`${story}: the ring is ${ratio.toFixed(2)}:1`);
+}
+
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const meta = {
   title: 'Voice/VoiceChannelRow', component: VoiceChannelRow,
-  excludeStories: ['expectGlyphLine'],
+  excludeStories: ['expectGlyphLine', 'expectPeopleColumns'],
   play: ({ canvasElement }) => { expectGlyphLine(canvasElement, 'VoiceChannelRow'); },
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
+      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
       },
     },
-    onOpen: () => {},
+    onOpen: () => {}, onJoin: () => {},
   },
-  // The sidebar's width.
-  decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
+  // The sidebar's width, in the list item that positions the join icon.
+  decorators: [Story => <div className="d-voice-item" style={{ width: 240 }}><Story /></div>],
 } satisfies Meta<typeof VoiceChannelRow>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -56,10 +96,18 @@ export const Live: Story = {};
 /** No one in voice: no count and no sub-rows. */
 export const Empty: Story = { args: { participants: [] } };
 /** This device is in it, and the main pane shows it. */
+/** The join icon shows on focus or hover (here: focused); joined shows the connected glyph instead, never both. */
+export const JoinFocused: Story = {
+  globals: { theme: 'mesh' },
+  play: async ({ canvasElement }) => { await expectJoinRing(canvasElement, 'JoinFocused'); },
+};
+export const JoinFocusedLight: Story = { ...JoinFocused, globals: { theme: 'light' } };
+export const JoinFocusedHighContrast: Story = { ...JoinFocused, globals: { theme: 'high-contrast' } };
 export const JoinedCurrent: Story = {
   args: { current: true, joined: true, participants: [person('ada', { speaking: true }), person('bo', { muted: true }), person('you')] },
 };
 export const EveryState: Story = {
+  play: ({ canvasElement }) => { expectGlyphLine(canvasElement, 'EveryState'); expectPeopleColumns(canvasElement, 'EveryState'); },
   args: {
     participants: [person('ada', { speaking: true, video: true }), person('bo', { muted: true, deafened: true }), person('cy', { screen: true }),
       person('dee', { state: 'connecting' }), person('eli', { state: 'not-heard' }), person('fay', { state: 'unverified' })],
@@ -75,5 +123,7 @@ export const LongNameWithGlyphs: Story = {
     person('relay', { bot: true, web: false, state: 'unverified', muted: true })] },
 };
 /** The same list in each theme. */
+/** The mute and deafen glyphs sit in the person's trailing slot; a speaking person's avatar has the accent ring. */
+export const SpeakingAndMuted: Story = { args: { participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] } };
 export const EveryStateLight: Story = { ...EveryState, globals: { theme: 'light' } };
 export const EveryStateHighContrast: Story = { ...EveryState, globals: { theme: 'high-contrast' } };

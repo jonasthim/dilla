@@ -566,8 +566,15 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if err := requireParentVisible(r.Context(), tx, s.UserID, row); err != nil {
+			return err
+		}
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
+		}
+		// R-AFK8: 2^30 and above is the built-in AFK channel's, which no route creates.
+		if row.Position >= AFKBuiltinPosition {
+			return reservedPosition()
 		}
 		if err := tx.CreateChannel(r.Context(), row); err != nil {
 			return err
@@ -688,6 +695,51 @@ func validChannel(ctx context.Context, repo store.Repository, row store.ChannelR
 	return nil
 }
 
+// requireParentVisible is R44: a channel's parent must be a category its author can see. It is
+// nil for a top-level row. A parent that names no live channel is left to validChannel's own 400;
+// one the caller cannot view answers 404 E_NOT_FOUND, as the channel itself would, so a create or
+// a move never confirms that a hidden category exists.
+func requireParentVisible(ctx context.Context, repo store.Repository, uid id.ID, row store.ChannelRow) error {
+	if row.ParentID == nil {
+		return nil
+	}
+	parent, err := repo.GetChannel(ctx, *row.ParentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // validChannel answers it
+		}
+		return err
+	}
+	bits, err := NewResolver(repo).Resolve(ctx, uid, parent)
+	if err != nil {
+		return err
+	}
+	if !bits.Has(PermViewChannel) {
+		return server.Errorf(server.CodeNotFound, "no such object")
+	}
+	return nil
+}
+
+// parentVisible reports whether row has a live parent that uid holds PermViewChannel in: false
+// for a top-level row, a parent that names no live channel, and a category uid cannot view.
+func parentVisible(ctx context.Context, repo store.Repository, uid id.ID, row store.ChannelRow) (bool, error) {
+	if row.ParentID == nil {
+		return false, nil
+	}
+	parent, err := repo.GetChannel(ctx, *row.ParentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	bits, err := NewResolver(repo).Resolve(ctx, uid, parent)
+	if err != nil {
+		return false, err
+	}
+	return bits.Has(PermViewChannel), nil
+}
+
 // validChannelText bounds a channel's name or topic in bytes, requires UTF-8,
 // and refuses control characters: a NUL is legal in a SQLite TEXT column and
 // refused by Postgres, so without the check one request would succeed on one
@@ -708,6 +760,11 @@ func validChannelText(field, s string, minBytes, maxBytes int, multiline bool) e
 		}
 	}
 	return nil
+}
+
+// reservedPosition is the refusal of an ordinary channel at AFKBuiltinPosition or above (R-AFK8).
+func reservedPosition() error {
+	return server.Errorf(server.CodeInvalidRequest, "position must be below %d, which the AFK channel holds", AFKBuiltinPosition)
 }
 
 type patchChannelReq struct {
@@ -766,6 +823,25 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := c.lockManageable(r, tx, current); err != nil {
 			return err
 		}
+		// R2: the built-in AFK channel may be renamed and moved to another category, and nothing else.
+		// R-AFK8: it stays at AFKBuiltinPosition, last in its run, and every other channel stays below it.
+		settings := req.Topic != nil || req.Mode != nil || req.Visibility != nil || req.SlowmodeSeconds != nil
+		if settings || req.Position != nil {
+			afk, err := tx.GetCommunityAFK(r.Context(), *current.CommunityID)
+			if err != nil {
+				return err
+			}
+			isAFK := afk.ChannelID != nil && *afk.ChannelID == current.ID
+			if isAFK && settings {
+				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its kind, mode, visibility, topic and slow mode")
+			}
+			if isAFK && req.Position != nil && *req.Position != AFKBuiltinPosition {
+				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its position")
+			}
+			if !isAFK && req.Position != nil && *req.Position >= AFKBuiltinPosition {
+				return reservedPosition()
+			}
+		}
 		row, err := tx.GetChannel(r.Context(), current.ID)
 		if err != nil {
 			return notFound(err)
@@ -794,6 +870,11 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SlowmodeSeconds != nil {
 			row.SlowmodeSeconds = *req.SlowmodeSeconds
+		}
+		if req.ParentID != nil {
+			if err := requireParentVisible(r.Context(), tx, s.UserID, row); err != nil {
+				return err
+			}
 		}
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
@@ -877,9 +958,11 @@ type listedChannel struct {
 }
 
 // list is GET /v1/communities/{id}/channels (fix wave I10): the community's live
-// channels the caller may view, ordered by position then channel_id, with a
-// category listed when it or one of its children is visible. A caller who is not
-// a member, like an unknown or deleted community, gets 404.
+// channels the caller may view, ordered by position then channel_id. A category is
+// listed only when the caller can view it (R44): a visible child never reveals its
+// parent, and a child whose category the caller cannot view is listed with
+// parent_id null. A caller who is not a member, like an unknown or deleted
+// community, gets 404.
 func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -905,18 +988,22 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "list channels", err)
 		return
 	}
+	// m-3: the AFK pointer is read once for the whole listing, not once per channel resolved.
+	afk, err := c.repo.GetCommunityAFK(r.Context(), cid)
+	if err != nil {
+		c.fail(w, r, "list channels", err)
+		return
+	}
+	resolveCtx := withAFKPointer(r.Context(), cid, afk)
 	visible := make(map[id.ID]bool, len(channels))
 	for _, ch := range channels {
-		bits, err := c.res.Resolve(r.Context(), s.UserID, ch)
+		bits, err := c.res.Resolve(resolveCtx, s.UserID, ch)
 		if err != nil {
 			c.fail(w, r, "list channels", err)
 			return
 		}
 		if bits.Has(PermViewChannel) {
 			visible[ch.ID] = true
-			if ch.ParentID != nil {
-				visible[*ch.ParentID] = true // the category of a visible child
-			}
 		}
 	}
 	out := make([]listedChannel, 0, len(channels))
@@ -929,9 +1016,13 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, "list channels", err)
 			return
 		}
+		parent := ch.ParentID
+		if parent != nil && !visible[*parent] {
+			parent = nil // a category the caller cannot view is never named
+		}
 		out = append(out, listedChannel{
 			ChannelID: ch.ID, Kind: uint64(ch.Kind), Mode: uint64(ch.Mode),
-			Visibility: uint64(ch.Visibility), ParentID: ch.ParentID, Name: ch.Name, Topic: ch.Topic,
+			Visibility: uint64(ch.Visibility), ParentID: parent, Name: ch.Name, Topic: ch.Topic,
 			Position: ch.Position, SlowmodeSeconds: ch.SlowmodeSeconds, Seq: ch.Seq, TextGroupID: tg,
 		})
 	}
@@ -941,10 +1032,20 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
-	row, _, err := c.visible(r)
+	row, s, err := c.visible(r)
 	if err != nil {
 		c.fail(w, r, "get channel", err)
 		return
+	}
+	// R44, as the listing: a visible child never names a category the caller cannot view.
+	parent := row.ParentID
+	seen, err := parentVisible(r.Context(), c.repo, s.UserID, row)
+	if err != nil {
+		c.fail(w, r, "get channel", err)
+		return
+	}
+	if !seen {
+		parent = nil
 	}
 	tg, err := textGroupID(r.Context(), c.repo, row)
 	if err != nil {
@@ -953,7 +1054,7 @@ func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusOK, channelResp{
 		ChannelID: row.ID, CommunityID: row.CommunityID, Kind: uint64(row.Kind),
-		Mode: uint64(row.Mode), Visibility: uint64(row.Visibility), ParentID: row.ParentID,
+		Mode: uint64(row.Mode), Visibility: uint64(row.Visibility), ParentID: parent,
 		Name: row.Name, Topic: row.Topic, Position: row.Position,
 		SlowmodeSeconds: row.SlowmodeSeconds, Seq: row.Seq, TextGroupID: tg,
 	}); err != nil {
@@ -973,25 +1074,21 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if err := c.lockManageable(r, tx, row); err != nil {
 			return err
 		}
+		// R2: the built-in AFK channel is never deleted. Read under the community row lock, so a
+		// delete racing anything that moves the pointer still sees the pointer as it stands.
+		afk, err := tx.GetCommunityAFK(r.Context(), *row.CommunityID)
+		if err != nil {
+			return err
+		}
+		if afk.ChannelID != nil && *afk.ChannelID == row.ID {
+			return server.Errorf(server.CodeForbidden, "the AFK channel cannot be deleted")
+		}
 		// Read the channel's open groups inside the transaction; close them after it.
-		var err error
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
 			return err
 		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
-		}
-		if row.CommunityID != nil {
-			cfg, err := tx.GetCommunityAFK(r.Context(), *row.CommunityID)
-			if err != nil {
-				return err
-			}
-			if cfg.ChannelID != nil && *cfg.ChannelID == row.ID {
-				cfg.ChannelID = nil
-				if err := tx.SetCommunityAFK(r.Context(), *row.CommunityID, cfg); err != nil {
-					return err
-				}
-			}
 		}
 		// A deleted category's channels stay, at the top level: the tombstone
 		// keeps its row, so ON DELETE SET NULL never fires, and a child left

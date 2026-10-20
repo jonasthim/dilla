@@ -429,12 +429,15 @@ describe('the channel header of an announcement channel (walk 17)', () => {
   it('shows the megaphone in place of # for an announcement channel, and # for a plain one', async () => {
     setup({ path: `/c/${A}/${NEWS}` });
     const head = await screen.findByRole('heading', { level: 2, name: 'news' });
-    expect(head.querySelector('[data-icon="megaphone"]')).not.toBeNull();
-    expect(head.textContent).toBe('[ news ]');
+    // web3.9 (C3): the megaphone is a sibling of the name inside the title, not inside the heading.
+    const title = head.closest('.d-channel-header__title')!;
+    expect(title.querySelector('[data-icon="megaphone"]')).not.toBeNull();
+    expect(head.querySelector('[data-icon="megaphone"]')).toBeNull();
+    expect(title.textContent).toBe('[ news ]');
     cleanup();
     setup({ path: `/c/${A}/${GEN}` });
     const plain = await screen.findByRole('heading', { level: 2, name: 'general' });
-    expect(plain.querySelector('[data-icon="megaphone"]')).toBeNull();
-    expect(plain.textContent).toBe('[ # general ]');
+    expect(plain.closest('.d-channel-header__title')!.querySelector('[data-icon="megaphone"]')).toBeNull();
+    expect(plain.closest('.d-channel-header__title')!.textContent).toBe('[ # general ]');
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Avatar, Icon, StateDot, type IconName } from '@dilla/ui';
+import { Avatar, Icon, PhoneHeader, StateDot, type IconName } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import type { SettingsSection } from '../router.ts';
@@ -11,7 +11,7 @@ import { PresencePicker } from './PresencePicker.tsx';
 
 const CHEVRON = 'chevron-right';
 const SECTION_ICON: Record<SettingsSection, IconName> = {
-  devices: 'server', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'check', keyboard: 'hash', diagnostics: 'activity',
+  devices: 'monitor-smartphone', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'shield', keyboard: 'keyboard', diagnostics: 'activity',
 };
 
 /**
@@ -35,7 +35,7 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'pending' : 'danger';
   return (
     <div className="dw-phone-pane dw-you">
-      <h1 className="dw-phone-heading">{t('you.title')}</h1>
+      <PhoneHeader title={t('you.title')} />
       <div className="dw-you__account">
         <Avatar name={name} size="md" />
         <div className="dw-you__who">
@@ -66,7 +66,7 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
           </li>
         ))}
       </ul>
-      <div className="dw-you__signout"><SignOutAction /></div>
+      <div className="dw-you__signout"><SignOutAction icon /></div>
     </div>
   );
 }

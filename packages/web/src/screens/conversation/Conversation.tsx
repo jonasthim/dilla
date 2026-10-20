@@ -1,18 +1,27 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
 import { phoneNow } from '../../layout.ts';
-import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
-import { Banner, Button, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
+import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
 import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
+import { dayLabel, groupedWithAbove, startsDay } from './log-model.ts';
 import { MessageItem, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
 
 export const FLASH_MS = 1400;
+/** How far from the end, in CSS px, the log may be and still count as at the newest message (the log's own pin slack). */
+const AT_PRESENT_PX = 24;
+/** A scroll this soon after a wheel, touch or scroll key is the reader's (a fling keeps scrolling after the finger lifts). */
+const USER_SCROLL_MS = 800;
+/** A press that never clicks (a drag, a long press) stops counting as the focus's cause after this long. */
+const POINTER_FOCUS_MS = 600;
+/** Keys that scroll the log without moving focus between rows (the arrows, Home and End do, and reveal the row they land on). */
+const SCROLL_KEYS = ['PageUp', 'PageDown'];
 export interface ConversationUi {
   reply: { msgId: string; author: string; excerpt: string } | null;
   editing: { msgId: string; value: string } | null;
@@ -78,6 +87,23 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const [gridPos, setGridPos] = useState<{ top: number; left: number } | null>(null);
+  // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a scroll of the log. `at` is when it was shown.
+  const [revealFor, setRevealFor] = useState<{ log: string; key: string } | null>(null);
+  const revealedKey = revealFor !== null && revealFor.log === p.logKey && items.some(i => i.key === revealFor.key) ? revealFor.key : null;
+  // The reader's own scrolling (wheel, touch, scroll keys); a scroll with none of these before it is the log's own.
+  const userScrollAt = useRef(0);
+  const pointerTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (pointerTimer.current !== null) window.clearTimeout(pointerTimer.current); }, []);
+  const byPointer = useRef(false); // a pointer press is under way was a pointer: a row it focuses is revealed by its tap, not by the focus
+  const dragged = useRef(false); // a touch that moved is a scroll; one that did not is a tap, and a tap's reveal grows the row
+  const markUserScroll = () => { userScrollAt.current = Date.now(); };
+  const reveal = (key: string, on: boolean) => {
+    if (on) setRevealFor({ log: p.logKey, key });
+    else setRevealFor(cur => (cur?.key === key ? null : cur));
+  };
+  // R29: the log is away from the newest message (the "viewing older messages" bar), per log.
+  const [awayFrom, setAwayFrom] = useState<string | null>(null);
+  useEffect(() => { setAwayFrom(null); }, [p.logKey]);
   const rowEls = useRef(new Map<string, HTMLElement>());
   const paneRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -170,7 +196,23 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       case 'discard': command({ m: 'discardSend', msgId: ev.msgId }); break;
     }
   };
+  const jumpToPresent = () => {
+    const log = paneRef.current?.querySelector<HTMLElement>('[role="log"]');
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
+    const newest = items.at(-1);
+    if (newest !== undefined) rowEls.current.get(newest.key)?.focus({ preventScroll: true });
+  };
+  const onLogScroll = (e: React.UIEvent<HTMLElement>) => {
+    const log = e.target as HTMLElement;
+    if (!(log instanceof HTMLElement) || log.getAttribute('role') !== 'log') return;
+    const away = log.scrollHeight - log.scrollTop - log.clientHeight > AT_PRESENT_PX;
+    setAwayFrom(away ? p.logKey : null);
+    // Only the reader's own scroll hides it: a message arriving re-pins the log, and the log keeps the end in view under a row that grew.
+    if (Date.now() - userScrollAt.current < USER_SCROLL_MS) setRevealFor(null);
+  };
   const rowKey = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key === 'Escape') setRevealFor(null);
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     const target = e.target as HTMLElement;
     if (e.key === 'Escape') {
@@ -197,10 +239,25 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   };
   const closeLightbox = () => { closedLightbox.current = lightbox?.opener ?? null; setLightbox(null); };
 
-  return <div ref={paneRef} className="dw-conversation" data-channel-id={p.channelId}
+  return <div ref={paneRef} className="dw-conversation" data-channel-id={p.channelId} onScrollCapture={onLogScroll}
+    onWheelCapture={markUserScroll} onTouchStartCapture={() => { dragged.current = false; }}
+    onTouchMoveCapture={() => { dragged.current = true; markUserScroll(); }}
+    onTouchEndCapture={() => { if (dragged.current) markUserScroll(); }}
+    onPointerDownCapture={() => {
+      // A pointer's press focuses a row between its pointerdown and its click (a touch's compatibility mousedown comes after
+      // pointerup); a focus() by script after the click is not the pointer's.
+      byPointer.current = true;
+      if (pointerTimer.current !== null) window.clearTimeout(pointerTimer.current);
+      pointerTimer.current = window.setTimeout(() => { byPointer.current = false; }, POINTER_FOCUS_MS);
+    }}
+    onClickCapture={() => { byPointer.current = false; }}
+    onKeyDownCapture={e => { byPointer.current = false; if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
     onFocus={e => { const row = (e.target as Element).closest<HTMLElement>('.d-message-row'); if (row) {
       const key = items.find(i => rowEls.current.get(i.key) === row)?.key;
       if (key) setActiveKey(key);
+      // I1: a row that takes keyboard focus shows its actions on a phone layout, as focus-within did when they were always there.
+      // A tap focuses the row too, but by pointer: the tap itself reveals it (and a second tap hides it).
+      if (key && e.target === row && !byPointer.current) reveal(key, true);
     } }}
     onDragEnter={e => { if (fileDrag(e)) { e.preventDefault(); setDragDepth(n => n + 1); } }}
     onDragOver={e => { if (fileDrag(e)) e.preventDefault(); }}
@@ -214,8 +271,12 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     <MessageLog key={p.logKey} label={p.label} emptyLabel={p.timeline === undefined ? t('shell.log.loading')
       : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
-      busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}>
-      {items.map(item => <MessageItem key={item.key} item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
+      busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}
+      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}>
+      {items.map((item, index) => <Fragment key={item.key}>
+        {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}
+        <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
+        grouped={groupedWithAbove(items[index - 1], item)} revealed={item.key === revealedKey} onReveal={on => reveal(item.key, on)}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
         editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentionsFor(item.body))).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
@@ -229,7 +290,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         }}
         onEditCancel={() => { p.dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
         onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)}
-        {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})} />)}
+        {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})} />
+      </Fragment>)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

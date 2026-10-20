@@ -55,6 +55,25 @@ type Story = StoryObj<typeof meta>;
 
 export const Connected: Story = {};
 export const Speaking: Story = { args: { view: { ...VIEW, speaking: true } } };
+/** R25: on the stage the ring is on the tile's edge and on the avatar (2px accent), and there is no dot. */
+export const SpeakingOnStage: Story = {
+  args: { view: { ...VIEW, speaking: true }, onFocusTile: () => {} },
+  play: ({ canvasElement }) => {
+    const ring = canvasElement.querySelector<HTMLElement>('.d-call-tile__avatar-ring[data-speaking="true"]');
+    const tile = canvasElement.querySelector<HTMLElement>('.d-call-tile[data-speaking="true"]');
+    if (ring === null || tile === null) throw new Error('SpeakingOnStage: no ring');
+    if (getComputedStyle(ring).outlineWidth !== '2px' || getComputedStyle(tile).outlineWidth !== '2px') throw new Error('SpeakingOnStage: the ring is not 2px');
+    if (canvasElement.querySelector('.d-state-dot') !== null) throw new Error('SpeakingOnStage: a dot is drawn');
+  },
+};
+/** The level is not 100: a quiet chip in the caption row says so. */
+export const QuietVolume: Story = {
+  args: { volume: 70, onFocusTile: () => {} },
+  play: ({ canvasElement }) => {
+    const chip = canvasElement.querySelector<HTMLElement>('.d-call-tile__caption .d-call-tile__chip');
+    if (chip === null || chip.textContent !== '70 %') throw new Error('QuietVolume: no 70 % chip');
+  },
+};
 export const MutedAndDeafened: Story = { args: { view: { ...VIEW, name: 'bo', muted: true, deafened: true }, labels: { ...LABELS, volume: 'volume for bo' } } };
 export const Connecting: Story = { args: { view: { ...VIEW, state: 'connecting' } } };
 export const NotHeard: Story = { args: { view: { ...VIEW, state: 'not-heard' } } };

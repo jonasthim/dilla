@@ -295,3 +295,74 @@ describe('private channels in the channels tab', () => {
     expect(screen.getByRole('switch', { name: en['chperm.private'] })).toHaveFocus();
   });
 });
+
+// I6, R39: move up, move down, edit and delete are icon actions in four trailing slots; the AFK row has edit and no delete, and the slot stays reserved.
+describe('the channel row actions', () => {
+  it('draws move up, move down, edit and delete as icon buttons in four trailing slots per row', () => {
+    setup();
+    const row = screen.getByRole('button', { name: 'edit lobby' }).closest('li') as HTMLElement;
+    expect(row.querySelectorAll('.d-slot')).toHaveLength(4);
+    for (const name of ['move lobby up', 'move lobby down', 'edit lobby']) expect(within(row).getByRole('button', { name }).querySelector('svg')).not.toBeNull();
+    // I6: the moves have no text label of their own.
+    expect(within(row).getByRole('button', { name: 'move lobby down' })).toHaveTextContent('');
+    expect(within(row).getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
+  });
+  it('gives the AFK channel an edit and no delete, keeping the slot', () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`channels:${SERVER}`, CHANNELS);
+    fake.set(`afk:${SERVER}`, { channelId: GENERAL, timeoutSeconds: 300, pending: false });
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ChannelsSection communityId={SERVER} serverName="Midgard" announce={vi.fn()} />
+    </CoreProvider></div>);
+    const afk = screen.getByRole('button', { name: 'edit General voice' }).closest('li') as HTMLElement;
+    expect(within(afk).queryByRole('button', { name: 'delete General voice' })).toBeNull();
+    expect(afk.querySelectorAll('.d-slot')).toHaveLength(4);
+    expect(screen.getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
+  });
+});
+
+// R-AFK8: AFK always stands last in its run at 2^30. Its row has no move controls (the slots stay reserved), and no
+// ordinary row can move past it: the last ordinary row above AFK cannot move down.
+describe('the AFK row in the channels tab (R-AFK8)', () => {
+  const AFK = 'c7'.repeat(16);
+  const withAFK = [...CHANNELS, row(AFK, 1, 'AFK', TALK, 2 ** 30)];
+  const mount = (afk: { channelId: string | null } | null) => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`channels:${SERVER}`, withAFK);
+    if (afk !== null) fake.set(`afk:${SERVER}`, { ...afk, timeoutSeconds: 300, pending: false });
+    const user = userEvent.setup();
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ChannelsSection communityId={SERVER} serverName="Midgard" announce={vi.fn()} />
+    </CoreProvider></div>);
+    return { fake, user };
+  };
+
+  it('gives AFK no move up or down, keeping all four slots and the edit', () => {
+    mount({ channelId: AFK });
+    const afk = btn('edit AFK').closest('li') as HTMLElement;
+    expect(within(afk).queryByRole('button', { name: 'move AFK up' })).toBeNull();
+    expect(within(afk).queryByRole('button', { name: 'move AFK down' })).toBeNull();
+    expect(afk.querySelectorAll('.d-slot')).toHaveLength(4);
+    expect(afk.querySelector('[data-move]')).toBeNull();
+  });
+
+  it('cannot move the last ordinary row above AFK down, and its up and the others stay as they were', async () => {
+    const { fake, user } = mount({ channelId: AFK });
+    expect(btn('move dev down')).toBeDisabled();
+    expect(btn('move dev up')).toBeEnabled();
+    expect(btn('move lobby down')).toBeEnabled();
+    await user.click(btn('move dev up'));
+    expect(fake.callsOf('moveChannel')).toEqual([{ m: 'moveChannel', channelId: DEV, direction: 'up' }]);
+  });
+
+  it('before the afk: slice is read, the channel at exactly 2^30 is treated as AFK', () => {
+    mount(null);
+    const afk = btn('edit AFK').closest('li') as HTMLElement;
+    expect(afk.querySelector('[data-move]')).toBeNull();
+    expect(btn('move dev down')).toBeDisabled();
+  });
+});

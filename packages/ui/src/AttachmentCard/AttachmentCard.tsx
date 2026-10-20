@@ -15,6 +15,8 @@ export interface AttachmentCardProps {
   openLabel: string;
   onOpen?(): void;
   saveLabel: string;
+  /** The visible text of a file card's save button; its accessible name stays saveLabel. Defaults to saveLabel. */
+  saveText?: string;
   /** Without it a file card has no save button (an unsent card). */
   onSave?(): void;
   state: 'idle' | 'loading' | 'failed' | 'too-large';
@@ -50,7 +52,7 @@ function cardBox(w: number | null, h: number | null): CSSProperties {
  * own save, with the same text and name, stands in for the card's.
  */
 export function AttachmentCard({
-  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, onSave, state, stateText, tabbable, player,
+  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, saveText, onSave, state, stateText, tabbable, player,
 }: AttachmentCardProps) {
   const tabIndex = tabbable ? 0 : -1;
   const tooLarge = state === 'too-large';
@@ -97,7 +99,7 @@ export function AttachmentCard({
         <span className="d-attachment-card__size">{size}</span>
         {!tooLarge && onSave ? (
           <Button variant="default" size="md" className="d-attachment-card__save" aria-label={saveLabel} tabIndex={tabIndex}
-            onClick={() => onSave()}>{saveLabel}</Button>
+            onClick={() => onSave()}>{saveText ?? saveLabel}</Button>
         ) : null}
       </div>
     );

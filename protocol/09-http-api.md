@@ -395,10 +395,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 
 | Method and path | Request | Response |
 |---|---|---|
-| `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)[, overwrites]]`, `overwrites` = `[[kind(uint), target_id(bstr16), allow(uint), deny(uint)]]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
-| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]` |
-| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
-| `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204` |
+| `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)[, overwrites]]`, `overwrites` = `[[kind(uint), target_id(bstr16), allow(uint), deny(uint)]]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]`; `404 E_NOT_FOUND` when `parent_id` names a category the caller cannot view, ahead of the `400` parent rules, as for a hidden channel |
+| `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]`; `parent_id` is null when the caller cannot view the category |
+| `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a channel whose category the caller cannot view is listed with `parent_id` null; a category is listed only when the caller can view it; `404` for a non-member |
+| `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204`; `404 E_NOT_FOUND` when `parent_id` names a category the caller cannot view, ahead of the `400` parent rules, as for a hidden channel |
 | `DELETE /v1/channels/{id}` | — | `204` |
 
 | field | values |
@@ -458,7 +458,13 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 - `name` is 1–100 bytes and `topic` at most 1024 bytes of UTF-8, with no control character (a
   topic may carry line breaks and tabs). `position` is at most 2 147 483 647 and
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
-  by `channel_id` (bytewise), the same on every engine.
+  by `channel_id` (bytewise), the same on every engine. Position `2^30` and above belongs to the
+  built-in AFK channel (§ Voice): a `POST` or `PATCH` that puts any other channel there is `400
+  E_INVALID_REQUEST`, a `PATCH` that names a position other than `2^30` for the AFK channel itself
+  is `403 E_FORBIDDEN` `the AFK channel keeps its position`, and the next start moves any other
+  channel found there (one an older release created) below `2^30`, keeping their order. When they do
+  not fit after the highest position below `2^30`, it renumbers every channel of the community
+  except the AFK channel `0..n-1` in that order instead.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
 - `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
   an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
@@ -843,25 +849,48 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
 | `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
-| `GET /v1/communities/{id}/afk/settings` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint)]`, default `[null, 300]`; unfiltered administrator view | `manage_community` |
-| `PUT /v1/communities/{id}/afk/settings` | `[channel_id(bstr16\|null), timeout_seconds(uint)]` | `204`; timeout is one of `60, 300, 900, 1800, 3600`; destination is an existing voice channel in this community with no live call; `400 E_INVALID_REQUEST` otherwise | `manage_community` |
-| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), occupants([[user_id(bstr16), device_id(bstr16)]])]`; an inaccessible or removed destination is returned as `null` with no occupants | community membership; occupants only when the caller may view and connect to the destination |
-| `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` | `204`; records this authenticated device's activity in that live community voice call | community membership |
-| `POST /v1/communities/{id}/afk` | `[source_channel_id(bstr16)]` | `204`; moves this authenticated device from a live community voice call to silent AFK; `400 E_INVALID_REQUEST` if the destination is disabled or inaccessible or this device is absent from the source call | community membership and destination `view_channel` and `connect` |
-| `DELETE /v1/communities/{id}/afk` | — | `204`, also when this device was not in AFK | community membership |
+| `GET /v1/communities/{id}/afk/settings` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint)]`: the built-in AFK channel and its timeout (default `300`) | `manage_community` |
+| `PUT /v1/communities/{id}/afk/settings` | `[timeout_seconds(uint)]`, or `[channel_id(bstr16), timeout_seconds(uint)]` when `channel_id` is the built-in AFK channel | `204`; timeout is one of `60, 300, 900, 1800, 3600` (there is no "off"); the channel is never chosen here: `400 E_INVALID_REQUEST` `the AFK channel is built in; send [timeout_seconds]` for any other `channel_id`, `null` included, and `400 E_INVALID_REQUEST` for any other timeout | `manage_community` |
+| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), [], pending(uint)]`: the built-in AFK channel; the third element is always the empty array (web3.8's retired occupant list, kept so a web3.8 parser still reads it); `pending` is `1` only while the sweep's move of the calling device in this community is younger than 10 minutes, else `0` (the dilla CBOR subset has no booleans). A community with no live AFK channel gets one here first; `channel_id` is `null` only if that fails | community membership |
+| `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` or `[channel_id(bstr16), exempt(uint)]` | `204`; records this authenticated device's activity in that live community voice call. `exempt` is `0` or `1` (`400 E_INVALID_REQUEST` otherwise, and for a CBOR boolean); with `1` the device is never moved out of that call's room, even when the report precedes its admission | community membership |
+| `POST /v1/communities/{id}/afk` | any | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's manual move) | — |
+| `DELETE /v1/communities/{id}/afk` | — | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's leave) | — |
 
-- **AFK lifecycle.** A community can designate one existing voice channel as AFK. The instance
-  keeps a server-side activity time for each device in community voice. Browser keyboard, pointer
-  and touch input, and microphone speech report activity; listening alone does not. Every retry
-  tick moves a device that exceeded the chosen timeout, even when its browser timers are suspended.
-  The instance removes the device from the original SFU room and revokes its relay before listing
-  it as an AFK occupant. AFK has no media call or media keys: microphone, camera, screen and remote
-  audio are all absent. The call's normal leave path removes its MLS leaf. A pending or completed
-  AFK move blocks both a new call token and a replayed `/rtc` admission for that device. The person
-  leaves AFK or joins another voice room manually. An actual gateway disconnect, loss of membership
-  or destination access, deletion or disabling clears its occupancy. AFK settings and occupancy
-  changes send `community_changed` (`02`); clients reload the AFK snapshot on initial load and
-  reconnect. The snapshot, rather than a gateway event payload, decides what each caller may see.
+- **The built-in AFK channel.** Every community has exactly one AFK channel, written by the
+  instance: a voice channel named `AFK`, end-to-end encrypted and private, at the top level, at
+  position `2^30` (clients skip it when they compute the next position), with no topic, no slow
+  mode and no overwrites. A new community gets it in the transaction that creates the community; an
+  existing one (a web3.8 community, or one whose pointer went missing) gets it once when the
+  instance starts, and the snapshot creates it lazily if it is still missing. A web3.8 community
+  whose administrator had picked an AFK channel gets a new built-in channel with the stored timeout,
+  and the old channel becomes an ordinary voice channel (its name, overwrites and live call stay).
+  An overwrite left on the built-in channel (by a rollback to an older release) is removed at the
+  next start, which also puts back its built-in mode, visibility, topic and slow mode.
+- **What may change.** Administrators may rename it and move it to another category (under the
+  category rule of § Channels); its position stays `2^30` (§ Channels), and the next start puts it
+  back there if it is anywhere else. `DELETE /v1/channels/{id}` on it is `403 E_FORBIDDEN` `the AFK
+  channel cannot be deleted`; a `PATCH` that names its topic, mode, visibility or slow mode is
+  `403 E_FORBIDDEN` `the AFK channel keeps its kind, mode, visibility, topic and slow mode`; `PUT`
+  and `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` on it are `403 E_FORBIDDEN` `the AFK
+  channel takes no permission overwrites`. A category delete leaves it at the top level, and a
+  community transfer leaves it as it is.
+- **Permissions and listen-only.** Every member holds `view_channel` and `connect` in the AFK
+  channel whatever their roles say (the owner and administrators keep every bit), so every member is
+  in its `channel_members` and its call group. A call there is listen-only: the token, the `/rtc`
+  admission and every grant re-push give no source to publish, and `POST /v1/calls/{call_id}/share`
+  is `403 E_FORBIDDEN` `nobody shares in the AFK channel`. When the instance cannot read the AFK
+  pointer, the grant is listen-only.
+- **AFK lifecycle.** The instance keeps a server-side activity time for each device in community
+  voice. Browser keyboard, pointer and touch input, and microphone speech report activity; listening
+  alone does not. A device that cannot be idle-detected (a phone) reports `exempt` `1` once per join
+  and is never moved. Every retry tick moves a device that exceeded the community's timeout, even
+  when its browser timers are suspended; the AFK channel's own calls are never tracked. The server
+  decides a move and the client carries it out, because the server cannot add a device to an
+  end-to-end encrypted call group: the instance removes the device from its SFU room, revokes its
+  relay, marks a pending move for that device alone (10 minutes) and sends `community_changed`
+  (`02`) to that user's live connections. The client reads `pending` from the snapshot and joins the
+  AFK channel like any other call; any admission of that device to a room clears it. Nothing but
+  the sweep sets `pending`. Settings changes send `community_changed` to the members.
 
 - **Discovery and snapshot.** `GET /v1/channels/{id}/call` tells a client which call group to join
   or register and who is in the channel's call. `group_id` is the live call's group; with no live

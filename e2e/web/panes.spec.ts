@@ -2,7 +2,7 @@
 // the mouse and with the keyboard, the width is kept across a reload (localStorage `dilla.paneWidths`, read and written only
 // in layout.ts), Enter resets it, Home and End go to the limits, and the aside has a splitter only while it is a column.
 import { expect, type Page } from '@playwright/test';
-import { TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
+import { addServerVia, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -34,13 +34,25 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   if (h === null) throw new Error('the empty test host did not start');
   await page.setViewportSize({ width: 1280, height: 800 });
   await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
   await expectComposerReady(page, 'general');
+
+  // 0. web3.9 (controller addition, UI-4): at 1440x900 the user panel is 52 px high (measured) and the composer's resting top
+  // meets the panel's top, within 1 px (--d-composer-band, set on the shell).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const tops = async () => page.evaluate(() => {
+    const panel = document.querySelector('.d-user-panel')?.getBoundingClientRect();
+    const composer = document.querySelector('.d-composer')?.getBoundingClientRect();
+    return { panelTop: panel?.top ?? NaN, panelHeight: panel?.height ?? NaN, composerTop: composer?.top ?? NaN };
+  });
+  await expect.poll(async () => { const m = await tops(); return Math.abs(m.composerTop - m.panelTop); }, { message: 'composer and user panel tops at 1440x900' }).toBeLessThanOrEqual(1);
+  expect((await tops()).panelHeight, 'the user panel is 52 px high').toBeCloseTo(52, 0);
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   const splitter = sidebarSplitter(page);
   await expect(splitter).toBeVisible({ timeout: WAIT });
@@ -92,16 +104,20 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect(sidebarSplitter(page)).toBeVisible();
   expect(await page.locator('.d-channel-header').evaluate(el => el.getBoundingClientRect().height), 'the header at 900 px').toBeLessThanOrEqual(52);
 
-  // 5. FX-misc m6: with the sidebar at its widest on an 800 px window main is 24rem (384 px), and the channel header still shows
-  // every action whole inside main: they wrap onto a second row instead of being clipped or pushed off screen.
+  // 5. FX-misc m6, as web3.9 UI-3 designed it: with the sidebar at its widest on an 800 px window main is 24rem (384 px). The header
+  // stays one 48 px bar (it no longer wraps); below 36rem of header width the foldable actions give way to the "more" menu, and every
+  // action still shown sits whole inside main.
   await page.setViewportSize({ width: 800, height: 800 });
   await sidebarSplitter(page).focus();
   await page.keyboard.press('End');
   const mainBox = async () => page.getByRole('main').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
   await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
   const header = page.locator('.d-channel-header');
-  const cells = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
-  expect(cells.length, 'the header actions').toBeGreaterThanOrEqual(3);
+  expect(await header.evaluate(el => el.getBoundingClientRect().height), 'the header stays one bar at 24rem').toBeLessThanOrEqual(52);
+  // A folded action is display:none (no box); what is left, the "more" menu among it, is measured.
+  const shown = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
+  const cells = shown.filter(c => c.width > 0);
+  expect(cells.length, 'the header actions still shown').toBeGreaterThanOrEqual(2);
   const bounds = await mainBox();
   for (const c of cells) {
     expect(c.width, `${c.name} keeps its width`).toBeGreaterThan(24);

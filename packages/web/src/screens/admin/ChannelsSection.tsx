@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button, ConfirmDialog, ChannelSettings } from '@dilla/ui';
-import { isPrivate, type ChannelSummary } from '@dilla/client-core';
+import { Button, ConfirmDialog, ChannelSettings, IconButton, TrailingSlot } from '@dilla/ui';
+import { isBuiltinAFK, isPrivate, type ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx';
 import { ChannelEditFlow } from './ChannelEditFlow.tsx';
+import './ChannelsSection.css';
 import { useRun, type SectionProps } from './shared.ts';
 
 const byOrder = (a: ChannelSummary, b: ChannelSummary): number => a.position - b.position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -33,7 +34,8 @@ const shown = (c: ChannelSummary): string => (c.kind === 0 ? `#${c.name}` : c.na
 /**
  * Channels tab: the list grouped by category with edit, move up, move down and delete on every row, and a new category
  * button. A move is one `moveChannel` step among the row's siblings; the first of a group cannot move up, the last cannot
- * move down. Focus follows a moved row to its button.
+ * move down. The built-in AFK channel has no moves and is not counted, so it stays last (R-AFK8). Focus follows a moved
+ * row to its button.
  */
 export function ChannelsSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
   const client = useCore();
@@ -87,14 +89,21 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
     }).finally(() => { moving.current = false; });
   };
 
+  // I6: move up, move down, edit and delete are icon actions in four fixed trailing slots (the ManageList grammar); the AFK row is `fixed`,
+  // so its delete slot stays empty and the icons keep one right edge. A long name is cut to one line (the full name is its title).
+  // R-AFK8: AFK stands last in its run at 2^30 and never moves, so its move slots stay empty too, and the ordinary rows
+  // count among themselves: the last one above AFK cannot move down.
+  const afkId = useSlice(`afk:${communityId}`)?.channelId ?? null;
+  const fixed = (c: ChannelSummary): boolean => c.kind !== CATEGORY && isBuiltinAFK(c.id, c.position, afkId);
   const controls = (c: ChannelSummary, index: number, siblings: number) => (
-    <span className="dw-admin-controls">
-      <Button variant="ghost" aria-label={t('admin.channels.editLabel', { name: c.name })} onClick={() => setTarget({ kind: 'edit', id: c.id })}>{t('admin.channels.edit')}</Button>
-      <Button variant="ghost" data-move={`${c.id}:up`} aria-label={t('admin.channels.upLabel', { name: c.name })} disabled={index === 0}
-        onClick={() => move(c, 'up')}>{t('admin.channels.up')}</Button>
-      <Button variant="ghost" data-move={`${c.id}:down`} aria-label={t('admin.channels.downLabel', { name: c.name })} disabled={index === siblings - 1}
-        onClick={() => move(c, 'down')}>{t('admin.channels.down')}</Button>
-      <Button variant="ghost" aria-label={t('admin.channels.deleteLabel', { name: c.name })} onClick={() => setTarget({ kind: 'delete', id: c.id })}>{t('admin.channels.delete')}</Button>
+    <span className="d-manage-list__trail">
+      <TrailingSlot>{fixed(c) ? null : <IconButton icon="arrow-up" label={t('admin.channels.upLabel', { name: c.name })} data-move={`${c.id}:up`}
+        disabled={index === 0} onClick={() => move(c, 'up')} />}</TrailingSlot>
+      <TrailingSlot>{fixed(c) ? null : <IconButton icon="arrow-down" label={t('admin.channels.downLabel', { name: c.name })} data-move={`${c.id}:down`}
+        disabled={index === siblings - 1} onClick={() => move(c, 'down')} />}</TrailingSlot>
+      <TrailingSlot><IconButton icon="square-pen" label={t('admin.channels.editLabel', { name: c.name })} onClick={() => setTarget({ kind: 'edit', id: c.id })} /></TrailingSlot>
+      <TrailingSlot>{c.id === afkId ? null
+        : <IconButton icon="x" label={t('admin.channels.deleteLabel', { name: c.name })} onClick={() => setTarget({ kind: 'delete', id: c.id })} />}</TrailingSlot>
     </span>
   );
 
@@ -105,23 +114,26 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
         <Button onClick={() => setTarget({ kind: 'category' })}>{t('admin.channels.newCategory')}</Button>
       </div>
       {moveError !== null ? <p key={moveAttempt} role="alert" className="dw-admin-error">{moveError}</p> : null}
-      {groups.map((g, gi) => (
-        <div key={g.category?.id ?? 'top'} className="dw-admin-group">
-          <div className="dw-admin-grouphead">
-            <h3 className="dw-admin-name">{g.category?.name ?? t('admin.channels.noCategory')}</h3>
-            {g.category !== null ? controls(g.category, gi - 1, categories.length) : null}
+      {groups.map((g, gi) => {
+        const movable = g.channels.filter(c => !fixed(c));
+        return (
+          <div key={g.category?.id ?? 'top'} className="dw-admin-group">
+            <div className="dw-admin-grouphead d-manage-list__row" data-row>
+              <h3 className="dw-admin-name" title={g.category?.name}>{g.category?.name ?? t('admin.channels.noCategory')}</h3>
+              {g.category !== null ? controls(g.category, gi - 1, categories.length) : null}
+            </div>
+            <ul aria-label={g.category?.name ?? t('admin.channels.noCategory')} className="dw-admin-rows d-manage-list">
+              {g.channels.map(c => (
+                <li key={c.id} className="dw-admin-row d-manage-list__row" data-row>
+                  <span className="dw-admin-name" title={shown(c)}>{shown(c)}</span>
+                  {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
+                  {controls(c, movable.indexOf(c), movable.length)}
+                </li>
+              ))}
+            </ul>
           </div>
-          <ul aria-label={g.category?.name ?? t('admin.channels.noCategory')} className="dw-admin-rows">
-            {g.channels.map((c, i) => (
-              <li key={c.id} className="dw-admin-row">
-                <span className="dw-admin-name">{shown(c)}</span>
-                {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
-                {controls(c, i, g.channels.length)}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
+        );
+      })}
       <ChannelEditFlow announce={announce} channel={target?.kind === 'edit' ? live ?? null : null} categories={categories} onClose={() => setTarget(null)} />
       <DeleteChannel channel={target?.kind === 'delete' ? live ?? null : null}
         onDone={() => { focusHeading.current = true; setTarget(null); headingRef.current?.focus(); }} onClose={() => setTarget(null)} />

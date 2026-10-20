@@ -3,7 +3,7 @@
 // channels) has no "+", opens server settings, lands on Invites, makes a link and copies it. At 390x844 the header has the search icon
 // and the gear (no menu), a member reaches leave under settings, and the list header has the "+" for Ada only.
 import { expect, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, expectAccessible, expectComposerReady, makeInviteLink, newAccount, newChannelButton,
   railItem, railNav, signUp, test,
 } from './support/app';
@@ -43,7 +43,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
   // 1. Ada starts the server and adds a channel through the "+" in the list header. The server header holds no invite
   //    link and no "+ channel" any more.
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

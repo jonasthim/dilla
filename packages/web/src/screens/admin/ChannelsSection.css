@@ -1,0 +1,3 @@
+/* I6: a channel or category name is cut to one line, and the trailing slots keep their width (the full name is the element's title). */
+.dw-admin-row > .dw-admin-name, .dw-admin-grouphead > .dw-admin-name { flex: 1 1 0; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-admin-row > .dw-admin-tag { flex: none; }

@@ -412,6 +412,180 @@ describe('AdminController: server and channel edits', () => {
       (l) => l.some((c) => c.id === toHex(id16(0x90)) && c.kind === 2 && c.name === 'voice' && c.position === 1))).toBe(true);
   });
 
+  it('createCategory skips the built-in AFK channel at 2^30 when it takes the next position (R42)', async () => {
+    const w = world();
+    const AFK = id16(0x61);
+    w.routes.listChannels.mockResolvedValue([channelRow(0xc1, 0), channelRow(0x61, 2 ** 30, { kind: 1, name: 'AFK' })]);
+    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${CID}`)?.channelId).toBe(toHex(AFK)));
+    await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.some((c) => c.id === toHex(AFK))).toBe(true));
+    expect(await run(w, { m: 'createCategory', communityId: CID, name: 'voice' })).toMatchObject({ ok: true });
+    expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'voice', position: 1 });
+  });
+
+  it('createCategory skips the AFK position 2^30 before the afk: slice is read (R-AFK6)', async () => {
+    const w = world();
+    const AFK = id16(0x61);
+    w.routes.listChannels.mockResolvedValue([channelRow(0xc1, 0), channelRow(0x61, 2 ** 30, { kind: 1, name: 'AFK' })]);
+    // The AFK snapshot never answers: the slice stays unread while the create runs.
+    w.routes.getAFK.mockReturnValue(new Promise(() => undefined));
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.some((c) => c.id === toHex(AFK))).toBe(true));
+    expect(w.last(`afk:${CID}`) ?? null).toBeNull();
+    expect(await run(w, { m: 'createCategory', communityId: CID, name: 'voice' })).toMatchObject({ ok: true });
+    expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'voice', position: 1 });
+  });
+
+  describe('R-AFK8: the AFK channel stays last in its run at 2^30, and no move ever touches its position', () => {
+    const AFK = id16(0x61);
+    const reserved = 2 ** 30;
+    type Row = ReturnType<typeof channelRow>;
+    /** A double that follows the patches and the channel creates, so the list read after each command is what the instance holds. */
+    function instance(rows: Row[], afkRead = true): World {
+      const w = world();
+      w.routes.listChannels.mockImplementation(() => Promise.resolve(rows.map((r) => ({ ...r }))));
+      w.routes.patchChannel.mockImplementation((id: Uint8Array, patch: { position?: number; parent?: Uint8Array | 'top' }) => {
+        const r = rows.find((x) => toHex(x.id) === toHex(id));
+        if (r !== undefined && patch.position !== undefined) r.position = patch.position;
+        if (r !== undefined && patch.parent !== undefined) r.parentId = patch.parent === 'top' ? null : patch.parent;
+        return Promise.resolve();
+      });
+      let made = 0;
+      w.routes.createChannel.mockImplementation((_c: Uint8Array, c: { kind: 'text' | 'voice'; name: string; position: number }) => {
+        made += 1;
+        rows.push(channelRow(0xe0 + made, c.position, { kind: c.kind === 'voice' ? 1 : 0, name: c.name }));
+        return Promise.resolve({ id: new Uint8Array(16).fill(0xe0 + made), mode: 0, visibility: 0 });
+      });
+      w.routes.createCategory.mockImplementation((_c: Uint8Array, c: { name: string; position: number }) => {
+        made += 1;
+        rows.push(channelRow(0xe0 + made, c.position, { kind: 2, name: c.name }));
+        return Promise.resolve({ id: new Uint8Array(16).fill(0xe0 + made), mode: 0, visibility: 0 });
+      });
+      w.routes.getAFK.mockImplementation(() => (afkRead ? Promise.resolve({ channelId: AFK, timeoutSeconds: 300, pending: false })
+        : new Promise(() => undefined)));
+      return w;
+    }
+    const shown = (rows: Row[]) => JSON.stringify(rows.map((r) => [r.name, r.position]));
+    /** The channel named `name` stands after every other channel but AFK, and below AFK. */
+    const ordinaryLast = (rows: Row[], name: string): boolean => {
+      const ordinary = rows.filter((r) => toHex(r.id) !== toHex(AFK));
+      const made = ordinary.find((r) => r.name === name);
+      const afk = rows.find((r) => toHex(r.id) === toHex(AFK));
+      return made !== undefined && ordinary.every((r) => r === made || r.position < made.position)
+        && (afk === undefined || made.position < afk.position);
+    };
+    /** The page's list holds what the instance holds. */
+    const settle = async (w: World, rows: Row[]): Promise<void> => {
+      await vi.waitFor(() => {
+        const listed = w.last<ChannelSummary[]>(`channels:${CID}`) ?? [];
+        expect(rows.every((r) => listed.some((c) => c.id === toHex(r.id) && c.position === r.position))).toBe(true);
+      });
+    };
+    /** Whether any PATCH sent AFK a position. */
+    const afkPatched = (w: World): boolean => w.routes.patchChannel.mock.calls.some(([id, p]) => toHex(id) === toHex(AFK)
+      && p.position !== undefined);
+    const ready = async (w: World, rows: Row[], afkRead = true): Promise<void> => {
+      await toReady(w);
+      if (afkRead) await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${CID}`)?.channelId).toBe(toHex(AFK)));
+      await settle(w, rows);
+    };
+
+    it('a sibling move in AFK\'s run is a plain swap that leaves AFK at 2^30, and the next channel is last among the ordinary ones', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0xb1, 1, { kind: 1, name: 'general' }), channelRow(0x61, reserved, { kind: 1, name: 'AFK' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'up' })).toMatchObject({ ok: true, value: null });
+      expect(w.routes.patchChannel.mock.calls).toEqual([[id16(0xb1), { position: 0 }], [id16(0xa1), { position: 1 }]]);
+      expect(shown(rows)).toBe(JSON.stringify([['c161', 1], ['general', 0], ['AFK', reserved]]));
+      await settle(w, rows);
+      expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'music' })).toMatchObject({ ok: true });
+      expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'music', position: 2 });
+      expect(ordinaryLast(rows, 'music'), shown(rows)).toBe(true);
+      expect(afkPatched(w)).toBe(false);
+    });
+
+    it('the last ordinary channel above AFK cannot move down, and AFK moves neither up nor down (slice read)', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0xb1, 1, { kind: 1, name: 'general' }), channelRow(0x61, reserved, { kind: 1, name: 'AFK' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'down' })).toMatchObject({ ok: true, value: null });
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(AFK), direction: 'up' })).toMatchObject({ ok: true, value: null });
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(AFK), direction: 'down' })).toMatchObject({ ok: true, value: null });
+      expect(w.routes.patchChannel).not.toHaveBeenCalled();
+      expect(shown(rows)).toBe(JSON.stringify([['c161', 0], ['general', 1], ['AFK', reserved]]));
+    });
+
+    it('with the slice unread, the channel at exactly 2^30 is AFK: nothing moves past it and it never moves', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0xb1, 1, { kind: 1, name: 'general' }), channelRow(0x61, reserved, { kind: 1, name: 'AFK' })];
+      const w = instance(rows, false);
+      await ready(w, rows, false);
+      expect(w.last(`afk:${CID}`) ?? null).toBeNull();
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'down' })).toMatchObject({ ok: true, value: null });
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(AFK), direction: 'up' })).toMatchObject({ ok: true, value: null });
+      expect(w.routes.patchChannel).not.toHaveBeenCalled();
+    });
+
+    it('AFK moved to another category keeps 2^30, and stays last there after a sibling move', async () => {
+      const cat = id16(0xd1);
+      const rows = [channelRow(0xa1, 0), channelRow(0xd1, 1, { kind: 2, name: 'Voice' }), channelRow(0xb1, 0, { kind: 1, name: 'lounge', parentId: cat }),
+        channelRow(0xc1, 1, { kind: 1, name: 'stage', parentId: cat }), channelRow(0x61, reserved, { kind: 1, name: 'AFK' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'updateChannel', channelId: toHex(AFK), name: null, topic: null, parent: toHex(cat), slowmode: null })).toMatchObject({ ok: true });
+      expect(w.routes.patchChannel).toHaveBeenLastCalledWith(AFK, { parent: cat });
+      await settle(w, rows);
+      expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.find((c) => c.id === toHex(AFK))).toMatchObject({ parentId: toHex(cat), position: reserved });
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xc1)), direction: 'down' })).toMatchObject({ ok: true, value: null });
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xc1)), direction: 'up' })).toMatchObject({ ok: true, value: null });
+      expect(shown(rows)).toBe(JSON.stringify([['c161', 0], ['Voice', 1], ['lounge', 1], ['stage', 0], ['AFK', reserved]]));
+      expect(afkPatched(w)).toBe(false);
+    });
+
+    it('a run holding a stray ordinary channel at or above 2^30 (a rolled-back client) is renumbered below 2^30 on the next move', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0x61, reserved, { kind: 1, name: 'AFK' }), channelRow(0xb1, reserved + 1, { kind: 1, name: 'rolled' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xa1)), direction: 'down' })).toMatchObject({ ok: true, value: null });
+      expect(shown(rows)).toBe(JSON.stringify([['c161', 1], ['AFK', reserved], ['rolled', 0]]));
+      expect(afkPatched(w)).toBe(false);
+      await settle(w, rows);
+      expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'next' })).toMatchObject({ ok: true });
+      expect(ordinaryLast(rows, 'next'), shown(rows)).toBe(true);
+    });
+
+    it('a stray ordinary channel at exactly 2^30 is told from AFK by id and renumbered too (the slice is read)', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0xb1, reserved, { kind: 1, name: 'stray' }), channelRow(0x61, reserved, { kind: 1, name: 'AFK' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'up' })).toMatchObject({ ok: true, value: null });
+      expect(shown(rows)).toBe(JSON.stringify([['c161', 1], ['stray', 0], ['AFK', reserved]]));
+      expect(afkPatched(w)).toBe(false);
+    });
+
+    it('a create skips the AFK channel by id when it sits below 2^30 (the slice is read), without tying it', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0xb1, 1, { kind: 1, name: 'general' }), channelRow(0x61, 5, { kind: 1, name: 'AFK' })];
+      const w = instance(rows);
+      await ready(w, rows);
+      expect(await run(w, { m: 'createCategory', communityId: CID, name: 'Lounge' })).toMatchObject({ ok: true });
+      expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'Lounge', position: 2 });
+      await settle(w, rows);
+      expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'next' })).toMatchObject({ ok: true });
+      expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'next', position: 3 });
+    });
+
+    it('with the slice unread, AFK below 2^30 counts as any channel and the create is still last', async () => {
+      const rows = [channelRow(0xa1, 0), channelRow(0x61, 1, { kind: 1, name: 'AFK' }), channelRow(0xb1, 2, { kind: 1, name: 'general' })];
+      const w = instance(rows, false);
+      await toReady(w);
+      await settle(w, rows);
+      expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'next' })).toMatchObject({ ok: true });
+      const ordinary = rows.filter((r) => toHex(r.id) !== toHex(AFK));
+      const made = ordinary.find((r) => r.name === 'next');
+      expect(made !== undefined && ordinary.every((r) => r === made || r.position < made.position), shown(rows)).toBe(true);
+    });
+  });
+
   it('a 403 on a channel edit reads the permissions of its server again', async () => {
     const w = world();
     await toReady(w);

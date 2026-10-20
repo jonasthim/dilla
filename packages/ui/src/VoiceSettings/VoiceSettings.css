@@ -11,3 +11,8 @@
 /* The capture prompt is a status region that is always present; empty, it takes no room. */
 .d-voice-settings__prompt { margin: 0; font-size: var(--text-sm); color: var(--fg); }
 .d-voice-settings__prompt:not(:empty) { padding: 0.375rem 0.75rem; border-left: 3px solid var(--accent); }
+/* web3.9 AUDIT-2 (N3): the device selects and the capture button are 44 high on a phone. */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-voice-settings__select { min-height: 2.75rem; }
+  .d-voice-settings .d-voice-settings__capture { min-height: 2.75rem; }
+}

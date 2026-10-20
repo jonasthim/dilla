@@ -103,6 +103,10 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
         parentId: null, position: 0, group: expect.stringMatching(/^(none|joining|active)$/) as unknown as string,
         slowmode: 0, announcement: false,
+      }, {
+        // web3.9: every server holds the built-in AFK voice channel at position 2^30; a voice channel is not joinable by the harness core ('unsupported').
+        id: expect.stringMatching(HEX32) as unknown as string, communityId: s.community_id, kind: 1, mode: 0, name: 'AFK', topic: '',
+        parentId: null, position: 2 ** 30, group: 'unsupported', slowmode: 0, announcement: false,
       }]);
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);

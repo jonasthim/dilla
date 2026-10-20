@@ -1,9 +1,9 @@
 import { expect, type Page } from '@playwright/test';
 import {
   CLASS, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, channelRow, clickNotification, closeSettings, copy, dmComposer,
-  dmLog, dmsNav, expectAccessible, expectComposerReady, expectShell, instanceInvite, joinCommunity, messageRow,
+  dmLog, dmsNav, expectAccessible, expectComposerReady, expectShell, homeTile, instanceInvite, joinCommunity, messageRow,
   notificationsShown, openChannel, openSettings, permissionRequests, railItem, recordNotifications, sendText,
-  setNotifyDefault, shownName, sidebarTab, signUp, tag, test, type Peer,
+  setNotifyDefault, shownName, signUp, tag, test, type Peer,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -114,8 +114,8 @@ test('a direct message opened from the DMs tab reaches the peer, and the reply b
   const deviceA = (await peer.waitForDevices(2)).find((d) => d !== setup.device_id);
   expect(deviceA).toMatch(HEX32);
 
-  await sidebarTab(page, 'dms').click();
-  await expect(sidebarTab(page, 'dms')).toHaveAttribute('aria-selected', 'true');
+  await homeTile(page).click();
+  await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
   await expect(dmsNav(page).getByText(copy('shell.dms.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
   await page.getByRole('button', { name: copy('shell.dms.new'), exact: true }).click();
   const picker = page.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true });
@@ -131,11 +131,10 @@ test('a direct message opened from the DMs tab reaches the peer, and the reply b
   expect(dm.group_id).toMatch(HEX32);
 
   // Off the DM: back to the channel, then the peer replies.
-  await sidebarTab(page, 'channels').click();
   await openChannel(page, peer.communityName, channel);
   const reply = `dm reply ${tag()}`;
   await peer.sendDm(dmId, reply);
-  await expect(sidebarTab(page, 'dms')).toHaveAttribute('data-count', '1', { timeout: WAIT });
+  await expect(homeTile(page)).toHaveAttribute('data-unread', '1', { timeout: WAIT });
   if (chromium) {
     await expect.poll(() => tagsShown(page), { timeout: WAIT }).toEqual([`dilla:${dmId}`]);
     const [shown] = await notificationsShown(page);
@@ -143,7 +142,7 @@ test('a direct message opened from the DMs tab reaches the peer, and the reply b
     expect([copy('notify.title.dm', { sender: shownName(setup) }), copy('notify.title.dm', { sender: setup.user_id.slice(0, 8) })]).toContain(shown.title);
   }
 
-  await sidebarTab(page, 'dms').click();
+  await homeTile(page).click();
   const dmRow = dmsNav(page).locator(CLASS.channelRow);
   await expect(dmRow).toHaveCount(1, { timeout: WAIT });
   await expect(dmRow).toHaveAttribute('data-unread', '1', { timeout: WAIT });
@@ -246,7 +245,7 @@ test('a direct message the peer opens appears, badges and notifies without a rel
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, channel);
-  await expect(sidebarTab(page, 'channels')).toHaveAttribute('aria-selected', 'true');
+  await expect(homeTile(page)).not.toHaveAttribute('aria-current', 'page');
   const user = await browserUser(page, peer, channel);
 
   // The peer opens the DM: it registers the DM's group (null community), the instance proposes the browser's
@@ -259,8 +258,8 @@ test('a direct message the peer opens appears, badges and notifies without a rel
   await peer.sendDm(opened.channelId, 'dm from peer');
 
   // No reload anywhere: the unexpected Welcome reloads the DM list in the worker (L-TS-22 rule 7).
-  await expect(sidebarTab(page, 'dms')).toHaveAttribute('data-count', '1', { timeout: WAIT });
-  await sidebarTab(page, 'dms').click();
+  await expect(homeTile(page)).toHaveAttribute('data-unread', '1', { timeout: WAIT });
+  await homeTile(page).click();
   const dmRow = dmsNav(page).locator(CLASS.channelRow);
   await expect(dmRow).toHaveCount(1, { timeout: WAIT });
   await expect(dmRow).toHaveAccessibleName(rowLabel(setup.username, 1, 0), { timeout: WAIT });

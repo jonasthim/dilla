@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
-import { VoiceChannelRow, type VoiceChannelRowProps } from './VoiceChannelRow.tsx';
+import { groupPeople, VoiceChannelRow, type VoiceChannelRowProps } from './VoiceChannelRow.tsx';
 import { ChannelList } from '../ChannelList/ChannelList.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import meta from './VoiceChannelRow.stories.tsx';
@@ -11,7 +11,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
   video: false, screen: false, web: true, bot: false, ...more,
 });
-const labels: VoiceChannelRowProps['labels'] & { join: string } = {
+const labels: VoiceChannelRowProps['labels'] = {
   open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
@@ -39,11 +39,50 @@ describe('VoiceChannelRow', () => {
     expect(row).toHaveAccessibleDescription('2 in voice');
     expect(screen.getAllByRole('button')).toEqual([row]);
     const people = screen.getByRole('list');
-    expect(within(people).getAllByRole('listitem').map(spoken)).toEqual(['ada', 'bo']);
-    expect(within(people).getByRole('img', { name: 'speaking' })).toBeInTheDocument();
+    expect(within(people).getAllByRole('listitem').map(spoken)).toEqual(['ada speaking', 'bo']);
+    expect(within(people).queryByRole('img', { name: 'speaking' })).toBeNull(); // the ring is the only visible mark; the word is sr-only
+    expect(people.querySelector('.d-sr-only')).toHaveTextContent('speaking');
     expect(within(people).getByRole('img', { name: 'muted' })).toBeInTheDocument();
     await userEvent.click(row);
     expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the count after the name as harbour · 3, and no count when nobody is in it', () => {
+    const { container, rerender } = render(<VoiceChannelRow {...base} participants={[person('a'), person('b'), person('c')]} />);
+    expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour · 3');
+    expect(container.querySelector('.d-voice-row__name')?.textContent).toBe('harbour');
+    rerender(<VoiceChannelRow {...base} participants={[]} />);
+    expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour');
+  });
+
+  it('the trailing slot holds the join icon button or, when joined, the connected glyph, never both', async () => {
+    const onJoin = vi.fn();
+    const { container, rerender } = render(<VoiceChannelRow {...base} onJoin={onJoin} />);
+    const join = screen.getByRole('button', { name: 'join voice' });
+    expect(join.closest('.d-slot')).not.toBeNull();
+    expect(container.querySelector('.d-voice-row__connected')).toBeNull();
+    await userEvent.click(join);
+    expect(onJoin).toHaveBeenCalledTimes(1);
+    rerender(<VoiceChannelRow {...base} joined onJoin={onJoin} />);
+    expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
+    const slot = container.querySelector('.d-voice-row > .d-slot') as HTMLElement;
+    expect(slot.children).toHaveLength(1);
+    expect(slot.querySelector('.d-voice-row__connected svg')).toHaveAttribute('data-icon', 'phone');
+    rerender(<VoiceChannelRow {...base} />);
+    expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  it('a participant row is data-row at its own height with a 24px avatar, the speaking mark, and the mute glyph in the slot', () => {
+    const { container } = render(<VoiceChannelRow {...base} participants={[person('ada', { speaking: true }), person('bo', { muted: true, deafened: true })]} />);
+    const [ada, bo] = [...container.querySelectorAll<HTMLElement>('.d-voice-row__person')];
+    expect(ada).toHaveAttribute('data-row');
+    expect(ada).toHaveAttribute('data-speaking', 'true');
+    expect(bo).not.toHaveAttribute('data-speaking');
+    expect(ada.querySelector('.d-avatar')).toHaveAttribute('data-size', 'xs');
+    const slot = bo.querySelector('.d-slot') as HTMLElement;
+    expect([...slot.querySelectorAll('.d-voice-row__state')].map(s => s.getAttribute('data-state'))).toEqual(['muted', 'deafened']);
+    expect(slot.querySelector('svg')).toHaveAttribute('data-icon', 'mic-off');
+    expect(ada.querySelector('.d-slot')?.children).toHaveLength(0);
   });
 
   it('the row marker is the volume-2 icon, live or not; live and joined are data attributes', () => {
@@ -99,27 +138,28 @@ describe('VoiceChannelRow', () => {
     expect(spoken(row)).toBe('relay bot can hear');
   });
 
-  // web3.8 (R29): muted, deafened, camera and screen are 14px icons, speaking a dot; each is a named image with no text.
+  // web3.8 (R29): muted, deafened, camera and screen are 14px icons, speaking the ring alone (its word sr-only); each is a named image with no text.
   it('a glyph-only state is a role=img named and titled by its voice.state word, with no text node', () => {
     render(<VoiceChannelRow {...base} participants={[person('bo', { muted: true, deafened: true, video: true, screen: true, speaking: true })]} />);
     const row = screen.getByRole('listitem');
     const states = [...row.querySelectorAll<HTMLElement>('.d-voice-row__state')];
-    expect(states.map(s => s.dataset.state)).toEqual(['muted', 'deafened', 'video', 'screen', 'speaking']);
-    expect(states.map(s => s.getAttribute('aria-label'))).toEqual(['muted', 'deafened', 'camera on', 'sharing screen', 'speaking']);
-    expect(states.map(s => s.getAttribute('title'))).toEqual(['muted', 'deafened', 'camera on', 'sharing screen', 'speaking']);
+    // The mute and deafen glyphs are in the trailing slot, after the others.
+    expect(states.map(s => s.dataset.state)).toEqual(['video', 'screen', 'muted', 'deafened']);
+    expect(states.map(s => s.getAttribute('aria-label'))).toEqual(['camera on', 'sharing screen', 'muted', 'deafened']);
+    expect(states.map(s => s.getAttribute('title'))).toEqual(['camera on', 'sharing screen', 'muted', 'deafened']);
     for (const s of states) { expect(s).toHaveAttribute('role', 'img'); expect(s.textContent).toBe(''); }
-    expect(states.slice(0, 4).map(s => s.querySelector('svg')?.getAttribute('data-icon'))).toEqual(['mic-off', 'headphone-off', 'video', 'monitor-up']);
-    expect(states.slice(0, 4).map(s => s.querySelector('svg')?.getAttribute('width'))).toEqual(['14', '14', '14', '14']);
-    expect(states[4].querySelector('.d-state-dot')).toHaveAttribute('data-tone', 'ok');
-    expect(row.textContent).toBe('bo');
+    expect(states.map(s => s.querySelector('svg')?.getAttribute('data-icon'))).toEqual(['video', 'monitor-up', 'mic-off', 'headphone-off']);
+    expect(states.map(s => s.querySelector('svg')?.getAttribute('width'))).toEqual(['14', '14', '14', '14']);
+    expect(row.querySelector('.d-state-dot')).toBeNull(); // WEB-DOCK: speaking is the ring, never a dot
+    expect(spoken(row)).toBe('bo speaking');
   });
 
   it('a muted camera participant shows two icons on one row, named by the labels, and no text besides the name', () => {
     render(<VoiceChannelRow {...base} participants={[person('bo', { muted: true, video: true })]} />);
     const row = screen.getByRole('listitem');
-    expect(within(row).getAllByRole('img').map(i => i.getAttribute('aria-label'))).toEqual(['muted', 'camera on']);
+    expect(within(row).getAllByRole('img').map(i => i.getAttribute('aria-label'))).toEqual(['camera on', 'muted']);
     expect(row.querySelectorAll('svg')).toHaveLength(2);
-    expect(row.textContent).toBe('bo');
+    expect(spoken(row)).toBe('bo');
   });
 
   it('an unverified participant also shows the unverified stream word, after the icons', () => {
@@ -129,7 +169,7 @@ describe('VoiceChannelRow', () => {
     expect(row.querySelector('[data-state="unverified"]')).toHaveTextContent('unverified stream');
     expect(spoken(row)).toBe('bounverified stream');
     const kids = [...row.querySelectorAll<HTMLElement>('.d-voice-row__state')].map(s => s.dataset.state);
-    expect(kids).toEqual(['muted', 'unverified']);
+    expect(kids).toEqual(['unverified', 'muted']);
     expect(row.querySelector('[data-state="unverified"]')).not.toHaveAttribute('role', 'img');
   });
 
@@ -151,5 +191,49 @@ describe('VoiceChannelRow', () => {
     const { container } = render(<div className="d-root"><VoiceChannelRow {...(meta.args as VoiceChannelRowProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
+  describe('one row per person (A7)', () => {
+    const device = (name: string, id: string, more: Partial<VoiceParticipantView> = {}) => person(name, { deviceId: id, ...more });
+    const rowsOf = () => within(screen.getByRole('list')).getAllByRole('listitem');
+
+    it('lists a person with two devices once, and counts people', () => {
+      render(<VoiceChannelRow {...base} participants={[device('ada', 'd1'), device('ada', 'd2'), person('bo')]} />);
+      expect(rowsOf()).toHaveLength(2);
+      expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
+    });
+
+    it('says speaking when any device speaks', () => {
+      render(<VoiceChannelRow {...base} participants={[device('ada', 'd1'), device('ada', 'd2', { speaking: true })]} />);
+      expect(rowsOf()).toHaveLength(1);
+      expect(rowsOf()[0]).toHaveAttribute('data-speaking', 'true');
+    });
+
+    it('takes the worst stream state across devices', () => {
+      const states = (a: VoiceParticipantView['state'], b: VoiceParticipantView['state']) =>
+        groupPeople([device('ada', 'd1', { state: a }), device('ada', 'd2', { state: b })])[0].state;
+      expect(states('ok', 'unverified')).toBe('unverified');
+      expect(states('connecting', 'unverified')).toBe('unverified');
+      expect(states('ok', 'connecting')).toBe('connecting');
+      expect(states('not-heard', 'connecting')).toBe('connecting');
+      expect(states('ok', 'not-heard')).toBe('not-heard');
+      expect(states('ok', 'ok')).toBe('ok');
+    });
+
+    it('is web or bot when any device is', () => {
+      const [p] = groupPeople([device('ada', 'd1'), device('ada', 'd2', { web: false, bot: true })]);
+      expect(p.web).toBe(true);
+      expect(p.bot).toBe(true);
+      expect(groupPeople([device('ada', 'd1', { web: false }), device('ada', 'd2', { web: true })])[0].web).toBe(true);
+    });
+
+    it('says muted only when every device is muted, and deafened likewise', () => {
+      const { rerender } = render(<VoiceChannelRow {...base} participants={[device('ada', 'd1', { muted: true, deafened: true }), device('ada', 'd2')]} />);
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'muted' })).toBeNull();
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'deafened' })).toBeNull();
+      rerender(<VoiceChannelRow {...base} participants={[device('ada', 'd1', { muted: true, deafened: true }), device('ada', 'd2', { muted: true })]} />);
+      expect(within(rowsOf()[0]).getByRole('img', { name: 'muted' })).toBeTruthy();
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'deafened' })).toBeNull();
+    });
   });
 });

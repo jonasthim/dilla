@@ -33,3 +33,26 @@ export const PerChannel: Story = {
     </SettingsRow>
   ),
 };
+// A phone layout stacks the label over a full-width control (H5); `data-phone` is the hook for a surface outside the shell.
+export const Stacked: Story = {
+  render: () => (
+    <div data-phone style={{ maxWidth: '22.5rem' }}>
+      <SettingsRow id="notify-default" label="notify me about" hint="Rows left on default follow this choice.">
+        <Segmented id="notify-default-control" label="notify me about" options={NOTIFY} value="dms-mentions" onChange={noop} />
+      </SettingsRow>
+      <SettingsRow id="notify-permission" label="desktop notifications" hint={BODY}><Button variant="accent">turn on</Button></SettingsRow>
+    </div>
+  ),
+};
+// The grammar: two rows one under the other, the controls start at one x.
+export const Aligned: Story = {
+  render: () => (
+    <>
+      <SettingsRow id="a-permission" label="desktop notifications" hint={BODY}><Button variant="accent">turn on</Button></SettingsRow>
+      <SettingsRow id="a-mute" label="mute everything"><Toggle id="mute-all" label="mute everything" checked={false} onChange={noop} /></SettingsRow>
+      <SettingsRow id="a-default" label="notify me about">
+        <Segmented id="a-default-control" label="notify me about" options={NOTIFY} value="everything" onChange={noop} />
+      </SettingsRow>
+    </>
+  ),
+};

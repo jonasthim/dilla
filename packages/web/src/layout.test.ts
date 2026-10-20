@@ -212,11 +212,24 @@ describe('tab memory', () => {
   it('round-trips through sessionStorage', () => {
     // eslint-disable-next-line no-restricted-properties -- the tab memory test reads the one key it writes
     window.sessionStorage.clear();
-    expect(rememberedTab('dms')).toBeNull();
-    rememberTab('dms', '/dm/abc');
-    expect(rememberedTab('dms')).toBe('/dm/abc');
+    expect(rememberedTab('home')).toBeNull();
+    rememberTab('home', '/dm/abc');
+    expect(rememberedTab('home')).toBe('/dm/abc');
     // eslint-disable-next-line no-restricted-properties -- the tab memory test reads the one key it writes
-    expect(window.sessionStorage.getItem('dilla.phoneTab.dms')).toBe('/dm/abc');
+    expect(window.sessionStorage.getItem('dilla.phoneTab.home')).toBe('/dm/abc');
+  });
+
+  it('a path remembered under a retired tab name reads back as home', () => {
+    // eslint-disable-next-line no-restricted-properties -- the tab memory test writes the retired keys web3.8 left behind
+    window.sessionStorage.clear();
+    // eslint-disable-next-line no-restricted-properties -- the tab memory test writes the retired keys web3.8 left behind
+    window.sessionStorage.setItem('dilla.phoneTab.dms', '/dm/abc');
+    expect(rememberedTab('home')).toBe('/dm/abc');
+    // eslint-disable-next-line no-restricted-properties -- the tab memory test writes the retired keys web3.8 left behind
+    window.sessionStorage.clear();
+    // eslint-disable-next-line no-restricted-properties -- the tab memory test writes the retired keys web3.8 left behind
+    window.sessionStorage.setItem('dilla.phoneTab.servers', '/c/abc');
+    expect(rememberedTab('home')).toBe('/c/abc');
   });
 
   it('returns null without throwing when sessionStorage throws', () => {

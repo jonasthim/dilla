@@ -1,16 +1,16 @@
 # Flow 12: phone shell (v0.1.0-web3.7)
 
-The mobile app shell on phones (390px and narrower): a navigation tab bar at the bottom, a banner for link status, a header with the page title and actions, a composer above the keyboard, and a content pane. No zoom on any input field, no status bar, visible focus, 44px targets.
+The mobile app shell on phones (390px and narrower): a navigation tab bar at the bottom, a banner for link status, a header with the page title and actions, a composer above the keyboard, and a content pane. No zoom on any input field, no status bar, visible focus, 44px targets. Replaced in v0.1.0-web3.9: Home, Activity, You, with DMs as the `@` tile (flow 14).
 
 ## States
 
 | State | What shows | Copy keys |
 |---|---|---|
-| 1. Servers list | The servers tab is selected. A rail or list of servers on the left, a channel list on the right. Tab bar at the bottom with tabs: Servers, DMs, Activity, You. Each tab is a link. Tab label is `nav.tabs.label`, and the individual tabs are `nav.tab.servers`, `nav.tab.dms`, `nav.tab.activity`, `nav.tab.you`. | `nav.tabs.label`, `nav.tab.servers`, `nav.tab.dms`, `nav.tab.activity`, `nav.tab.you`, `nav.tab.unread` |
+| 1. Servers list | Replaced in v0.1.0-web3.9: Home, Activity, You, with DMs as the `@` tile (flow 14). | `nav.tabs.label`, `nav.tab.servers`, `nav.tab.dms`, `nav.tab.activity`, `nav.tab.you`, `nav.tab.unread` |
 | 2. Server menu open | A menu for server actions. | `nav.server.menu` |
 | 3. Channel view pushed | A channel is opened. The header shows the channel name, a back button (`nav.back`), and a menu (`nav.channel.menu`). The tab bar is hidden. | `nav.back`, `nav.channel.menu` |
 | 4. Keyboard up | Composer is above the keyboard. Focus and tab management keep the composer accessible. Tab bar remains hidden. | — |
-| 5. DMs list | The DMs tab is selected. A list of direct message conversations. | `nav.tab.dms` |
+| 5. DMs list | Replaced in v0.1.0-web3.9: Home, Activity, You, with DMs as the `@` tile (flow 14). | `nav.tab.dms` |
 | 6. DM view | A direct message conversation is opened. Similar to channel view but for a DM. | `nav.back`, `nav.channel.menu` |
 | 7. Activity tab, mentions and DMs | The Activity tab is selected. Shows mentions and direct messages. Title is `activity.title`, with items for mentions (`activity.mention`), direct messages (`activity.dm`), and unread from elsewhere (`activity.elsewhere`). | `activity.title`, `activity.mention`, `activity.dm`, `activity.elsewhere`, `activity.since` |
 | 8. Activity empty | No mentions or DMs. Shows the empty message. | `activity.empty` |
@@ -68,6 +68,7 @@ The link banner (`nav.link.offline`, `nav.link.connecting`) is `role="status"`. 
 - `activity.mention='mentioned you in #{channel}'`
 - `activity.dm='direct message'`
 - `activity.elsewhere='unread elsewhere'`
+- `activity.emptyTitle='Nothing new'`
 - `activity.since='Since this tab opened.'`
 - `you.title='you'`
 - `you.status='this device'`

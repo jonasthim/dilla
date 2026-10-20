@@ -166,7 +166,7 @@ export function Composer({
     <form className="d-composer" data-disabled={disabled ? 'true' : undefined} noValidate onSubmit={onSubmit}>
       {top !== undefined ? <div className="d-composer__top">{top}</div> : null}
       {showNotice ? <div id={noticeId} className="d-composer__notice">{notice}</div> : null}
-      <label className="d-composer__label d-label" htmlFor={inputId}>
+      <label className="d-composer__label d-label d-sr-only" htmlFor={inputId}>
         {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
       </label>
       <div className="d-composer__box">

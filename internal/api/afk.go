@@ -3,68 +3,449 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
+
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
+
+// AFKBuiltinPosition is where the built-in AFK channel is written (R42): below every channel a client
+// creates, which skips it when it computes max(position) + 1, and below maxChannelPosition.
+const AFKBuiltinPosition = 1 << 30
+
+// afkBuiltinName is the server-written name of the built-in AFK channel; a Go literal, not localised.
+const afkBuiltinName = "AFK"
+
+// afkBuiltinDetail is the audit detail of the system row that marks a channel as the built-in AFK.
+const afkBuiltinDetail = "afk.builtin"
+
+// afkBuiltinSettings is the built-in AFK channel's settings_json (R-AFK1): the marker the backfill
+// reads to tell the built-in channel from a web3.8 pick. No route writes settings_json and it is not on
+// the wire, so the marker cannot be lost or forged by a client.
+const afkBuiltinSettings = `{"afk":"builtin"}`
+
+// isBuiltinAFK reports whether ch carries the built-in marker.
+func isBuiltinAFK(ch store.ChannelRow) bool { return string(ch.SettingsJSON) == afkBuiltinSettings }
+
+// afkPendingTTL is how long a move the sweep decided stays pending for its device (R4, R33).
+const afkPendingTTL = 10 * time.Minute
+
+// afkDefaultTimeout is the timeout a community starts with, in seconds (5 minutes).
+const afkDefaultTimeout = 300
+
+// afkBackfillPage is one page of ListCommunities in EnsureAFKChannels.
+const afkBackfillPage = 500
 
 type afkTracked struct {
 	community, channel, user id.ID
 	room                     string
 	lastActive               time.Time
 }
-type afkOccupant struct {
-	community, channel, user id.ID
-	moving                   bool
+
+// afkPendingEntry is a move the sweep made (R33): the device was cut from its room and its client
+// joins the AFK channel on its own pending, read from the snapshot.
+type afkPendingEntry struct {
+	community, channel id.ID
+	at                 time.Time
 }
-type afkPerson struct {
-	_      struct{} `cbor:",toarray"`
-	User   id.ID
-	Device id.ID
-}
+
+// afkSnapshot is GET /v1/communities/{id}/afk: [channel_id|null, timeout_seconds, [], pending(uint
+// 0|1)]. The third element is the retired web3.8 occupant list, always empty, so a web3.8 parser
+// still reads it; the dilla CBOR subset has no booleans (W-1).
 type afkSnapshot struct {
 	_              struct{} `cbor:",toarray"`
 	ChannelID      *id.ID
 	TimeoutSeconds uint64
-	Occupants      []afkPerson
-}
-type afkActivityBody struct {
-	_         struct{} `cbor:",toarray"`
-	ChannelID id.ID
+	Retired        []struct{}
+	Pending        uint64
 }
 
-func (h *Calls) afkChannelLock(channel id.ID) *sync.Mutex {
-	h.afkConfigMu.Lock()
-	defer h.afkConfigMu.Unlock()
-	if h.afkConfigLocks == nil {
-		h.afkConfigLocks = make(map[id.ID]*sync.Mutex)
+// isAFKTimeout is the timeouts an administrator may pick: 1, 5, 15, 30 or 60 minutes.
+func isAFKTimeout(seconds uint64) bool {
+	switch seconds {
+	case 60, 300, 900, 1800, 3600:
+		return true
 	}
-	if h.afkConfigLocks[channel] == nil {
-		h.afkConfigLocks[channel] = new(sync.Mutex)
+	return false
+}
+
+// createBuiltinAFK writes the channel row (R1), its system audit row and the community_afk pointer
+// (timeout kept, else 300) in tx. The caller holds the community row lock or created the community in tx.
+func createBuiltinAFK(ctx context.Context, tx store.Repository, com store.CommunityRow, timeout uint64, now int64) (store.ChannelRow, error) {
+	if !isAFKTimeout(timeout) {
+		timeout = afkDefaultTimeout
 	}
-	return h.afkConfigLocks[channel]
+	cid := com.ID
+	row := store.ChannelRow{
+		ID:                id.New(),
+		CommunityID:       &cid,
+		Kind:              ChannelVoice,
+		Mode:              ModeE2EE,
+		Visibility:        VisPrivate,
+		Name:              afkBuiltinName,
+		Position:          AFKBuiltinPosition,
+		SettingsJSON:      []byte(afkBuiltinSettings),
+		HostPolicyVersion: com.PolicyVersion,
+		Created:           now,
+	}
+	if err := tx.CreateChannel(ctx, row); err != nil {
+		return store.ChannelRow{}, err
+	}
+	if err := tx.Audit(ctx, store.AuditRow{
+		Actor: nil, Action: "channel.create", Target: row.ID.String(), Detail: afkBuiltinDetail, At: now,
+	}); err != nil {
+		return store.ChannelRow{}, err
+	}
+	if err := tx.SetCommunityAFK(ctx, cid, store.CommunityAFK{ChannelID: &row.ID, TimeoutSeconds: timeout}); err != nil {
+		return store.ChannelRow{}, err
+	}
+	return row, nil
+}
+
+// ensureCommunityAFK is the per-community transaction of the backfill and of the lazy ensure. It
+// takes the community row lock, reads the pointer and the channel it names as they stand under the
+// lock, and asks done whether that channel will do. If it will not, a new built-in channel is written
+// with the stored timeout kept; the old pointed channel is left as it is, and from this commit on it is
+// an ordinary voice channel. If the pointed channel is the built-in one, its position, mode,
+// visibility, topic and slow mode are put back as built (R-AFK8, M-2) and any overwrite on it is removed (R-AFK2: a rollback to web3.8 could
+// have written one). Either way, every other channel at AFKBuiltinPosition or above is moved below it
+// (R-AFK8, lowerStrayChannels). After the commit the members of the channel that was created or cleaned
+// are materialised. created is true only when a channel was written.
+func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid id.ID, now int64,
+	done func(ch store.ChannelRow, live bool) bool, log *slog.Logger,
+) (store.ChannelRow, bool, error) {
+	var afk store.ChannelRow
+	created, cleaned := false, false
+	err := repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, cid); err != nil {
+			return err
+		}
+		com, err := tx.GetCommunity(ctx, cid)
+		if err != nil {
+			return err
+		}
+		cfg, err := tx.GetCommunityAFK(ctx, cid)
+		if err != nil {
+			return err
+		}
+		ch, live, err := livePointer(ctx, tx, cid, cfg)
+		if err != nil {
+			return err
+		}
+		if done(ch, live) {
+			if !live || !isBuiltinAFK(ch) {
+				return nil
+			}
+			var restored, stripped bool
+			if afk, restored, err = restoreBuiltinAFK(ctx, tx, ch, now); err != nil {
+				return err
+			}
+			if err := lowerStrayChannels(ctx, tx, cid, afk.ID, now); err != nil {
+				return err
+			}
+			stripped, err = stripAFKOverwrites(ctx, tx, afk, now)
+			cleaned = restored || stripped
+			return err
+		}
+		afk, err = createBuiltinAFK(ctx, tx, com, cfg.TimeoutSeconds, now)
+		if err != nil {
+			return err
+		}
+		created = true
+		return lowerStrayChannels(ctx, tx, cid, afk.ID, now)
+	})
+	if err != nil {
+		return afk, false, err
+	}
+	if created || cleaned {
+		if err := MaterialiseChannelMembers(ctx, repo, dsvc, afk, now); err != nil {
+			log.ErrorContext(ctx, "materialise channel members", "channel", afk.ID, "err", err)
+		}
+	}
+	return afk, created, nil
+}
+
+// builtinAFKDrift lists what of the built-in AFK channel ch differs from how createBuiltinAFK writes it,
+// as audit details naming the value it had: its position (R-AFK8: an earlier web3.9 build accepted a
+// PATCH of it), and its mode, visibility, topic and slow mode (M-2: a web3.8 rollback accepts a PATCH of
+// them, which web3.9 then refuses to undo). The name is the administrator's and is never reset.
+func builtinAFKDrift(ch store.ChannelRow) []string {
+	var out []string
+	if ch.Position != AFKBuiltinPosition {
+		out = append(out, fmt.Sprintf("afk.position:%d", ch.Position))
+	}
+	if ch.Mode != ModeE2EE {
+		out = append(out, fmt.Sprintf("afk.mode:%d", ch.Mode))
+	}
+	if ch.Visibility != VisPrivate {
+		out = append(out, fmt.Sprintf("afk.visibility:%d", ch.Visibility))
+	}
+	if ch.Topic != "" {
+		out = append(out, "afk.topic")
+	}
+	if ch.SlowmodeSeconds != 0 {
+		out = append(out, fmt.Sprintf("afk.slowmode:%d", ch.SlowmodeSeconds))
+	}
+	return out
+}
+
+// restoreBuiltinAFK puts every field builtinAFKDrift reports back to its built-in value, with one
+// system audit row per field, and returns the row as it now stands and whether anything changed. The
+// caller holds the community row lock.
+func restoreBuiltinAFK(ctx context.Context, tx store.Repository, ch store.ChannelRow, now int64) (store.ChannelRow, bool, error) {
+	drift := builtinAFKDrift(ch)
+	if len(drift) == 0 {
+		return ch, false, nil
+	}
+	ch.Position, ch.Mode, ch.Visibility, ch.Topic, ch.SlowmodeSeconds = AFKBuiltinPosition, ModeE2EE, VisPrivate, "", 0
+	if err := tx.UpdateChannel(ctx, ch); err != nil {
+		return store.ChannelRow{}, false, err
+	}
+	for _, d := range drift {
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.update", Target: ch.ID.String(), Detail: d, At: now,
+		}); err != nil {
+			return store.ChannelRow{}, false, err
+		}
+	}
+	return ch, true, nil
+}
+
+// lowerStrayChannels moves every live channel of community cid other than the AFK channel afkID that sits
+// at AFKBuiltinPosition or above (R-AFK8: a rolled-back web3.8 numbers a new channel max(position) + 1)
+// down to max(position below 2^30) + 1, + 2, … in their current order (position, then channel_id), each
+// with a null-actor channel.update audit row whose detail names the position it left (afk.reserved:<old>).
+// When they do not fit there (I-1: a channel already at or near 2^30-1), every channel other than afkID is
+// renumbered densely 0..n-1 in that order instead, each one that moves with an afk.renumber:<old> row, so
+// the lowering itself never fails and the rest of the ensure still commits. The caller holds the
+// community row lock.
+func lowerStrayChannels(ctx context.Context, tx store.Repository, cid, afkID id.ID, now int64) error {
+	all, err := tx.ListChannels(ctx, cid) // ordered by position, then channel_id
+	if err != nil {
+		return err
+	}
+	var next uint64
+	var ordinary, stray []store.ChannelRow
+	for _, c := range all {
+		switch {
+		case c.ID == afkID:
+			continue
+		case c.Position < AFKBuiltinPosition:
+			next = max(next, c.Position+1)
+		default:
+			stray = append(stray, c)
+		}
+		ordinary = append(ordinary, c)
+	}
+	if len(stray) == 0 {
+		return nil
+	}
+	moves, detail := stray, "afk.reserved:%d"
+	if next+uint64(len(stray)) > AFKBuiltinPosition {
+		moves, detail, next = ordinary, "afk.renumber:%d", 0
+	}
+	for _, c := range moves {
+		was := c.Position
+		c.Position = next
+		next++
+		if was == c.Position {
+			continue
+		}
+		if err := tx.UpdateChannel(ctx, c); err != nil {
+			return err
+		}
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.update", Target: c.ID.String(),
+			Detail: fmt.Sprintf(detail, was), At: now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stripAFKOverwrites deletes every overwrite on the built-in AFK channel ch, with a system audit row
+// each (R-AFK2), and reports whether there was one. The caller holds the community row lock.
+func stripAFKOverwrites(ctx context.Context, tx store.Repository, ch store.ChannelRow, now int64) (bool, error) {
+	rows, err := tx.ListOverwrites(ctx, ch.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, o := range rows {
+		if err := tx.DeleteOverwrite(ctx, ch.ID, o.TargetKind, o.TargetID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return false, err
+		}
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.overwrite.delete", Target: ch.ID.String(),
+			Detail: fmt.Sprintf("%d:%s", o.TargetKind, o.TargetID), At: now,
+		}); err != nil {
+			return false, err
+		}
+	}
+	return len(rows) > 0, nil
+}
+
+// livePointer reports whether cfg names a live channel of community cid.
+func livePointer(ctx context.Context, repo store.Repository, cid id.ID, cfg store.CommunityAFK) (store.ChannelRow, bool, error) {
+	if cfg.ChannelID == nil {
+		return store.ChannelRow{}, false, nil
+	}
+	ch, err := repo.GetChannel(ctx, *cfg.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return ch, false, nil
+	}
+	if err != nil {
+		return ch, false, err
+	}
+	return ch, ch.CommunityID != nil && *ch.CommunityID == cid, nil
+}
+
+// builtinDone is the backfill's question (R1, R-AFK1): the pointer names a live channel of the
+// community that carries the built-in marker.
+func builtinDone(ch store.ChannelRow, live bool) bool { return live && isBuiltinAFK(ch) }
+
+// EnsureAFKChannels backfills every live community that is not done (R1). Never inside a request.
+//
+// Done means the community's pointer names a live channel of the community whose settings_json is
+// the built-in marker (R-AFK1), decided inside the community's own transaction under its row lock, so
+// two processes that run it at once against one database still write one channel per community. Every
+// other live community (no row, a NULL pointer, or a web3.8 pointer at an administrator's pick) gets
+// a new built-in channel. A built-in channel that carries an overwrite loses it (R-AFK2). A failure
+// for one community is logged and the others go on; the answer is how many channels were created.
+func EnsureAFKChannels(ctx context.Context, repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) (int, error) {
+	n := 0
+	var after id.ID
+	for {
+		page, err := repo.ListCommunities(ctx, after, afkBackfillPage)
+		if err != nil {
+			return n, err
+		}
+		for _, com := range page {
+			skip, err := afkSettled(ctx, repo, com.ID)
+			if err != nil {
+				log.ErrorContext(ctx, "afk backfill", "community", com.ID, "err", err)
+				continue
+			}
+			if skip {
+				continue
+			}
+			_, created, err := ensureCommunityAFK(ctx, repo, dsvc, com.ID, clk.Now().Unix(), builtinDone, log)
+			if err != nil {
+				log.ErrorContext(ctx, "afk backfill", "community", com.ID, "err", err)
+				continue
+			}
+			if created {
+				n++
+			}
+		}
+		if len(page) < afkBackfillPage {
+			break
+		}
+		after = page[len(page)-1].ID
+	}
+	if n > 0 {
+		log.Info("afk backfill", "created", n)
+	}
+	return n, nil
+}
+
+// afkSettled is the backfill's read before any lock: the pointer already names the community's
+// built-in channel, with its built-in settings (builtinAFKDrift) and no overwrite, and no other channel
+// of the community sits at AFKBuiltinPosition or above, so there is nothing to write. Anything else goes
+// on to the transaction, which decides again under the lock.
+func afkSettled(ctx context.Context, repo store.Repository, cid id.ID) (bool, error) {
+	cfg, err := repo.GetCommunityAFK(ctx, cid)
+	if err != nil {
+		return false, err
+	}
+	ch, live, err := livePointer(ctx, repo, cid, cfg)
+	if err != nil || !builtinDone(ch, live) || len(builtinAFKDrift(ch)) > 0 {
+		return false, err
+	}
+	ow, err := repo.ListOverwrites(ctx, ch.ID)
+	if err != nil || len(ow) > 0 {
+		return false, err
+	}
+	all, err := repo.ListChannels(ctx, cid)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range all {
+		if c.ID != ch.ID && c.Position >= AFKBuiltinPosition {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// ensureAFK is the lazy ensure of GET /v1/communities/{id}/afk (R1): the backfill's per-community
+// transaction, for a pointer that is NULL or names no live channel.
+func (h *Calls) ensureAFK(ctx context.Context, cid id.ID) (store.CommunityAFK, error) {
+	_, created, err := ensureCommunityAFK(ctx, h.repo, h.dsvc, cid, h.clk.Now().Unix(),
+		func(_ store.ChannelRow, live bool) bool { return live }, h.log)
+	if err != nil {
+		return store.CommunityAFK{}, err
+	}
+	if created {
+		h.afkNotify.Changed(context.WithoutCancel(ctx), cid)
+	}
+	return h.repo.GetCommunityAFK(ctx, cid)
+}
+
+// inAFK reports whether row is a call of its community's AFK channel (R34). A read error counts as
+// AFK: the grant paths that ask fail closed, to listen-only.
+func (h *Calls) inAFK(ctx context.Context, row store.VoiceSessionRow) bool {
+	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false // a deleted channel's call is over; every gate refuses it anyway
+	}
+	if err != nil {
+		return true
+	}
+	if ch.CommunityID == nil {
+		return false
+	}
+	cfg, err := h.repo.GetCommunityAFK(ctx, *ch.CommunityID)
+	if err != nil {
+		return true
+	}
+	return cfg.ChannelID != nil && *cfg.ChannelID == ch.ID
 }
 
 // An SFU admission starts the device's timer even if its browser never gets to send
-// the first activity report. A signalling resume keeps the original timer.
+// the first activity report. A signalling resume keeps the original timer. The AFK channel's own
+// calls are never tracked, and neither is a device that reported itself exempt for this room (R5).
 func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID, resume bool) {
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil || ch.CommunityID == nil || ch.Kind != ChannelVoice {
 		return
 	}
+	afk := h.inAFK(ctx, row)
 	dv, err := h.repo.GetDevice(ctx, dev)
 	if err != nil {
 		return
 	}
 	h.afkMu.Lock()
 	defer h.afkMu.Unlock()
-	if _, occupied := h.afkOccupied[dev]; occupied {
+	if room, exempt := h.afkExempt[dev]; exempt {
+		if room == row.LivekitRoom {
+			return
+		}
+		if !resume {
+			delete(h.afkExempt, dev)
+		}
+	}
+	if afk {
+		delete(h.afkTracked, dev)
 		return
 	}
 	if current, exists := h.afkTracked[dev]; resume && exists && current.room == row.LivekitRoom {
@@ -77,18 +458,24 @@ func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow
 		room: row.LivekitRoom, lastActive: h.clk.Now()}
 }
 
-// WithAFKLive binds occupancy to a live gateway connection. A suspended but still connected
-// browser remains AFK; a truly disconnected device disappears from the roster.
-func (h *Calls) WithAFKLive(online interface{ Online(id.ID) bool }, notify *StructureNotifier) *Calls {
-	h.afkOnline, h.afkNotify = online, notify
+// WithAFKNotify sets where a sweep's move is announced (op 54 to the moved user's live connections)
+// and returns h.
+func (h *Calls) WithAFKNotify(notify *StructureNotifier) *Calls {
+	h.afkNotify = notify
 	return h
 }
 
 func (h *Calls) registerAFK(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/afk", h.afkSnapshot)
 	mux.HandleFunc("POST /v1/communities/{id}/afk/activity", h.afkActivity)
-	mux.HandleFunc("POST /v1/communities/{id}/afk", h.afkManual)
-	mux.HandleFunc("DELETE /v1/communities/{id}/afk", h.afkLeave)
+	// R41: the web3.8 manual move and leave stay registered so a web3.8 tab gets a mapped refusal
+	// instead of the mux's 405.
+	mux.HandleFunc("POST /v1/communities/{id}/afk", afkRetired)
+	mux.HandleFunc("DELETE /v1/communities/{id}/afk", afkRetired)
+}
+
+func afkRetired(w http.ResponseWriter, _ *http.Request) {
+	server.WriteError(w, server.Errorf(server.CodeNotFound, "retired in web3.9"))
 }
 
 func (h *Calls) afkMember(r *http.Request) (id.ID, id.ID, id.ID, error) {
@@ -136,51 +523,70 @@ func (h *Calls) afkDestination(ctx context.Context, cid, user id.ID) (store.Comm
 	return cfg, nil
 }
 
-func (h *Calls) refuseAFK(ctx context.Context, ch store.ChannelRow, device id.ID) error {
-	h.afkMu.Lock()
-	_, occupied := h.afkOccupied[device]
-	h.afkMu.Unlock()
-	if occupied {
-		return server.Errorf(server.CodeForbidden, "leave AFK before joining voice")
-	}
-	if ch.CommunityID == nil {
-		return nil
-	}
-	cfg, err := h.repo.GetCommunityAFK(ctx, *ch.CommunityID)
-	if err != nil {
-		return err
-	}
-	if cfg.ChannelID != nil && *cfg.ChannelID == ch.ID {
-		return server.Errorf(server.CodeForbidden, "AFK is a silent channel")
-	}
-	return nil
-}
-
+// afkSnapshot is GET /v1/communities/{id}/afk (R33): the built-in channel, the timeout and whether
+// the caller's own device has a pending move in this community.
 func (h *Calls) afkSnapshot(w http.ResponseWriter, r *http.Request) {
-	cid, user, _, err := h.afkMember(r)
+	cid, user, dev, err := h.afkMember(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	stored, err := h.repo.GetCommunityAFK(r.Context(), cid)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, live, err := livePointer(r.Context(), h.repo, cid, stored); err != nil {
+		server.WriteError(w, err)
+		return
+	} else if !live {
+		if _, err := h.ensureAFK(afterCommit(r), cid); err != nil {
+			h.log.ErrorContext(r.Context(), "ensure the AFK channel", "community", cid, "err", err)
+			h.writeAFKSnapshot(w, r, afkSnapshot{TimeoutSeconds: stored.TimeoutSeconds, Retired: []struct{}{}})
+			return
+		}
 	}
 	cfg, err := h.afkDestination(r.Context(), cid, user)
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	out := afkSnapshot{ChannelID: cfg.ChannelID, TimeoutSeconds: cfg.TimeoutSeconds, Occupants: []afkPerson{}}
-	if cfg.ChannelID != nil {
-		h.afkMu.Lock()
-		for dev, p := range h.afkOccupied {
-			if p.community == cid && p.channel == *cfg.ChannelID && !p.moving && (h.afkOnline == nil || h.afkOnline.Online(dev)) {
-				out.Occupants = append(out.Occupants, afkPerson{User: p.user, Device: dev})
-			}
-		}
-		h.afkMu.Unlock()
-		slices.SortFunc(out.Occupants, func(a, b afkPerson) int { return strings.Compare(a.Device.String(), b.Device.String()) })
+	out := afkSnapshot{ChannelID: cfg.ChannelID, TimeoutSeconds: cfg.TimeoutSeconds, Retired: []struct{}{}}
+	h.afkMu.Lock()
+	if p, ok := h.afkPending[dev]; ok && p.community == cid && h.clk.Since(p.at) < afkPendingTTL {
+		out.Pending = 1
 	}
+	h.afkMu.Unlock()
+	h.writeAFKSnapshot(w, r, out)
+}
+
+func (h *Calls) writeAFKSnapshot(w http.ResponseWriter, r *http.Request, out afkSnapshot) {
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		h.log.WarnContext(r.Context(), "write AFK snapshot", "err", err)
 	}
+}
+
+// decodeAFKActivity reads [channel_id] or [channel_id, exempt(uint 0|1)] (R5, W-1).
+func decodeAFKActivity(w http.ResponseWriter, r *http.Request) (id.ID, bool, error) {
+	var body []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
+		return id.ID{}, false, err
+	}
+	if len(body) != 1 && len(body) != 2 {
+		return id.ID{}, false, server.Errorf(server.CodeInvalidRequest, "the body is [channel_id] or [channel_id, exempt]")
+	}
+	var ch id.ID
+	if err := cborx.Unmarshal(body[0], &ch); err != nil {
+		return id.ID{}, false, server.Errorf(server.CodeInvalidRequest, "channel_id is a 16-byte id")
+	}
+	if len(body) == 1 {
+		return ch, false, nil
+	}
+	var flag uint64
+	if err := cborx.Unmarshal(body[1], &flag); err != nil || flag > 1 {
+		return id.ID{}, false, server.Errorf(server.CodeInvalidRequest, "exempt is 0 or 1")
+	}
+	return ch, flag == 1, nil
 }
 
 func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
@@ -189,12 +595,12 @@ func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	var body afkActivityBody
-	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
+	chID, exempt, err := decodeAFKActivity(w, r)
+	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	ch, err := h.repo.GetChannel(r.Context(), body.ChannelID)
+	ch, err := h.repo.GetChannel(r.Context(), chID)
 	if err != nil || ch.CommunityID == nil || *ch.CommunityID != cid || ch.Kind != ChannelVoice {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "activity must name a community voice channel"))
 		return
@@ -218,7 +624,15 @@ func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.afkMu.Lock()
-	if tracked, ok := h.afkTracked[dev]; ok && tracked.community == cid && tracked.channel == ch.ID &&
+	if exempt {
+		// R5: a device that cannot be idle-detected (a phone) is never moved out of this call. The
+		// report may come before the admission; trackAFKAdmission honours it then too.
+		if h.afkExempt == nil {
+			h.afkExempt = make(map[id.ID]string)
+		}
+		h.afkExempt[dev] = row.LivekitRoom
+		delete(h.afkTracked, dev)
+	} else if tracked, ok := h.afkTracked[dev]; ok && tracked.community == cid && tracked.channel == ch.ID &&
 		tracked.user == user && tracked.room == row.LivekitRoom {
 		tracked.lastActive = h.clk.Now()
 		h.afkTracked[dev] = tracked
@@ -227,57 +641,17 @@ func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Calls) afkManual(w http.ResponseWriter, r *http.Request) {
-	cid, user, dev, err := h.afkMember(r)
-	if err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	var body afkActivityBody
-	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	if err := h.moveAFK(r.Context(), dev, afkTracked{community: cid, channel: body.ChannelID, user: user}, nil); err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *Calls) afkLeave(w http.ResponseWriter, r *http.Request) {
-	cid, _, dev, err := h.afkMember(r)
-	if err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	h.afkMu.Lock()
-	p, ok := h.afkOccupied[dev]
-	if ok && p.community == cid && p.moving {
-		h.afkMu.Unlock()
-		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK move is still completing"))
-		return
-	}
-	if ok && p.community == cid {
-		delete(h.afkOccupied, dev)
-		delete(h.afkTracked, dev)
-	}
-	h.afkMu.Unlock()
-	if ok && p.community == cid {
-		h.afkNotify.Changed(afterCommit(r), cid)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// moveAFK blocks re-entry before cutting the SFU participant. A failed cut rolls back the
-// occupancy marker so the next sweep may retry. There is no media call in the AFK destination.
-func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked, expected *time.Time) error {
+// moveAFK cuts an idle device from its room (R4). The server decides the move and the client carries
+// it out: the server cannot add a device to an E2EE call group, so after the cut it records a pending
+// move for that device (R33), which the device's own snapshot reports, and tells the user's live
+// connections (op 54). A failed cut changes nothing, so the next sweep retries.
+func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked) error {
 	cfg, err := h.afkDestination(ctx, tracked.community, tracked.user)
 	if err != nil {
 		return err
 	}
 	if cfg.ChannelID == nil {
-		return server.Errorf(server.CodeInvalidRequest, "AFK is disabled or inaccessible")
+		return server.Errorf(server.CodeInvalidRequest, "AFK is missing or inaccessible")
 	}
 	if tracked.channel == *cfg.ChannelID {
 		return server.Errorf(server.CodeInvalidRequest, "already in AFK")
@@ -293,7 +667,7 @@ func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked, expe
 	if !live || h.sfu == nil {
 		return server.Errorf(server.CodeInvalidRequest, "device is not in a live call")
 	}
-	if expected != nil && tracked.room != row.LivekitRoom {
+	if tracked.room != row.LivekitRoom {
 		return server.Errorf(server.CodeInvalidRequest, "call changed since AFK timer started")
 	}
 	checkCtx, cancel := sfuCtx(ctx)
@@ -314,66 +688,44 @@ func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked, expe
 		return server.Errorf(server.CodeInvalidRequest, "device is not in this call")
 	}
 	h.afkMu.Lock()
-	if h.afkOccupied == nil {
-		h.afkOccupied = make(map[id.ID]afkOccupant)
-	}
-	if expected != nil {
-		current, ok := h.afkTracked[dev]
-		if !ok || current.channel != tracked.channel || !current.lastActive.Equal(*expected) {
-			h.afkMu.Unlock()
-			return nil // fresh activity or a different call won the race
-		}
-	}
-	if _, exists := h.afkOccupied[dev]; exists {
+	current, ok := h.afkTracked[dev]
+	if !ok || current.channel != tracked.channel || current.room != tracked.room || !current.lastActive.Equal(tracked.lastActive) {
 		h.afkMu.Unlock()
-		return nil
+		return nil // fresh activity, an exempt report or a different call won the race
 	}
-	h.afkOccupied[dev] = afkOccupant{community: tracked.community, channel: *cfg.ChannelID, user: tracked.user, moving: true}
 	h.afkMu.Unlock()
 	removeCtx, cancel := sfuCtx(context.WithoutCancel(ctx))
 	err = h.sfu.RemoveParticipants(removeCtx, row.LivekitRoom, dev)
 	cancel()
 	if err != nil {
-		h.afkMu.Lock()
-		delete(h.afkOccupied, dev)
-		h.afkMu.Unlock()
 		return err
 	}
 	h.revokeRelay(dev)
 	h.afkMu.Lock()
-	if p, ok := h.afkOccupied[dev]; ok && p.moving && p.community == tracked.community && p.channel == *cfg.ChannelID {
-		p.moving = false
-		h.afkOccupied[dev] = p
+	if h.afkPending == nil {
+		h.afkPending = make(map[id.ID]afkPendingEntry)
 	}
+	h.afkPending[dev] = afkPendingEntry{community: tracked.community, channel: *cfg.ChannelID, at: h.clk.Now()}
 	delete(h.afkTracked, dev)
 	h.afkMu.Unlock()
-	h.afkNotify.Changed(context.WithoutCancel(ctx), tracked.community)
+	h.afkNotify.ChangedTo(context.WithoutCancel(ctx), tracked.community, []id.ID{tracked.user})
 	return nil
 }
 
-// SweepAFK enforces inactivity in the server even if the browser's timers stop. It also drops
-// stale occupancy after a true gateway disconnect, removed membership, or removed destination.
+// SweepAFK enforces inactivity in the server even if the browser's timers stop, and drops pending
+// moves older than afkPendingTTL.
 func (h *Calls) SweepAFK(ctx context.Context) {
 	h.afkMu.Lock()
+	for dev, p := range h.afkPending {
+		if h.clk.Since(p.at) >= afkPendingTTL {
+			delete(h.afkPending, dev)
+		}
+	}
 	tracked := make(map[id.ID]afkTracked, len(h.afkTracked))
 	for dev, row := range h.afkTracked {
 		tracked[dev] = row
 	}
-	occupied := make(map[id.ID]afkOccupant, len(h.afkOccupied))
-	for dev, row := range h.afkOccupied {
-		occupied[dev] = row
-	}
 	h.afkMu.Unlock()
-	for dev, p := range occupied {
-		cfg, err := h.afkDestination(ctx, p.community, p.user)
-		_, memberErr := h.repo.GetMember(ctx, p.community, p.user)
-		if err != nil || memberErr != nil || cfg.ChannelID == nil || *cfg.ChannelID != p.channel || (h.afkOnline != nil && !h.afkOnline.Online(dev)) {
-			h.afkMu.Lock()
-			delete(h.afkOccupied, dev)
-			h.afkMu.Unlock()
-			h.afkNotify.Changed(ctx, p.community)
-		}
-	}
 	for dev, p := range tracked {
 		cfg, err := h.afkDestination(ctx, p.community, p.user)
 		if err != nil {
@@ -383,12 +735,12 @@ func (h *Calls) SweepAFK(ctx context.Context) {
 			continue
 		}
 		if cfg.ChannelID == nil {
-			continue // an active admission may outlive a disabled destination
+			continue // an active admission may outlive a missing destination
 		}
 		if h.clk.Since(p.lastActive) < afkTimeout(cfg.TimeoutSeconds) {
 			continue
 		}
-		if err := h.moveAFK(ctx, dev, p, &p.lastActive); err != nil {
+		if err := h.moveAFK(ctx, dev, p); err != nil {
 			// A departed caller cannot be moved. Keep only errors worth retrying; a new
 			// interaction starts a fresh timer if this device joins again.
 			var se *server.Error

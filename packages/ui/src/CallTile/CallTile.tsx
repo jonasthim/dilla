@@ -40,6 +40,8 @@ export interface CallTileProps {
   fullscreenLabel?: string;
   /** Injected by `CallStage`: this tile is the focused one. */
   focused?: boolean;
+  /** Injected by `CallStage`: this tile sits in a partial last row of the grid, which the stage centres (D1). */
+  orphan?: boolean;
   /** Injected by `CallStage`: toggles this tile's focus. Without it the tile has no focus button. */
   onFocusTile?(): void;
   /**
@@ -110,17 +112,18 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
 }
 
 /**
- * One tile on the call stage, as its own `<li class="d-call-stage__tile">` (pre-flight C-23). Speaking is the accent
- * outline plus the dot (the outline pulses only when motion is allowed); every other state is a glyph, a stream state
- * keeps its word. A camera or screen stream is shown only for a verified stream: an `unverified` tile never renders a
+ * One tile on the call stage, as its own `<li class="d-call-stage__tile">` (pre-flight C-23). Speaking is a 2px accent
+ * ring on the tile's edge and on its avatar (R25), with the word kept for assistive technology and no dot; every other
+ * state is a glyph, a stream state keeps its word. A camera or screen stream is shown only for a verified stream: an `unverified` tile never renders a
  * media element (L-UI-61…69), and a tile without media shows the `Avatar`. A person's tile has a native range for their
- * volume, 0 to 200 in steps of 10; the own tile and a `screen` tile have none, and a `screen` tile shows only its title.
+ * volume, 0 to 200 in steps of 10, shown on hover and focus only (D3) with a quiet chip in the caption while it is not 100; the
+ * own tile and a `screen` tile have neither, and a `screen` tile shows only its title.
  *
  * With `onFocusTile` the media and caption sit in a focus `<button aria-pressed>`, and the full-screen button and the
  * range are its siblings, never inside it (R28). Focus only flips `data-focused`: nothing is re-parented (R27).
  */
 export function CallTile({ view, own, volume, media, mirror = false, labels, onVolume, id, source = 'camera', title,
-  fullscreenLabel, focused = false, onFocusTile }: CallTileProps) {
+  fullscreenLabel, focused = false, orphan = false, onFocusTile }: CallTileProps) {
   const ticks = useId();
   const statesId = useId();
   const liRef = useRef<HTMLLIElement>(null);
@@ -133,7 +136,10 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   const name = title ?? view.name;
   const isScreen = source === 'screen';
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
-  const words = isScreen ? [] : voiceStateWords(view, labels.state);
+  // R25: speaking is the ring, not a dot; the word stays for assistive technology (sr-only below).
+  const words = isScreen ? [] : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking');
+  const speaking = !isScreen && view.speaking;
+  const volumeText = labels.volumeValue.replaceAll('{n}', String(volume));
   // web3.8 FX m8: full screen only for a tile that shows media (never an avatar), and only where the document can do it.
   const canFullscreen = fullscreenLabel !== undefined && showMedia && document.fullscreenEnabled === true;
   const toggleFullscreen = () => {
@@ -148,20 +154,22 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
         <div className="d-call-tile__media">
           <StreamVideo stream={media} className="d-call-tile__video" mirror={mirror} />
         </div>
-      ) : onFocusTile ? <div className="d-call-tile__avatar"><Avatar name={name} size="lg" /></div> : null}
+      ) : onFocusTile ? <div className="d-call-tile__avatar"><span className="d-call-tile__avatar-ring" data-speaking={speaking ? 'true' : 'false'}><Avatar name={name} size="lg" /></span></div> : null}
       <span className="d-call-tile__caption">
         <span className="d-call-tile__name">{name}</span>
         <span id={statesId} className="d-call-tile__states">
           <VoiceStates words={words} prefix="d-call-tile" />
+          {speaking ? <span className="d-sr-only">{labels.state.speaking}</span> : null}
           {!isScreen && view.web ? <span className="d-call-tile__tag">{labels.state.web}</span> : null}
           {!isScreen && view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
+          {!own && !isScreen && volume !== 100 ? <span className="d-call-tile__chip" aria-hidden="true">{volumeText}</span> : null}
         </span>
       </span>
     </>
   );
   return (
     <li ref={liRef} className="d-call-stage__tile" data-source={source} data-focused={focused ? 'true' : 'false'} data-tile-id={id}
-      data-stage={onFocusTile ? 'true' : undefined}>
+      data-stage={onFocusTile ? 'true' : undefined} data-orphan={orphan ? 'true' : undefined}>
       <div className="d-call-tile" data-source={source} data-voice-state={view.state} data-speaking={view.speaking ? 'true' : 'false'}
         data-own={own ? 'true' : undefined} data-media={showMedia ? 'true' : undefined} data-stage={onFocusTile ? 'true' : undefined}>
         {onFocusTile ? (
@@ -178,9 +186,9 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
             {/* Product walk M6: the value shows beside the range, and 100 % (the middle of 0 to 200) is marked. */}
             <span className="d-call-tile__volume-row">
               <input type="range" min={0} max={200} step={10} value={volume} list={ticks}
-                aria-valuetext={labels.volumeValue.replaceAll('{n}', String(volume))} style={{ '--d-volume': `${volume / 2}%` } as React.CSSProperties}
+                aria-valuetext={volumeText} style={{ '--d-volume': `${volume / 2}%` } as React.CSSProperties}
                 onChange={e => onVolume(Number(e.target.value))} />
-              <span className="d-call-tile__volume-value" aria-hidden="true">{labels.volumeValue.replaceAll('{n}', String(volume))}</span>
+              <span className="d-call-tile__volume-value" aria-hidden="true">{volumeText}</span>
             </span>
             <datalist id={ticks}><option value="100" /></datalist>
           </label>

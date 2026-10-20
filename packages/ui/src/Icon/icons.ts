@@ -39,6 +39,19 @@
  *   icons/maximize.svg  1f790856b0de805ab62e871609f1990b89d227d472022e57a11fde015aad4826
  *   icons/minimize.svg  7daa304bc3dccac1f100304e66a41139662cc6c0ba3eba67480d97466a9ce02b
  *   icons/search.svg  283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc
+ *   icons/lock.svg  d2cfe60cac8deaef36442b5c8218c1e61abe18222784b2a370ea090d13fca840
+ *   icons/log-out.svg  f24b5b45c05a3acc346af8095408f6ba197ff58ea1641a4f2cb25a9702d2c0ac
+ *   icons/shield.svg  be32f6a86df7cbe43a83c439dd8849e5bcf5145e484d23420c20d8b98a78e82b
+ *   icons/keyboard.svg  f509925ca81964ed06251ad4702e989bb81a566ffc74d15c2226b4f07ded67be
+ *   icons/monitor-smartphone.svg  e623faa6b589762fb67ca6dc04dd0129796762c12eddf1160bf11d1482670931
+ *   icons/phone.svg  bd59dd10667cbe410a69e2fbbf4d9645d08abe862c8d89082bd4f533957859a8
+ *   icons/square-pen.svg  09bdac7fdb94058246a5d3132eea0976e690d01694179ab6f474faa2c21de59a
+ *   icons/at-sign.svg  a71ec1918c3787172b16949262ca4c4a7c427c045367bb58f2c2cdbd87297c5e
+ *   icons/pin.svg  55e8e5e04bcb671179fc1dd589abf09cf6a1e71301ff14eb739419cfab6011e7
+ *   icons/users.svg  eeed488a1ec95ba730dd69996536fb65061d6ea273afb2429ae47e65eebf401c
+ *   icons/ellipsis.svg  4f495cc72013ffdfec677f03b33a150f7b4dd741979283fd6853a09024bca112
+ *   icons/arrow-up.svg  8c22c25874c80bb062bef985d207d8f1d4a4d7847237d0a8cf720a3235968518
+ *   icons/arrow-down.svg  2b641c7a59d39450edfed72067fcc9940a1a316a737346af23b4b9103c0689f2
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -58,7 +71,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -241,6 +254,69 @@ export const ICONS = {
   'search': [
     ['path', { d: 'm21 21-4.34-4.34' }],
     ['circle', { cx: '11', cy: '11', r: '8' }],
+  ],
+  'lock': [
+    ['rect', { width: '18', height: '11', x: '3', y: '11', rx: '2', ry: '2' }],
+    ['path', { d: 'M7 11V7a5 5 0 0 1 10 0v4' }],
+  ],
+  'log-out': [
+    ['path', { d: 'm16 17 5-5-5-5' }],
+    ['path', { d: 'M21 12H9' }],
+    ['path', { d: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4' }],
+  ],
+  'shield': [
+    ['path', { d: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z' }],
+  ],
+  'keyboard': [
+    ['path', { d: 'M10 8h.01' }],
+    ['path', { d: 'M12 12h.01' }],
+    ['path', { d: 'M14 8h.01' }],
+    ['path', { d: 'M16 12h.01' }],
+    ['path', { d: 'M18 8h.01' }],
+    ['path', { d: 'M6 8h.01' }],
+    ['path', { d: 'M7 16h10' }],
+    ['path', { d: 'M8 12h.01' }],
+    ['rect', { width: '20', height: '16', x: '2', y: '4', rx: '2' }],
+  ],
+  'monitor-smartphone': [
+    ['path', { d: 'M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8' }],
+    ['path', { d: 'M10 19v-3.96 3.15' }],
+    ['path', { d: 'M7 19h5' }],
+    ['rect', { width: '6', height: '10', x: '16', y: '12', rx: '2' }],
+  ],
+  'phone': [
+    ['path', { d: 'M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384' }],
+  ],
+  'square-pen': [
+    ['path', { d: 'M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7' }],
+    ['path', { d: 'M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z' }],
+  ],
+  'at-sign': [
+    ['circle', { cx: '12', cy: '12', r: '4' }],
+    ['path', { d: 'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8' }],
+  ],
+  'pin': [
+    ['path', { d: 'M12 17v5' }],
+    ['path', { d: 'M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z' }],
+  ],
+  'users': [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['path', { d: 'M16 3.128a4 4 0 0 1 0 7.744' }],
+    ['path', { d: 'M22 21v-2a4 4 0 0 0-3-3.87' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+  ],
+  'ellipsis': [
+    ['circle', { cx: '12', cy: '12', r: '1' }],
+    ['circle', { cx: '19', cy: '12', r: '1' }],
+    ['circle', { cx: '5', cy: '12', r: '1' }],
+  ],
+  'arrow-up': [
+    ['path', { d: 'm5 12 7-7 7 7' }],
+    ['path', { d: 'M12 19V5' }],
+  ],
+  'arrow-down': [
+    ['path', { d: 'M12 5v14' }],
+    ['path', { d: 'm19 12-7 7-7-7' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

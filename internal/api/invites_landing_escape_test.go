@@ -7,7 +7,7 @@ import (
 )
 
 func TestLandingEscapesTheCommunityName(t *testing.T) {
-	e, cid, tok := inviteEnvFor(t, "dilla.test")
+	e, cid, tok := inviteEnvFor(t, "dilla.test", "")
 	name := `<script>alert(1)</script> "q" 'a' & b`
 	if status, _ := e.Do(http.MethodPatch, "/v1/communities/"+cid.String(), tok, []any{name, nil, nil, nil}); status != http.StatusOK {
 		t.Fatal("PATCH name failed")

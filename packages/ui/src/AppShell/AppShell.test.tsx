@@ -16,8 +16,6 @@ describe('AppShell', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: 'Midgard Crew' })).toHaveFocus();
     await user.tab();
-    expect(screen.getByRole('tab', { name: 'channels' })).toHaveFocus();
-    await user.tab();
     expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('log', { name: 'messages in #general' })).toHaveFocus();
@@ -415,12 +413,12 @@ describe('phone layout', () => {
   });
 
   it('the phone drops the rail settings tile; the desktop keeps it', () => {
-    const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} joinLabel="join" onJoin={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
+    const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} addLabel="add a server" onAdd={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
     const shell = (layout: 'phone' | 'desktop') => (
       <AppShell layout={layout} skipLabel="skip" rail={railWith} sidebar={<p>s</p>} header={<h2>x</h2>} composer={null}><p>c</p></AppShell>
     );
     const phoneView = render(shell('phone'));
-    expect(screen.getByRole('button', { name: 'join' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'add a server' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
     phoneView.unmount();
     render(shell('desktop'));
@@ -488,6 +486,16 @@ describe('phone layout', () => {
   it('view pane: the tab bar follows the call bar', () => {
     render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
     expect(screen.getByTestId('call-bar').parentElement!.compareDocumentPosition(screen.getByTestId('tab-bar').parentElement!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('typing: onTypingChange hears false first, then true on focus and false on blur', () => {
+    const heard: boolean[] = [];
+    render(<ComposedShell shell={phone({ phonePane: 'view', onTypingChange: (v: boolean) => heard.push(v) })} />);
+    expect(heard.at(-1)).toBe(false);
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+    expect(heard.at(-1)).toBe(true);
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).blur(); });
+    expect(heard.at(-1)).toBe(false);
   });
 
   it('typing: focusing a textarea marks the shell and hides the tab bar; blur brings both back', () => {

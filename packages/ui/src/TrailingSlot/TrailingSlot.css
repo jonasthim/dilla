@@ -1,0 +1,3 @@
+/* The fixed trailing column of a list row (R13): every row of a list reserves it, empty or not, so the right edge of the
+   badge, the join button and the state glyph is one line down the whole list. 32px on a desktop, 44px on a phone (base.css). */
+.d-slot { display: inline-flex; align-items: center; justify-content: center; width: var(--slot-w); flex: none; }

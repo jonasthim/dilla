@@ -7,8 +7,8 @@
 // The create flow's controls are found by role and accessible name (flow 07's copy keys in en.ts) only.
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, channelRow,
-  messageRow, newAccount, newChannelButton, openChannel, openInviteDialog, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
+  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, channelRow, homeTile,
+  messageRow, newAccount, newChannelButton, openChannel, openInviteDialog, railItem, railNav, sendText, signUp, tag, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -67,7 +67,9 @@ test('from an empty instance: start a server, invite a friend through a link, re
   const empty = page.getByRole('region', { name: copy('shell.noServer.title'), exact: true });
   await expect(empty).toBeVisible({ timeout: WAIT });
   // The control main's client lacked (dbe836b): the spec fails here against it.
-  const newServer = railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true });
+  const newServer = railNav(page).getByRole('button', { name: copy('layout.rail.add'), exact: true });
+  const chooseCreate = () => page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy('layout.add.create'), exact: true }).click();
   await expect(newServer).toBeVisible();
   await expect(button(empty, 'shell.noServer.create')).toBeVisible();
   await expect(button(empty, 'shell.noServer.action')).toBeVisible();
@@ -79,13 +81,25 @@ test('from an empty instance: start a server, invite a friend through a link, re
   const serverName = start.getByRole('textbox', { name: copy('create.server.name'), exact: true });
   await newServer.focus();
   await page.keyboard.press('Enter');
+  await chooseCreate();
   await expect(serverName).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(start).toBeHidden();
   await expect(newServer).toBeFocused();
+  // The same for the join flow opened from the add dialog: Escape returns focus to the "+" tile.
+  await newServer.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy('layout.add.join'), exact: true }).click();
+  const joinDialog = page.getByRole('dialog', { name: copy('join.title'), exact: true });
+  await expect(joinDialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(joinDialog).toBeHidden();
+  await expect(newServer).toBeFocused();
 
   // 2. "new server", a name, and #general opens with focus in its composer. The server also has a voice general.
   await newServer.click();
+  await chooseCreate();
   await expect(serverName).toBeFocused();
   await expectAccessible(page, 'start a server');
   await page.keyboard.type(SERVER);
@@ -164,7 +178,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await expect(messageRow(page, 'general', reply)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     // 6. A direct message to the owner, through "message someone".
-    await sidebarTab(page2, 'dms').click();
+    await homeTile(page2).click();
     await button(page2, 'shell.dms.new').click();
     const picker = page2.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true });
     const pick = picker.getByRole('button', { name: copy('shell.dms.open'), exact: true });
@@ -178,7 +192,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await dmBox.fill(dmText);
     await dmBox.press('Enter');
     await expect(dmRow(page2, OWNER, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    await sidebarTab(page, 'dms').click();
+    await homeTile(page).click();
     await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}(, |$)`) }).click();
     await expect(dmRow(page, FRIEND, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
@@ -186,7 +200,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     // it from op 54 community_changed within about a second: no reload, no focus, and well inside the 15 s focus throttle.
     await railItem(page2, SERVER).click();
     await expect(channelRow(page2, 'general')).toBeVisible({ timeout: WAIT });
-    await sidebarTab(page, 'channels').click();
+    await railItem(page, SERVER).click();
     await newChannelButton(page).click();
     const newChannel = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
     await expect(newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true })).toBeFocused();

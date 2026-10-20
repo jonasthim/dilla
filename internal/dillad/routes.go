@@ -57,6 +57,7 @@ type RTCGate interface {
 // planTwo is what Plan 2's handler groups are built over: the composition root's own collaborators,
 // shared with Plan 1's routes rather than built a second time.
 type planTwo struct {
+	ctx      context.Context
 	o        Options
 	instance store.InstanceRow
 	sessions *auth.Sessions
@@ -114,7 +115,14 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// an open tab re-reads its lists; a delete tells the members it had, and a leave, kick or ban
 	// tells the user it removed once.
 	notify := api.NewStructureNotifier(p.gw, repo, log)
-	calls.WithAFKLive(p.gw, notify)
+	calls.WithAFKNotify(notify)
+	// R1: every community that predates web3.9, or lost its pointer, gets its built-in AFK channel
+	// once, before any listener exists (dillad serve and dilla-testhost alike).
+	// It logs its own summary and each community it could not finish; only a failure to list the
+	// communities at all reaches here, and the start goes on.
+	if _, err := api.EnsureAFKChannels(p.ctx, repo, p.delivery, clk, log); err != nil {
+		log.ErrorContext(p.ctx, "afk backfill", "err", err)
+	}
 	api.NewCommunities(repo, p.delivery, clk, log).
 		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
 	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify)

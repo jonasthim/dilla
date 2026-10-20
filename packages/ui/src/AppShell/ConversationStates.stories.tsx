@@ -21,7 +21,6 @@ import { Dialog } from '../Dialog/Dialog.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { t } from '../../../web/src/strings/index.ts';
 import { reactionName } from '../../../web/src/emoji.ts';
 
@@ -44,12 +43,9 @@ function Screen({ main, composer, after }: { main: ReactNode; composer?: ReactNo
   return <div style={{ ['--d-shell-h' as string]: '768px' }}>
     <AppShell skipLabel={t('shell.skip')}
       rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
-        joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
+        addLabel={t('layout.rail.add')} onAdd={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
       sidebar={<ChannelList label={t('shell.channels.label')} title="Midgard" activeId="general" onSelect={noop}
         emptyLabel={t('shell.channels.empty')} rowLabel={rowLabel}
-        tabs={<SidebarTabs label={t('shell.tabs.label')} activeId="channels" onSelect={noop} tabs={[
-          { id: 'channels', label: t('shell.tabs.channels') }, { id: 'dms', label: t('shell.tabs.dms') },
-        ]} />}
         channels={[{ id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'random', name: 'random', kind: 'text', readable: false }]} />}
       header={<ChannelHeader name="general" topic="say hi" actions={<Button variant="ghost" size="md">{t('shell.pins.open')}</Button>} />}
       composer={composer ?? <Composer label={t('shell.composer.label', { channel: 'general' })}

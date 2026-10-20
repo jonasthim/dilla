@@ -1,0 +1,3 @@
+.d-settings-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; font-family: var(--font-mono); }
+.d-settings-footer__status { flex: 1 1 12rem; min-width: 0; font-size: var(--text-sm); color: var(--fg-3); overflow-wrap: anywhere; }
+.d-settings-footer__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.5rem; margin-left: auto; }

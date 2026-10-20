@@ -7,6 +7,7 @@
 // No key byte reaches the state, a log or an error here: keys.ts holds the only copies and zero-fills them.
 // This module is loaded only through load.ts (L-WEB-51), so livekit-client and RNNoise stay out of the entry chunk.
 import type { CallJoinResult, CoreClient, IceServerTuple } from '@dilla/client-core';
+import { getBrowser } from 'livekit-client';
 import {
   chooseVideoCodec, decodeCaps, DillaMicrophoneProcessor, noisePreference, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
@@ -41,8 +42,12 @@ export interface PageCallState {
   camera: boolean;
   sharing: boolean;
   paused: boolean;
-  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only. */
-  mic: 'ok' | 'denied' | 'missing' | 'failed';
+  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only.
+   *  'listen': the AFK channel: the call is listen-only by the server's grant (web3.9 R3); no microphone is asked for. */
+  mic: 'ok' | 'denied' | 'missing' | 'failed' | 'listen';
+  /** web3.9 VOICE-AFK: started with PageCallOptions.listenOnly. Nothing is captured or published: mute stays on, camera and
+   *  share are refused (E_FORBIDDEN), and deafen still silences what is heard. */
+  listenOnly: boolean;
   /** The input mode in force (task-9 review I2: it follows Settings → Voice during a call). */
   mode: 'vad' | 'ptt';
   tiles: PageCallTile[];
@@ -127,6 +132,17 @@ export interface PageCallDeps {
   /** web3.8 V1: a level reader on one audio track in the call's context (an AnalyserNode, never connected to the
    *  destination); analyserMeter by default. Null means no local level: the SFU's speaker flag is the fallback. */
   createLevelMeter?(ctx: AudioContext, track: MediaStreamTrack): LevelMeter | null;
+  /** web3.9 VOICE-FIX fix round 1 (I1): true where this engine keeps a second capture of one microphone live beside the
+   *  first (concurrentCapture), so a parked restart may acquire before it swaps. Anything else stops first (restartTrack). */
+  concurrentCapture?: boolean;
+}
+
+/** web3.9 VOICE-FIX fix round 1 (I1): whether this engine keeps a second capture of one microphone live beside the first.
+ *  WebKit (Safari, and every iOS browser) ends the new one (livekit-client LocalTrack.ts:372-374), so there, and on any
+ *  engine not on this allowlist, the parked restart stops first. Final review I-1: desktop Chrome, Edge and Firefox only.
+ *  getBrowser sets no `os` on Android, so `ua` (the user agent getBrowser read) rules out anything Android or mobile. */
+export function concurrentCapture(b: ReturnType<typeof getBrowser>, ua: string): boolean {
+  return (b?.name === 'Chrome' || b?.name === 'Firefox') && b.os !== 'iOS' && !/android|mobile/i.test(ua);
 }
 
 function defaultAudioContext(): AudioContext | null {
@@ -176,6 +192,9 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /** web3.9 VOICE-AFK: the AFK channel, where the server's grant lets nobody publish (R3). The microphone is never acquired
+   *  (no permission prompt) or published, the call stays muted, and the camera and share are refused before any request. */
+  listenOnly?: boolean;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -206,6 +225,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     now: () => Date.now(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    concurrentCapture: concurrentCapture(getBrowser(navigator.userAgent), navigator.userAgent),
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),
@@ -294,7 +314,7 @@ interface RemoteAudio {
   /** livekit's Track.Source, when the publication does not say it. */
   source?: unknown;
 }
-interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
+interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; replaceTrack?(track: MediaStreamTrack, userProvidedTrack?: boolean): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
 /** The earliest expiry, in ms, among the TURN usernames (`<expiry seconds>:<…>`), or null. */
@@ -353,9 +373,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     : null;
   // A refused device at the start leaves the system default playing.
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
-  let mic: Awaited<ReturnType<typeof acquireMic>>;
+  // web3.9 VOICE-AFK: a listen-only call never asks for the microphone, so it never prompts and has nothing to publish.
+  const listenOnly = opts.listenOnly === true;
+  let mic: Awaited<ReturnType<typeof acquireMic>> | { mic: 'listen' };
   try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = listenOnly ? { mic: 'listen' } : await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -520,8 +542,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false, audio: { attached: 0, expected: 0 },
+      noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      audioBlocked: false, audio: { attached: 0, expected: 0 }, listenOnly,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -535,7 +557,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const volumes: Volumes = { ...opts.volumes };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
-    let mutedBeforeDeafen = opts.self === 'deafened';
+    let mutedBeforeDeafen = listenOnly || opts.self === 'deafened';
     /** web3.8 MUTE: a mute or deafen pressed while the start runs (selfNow) joins the session's state before it is in use,
      *  never the other way. A deafen is applied as a mute first and then a deafen, so an undeafen keeps the microphone muted
      *  (R25: deafened goes back to muted, never to an open microphone). True when it changed anything. */
@@ -739,7 +761,51 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
      *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
     let restartWaiting: { reason: ProcessorStatus['reason'] } | null = null;
-    const browserStatus = async (reason: ProcessorStatus['reason'] = null): Promise<void> => {
+    /** web3.9 VOICE-FIX: the parked restart is a pre-acquire. LiveKit's restartTrack stops the old capture before it asks
+     *  for the new one, which lost the first words after the open. Here the new capture is acquired first, guarded (it
+     *  cannot be enabled while the microphone must not send, so a mute during the hand-over never puts an open capture on
+     *  the sender), handed to the sender with replaceTrack, and the old capture, which kept sending until then, is stopped
+     *  only after the replace resolved. False when nothing was handed over: the old capture stays, and nothing retries. */
+    /** A capture's state read now (it changes across an await; a plain read would be narrowed). */
+    const isEnded = (t: MediaStreamTrack): boolean => t.readyState === 'ended';
+    /** Fix round 2 (N1): the session's own restartTrack calls in flight. One queued behind the hand-over's replace stops
+     *  `next` itself and brings its own capture, so an ended `next` is then no reason to give the sender back. */
+    let restarting = 0;
+    const restartCapture = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<void> => {
+      restarting += 1;
+      try { await track.restartTrack?.(constraints); } finally { restarting -= 1; }
+    };
+    const handOver = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<boolean> => {
+      if (track.replaceTrack === undefined) return false;
+      const old = micTrack;
+      let next: MediaStreamTrack | undefined;
+      try { next = (await deps.media.getUserMedia({ audio: constraints })).getAudioTracks()[0]; } catch { return false; }
+      if (next === undefined) return false;
+      guardMic(next);
+      next.enabled = false;
+      // A leave meanwhile, or a capture that already failed (Safari can end it while the old one runs): the old one stays.
+      if (ended || isEnded(next)) { next.stop(); return false; }
+      try {
+        await track.replaceTrack(next, true);
+      } catch {
+        // Not on the sender: the old capture stays. (One LiveKit already took is the session's from here on.)
+        if (track.mediaStreamTrack !== next) { next.stop(); return false; }
+      }
+      // Fix round 1 (M1): a new capture that ended during the replace gives the sender back the one the session holds,
+      // which is still live and still guarded (applyMic), so LiveKit's `enabled = !isMuted` stays fail-closed.
+      const held = micTrack;
+      if (isEnded(next) && restarting === 0 && held !== null && held !== next && !isEnded(held)) {
+        try { await track.replaceTrack(held, true); } catch { /* the sender keeps the ended track; the session's stays held */ }
+        next.stop();
+        return false;
+      }
+      // Fix round 1 (I2): a restart that ran meanwhile (a noise toggle) swapped in its own capture, which LiveKit does not
+      // stop for a user-provided track; it is stopped here with the old one, so no capture outlives the call.
+      micTrack = next;
+      for (const t of new Set([old, held])) if (t !== null && t !== next) t.stop();
+      return true;
+    };
+    const browserStatus = async (reason: ProcessorStatus['reason'] = null, parked = false): Promise<void> => {
       if (!micTrack) return;
       let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
       const track = micPub?.track;
@@ -747,13 +813,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       restartWaiting = wanted && !sendNow() ? { reason } : null;
       if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
-          await track.restartTrack({ ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 });
-          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
-          if (ended) { micTrack.stop(); return; }
-          applyMic();
-          // web3.8 FX I3: LiveKit stopped the old capture, so the own meter moves to the new one (own speaking, AFK).
-          restartOwnMeter();
-          browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+          let swapped = true;
+          // Fix round 1 (I1): only where a second capture of the microphone stays live beside the first (an allowlist,
+          // concurrentCapture); everywhere else, and with no answer, the stop-first restartTrack of web3.8.
+          if (parked && track.replaceTrack !== undefined && deps.concurrentCapture === true) swapped = await handOver(track, constraints);
+          else {
+            await restartCapture(track, constraints);
+            if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+          }
+          // A failed hand-over keeps the old capture and reports what it observed, as a failed restart does.
+          if (swapped) {
+            if (ended) { micTrack.stop(); return; }
+            applyMic();
+            // web3.8 FX I3: the old capture is stopped, so the own meter moves to the new one (own speaking, AFK).
+            restartOwnMeter();
+            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+          }
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
       reportStatus({requested: noisePreference(state.noise), effective: state.noise === 'off' ? 'off' : 'browser', browserNoise, reason, vad: 'unavailable'});
@@ -771,7 +847,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         processor = made;
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
-          await track.restartTrack({...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
           // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
           if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
@@ -828,7 +904,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (send && restartWaiting !== null && processor === null) {
         const waited = restartWaiting;
         restartWaiting = null;
-        void browserStatus(waited.reason).catch(() => undefined);
+        void browserStatus(waited.reason, true).catch(() => undefined);
       }
       if (send === micSending) return;
       micSending = send;
@@ -895,7 +971,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const list = p.canPublishSources ?? [];
       return list.length === 0 || list.includes(PERMISSION[what]);
     };
+    /** web3.9 VOICE-AFK: nobody sends in the AFK channel (the server refuses the share too, R3); refused before any request. */
+    const sendable = (): void => { if (listenOnly) throw new PageCallError('E_FORBIDDEN'); };
     const ensureShare = async (what: 'camera' | 'screen'): Promise<void> => {
+      sendable();
       if (shareOn && permitted(what)) return;
       let settle: (ok: boolean) => void = () => undefined;
       const granted = new Promise<boolean>((resolve) => { settle = resolve; });
@@ -954,6 +1033,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setCamera = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopCamera(); await shareOffIfIdle(); return; }
+      sendable();
       usable();
       if (camera !== null) return;
       await ensureShare('camera');
@@ -986,6 +1066,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setSharing = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopScreen(); await shareOffIfIdle(); return; }
+      sendable();
       usable();
       if (screen !== null) return;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
@@ -1234,7 +1315,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         return () => { listeners.delete(entry); };
       },
       setMuted(on) {
-        if (ended) return;
+        // web3.9 VOICE-AFK: listen-only stays muted; there is no microphone to open.
+        if (ended || listenOnly) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
         // With a local meter the own mic starts silent after an unmute (the detector needs its 50 ms again); without one
@@ -1253,7 +1335,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           ownDetector.reset(); ownOn = false; ownRms = 0;
           set({ deafened: true, muted: true, speaking: false });
         } else {
-          set({ deafened: false, muted: mutedBeforeDeafen });
+          set({ deafened: false, muted: listenOnly || mutedBeforeDeafen });
         }
         applyMic();
         applyGains();

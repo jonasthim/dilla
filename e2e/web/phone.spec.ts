@@ -1,13 +1,13 @@
 // web3.7 W-Phone-4: the phone shell at 390 x 844 (flow 12), from an empty host and through the UI only: the sign-up steps
 // keep the page unzoomed (field sizes of 16 px and up, a visual viewport that stays at scale 1), a server starts in the
-// tab bar's servers list, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
+// tab bar's Home tab, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
 // the network, every tap target is 44 x 44 CSS px, and focus lands where flow 12 says. Chromium and WebKit only: Firefox has
 // no mobile emulation (R23).
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
-import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
-  expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
+import { addServerVia,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
@@ -165,9 +165,9 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       signedUp = ada;
     });
 
-    // 2. A server from the servers tab; the tab bar names four places and the status bar is gone.
+    // 2. A server from Home; the tab bar names three places (home, activity, you) and the status bar is gone.
     await test.step('start the server', async () => {
-      await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+      await addServerVia(page, 'create');
       const dialog = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');
@@ -179,8 +179,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.locator('.d-composer textarea')).not.toBeFocused();
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
-      await expect(tabBar(page).getByRole('link')).toHaveCount(4);
-      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+      await expect(tabBar(page).getByRole('link')).toHaveCount(3);
+      expect(await tabBar(page).getByRole('link').evaluateAll((links) => links.map((l) => l.textContent?.trim()))).toEqual([copy('home.tab'), copy('nav.tab.activity'), copy('nav.tab.you')]);
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      // Home shows the rail with the @ tile first, and the list pane.
+      await expect(railNav(page)).toBeVisible();
+      await expect(railNav(page).getByRole('button').first()).toHaveAccessibleName(copy('home.tile'));
+      await expect(homeTile(page)).not.toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       listPath = new URL(page.url()).pathname;
@@ -196,6 +201,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
       expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+      await expectTapTargets(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button');
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
@@ -206,14 +212,50 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.locator('.d-app-shell')).toHaveAttribute('data-typing', 'true');
       const typing = await composer.boundingBox();
       expect(typing!.y + typing!.height, 'the composer ends inside the viewport while typing').toBeLessThanOrEqual(await page.evaluate(() => window.visualViewport?.height ?? innerHeight));
+      // H1/H3: with the keyboard up the 48 header and the composer are both on screen and no call bar is (no call is up here).
+      const viewport = await page.evaluate(() => window.visualViewport?.height ?? innerHeight);
+      const header = await page.locator('.d-app-shell__main .d-phone-header').boundingBox();
+      expect(header!.y, 'the header is at the top of the viewport').toBeGreaterThanOrEqual(0);
+      expect(header!.height, 'the header is a 48 bar').toBeGreaterThanOrEqual(48);
+      expect(header!.y + header!.height, 'the header sits above the composer').toBeLessThanOrEqual(typing!.y);
+      expect(typing!.y, 'the composer is in the viewport').toBeLessThan(viewport);
+      await expect(page.locator('.d-call-bar')).toHaveCount(0);
+      await expect(page.locator('.d-phone-header__dot')).toHaveCount(0);
       await sendText(page, 'general', 'hej');
       await expect(messageRow(page, 'general', 'hej')).toBeVisible();
-      // Tapping the message log blurs the composer: the tab bar comes back and the scale is still 1.
-      await page.getByRole('log').tap();
+      // Leaving the composer: the tab bar comes back and the scale is still 1.
+      await composer.evaluate(el => { el.blur(); });
       await expect(composer).not.toBeFocused();
       await softKeyboard(page, false);
       await expect(tabBar(page)).toBeVisible();
       expect(await scale(page), 'visualViewport.scale after leaving the composer').toBe(1);
+      // R30: a message's actions are not on screen until a tap on it, and a second tap puts them away.
+      const row = messageRow(page, 'general', 'hej');
+      const actions = row.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
+      await expect(actions).toHaveCount(0);
+      await row.locator('.d-message-row__body').tap();
+      await expect(actions).toBeVisible();
+      await row.locator('.d-message-row__body').tap();
+      await expect(actions).toHaveCount(0);
+      // I2: a grouped row's gutter time fits the avatar column and its gap, unclipped, at 390 and at 360.
+      await sendText(page, 'general', 'tack');
+      const grouped = messageRow(page, 'general', 'tack');
+      await expect(grouped).toHaveAttribute('data-grouped', 'true');
+      await grouped.locator('.d-message-row__body').tap();
+      for (const width of [390, 360]) {
+        await page.setViewportSize({ width, height: 844 });
+        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => {
+          const box = el.getBoundingClientRect();
+          const main = el.parentElement!.querySelector('.d-message-row__main')!.getBoundingClientRect();
+          return { left: box.left, right: box.right, mainLeft: main.left, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, text: el.textContent };
+        });
+        expect(g.left, `the gutter time starts on screen at ${String(width)}: ${g.text}`).toBeGreaterThanOrEqual(0);
+        expect(g.right, `the gutter time ends before the text at ${String(width)}`).toBeLessThanOrEqual(g.mainLeft + 0.5);
+        expect(g.scrollWidth, `the gutter time is not clipped at ${String(width)}`).toBeLessThanOrEqual(g.clientWidth);
+      }
+      await page.setViewportSize({ width: 390, height: 844 });
+      await grouped.locator('.d-message-row__body').tap();
+      await expect(grouped.getByRole('toolbar')).toHaveCount(0);
       await expectAccessible(page, 'the channel view');
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
@@ -257,6 +299,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('a thread sheet opens from the chip on a real click', async () => {
       const row = messageRow(page, 'general', 'hej');
       await row.focus();
+      await page.keyboard.press('Enter'); // Enter on the focused row reveals its actions (R30)
       await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
       const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
       await expect(reply).toBeVisible({ timeout: WAIT });
@@ -275,12 +318,15 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
 
     // The tab bar is the way out of a view: the current tab goes to its list, and the tabs keep their memory.
     await test.step('tapping the current tab in a channel view shows the channel list', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       await expect(page).toHaveURL(new RegExp(`${listPath}$`));
-      await tab(page, 'nav.tab.dms').tap();
-      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
-      await tab(page, 'nav.tab.servers').tap();
+      // The @ tile stays on Home: the DM list shows in the list pane, and the server's tile brings its channels back.
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(page).toHaveURL(/\/dm$/);
+      await railItem(page, SERVER).tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       await channelRow(page, 'general').tap();
       await expect(back(page)).toBeVisible({ timeout: WAIT });
@@ -291,12 +337,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(channelRow(page, 'general')).toBeFocused();
-      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
     });
 
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
+      await expectTapTargets(homeTile(page), 'the @ tile');
       // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
       // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
       const search = page.getByRole('button', { name: copy('search.open'), exact: true });
@@ -353,21 +400,33 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     });
 
     // 5. The other tabs name themselves, and a tap on a tab puts focus on its heading.
-    await test.step('the DMs, Activity and You tabs', async () => {
-      await tab(page, 'nav.tab.dms').tap();
-      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
-      await expect(listHeading(page, 'shell.dms.label')).toBeFocused();
+    await test.step('the @ tile on Home, then the Activity and You tabs', async () => {
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(page.getByText(copy('shell.dms.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
+      await expectTapTargets(page.getByRole('button', { name: copy('shell.dms.new'), exact: true }), 'message someone');
+      await expectAccessible(page, 'Home with @ selected');
+      // Home remembers where it was left; leave it on the server list for the steps below.
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
 
       await tab(page, 'nav.tab.activity').tap();
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
       await expect(listHeading(page, 'activity.title')).toBeFocused();
-      await expect(page.getByText(copy('activity.empty'), { exact: true }).or(page.getByText(copy('activity.since'), { exact: true }))).toBeVisible();
+      await expect(page.getByRole('region', { name: copy('activity.emptyTitle'), exact: true })).toBeVisible();
+      expect((await page.locator('.d-app-shell__sidebar .d-phone-header').boundingBox())!.height, 'a 48 header on Activity').toBeGreaterThanOrEqual(48);
       await expectAccessible(page, 'Activity');
 
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
-      await expect(page.getByRole('heading', { level: 1, name: copy('you.title'), exact: true })).toBeFocused();
+      await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
       await expect(page.getByRole('heading', { name: copy('you.status'), exact: true })).toBeVisible();
+      // H1/H6: a 48 header on the tab root, and the status is a 44 row, not a native select.
+      expect((await page.locator('.dw-you .d-phone-header').boundingBox())!.height).toBeGreaterThanOrEqual(48);
+      await expect(page.locator('.dw-you select')).toHaveCount(0);
+      await expectTapTargets(page.getByRole('button', { name: new RegExp(copy('presence.label')) }), 'the status row');
       for (const fact of ['shell.status.node', 'shell.status.link', 'shell.status.gen', 'shell.status.devices']) {
         await expect(page.locator('.dw-you__facts dt').filter({ hasText: copy(fact) })).toBeVisible();
       }
@@ -390,7 +449,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
 
     // Server settings is a page under the tabs too, and Escape closes it.
     await test.step('server settings keeps the tab bar and closes on Escape', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
@@ -401,9 +460,22 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible();
     });
 
+    // A deep link to /dm is Home with the @ tile selected, on a fresh page.
+    await test.step('a /dm deep link lands on Home with @ selected', async () => {
+      await page.goto('/dm');
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(page).toHaveURL(/\/dm$/);
+      await expectAccessible(page, '/dm deep link');
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
+
     // 6. The link banner follows the network.
     await test.step('offline shows the link banner, online removes it', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       offlineLogged = guard.consoleErrors.length;
       await context.setOffline(true);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeVisible({ timeout: WAIT });
@@ -429,7 +501,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
       await context.setOffline(false);
       await expect(text).toBeHidden({ timeout: WAIT });
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });
 
@@ -532,6 +604,19 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await signIn(page, account, instance);
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
     await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+    await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
+      await expect(tabBar(page).getByRole('link')).toHaveCount(3);
+      await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
+      await expectTapTargets(homeTile(page), 'the @ tile at 844 x 390');
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expectAccessible(page, 'Home with @ selected at 844 x 390');
+      await page.goto('/dm');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
     expect(await page.evaluate(() => document.documentElement.hasAttribute('data-phone-shell')), 'the phone shell locks the page by an attribute').toBe(true);
     expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('hidden');
 
@@ -542,8 +627,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
       await expectComposerReady(page, 'general');
       await sendText(page, 'general', 'hej');
       const row = messageRow(page, 'general', 'hej');
-      await row.focus();
-      await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
+      await row.locator('.d-message-row__body').tap();
+      await row.getByRole('button', { name: copy('thread.open'), exact: true }).tap();
       const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
       await expect(reply).toBeVisible({ timeout: WAIT });
       await reply.fill('svar');
@@ -557,21 +642,19 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     });
 
     // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts
-    // the elements the twinned rules select (the DM call pane, the channel list's join, a call-strip button) in the shell and
+    // the elements the twinned rules select (the DM call pane, a call-strip button) in the shell and
     // reads what the data-layout twins do to them (the same technique as the call bar probe in test 1).
-    await test.step('the DM call pane fills the layout, and the channel-list join and call-strip buttons are 44 px', async () => {
+    await test.step('the DM call pane fills the layout, and the call-strip buttons are 44 px', async () => {
       const probe = await page.evaluate(() => {
         const content = document.querySelector('.d-app-shell__content')!;
         const call = document.createElement('div');
         call.className = 'dw-dm-call';
-        call.innerHTML = '<button type="button" class="d-btn d-channel-list__join" data-size="sm"></button>';
         const strip = document.createElement('div');
         strip.className = 'dw-call-strip';
         strip.innerHTML = '<button type="button" class="d-btn" data-size="sm"></button>';
         content.append(call, strip);
         const out = {
           maxHeight: getComputedStyle(call).maxHeight,
-          join: call.querySelector('button')!.getBoundingClientRect().height,
           strip: strip.querySelector('button')!.getBoundingClientRect().height,
         };
         call.remove();
@@ -579,7 +662,6 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
         return out;
       });
       expect(probe.maxHeight, 'the phone DM call fills the pane (the desktop one is capped at 40%)').toBe('none');
-      expect(probe.join, 'the join button is a 44 px target').toBeGreaterThanOrEqual(44);
       expect(probe.strip, 'a call-strip button is a 44 px target').toBeGreaterThanOrEqual(44);
     });
   } finally {

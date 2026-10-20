@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { DiagnosticsState } from '@dilla/client-core';
-import { DiagnosticsPanel } from '@dilla/ui';
+import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { devicesChunk } from '../shell-model.ts';
@@ -21,11 +21,22 @@ export function Diagnostics({ data, instanceName, writeText }: {
   useEffect(() => {
     client.call({ m: 'refreshDevices' }).catch(() => undefined);
   }, [client]);
-  return <section className="dw-settings-section" data-doc-state="settings-diagnostics"><DiagnosticsPanel
-    data={{ ...data, instance: instanceName ?? t('shell.status.unknown'), devices: devicesChunk(devices) }}
-    labels={{ title: t('diagnostics.title'), copy: t('diagnostics.copy'), empty: t('diagnostics.empty'), fields: {
-      connection: t('diagnostics.connection'), generation: t('diagnostics.generation'), instance: t('diagnostics.instance'),
-      devices: t('diagnostics.devices'),
-    } }} formatTime={at => clock.format(new Date(at))}
-    onCopy={() => { writeText(data.errors.slice(-20).map(error => error.code).join('\n')).catch(() => undefined); }} /></section>;
+  const errors = data.errors.slice(-20);
+  const iso = (at: number) => new Date(at).toISOString();
+  const facts: readonly [string, string, string | number | null][] = [
+    ['connection', t('diagnostics.connection'), data.connection], ['generation', t('diagnostics.generation'), data.generation],
+    ['instance', t('diagnostics.instance'), instanceName ?? t('shell.status.unknown')], ['devices', t('diagnostics.devices'), devicesChunk(devices)],
+  ];
+  // Each fact is a settings row (I2): its name on the left, its value in the control column. The last 20 stable codes follow.
+  return <section className="dw-settings-section" data-doc-state="settings-diagnostics" aria-labelledby="diagnostics-title">
+    <h2 id="diagnostics-title" tabIndex={-1}>{t('diagnostics.title')}</h2>
+    {facts.map(([id, label, value]) => <SettingsRow key={id} id={`diag-${id}`} label={label}><span data-fact={id}>{value}</span></SettingsRow>)}
+    {errors.length > 0
+      ? <ul className="dw-diagnostics-errors">{errors.map((error, index) => <li data-error-code={error.code} key={`${error.at}-${index}`}>
+        <code>{error.code}</code><time dateTime={iso(error.at)}>{clock.format(new Date(error.at))}</time></li>)}</ul>
+      : <p>{t('diagnostics.empty')}</p>}
+    <SettingsRow id="diag-copy" label={t('diagnostics.copy')}>
+      <Button onClick={() => { writeText(errors.map(error => error.code).join('\n')).catch(() => undefined); }}>{t('diagnostics.copy')}</Button>
+    </SettingsRow>
+  </section>;
 }

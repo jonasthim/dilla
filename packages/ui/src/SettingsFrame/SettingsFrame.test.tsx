@@ -235,3 +235,58 @@ describe('SettingsFrame stacked (A11Y-DESIGN-01)', () => {
     expect(rule('d-settings-frame__pane')).toMatch(/min-height: auto;/);
   });
 });
+
+// R17, I5, I8: one hairline at y=48 across the side title and the section bar; the one sticky save footer; no repeated
+// title on a phone (H5). jsdom has no layout, so these read the rules.
+describe('SettingsFrame bar and footer (I8, R17)', () => {
+  let css = '';
+  let base = '';
+  beforeAll(async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    css = fs.readFileSync(`${cwd}/src/SettingsFrame/SettingsFrame.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    base = fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  });
+  const rule = (src: string, selector: string) => new RegExp(`${selector.replace(/[.[\]"=-]/g, '\\$&')} \\{([^}]*)\\}`).exec(src)?.[1] ?? '';
+
+  it('the side title and the section bar are the same height, with the same hairline: one line at y=48', () => {
+    for (const sel of ['.d-settings-frame__title', '.d-settings-frame__bar']) {
+      const r = rule(css, sel);
+      expect(r, sel).toMatch(/box-sizing: border-box;/);
+      expect(r, sel).toMatch(/height: var\(--bar-h\);/);
+      expect(r, sel).toMatch(/border-bottom: 1px solid var\(--hairline\);/);
+    }
+  });
+
+  it('renders the footer after the body, in the pane, and is absent without it', () => {
+    const { rerender } = render(<SettingsFrame {...props({ footer: <button type="button">save</button> })} />);
+    const footer = screen.getByRole('button', { name: 'save' }).closest('.d-settings-frame__footer');
+    expect(footer).not.toBeNull();
+    expect(footer?.previousElementSibling).toHaveClass('d-settings-frame__body');
+    expect(footer?.parentElement).toHaveClass('d-settings-frame__pane');
+    rerender(<SettingsFrame {...props()} />);
+    expect(document.querySelector('.d-settings-frame__footer')).toBeNull();
+  });
+
+  it('the footer is sticky to the bottom of the pane', () => {
+    const r = rule(css, '.d-settings-frame__footer');
+    expect(r).toMatch(/position: sticky;/);
+    expect(r).toMatch(/bottom: 0;/);
+  });
+
+  it('a phone layout sets data-layout and does not repeat the title', () => {
+    render(<PhoneLayoutProvider value><SettingsFrame {...props()} /></PhoneLayoutProvider>);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('data-layout', 'phone');
+    expect(rule(base, '.d-settings-frame[data-layout="phone"] .d-settings-frame__title')).toMatch(/clip-path: inset\(50%\);/);
+  });
+
+  // H5: the PhoneHeader is the heading, so the section's own h2 is visually hidden on a phone and kept for its name and focus.
+  it('hides the section heading on a phone, where the PhoneHeader is the heading', () => {
+    expect(rule(css, '.d-settings-frame[data-layout="phone"] .d-settings-frame__body section > h2:first-child')).toMatch(/clip-path: inset\(50%\);/);
+  });
+
+  it('a desktop frame has no data-layout', () => {
+    render(<SettingsFrame {...props()} />);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).not.toHaveAttribute('data-layout');
+  });
+});

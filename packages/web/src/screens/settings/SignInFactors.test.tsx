@@ -82,6 +82,16 @@ function regionHome(): HTMLElement | null {
 }
 
 describe('Settings → Sign-in rows', () => {
+  it('gives the password, app, passkeys and backup codes groups h3 headings under the h2, each naming its group', async () => {
+    setup();
+    await screen.findByRole('heading', { level: 2, name: en['factorSettings.title'] });
+    for (const key of ['factorSettings.password', 'factorSettings.totp', 'factorSettings.passkeys', 'factorSettings.codes'] as const) {
+      expect(screen.getByRole('heading', { level: 3, name: en[key] })).toBeInTheDocument();
+      expect(screen.getByRole('group', { name: en[key] })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(4);
+  });
+
   it('lists the password, the app, each passkey and the backup codes, and refreshes the factors once', async () => {
     const { fake } = setup();
     expect(await screen.findByRole('heading', { level: 2, name: en['factorSettings.title'] })).toBeInTheDocument();
@@ -136,6 +146,15 @@ describe('Settings → Sign-in rows', () => {
     await user.click(button(en['factorSettings.retry']));
     expect(await screen.findByText(en['factorSettings.password.set'])).toBeInTheDocument();
     expect(fake.callsOf('refreshFactors')).toHaveLength(2);
+  });
+  // I1, I2: every factor is a settings row, its action in the control column.
+  it('draws the password, app, each passkey, the add-passkey action and the codes as settings rows', async () => {
+    const { view } = setup();
+    await screen.findByText(en['factorSettings.password.set']);
+    expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(6);
+    const laptop = button('remove laptop').closest('.d-settings-row') as HTMLElement;
+    expect(laptop.querySelector('.d-settings-row__label')).toHaveTextContent('laptop');
+    expect(laptop.querySelector('.d-settings-row__control')).toContainElement(button('remove laptop'));
   });
   it('has no axe violations', async () => {
     const { view } = setup();
@@ -470,20 +489,14 @@ describe('review fixes', () => {
     await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
     expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
   });
-  it('walk I3: keeps the passkeys in their own group, with its heading and its add button after its rows, before the backup codes', async () => {
+  it('walk I3: keeps the passkeys together, one row each, with the add row after them and before the backup codes', async () => {
     const { view } = setup();
     await screen.findByText(en['factorSettings.password.set']);
-    const group = screen.getByRole('group', { name: en['factorSettings.passkeys'] });
-    expect(within(group).getByRole('heading', { level: 3, name: en['factorSettings.passkeys'] })).toBeInTheDocument();
-    expect(within(group).getByText('laptop')).toBeInTheDocument();
-    expect(within(group).getByText('phone')).toBeInTheDocument();
-    const add = within(group).getByRole('button', { name: en['factorSettings.passkeys.add'] });
-    const lastRow = within(group).getByRole('button', { name: 'remove phone' });
-    expect(lastRow.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(group).queryByText(en['factorSettings.totp'])).toBeNull();
-    expect(within(group).queryByText(en['factorSettings.codes'])).toBeNull();
-    const codes = screen.getByRole('button', { name: en['factorSettings.codes.make'] });
-    expect(add.compareDocumentPosition(codes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const rows = Array.from(view.container.querySelectorAll('.d-settings-row__label')).map(l => l.textContent);
+    expect(rows).toEqual([en['factorSettings.password'], en['factorSettings.totp'], 'laptop', 'phone', en['factorSettings.passkeys'], en['factorSettings.codes']]);
+    const add = screen.getByRole('button', { name: en['factorSettings.passkeys.add'] });
+    expect(button('remove phone').compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(add.compareDocumentPosition(screen.getByRole('button', { name: en['factorSettings.codes.make'] })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await expectNoAxeViolations(view.container);
   });
   it('walk M3: a wrong password puts focus back on the emptied password field', async () => {

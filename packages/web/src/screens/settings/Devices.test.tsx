@@ -251,3 +251,16 @@ describe('this browser', () => {
     expect(window.location.pathname).toBe('/settings/devices');
   });
 });
+
+// I1, I2: the count with its refresh, and the two actions on this browser, are SettingsRows (label left, control right).
+describe('the settings grammar', () => {
+  it('puts the count and refresh, sign out and forget in three settings rows', () => {
+    const { view } = setup();
+    const rows = Array.from(view.container.querySelectorAll<HTMLElement>('.d-settings-row'));
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]).getByText('3 devices')).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('button', { name: 'refresh' })).toBeInTheDocument();
+    expect(within(rows[1]).getByRole('button', { name: 'sign out and remove this browser' })).toBeInTheDocument();
+    expect(within(rows[2]).getByRole('button', { name: 'forget this browser' })).toBeInTheDocument();
+  });
+});

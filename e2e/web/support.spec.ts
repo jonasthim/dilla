@@ -1,12 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT } from './support/host';
-import { expect, test } from './support/persistent';
+import { PROFILE_ROOT, expect, test } from './support/persistent';
 import { WebDriver, testHostUrl, testkitEnv } from './support/driver';
 import { injectAxe, runAxe } from './support/axe';
 import { totp } from './support/totp';
 
 const HEX32 = /^[0-9a-f]{32}$/;
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 // L-HTTP-10, exactly, with HOST = 127.0.0.1:8453.
 const CSP =
@@ -14,10 +15,10 @@ const CSP =
   "connect-src 'self' ws://127.0.0.1:8453 wss://127.0.0.1:8453; worker-src 'self'; media-src blob:; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 // The invite landing's own policy (internal/api/invites.go:107), set on every answer of GET /i/{code}.
-const LANDING_CSP = "default-src 'none'; style-src 'unsafe-inline'";
+const LANDING_CSP = "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'";
 
 test('the test host serves the client root same-origin, with its headers, to a persistent profile', async ({ page, profileDir }) => {
-  expect(profileDir).toMatch(/^\/tmp\/dw\/(chromium|firefox)-core-\d+$/);
+  expect(profileDir).toMatch(new RegExp(`^${escapeRegExp(PROFILE_ROOT)}/(chromium|firefox)-core-\\d+$`));
   const response = await page.goto('/');
   // A persistent context: the browser wrote its profile into the directory the fixture created empty.
   expect(readdirSync(profileDir).length).toBeGreaterThan(0);

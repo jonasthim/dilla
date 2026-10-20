@@ -47,3 +47,11 @@ describe('Appearance', () => {
     await waitFor(() => expect(within(theme()).getByRole('radio', { name: 'system' })).toHaveAttribute('aria-checked', 'true'));
   });
 });
+
+// I1: guard, green at start: the theme is already one settings row (the grammar was adopted in web3.8).
+it('is one settings row', async () => {
+  const { ready } = setup('light');
+  await ready;
+  const view = render(<CoreProvider client={new FakeClient()}><Appearance /></CoreProvider>);
+  expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(1);
+});

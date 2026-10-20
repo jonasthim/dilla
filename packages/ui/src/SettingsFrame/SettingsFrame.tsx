@@ -12,6 +12,8 @@ export interface SettingsFrameProps {
   children: ReactNode;
   /** Default: modal, except inside a phone shell, where it is a non-modal page above the tab bar. A screen outside the shell passes `!phone`. */
   modal?: boolean;
+  /** The one sticky save footer of the section (R17, I5): a SettingsFooter. Rendered under the scrolling body, in the pane. */
+  footer?: ReactNode;
 }
 
 /**
@@ -20,10 +22,13 @@ export interface SettingsFrameProps {
  * closes. Its <h1> takes focus on every open. Escape, the native cancel and a click on the backdrop
  * call `onClose`; an Escape or a cancel that belongs to a dialog nested inside the frame (remove,
  * sign out, forget) is left to that dialog and never closes the frame (pre-flight ruling 1.2).
+ * The title and the section bar share one 48px height, so their hairlines are one line (I8); on a phone the title is not repeated
+ * (H5: it stays as the dialog's name and focus target, visually hidden). `footer` is the section's one sticky save bar.
  * On a phone (web3.7.1) it opens with `show()`: the tab bar beside it stays live, and Escape closes it through the key handler alone.
  */
-export function SettingsFrame({ open, title, closeLabel, onClose, nav, children, modal }: SettingsFrameProps) {
-  const modeless = !(modal ?? !usePhoneLayout());
+export function SettingsFrame({ open, title, closeLabel, onClose, nav, children, modal, footer }: SettingsFrameProps) {
+  const phone = usePhoneLayout();
+  const modeless = !(modal ?? !phone);
   const ref = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
@@ -59,7 +64,7 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
   // True when the event started in this frame and not inside a dialog nested in it.
   const ownEvent = (target: EventTarget) => target instanceof Element && target.closest('dialog') === ref.current;
   return (
-    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal={modeless ? undefined : 'true'} data-modeless={modeless || undefined}
+    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal={modeless ? undefined : 'true'} data-modeless={modeless || undefined} data-layout={phone ? 'phone' : undefined}
       onCancel={e => { if (!ownEvent(e.target)) return; e.preventDefault(); onClose(); }}
       onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
@@ -73,6 +78,7 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
           <div className="d-settings-frame__pane">
             <div className="d-settings-frame__bar"><Button variant="ghost" keyHint="esc" onClick={onClose}>{closeLabel}</Button></div>
             <div className="d-settings-frame__body">{children}</div>
+            {footer ? <div className="d-settings-frame__footer">{footer}</div> : null}
           </div>
         </div>
       ) : null}

@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
+import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { memberGroups, memberName, menuFor, type MenuAction } from './members-model.ts';
 import { BanFlow, KickFlow, type ModTarget } from './Moderation.tsx';
@@ -20,6 +21,7 @@ export interface MemberPaneProps {
 
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const { communityId, selfId } = props;
+  const phone = usePhoneLayout();
   const communities = useSlice('communities');
   const members = useSlice(`members:${communityId}`);
   const presence = useSlice(`presence:${communityId}`);
@@ -73,7 +75,8 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   };
   const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId, presence ?? undefined).map(g => ({
     id: g.id,
-    title: t('members.group', { name: g.id === 'offline' ? t('members.groupOffline') : g.role?.name ?? t('members.groupMembers'), count: g.members.length }),
+    kind: g.role !== null ? 'role' as const : g.id === 'offline' ? 'offline' as const : 'online' as const,
+    title: g.role?.name ?? t(g.id === 'offline' ? 'layout.members.offline' : 'layout.members.online'),
     color: g.role?.color ?? null,
     members: g.members.map(row => {
       const summary = byId.get(row.userId);
@@ -100,8 +103,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     <div ref={region} tabIndex={-1} onFocusCapture={event => {
       if (event.target instanceof HTMLElement && event.target.dataset.focusKey?.startsWith('member:')) focusedRow.current = event.target;
     }}>
-      {/* Final fix M5: the shell's aside carries the name "members of {server}"; the list repeats no region of its own. */}
-      <MemberList groups={groups} loading={members === undefined || presence === undefined || presence === null}
+      {/* The shell's aside carries the name "members of {server}"; the list's own 48 bar (S3) is the word "members", on the header's hairline.
+          A phone's sheet already has its PhoneHeader, so it draws no second bar. */}
+      <MemberList label={phone ? undefined : t('members.toggle')} groups={groups} loading={members === undefined || presence === undefined || presence === null}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />
       <KickFlow open={kickOpen} communityId={communityId} serverName={serverName} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />

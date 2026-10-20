@@ -21,7 +21,7 @@ export function captureViewPlace(): ViewPlace {
   else if (active?.matches('.d-app-shell__main .d-composer textarea')) focus = 'composer';
   else if (active?.matches('.dw-thread .d-message-log')) focus = 'thread-log';
   else if (active?.matches('.d-app-shell__main .d-message-log')) focus = 'log';
-  else if (active?.matches('.dw-search [role="combobox"]')) focus = 'search';
+  else if (active?.matches('.d-search-palette [role="combobox"]')) focus = 'search';
   return { main: scrollPlace('.d-app-shell__main .d-message-log'),
     thread: scrollPlace('.dw-thread .d-message-log'), focus };
 }
@@ -61,7 +61,7 @@ export function restoreViewPlace(view: ViewPlace, allowMissingAnchor = false): b
     'thread-composer': '.dw-thread .d-composer textarea',
     log: '.d-app-shell__main .d-message-log',
     'thread-log': '.dw-thread .d-message-log',
-    search: '.dw-search [role="combobox"]',
+    search: '.d-search-palette [role="combobox"]',
   };
   if (view.focus !== null) document.querySelector<HTMLElement>(focusSelector[view.focus])?.focus();
   return true;

@@ -77,6 +77,9 @@ type Snapshot struct {
 	Roles     []store.RoleRow // ordered by (position, id); @everyone sorts first
 	Held      map[id.ID]bool  // role ids this user was explicitly granted
 	Overwrite []store.OverwriteRow
+	// AFK is set when the snapshot's channel is its community's built-in AFK channel (R35): every
+	// member may view and connect to it, whatever the roles say.
+	AFK bool
 }
 
 // byPositionThenID is the one ordering of roles. LoadSnapshot, Resolve and the
@@ -133,7 +136,20 @@ func (s Snapshot) Resolve(userID id.ID) Bits {
 // overwrite the user's roles match, in ascending role position, then the user's
 // own overwrite. Community-scoped bits are restored afterwards, and a user who
 // cannot view the channel holds nothing in it.
+//
+// In the built-in AFK channel (s.AFK) every member also holds view_channel and connect (R35), even
+// one whose roles give no view at all; the owner and administrators keep PermAll. A snapshot is
+// only ever built for a member, so the grant reaches no one else.
 func (s Snapshot) ResolveChannel(userID id.ID) Bits {
+	bits := s.resolveChannel(userID)
+	if s.AFK && bits != PermAll {
+		return bits | PermViewChannel | PermConnect
+	}
+	return bits
+}
+
+// resolveChannel is ResolveChannel without the AFK grant.
+func (s Snapshot) resolveChannel(userID id.ID) Bits {
 	base := s.Resolve(userID)
 	if base == PermAll || base == 0 {
 		return base
@@ -220,8 +236,35 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 		if s.Overwrite, err = repo.ListOverwrites(ctx, *channelID); err != nil {
 			return Snapshot{}, err
 		}
+		afk, err := afkPointerOf(ctx, repo, communityID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		s.AFK = afk.ChannelID != nil && *afk.ChannelID == *channelID
 	}
 	return s, nil
+}
+
+// afkPointerKey carries one community's AFK pointer through a request that resolves many of its
+// channels (m-3): the channel listing reads it once instead of once per channel.
+type afkPointerKey struct{}
+
+type afkPointerCache struct {
+	cid id.ID
+	cfg store.CommunityAFK
+}
+
+// withAFKPointer is ctx carrying cfg as community cid's AFK pointer for afkPointerOf.
+func withAFKPointer(ctx context.Context, cid id.ID, cfg store.CommunityAFK) context.Context {
+	return context.WithValue(ctx, afkPointerKey{}, afkPointerCache{cid: cid, cfg: cfg})
+}
+
+// afkPointerOf is the pointer ctx carries for cid (withAFKPointer), else the stored one.
+func afkPointerOf(ctx context.Context, repo store.Repository, cid id.ID) (store.CommunityAFK, error) {
+	if c, ok := ctx.Value(afkPointerKey{}).(afkPointerCache); ok && c.cid == cid {
+		return c.cfg, nil
+	}
+	return repo.GetCommunityAFK(ctx, cid)
 }
 
 // Resolver is the request-scoped front end handlers use. It is the one place a

@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import {
-  CLASS, COPY, HEX32, RK_GROUP, TEST_TIMEOUT, WAIT, copy, expectHeading, expectShell, nextButton, onboardingFrame,
+  CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
   completeFactorStep, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
 } from './support/app';
 
@@ -43,7 +43,7 @@ test('a server invite, a name and a written-down key make an account that lands 
 
   // The server invite registered the account and joined its server: the person lands in it, with no
   // join dialog and no second paste (ruling 34).
-  await expect(page).toHaveURL(new RegExp(`^http://127\\.0\\.0\\.1:8463/c/${setup.community_id}(/[0-9a-f]{32})?$`), { timeout: WAIT });
+  await expect(page).toHaveURL(new RegExp(`^${escapeRegExp(PUBLIC_URL)}/c/${setup.community_id}(/[0-9a-f]{32})?$`), { timeout: WAIT });
   await expect(railItem(page, peer.communityName)).toBeVisible({ timeout: WAIT });
   await expect(page.getByRole('dialog')).toHaveCount(0);
 

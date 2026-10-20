@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef, type PointerEvent } from 'react';
 import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
-import { t, type StringKey } from '../../strings/index.ts';
+import { formatGutterTime, t, type StringKey } from '../../strings/index.ts';
 import { authorName, bodyParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
@@ -38,7 +38,12 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   /** Opens this message's thread (web3.7): the toolbar item and the summary chip. Absent where no thread can be opened (the thread pane's own rows). */
   onOpenThread?: (msgId: string) => void;
   /** True: a row of the thread pane. Its toolbar takes react, and edit and delete on own messages; reply, pin and thread stay in the channel. */
-  inThread?: boolean }
+  inThread?: boolean;
+  /** The row continues the author's run above it (R29): its head is hidden and its time stands in the gutter. */
+  grouped?: boolean;
+  /** Phone only (R30): whether this row's toolbar is shown, and the row's ask to show or hide it. Absent: the toolbar is always shown. */
+  revealed?: boolean;
+  onReveal?: (on: boolean) => void }
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -95,7 +100,10 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     onJump: reply.state === 'missing' ? undefined : () => emit({ kind: 'jump', msgId: reply.msgId }),
     onJumpPointerDown: (e: PointerEvent<HTMLButtonElement>) => p.onJumpPointerDown(e),
   };
-  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
+  // In the gutter the time stands alone: the day divider above the run names the day.
+  const time = messageTime(item.ts, p.now);
+  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
+    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal} deviceTag={item.web && !item.bot ? 'hover' : 'always'}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

@@ -24,6 +24,17 @@ describe('the phone layout of voice (360 px)', () => {
     expect(css).not.toMatch(/\.dw-voice-stage \.d-call-tile \{/);
   });
 
+  it('H7: on a phone the voice preview\'s join is 44 tall; the stage keeps its 18px gutter', () => {
+    expect(css).toMatch(/\[data-layout="phone"\] \.dw-voice-stage \.dw-voice-join \{[^}]*min-height:\s*2\.75rem/);
+    const stage = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../ui/src/CallStage/CallStage.css'), 'utf8');
+    expect(stage).toMatch(/\[data-layout="phone"\] \.d-call-stage \{[^}]*--d-stage-px:\s*1\.125rem/);
+  });
+
+  it('H1/H2: no footer rule is left for the phone\'s DM list, and no bare tab heading', () => {
+    expect(css).not.toMatch(/\.dw-phone-footer/);
+    expect(css).not.toMatch(/\.dw-phone-heading/);
+  });
+
   it('I5: no stage toolbar floats over the tiles: the controls are in normal flow', () => {
     expect(rule(phone, '.dw-voice-stage .d-call-stage__controls')).toMatch(/position:\s*static/);
     expect(rule(phone, '.dw-dm-call .d-call-stage__controls')).toMatch(/position:\s*static/);
@@ -50,12 +61,13 @@ describe('a focused tile control clears the pinned toolbar (WCAG 2.4.11)', () =>
 });
 
 describe('the one channel list (web3.8 item 12)', () => {
-  it('has no voice-section rules left, and the join and the "+" are 44 px targets on a phone', () => {
+  it('has no voice-section rules left, and the retired text join and the old "+" have none either (web3.9: both are icon buttons, 44 px by base.css)', () => {
     expect(css).not.toContain('dw-voice-section');
     expect(css).not.toContain('dw-new-channel');
-    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join, \[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
-    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.d-channel-list__join, \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
-    expect(rule(css, '[data-layout="phone"] .dw-channel-add')).toMatch(/min-width:\s*2\.75rem;\s*min-height:\s*2\.75rem/);
+    expect(css).not.toContain('dw-channel-add');
+    expect(css).not.toContain('d-channel-list__join');
+    expect(css).toMatch(/\[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
   });
 });
 
@@ -64,5 +76,34 @@ describe('a long chosen name never widens the page (product walk I2)', () => {
     expect(rule(css, '.dw-dm-picker__name')).toMatch(/min-width:\s*0/);
     expect(rule(css, '.dw-dm-picker__name')).toMatch(/overflow-wrap:\s*anywhere/);
     expect(rule(css, '.dw-dm-picker__row > .d-btn')).toMatch(/flex-shrink:\s*0/);
+  });
+});
+
+describe('web3.9 WEB-AUTH: the auth column edges (L2, L3)', () => {
+  it('L2: a ghost action inside the onboarding frame has no side padding, so its text sits on the column\'s x', () => {
+    expect(rule(css, '.d-onboarding-frame__body .d-btn[data-variant="ghost"]')).toMatch(/padding-inline:\s*0/);
+    expect(css).not.toMatch(/\.d-onboarding-frame \.d-btn\[data-variant="ghost"\]/);
+    expect(css).not.toMatch(/__footer[^{]*data-variant="ghost"/);
+  });
+
+  it('L3: the setup key\'s Copy is a 36px suffix attached to the field, on one line', () => {
+    const field = rule(css, '.dw-factor-key__field');
+    expect(field).toMatch(/flex-wrap:\s*nowrap/);
+    expect(field).toMatch(/gap:\s*0/);
+    expect(rule(css, '.dw-factor-key__field > .d-btn')).toMatch(/height:\s*2\.25rem/);
+    expect(rule(css, '.dw-factor-key__field > .d-btn')).toMatch(/border-radius:\s*0 var\(--r-md\) var\(--r-md\) 0/);
+    expect(rule(css, '.dw-factor-key__field .d-text-field__input')).toMatch(/height:\s*2\.25rem/);
+  });
+
+  it('L3: the one checkbox is 24px and sits on the column\'s x (no UA margin)', () => {
+    const box = rule(css, '.dw-factor-ack > input');
+    expect(box).toMatch(/width:\s*24px;\s*height:\s*24px/);
+    expect(box).toMatch(/margin:\s*0/);
+    expect(rule(css, '.dw-factor-ack')).toMatch(/gap:\s*0\.5rem/);
+  });
+
+  it('M4: on a phone Copy wraps under the setup key, which is set tighter so it shows whole', () => {
+    expect(css).toMatch(/@media \(max-width: 30rem\) \{\s*\.dw-factor-key__field \{ flex-wrap: wrap; \}/);
+    expect(css).toMatch(/\.dw-factor-key__field \.d-text-field__input \{[^}]*letter-spacing: -0\.04em/);
   });
 });

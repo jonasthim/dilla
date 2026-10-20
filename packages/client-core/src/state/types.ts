@@ -118,7 +118,9 @@ export interface TrustSummary { userId: string; name: string; shared: boolean; u
  */
 export interface SendBlock { code: TrustBlock; own: boolean }
 export type SendBlocksState = Record<string, SendBlock>;
-export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null }[];
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null;
+    /** J1: who wrote the hit and when (unix seconds), read from the stored row; absent when the row cannot be read. */
+    author?: string; ts?: number }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }
@@ -197,8 +199,15 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
-/** Silent AFK occupants in one community; null means the initial snapshot is still loading. */
-export interface AFKState { channelId: string | null; timeoutSeconds: number; occupants: { userId: string; deviceId: string }[] }
+/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: the sweep moved
+ *  this device and it has not joined yet. */
+export interface AFKState {
+  channelId: string | null; timeoutSeconds: number; pending: boolean;
+  /** web3.9 R-AFK4: rises with every landed read (one counter for the worker's life), so each read that says `pending`
+   *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
+   *  leave it out. */
+  seq?: number;
+}
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `afk:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'

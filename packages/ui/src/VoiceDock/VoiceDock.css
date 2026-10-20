@@ -1,12 +1,15 @@
-/* 0.5rem each side. In the app's 240 px desktop sidebar the dock has 221 px inside: four 40 px toggles with 2 px gaps,
-   the divider's 13 px and leave's 40 px take 219, so the five sit in one row. In the phone drawer (300 px, about 281
-   inside) the 44 px controls take 239. */
-.d-voice-dock { display: grid; gap: 0.5rem; padding: 0.5rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); min-width: 0; }
-.d-voice-dock__where { display: flex; align-items: center; gap: 0.5rem; margin: 0; min-width: 0; font-size: var(--text-sm); color: var(--fg); }
+/* R26, E1, E2: no card. A hairline top and the panel's 12px inset; the dock sits on the sidebar's own ground. Line 1 is the
+   status (a button when it opens Diagnostics), line 2 where, then camera, share and leave in one row of 32px icon buttons. */
+.d-voice-dock { display: grid; gap: 0.5rem; padding: 0.75rem; border-top: 1px solid var(--hairline); min-width: 0; }
+.d-voice-dock__status { display: grid; gap: 0.125rem; min-width: 0; }
+.d-voice-dock__line1 { display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 1.5rem; margin: 0; padding: 0; font: inherit; font-size: var(--text-sm); color: var(--fg); text-align: left; background: transparent; border: 0; border-radius: 0; }
+button.d-voice-dock__line1 { cursor: pointer; }
+button.d-voice-dock__line1:hover .d-voice-dock__text { text-decoration: underline; text-underline-offset: 0.2em; }
+.d-voice-dock__glyph { display: inline-flex; flex: none; }
 .d-voice-dock__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.d-voice-dock[data-phase="paused"] { border-color: var(--warn); }
+.d-voice-dock__where { margin: 0; padding-left: 1.375rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
 .d-voice-dock[data-phase="paused"] .d-voice-dock__glyph { color: var(--warn); }
-.d-voice-dock__meter { display: flex; }
-/* The toggles share the row's spare width; leave keeps its own size at the end, after the divider. */
-.d-voice-dock__controls .d-voice-toolbar__control { flex: 1 1 0; }
-.d-voice-dock__controls .d-voice-toolbar__control[data-control="leave"] { flex: none; }
+.d-voice-dock__controls { display: flex; align-items: center; gap: 0.25rem; min-width: 0; }
+/* Leave sits at the end of the row. */
+.d-voice-dock__controls .d-tooltip-anchor:last-child { margin-left: auto; }
+.d-voice-dock__leave:hover { color: var(--danger); }

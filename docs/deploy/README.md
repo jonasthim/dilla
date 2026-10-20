@@ -374,7 +374,10 @@ The `DILLA_WEB_DIST` test checks those exact bytes before either release binary 
 certificate issuance and a migration. It runs as the `dillad` user with only
 `CAP_NET_BIND_SERVICE`, keeps its state in `/var/lib/dillad` (mode 0700) and reads
 `/etc/dilla/dilla.toml`.
-`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service.
+`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service. It has `PartOf=dilla.service`, so
+stopping or restarting `dilla` stops or restarts the media sidecar with it; run `systemctl daemon-reload` after copying
+the unit by hand (`install.sh --upgrade` does). `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
+rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
@@ -822,6 +825,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.6 | 4 | 17 | A client now refuses a store newer than it knows; migration `00017_second_factor` |
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 | web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
+| web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
@@ -877,6 +881,23 @@ When you check that the served client files all load, skip one name: `dilla_core
 client chunk, is the name of the wasm module's import (`WebAssembly.Module.imports` lists only
 `./dilla_core_wasm_bg.js`), not a file. Nothing fetches it, and it is not on the server, so a 404 check for it is a false
 alarm.
+
+### Upgrading to web-3.9: the AFK channel
+
+web-3.9 adds no migration and no browser-store change. The first time the new `dillad` starts, it gives every server that
+has no built-in AFK channel one: a voice channel called "AFK", listen-only (everyone in it is muted), which a server
+manager can rename and move but not delete. The start logs one line, `afk backfill` with the number of servers it made a
+channel for, and a second start changes nothing. New servers get the channel when they are made.
+
+A server that chose its own AFK channel in web-3.8 keeps its inactive timeout. That channel stays where it is, with its
+name and permissions, and becomes an ordinary voice channel: it no longer moves people and is no longer silent. The
+server's AFK channel is the new built-in one, and there is no longer a picker for it (server settings → overview holds
+the inactive timeout only). A manager who wants the old channel gone deletes it like any other.
+
+Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treats it as the server's chosen AFK channel.
+
+Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
+channel's rules until it reloads.
 
 ## Capacity
 

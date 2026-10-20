@@ -84,10 +84,15 @@ export const structural = {
    * around rem text clips it the moment the browser's text size goes up.
    */
   layout: {
-    railW: '60px', sidebarW: '240px', membersW: '232px', threadW: '380px',
+    railW: '72px', railTile: '48px', slotW: '32px', sidebarW: '240px', membersW: '232px', threadW: '380px',
     topbarH: '2rem',          // 32px
     bottombarH: '1.625rem',   // 26px
     channelHeaderH: '3rem',   // 48px
+    barH: '3rem',             // 48px, the one height of every pane's top bar (UI-3 moves ChannelHeader to it)
+    rowH: '2rem',             // 32px, a list row; 2.75rem on a phone (base.css)
+    rowHSub: '2rem',          // 32px, a sub-row (a voice participant); 2.25rem on a phone
+    rowH2: '2.75rem',         // 44px, a two-line row; 3.25rem on a phone
+    listGap: '0.125rem',      // 2px between list rows; 0 on a phone
   },
   /**
    * The focus ring, as an `outline` shorthand: `outline: var(--focus-ring)`

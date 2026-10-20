@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { ChannelSummary } from '@dilla/client-core';
-import { EmptyState, Icon, Pill } from '@dilla/ui';
+import { EmptyState, Icon, PhoneHeader, Pill } from '@dilla/ui';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { t } from '../strings/index.ts';
 import { requestThread } from '../thread-request.ts';
@@ -40,14 +40,15 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
 
   if (listed.length === 0 && elsewhere.length === 0) {
     return (
-      <div className="dw-phone-pane">
-        <EmptyState title={t('activity.title')} body={t('activity.empty')} />
+      <div className="dw-phone-pane dw-phone-pane--empty">
+        <PhoneHeader title={t('activity.title')} />
+        <div className="dw-phone-pane__frame"><EmptyState title={t('activity.emptyTitle')} body={t('activity.since')} /></div>
       </div>
     );
   }
   return (
     <div className="dw-phone-pane">
-      <h1 className="dw-phone-heading">{t('activity.title')}</h1>
+      <PhoneHeader title={t('activity.title')} />
       {listed.length === 0 ? null : (
         <ul className="dw-phone-list" aria-label={t('activity.title')}>
           {listed.map(n => {

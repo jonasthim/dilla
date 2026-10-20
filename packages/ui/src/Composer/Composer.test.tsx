@@ -429,3 +429,12 @@ describe('Composer', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+describe('the composer label and band (G1, G3)', () => {
+  it('hides the visible label in both states and keeps the textbox name', () => {
+    const { textarea } = setup();
+    const label = textarea.closest('form')?.querySelector('label');
+    expect(label).toHaveClass('d-sr-only');
+    expect(screen.getByRole('textbox', { name: 'message #general' })).toBe(textarea);
+  });
+});

@@ -3,15 +3,15 @@
 // `data-voice-state`, `data-call-phase`, `data-ring`, `data-media-state`, the voice snapshot, a media counter — never
 // for a duration (lesson c), and none asserts on how late LiveKit shows a joiner (media card 23).
 import { randomInt } from 'node:crypto';
-import { expect, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { CallState, Ring, TrustSummary, VoiceState } from '../../../packages/client-core/src/state/types';
 import {
   WebDriver, testHostUrl, testkitEnv, type PeerActor, type PeerCallCheck, type PeerCallJoined, type PeerCallMembers,
   type PeerCallRead, type PeerCallStarted, type PeerSetup,
 } from '../../web/support/driver';
-import {
-  channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, expectShell, instanceInvite, messageRow, namedRow,
-  openSettings, railItem, railNav, sendText, sidebarTab, signUp, type Account, type SettingsSection,
+import { addServerVia,
+  channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, homeTile, expectShell, instanceInvite, messageRow, namedRow,
+  openSettings, railItem, railNav, sendText, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
 import { WAIT, mediaWorkers, type Person } from './peer-browser';
 
@@ -136,7 +136,7 @@ export async function instanceName(): Promise<string> {
 export async function onboard(person: Person, peer: VoicePeer, display: string): Promise<Account> {
   const account = await signUp(person.page, instanceInvite(), await instanceName(), display, process.env.DILLA_TESTKIT_CONTROL);
   const page = person.page;
-  await railNav(page).getByRole('button', { name: copy('shell.rail.join'), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = page.getByRole('dialog', { name: copy('join.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByLabel(copy('join.invite'), { exact: true }).fill(peer.setupDone.invite_code);
@@ -163,10 +163,10 @@ export async function introduce(peer: VoicePeer, people: readonly Person[], brow
   }
 }
 
-/** Opens a DM with `name` from the DMs tab's `message someone` picker (a member of the open server); answers its id. */
+/** Opens a DM with `name` from the `@` tile's `message someone` picker (a member of the open server); answers its id. */
 export async function openDmWith(page: Page, community: string, name: string): Promise<string> {
   await railItem(page, community).click();
-  await sidebarTab(page, 'dms').click();
+  await homeTile(page).click();
   await page.getByRole('button', { name: copy('shell.dms.new'), exact: true }).click();
   const picker = page.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true });
   await picker.getByRole('listitem').filter({ hasText: name }).getByRole('button', { name: copy('shell.dms.open'), exact: true }).click();
@@ -227,20 +227,20 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
 }
 
 /**
- * Opens the DM `dmId` from the DMs tab, by its row's name (the other person's), once the page lists it, and waits until
+ * Opens the DM `dmId` from the `@` tile's list, by its row's name (the other person's), once the page lists it, and waits until
  * this device has joined the DM's group (the composer is enabled only while the group is `active`). A DM is listed as
  * soon as its Welcome is seen, while its group is still `none`, and the worker drops a typing frame of a group that is
  * not active (controller.ts incomingTypingFrame): a one-shot signal sent before the join is lost for good.
  */
 export async function openDm(page: Page, dmId: string, name: string): Promise<void> {
-  await sidebarTab(page, 'dms').click();
+  await homeTile(page).click();
   await namedRow(dmsNav(page), name).click();
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
 }
-/** The DM call strip's `call` (no live call) or `join call` button. */
+/** The DM header's `call` (no live call) or `join call` icon button (web3.9 N1). */
 export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locator {
-  return page.locator('.dw-call-strip').getByRole('button', { name: copy(key), exact: true });
+  return page.locator('.d-channel-header, .d-phone-header').getByRole('button', { name: copy(key), exact: true });
 }
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }
@@ -307,14 +307,30 @@ export async function openText(page: Page, community: string, channel: string): 
   await expect(page.getByRole('textbox', { name: copy('shell.composer.label', { channel }), exact: true })).toBeVisible({ timeout: WAIT });
 }
 
-/** Opens a voice channel's view from the sidebar. */
+/** Opens a voice channel's view from the sidebar. On a desktop a click on the row also joins (web3.9, R24), so a spec that
+ *  needs the stage before the join reaches it by the route, not through this helper. */
 export async function openVoice(page: Page, community: string, name: string): Promise<void> {
   await railItem(page, community).click();
   await voiceRow(page, name).click();
   await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
 }
 
-/** The voice dock (flow 06), present while this device is in voice. */
+/** Opens a voice channel's stage by its route and does not join (web3.9, R-L1): a click on the row would join on a desktop. The
+ *  community comes from the rail tile, the channel from the native peer's setup. */
+export async function openVoiceOnly(page: Page, community: string, peer: VoicePeer): Promise<void> {
+  const voiceId = (peer.setupDone as { voice_channel_id?: string | null }).voice_channel_id;
+  if (typeof voiceId !== 'string') throw new Error('the peer set up no voice channel');
+  await railItem(page, community).click();
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}/, { timeout: WAIT });
+  const communityId = new URL(page.url()).pathname.split('/')[2] ?? '';
+  await page.evaluate(([c, v]) => {
+    window.history.pushState(null, '', `/c/${c}/${v}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, [communityId, voiceId]);
+  await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
+}
+
+/** The voice dock (flow 06), present while this device is in voice: "voice connected", channel · server and three icon buttons; no meter or level text (web3.9 R26). */
 export function dock(page: Page): Locator { return page.locator('.dw-voice-dock'); }
 /** The call stage or voice view of the open route. */
 export function stage(page: Page): Locator { return page.locator('.dw-voice-stage'); }
@@ -324,8 +340,12 @@ export function phaseOf(page: Page): Locator { return page.locator('[data-call-p
 /** `joinVoice`: opens the voice channel, presses `join voice`, and waits until the call phase is `in` and the page's
  *  session is connected (the dock's `data-phase`; leave and the controls act on a connected session). */
 export async function joinVoice(page: Page, community: string, name: string): Promise<void> {
-  await openVoice(page, community, name);
-  await stage(page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+  await railItem(page, community).click();
+  // The row's trailing join icon (web3.9) joins without the row's own click; it shows while the row is hovered or focused.
+  const row = voiceRow(page, name);
+  await row.hover();
+  await row.locator('xpath=ancestor::li[1]').getByRole('button', { name: copy('voice.join'), exact: true }).click();
+  await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
   await connected(page);
 }
 /** The call phase is `in` and the dock shows a connected session. */
@@ -507,4 +527,198 @@ export async function framesPass(page: Page, from: number, frames: number): Prom
   await expect.poll(async () => { now = await sentCount(page); return now - from; }, { ...POLL, message: `${frames} own frames encrypted` })
     .toBeGreaterThanOrEqual(frames);
   return now;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// What a page sends as audio (moved here from join-muted.spec.ts by web3.9 E-AFK, which pins the AFK call's silence with it).
+
+/** The page-side record of `watchAudio`. `captured` counts the microphone captures (a getUserMedia stream with an audio
+ *  track) since the watch was installed or last reset. */
+interface Watch { pcs: RTCPeerConnection[]; handed: { at: string; enabled: boolean }[]; mics: WeakSet<MediaStreamTrack>; opened: number; captured: number }
+
+/**
+ * From here on: every peer connection the page makes, and every audio track handed to one (addTransceiver, addTrack, or a
+ * sender's replaceTrack, which LiveKit uses for the noise processor's output and a capture restart), with whether the
+ * track was enabled at the moment it was handed over; `opened`, how often a microphone track the page captured actually
+ * turned enabled (LiveKit enables the track it publishes; the session must not let it while muted); and `captured`, the
+ * microphone captures. A second call on the same page installs nothing again: it empties `handed` and zeroes `opened` and
+ * `captured`, so what follows is measured alone (the peer connections and captured tracks seen so far stay watched).
+ */
+export async function watchAudio(person: { page: Page }): Promise<void> {
+  await person.page.evaluate(() => {
+    const w = window as unknown as { __watch?: Watch };
+    if (w.__watch !== undefined) {
+      w.__watch.handed = [];
+      w.__watch.opened = 0;
+      w.__watch.captured = 0;
+      return;
+    }
+    const rec: Watch = { pcs: [], handed: [], mics: new WeakSet(), opened: 0, captured: 0 };
+    w.__watch = rec;
+    const enabled = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, 'enabled')!;
+    Object.defineProperty(MediaStreamTrack.prototype, 'enabled', {
+      ...enabled,
+      set(this: MediaStreamTrack, v: boolean) {
+        const was = enabled.get!.call(this) as boolean;
+        enabled.set!.call(this, v);
+        if (!was && (enabled.get!.call(this) as boolean) && rec.mics.has(this)) rec.opened += 1;
+      },
+    });
+    const md = navigator.mediaDevices;
+    const capture = md.getUserMedia.bind(md);
+    md.getUserMedia = async (c?: MediaStreamConstraints) => {
+      const stream = await capture(c);
+      if (stream.getAudioTracks().length > 0) rec.captured += 1;
+      for (const t of stream.getAudioTracks()) rec.mics.add(t);
+      return stream;
+    };
+    const hand = (at: string, track: MediaStreamTrack | null | undefined) => {
+      if (track?.kind === 'audio') rec.handed.push({ at, enabled: track.enabled });
+    };
+    const Native = window.RTCPeerConnection;
+    const proto = Native.prototype;
+    const addTransceiver = proto.addTransceiver;
+    proto.addTransceiver = function (this: RTCPeerConnection, trackOrKind: MediaStreamTrack | string, init?: RTCRtpTransceiverInit) {
+      if (typeof trackOrKind !== 'string') hand('addTransceiver', trackOrKind);
+      return addTransceiver.call(this, trackOrKind as MediaStreamTrack, init);
+    } as typeof proto.addTransceiver;
+    const addTrack = proto.addTrack;
+    proto.addTrack = function (this: RTCPeerConnection, track: MediaStreamTrack, ...streams: MediaStream[]) {
+      hand('addTrack', track);
+      return addTrack.call(this, track, ...streams);
+    };
+    const replaceTrack = RTCRtpSender.prototype.replaceTrack;
+    RTCRtpSender.prototype.replaceTrack = function (this: RTCRtpSender, track: MediaStreamTrack | null) {
+      hand('replaceTrack', track);
+      return replaceTrack.call(this, track);
+    };
+    class Watched extends Native {
+      constructor(config?: RTCConfiguration) { super(config); rec.pcs.push(this); }
+    }
+    window.RTCPeerConnection = Watched as typeof RTCPeerConnection;
+  });
+}
+
+/** What the page's open peer connections send as audio now: each audio sender's track ('on', 'off', or 'none'), the
+ *  outbound audio packets and bytes summed over every connection, the media-source audio energy, or null where there is
+ *  none (Firefox has no media-source `totalAudioEnergy`; a listen-only call has no audio source at all), how many watched
+ *  connections are `connected`, and how many outbound audio streams their stats report. */
+export async function audioOut(person: { page: Page }): Promise<{
+  senders: string[]; packets: number; bytes: number; energy: number | null; connected: number; outbound: number;
+}> {
+  return person.page.evaluate(async () => {
+    const w = window as unknown as { __watch: Watch };
+    const senders: string[] = [];
+    let packets = 0;
+    let bytes = 0;
+    let energy: number | null = null;
+    let connected = 0;
+    let outbound = 0;
+    for (const pc of w.__watch.pcs) {
+      if (pc.connectionState === 'closed') continue;
+      if (pc.connectionState === 'connected') connected += 1;
+      for (const t of pc.getTransceivers()) {
+        if (t.receiver.track.kind !== 'audio' || t.currentDirection === 'recvonly' || t.direction === 'recvonly' || t.currentDirection === 'stopped') continue;
+        const track = t.sender.track;
+        senders.push(track === null ? 'none' : track.enabled && track.readyState === 'live' ? 'on' : 'off');
+      }
+      const stats = await pc.getStats();
+      stats.forEach((r: { type: string; kind?: string; packetsSent?: number; bytesSent?: number; totalAudioEnergy?: number }) => {
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') { outbound += 1; packets += r.packetsSent ?? 0; bytes += r.bytesSent ?? 0; }
+        if (r.type === 'media-source' && r.kind === 'audio' && typeof r.totalAudioEnergy === 'number') energy = (energy ?? 0) + r.totalAudioEnergy;
+      });
+    }
+    return { senders, packets, bytes, energy, connected, outbound };
+  });
+}
+
+/**
+ * A muted microphone still lets Opus send its discontinuous-transmission frames: on chromium about ten a second of some
+ * twenty bytes each (a disabled track is silence, and silence is what DTX sends); the encoder's first second may send a
+ * little more. A live one with the fake microphone's 1 kHz tone sends about 9 KB a second, with audio energy. The proof
+ * that nothing went out is: every hand-off disabled, no captured track ever enabled (`opened`), no audio energy at the
+ * sender where the browser measures it, and only DTX-sized frames after a settle period.
+ */
+const DTX_BYTES_PER_PACKET = 40;
+const SETTLE_MS = 1_000;
+/** The unmuted control: a live tone sends far more than DTX in half a second. */
+const LIVE_BYTES_PER_HALF_S = 1_000;
+
+/** Every audio track she handed over was disabled when it was handed, no captured microphone track ever turned enabled,
+ *  each audio sender's track is disabled now, no audio energy has reached a sender, and once settled only DTX frames go
+ *  out, over `holdMs` (1 s unless given).
+ *  `listenOnly` (web3.9, the AFK call, R3): the call never asks for the microphone. The check needs a watched connection
+ *  that is `connected` (so a call the watch never saw fails, never passes vacuously); since the watch was (re)set no
+ *  microphone was captured and no audio track was handed over at all; any audio sender carries no live track; and no
+ *  connection reports an outbound audio stream, before or after the hold. */
+export async function sendsNoAudio(person: { page: Page }, o: { listenOnly?: boolean; holdMs?: number } = {}): Promise<void> {
+  if (o.listenOnly === true) {
+    await expect.poll(async () => (await audioOut(person)).connected, { ...POLL, message: 'a watched peer connection of the call is connected' })
+      .toBeGreaterThan(0);
+  }
+  const senderShape = o.listenOnly === true ? /^((off|none)(,(off|none))*)?$/ : /^(off|none)(,(off|none))*$/;
+  await expect.poll(async () => (await audioOut(person)).senders.join(','), { ...POLL, message: 'her audio senders' }).toMatch(senderShape);
+  const watch = await person.page.evaluate(() => {
+    const w = (window as unknown as { __watch: Watch }).__watch;
+    return { handed: w.handed, opened: w.opened, captured: w.captured };
+  });
+  if (o.listenOnly === true) {
+    expect(watch.captured, 'microphone captures in a listen-only call').toBe(0);
+    expect(watch.handed, 'audio tracks handed to a peer connection in a listen-only call').toEqual([]);
+  } else {
+    expect(watch.handed.length, 'an audio track was handed to a peer connection').toBeGreaterThan(0);
+    expect(watch.handed.filter((h) => h.enabled), 'audio tracks handed over enabled').toEqual([]);
+  }
+  expect(watch.opened, 'times a microphone track turned enabled').toBe(0);
+  const first = await audioOut(person);
+  if (o.listenOnly === true) {
+    // A listen-only call has no audio source, so there is no energy to read in any browser: the proof is the connected
+    // watch, no capture, no hand-off and no outbound audio stream.
+    expect(first.outbound, 'outbound audio streams in a listen-only call').toBe(0);
+    test.info().annotations.push({ type: 'audio-energy', description: 'listen-only: no audio source; capture, hand-offs and outbound-rtp are the proof' });
+  } else if (first.energy === null) {
+    // No media-source energy in this browser (Firefox): the proof rests on the disabled hand-offs and `opened == 0`
+    // above, and the frame size below. Said in the report, never checked as a vacuous 0.
+    test.info().annotations.push({ type: 'audio-energy', description: 'not reported by this browser; hand-offs, opened and frame size are the proof' });
+  } else {
+    expect(first.energy, 'audio energy that ever reached her sender').toBe(0);
+  }
+  await person.page.waitForTimeout(SETTLE_MS);
+  const before = await audioOut(person);
+  await person.page.waitForTimeout(o.holdMs ?? 1_000);
+  const after = await audioOut(person);
+  if (after.energy !== null) expect(after.energy, 'audio energy while muted').toBe(0);
+  const bytes = after.bytes - before.bytes;
+  const packets = after.packets - before.packets;
+  if (o.listenOnly === true) {
+    expect(after.connected, 'the watched call is still connected after the hold').toBeGreaterThan(0);
+    expect(after.outbound, 'outbound audio streams in a listen-only call').toBe(0);
+    expect(packets, 'audio packets sent in a listen-only call').toBe(0);
+  }
+  expect(packets === 0 ? 0 : bytes / packets, 'bytes per audio packet while muted, once settled (DTX frames only)').toBeLessThanOrEqual(DTX_BYTES_PER_PACKET);
+}
+
+/** The microphone is back (web3.9 E-AFK, after leaving a listen-only call): since the watch was (re)set it was captured, an
+ *  enabled audio track was handed to a peer connection, and an audio sender carries it live. Byte-free, so it holds with
+ *  noise suppression on (which silences the fake tone). */
+export async function micLive(person: { page: Page }): Promise<void> {
+  await expect.poll(async () => {
+    const w = await person.page.evaluate(() => {
+      const r = (window as unknown as { __watch: Watch }).__watch;
+      return { captured: r.captured, enabled: r.handed.filter((h) => h.enabled).length };
+    });
+    const out = await audioOut(person);
+    return w.captured >= 1 && w.enabled >= 1 && out.senders.includes('on');
+  }, { ...POLL, message: 'the microphone is captured, handed over enabled and sent' }).toBe(true);
+}
+
+/** The control for the measure above: once she unmutes, the tone goes out (live-sized bytes, and energy where reported). */
+export async function sendsAudio(person: { page: Page }): Promise<void> {
+  await expect.poll(async () => {
+    const a = await audioOut(person);
+    await person.page.waitForTimeout(500);
+    const b = await audioOut(person);
+    const louder = a.energy === null || b.energy === null || b.energy > a.energy;
+    return louder && b.bytes - a.bytes > LIVE_BYTES_PER_HALF_S;
+  }, { ...POLL, message: 'her unmuted microphone sends the tone' }).toBe(true);
 }

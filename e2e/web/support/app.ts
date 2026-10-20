@@ -17,9 +17,12 @@ import { en } from '../../../packages/web/src/strings/en';
 import { t } from '../../../packages/web/src/strings/index';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-export const HOST = '127.0.0.1:8463';
+/** The suite's shared host. A lane that shares its machine with others moves it with DILLA_E2E_PORT and DILLA_E2E_PORT2 (playwright.web.config.ts reads the same two). */
+export const HOST_PORT = Number(process.env.DILLA_E2E_PORT ?? 8463);
+export const CONTROL_PORT = Number(process.env.DILLA_E2E_PORT2 ?? 8464);
+export const HOST = `127.0.0.1:${String(HOST_PORT)}`;
 export const PUBLIC_URL = `http://${HOST}`;
-export const CONTROL_URL = 'http://127.0.0.1:8464';
+export const CONTROL_URL = `http://127.0.0.1:${String(CONTROL_PORT)}`;
 /** One wait for one state. The CI runner has 4 vCPUs and is 3-5x slower than the dev machine. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 export const TEST_TIMEOUT = process.env.CI === 'true' ? 480_000 : 180_000;
@@ -62,7 +65,6 @@ export const COPY = {
   finish: 'onboarding.done.next',
   skipLink: 'shell.skip',
   railLabel: 'shell.rail.label',
-  railJoin: 'shell.rail.join',
   joinTitle: 'join.title',
   joinInvite: 'join.invite',
   joinSubmit: 'join.submit',
@@ -337,8 +339,11 @@ function newGuard(projectName: string): Guard {
         // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
         const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
+        // web3.9 V-2, extended to the web suite: on a reload in a call, Firefox closes the signal socket before the
+        // session's pagehide leave runs, and LiveKit logs this one line; the leave is then seen through the socket close.
         const firefoxBrowserAbort = projectName.startsWith('firefox') &&
-          (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()));
+          (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()) ||
+            m.text() === 'cannot send signal request before connected, type: leave JSHandle@object');
         if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
           consoleErrors.push(m.text());
         }
@@ -507,9 +512,15 @@ export async function expectShell(page: Page): Promise<void> {
   await expect(onboardingFrame(page)).toHaveCount(0);
 }
 
+/** The rail's one "+" tile opens the add dialog (web3.9); its choice opens the existing join or create flow. */
+export async function addServerVia(page: Page, choice: 'join' | 'create'): Promise<void> {
+  await railNav(page).getByRole('button', { name: copy('layout.rail.add'), exact: true }).click();
+  await page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy(choice === 'join' ? 'layout.add.join' : 'layout.add.create'), exact: true }).click();
+}
+
 export async function joinCommunity(page: Page, peer: Peer, setup: PeerSetup): Promise<void> {
-  const rail = railNav(page);
-  await rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = page.getByRole('dialog', { name: copy(COPY.joinTitle), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByLabel(copy(COPY.joinInvite), { exact: true }).fill(setup.invite_code);
@@ -663,7 +674,7 @@ export async function signIn(page: Page, account: Account, instanceName: string,
   await finishWithKey(page, account, instanceName, typed);
 }
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The desktop user panel (the bottom left, with mute and deafen). */
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
@@ -763,12 +774,11 @@ export function readManifest(): { v: number; files: ManifestFile[] } {
   return JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages', 'web', 'dist', 'dilla-manifest.json'), 'utf8')) as { v: number; files: ManifestFile[] };
 }
 
-// web-2a (task 22): the sidebar tabs, DMs, notifications.
-export function sidebarTab(page: Page, tab: 'channels' | 'dms'): Locator {
-  const label = copy(tab === 'channels' ? 'shell.tabs.channels' : 'shell.tabs.dms');
-  // A tab's name is its label, followed by its Pill's hidden count when it has one.
-  return page.getByRole('tablist', { name: copy('shell.tabs.label'), exact: true })
-    .getByRole('tab', { name: new RegExp(`^${escapeRegExp(label)}`) });
+// web3.9: the `@` Home tile, the rail's first item, is the way to the direct messages (there are no sidebar tabs).
+/** The `@` tile. Its name is `home.tile`, followed by ", unread N, mentions M" while it carries a count; `aria-current="page"`
+ *  while the DM list shows, and `data-unread` / `data-mentions` hold its counts. */
+export function homeTile(page: Page): Locator {
+  return railNav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(copy('home.tile'))}(,|$)`) });
 }
 export function dmsNav(page: Page): Locator { return page.getByRole('navigation', { name: copy('shell.dms.label'), exact: true }); }
 /** The one message log on screen (a DM's log is named by the DM's name, which the spec does not fix). */

@@ -480,6 +480,7 @@ Description=dilla media SFU
 Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
 After=network-online.target
 Wants=network-online.target
+PartOf=dilla.service
 
 [Service]
 Type=simple

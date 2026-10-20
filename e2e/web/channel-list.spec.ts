@@ -5,7 +5,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, copy, expectAccessible, expectComposerReady, newChannelButton, openSettings, railNav,
   signUp, test, type SettingsSection,
 } from './support/app';
@@ -63,7 +63,7 @@ test('voice channels stand in order in the one channel list, with their people n
 
   // 1. Ada creates the server, then text alpha, voice lounge and text beta, in that order.
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -95,8 +95,8 @@ test('voice channels stand in order in the one channel list, with their people n
 
   await test.step('Ada joins lounge: she is nested under its row, speaking, with her glyphs on her name’s line', async () => {
     await noiseOff(page);
+    // web3.9 (R24): a click on a voice row opens it and joins.
     await lounge.click();
-    await page.getByRole('main').getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(page.locator('[data-call-phase]').first()).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     const item = lounge.locator('xpath=ancestor::li[1]');
     const person = item.locator('.d-voice-row__person').filter({ hasText: OWNER });
@@ -107,8 +107,13 @@ test('voice channels stand in order in the one channel list, with their people n
     if (row === null || name === null) throw new Error('lounge or its person has no box');
     expect(name.x, 'the person is indented under the row').toBeGreaterThan(row.x);
     expect(name.y, 'the person is below the row').toBeGreaterThan(row.y);
+    // web3.9 (WEB-DOCK, FA3): speaking is the person's ring, not a dot or a visible state; its word stays for assistive technology
+    // only, in the row's states span. A mute or deafen glyph is a `.d-voice-row__state` (Ada is neither here), checked on the name's line.
+    await expect(person.locator('.d-state-dot')).toHaveCount(0);
+    const speakingWord = person.locator('.d-voice-row__states .d-sr-only').filter({ hasText: copy('voice.state.speaking') });
+    await expect(speakingWord).toHaveCount(1);
+    await expect(speakingWord).toBeAttached();
     const glyphs = person.locator('.d-voice-row__state');
-    await expect(glyphs.first()).toBeVisible({ timeout: WAIT });
     for (const box of await glyphs.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { y: r.y, h: r.height }; }))) {
       expect(Math.abs((box.y + box.h / 2) - (name.y + name.height / 2)), 'a glyph shares the name’s line').toBeLessThan(name.height);
     }

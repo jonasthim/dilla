@@ -8,10 +8,9 @@ import { MessageLog } from '../MessageLog/MessageLog.tsx';
 import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
-import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
 import { CallControls } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
@@ -65,7 +64,7 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave') }}
-        meter={<AudioMeter level={6} label={t('settings.voice.level')} />} onMute={noop} onDeafen={noop} onLeave={noop} />
+        onMute={noop} onDeafen={noop} onLeave={noop} />
     </div>
   );
 }
@@ -84,11 +83,9 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
     <div style={{ ['--d-shell-h' as string]: 'calc(100dvh - 32px)' }}>
       <AppShell skipLabel={t('shell.skip')} ring={p.ring}
         rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
-          joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
+          addLabel={t('layout.rail.add')} onAdd={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
           <ChannelList title="Midgard" label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
-            tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop}
-              tabs={[{ id: 'channels', label: t('shell.tabs.channels'), count: 0 }, { id: 'dms', label: t('shell.tabs.dms'), count: 0 }]} />}
             channels={tab === 'dms' ? [{ id: 'bob', name: 'bob', kind: 'dm' as const, readable: false }]
               : [{ id: 'general', name: 'general', kind: 'text' as const, readable: false },
                 { id: 'harbour', name: 'harbour', kind: 'voice' as const, readable: false },
@@ -167,8 +164,8 @@ export const DmCallRinging: Story = {
     </div><div className="dw-conversation">{dmLog}</div></>} />,
 };
 export const DmIncomingRing: Story = {
-  render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
-    main={<><div className="dw-call-strip"><Button className="dw-call-strip__start">{t('call.start')}</Button></div>{dmLog}</>} />,
+  render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" actions={<IconButton icon="phone" label={t('call.start')} />} />} composer={composer}
+    main={dmLog} />,
 };
 
 // WB a11y m8: the rest of flow 06's states as screens.

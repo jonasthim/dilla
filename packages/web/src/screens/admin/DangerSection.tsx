@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button, ConfirmDialog, Select, TextField } from '@dilla/ui';
+import { Button, ConfirmDialog, Select, SettingsRow, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
@@ -72,15 +72,17 @@ export function DangerSection({ communityId, serverName, announce, owner, onGone
         <>
           <p>{t('admin.leave.owner', { server: serverName })}</p>
           {members !== undefined && others.length === 0 ? <p>{t('admin.transfer.none')}</p> : null}
-          <div className="dw-settings-actions">
-            {others.length > 0 ? <Button onClick={() => choose('transfer')}>{t('admin.nav.transfer')}</Button> : null}
+          {others.length > 0 ? <SettingsRow id={`${base}-transfer-row`} label={t('admin.nav.transfer')}>
+            <Button onClick={() => choose('transfer')}>{t('admin.nav.transfer')}</Button>
+          </SettingsRow> : null}
+          <SettingsRow id={`${base}-delete-row`} label={t('admin.nav.delete')}>
             <Button variant="danger" onClick={() => choose('delete')}>{t('admin.nav.delete')}</Button>
-          </div>
+          </SettingsRow>
         </>
       ) : (
-        <div className="dw-settings-actions">
+        <SettingsRow id={`${base}-leave-row`} label={t('admin.nav.leave')}>
           <Button variant="danger" onClick={() => choose('leave')}>{t('admin.leave.open')}</Button>
-        </div>
+        </SettingsRow>
       )}
       <ConfirmDialog open={dialog === 'leave'} title={t('admin.leave.title', { server: serverName })} body={t('admin.leave.body', { server: serverName })}
         confirmLabel={t('admin.leave.confirm')} busyLabel={t('admin.leave.busy')} cancelLabel={t('admin.cancel')}

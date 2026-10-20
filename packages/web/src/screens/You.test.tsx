@@ -27,17 +27,38 @@ function setup(onOpenSettings = vi.fn()) {
 }
 
 describe('You', () => {
-  it('offers a keyboard accessible account status choice', async () => {
+  it('offers the account status as a 44 row that opens its four choices (H6), not a native select', async () => {
     const { fake, user, view } = setup();
-    const picker = screen.getByRole('combobox', { name: 'Your status' });
-    expect(picker).toHaveValue('online');
-    await user.selectOptions(picker, 'dnd');
-    expect(fake.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'dnd' }]);
+    expect(screen.queryByRole('combobox')).toBeNull();
+    const row = screen.getByRole('button', { name: new RegExp(t('presence.label')) });
+    expect(row).toHaveClass('dw-phone-row');
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(row).toHaveTextContent(t('presence.online'));
+    expect(screen.queryByRole('button', { name: t('presence.dnd') })).toBeNull();
+    await user.click(row);
+    expect(row).toHaveAttribute('aria-expanded', 'true');
+    const group = screen.getByRole('group', { name: t('presence.label') });
+    expect(within(group).getAllByRole('button').map(b => b.textContent)).toEqual(
+      [t('presence.online'), t('presence.idle'), t('presence.dnd'), t('presence.invisible')]);
+    expect(within(group).getByRole('button', { name: t('presence.online') })).toHaveAttribute('aria-pressed', 'true');
     await expectNoAxeViolations(view.container);
+    await user.click(within(group).getByRole('button', { name: t('presence.dnd') }));
+    expect(fake.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'dnd' }]);
+    // The choice closes the list and focus goes back to the row.
+    expect(screen.queryByRole('group', { name: t('presence.label') })).toBeNull();
+    expect(row).toHaveFocus();
   });
-  it('heads the page and names the account', () => {
+  it('says so, in an alert, when the status could not be changed', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(new Error('no'));
+    await user.click(screen.getByRole('button', { name: new RegExp(t('presence.label')) }));
+    await user.click(screen.getByRole('button', { name: t('presence.idle') }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('presence.error'));
+  });
+  it('heads the page with a phone header and names the account', () => {
     setup();
-    expect(screen.getByRole('heading', { level: 1, name: t('you.title') })).toBeInTheDocument();
+    const heading = screen.getByRole('heading', { level: 2, name: t('you.title') });
+    expect(heading.closest('header')).toHaveClass('d-phone-header');
     expect(screen.getByText('Ada L')).toBeInTheDocument();
     expect(screen.getByText('@ada')).toBeInTheDocument();
   });
@@ -79,5 +100,15 @@ describe('You', () => {
     const { view } = setup();
     expect(screen.getByRole('button', { name: t('devices.signOut') })).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
+  });
+  // H6: every row has its own icon, and sign out has log-out.
+  it('gives every settings row a distinct icon, and sign out its own', () => {
+    setup();
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'));
+    expect(rows).toHaveLength(NAV.length);
+    const icons = rows.map(row => row.querySelector('svg')?.innerHTML ?? '');
+    expect(icons.every(svg => svg !== '')).toBe(true);
+    expect(new Set(icons).size).toBe(icons.length);
+    expect(screen.getByRole('button', { name: t('devices.signOut') }).querySelector('svg')).not.toBeNull();
   });
 });

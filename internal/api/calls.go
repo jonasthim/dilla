@@ -245,13 +245,13 @@ type Calls struct {
 	endHook   func(stage string)
 
 	// AFK state is per device: activity in another tab or device cannot reset its voice timer.
-	afkConfigMu    sync.Mutex
-	afkConfigLocks map[id.ID]*sync.Mutex
-	afkMu          sync.Mutex
-	afkTracked     map[id.ID]afkTracked
-	afkOccupied    map[id.ID]afkOccupant
-	afkOnline      interface{ Online(id.ID) bool }
-	afkNotify      *StructureNotifier
+	// afkPending is the moves the sweep made, which only the sweep writes (R33); afkExempt is the
+	// room each device that reported itself exempt (a phone, R5) is never moved out of.
+	afkMu      sync.Mutex
+	afkTracked map[id.ID]afkTracked
+	afkPending map[id.ID]afkPendingEntry
+	afkExempt  map[id.ID]string
+	afkNotify  *StructureNotifier
 }
 
 // WithRinger sets the DM call ring and returns h.
@@ -406,17 +406,6 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// Only community voice channels can become AFK destinations. Keep their call
-	// creation ordered with the manager's live-call check and settings write.
-	if ch.CommunityID != nil && ch.Kind == ChannelVoice {
-		configLock := h.afkChannelLock(ch.ID)
-		configLock.Lock()
-		defer configLock.Unlock()
-	}
-	if err := h.refuseAFK(r.Context(), ch, s.DeviceID); err != nil {
-		server.WriteError(w, err)
-		return
-	}
 	var body []cbor.RawMessage
 	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
@@ -561,7 +550,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(bits, row, s.DeviceID), attrs)
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -1047,9 +1036,10 @@ func (h *Calls) caps() callCaps {
 
 // grantFor is dev's permission in the call: its speak/video/screen_share bits, the video sources
 // only while it holds a sharing slot of the call (ruling F1), and nothing while it is penalised in
-// the call's room for publishing media that is not dilla-sframe/1 (ruling F11).
-func (h *Calls) grantFor(bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
-	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) {
+// the call's room for publishing media that is not dilla-sframe/1 (ruling F11) or the call is the
+// built-in AFK channel's (R3, R34).
+func (h *Calls) grantFor(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
 		return sfu.PublishGrant(false, false, false)
 	}
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev)
@@ -1057,9 +1047,10 @@ func (h *Calls) grantFor(bits Bits, row store.VoiceSessionRow, dev id.ID) *livek
 }
 
 // admitGrant is what dev's token for row's room is minted with and what the /rtc gate admits: the
-// base grant, or listen-only while dev is penalised in that room (ruling F11).
-func (h *Calls) admitGrant(bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
-	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) {
+// base grant, or listen-only while dev is penalised in that room (ruling F11) and in every call of
+// the built-in AFK channel (R3, R34).
+func (h *Calls) admitGrant(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
 		return sfu.PublishGrant(false, false, false)
 	}
 	return baseGrant(bits)
@@ -1135,13 +1126,6 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if row.Ended != nil || row.LivekitRoom != room {
 		return nil, notLeaf
 	}
-	if ch, err := h.repo.GetChannel(ctx, row.ChannelID); err == nil {
-		if err := h.refuseAFK(ctx, ch, device); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, err
-	}
 	if err := h.requireLeafOfCall(ctx, row, device); err != nil {
 		var se *server.Error
 		if errors.As(err, &se) {
@@ -1185,7 +1169,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
-	return h.admitGrant(bits, row, device), nil
+	return h.admitGrant(ctx, bits, row, device), nil
 }
 
 // Admitted records that the /rtc proxy let device's join of room through: the gate (AdmitRoom)
@@ -1210,6 +1194,10 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 		return
 	}
 	h.noteAdmission(ctx, row, device, resume)
+	// Any admission of the device answers a pending AFK move (R33): it joined somewhere.
+	h.afkMu.Lock()
+	delete(h.afkPending, device)
+	h.afkMu.Unlock()
 	h.trackAFKAdmission(ctx, row, device, resume)
 }
 

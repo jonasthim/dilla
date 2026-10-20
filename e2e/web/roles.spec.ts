@@ -5,7 +5,7 @@
 // copy keys of flow 09 (strings/{roles,perm}.ts, the shell's pins and mention keys) through copy().
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion,
 } from './support/app';
@@ -97,7 +97,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
 
   // 1. Ada signs up with the bootstrap invite and starts "Midgard Crew"; Björn joins through Ada's invite.
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

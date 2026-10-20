@@ -2,7 +2,6 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelList, type ChannelListProps } from './ChannelList.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const CHANNELS = [
@@ -20,8 +19,11 @@ const BADGED: ChannelListProps['channels'] = [
 // L-COPY-02 shell.channels.rowLabel and shell.channels.rowLabelMuted, filled in as en.ts's t() will.
 const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>
   c.muted ? `${c.name}, muted, mentions ${c.mentions}` : `${c.name}, unread ${c.unread}, mentions ${c.mentions}`;
-const tabs = <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-  tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} />;
+// The legacy `tabs` slot takes any node; a plain tablist stands in for the retired SidebarTabs.
+const tabs = <div role="tablist" aria-label="sidebar">
+  <button type="button" role="tab" aria-selected="true">channels</button>
+  <button type="button" role="tab" aria-selected="false" tabIndex={-1}>direct messages</button>
+</div>;
 
 function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
   return { label: 'channels', title: 'Midgard Crew', channels: CHANNELS, activeId: 't', onSelect: vi.fn(), emptyLabel: 'No channels yet.', ...over };
@@ -254,6 +256,15 @@ describe('ChannelList, one list with voice rooms in place', () => {
     expect(rows.map(r => r.classList.contains('d-voice-row'))).toEqual([false, true, false, true, false]);
   });
 
+  it('a speaking person has the ring on the sub-row and no speaking glyph; the word stays for assistive technology', () => {
+    const { container } = render(<ChannelList {...props({ channels: mixed, voice: voice() })} />);
+    const ada = container.querySelector('.d-voice-row__person[data-speaking="true"]')!;
+    expect(ada).toHaveTextContent('ada');
+    expect(ada.querySelector('[data-state="speaking"], .d-state-dot')).toBeNull();
+    expect(ada.querySelector('.d-sr-only')).toHaveTextContent('speaking');
+    expect(container.querySelectorAll('.d-voice-row__person[data-speaking="true"]')).toHaveLength(1);
+  });
+
   it('the voice row has the volume-2 icon and no badge, even with unread: 3 (guard, green at start: the voice branch never passed one)', () => {
     render(<ChannelList {...props({ channels: mixed, voice: voice(), rowLabel })} />);
     const row = screen.getByRole('button', { name: 'voice harbour' });
@@ -277,7 +288,7 @@ describe('ChannelList, one list with voice rooms in place', () => {
     const harbour = screen.getByRole('button', { name: 'voice harbour' });
     expect(harbour.tabIndex).toBe(0);
     expect(joins.map(j => j.tabIndex)).toEqual([0, -1]);
-    expect(joins[0]).toHaveAccessibleDescription('harbour');
+    expect(joins[0].closest('.d-slot')).not.toBeNull();
     await userEvent.keyboard('{Tab}{ArrowDown}{ArrowDown}');
     expect(screen.getByRole('button', { name: 'voice workshop' })).toHaveFocus();
     expect(screen.getAllByRole('button', { name: 'join voice' }).map(j => j.tabIndex)).toEqual([-1, 0]);
@@ -291,17 +302,85 @@ describe('ChannelList, one list with voice rooms in place', () => {
     rerender(<ChannelList {...props({ channels: mixed, voice: voice({ onJoin: undefined }) })} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });
+});
 
-  it('listAction is right-aligned in the header row, inside the tab panel, outside the list and the roving group', () => {
-    render(<ChannelList {...props({ channels: mixed, voice: voice(), tabs, listAction: <button type="button">new channel</button> })} />);
-    const action = screen.getByRole('button', { name: 'new channel' });
-    const panel = screen.getByRole('tabpanel');
-    expect(panel).toContainElement(action);
-    expect(action.closest('[role="list"]')).toBeNull();
-    expect(action.closest('.d-channel-list__list-head')).not.toBeNull();
-    const list = panel.querySelector('.d-channel-list__list')!;
-    expect(action.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getAllByRole('button').filter(b => b.closest('.d-channel-list__list') && b.tabIndex === 0)).toHaveLength(1);
-    expect(action.tabIndex).toBe(0);
+// web3.9 (UI-2): categories, collapse and the "+" on a header.
+describe('ChannelList, categories', () => {
+  const channels: ChannelListProps['channels'] = [
+    { id: 'top', name: 'welcome', kind: 'text', readable: false },
+    { id: 'r1', name: 'plans', kind: 'text', readable: false, parentId: 'raids' },
+    { id: 'r2', name: 'loot', kind: 'text', readable: false, parentId: 'raids' },
+    { id: 'r3', name: 'bosses', kind: 'text', readable: false, parentId: 'raids', unread: 2 },
+    { id: 'r4', name: 'war room', kind: 'voice', readable: false, parentId: 'raids', joined: true },
+    { id: 'l1', name: 'general', kind: 'text', readable: false, parentId: 'lounge' },
+    { id: 'l2', name: 'music', kind: 'text', readable: false, parentId: 'lounge' },
+    { id: 'o', name: 'orphan', kind: 'text', readable: false, parentId: 'gone' },
+  ];
+  const categories = [{ id: 'raids', name: 'raids', collapsed: true }, { id: 'lounge', name: 'lounge', collapsed: false }];
+  const names = () => [...document.querySelectorAll('.d-channel-list__list > li')].map(li => li.querySelector('.d-chrow__name, .d-channel-list__cat-label, .d-voice-row__name')?.textContent);
+  const voice = { labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
+    state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot' } },
+    rooms: {} };
+
+  it('renders the top-level rows first, then each category header with its children, a collapsed one keeping only its active, unread and joined rows', () => {
+    render(<ChannelList {...props({ channels, categories, voice, activeId: 'r2' })} />);
+    expect(names()).toEqual(['welcome', 'orphan', 'raids', 'loot', 'bosses', 'war room', 'lounge', 'general', 'music']);
+  });
+  it('a collapsed category with nothing to keep shows its header alone, and an expanded one all its rows', () => {
+    render(<ChannelList {...props({ channels: channels.filter(c => c.id !== 'r3' && c.id !== 'r4'), categories, activeId: 'top' })} />);
+    expect(names()).toEqual(['welcome', 'orphan', 'raids', 'lounge', 'general', 'music']);
+  });
+  it('a mention keeps a row of a collapsed category too', () => {
+    render(<ChannelList {...props({ channels: channels.map(c => c.id === 'r1' ? { ...c, mentions: 1 } : c), categories, activeId: 'top' })} />);
+    expect(names()).toContain('plans');
+    expect(names()).not.toContain('loot');
+  });
+  it('the header is a button with aria-expanded, and Enter on it calls onToggleCategory', async () => {
+    const user = userEvent.setup();
+    const onToggleCategory = vi.fn();
+    render(<ChannelList {...props({ channels, categories, onToggleCategory, activeId: 'top' })} />);
+    const raids = screen.getByRole('button', { name: 'raids' });
+    const lounge = screen.getByRole('button', { name: 'lounge' });
+    expect(raids).toHaveAttribute('aria-expanded', 'false');
+    expect(lounge).toHaveAttribute('aria-expanded', 'true');
+    raids.focus();
+    await user.keyboard('{Enter}');
+    expect(onToggleCategory).toHaveBeenCalledWith('raids');
+    await user.click(lounge);
+    expect(onToggleCategory).toHaveBeenLastCalledWith('lounge');
+  });
+  it('a header is a stop of the one roving group', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props({ channels, categories, activeId: 'top' })} />);
+    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(1);
+    await user.keyboard('{Tab}{ArrowDown}{ArrowDown}');
+    expect(screen.getByRole('button', { name: 'raids' })).toHaveFocus();
+  });
+  it('has no list-header "+" row, and the header "+" exists only with onAddInCategory, named by addInCategoryLabel', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<ChannelList {...props({ channels, categories, activeId: 'top' })} />);
+    expect(screen.queryByRole('button', { name: /add|new|\+/ })).toBeNull();
+    const onAddInCategory = vi.fn();
+    rerender(<ChannelList {...props({ channels, categories, activeId: 'top', onAddInCategory, addInCategoryLabel: n => `new channel in ${n}` })} />);
+    expect(screen.getAllByRole('button', { name: /^new channel in/ })).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: 'new channel in lounge' }));
+    expect(onAddInCategory).toHaveBeenCalledWith('lounge');
+  });
+  it('the header\'s "+" follows the stop row\'s tab index', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props({ channels, categories, activeId: 'top', onAddInCategory: () => {}, addInCategoryLabel: n => `new channel in ${n}` })} />);
+    const plus = screen.getAllByRole('button', { name: /^new channel in/ });
+    expect(plus.map(b => b.tabIndex)).toEqual([-1, -1]);
+    await user.keyboard('{Tab}{ArrowDown}{ArrowDown}');
+    expect(screen.getAllByRole('button', { name: /^new channel in/ }).map(b => b.tabIndex)).toEqual([0, -1]);
+  });
+  it('a list of only categories shows no empty label', () => {
+    render(<ChannelList {...props({ channels: [], categories })} />);
+    expect(screen.queryByText('No channels yet.')).toBeNull();
+    expect(names()).toEqual(['raids', 'lounge']);
+  });
+  it('has no serious axe violations with categories', async () => {
+    const { container } = render(<div className="d-root"><ChannelList {...props({ channels, categories, voice, activeId: 'r2', onAddInCategory: () => {}, addInCategoryLabel: n => `new channel in ${n}` })} /></div>);
+    await expectNoAxeViolations(container);
   });
 });

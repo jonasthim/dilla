@@ -5,13 +5,13 @@
 import { expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
+import { addServerVia, TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
 import { REPO_ROOT, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const EMPTY: HostConfig = { port: 8517, control: 8518, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
-const SHOTS = join(REPO_ROOT, 'target', 'ui-screens', 'web3.8');
+const SHOTS = join(REPO_ROOT, 'target', 'ui-screens', 'web3.9');
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -32,7 +32,7 @@ test.afterAll(async () => { await host?.stop(); });
 /** Ada starts a server, opens server settings → Invites, makes a link and returns its URL. */
 async function makeLink(page: Page, h: StartedHost): Promise<string> {
   await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
-  await page.getByRole('navigation').getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -70,7 +70,11 @@ test('the invite page names the community, keeps its limits and is shot in both 
     expect(headers['cache-control']).toBe('no-store');
     expect(headers['referrer-policy']).toBe('no-referrer');
     expect(headers['x-content-type-options']).toBe('nosniff');
-    expect(headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'");
+    expect(headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'");
+    // The same-origin JetBrains Mono under font-src 'self' actually loaded (a moved asset would fall back quietly).
+    await view.evaluate(() => document.fonts.ready);
+    expect(await view.evaluate(() => document.fonts.check('13.5px "JetBrains Mono"'))).toBe(true);
+    expect(await view.evaluate(() => Array.from(document.fonts).some(f => f.family.includes('JetBrains Mono') && f.status === 'loaded'))).toBe(true);
 
     await expect(view.getByRole('heading', { level: 1, name: `You have been invited to ${SERVER}` })).toBeVisible();
     await expect(view.getByText(`on ${instance}`, { exact: true })).toBeVisible();
@@ -87,6 +91,8 @@ test('the invite page names the community, keeps its limits and is shot in both 
       for (const colorScheme of ['dark', 'light'] as const) {
         await view.setViewportSize(size);
         await view.emulateMedia({ colorScheme });
+        const open = await view.locator('a.open').boundingBox();
+        expect(open?.height).toBe(name === 'phone' ? 44 : 36);
         await view.screenshot({ path: join(SHOTS, `invite-${name}-${colorScheme}.png`) });
       }
     }

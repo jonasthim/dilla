@@ -5,7 +5,7 @@
 // copy keys of flow 09 (strings/{roles,perm}.ts, the shell's pins and mention keys) through copy().
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox,
 } from './support/app';
@@ -136,7 +136,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
 
   // 1. Ada starts "Midgard Crew", Björn joins through her invite, and Ada makes the role "Staff".
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -210,7 +210,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
 
     // 4. With the room open, Ada takes Staff from Björn: he is told, and the room leaves his list.
     await assign(page, FRIEND, STAFF, false);
-    await expect(announcer(page2)).toHaveText(copy('chperm.lostAccess', { name: ROOM }), { timeout: WAIT });
+    await expect(announcer(page2)).toHaveText(copy('chperm.lostAccess', { name: `#${ROOM}` }), { timeout: WAIT });
     await expect(channelRow(page2, ROOM)).toHaveCount(0, { timeout: WAIT });
     await expect(composerBox(page2, ROOM)).toHaveCount(0);
     await expect(channelRow(page2, 'general')).toBeVisible();

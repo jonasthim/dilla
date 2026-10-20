@@ -1,5 +1,5 @@
-import { expect } from '@playwright/test';
-import { advanceClock, composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
+import { expect, type Locator } from '@playwright/test';
+import { advanceClock, composerBox, copy, expectAccessible, closeSettings, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
 
 test('native edit is searched by prefix and deleted text disappears after a positive result', async ({ page, peer, instanceName }) => {
@@ -17,6 +17,16 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   const search = page.getByRole('combobox', { name: copy('search.placeholder') });
   await search.fill('cafe');
   await expect(page.getByRole('option', { name: /café lamp/ })).toBeVisible({ timeout: WAIT });
+  // J1, R-S4: a desktop search is a centred overlay of at most 40rem over a shell that stays in the DOM, not a full-screen page.
+  const overlay = page.locator('dialog.d-search-palette-dialog');
+  const box = await overlay.boundingBox();
+  const viewport = page.viewportSize();
+  if (box === null || viewport === null) throw new Error('no search overlay box');
+  expect(box.width).toBeLessThanOrEqual(641);
+  expect(box.x).toBeGreaterThan(100);
+  expect(box.x + box.width / 2).toBeCloseTo(viewport.width / 2, 0);
+  await expect(page.locator('dialog.dw-search')).toHaveCount(0);
+  await expect(rowById(page, peer.channelName, first.msg_id)).toBeAttached();
   await expect(search).toBeFocused();
   await page.getByRole('option', { name: /café lamp/ }).click();
   await expect(rowById(page, peer.channelName, first.msg_id)).toBeFocused();
@@ -68,6 +78,13 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   await peer.waitForDevices(2, setup.channel_id);
   const sent = await peer.send('café compass');
   await expect(rowById(page, peer.channelName, sent.msg_id)).toContainText('café compass', { timeout: WAIT });
+  // Escape closes the overlay and returns focus to where search was opened.
+  await rowById(page, peer.channelName, sent.msg_id).focus();
+  await page.keyboard.press('ControlOrMeta+/');
+  await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toHaveCount(0);
+  await expect(rowById(page, peer.channelName, sent.msg_id)).toBeFocused();
   await page.keyboard.press('ControlOrMeta+/');
   const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
@@ -144,4 +161,39 @@ test('desktop, phone and reflow keep controls accessible in three themes', async
       expect(layout).toEqual({ overflow: false, small: 0 });
     }
   }
+});
+
+// I1, I2: the label is left and the controls share the 16rem column (one x, 256px wide); a long danger label grows its button, it never overprints.
+test('settings rows share one 16rem control column, and the sign-out button holds its text', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const columns = async (dialog: Locator) => dialog.locator('.d-settings-row__control').evaluateAll(els => els.map(el => {
+    const box = el.getBoundingClientRect();
+    return { x: Math.round(box.x), width: Math.round(box.width) };
+  }));
+  let dialog = await openSettings(page, 'devices');
+  await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('factorSettings.nav'), exact: true }).click();
+  await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
+  const signin = await columns(dialog);
+  expect(signin.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(signin.map(c => c.x)).size, 'one control x in Sign-in').toBe(1);
+  expect(signin[0].width).toBe(256);
+  await closeSettings(page);
+  dialog = await openSettings(page, 'devices');
+  const out = dialog.getByRole('button', { name: copy('devices.signOut'), exact: true });
+  await expect(out).toBeVisible({ timeout: WAIT });
+  const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-settings-row__control')?.getBoundingClientRect().right ?? 0) + 1);
+  expect(fits, 'the sign-out label is inside its button and its column').toBe(true);
+  await closeSettings(page);
+  // M-3: every row keeps its own hairline, also two rows that are each the last child of their parent (Voice).
+  dialog = await openSettings(page, 'voice');
+  await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
+  const hairlines = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => getComputedStyle(el).borderBottomWidth));
+  expect(hairlines.length).toBeGreaterThan(1);
+  expect(new Set(hairlines)).toEqual(new Set(['1px']));
+  await closeSettings(page);
 });

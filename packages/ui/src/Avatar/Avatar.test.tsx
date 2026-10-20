@@ -1,4 +1,6 @@
 import { render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { Avatar, AVATAR_HUES } from './Avatar.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -69,5 +71,18 @@ describe('Avatar', () => {
       const ratio = contrastRatio('#FFFFFF', bgHex);
       expect(ratio, `Hue ${hue}° has contrast ${ratio.toFixed(2)}:1 with white`).toBeGreaterThanOrEqual(MIN_CONTRAST);
     });
+  });
+});
+const read = (name: string) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+describe('Avatar sizes xs and row (UI-1)', () => {
+  it('xs is 24px and row is 32px, by data-size', () => {
+    const css = read('./Avatar.css');
+    expect(css).toMatch(/\.d-avatar\[data-size="xs"\] \{[^}]*width: 1\.5rem[^}]*height: 1\.5rem/);
+    expect(css).toMatch(/\.d-avatar\[data-size="row"\] \{[^}]*width: 2rem[^}]*height: 2rem/);
+    const { rerender } = render(<Avatar name="ada" size="xs" />);
+    expect(screen.getByRole('img', { name: 'ada' })).toHaveAttribute('data-size', 'xs');
+    rerender(<Avatar name="ada" size="row" />);
+    expect(screen.getByRole('img', { name: 'ada' })).toHaveAttribute('data-size', 'row');
   });
 });

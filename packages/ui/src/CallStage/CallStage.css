@@ -1,5 +1,10 @@
-.d-call-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0.75rem 1rem; }
+.d-call-stage { --d-stage-px: 1rem; --d-stage-py: 0.75rem; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--d-stage-py) var(--d-stage-px); }
 .d-call-stage > * + * { margin-top: 0.75rem; }
+/* C4, R12: the header slot is the stage's 48 bar, bled out to the stage's edges, its hairline at y=48 like every other bar. */
+.d-call-stage__bar { box-sizing: border-box; height: var(--bar-h); margin: calc(-1 * var(--d-stage-py)) calc(-1 * var(--d-stage-px)) 0; border-bottom: 1px solid var(--hairline); flex: none; }
+.d-call-stage__bar > * { height: 100%; border-bottom: 0; }
+/* With the slot, the head holds only the hidden name unless there is a ring strip or a code: then it takes no room of its own. */
+.d-call-stage__head[data-bare]:not(:has(.d-call-stage__outgoing, .d-call-stage__code)) { margin-top: 0; }
 .d-call-stage__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; min-width: 0; }
 .d-call-stage__title { margin: 0; min-width: 0; font-size: var(--text-md); font-weight: var(--weight-label); color: var(--fg); overflow-wrap: anywhere; }
 .d-call-stage__outgoing { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
@@ -25,6 +30,9 @@
 .d-call-stage__empty { align-self: center; margin-bottom: 0; font-size: var(--text-sm); color: var(--fg-2); }
 .d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: 0.75rem; margin-bottom: 0; padding: 0; list-style: none; min-width: 0; }
 .d-call-stage__tile { min-width: 0; }
+/* D1: a partial last row is centred. Its tiles sit in the grid's first columns, so each moves right by half the empty
+   columns (the measured --d-stage-cols less the tiles in that row, --d-orphan-n) times a column and a gap. */
+.d-call-stage__tile[data-orphan] { translate: calc((var(--d-stage-cols, 1) - var(--d-orphan-n, 0)) * (var(--d-tile-w, 0px) + 0.75rem) / 2) 0; }
 /* Stage mode (U4: the caller passes `onFocus`, so `data-tiles="stage"`; callers without it keep the rules above). The tiles
    fill the area above the pinned toolbar. `--d-stage-cols` and `--d-tile-w` are written by the stage's ResizeObserver from
    `stageColumns`; tiles are 16:9 and centred. Without them (no observer) it is one column. */
@@ -52,7 +60,8 @@
 }
 .d-call-stage__controls { display: flex; justify-content: center; }
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-call-stage { padding: 0.5rem; }
+  .d-call-stage { --d-stage-px: 0.5rem; --d-stage-py: 0.5rem; }
+  .d-call-stage__tile[data-orphan] { translate: none; }
   .d-call-stage__notice .d-call-stage__notice-action { grid-column: 2; justify-self: start; min-height: 2.75rem; }
   .d-call-stage__summary { min-height: 2.75rem; min-width: 2.75rem; }
   /* Phone (R9): no filmstrip. One column; the focused tile takes the full width and goes first, the others follow
@@ -79,3 +88,8 @@
   .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even) { grid-column: 1 / -1; }
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
 }
+/* D4, the phone layout (also a landscape phone, whose shell is wider than the media query): an 18px gutter, the avatars
+   centred in their tiles, the toolbar pinned to the foot of the stage, and no orphan shift (the phone has its own columns). */
+[data-layout="phone"] .d-call-stage { --d-stage-px: 1.125rem; padding-inline: 1.125rem; }
+[data-layout="phone"] .d-call-stage__tile[data-orphan] { translate: none; }
+[data-layout="phone"] .d-call-stage__controls { position: sticky; bottom: 0; z-index: 1; padding-block: 0.5rem; background: var(--bg); }

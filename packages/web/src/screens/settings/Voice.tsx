@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { SETTINGS } from '@dilla/client-core';
-import { Banner, isPushToTalkKey, VoiceSettings, type CaptureKeyAction } from '@dilla/ui';
+import { Banner, isPushToTalkKey, SettingsRow, VoiceSettings, type CaptureKeyAction } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -152,7 +152,9 @@ export function Voice(): React.JSX.Element {
         {status.reason === null ? null : t(`settings.voice.fallback.${status.reason}`)}{' '}
         {status.browserNoise === 'unknown' ? t('settings.voice.browserUnknown') : noise === 'off' && status.browserNoise === 'on' ? t('settings.voice.browserStillOn') : null}
       </p>}
-      <MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} />
+      <SettingsRow id="voice-test" label={t('settings.voice.test')}>
+        <MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} />
+      </SettingsRow>
     </section>
   );
 }

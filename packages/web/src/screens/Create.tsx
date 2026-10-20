@@ -291,7 +291,9 @@ export function CreateServerFlow(props: {
  * follows it into a dialog reopened meanwhile (review I2).
  */
 export function CreateChannelFlow(props: {
-  open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
+  open: boolean; community: { id: string; name: string } | null;
+  /** The category the channel is made in (its header's "+"); null or absent is the top level. */
+  parentId?: string | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
   const client = useCore();
   const [picked, setKind] = useState<NewChannelKind>('text');
@@ -361,6 +363,7 @@ export function CreateChannelFlow(props: {
     void (async () => {
       try {
         const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown,
+          ...(props.parentId != null ? { parentId: props.parentId } : {}),
           ...(sendPrivate ? { private: { roleIds } } : {}), ...(chosen === 'announcement' ? { announce: { roleIds: announceIds } } : {}) }), 'channelId');
         if (id !== null) rememberMade(client, id);
         if (!mine()) return;

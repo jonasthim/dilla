@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 import type { HostConfig } from './web/support/host.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// The web app suite (task 25): packages/web/dist served by dilla-testhost on 8463/8464.
-const dillaHost: HostConfig = { port: 8463, control: 8464, webRoot: 'packages/web/dist' };
+// The web app suite (task 25): packages/web/dist served by dilla-testhost on 8463/8464. DILLA_E2E_PORT and DILLA_E2E_PORT2 move the
+// pair (a lane that shares its machine); web/support/app.ts reads the same two.
+const hostPort = Number(process.env.DILLA_E2E_PORT ?? 8463);
+const controlPort = Number(process.env.DILLA_E2E_PORT2 ?? 8464);
+const dillaHost: HostConfig = { port: hostPort, control: controlPort, webRoot: 'packages/web/dist' };
 
 export default defineConfig({
   testDir: resolve(here, 'web'),
@@ -20,12 +23,12 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: process.env.CI === 'true' ? 90_000 : 30_000 },
   reporter: [['list']],
-  use: { baseURL: 'http://127.0.0.1:8463', trace: 'retain-on-failure' },
+  use: { baseURL: `http://127.0.0.1:${String(hostPort)}`, trace: 'retain-on-failure' },
   projects: [
     { name: 'chromium-web', use: { ...devices['Desktop Chrome'], channel: 'chromium' } },
     // channel-list.spec starts an SFU and grants the `microphone` permission to a fake-microphone context; both are
     // Chromium-only (Firefox rejects "Unknown permission: microphone"), so Firefox does not load it.
     { name: 'firefox-web', testIgnore: /(^|\/)(support|core-worker|spike-joinall|channel-list)\.spec\.ts$/, use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

@@ -77,8 +77,9 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 // I10 (fix wave): a member discovers a community's channels in band. GET
 // /v1/communities/{id}/channels lists the live channels the caller may view, by position then
 // channel id, each [channel_id, kind, mode, visibility, parent_id|null, name, topic, position,
-// slowmode_seconds, seq, text_group_id|null]; a category is listed when it or a child of it is visible; a deleted
-// channel never is; a non-member gets 404, as for an unknown community.
+// slowmode_seconds, seq, text_group_id|null]; a category is listed only when the caller can view
+// it (R44, TestListingHidesAHiddenParent); a deleted channel never is; a non-member gets 404, as
+// for an unknown community.
 func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	cat, _, _ := newChannel(t, e, cid, ownerTok, uint64(api.ChannelCategory), 0, 0, "zeta")
@@ -115,6 +116,7 @@ func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 	_, memberTok := e.NewUser("member")
 	joinCommunity(t, e, cid, memberTok)
 
+	afk, _ := afkPointer(t, e, cid)
 	list := func(tok string) []id.ID {
 		t.Helper()
 		status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/channels", tok, nil)
@@ -132,6 +134,9 @@ func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 			}
 			var chID id.ID
 			mustUnmarshal(t, r[0], &chID)
+			if chID == afk {
+				continue // every community's built-in AFK channel (web3.9 R1)
+			}
 			out = append(out, chID)
 			if chID == general {
 				var kind, mode, vis, pos, slow, seq uint64
@@ -286,6 +291,7 @@ func TestAPositionChangeMovesTheChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChannels: %v", err)
 	}
+	rows = withoutBuiltinAFK(rows)
 	if len(rows) != 3 || rows[0].ID != ids[0] || rows[1].ID != ids[1] || rows[2].ID != ids[2] {
 		t.Fatalf("initial order = %+v, want positions 10, 20, 30", rows)
 	}
@@ -314,6 +320,7 @@ func TestEqualPositionsBreakOnID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChannels: %v", err)
 	}
+	rows = withoutBuiltinAFK(rows)
 	if len(rows) != 2 {
 		t.Fatalf("channels = %d", len(rows))
 	}
@@ -507,8 +514,9 @@ func TestChannelFieldBounds(t *testing.T) {
 			t.Errorf("%s: status %d, want 400", c.name, c.status)
 		}
 	}
-	// The bounds themselves are legal, and a topic may carry line breaks.
-	if status := post(0, 0, 0, strings.Repeat("n", 100), "line one\nline two", 1<<31-1, 21600); status != http.StatusCreated {
+	// The bounds themselves are legal, and a topic may carry line breaks. A create's position bound is
+	// 2^30-1: 2^30 and above is the built-in AFK channel's (R-AFK8, TestAFKReservedPositionRefusedOnCreate).
+	if status := post(0, 0, 0, strings.Repeat("n", 100), "line one\nline two", api.AFKBuiltinPosition-1, 21600); status != http.StatusCreated {
 		t.Fatalf("a channel at every bound = %d, want 201", status)
 	}
 }
@@ -1033,7 +1041,7 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("create by a mod demoted before the transaction = %d, want 403 (%x)", status, body)
 	}
-	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(withoutBuiltinAFK(chans)) != 0 {
 		t.Fatalf("a refused create wrote %+v", chans)
 	}
 	// Control: the same create with no demotion in between passes every check before the
@@ -1090,7 +1098,7 @@ func TestCreatorSelfSendRecheckedUnderTheLock(t *testing.T) {
 	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusForbidden {
 		t.Fatalf("self send after losing send before the transaction = %d (%x), want 403", status, body)
 	}
-	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(withoutBuiltinAFK(chans)) != 0 {
 		t.Fatalf("a refused create wrote %+v", chans)
 	}
 	// Control: send restored and nothing in between, so the 403 above could only come from the

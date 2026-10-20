@@ -15,7 +15,7 @@ export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
   | { name: 'dm'; channelId: string }
-  /** The phone's DMs tab (and, on a desktop, the DMs sidebar tab with no DM open). */
+  /** Home with the `@` tile selected and no DM open (`/dm`). */
   | { name: 'dms' } | { name: 'activity' } | { name: 'you' }
   | { name: 'settings'; section: SettingsSection; from: string | null;
     /** Privacy only: the contact whose comparison opens at once (the voice pause banner's action, flow 06). */
@@ -168,13 +168,12 @@ export function pushedFrom(): Route | null {
   return typeof from === 'string' ? routeOf(from) : null;
 }
 
-/** The phone tab a route belongs to: a channel is servers, a DM is dms, Settings is you. */
+/** The phone tab a route belongs to: a channel, a DM and the DM list are home, Settings is you. */
 export function tabOf(route: Route): PhoneTab {
   switch (route.name) {
-    case 'dm': case 'dms': return 'dms';
+    case 'dm': case 'dms': case 'channel': case 'root': case 'welcome': return 'home';
     case 'activity': return 'activity';
     case 'you': case 'settings': return 'you';
-    case 'channel': case 'root': case 'welcome': return 'servers';
   }
 }
 

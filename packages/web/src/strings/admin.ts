@@ -97,7 +97,7 @@ export const admin = {
   'admin.invites.uses.one': '1 use',
   'admin.invites.uses.n': '{n} uses',
   'admin.invites.limitsNote': 'An invite lasts at most 30 days and admits at most 1000 people.',
-  'admin.invites.create': 'Make link',
+  'admin.invites.create': 'make link',
   'admin.invites.creating': 'Making an invite link…',
   'admin.invites.empty': 'No live invite links.',
   'admin.invites.row': 'by {name}, {used} of {max} uses, expires {date}',

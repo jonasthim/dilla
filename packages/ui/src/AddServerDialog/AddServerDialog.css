@@ -1,0 +1,6 @@
+/* Two full-width choices, each a mono row with a hairline and a 44px target; the focus ring is the global one, inset. */
+.d-add-server { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.d-add-server__choice { display: flex; align-items: center; width: 100%; min-height: 2.75rem; box-sizing: border-box; padding: 0 0.75rem; font: inherit; font-size: var(--text-base); color: var(--fg); text-align: left; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast); }
+.d-add-server__choice:hover { background: var(--surface-hi); border-color: var(--accent); }
+.d-add-server__choice:focus-visible { outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .d-add-server__choice { transition: none; } }

@@ -38,6 +38,10 @@
 .d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
 .d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* A file or media card takes what the row has and drops under the images when less than 18rem is left (or the row is
+   narrower). The wrap follows the row's own width at any viewport, so the name, size and save button always fit. */
+.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) { flex: 1 1 18rem; min-width: min(18rem, 100%); max-width: 100%; }
+.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) :is(.d-attachment-card__file, .d-attachment-card__media) { max-width: 100%; }
 .d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
 /* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-message-row__pending[data-tone="failed"] { color: var(--danger); }
@@ -59,3 +63,14 @@
 @container d-shell (max-width: 47.99rem) { .d-message-row__thread { min-height: 2.75rem; } }
 [data-layout="phone"] .d-message-row__thread { min-height: 2.75rem; }
 @media (prefers-reduced-motion: reduce) { .d-message-row__thread { transition: none; } }
+
+/* web3.9 (R29, G2): a grouped row shows its time in the avatar column on hover or focus; the head's author and time stay for a screen reader. */
+/* The time is compact ("12:59p", "23:59") at 11px with tabular figures, and the gutter is the avatar column plus its gap, centred, so it never leaves the row's left padding. */
+.d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--avatar-size) + 0.75rem); margin-right: -0.75rem; padding-top: 0.125rem; text-align: center; font-size: 0.6875rem; font-variant-numeric: tabular-nums; line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
+.d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
+.d-message-row[data-grouped="true"] { margin-top: 0; }
+/* The device tag on a web client shows only while the row is hovered or holds focus. Hidden, it is out of flow (no gap after the author) and visibility:hidden. */
+.d-message-row__tag[data-reveal="hover"] { display: inline-flex; position: absolute; visibility: hidden; }
+.d-message-row:hover .d-message-row__tag[data-reveal="hover"], .d-message-row:focus-within .d-message-row__tag[data-reveal="hover"], .d-message-row[data-revealed="true"] .d-message-row__tag[data-reveal="hover"] { position: static; visibility: visible; }
+/* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
+[data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }

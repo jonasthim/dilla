@@ -43,7 +43,7 @@ import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerL
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
-import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
+import { ADMIN_VALIDATORS, AdminController, nextPosition } from '../admin/controller';
 import { PERM } from '../admin/perm';
 import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
@@ -232,8 +232,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getAFKSettings',
   'setAFK',
   'afkActivity',
-  'afkMove',
-  'afkLeave',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -343,8 +341,6 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
-  afkMove: ['communityId', 'channelId'],
-  afkLeave: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -409,8 +405,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getAFKSettings',
     'setAFK',
     'afkActivity',
-    'afkMove',
-    'afkLeave',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -510,6 +504,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'createChannel') {
     if (command.kind !== 'text' && command.kind !== 'voice' && command.kind !== 'announcement') return 'kind is not text, voice or announcement';
+    if (command.parentId !== undefined && !(typeof command.parentId === 'string' && ID.test(command.parentId))) return 'parentId is not 32 lowercase hex';
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
     if (command.private !== undefined) {
@@ -1013,7 +1008,7 @@ export class Controller {
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
       case 'createCommunity': return this.createCommunity(command.name);
-      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce, command.parentId);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
@@ -1056,12 +1051,8 @@ export class Controller {
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
-      case 'setAFK': return this.setAFK(command.communityId, command.channelId, command.timeoutSeconds);
-      case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId)).then(() => null);
-      case 'afkMove': return this.routes.moveToAFK(fromHex(command.communityId), fromHex(command.channelId))
-        .then(() => this.loadAFK(command.communityId)).then(() => null);
-      case 'afkLeave': return this.routes.leaveAFK(fromHex(command.communityId))
-        .then(() => this.loadAFK(command.communityId)).then(() => null);
+      case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
+      case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -1549,10 +1540,9 @@ export class Controller {
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
-    for (const community of this.slices.get('communities') ?? []) {
-      this.clearPresence(community.id);
-      this.clearAFK(community.id);
-    }
+    // R-AFK3 (a): the AFK snapshot is not cleared here; refreshAfterReady reads it again in place (an offline status
+    // already cleared it, so a reconnect does start from null).
+    for (const community of this.slices.get('communities') ?? []) this.clearPresence(community.id);
     void this.barrier.track(this.refreshPresenceChoice());
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
@@ -1567,7 +1557,12 @@ export class Controller {
     if (core !== null && me !== null) {
       void this.barrier.track(this.ensureBackups(core));
       void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
-        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined));
+        .then((own) => {
+          if (!own.listed) return this.enterRevoked();
+          // Contract 6: the device count is read once per ready (from the list this pass just refreshed), so Diagnostics never reads 0.
+          void this.barrier.track(this.refreshDevices(own).then(() => undefined, () => undefined));
+          return this.repairBackupState(core);
+        }, () => undefined));
     }
     void this.barrier.track(this.refreshAfterReady());
     this.runPurges();
@@ -2203,25 +2198,27 @@ export class Controller {
    *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
    *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
   private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
-    announce?: { roleIds: string[] }): Promise<{ channelId: string }> {
+    announce?: { roleIds: string[] }, parentId?: string): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    let position = 0;
-    for (const known of this.channels.values()) {
-      if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
-    }
+    // R42: the built-in AFK channel sits at 2^30; the next position is taken from the other channels. R-AFK6: positions at
+    // or above that reservation never count, so a create before the `afk:` slice is read still lands above AFK.
+    const afkId = this.slices.get(`afk:${communityId}`)?.channelId ?? null;
+    const position = nextPosition([...this.channels].filter(([knownId, known]) => known.communityId === communityId && knownId !== afkId)
+      .map(([, known]) => known.row.position));
     // A private channel is private from birth: the overwrites go in the create (wave 2a).
     // An announcement channel is a text channel whose @everyone may not send, read-only from birth in the same way.
     const routeKind: NewChannelKind = kind === 'announcement' ? 'text' : kind;
     const overwrites = kind === 'announcement' ? await this.rolesCtl.announcementOverwrites(communityId, announce?.roleIds ?? [])
       : priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
-    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position })
-      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, overwrites }));
+    const parent = parentId === undefined ? {} : { parentId: fromHex(parentId) };
+    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, ...parent })
+      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, ...parent, overwrites }));
     // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
     this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
     const channelId = toHex(created.id);
     if (this.storeCleared || !this.listed(communityId)) return { channelId };
     this.channels.set(channelId, { communityId, row: {
-      id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: null,
+      id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: parentId === undefined ? null : fromHex(parentId),
       name: channelName, topic: '', position, slowmode: 0, seq: 0n, textGroupId: null,
     } });
     this.publishChannels(communityId);
@@ -2271,12 +2268,17 @@ export class Controller {
     if (this.storeCleared || !this.listed(communityId)) return;
     for (const [channelId, known] of this.channels) if (known.communityId === communityId) this.channels.delete(channelId);
     for (const row of rows) this.channels.set(toHex(row.id), { communityId, row });
+    // web3.9 VOICE-AFK fix round 3 (N-3): a held snapshot with no AFK pointer (a failed lazy ensure) cannot say whether a
+    // newly listed channel is the built-in AFK channel, so it is unknown (null) until this re-read lands, and the page
+    // holds a join of it instead of reaching for the microphone. Set before the channels are published.
+    const held = this.slices.get(`afk:${communityId}`);
+    if (held != null && held.channelId === null) this.slices.set(`afk:${communityId}`, null);
     this.publishChannels(communityId);
     // C4 fix round 1: the role view is pushed once, after the access read below, not from the member list as well.
     if (members !== null) this.publishMembers(communityId, members, false);
     this.clearPresence(communityId);
     void this.barrier.track(this.loadPresence(communityId));
-    this.clearAFK(communityId);
+    // R-AFK3 (a): read again in place; the previous snapshot stands until the new one lands.
     void this.barrier.track(this.loadAFK(communityId));
     this.updateExpected();
     this.publishBadges();
@@ -2698,27 +2700,57 @@ export class Controller {
   private static readonly PRESENCE_CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
   private readonly afkReadSeq = new Map<string, number>();
 
+  /** web3.9 R-AFK3 (b): a failed AFK read is read again after 1 s, 2 s, 4 s … (at most 30 s) while the community stays listed. */
+  private readonly afkRetry = new Map<string, { timer: number; attempt: number }>();
+  /** R-AFK4: the seq of the newest landed AFK read, across every community; it only rises. */
+  private afkLandedSeq = 0;
+  private static readonly AFK_RETRY_MAX_MS = 30_000;
+
+  private stopAFKRetry(communityId: string): void {
+    const retry = this.afkRetry.get(communityId);
+    if (retry === undefined) return;
+    this.deps.clearTimeout(retry.timer);
+    this.afkRetry.delete(communityId);
+  }
+
+  /** Unloads the snapshot (offline, a left or wiped community): null, any read in flight ignored, the retry stopped. */
   private clearAFK(communityId: string): void {
     this.afkReadSeq.set(communityId, (this.afkReadSeq.get(communityId) ?? 0) + 1);
+    this.stopAFKRetry(communityId);
     this.slices.set(`afk:${communityId}`, null);
   }
 
+  /** Reads the snapshot. R-AFK3 (a): the slice keeps its previous value until this read lands (a re-read never passes
+   *  through null), so a voice join that needs it is never held by a re-read. */
   private async loadAFK(communityId: string): Promise<void> {
     const seq = (this.afkReadSeq.get(communityId) ?? 0) + 1;
     this.afkReadSeq.set(communityId, seq);
     try {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
+      this.stopAFKRetry(communityId);
+      // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, occupants: row.occupants.map(p => ({ userId: toHex(p.userId), deviceId: toHex(p.deviceId) })) });
-    } catch { /* reconnect or the next community_changed retries the snapshot */ }
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq });
+    } catch {
+      // A newer read, an unload or a cleared store owns the snapshot now.
+      if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
+      const previous = this.afkRetry.get(communityId);
+      if (previous !== undefined) this.deps.clearTimeout(previous.timer);
+      const attempt = previous?.attempt ?? 0;
+      const delay = Math.min(1_000 * 2 ** attempt, Controller.AFK_RETRY_MAX_MS);
+      const timer: number = this.deps.setTimeout(() => {
+        if (this.afkRetry.get(communityId)?.timer !== timer || this.storeCleared || !this.listed(communityId)) return;
+        void this.barrier.track(this.loadAFK(communityId));
+      }, delay);
+      this.afkRetry.set(communityId, { timer, attempt: attempt + 1 });
+    }
   }
 
-  private async setAFK(communityId: string, channelId: string | null, timeoutSeconds: number): Promise<null> {
+  private async setAFK(communityId: string, timeoutSeconds: number): Promise<null> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    if (channelId !== null && !ID.test(channelId)) throw new Refusal('E_BAD_INPUT', 'invalid AFK channel');
     if (![60, 300, 900, 1800, 3600].includes(timeoutSeconds)) throw new Refusal('E_BAD_INPUT', 'invalid AFK timeout');
-    await this.routes.setAFKSettings(fromHex(communityId), channelId === null ? null : fromHex(channelId), timeoutSeconds);
+    await this.routes.setAFKSettings(fromHex(communityId), timeoutSeconds);
     await this.loadAFK(communityId);
     return null;
   }
@@ -2887,12 +2919,16 @@ export class Controller {
   // ---- devices (requirements 23-26) ----
 
   /** Requirement 25: the own list first, so a just-enrolled device shows as listed. */
-  private async refreshDevices(): Promise<null> {
+  private devicesReadSeq = 0;
+  private async refreshDevices(refreshed?: { listed: boolean }): Promise<null> {
     const core = this.requireCore();
     const me = this.requireMe();
-    const own = await this.parts.refreshOwnDeviceList(core, this.routes, me.userId);
+    const own = refreshed ?? await this.parts.refreshOwnDeviceList(core, this.routes, me.userId);
     if (!own.listed) { this.enterRevoked(); return null; }
+    // A read that began before a newer one must not publish over it (a ready-path read racing a revoke's).
+    const seq = ++this.devicesReadSeq;
     const rows = await this.routes.listDevices();
+    if (seq !== this.devicesReadSeq) return null;
     const entries = core.ownDeviceList().entries;
     const ownHex = toHex(me.deviceId);
     const devices: DeviceSummary[] = rows.map((r) => {
@@ -2907,7 +2943,7 @@ export class Controller {
     devices.sort((a, b) => (a.own !== b.own ? (a.own ? -1 : 1)
       : a.lastSeen !== b.lastSeen ? b.lastSeen - a.lastSeen : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.slices.set('devices', devices);
-    this.deviceCount = devices.length;
+    this.deviceCount = devices.filter((d) => d.revokedAt === null).length;
     this.publishDiagnostics();
     return null;
   }
@@ -3810,9 +3846,14 @@ export class Controller {
       }
       const rows = hits.slice(0, 50).flatMap((h) => {
         const destination = destinations.get(toHex(h.groupId));
-        return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
+        if (destination === undefined) return [];
+        // J1: the row's sender and time, so the palette can show them; a row that cannot be read leaves both out.
+        const found = this.rowAt(this.requireCore(), h.groupId, h.seq);
+        const who = found?.row.senderUser ?? null;
+        return [{ ...destination, seq: h.seq.toString(),
           snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString(),
-          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot) }];
+          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot),
+          ...(found === null ? {} : { ts: Number(found.row.recvTs), ...(who === null ? {} : { author: this.nameOf(toHex(who)) }) }) }];
       });
       const last = hits.at(-1);
       if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,

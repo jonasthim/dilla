@@ -58,7 +58,7 @@ export const SheetMissingRoot: Story = {
 };
 
 const rail = (
-  <CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" onJoin={noop} settingsLabel="settings" onSettings={noop}
+  <CommunityRail label="servers" activeId="a1" onSelect={noop} addLabel="add a server" onAdd={noop} settingsLabel="settings" onSettings={noop}
     itemLabel={i => i.name} items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls' }]} />
 );
 const sidebar = (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Button, InviteLink, ManageList, Select } from '@dilla/ui';
+import { Button, InviteLink, ManageList, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -122,10 +122,16 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
       <h2 id={`${base}-title`} ref={headingRef} tabIndex={-1}>{t('admin.invites.title')}</h2>
       <h3>{t('admin.invites.new')}</h3>
       <form className="dw-admin-form" onSubmit={e => { e.preventDefault(); make(); }}>
-        <Select label={t('admin.invites.expires')} value={ttl} onChange={setTtl}
-          options={TTL_OPTIONS.map(o => ({ value: String(o.seconds), label: t(o.key) }))} />
-        <Select label={t('admin.invites.uses')} value={uses} onChange={setUses}
-          options={USES_OPTIONS.map(n => ({ value: String(n), label: usesLabel(n) }))} hint={t('admin.invites.limitsNote')} />
+        <SettingsRow id={`${base}-expires`} label={t('admin.invites.expires')}>
+          <select className="d-select__input" aria-label={t('admin.invites.expires')} value={ttl} onChange={e => setTtl(e.currentTarget.value)}>
+            {TTL_OPTIONS.map(o => <option key={o.seconds} value={String(o.seconds)}>{t(o.key)}</option>)}
+          </select>
+        </SettingsRow>
+        <SettingsRow id={`${base}-uses`} label={t('admin.invites.uses')} hint={t('admin.invites.limitsNote')}>
+          <select className="d-select__input" aria-label={t('admin.invites.uses')} value={uses} onChange={e => setUses(e.currentTarget.value)}>
+            {USES_OPTIONS.map(n => <option key={n} value={String(n)}>{usesLabel(n)}</option>)}
+          </select>
+        </SettingsRow>
         <div className="dw-settings-actions">
           <Button type="submit" variant="accent" aria-disabled={made?.state === 'creating' || undefined}>{t('admin.invites.create')}</Button>
         </div>

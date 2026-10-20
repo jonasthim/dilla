@@ -20,8 +20,10 @@ it('copies only stable codes and counts listed devices', async () => {
   const view = render(withCore(fake, <Diagnostics data={data} instanceName="dilla.test" writeText={writeText} />));
   expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
   // W-05: the field label is "devices" and the count its value; the instance is its name, not the hex id.
-  expect(Array.from(view.container.querySelectorAll('dt'), dt => dt.textContent)).toEqual(['connection', 'generation', 'instance', 'devices']);
-  expect(Array.from(view.container.querySelectorAll('dd'), dd => dd.textContent)).toEqual(['online', '8', 'dilla.test', '2']);
+  expect(Array.from(view.container.querySelectorAll('.d-settings-row__label'), l => l.textContent).slice(0, 4)).toEqual(['connection', 'generation', 'instance', 'devices']);
+  expect(Array.from(view.container.querySelectorAll('[data-fact]'), d => d.textContent)).toEqual(['online', '8', 'dilla.test', '2']);
+  // I1: four fact rows and the copy row.
+  expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(5);
   await userEvent.setup().click(screen.getByRole('button', { name: 'Copy codes' }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith('E_CORE_INPUT\nE_NOT_FOUND');
   expect(document.body).not.toHaveTextContent('detail');
@@ -36,7 +38,7 @@ it('says when no error is recorded', () => {
 it('shows the devices as unknown until the list loads, then counts the unrevoked ones', () => {
   const fake = new FakeClient();
   const view = render(withCore(fake, <Diagnostics data={{ connection: 'online', generation: '8', instance: 'home', devices: 0, errors: [] }} instanceName="dilla.test" writeText={vi.fn(async () => {})} />));
-  const value = () => Array.from(view.container.querySelectorAll('dd'), dd => dd.textContent)[3];
+  const value = () => Array.from(view.container.querySelectorAll('[data-fact]'), d => d.textContent)[3];
   expect(value()).toBe('–');
   act(() => fake.set('devices', [dev('a1', null), dev('c3', 5)]));
   expect(value()).toBe('1');

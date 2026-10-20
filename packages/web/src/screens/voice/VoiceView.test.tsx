@@ -35,30 +35,78 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
-  it('shows the silent AFK room and its occupants without offering a media join', async () => {
-    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
-      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
-    const region = await main().findByRole('region', { name: t('voice.afk.title') });
-    expect(region).toHaveTextContent('1 in AFK');
-    expect(within(region).queryByRole('button', { name: 'join voice' })).toBeNull();
-    expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
+  it('shows the AFK channel as an ordinary voice view with a join button and the muted stage line', async () => {
+    renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    const app = screen.getByRole('main');
+    expect(await within(app).findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: t('voice.afk.title') })).toBeNull();
   });
 
-  it('closes its media session when this device is moved to AFK', async () => {
+  it('in the AFK call every tile and row shows the muted glyph, the stage says so, and mic, camera and share are disabled', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    await main().findByRole('toolbar', { name: 'voice channel controls' });
+    expect(document.querySelector('.d-call-stage__outgoing')).toHaveTextContent(t('afk.stage.muted', { channel: 'music' }));
+    for (const name of ['mute', 'camera', 'share screen']) {
+      const control = main().getByRole('button', { name });
+      expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(control).toHaveAccessibleDescription(new RegExp(t('afk.stage.muted', { channel: 'music' })));
+      expect(control).not.toHaveAccessibleDescription(new RegExp(t('voice.why.paused')));
+    }
+    expect(main().getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
+    for (const tile of document.querySelectorAll('.dw-voice-stage .d-call-tile')) {
+      expect(within(tile as HTMLElement).getByRole('img', { name: 'muted' })).toBeInTheDocument();
+    }
+    expect(document.querySelectorAll('.dw-voice-stage .d-call-tile').length).toBeGreaterThan(0);
+    // The sidebar row of the AFK channel lists its people muted too.
+    const people = [...document.querySelectorAll('.d-voice-row__person')];
+    expect(people.length).toBeGreaterThan(0);
+    for (const person of people) expect(person.querySelector('[data-state="muted"]')).not.toBeNull();
+  });
+
+  it('final review I-2: in the AFK call the dock\u2019s camera and share are disabled with the stage\u2019s AFK reason', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    const dock = within(await screen.findByRole('toolbar', { name: t('voice.dock.region') }));
+    for (const name of ['camera', 'share screen']) {
+      const control = dock.getByRole('button', { name });
+      expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(control).toHaveAccessibleDescription(t('afk.stage.muted', { channel: 'music' }));
+      await app.user.click(control);
+    }
+    expect(app.session.setCamera).not.toHaveBeenCalled();
+    expect(dock.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('final review I-2 control: in an ordinary call the dock\u2019s camera is live', async () => {
+    await inVoice();
+    const dock = within(screen.getByRole('toolbar', { name: t('voice.dock.region') }));
+    expect(dock.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('an ordinary voice call keeps its controls live and shows no muted-for-everyone line (control)', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
-      occupants: [{ userId: ME.id, deviceId: OWN_DEV }] });
-    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
-    expect(app.session.state.phase).toBe('ended');
+    expect(main().queryByText(t('afk.stage.muted', { channel: 'general' }))).toBeNull();
+    for (const name of ['mute', 'camera']) expect(main().getByRole('button', { name })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBeFalsy();
   });
 
   it('reports actual input while a voice call remains open on another page', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
-      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    expect(app.client.callsOf('afkActivity')[0]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV }); // desktop: not exempt
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
@@ -71,7 +119,7 @@ describe('voice in the shell', () => {
 
   it('reports a short microphone utterance before the next polling interval', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
@@ -260,7 +308,7 @@ describe('voice in the shell', () => {
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
-    expect(screen.getByText('in general')).toBeInTheDocument();
+    expect(screen.getByText(t('layout.dock.connected'))).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
@@ -565,7 +613,7 @@ describe('review round 1', () => {
     screen.getByRole('button', { name: 'voice general' }).focus();
     await app.user.tab();
     expect(document.activeElement).toHaveAccessibleName('join voice');
-    expect(document.activeElement?.closest('.d-channel-list__voice')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
+    expect(document.activeElement?.closest('.d-voice-item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
   });
 
   // Product walk M4: the SFU's own speaking (the session's state.speaking), no longer the meter level.
@@ -590,6 +638,105 @@ describe('review round 1', () => {
     await app.user.click(toggle);
     expect(box).toHaveAttribute('data-view', 'messages');
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  });
+});
+
+describe('web3.9 WEB-AFK: the AFK channel in the shell', () => {
+  const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, ...over });
+  it('the AFK row is a plain voice row: not held, with the voice glyph and a join; no move or leave command exists', async () => {
+    const app = renderVoiceShell({ voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, afkSlice());
+    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
+    expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
+    expect(within(row).getByRole('button', { name: /join/i })).toBeInTheDocument();
+    await app.user.click(within(row).getByRole('button', { name: /join/i }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+  });
+
+  it('while in an ordinary call, the open AFK channel offers a join and no move or leave control', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, afkSlice());
+    go(`/c/${A}/${MUSIC}`);
+    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /move to afk|leave afk/i })).toBeNull();
+  });
+
+  it('Shell hands the slice’s seq to useCall: a second sweep’s read (a higher seq, no false read between) moves again', async () => {
+    const app = renderVoiceShell();
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    // The person leaves the AFK call and joins general; later the sweep cuts that call and its read lands seq 4.
+    await app.user.click(await screen.findByRole('button', { name: 'leave' }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(2));
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + 120_000);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
+    await waitFor(() => expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2));
+    vi.restoreAllMocks();
+  });
+
+  it('a pending move joins the AFK channel once, and a republished read of it does not join again', async () => {
+    const app = renderVoiceShell();
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await new Promise(r => setTimeout(r, 200));
+    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+  });
+
+  it('a failed move shows afk.moved with a join button that joins the AFK channel', async () => {
+    const app = renderVoiceShell();
+    let fail = true;
+    const base = app.client.handler;
+    app.client.handler = command => command.m === 'callJoin' && command.channelId === MUSIC && fail
+      ? Promise.reject(Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN' })) : base(command);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
+    const line = await screen.findByText(t('afk.moved', { channel: 'music' }));
+    const banner = line.closest('.d-banner') as HTMLElement;
+    fail = false;
+    await app.user.click(within(banner).getByRole('button', { name: t('afk.moved.join') }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2);
+    await waitFor(() => expect(screen.queryByText(t('afk.moved', { channel: 'music' }), { selector: '.d-banner *' })).toBeNull());
+  });
+});
+
+describe('push to talk in the user panel (web3.9)', () => {
+  const panelMic = () => within(screen.getByRole('toolbar', { name: t('panel.region') })).getByRole('button', { name: 'mute' });
+  it('shows the PTT tag and the push to talk description in push-to-talk mode, the ring while heard', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'F13' } });
+    expect(screen.getByText(t('layout.ptt.tag'))).toHaveAttribute('aria-hidden', 'true');
+    expect(panelMic()).toHaveAccessibleDescription(new RegExp(t('settings.voice.ptt')));
+    const ring = () => document.querySelector('.d-user-panel__avatar');
+    expect(ring()).not.toHaveAttribute('data-speaking');
+    act(() => app.session.update({ speaking: true }));
+    expect(ring()).toHaveAttribute('data-speaking', 'true');
+  });
+  it('shows none of it in voice-activity mode (control)', async () => {
+    await inVoice();
+    expect(screen.queryByText(t('layout.ptt.tag'))).toBeNull();
+  });
+});
+
+describe('WEB-DOCK review: a DM call stage carries the hearing line', () => {
+  it('shows "hearing {attached} of {expected}" under a DM call\'s controls', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    expect(document.querySelector('.dw-dm-call [data-audio-expected]')).toBeNull();
+    act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
+    const line = await waitFor(() => { const l = document.querySelector('.dw-dm-call [data-audio-expected]'); expect(l).not.toBeNull(); return l!; });
+    expect(line).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
   });
 });
 
@@ -624,10 +771,10 @@ describe('web3.3: the browser holds call audio back', () => {
   });
 });
 
-describe('web3.4 V2: the dock says how many it hears', () => {
+describe('web3.4 V2: the stage says how many it hears (web3.9: it left the dock)', () => {
   it('shows "hearing {attached} of {expected}" with its counts while any remote audio is expected, and nothing otherwise', async () => {
     const app = await inVoice();
-    const line = () => document.querySelector('.dw-voice-dock [data-audio-expected]');
+    const line = () => document.querySelector('.dw-voice-stage [data-audio-expected]'); // web3.9 R26: on the stage, no longer in the dock
     expect(line()).toBeNull();
     // Deafened: a newcomer's track is expected but held back.
     act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
@@ -637,7 +784,7 @@ describe('web3.4 V2: the dock says how many it hears', () => {
     expect(shown).toHaveAttribute('data-audio-expected', '2');
     // A diagnostic, not news: no status region of its own (the dock's one region says what changes).
     expect(shown.closest('[role="status"]')).toBeNull();
-    await expectNoAxeViolations(document.querySelector('.dw-voice-dock')!);
+    await expectNoAxeViolations(document.querySelector('.dw-voice-stage__lines')!);
     act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
     await waitFor(() => expect(line()).toHaveAttribute('data-audio-attached', '2'));
     expect(line()).toHaveTextContent(t('voice.diag.tracks', { attached: 2, expected: 2 }));
@@ -701,12 +848,14 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
     const app = await inVoice();
     let release: () => void = () => undefined;
     app.session.leaveGate = new Promise<void>(resolve => { release = resolve; });
-    await app.user.click(screen.getByRole('button', { name: 'voice music' }));
+    // A row click joins on a desktop (web3.9), so the stage is opened by the route here and joined from its button.
+    const go = (id: string) => act(() => { window.history.pushState(null, '', `/c/${A}/${id}`); window.dispatchEvent(new PopStateEvent('popstate')); });
+    go(MUSIC);
     await waitFor(() => expect(window.location.pathname).toContain(MUSIC));
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.log).toContain('leave:switch'));
     // While the switch’s leave runs, the person picks general again: the music join is superseded before it started.
-    await app.user.click(screen.getByRole('button', { name: 'voice general' }));
+    go(GENV);
     await waitFor(() => expect(window.location.pathname).toContain(GENV));
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     expect(app.callContexts).toHaveLength(3);
@@ -807,8 +956,8 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     await inVoice();
     expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
     expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
-    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
-    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl Shift M');
+    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl Shift D');
     await offStage();
     expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
     expect(dock().queryByRole('button', { name: t('voice.mute') })).toBeNull();
@@ -1120,5 +1269,87 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
       act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
       await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
     });
+  });
+});
+
+// web3.9 (C4): a voice channel's stage opens with the channel header in its 48 bar; a DM call has none.
+describe('the voice stage header (web3.9)', () => {
+  it('shows the voice channel header in the stage bar on a desktop, with the volume glyph', async () => {
+    renderVoiceShell({ path: `/c/${A}/${GENV}` });
+    const stage = (await main().findByRole('button', { name: 'join voice' })).closest('section') as HTMLElement;
+    const bar = stage.querySelector('.d-call-stage__bar') as HTMLElement;
+    expect(within(bar).getByRole('heading', { name: 'general' })).toBeInTheDocument();
+    expect(bar.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
+  });
+
+  it('a DM call stage has no channel header', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    expect(document.querySelector('.d-call-stage__bar')).toBeNull();
+  });
+});
+
+// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, "voice connected", channel · server, three icon buttons; speaking is a
+// ring on the list row and on the tile and nothing else.
+describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
+  const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;
+  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null }];
+
+  it('has no meter, no level text and no line, and keeps the dock to its two lines and three buttons', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    act(() => app.session.update({ level: 40, audio: { attached: 1, expected: 2 } }));
+    await offStage();
+    const dock = dockEl();
+    expect(dock.querySelector('.d-audio-meter, [role="meter"], .d-voice-dock__meter')).toBeNull();
+    expect(dock).not.toHaveTextContent(t('settings.voice.level'));
+    expect(dock.querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
+  });
+
+  it('line 1 reads "voice connected" and opens Diagnostics; line 2 reads the channel and the server', async () => {
+    const app = await inVoice();
+    await offStage();
+    const status = within(dockEl()).getByRole('button', { name: t('layout.dock.connected') });
+    expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('general · Midgard');
+    await app.user.click(status);
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
+  });
+
+  it('camera, share and leave are 32px icon buttons', async () => {
+    await inVoice();
+    await offStage();
+    const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
+    expect(buttons).toHaveLength(3);
+    for (const b of buttons) { expect(b).toHaveClass('d-icon-button'); expect(b).toHaveAttribute('data-size', '32'); }
+  });
+
+  it('a remote tile at volume 70 shows "70 %" in its chip', async () => {
+    const app = await inVoice({ settings: { [`voice.volume.${BOB}`]: '70' } });
+    act(() => app.session.update({ tiles: remote(false) }));
+    await waitFor(() => expect(document.querySelector('.d-call-tile__chip')).toHaveTextContent('70 %'));
+  });
+
+  it('a speaking participant has the ring on the list row and on the tile and no other speaking mark', async () => {
+    const app = await inVoice({ voice: { [GENV]: { callId: GENV, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false },
+      { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    ] } } });
+    act(() => app.session.update({ tiles: remote(true) }));
+    const tile = await waitFor(() => { const e = document.querySelector('.d-call-tile[data-speaking="true"]'); expect(e).not.toBeNull(); return e!; });
+    expect(tile.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'true');
+    expect(tile.querySelector('[data-state="speaking"]')).toBeNull();
+    await waitFor(() => expect(document.querySelector('.d-voice-row__person[data-speaking="true"]')).not.toBeNull());
+    expect(document.querySelector('[data-state="speaking"]')).toBeNull();
+    await offStage();
+    expect(dockEl().querySelector('[data-speaking], [data-state="speaking"]')).toBeNull();
+  });
+
+  it('push to talk and the hearing count stand on the stage, not in the dock', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
+    const stage = main().getByRole('toolbar', { name: 'voice channel controls' }).closest('.dw-voice-stage')!;
+    await waitFor(() => expect(stage.querySelector('.dw-voice-dock__mode')).toHaveTextContent(t('voice.dock.ptt', { key: 'Pause' })));
+    expect(stage.querySelector('[data-audio-expected]')).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
+    expect(dockEl().querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
   });
 });

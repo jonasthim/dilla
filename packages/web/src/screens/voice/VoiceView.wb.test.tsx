@@ -205,20 +205,21 @@ describe('keyboard, rings and the voice section (wb-web-a11y m1, m3, m4, m5)', (
     await waitFor(() => expect(main().getByRole('button', { name: 'answer' })).toHaveFocus());
   });
 
-  it('m4: the voice row join is named join voice and described by the channel, without an aria-label', async () => {
+  it('m4: the voice row join is an icon button named join voice, in the trailing slot', async () => {
     renderVoiceShell({ path: `/c/${A}/${TEXT}` });
     const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
     const join = within(row).getByRole('button', { name: 'join voice' });
-    expect(join).not.toHaveAttribute('aria-label');
-    expect(join).toHaveAccessibleDescription('music');
+    // web3.9: the join is an icon button in the row's trailing slot, named by its own label.
+    expect(join).toHaveAttribute('aria-label', 'join voice');
+    expect(join.closest('.d-slot')).not.toBeNull();
   });
 
-  it('m5: leaving from the dock on another DM focuses the sidebar tab, not that DM call button', async () => {
+  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM call button', async () => {
     const app = await inVoice();
     window.history.pushState(null, '', `/dm/${DM}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
     await main().findByRole('button', { name: 'call' });
     await app.user.click(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
-    await waitFor(() => expect(document.activeElement).toHaveAttribute('role', 'tab'));
+    await waitFor(() => expect(document.activeElement).toHaveAccessibleName('direct messages'));
   });
 });

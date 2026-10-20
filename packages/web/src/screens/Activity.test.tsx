@@ -41,7 +41,7 @@ describe('Activity', () => {
       notice(2, { kind: 'mention', senderName: 'ada', body: 'bring the tank gear', channelId: LOOT }),
       notice(3, { kind: 'dm', senderName: 'bjorn', body: 'after nine', channelId: DM, communityId: null }),
     ] });
-    expect(screen.getByRole('heading', { level: 1, name: t('activity.title') })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: t('activity.title') })).toBeInTheDocument();
     const rows = screen.getAllByRole('button');
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent(`bjorn · ${t('activity.dm')}`);
@@ -66,8 +66,12 @@ describe('Activity', () => {
 
   it('says there is nothing new when there are no notices and nothing unread', async () => {
     const { view } = setup();
-    expect(screen.getByText(t('activity.empty'))).toBeInTheDocument();
-    expect(screen.queryByText(t('activity.since'))).toBeNull();
+    // H8: the header stays, and the empty state is the framed region under it, named by its own sentence.
+    expect(screen.getByRole('heading', { level: 2, name: t('activity.title') }).closest('header')).toHaveClass('d-phone-header');
+    const frame = screen.getByRole('region', { name: t('activity.emptyTitle') });
+    expect(frame).toHaveClass('d-empty-state');
+    expect(frame.parentElement).toHaveClass('dw-phone-pane__frame');
+    expect(within(frame).getByText(t('activity.since'))).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
 
@@ -96,7 +100,7 @@ describe('Activity', () => {
     const row = screen.getByRole('button', { name: /general/ });
     expect(row).toHaveTextContent('1 mention');
     expect(row).not.toHaveTextContent('unread');
-    expect(screen.queryByText(t('activity.empty'))).toBeNull();
+    expect(screen.queryByText(t('activity.emptyTitle'))).toBeNull();
   });
 
   it('has no axe violations with rows', async () => {

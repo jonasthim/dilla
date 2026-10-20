@@ -28,6 +28,8 @@
    The composer's textarea is the other exception (Jonas, 2026-10-14): its box's accent border shows focus,
    and it keeps a transparent outline, not `none`, so forced colors still shows focus. */
 .d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* web3.9 (R18): a list row sits flush against its neighbours and the pane edge, so its ring is drawn inside the row. */
+[data-row]:focus-visible { outline-offset: -2px; }
 /* Visually hidden, still read aloud: the text half of a non-colour cue. */
 .d-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .d-label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
@@ -78,8 +80,11 @@
 /* Final fix I3: the ring (z-index 30) is above the sheet (aside 25, backdrop 24); the sheet starts under it, so its back button stays reachable. */
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside { top: var(--d-ring-h, 0px); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside .d-phone-header { padding-top: 0; }
-/* The phone's rail tiles are 44px, with their caption (join, new) visible under the glyph. */
-.d-app-shell[data-layout="phone"] .d-community-rail__glyph { width: 2.75rem; height: 2.75rem; }
+/* web3.9 (R10, R13): a finger needs taller rows and a wider trailing column; the rows stay flush (no gap). `[data-phone]` is the
+   thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
+.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
+/* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. */
+.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
 /* The list heading of a phone tab (activity, you): mono, not the display serif, which is the server name's alone. */
 .d-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); }
 /* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */
@@ -87,9 +92,6 @@
 /* The server menu and its items: 44px on a phone. */
 .d-app-shell[data-layout="phone"] .d-action-menu__trigger { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
 .d-app-shell[data-layout="phone"] .d-action-menu__item { min-height: 2.75rem; }
-/* A finger, not a pointer: the sidebar's rows and the rail's tiles are 44px tall on a phone. */
-.d-app-shell[data-layout="phone"] .d-chrow { min-height: 2.75rem; }
-.d-app-shell[data-layout="phone"] .d-community-rail__item { width: 2.75rem; height: 2.75rem; }
 .d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__callbar) .d-composer { padding-bottom: 0.5rem; }
 /* The tab bar pads the home indicator once: the composers above it (the thread pane's too) add none, until the bar steps aside while typing. */
@@ -134,4 +136,12 @@
   .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); overflow: visible; min-height: auto; }
   .d-settings-frame .d-settings-frame__pane { min-height: auto; }
   .d-settings-frame .d-settings-frame__body { overflow: visible; }
+  /* R17: a narrow frame stacks the label over a full-width control, as a phone does. */
+  .d-settings-frame .d-settings-row { grid-template-columns: minmax(0, 1fr); }
 }
+/* web3.9 (R17, H5, I6): the settings frame and its rows on a phone layout. The frame is a dialog, so it carries its own data-layout. */
+.d-settings-frame[data-layout="phone"] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
+.d-settings-frame[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
+.d-settings-frame[data-layout="phone"] .d-settings-row, [data-phone] .d-settings-row { grid-template-columns: minmax(0, 1fr); }
+/* H5: the frame's title is not repeated on a phone (the page below it carries the section's own heading); it stays the dialog's name and focus target. */
+.d-settings-frame[data-layout="phone"] .d-settings-frame__title { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

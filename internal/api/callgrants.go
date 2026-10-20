@@ -301,7 +301,8 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 	if bar || !leaf || !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
 		return true, h.removeDevice(ctx, d, row, dev, false)
 	}
-	penalised := h.leases.penalised(row.CallID, row.LivekitRoom, dev)
+	// R34: a call of the built-in AFK channel is listen-only on this push too, as a penalty is.
+	penalised := h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row)
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev) && !dropSlot && !penalised
 	keepsSlot := (bits.Has(PermVideo) || bits.Has(PermScreenShare)) && !dropSlot && !penalised
 	perm := sfu.PublishGrant(bits.Has(PermSpeak) && !penalised, bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)

@@ -17,6 +17,7 @@ export { BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS } from './attachments/crypto';
 export { RENDERABLE_IMAGE } from './attachments/thumb';
 export { safeName } from './attachments/name';
 export { accessOf, topOf, canModerate } from './admin/rank';
+export { AFK_BUILTIN_POSITION, isBuiltinAFK } from './admin/afk';
 export { canCreateAnnouncement } from './admin/roles';
 export { PERM, COMMUNITY_BITS, PERM_GROUPS, PERM_BY_KEY, resolveCommunity, resolveChannel, channelBitsOf, isPrivate } from './admin/perm';
 export type { PermKey, PermRole, PermOverwrite, PermMember, PermInput } from './admin/perm';

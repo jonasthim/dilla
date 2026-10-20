@@ -1,7 +1,6 @@
 /**
- * The wrapping arrow rule of single-select groups: the radio group (`Segmented`) and the tab list
- * (`SidebarTabs`). Given a key and the focused index, it answers the index to move to, or null when
- * the key is not one of the group's (a key pressed with Alt, Ctrl, Meta or Shift is never one: those
+ * The wrapping arrow rule of single-select groups: the radio group (`Segmented`). Given a key and the
+ * focused index, it answers the index to move to, or null when the key is not one of the group's (a key pressed with Alt, Ctrl, Meta or Shift is never one: those
  * belong to the shell). `ArrowRight`/`ArrowLeft` wrap; with the `both` axis `ArrowDown`/`ArrowUp` do
  * the same; `Home`/`End` go to the ends. Pure: the caller moves focus and selects.
  */

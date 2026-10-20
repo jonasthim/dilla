@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceDock,
+  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -30,6 +30,8 @@ export interface VoiceContext {
   /** Opens Settings → Voice (product walk M7: the dock's push to talk with no key set leads there). */
   onVoiceSettings(): void;
   onJoinVoice?(channelId: string): void;
+  /** web3.9 WEB-AFK: the built-in AFK channels. Everyone in one is muted, and its stage says so. */
+  afkChannels?: ReadonlySet<string>;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -78,10 +80,12 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
   const ownName = selfName(v.self, v.members);
+  // WEB-AFK: in a listen-only call nobody speaks, so every state says muted.
+  const listen = state?.listenOnly === true || v.afkChannels?.has(channelId) === true;
   const own = v.self === null ? [] : deviceTiles({
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
-      speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
+      speaking: state?.speaking ?? false, muted: listen || (state?.muted ?? false), deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
     own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
@@ -90,9 +94,10 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
-    const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
+    const seen = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
+    const view = listen ? { ...seen, muted: true } : seen;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) },
     { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
@@ -103,7 +108,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
 /** The people of a live call this device is not in, as avatar tiles without media. */
 function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   return (v.voice?.[channelId]?.participants ?? []).map(p => ({
-    view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
+    view: v.afkChannels?.has(channelId) === true ? { ...participantView(p), muted: true } : participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
     onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
   }));
 }
@@ -237,16 +242,33 @@ function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
-function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
+/** web3.9 R26: the push-to-talk key and the hearing count left the dock; they stand under the stage's controls. */
+function StageLines({ v }: { v: VoiceContext }) {
+  const s = v.call.state;
+  const ptt = s?.mode === 'ptt';
+  const hearing = s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
+  if (!ptt && !hearing) return null;
+  return (
+    <div className="dw-voice-stage__lines">
+      {ptt ? <PttLine v={v} /> : null}
+      <HearingLine audio={s?.audio} silent={s?.deafened === true || s?.paused === true} />
+    </div>
+  );
+}
+
+function Controls({ v, paused, dm, afkName }: { v: VoiceContext; paused: boolean; dm: boolean; afkName: string }) {
   const s = v.call.state;
   const canShare = canCapture();
   const phone = usePhoneLayout();
   const hideShare = phone && !canShare;
+  // WEB-AFK: a listen-only call (the AFK channel) has no mic, camera or share; each is aria-disabled with the stage's reason.
+  const listen = s?.listenOnly === true;
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
+      canCamera={!paused && !listen} canShare={!paused && !listen && canShare} hideShare={hideShare} busy={v.call.session === null}
+      paused={paused} {...(listen ? { listenReason: t('afk.stage.muted', { channel: afkName }) } : {})} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
@@ -296,8 +318,9 @@ const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp
  * one element and one CallStage instance throughout, so its notice region is never remounted with its text (that
  * would not be announced) and focus can be kept inside it when the controls swap for the join button or back.
  */
-function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channelId: string; title: string; outgoing: { text: string } | null; dm: boolean }) {
+function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; channelId: string; title: string; name?: string; outgoing: { text: string } | null; dm: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const phone = usePhoneLayout();
   const joined = v.call.channelId === channelId;
   useStageFocus(ref, v.call, joined);
   useFocusRescue([ref], joined ? 'joined' : 'idle', () => stageTarget(ref.current, joined));
@@ -310,6 +333,7 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
+  const afk = v.afkChannels?.has(channelId) === true;
   const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
   // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
   const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
@@ -319,9 +343,9 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={tiles} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
-        outgoing={joined ? outgoing : null}
-        controls={joined ? <Controls v={v} paused={paused} dm={dm} />
+      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
+        outgoing={afk ? { text: t('afk.stage.muted', { channel: name ?? title }) } : joined ? outgoing : null}
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>
@@ -330,7 +354,7 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
-  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} outgoing={null} dm={false} />;
+  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />;
 }
 
 /**
@@ -354,10 +378,19 @@ function StripNotice({ notice, refObj }: { notice: CallStageNotice | null; refOb
 }
 
 /**
- * The DM call strip under the conversation header (flow 06 "DM call"): `call.start` with no live call, `call.join` with
- * one, the outgoing ring's text while this device's call rings the others; while in the DM's call, its stage sits above
- * the log. A call block never reaches the composer: the strip says it, the composer stays as the text group's gate has it.
+ * The DM call (flow 06): the call button is an icon in the conversation header (N1); a notice about the call is a strip under
+ * the header, and none stands there otherwise. While in the DM's call, its stage sits above the log. A call block never reaches the composer: the strip says it, the composer stays as the text group's gate has it.
  */
+/**
+ * What a DM's call button does and says (`call.start`, or `call.join` while a call is live), or null where there is nothing to
+ * start: this device is in the call, or the join is held. It is an icon in the DM header on every layout (H2, N1).
+ */
+export function dmCallStart(v: VoiceContext, channelId: string): { label: string; onStart: () => void } | null {
+  if (v.call.channelId === channelId || joinHeld(v, channelId)) return null;
+  const live = (v.voice?.[channelId]?.participants.length ?? 0) > 0;
+  return { label: t(live ? 'call.join' : 'call.start'), onStart: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } };
+}
+
 export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
   const outgoing = v.slice?.channelId === channelId ? v.slice.outgoing : null;
   // A ring lasts 30 s (R5, useCall's clock): once that long has passed with nobody answering, the strip says so.
@@ -373,25 +406,20 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
   const stripRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<HTMLDivElement>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
-  const live = (v.voice?.[channelId]?.participants.length ?? 0) > 0;
   const notice = inThisCall ? null : stageNotice(v, channelId);
-  const held = joinHeld(v, channelId);
   // WB a11y I1: a failed call, a removal or an end swaps the stage for the strip under focus; focus goes to the notice
   // that says why, else the call button (the stage's own focus rule covers the join).
   useFocusRescue([stripRef, callRef], inThisCall ? 'joined' : 'idle', () => (inThisCall ? null
-    : notice !== null ? noticeRef.current : stripRef.current?.querySelector<HTMLElement>('.dw-call-strip__start')));
-  // The strip is always the first element, in a call too (empty and collapsed there), so its status region is never
-  // mounted with its text (WB a11y I2).
+    : notice !== null ? noticeRef.current : document.querySelector<HTMLElement>('[data-dm-call-start]')));
   return (
     <>
+      {/* The call button is in the header (N1). The strip is always the first element, empty and collapsed (no band, no hairline)
+          until there is a notice, so its status region is never mounted with its text (WB a11y I2). */}
       <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
         data-call-phase={inThisCall ? undefined : v.slice?.channelId === channelId ? v.slice.phase : 'idle'}
-        data-empty={inThisCall && notice === null ? 'true' : undefined}>
+        data-empty={notice === null ? 'true' : undefined}>
         <StripNotice notice={notice} refObj={noticeRef} />
         {notice?.action != null ? <Button className="dw-call-strip__action" onClick={() => notice.action?.onAction()}>{notice.action.label}</Button> : null}
-        {inThisCall || held ? null : (
-          <Button className="dw-call-strip__start" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
-        )}
       </div>
       {inThisCall ? (
         <div ref={callRef} className="dw-dm-call" data-view={view}>
@@ -455,12 +483,15 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The call panel above the user panel while this device is in voice (flow 06): where, the input meter, then
- * camera, share screen and leave (no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
+ * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26): "voice connected"
+ * (a button to Diagnostics), "{channel} · {server}", then camera, share screen and leave (no meter and no line: the input level stays in
+ * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
  */
-export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
+export function Dock({ v, where, server, stageShown, onStatus }: {
+  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean; onStatus: () => void;
+}): React.JSX.Element | null {
   const { call } = v;
   const bannerRef = useRef<HTMLDivElement>(null);
   const id = call.channelId;
@@ -475,6 +506,8 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
   }, [bannerText, pauseFocusPending, markPauseFocused]);
   if (id === null) return null;
   const phase = callPhase(v);
+  // Final review I-2: a listen-only call (the AFK channel) holds the dock's camera and share as the stage does, with its reason.
+  const listen = call.state?.listenOnly === true;
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
@@ -494,18 +527,15 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         </div>
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
-        camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
+        camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused && !listen}
+        canShare={!paused && !listen && canCapture()} busy={call.session === null} paused={paused}
+        {...(listen ? { listenReason: t('afk.stage.muted', { channel: where }) } : {})}
         announcement={call.announcement}
-        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
+        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: t('layout.dock.connected'),
+          where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
-        meter={<>
-          <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
-          {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
-          <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
-        </>}
-        onCamera={call.toggleCamera} onShare={call.toggleShare}
+        onStatus={onStatus} onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );

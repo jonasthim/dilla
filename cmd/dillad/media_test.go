@@ -7,14 +7,22 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/config"
+	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/sfu"
 )
 
 type delayedRooms struct{ calls int }
+
+func (d *delayedRooms) Participants(context.Context, string) ([]*livekit.ParticipantInfo, error) {
+	return nil, nil
+}
 
 func (d *delayedRooms) Rooms(context.Context) ([]string, error) {
 	d.calls++
@@ -84,5 +92,121 @@ func TestMediaRunsSeparatelyAndTheAPIControlsItsRooms(t *testing.T) {
 		}
 	case <-time.After(25 * time.Second):
 		t.Fatal("media did not stop")
+	}
+}
+
+type fakeLister struct {
+	rooms        map[string][]string
+	failRoom     string
+	slow         time.Duration
+	roomsErr     error
+	participants error
+}
+
+func (f fakeLister) Rooms(context.Context) ([]string, error) {
+	if f.roomsErr != nil {
+		return nil, f.roomsErr
+	}
+	out := make([]string, 0, len(f.rooms))
+	for r := range f.rooms {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (f fakeLister) Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error) {
+	if f.participants != nil {
+		return nil, f.participants
+	}
+	if room == f.failRoom {
+		return nil, errors.New("boom")
+	}
+	if f.slow > 0 {
+		select {
+		case <-time.After(f.slow):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	var out []*livekit.ParticipantInfo
+	for _, id := range f.rooms[room] {
+		out = append(out, &livekit.ParticipantInfo{Identity: id})
+	}
+	return out, nil
+}
+
+func TestMediaRoomsListsRoomsAndParticipantsSorted(t *testing.T) {
+	var out bytes.Buffer
+	remote := fakeLister{rooms: map[string][]string{"room-b": nil, "room-a": {"zed", "amy"}}}
+	if err := mediaRooms(t.Context(), remote, &out, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	want := "room-a\t2 participants\n  amy\n  zed\nroom-b\t0 participants\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestMediaRoomsEmptySFU(t *testing.T) {
+	var out bytes.Buffer
+	if err := mediaRooms(t.Context(), fakeLister{}, &out, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "no live rooms\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestMediaRoomsUnavailableWhenTheSidecarDoesNotAnswer(t *testing.T) {
+	remote := fakeLister{roomsErr: errors.New("down")}
+	err := mediaRooms(t.Context(), remote, &bytes.Buffer{}, 300*time.Millisecond)
+	if !errors.Is(err, exit.Unavailable) {
+		t.Fatalf("err = %v, want exit.Unavailable", err)
+	}
+}
+
+func TestMediaProbeAndRoomsAreExclusive(t *testing.T) {
+	var stderr bytes.Buffer
+	err := runMedia([]string{"--probe", "--rooms"}, &bytes.Buffer{}, &stderr)
+	if !errors.Is(err, exit.Usage) {
+		t.Fatalf("err = %v, want exit.Usage", err)
+	}
+	if !strings.Contains(stderr.String(), "media: --probe and --rooms are exclusive") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestMediaProbeNamesTheRoomCount(t *testing.T) {
+	var out bytes.Buffer
+	remote := fakeLister{rooms: map[string][]string{"a": nil, "b": nil}}
+	if err := mediaProbe(t.Context(), remote, &out, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "media probe: ok, 2 live rooms\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestMediaRoomsStopsAtTheOverallDeadline(t *testing.T) {
+	remote := fakeLister{rooms: map[string][]string{"a": {"x"}, "b": {"y"}, "c": {"z"}}, slow: 400 * time.Millisecond}
+	start := time.Now()
+	err := mediaRooms(t.Context(), remote, &bytes.Buffer{}, 300*time.Millisecond)
+	if !errors.Is(err, exit.Unavailable) {
+		t.Fatalf("err = %v, want exit.Unavailable", err)
+	}
+	if took := time.Since(start); took > 700*time.Millisecond {
+		t.Fatalf("took %v, want the verb to stop near the 300ms deadline", took)
+	}
+}
+
+func TestMediaRoomsPrintsNothingWhenAListingFailsMidway(t *testing.T) {
+	var out bytes.Buffer
+	remote := fakeLister{rooms: map[string][]string{"a": {"x"}, "b": {"y"}}, failRoom: "b"}
+	err := mediaRooms(t.Context(), remote, &out, time.Second)
+	if !errors.Is(err, exit.Unavailable) {
+		t.Fatalf("err = %v, want exit.Unavailable", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want nothing", out.String())
 	}
 }

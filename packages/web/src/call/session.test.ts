@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
 import type { EpochKeys, JoinCallOptions } from '@dilla/media';
-import { startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
+import { getBrowser } from 'livekit-client';
+import { concurrentCapture, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
 const CH = 'c1'.repeat(16);
 const callId = 'a1'.repeat(16);
@@ -282,7 +283,7 @@ function fakes(o: Options = {}) {
   };
   return {
     deps, order, calls, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
-    audioHost, subscribeTrack, unsubscribeTrack, contexts, audio,
+    audioHost, subscribeTrack, unsubscribeTrack, contexts, audio, media,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
     setNow: (t: number) => { now = t; },
@@ -1938,6 +1939,284 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(call.state.speaking).toBe(true);
   });
 
+  /** web3.9 VOICE-FIX: as `reopening`, and the published LiveKit track can take a capture the session acquired itself
+   *  (LocalAudioTrack.replaceTrack). `steps` records the order of the pre-acquire, the replace and the old capture's stop;
+   *  `atReplace` is the new capture's `enabled` at the moment it reaches the sender. As LiveKit, the replace then sets
+   *  `enabled = true` on it (`!isMuted`, isMuted false). The pre-acquire is `pre`, installed once the call is up. */
+  const handingOver = (f: ReturnType<typeof fakes>) => {
+    const steps: string[] = [];
+    const { fresh, restarts } = reopening(f);
+    // Fix round 1 (I1): the hand-over runs only where the engine keeps two captures of one microphone live.
+    f.deps.concurrentCapture = true;
+    const next = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(() => { steps.push('new.stop'); }), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }),
+      getConstraints: () => ({}), applyConstraints: async () => undefined,
+    });
+    const seen: { atReplace?: boolean; userProvided?: boolean } = {};
+    const holdReplace: { promise?: Promise<void> } = {};
+    let old: { stop: ReturnType<typeof vi.fn>; track: unknown } | null = null;
+    /** Every track handed to replaceTrack, in order; `onReplace` runs as the replace resolves (fix round 1, M1). */
+    const replaced: unknown[] = [];
+    const hooks: { onReplace?: (n: MediaStreamTrack) => void } = {};
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const stop = vi.fn(() => { steps.push('old.stop'); });
+      (track as unknown as { stop: unknown }).stop = stop;
+      old = { stop, track };
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; replaceTrack: (n: MediaStreamTrack, u?: boolean) => Promise<void> };
+      t.replaceTrack = vi.fn(async (n: MediaStreamTrack, u?: boolean) => {
+        steps.push('replaceTrack');
+        replaced.push(n);
+        seen.atReplace = (n as unknown as { enabled: boolean }).enabled;
+        seen.userProvided = u;
+        await holdReplace.promise;
+        t.mediaStreamTrack = n;
+        (n as unknown as { enabled: boolean }).enabled = true;
+        hooks.onReplace?.(n);
+      });
+      return pub;
+    });
+    const pre = vi.fn(async (c: MediaStreamConstraints) => {
+      void c;
+      steps.push('getUserMedia');
+      return { getTracks: () => [next], getAudioTracks: () => [next], getVideoTracks: () => [] } as unknown as MediaStream;
+    });
+    const install = () => { f.deps.media.getUserMedia = pre; };
+    return { steps, restarts, fresh, next, seen, holdReplace, pre, install, replaced, hooks, old: () => old };
+  };
+
+  it('a deferred restart keeps the old capture until the new one is on the sender', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    expect(h.steps).toEqual([]);
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.restarts.n).toBe(0);
+    expect(h.seen.userProvided).toBe(true);
+    expect(h.pre.mock.calls[0][0]).toMatchObject({ audio: { deviceId: { exact: 'chosen' }, noiseSuppression: false, echoCancellation: true, autoGainControl: true } });
+    // The new capture is the one the session's mute governs from here on.
+    expect(h.next.enabled).toBe(true);
+    call.setMuted(true);
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('the pre-acquired track is guarded before it reaches the sender', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    // Muted again before the new capture is on the sender.
+    call.setMuted(true);
+    prompt.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.seen.atReplace).toBe(false);
+    // LiveKit's `enabled = !isMuted` after the replace does not open it either: the end state is disabled.
+    expect(h.next.enabled).toBe(false);
+    h.next.enabled = true;
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('the pre-acquired track stays closed when a mute lands while the replace runs', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    const replace = deferred<void>();
+    h.holdReplace.promise = replace.promise;
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack']);
+    call.setMuted(true);
+    replace.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('a failed pre-acquire keeps the old capture and does not loop', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.pre.mockImplementationOnce(async () => { h.steps.push('getUserMedia'); throw Object.assign(new Error('busy'), { name: 'NotReadableError' }); });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    expect(h.restarts.n).toBe(0);
+    for (let i = 0; i < 2; i++) {
+      call.setMuted(true);
+      await flush();
+      call.setMuted(false);
+      await flush();
+    }
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    expect(h.restarts.n).toBe(0);
+  });
+
+  it('a pre-acquired capture that has already ended is not handed over', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    (h.next as unknown as { readyState: string }).readyState = 'ended';
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'new.stop']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+  });
+
+  it('a leave while the pre-acquire runs stops the new capture and never hands it over', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    await call.leave('user');
+    prompt.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'old.stop', 'new.stop']);
+  });
+
+  for (const flag of [false, undefined]) {
+    it(`a deferred restart on an engine without concurrent capture stops first (concurrentCapture ${String(flag)})`, async () => {
+      const f = fakes();
+      const h = handingOver(f);
+      if (flag === undefined) delete f.deps.concurrentCapture; else f.deps.concurrentCapture = flag;
+      const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+      open.push(call);
+      h.install();
+      await flush();
+      expect(h.restarts.n).toBe(0);
+      call.setMuted(false);
+      await flush();
+      expect(h.restarts.n).toBe(1);
+      expect(h.replaced).toEqual([]);
+      expect(h.pre).not.toHaveBeenCalled();
+      // The web3.8 guard still holds on that path.
+      call.setMuted(true);
+      expect(h.fresh.enabled).toBe(false);
+      h.fresh.enabled = true;
+      expect(h.fresh.enabled).toBe(false);
+    });
+  }
+
+  it('a noise toggle during the hand-over leaves every acquired capture stopped after leave', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    // While the pre-acquire waits, noise goes on and off again: the off reopens the capture through restartTrack (X).
+    await call.setNoise('lightweight');
+    await call.setNoise('off');
+    await flush();
+    expect(h.restarts.n).toBe(1);
+    prompt.resolve();
+    await flush();
+    await call.leave('user');
+    expect(h.old()!.stop).toHaveBeenCalled();
+    expect(h.fresh.stop).toHaveBeenCalled();
+    expect(h.next.stop).toHaveBeenCalled();
+  });
+
+  it('a restart queued behind the replace is not undone by a give-back', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const replace = deferred<void>();
+    h.holdReplace.promise = replace.promise;
+    // Y: the capture a noise toggle's restartTrack brings, queued behind the replace (LiveKit's trackChangeLock). As
+    // LiveKit's restart, it stops its current track first (by then `next`), then puts Y on the sender.
+    const y = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined,
+    });
+    const lk = f.localTracks[0] as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+    lk.restartTrack = async () => {
+      h.restarts.n += 1;
+      await replace.promise;
+      const cur = lk.mediaStreamTrack as { stop: () => void; readyState?: string };
+      cur.readyState = 'ended';
+      cur.stop();
+      lk.mediaStreamTrack = y;
+    };
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack']);
+    // Noise on and off again: the off reopens the capture through restartTrack, which waits for the replace.
+    await call.setNoise('lightweight');
+    const off = call.setNoise('off');
+    await flush();
+    expect(h.restarts.n).toBe(1);
+    replace.resolve();
+    await off;
+    await flush();
+    // No give-back: Y stays on the sender and is the capture the session's mute governs.
+    expect(h.replaced).toEqual([h.next]);
+    expect(lk.mediaStreamTrack).toBe(y);
+    expect(h.old()!.stop).toHaveBeenCalled();
+    call.setMuted(true);
+    expect(y.enabled).toBe(false);
+    await call.leave('user');
+    expect(h.next.stop).toHaveBeenCalled();
+    expect(y.stop).toHaveBeenCalled();
+  });
+
+  it('a capture that ends during the replace gives the sender back the old one', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    h.hooks.onReplace = (n) => { if (n === (h.next as unknown)) (n as unknown as { readyState: string }).readyState = 'ended'; };
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.replaced).toEqual([h.next, h.old()!.track]);
+    expect(h.replaced[1]).toBe(h.old()!.track);
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'replaceTrack', 'new.stop']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    // The old capture is still the one the mute governs.
+    call.setMuted(true);
+    expect((h.old()!.track as { enabled: boolean }).enabled).toBe(false);
+  });
+
   it('a getter that throws changes nothing and fails no start', async () => {
     const f = fakes();
     const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'muted', selfNow: () => { throw new Error('gone'); } });
@@ -2638,4 +2917,155 @@ it('PTT privacy is enforced by the track even when the denoiser is present', asy
     call.setMuted(true);expect(allowed.at(-1)).toBe(false);
     call.pushToTalk(false);call.setMuted(false);expect(allowed.at(-1)).toBe(false);
   } finally {await call.leave('user');}
+});
+
+describe('web3.9 VOICE-FIX fix round 1 (I1): concurrentCapture', () => {
+  const WEBKIT = 'AppleWebKit/605.1.15 (KHTML, like Gecko)';
+  const CHROMIUM = 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)';
+  const rows: Array<[string, string, boolean]> = [
+    ['Chrome on Linux', `Mozilla/5.0 (X11; Linux x86_64) ${CHROMIUM}`, true],
+    ['Chrome on Windows', `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${CHROMIUM}`, true],
+    ['Chrome on macOS', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${CHROMIUM}`, true],
+    ['Edge on Windows', `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${CHROMIUM} Edg/130.0.0.0`, true],
+    ['Firefox on Linux', 'Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0', true],
+    ['Firefox on macOS', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:131.0) Gecko/20100101 Firefox/131.0', true],
+    ['Safari on macOS', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${WEBKIT} Version/18.0 Safari/605.1.15`, false],
+    ['Safari on iPhone', `${IPHONE} ${WEBKIT} Version/18.0 Mobile/15E148 Safari/604.1`, false],
+    ['iPad Safari in desktop mode', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${WEBKIT} Version/18.0 Safari/605.1.15`, false],
+    ['Chrome on iOS (CriOS)', `${IPHONE} ${WEBKIT} CriOS/130.0.6723.90 Mobile/15E148 Safari/604.1`, false],
+    ['Firefox on iOS (FxiOS)', `${IPHONE} ${WEBKIT} FxiOS/131.0 Mobile/15E148 Safari/605.1.15`, false],
+    ['Edge on iOS (EdgiOS)', `${IPHONE} ${WEBKIT} EdgiOS/130.0.2849.80 Version/18.0 Mobile/15E148 Safari/604.1`, false],
+    ['an unknown user agent', 'curl/8.10.1', false],
+    // Final review I-1: getBrowser sets no os on Android, so the user agent itself rules phones and tablets out.
+    ['Chrome on Android', `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36`, false],
+    ['Chrome on an Android tablet', `Mozilla/5.0 (Linux; Android 14; SM-X710) ${CHROMIUM}`, false],
+    ['Firefox on Android', 'Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0', false],
+    ['Samsung Internet', 'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/122.0.0.0 Mobile Safari/537.36', false],
+  ];
+  for (const [name, ua, want] of rows) {
+    it(`${name}: ${String(want)}`, () => {
+      expect(concurrentCapture(getBrowser(ua, true), ua)).toBe(want);
+    });
+  }
+  it('no browser details: false', () => {
+    expect(concurrentCapture(undefined, '')).toBe(false);
+  });
+});
+
+describe('web3.9 VOICE-AFK: a listen-only call (the AFK channel, R3)', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+
+  it('a listen-only call never asks for the microphone', async () => {
+    const f = fakes();
+    const call = await start(f, { listenOnly: true, noise: 'on' });
+    expect(call.state.phase).toBe('connected');
+    expect(f.media.getUserMedia).not.toHaveBeenCalled();
+    expect(f.media.enumerateDevices).not.toHaveBeenCalled();
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+    expect(call.state.mic).toBe('listen');
+    expect(call.state.listenOnly).toBe(true);
+    expect(call.state.muted).toBe(true);
+    expect(call.state.error).toBeNull();
+    // The others hear of it as a muted member at once (voiceSelf flag 1).
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+    // A mute press is a no-op that stays muted: nothing is acquired or published by it, or by the other controls.
+    call.setMuted(false);
+    expect(call.state.muted).toBe(true);
+    call.setMode('ptt');
+    call.pushToTalk(true);
+    await call.setNoise('off');
+    await call.setNoise('on');
+    expect(f.media.getUserMedia).not.toHaveBeenCalled();
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+  });
+
+  it('an ordinary call still asks for the microphone and publishes it (control)', async () => {
+    const f = fakes();
+    const call = await start(f);
+    expect(f.media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(1);
+    expect(call.state.mic).toBe('ok');
+    expect(call.state.listenOnly).toBe(false);
+  });
+
+  it('camera and share are refused in a listen-only call', async () => {
+    const f = fakes();
+    const call = await start(f, { listenOnly: true });
+    f.calls.length = 0;
+    await expect(call.setCamera(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
+    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
+    // Refused before any request: no callShare, no capture, no picker, no publish.
+    expect(f.calls.filter((c) => c.m === 'callShare')).toEqual([]);
+    expect(f.media.getUserMedia).not.toHaveBeenCalled();
+    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+    expect(call.state.camera).toBe(false);
+    expect(call.state.sharing).toBe(false);
+    // Turning them off stays harmless.
+    await call.setCamera(false);
+    await call.setSharing(false);
+    // Control: an ordinary call turns the camera on.
+    const g = fakes();
+    const other = await start(g);
+    await other.setCamera(true);
+    expect(other.state.camera).toBe(true);
+  });
+
+  it('deafen still mutes playback in a listen-only call', async () => {
+    const f = fakes();
+    const call = await start(f, { listenOnly: true });
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'microphone');
+    expect(bob.gains.microphone).toBe(1);
+    call.setDeafened(true);
+    expect(call.state.deafened).toBe(true);
+    expect(bob.gains.microphone).toBe(0);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    call.setDeafened(false);
+    expect(call.state.deafened).toBe(false);
+    expect(call.state.muted).toBe(true);
+    expect(bob.gains.microphone).toBe(1);
+    // An unmute while deafened stays muted too (mute is a no-op here).
+    call.setDeafened(true);
+    call.setMuted(false);
+    expect(call.state.muted).toBe(true);
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+  });
+});
+
+describe('web3.9 ruling V-1: the session owns page leave, LiveKit does not', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('a beforeunload alone leaves the call joined', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(call);
+    f.order.length = 0;
+    window.dispatchEvent(new Event('beforeunload'));
+    await flush();
+    expect(call.state.phase).toBe('connected');
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
+    expect(f.room.disconnect).not.toHaveBeenCalled();
+    expect(f.order).toEqual([]);
+  });
+
+  it('pagehide still leaves with callLeave("pagehide") (the worker’s self-Remove), exactly once', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    window.dispatchEvent(new Event('beforeunload'));
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pagehide'));
+    await flush();
+    expect(call.state.phase).toBe('ended');
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'pagehide' }]);
+    expect(f.manager.dispose).toHaveBeenCalled();
+  });
 });

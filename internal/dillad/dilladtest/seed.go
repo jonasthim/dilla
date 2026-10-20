@@ -184,6 +184,39 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// A web3.8 administrator's AFK pick (E-AFK's upgrade case): the pointer moves to the channel
+	// named, keeping the stored timeout, exactly as web3.8's PUT …/afk/settings wrote it. The next
+	// start's backfill gives the community a new built-in AFK and leaves this channel ordinary.
+	mux.HandleFunc("POST /debug/afk/legacy", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Community string `json:"community"`
+			Channel   string `json:"channel"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		community, err := id.Parse(body.Community)
+		if err != nil {
+			http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		channel, err := id.Parse(body.Channel)
+		if err != nil {
+			http.Error(w, "channel: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		repo := h.Server().Repo()
+		cfg, err := repo.GetCommunityAFK(r.Context(), community)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := repo.SetCommunityAFK(r.Context(), community, store.CommunityAFK{ChannelID: &channel, TimeoutSeconds: cfg.TimeoutSeconds}); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/mark-revoked", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Device string `json:"device"`

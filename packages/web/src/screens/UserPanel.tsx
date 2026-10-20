@@ -13,8 +13,10 @@ import type { CallView } from './voice/useCall.tsx';
 const SHORTCUTS = voiceShortcutText();
 const CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
 
-export function UserPanel({ name, username, choice, call, onSettings }: {
+export function UserPanel({ name, username, choice, call, onSettings, ptt = false }: {
   name: string; username: string; choice: PresenceChoice; call: Pick<CallView, 'selfMute' | 'selfDeafen' | 'selfMuted' | 'selfDeafened'>; onSettings: () => void;
+  /** Push-to-talk mode: the mic carries the PTT tag, and the avatar rings while the person is heard. */
+  ptt?: { held: boolean } | false;
 }): React.JSX.Element {
   const client = useCore();
   const [error, setError] = useState(false);
@@ -30,6 +32,7 @@ export function UserPanel({ name, username, choice, call, onSettings }: {
             void client.call({ m: 'setPresenceChoice', choice: id as PresenceChoice }).catch(() => setError(true));
           },
         }}
+        {...(ptt !== false ? { ptt: { tag: t('layout.ptt.tag'), description: t('settings.voice.ptt'), held: ptt.held } } : {})}
         onMute={call.selfMute} onDeafen={call.selfDeafen} onSettings={onSettings} />
       {error ? <p className="dw-panel-error" role="alert">{t('presence.error')}</p> : null}
     </>

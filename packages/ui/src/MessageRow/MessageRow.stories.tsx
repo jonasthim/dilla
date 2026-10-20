@@ -1,9 +1,10 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { MessageRow } from './MessageRow.tsx';
 import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
 import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { useDrawnImage } from '../internal/drawn-image.ts';
 
 // The state strings are task 24's to own in en.ts; these are the drafts it starts from.
@@ -103,3 +104,24 @@ export const ThreadChipActive: Story = {
       { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
     ]} /> },
 };
+
+// web3.9 (R29, G2, R30): a grouped row, a hover-only device tag, and a phone row that reveals its toolbar on a tap.
+export const Grouped: Story = { args: { grouped: true, time: '21:03', body: 'i have the map' } };
+export const DeviceTagOnHover: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web', deviceTag: 'hover' } };
+const phoneToolbar = (
+  <MessageToolbar label="actions for this message" tabbable items={[
+    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
+  ]} />
+);
+function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
+  const [revealed, setRevealed] = useState(startRevealed);
+  return (
+    <PhoneLayoutProvider value>
+      <div data-layout="phone" style={{ maxWidth: 390 }}>
+        <MessageRow author="ada" time="21:02" body="anyone up for a round tonight?" state="ok" toolbar={phoneToolbar} revealed={revealed} onReveal={setRevealed} />
+      </div>
+    </PhoneLayoutProvider>
+  );
+}
+export const PhoneHidden: Story = { render: () => <PhoneRow startRevealed={false} /> };
+export const PhoneRevealed: Story = { render: () => <PhoneRow startRevealed /> };

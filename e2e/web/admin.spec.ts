@@ -4,7 +4,7 @@
 // onboarding shows is the one request the spec makes itself). Controls are found by role and accessible name, with the
 // copy keys of flow 08 (strings/{admin,members,moderation}.ts) through copy().
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
   signUp, test, channelRow, expectComposerReady,
 } from './support/app';
@@ -78,7 +78,7 @@ async function memberAction(page: Page, server: string, name: string, item: stri
 }
 /** Joins `server` with the invite link from the rail's "join" button. */
 async function joinWith(page: Page, link: string): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.join'), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = dialogOf(page, 'join.title');
   await dialog.getByLabel(copy('join.invite'), { exact: true }).fill(link);
   await button(dialog, 'join.submit').click();
@@ -93,7 +93,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
 
   // 1. Ada signs up with the bootstrap invite and starts "Midgard Crew".
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -126,6 +126,30 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(memberRow(page, SERVER, FRIEND)).toBeVisible({ timeout: WAIT });
     await expect(memberRow(page, SERVER, OWNER)).toBeVisible();
     await expectAccessible(page, 'the members pane');
+
+    // 3b. Audit S3: the members aside draws its own 48px bar, its hairline on the channel header's line, as a column at 1440 and as
+    // the overlay at 1024 (where the close control sits in that bar, at its right).
+    const original = page.viewportSize();
+    for (const [width, height] of [[1440, 900], [1024, 768]] as const) {
+      await page.setViewportSize({ width, height });
+      const region = membersRegion(page, SERVER);
+      await expect(region).toBeVisible({ timeout: WAIT });
+      const bar = region.getByRole('heading', { level: 2, name: copy('members.toggle'), exact: true });
+      await expect(bar).toBeVisible();
+      const barBox = await bar.boundingBox();
+      const headerBox = await page.locator('.d-channel-header').boundingBox();
+      if (barBox === null || headerBox === null) throw new Error(`no members bar or channel header at ${String(width)}`);
+      expect(barBox.height, `members bar height at ${String(width)}`).toBeCloseTo(48, 0);
+      expect(barBox.y + barBox.height, `members bar bottom at ${String(width)}`).toBeCloseTo(headerBox.y + headerBox.height, 0);
+      const close = page.getByRole('button', { name: copy('members.close'), exact: true });
+      if (await close.count() > 0) {
+        const closeBox = await close.boundingBox();
+        if (closeBox === null) throw new Error('no members close box');
+        expect(closeBox.y, 'the close control sits inside the bar').toBeGreaterThanOrEqual(barBox.y - 1);
+        expect(closeBox.y + closeBox.height, 'the close control sits inside the bar').toBeLessThanOrEqual(barBox.y + barBox.height + 1);
+      }
+    }
+    if (original !== null) await page.setViewportSize(original);
 
     // 4. Ada renames the server; Björn's rail shows the new name without a reload.
     let settings = await openSettings(page);

@@ -6,7 +6,7 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
-import { POLL, VoicePeer, WAIT, blobs, buildWav, copy, introduce, onboard, openVoice } from './support/voice';
+import { POLL, VoicePeer, WAIT, blobs, buildWav, copy, introduce, onboard, openVoiceOnly } from './support/voice';
 import { attachInput, composerBox, messageRow, trayEntries } from '../web/support/app';
 
 watchContexts(test);
@@ -123,7 +123,7 @@ test('bob plays alice\'s webm and WAV inline; a truncated file shows the error a
     await test.step('every blob: URL the players minted is revoked once bob leaves the conversation', async () => {
       const minted = (await blobs(bob.page)).created.filter((u) => u.startsWith('blob:'));
       expect(minted.length).toBeGreaterThanOrEqual(2);
-      await openVoice(bob.page, peer.communityName, peer.voiceName);
+      await openVoiceOnly(bob.page, peer.communityName, peer);
       await expect(row).toHaveCount(0, { timeout: WAIT });
       await expect.poll(async () => {
         const b = await blobs(bob.page);

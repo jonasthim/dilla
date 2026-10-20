@@ -21,6 +21,8 @@ export const REQUIRED_JOBS = [
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
   // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
   'go-ds',
+  // internal/api under -race in a job of its own (CI run 39486567482): ~620 s locally, it outran the go job's 20m package timeout.
+  'go-api',
   // The scenario harness in its own job with its own timeout (final review): it needs both the
   // wasi core and the testkit binary, and in the go job it pushed a 4-vCPU runner past its budget.
   'go-harness',
@@ -174,7 +176,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ['npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -253,7 +255,7 @@ const REQUIRED_STEPS = {
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
-    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
+    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)',
     'name: dilla-core-wasi',
     NON_RACE_STEP,
   ],
@@ -264,6 +266,14 @@ const REQUIRED_STEPS = {
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'go test -race -shuffle=on -timeout 20m ./internal/ds/...',
+  ],
+  // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
+  'go-api': [
+    'timeout-minutes: 40',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'go test -race -shuffle=on -timeout 30m ./internal/api/...',
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
@@ -299,6 +309,8 @@ const REQUIRED_STEPS = {
     // I7 (fix wave): the packages with a Postgres leg, internal/ops's backup, restore and heal tests
     // among them, with an explicit -timeout that fits the job's budget.
     'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
+    // web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api.
+    "go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...",
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
@@ -326,12 +338,12 @@ const REQUIRED_STEPS = {
 /**
  * The `go` job's test step is a module-wide wildcard on purpose: every new internal/… package is
  * picked up with zero workflow edits. Narrowing it to a package list is how a whole subsystem
- * silently stops being tested, so the exact text is pinned. It leaves out exactly one package,
- * internal/ds, by its full import path, and only because the go-ds job (whose step is pinned in
- * REQUIRED_STEPS) runs it: the union of the two is still the whole module.
+ * silently stops being tested, so the exact text is pinned. It leaves out exactly two packages,
+ * internal/ds and internal/api, by their full import paths, and only because the go-ds and go-api jobs (whose
+ * steps are pinned in REQUIRED_STEPS) run them: the union of the two is still the whole module.
  */
 function assertTestStepIsNotNarrowed(workflow, fail) {
-  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
   }
@@ -364,6 +376,35 @@ export function raceGatedTests(root) {
   };
   walk('');
   return found;
+}
+
+/**
+ * web3.9: go-postgres runs internal/api through a -run regex, and `go test` passes when a regex matches nothing,
+ * so a test it misses is silently not run on Postgres. Every Test* in internal/api's afk*_test.go and
+ * channels_parent_test.go must match that regex.
+ */
+function assertPostgresAPITestsMatchRun(root, pgJob, problems) {
+  const regex = /-run '([^']*)'[^\n]*\.\/internal\/api\/\.\.\./.exec(pgJob)?.[1];
+  if (regex === undefined) return; // the missing line is reported by REQUIRED_STEPS
+  let re;
+  try {
+    re = new RegExp(regex);
+  } catch {
+    problems.push('ci.yml: job "go-postgres"\'s internal/api -run regex is not a valid expression');
+    return;
+  }
+  const dir = join(root, 'internal', 'api');
+  let files;
+  try {
+    files = readdirSync(dir).filter((f) => /^(afk.*|channels_parent)_test\.go$/.test(f));
+  } catch {
+    return;
+  }
+  for (const f of files) {
+    for (const m of readFileSync(join(dir, f), 'utf8').matchAll(/^func (Test\w+)\(/gm)) {
+      if (!re.test(m[1])) problems.push(`ci.yml: job "go-postgres"'s internal/api -run does not match ${m[1]} (internal/api/${f})`);
+    }
+  }
 }
 
 /**
@@ -446,7 +487,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
  * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_LLVM_VERSION = '1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83';
+export const WASM_LLVM_VERSION = '1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
@@ -578,6 +619,10 @@ function checkVoiceSteps(jobs, problems) {
     const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
     if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
     else if (voiceAt >= 0 && audioAt > voiceAt) problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
+    // Web3.9 CI2: the web suite places calls too (afk.spec's idle move, the layout's AFK preview), so it needs the
+    // running AudioContext as well: suspended, a fake microphone's tone reaches no local meter and counts as speech.
+    const webAt = steps.findIndex((s) => s[0] === `run: npm run test:e2e:web:${engine} -w @dilla/e2e`);
+    if (audioAt >= 0 && webAt >= 0 && audioAt > webAt) problems.push(`ci.yml: ${job} audio server must start before the web suite`);
   }
 }
 
@@ -679,7 +724,7 @@ export function checkWorkflow(root) {
   if ('image' in jobs) {
     // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
     // rust-wasi is named too, because the job downloads its artifact.
-    for (const need of ['go', 'go-ds', 'go-lint', 'rust-wasi', 'web-build']) {
+    for (const need of ['go', 'go-ds', 'go-api', 'go-lint', 'rust-wasi', 'web-build']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
         problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
       }
@@ -713,8 +758,14 @@ export function checkWorkflow(root) {
     assertRaceGatedTestsRunWithoutRace(root, jobs.go, problems);
   }
 
+  if ('go-postgres' in jobs) assertPostgresAPITestsMatchRun(root, jobs['go-postgres'], problems);
+
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {
     problems.push('ci.yml: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+  }
+
+  if ('go-api' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-api'])) {
+    problems.push('ci.yml: job "go-api" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
   }
 
   if ('go-harness' in jobs) {

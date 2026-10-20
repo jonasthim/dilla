@@ -45,7 +45,7 @@ const rowLabel = (c: { name: string; unread: number; mentions: number; muted: bo
 const itemLabel = (i: { name: string; unread: number; mentions: number }) => `${i.name}, unread ${i.unread}, mentions ${i.mentions}`;
 
 const rail = (
-  <CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" joinCaption="join" onJoin={noop} createLabel="new server" createCaption="new" onCreate={noop} settingsLabel="settings" onSettings={noop}
+  <CommunityRail label="servers" activeId="a1" onSelect={noop} addLabel="add a server" onAdd={noop} settingsLabel="settings" onSettings={noop}
     itemLabel={itemLabel}
     items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />
 );
@@ -182,8 +182,8 @@ const header = <ChannelHeader name="general" phone={{ backLabel: 'back to channe
 const members = (
   <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet." onAction={noop}
     groups={[
-      { id: 'mods', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [] }] },
-      { id: 'members', title: 'members', members: [
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [] }] },
+      { id: 'members', kind: 'online', title: 'online', members: [
         { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }] },
         { id: 'u3', name: 'Mira', tags: [], actionsLabel: 'actions for Mira', actions: [] },
       ] },

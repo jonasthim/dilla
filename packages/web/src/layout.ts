@@ -73,7 +73,7 @@ export function useVisualViewportHeight(enabled = true): void {
   }, [enabled]);
 }
 
-export type PhoneTab = 'servers' | 'dms' | 'activity' | 'you';
+export type PhoneTab = 'home' | 'activity' | 'you';
 
 const TAB_KEY = 'dilla.phoneTab.';
 
@@ -83,10 +83,17 @@ export function rememberTab(tab: PhoneTab, path: string): void {
   try { sessionStorage.setItem(TAB_KEY + tab, path); } catch { /* blocked storage: no memory, the tab opens at its root */ }
 }
 
-/** The path a tab was last left at, or null. */
+/** The path a tab was last left at, or null. Home also reads what web3.8's `servers` and `dms` tabs left in this browser tab. */
 export function rememberedTab(tab: PhoneTab): string | null {
-  // eslint-disable-next-line no-restricted-globals -- a remembered path is not a key, a token or state worth protecting (flow 12)
-  try { return sessionStorage.getItem(TAB_KEY + tab); } catch { return null; }
+  const keys = tab === 'home' ? ['home', 'servers', 'dms'] : [tab];
+  try {
+    for (const key of keys) {
+      // eslint-disable-next-line no-restricted-globals -- a remembered path is not a key, a token or state worth protecting (flow 12)
+      const kept = sessionStorage.getItem(TAB_KEY + key);
+      if (kept !== null) return kept;
+    }
+    return null;
+  } catch { return null; }
 }
 
 const PANE_KEY = 'dilla.paneWidths';

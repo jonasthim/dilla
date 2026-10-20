@@ -1,8 +1,9 @@
-import { useId, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
+import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
@@ -39,7 +40,20 @@ export interface MessageRowProps {
   rowRef?: Ref<HTMLElement>;
   seq?: string | null;
   msgId?: string | null;
+  /** The row continues the author's run above it (the caller decides): the author and time are hidden, the time shows in the gutter on hover or focus. */
+  grouped?: boolean;
+  /** The grouped row's gutter time, compact enough for the avatar column and its gap (the full `time` stays for screen readers). */
+  gutterTime?: string;
+  /** `hover`: the device tag shows only while the row is hovered or holds focus. Default `always`. */
+  deviceTag?: 'always' | 'hover';
+  /** Phone only: the toolbar is rendered only while revealed. Off a phone the toolbar is always rendered. */
+  revealed?: boolean;
+  /** Phone only: a tap on the row body or Enter on the row asks to reveal (true); Escape or a second tap asks to hide (false). */
+  onReveal?(on: boolean): void;
 }
+
+/** A click that starts on one of these is that control's own, not a tap on the row body. */
+const INTERACTIVE = 'button, a, input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 
@@ -93,7 +107,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  */
 export function MessageRow({
   author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, deviceTag, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -102,7 +116,21 @@ export function MessageRow({
   const note = (state === 'cannot-read' || state === 'deleted') && !!stateLabel;
   const showDetail = (state === 'cannot-read' || state === 'failed') && !!detail;
 
+  const phone = usePhoneLayout();
+  const reveals = phone && onReveal !== undefined;
+
   const onRowKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (reveals && e.key === 'Escape' && revealed === true) {
+      e.preventDefault();
+      e.currentTarget.focus();
+      onReveal(false);
+      return;
+    }
+    if (reveals && e.key === 'Enter' && e.target === e.currentTarget && !e.repeat) {
+      e.preventDefault();
+      onReveal(true);
+      return;
+    }
     if (e.key === 'Escape' && e.target !== e.currentTarget) {
       e.preventDefault();
       e.currentTarget.focus();
@@ -111,23 +139,32 @@ export function MessageRow({
     onKeyDown?.(e);
   };
 
+  const onRowClick = (e: MouseEvent<HTMLElement>) => {
+    if (!reveals) return;
+    if ((e.target as Element).closest(INTERACTIVE)) return;
+    onReveal(revealed !== true);
+  };
+  const showToolbar = toolbar !== undefined && (!reveals || revealed === true);
+
   return (
-    <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown}
+    <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown} onClick={reveals ? onRowClick : undefined}
       data-state={state} data-own={flag(own)} data-active={flag(active)}
       data-seq={seq ?? undefined} data-msg-id={msgId ?? undefined}
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
-      data-mention={flag(mention)} data-flash={flag(flash)}>
-      <span className="d-message-row__avatar" aria-hidden="true"><Avatar name={author} /></span>
+      data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
+      {grouped === true
+        ? <span className="d-message-row__gutter" aria-hidden="true">{gutterTime ?? time}</span>
+        : <span className="d-message-row__avatar" aria-hidden="true"><Avatar name={author} /></span>}
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId}>
-          <span className="d-message-row__author">{author}</span>
-          {tag ? <Tag kind={tag} /> : null}
-          <span className="d-message-row__time">{time}</span>
+          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>{author}</span>
+          {tag ? (deviceTag === 'hover' ? <span className="d-message-row__tag" data-reveal="hover"><Tag kind={tag} /></span> : <Tag kind={tag} />) : null}
+          <span className={grouped === true ? 'd-message-row__time d-sr-only' : 'd-message-row__time'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}
           {pinnedLabel !== undefined ? <span className="d-message-row__pinned">{pinnedLabel}</span> : null}
           {headState ? <span className="d-message-row__state">{stateLabel}</span> : null}
         </p>
-        {toolbar !== undefined ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
+        {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
         {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body)}</p> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}

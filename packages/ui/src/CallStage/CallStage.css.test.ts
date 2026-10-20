@@ -58,3 +58,23 @@ describe('the phone stage (CSS pin)', () => {
     expect(rule(phone(tile), '.d-call-tile[data-stage] .d-call-tile__volume')).toMatch(/position: static/);
   });
 });
+
+describe('D1, D4 and C4 (CSS pins)', () => {
+  it('a partial last row is centred by shifting its tiles half the empty columns, and only in the grid', () => {
+    expect(stage).toMatch(/translate: calc\(\(var\(--d-stage-cols, 1\) - var\(--d-orphan-n, 0\)\) \* \(var\(--d-tile-w, 0px\) \+ 0\.75rem\) \/ 2\) 0;/);
+    // The phone's own columns and the filmstrip are not the measured grid: no shift there.
+    expect(rule(phone(stage), '.d-call-stage__tile[data-orphan]')).toMatch(/translate: none/);
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage__tile[data-orphan]')).toMatch(/translate: none/);
+  });
+
+  it('the stage header slot is the 48 bar with the hairline at its foot', () => {
+    expect(rule(stage, '.d-call-stage__bar')).toMatch(/height: var\(--bar-h\)/);
+    expect(rule(stage, '.d-call-stage__bar')).toMatch(/border-bottom: 1px solid var\(--hairline\)/);
+  });
+
+  it('on a phone layout the stage has an 18px gutter, centred avatars and a pinned toolbar', () => {
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage')).toMatch(/padding-inline: 1\.125rem/);
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage__controls')).toMatch(/position: sticky;[^}]*bottom: 0/);
+    expect(rule(tile, '[data-layout="phone"] .d-call-tile__avatar')).toMatch(/place-items: center/);
+  });
+});

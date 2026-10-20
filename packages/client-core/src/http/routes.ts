@@ -33,8 +33,8 @@ export interface DmOpened { channelId: Uint8Array; created: boolean; }
 export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
-export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number;
-  occupants: { userId: Uint8Array; deviceId: Uint8Array }[] }
+/** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet. */
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }
 export interface AFKSettings { channelId: Uint8Array | null; timeoutSeconds: number }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
@@ -355,32 +355,25 @@ export class Routes {
       return { id: bin(a[0], 16), name: str(a[1]), owner: bin(a[2], 16), policyVersion: u64(a[3]) };
     });
   }
+  /** GET /v1/communities/{id}/afk: [id|null, timeout, [] (the retired occupant list, ignored), pending?]; the dilla CBOR has no booleans, so pending and exempt are uint 0 or 1; a 3-element answer is not pending. */
   async getAFK(communityId: Uint8Array): Promise<AFKSnapshot> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk`, 'read', true)), 3);
-    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]),
-      occupants: bounded(a[2], 1024, 'AFK occupants').map(value => {
-        const row = atLeast(value, 2);
-        return { userId: bin(row[0], 16), deviceId: bin(row[1], 16) };
-      }) };
+    bounded(a[2], 1024, 'AFK occupants');
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: a.length > 3 ? flag(a[3]) : false };
   }
   async getAFKSettings(communityId: Uint8Array): Promise<AFKSettings> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'read', true)), 2);
     return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]) };
   }
-  async setAFKSettings(communityId: Uint8Array, channelId: Uint8Array | null, timeoutSeconds: number): Promise<void> {
+  /** PUT /v1/communities/{id}/afk/settings: [timeout_seconds]; the channel is the built-in one. */
+  async setAFKSettings(communityId: Uint8Array, timeoutSeconds: number): Promise<void> {
     await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'write', true,
-      { body: encode([channelId === null ? null : inputId('channelId', channelId), timeoutSeconds]), ok: [204] });
+      { body: encode([timeoutSeconds]), ok: [204] });
   }
-  async sendAFKActivity(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+  /** POST /v1/communities/{id}/afk/activity: [channel] or, from a device that cannot be idle-detected, [channel, true]. */
+  async sendAFKActivity(communityId: Uint8Array, channelId: Uint8Array, exempt?: boolean): Promise<void> {
     await this.body('POST', `/v1/communities/${id('communityId', communityId)}/afk/activity`, 'write', true,
-      { body: encode([inputId('channelId', channelId)]), ok: [204] });
-  }
-  async moveToAFK(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
-    await this.body('POST', `/v1/communities/${id('communityId', communityId)}/afk`, 'write', false,
-      { body: encode([inputId('channelId', channelId)]), ok: [204] });
-  }
-  async leaveAFK(communityId: Uint8Array): Promise<void> {
-    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/afk`, 'write', true, { ok: [204] });
+      { body: encode(exempt === true ? [inputId('channelId', channelId), 1] : [inputId('channelId', channelId)]), ok: [204] });
   }
   async joinCommunity(communityId: Uint8Array, invite: string | null): Promise<void> {
     await this.body('POST', `/v1/communities/${id('communityId', communityId)}/join`, 'none', true, { body: encode([invite]) });
@@ -393,12 +386,13 @@ export class Routes {
     return { id: bin(a[0], 16), roleEveryone: bin(a[1], 16), policyVersion: u64(a[2]) };
   }
   /** POST /v1/communities/{id}/channels: [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds] for a
-   *  top-level channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode. */
+   *  channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode; top level, or inside the
+   *  category `parentId` (the server answers 404 for one the caller cannot view). */
   async createChannel(communityId: Uint8Array,
-    channel: { kind: NewChannelKind; name: string; position: number; overwrites?: readonly NewOverwrite[] }): Promise<ChannelCreated> {
+    channel: { kind: NewChannelKind; name: string; position: number; parentId?: Uint8Array; overwrites?: readonly NewOverwrite[] }): Promise<ChannelCreated> {
     const kind = channel.kind === 'text' ? 0 : channel.kind === 'voice' ? 1 : -1;
     if (kind < 0) throw new RangeError('E_ROUTE_INPUT: kind must be text or voice');
-    const fields: CborInput[] = [kind, 0, 0, null, checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
+    const fields: CborInput[] = [kind, 0, 0, channel.parentId === undefined ? null : inputId('parentId', channel.parentId), checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
       between('position', channel.position, 0, CHANNEL_POSITION_MAX), 0];
     const overwrites = channel.overwrites ?? [];
     if (overwrites.length > OVERWRITES_PER_CREATE_MAX) throw new RangeError('E_ROUTE_INPUT: overwrites must be at most ' + String(OVERWRITES_PER_CREATE_MAX));

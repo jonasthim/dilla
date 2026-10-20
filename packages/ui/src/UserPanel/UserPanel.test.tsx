@@ -40,6 +40,7 @@ describe('UserPanel', () => {
     expect(root).not.toHaveAttribute('aria-labelledby');
     expect(screen.getByRole('toolbar', { name: 'your account' })).toBeInTheDocument();
     expect(screen.getAllByRole('toolbar')).toHaveLength(1);
+    expect(screen.getAllByRole('toolbar')).toHaveLength(1);
   });
 
   it('names mute and deafen in the toolbar, as toggles carrying the shortcuts', () => {
@@ -74,7 +75,7 @@ describe('UserPanel', () => {
     expect(who).toHaveTextContent('Ada Lovelace');
     expect(who).toHaveTextContent('@ada');
     expect(who.querySelector('.d-avatar')).not.toBeNull();
-    // The name block, the toolbar and the gear are the three tab stops.
+    // The name block, the toolbar (one stop: mute, deafen) and the gear are the three tab stops.
     expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(3);
   });
 
@@ -123,17 +124,68 @@ describe('UserPanel', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Online' })).toHaveAttribute('aria-checked', 'false');
   });
 
-  it('mute and deafen are at least 2rem square too (CSS pin)', () => {
-    expect(panelCss).toMatch(/\.d-user-panel \.d-voice-toolbar \.d-voice-toolbar__control \{[^}]*min-width: 2rem; min-height: 2rem/);
+  it('E3: mute, deafen and the gear are the same 32px icon buttons as the dock, with tooltips', () => {
+    render(<UserPanel {...panel()} />);
+    for (const name of ['mute', 'deafen', 'settings']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveClass('d-icon-button');
+      expect(b).toHaveAttribute('data-size', '32');
+      expect(b.parentElement).toHaveClass('d-tooltip-anchor');
+    }
+    expect(document.querySelectorAll('.d-user-panel .d-icon-button[data-size="32"]')).toHaveLength(3);
+    expect(document.querySelector('.d-voice-toolbar')).toBeNull();
   });
 
-  it('the settings button is at least 2rem square (CSS pin)', () => {
-    expect(panelCss).toMatch(/\.d-user-panel__settings \{[^}]*min-width: 2rem; min-height: 2rem/);
+  it('mute and deafen are one roving Tab stop: arrows wrap, Home/End jump, Tab goes on to the gear', async () => {
+    render(<UserPanel {...panel()} />);
+    const bar = screen.getByRole('toolbar', { name: 'your account' });
+    await userEvent.keyboard('{Tab}{Tab}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'deafen' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    expect(within(bar).getByRole('button', { name: 'deafen' })).toHaveFocus();
+    await userEvent.keyboard('{Home}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{Tab}');
+    expect(screen.getByRole('button', { name: 'settings' })).toHaveFocus();
+  });
+
+  it('shows the shortcut in the mute tooltip on keyboard focus', async () => {
+    render(<UserPanel {...panel()} />);
+    screen.getByRole('button', { name: 'mute' }).focus();
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl Shift M');
+  });
+
+  it('is 52 high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: 3\.25rem/m);
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*border-top: 1px solid var\(--hairline\)/m);
+    expect(panelCss).not.toContain('d-user-panel__settings');
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><UserPanel {...(meta.args as UserPanelProps)} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
+  it('push to talk: a hidden PTT tag on the mic, "push to talk" in its description, and the ring while held', () => {
+    const { rerender } = render(<UserPanel {...panel({ ptt: { tag: 'PTT', description: 'push to talk', held: false } })} />);
+    const mic = screen.getByRole('button', { name: 'mute' });
+    expect(mic).toHaveAccessibleDescription(/push to talk/);
+    const tag = screen.getByText('PTT');
+    expect(tag).toHaveAttribute('aria-hidden', 'true');
+    expect(mic).toHaveAccessibleName('mute');
+    expect(document.querySelector('.d-user-panel__avatar')).not.toHaveAttribute('data-speaking');
+    rerender(<UserPanel {...panel({ ptt: { tag: 'PTT', description: 'push to talk', held: true } })} />);
+    expect(document.querySelector('.d-user-panel__avatar')).toHaveAttribute('data-speaking', 'true');
+  });
+  it('without push to talk there is no tag, no description and no ring (control)', () => {
+    render(<UserPanel {...panel()} />);
+    expect(screen.queryByText('PTT')).toBeNull();
+    expect(screen.getByRole('button', { name: 'mute' })).not.toHaveAccessibleDescription(/push to talk/);
+    expect(document.querySelector('.d-user-panel__avatar')).not.toHaveAttribute('data-speaking');
   });
 });

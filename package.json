@@ -13,13 +13,15 @@
     "e2e"
   ],
   "scripts": {
-    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:ci && npm test --workspaces --if-present && npm run lint",
+    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm test --workspaces --if-present && npm run lint",
     "lint": "eslint --max-warnings 0 --no-error-on-unmatched-pattern packages/client-core packages/web",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
     "check:brief": "node scripts/check-design-brief.mjs",
     "test:brief-check": "node --test scripts/check-design-brief.test.mjs",
     "check:copy": "node scripts/check-ui-copy.mjs",
+    "check:css": "node scripts/check-css-vars.mjs",
+    "test:css-check": "node --test scripts/check-css-vars.test.mjs",
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
     "check:ci": "node scripts/check-ci-workflow.mjs",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",

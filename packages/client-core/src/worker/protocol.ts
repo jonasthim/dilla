@@ -12,7 +12,7 @@ export type Command =
   // v0.1.0-web3.1, ready only. Names are checked as the instance checks them: 1..255 UTF-8 bytes for a server, 1..100 for a
   // channel, no control character, not blank. createChannel adds a top-level channel the server cannot read.
   | { m: 'createCommunity'; name: string }                                              // → { communityId }; listed before the ret
-  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice' | 'announcement'; name: string;
+  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice' | 'announcement'; name: string; parentId?: string;
       private?: { roleIds: string[] }; announce?: { roleIds: string[] } }   // → { channelId }; listed before the ret
   | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }
@@ -64,10 +64,8 @@ export type Command =
   | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
   | { m: 'presenceActivity' }
   | { m: 'getAFKSettings'; communityId: string }
-  | { m: 'setAFK'; communityId: string; channelId: string | null; timeoutSeconds: number }
-  | { m: 'afkActivity'; communityId: string; channelId: string }
-  | { m: 'afkMove'; communityId: string; channelId: string }
-  | { m: 'afkLeave'; communityId: string }
+  | { m: 'setAFK'; communityId: string; timeoutSeconds: number }
+  | { m: 'afkActivity'; communityId: string; channelId: string; exempt?: boolean }
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)

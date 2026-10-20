@@ -1,13 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
-import { Icon } from '../Icon/Icon.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
 const meta = {
-  title: 'Shell/ChannelList', component: ChannelList,
+  title: 'Shell/ChannelList', component: ChannelList, excludeStories: ['expectOneGrid'],
   args: { label: 'channels', title: 'Midgard Crew', activeId: 'g', onSelect: () => {}, emptyLabel: 'No channels yet.',
     channels: [{ id: 'g', name: 'general', kind: 'text', readable: false }, { id: 't', name: 'loot', kind: 'text', readable: false }] },
   decorators: [Story => <div style={{ width: 240, height: 360 }}><Story /></div>],
@@ -47,9 +46,7 @@ const ACTIONS = <>
 // long channel name is cut inside its row and never widens the list.
 export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, actions: ACTIONS, actionsLabel: 'server actions',
   channels: [...BADGED, { id: 'f', name: 'fika-på-fredag-och-veckans-planering', kind: 'text', readable: false },
-    { id: 'm', name: 'midsommar-'.repeat(10), kind: 'voice', readable: false }],
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} /> },
+    { id: 'm', name: 'midsommar-'.repeat(10), kind: 'voice', readable: false }] },
   play: ({ canvasElement }) => {
     const buttons = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-channel-list__actions .d-btn')).map(b => b.getBoundingClientRect());
     if (buttons.length !== 2 || buttons[0].top !== buttons[1].top) {
@@ -59,9 +56,6 @@ export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, 
     const list = canvasElement.querySelector<HTMLElement>('.d-channel-list');
     if (list === null || list.scrollWidth > list.clientWidth + 1) throw new Error(`WithActions: the list is ${String(list?.scrollWidth)} wide`);
   } };
-export const WithTabs: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED,
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages', count: 2 }]} /> } };
 export const AnnouncementSlow: Story = { args: { activeId: 'g', channels: [
   { id: 'n', name: 'news', kind: 'announcement', readable: false, unread: 2 },
   { id: 'g', name: 'general', kind: 'text', readable: false, badge: 'slow mode' },
@@ -96,9 +90,6 @@ const ONE_LIST = [
 ] as const;
 const ONE_LIST_ARGS = {
   activeId: 'g', rowLabel: ROW_LABEL, channels: ONE_LIST, voice: VOICE,
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} />,
-  listAction: <Button variant="ghost" size="sm" aria-label="new channel"><Icon name="plus" size={16} /></Button>,
 };
 const oneListPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
   expectGlyphLine(canvasElement, 'OneList');
@@ -109,31 +100,79 @@ export const OneList: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' },
 export const OneListLight: Story = { args: ONE_LIST_ARGS, globals: { theme: 'light' }, play: oneListPlay };
 export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { theme: 'high-contrast' }, play: oneListPlay };
 
-// G1: the join and the member count never overlap. With the join showing (focus-within here, as hover would) the count is
-// hidden; in the phone layout the join is always shown and the row reserves its width, so the two sit side by side.
-const overlap = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-function expectJoinClearsCount(root: HTMLElement, name: string): void {
-  const item = Array.from(root.querySelectorAll<HTMLElement>('.d-channel-list__voice')).find(li => li.querySelector('.d-channel-list__join') !== null);
-  const join = item?.querySelector<HTMLElement>('.d-channel-list__join');
-  const count = item?.querySelector<HTMLElement>('.d-voice-row__count');
-  if (!join || !count) throw new Error(`${name}: no join or no count to measure`);
-  if (getComputedStyle(join).opacity !== '1') throw new Error(`${name}: the join is not shown`);
-  if (getComputedStyle(count).visibility !== 'hidden' && overlap(join.getBoundingClientRect(), count.getBoundingClientRect())) {
-    throw new Error(`${name}: the join overlaps the count`);
-  }
+// web3.9 (UI-2): the row grammar. One name x and one trailing-slot right edge down the whole list.
+const MIXED_VOICE = {
+  ...VOICE,
+  rooms: {
+    v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] },
+    v2: { joined: true, participants: [person('you')] },
+  },
+};
+const MIXED = [
+  { id: 'g', name: 'general', kind: 'text', readable: false },
+  { id: 'n', name: 'news', kind: 'announcement', readable: false, unread: 2 },
+  { id: 'p', name: 'staff', kind: 'text', readable: false, mentions: 3, unread: 5 },
+  { id: 'v1', name: 'harbour', kind: 'voice', readable: false, parentId: 'lounge' },
+  { id: 'v2', name: 'workshop', kind: 'voice', readable: false, parentId: 'lounge', joined: true },
+  { id: 'l', name: 'lfg', kind: 'text', readable: true, parentId: 'lounge' },
+  { id: 'r1', name: 'raid-plans-with-a-rather-long-name-indeed', kind: 'text', readable: false, parentId: 'raids', unread: 120 },
+  { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true, parentId: 'lounge' },
+] as const;
+const CATEGORIES = [{ id: 'lounge', name: 'lounge', collapsed: false }, { id: 'raids', name: 'raids', collapsed: false }];
+const MIXED_ARGS = {
+  activeId: 'g', rowLabel: ROW_LABEL, channels: MIXED, categories: CATEGORIES, voice: MIXED_VOICE,
+  onToggleCategory: () => {}, onAddInCategory: () => {}, addInCategoryLabel: (n: string) => `new channel in ${n}`,
+  headerAction: <Button variant="ghost" size="sm" aria-label="server menu">⋯</Button>,
+};
+
+/** Every name (row, voice, category label) starts at the same x (+-0.5px), a person's avatar too, and every trailing slot ends at the same x. */
+export function expectOneGrid(root: HTMLElement, story: string): void {
+  const lefts = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow__name, .d-voice-row__name, .d-channel-list__cat-label, .d-voice-row__avatar'))
+    .map(el => el.getBoundingClientRect().left);
+  const rights = Array.from(root.querySelectorAll<HTMLElement>('.d-chrow .d-slot, .d-voice-row > .d-slot, .d-channel-list__cat-head .d-slot, .d-voice-row__person .d-slot'))
+    .map(el => el.getBoundingClientRect().right);
+  if (lefts.length < 8 || rights.length < 8) throw new Error(`${story}: too few rows measured (${String(lefts.length)}, ${String(rights.length)})`);
+  const off = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+  if (off(lefts) > 0.5) throw new Error(`${story}: the names start ${String(off(lefts))}px apart (${lefts.join(', ')})`);
+  if (off(rights) > 0.5) throw new Error(`${story}: the slots end ${String(off(rights))}px apart (${rights.join(', ')})`);
+  const list = root.querySelector<HTMLElement>('.d-channel-list__list');
+  if (list !== null && list.scrollWidth > list.clientWidth + 1) throw new Error(`${story}: the list overflows sideways`);
 }
-export const JoinShownHidesCount: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' },
-  play: async ({ canvasElement }) => {
-    const join = canvasElement.querySelector<HTMLElement>('.d-channel-list__join');
-    join?.focus();
-    await Promise.all((join?.getAnimations() ?? []).map(a => a.finished));
-    expectJoinClearsCount(canvasElement, 'JoinShownHidesCount');
-  } };
-export const JoinOnPhone: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' },
-  decorators: [Story => <div data-layout="phone" style={{ width: 240, height: 360 }}><Story /></div>],
-  play: async ({ canvasElement }) => {
-    await Promise.all(canvasElement.getAnimations({ subtree: true }).map(a => a.finished));
-    const count = canvasElement.querySelector<HTMLElement>('.d-voice-row__count');
-    if (count !== null && getComputedStyle(count).visibility === 'hidden') throw new Error('JoinOnPhone: the count is hidden without hover');
-    expectJoinClearsCount(canvasElement, 'JoinOnPhone');
-  } };
+const mixedPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneGrid(canvasElement, 'Mixed'); };
+// The phone layout the way the app sets it: the phone context and the layout hook that gives the rows their 44px (base.css),
+// filling the 390 x 844 viewport.
+const tall = (width: number, phone = false) => (Story: () => React.JSX.Element) => phone ? (
+  <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: '100%', height: 'calc(100vh - 32px)', maxWidth: 480 }}><Story /></div></PhoneLayoutProvider>
+) : <div style={{ width, height: 640 }}><Story /></div>;
+/** On a phone every channel row is at least 44px tall. */
+const phonePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const rows = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-chrow, .d-voice-row, .d-channel-list__cat-head'));
+  if (rows.length === 0) throw new Error(`${story}: no rows`);
+  for (const r of rows) if (r.getBoundingClientRect().height < 44) throw new Error(`${story}: a row is ${String(r.getBoundingClientRect().height)} tall`);
+};
+
+export const Mixed: Story = { args: MIXED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(240)], play: mixedPlay };
+export const MixedLight: Story = { args: MIXED_ARGS, globals: { theme: 'light' }, decorators: [tall(240)], play: mixedPlay };
+export const MixedHighContrast: Story = { args: MIXED_ARGS, globals: { theme: 'high-contrast' }, decorators: [tall(240)], play: mixedPlay };
+export const MixedPhone: Story = { args: MIXED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)], play: ({ canvasElement }) => { mixedPlay({ canvasElement }); phonePlay('MixedPhone')({ canvasElement }); } };
+
+const COLLAPSED_ARGS = { ...MIXED_ARGS, categories: [{ id: 'lounge', name: 'lounge', collapsed: true }, { id: 'raids', name: 'raids', collapsed: true }] };
+/** Both collapsed: each keeps the rows that are current, unread, mentioned or joined (R23). */
+export const Collapsed: Story = { args: COLLAPSED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(240)] };
+export const CollapsedLight: Story = { args: COLLAPSED_ARGS, globals: { theme: 'light' }, decorators: [tall(240)] };
+export const CollapsedHighContrast: Story = { args: COLLAPSED_ARGS, globals: { theme: 'high-contrast' }, decorators: [tall(240)] };
+
+const UNREAD_ARGS = { activeId: 'm', rowLabel: ROW_LABEL, channels: [
+  { id: 'q', name: 'quiet', kind: 'text', readable: false },
+  { id: 'u', name: 'unread', kind: 'text', readable: false, unread: 4 },
+  { id: 'm', name: 'selected', kind: 'text', readable: false, unread: 2 },
+  { id: 'x', name: 'mentioned', kind: 'text', readable: false, unread: 9, mentions: 2 },
+  { id: 'mu', name: 'muted-with-mention', kind: 'text', readable: false, unread: 9, mentions: 1, muted: true },
+  { id: 'ms', name: 'muted', kind: 'text', readable: false, unread: 9, muted: true },
+  { id: 'vv', name: 'private-voice', kind: 'voice', readable: false },
+] as const };
+/** The selected mark (fill and 2px bar), the unread mark (bright name and 4px tick), the mention pill over the unread pill. */
+export const UnreadAndMention: Story = { args: UNREAD_ARGS, globals: { theme: 'mesh' } };
+export const UnreadAndMentionLight: Story = { args: UNREAD_ARGS, globals: { theme: 'light' } };
+export const UnreadAndMentionHighContrast: Story = { args: UNREAD_ARGS, globals: { theme: 'high-contrast' } };
+export const UnreadAndMentionPhone: Story = { args: UNREAD_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)], play: phonePlay('UnreadAndMentionPhone') };

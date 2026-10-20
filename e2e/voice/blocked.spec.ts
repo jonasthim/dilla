@@ -14,9 +14,9 @@ import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
-  onboard, openVoice, peerName, self, sentCount, stage, tile,
+  onboard, openVoiceOnly, peerName, self, sentCount, stage, tile,
 } from './support/voice';
-import { dmComposer, dmsNav, openSettings, sidebarTab } from '../web/support/app';
+import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
 
 watchContexts(test);
 
@@ -71,7 +71,7 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await peer.rotateUmk();
     await changedSeen(alice.page, s.user_id);
     await peer.callJoin(call);
-    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await openVoiceOnly(alice.page, peer.communityName, peer);
     const aliceWrites = callWrites(alice.context);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });
@@ -243,14 +243,14 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     const a = await self(alice.page);
     const dm = await peer.openDm(a.user);
     await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, POLL).toBe(2);
-    await sidebarTab(alice.page, 'dms').click();
+    await homeTile(alice.page).click();
     await dmsNav(alice.page).locator('.d-chrow').first().click();
     await expect(alice.page).toHaveURL(new RegExp(`/dm/${dm.channel_id}$`), { timeout: WAIT });
     await expect(dmComposer(alice.page)).toBeEnabled({ timeout: WAIT });
 
     await peer.callJoin(dm.channel_id);
-    // The peer holds the call group but is in no room: no live call, so the strip offers `call`.
-    await alice.page.locator('.dw-call-strip').getByRole('button', { name: copy('call.start'), exact: true }).click();
+    // The peer holds the call group but is in no room: no live call, so the header offers `call`.
+    await alice.page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }).click();
     await connected(alice.page);
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
     await peer.forgeDevice();

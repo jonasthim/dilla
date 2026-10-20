@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, DeviceSummary } from '@dilla/client-core';
-import { Banner, Button, DeviceRow, Dialog } from '@dilla/ui';
+import { Banner, Button, DeviceRow, Dialog, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -127,14 +127,15 @@ export function Devices(): React.JSX.Element {
             } : undefined} />
         ))}
       </ul>
-      <div className="dw-settings-actions">
-        <p>{count}</p>
+      <SettingsRow id="devices-count" label={count}>
         <Button size="sm" onClick={refresh}>{t('devices.refresh')}</Button>
-      </div>
-      <div className="dw-settings-actions dw-settings-actions--below">
+      </SettingsRow>
+      <SettingsRow id="devices-signout" label={t('devices.signOutTitle')}>
         <SignOutAction />
+      </SettingsRow>
+      <SettingsRow id="devices-forget" label={t('devices.forgetTitle')}>
         <Button onClick={() => choose({ kind: 'forget' })}>{t('devices.forget')}</Button>
-      </div>
+      </SettingsRow>
 
       <KeyDialog open={revokeId !== null} id="devices-revoke" title={t('devices.revokeTitle')} body={t('devices.revokeBody')}
         confirmLabel={t('devices.confirmRevoke')} onClose={() => setTarget(null)}

@@ -1,6 +1,6 @@
 // Shared by the Server settings sections (flow 08): one action at a time with ConfirmDialog's busy/error contract, and the
 // small rules every section reads the worker's refusals by.
-import { useCallback, useRef, useState } from 'react';
+import { createContext, useCallback, useRef, useState } from 'react';
 import { errorOf, type UiError } from '../../core/errors.ts';
 
 /** Says a success to the person: the shell's polite announcer when ServerSettings was given one, else its own status region. */
@@ -52,3 +52,6 @@ export function useRun(): RunState & { run(work: () => Promise<unknown>, say: (e
   const reset = useCallback(() => { if (!running.current) setState(s => ({ busy: false, error: null, attempt: s.attempt })); }, []);
   return { ...state, run, reset };
 }
+
+/** The element of the SettingsFrame footer a section draws its one save bar into (R17); null while the footer is not mounted. */
+export const FooterSlot = createContext<HTMLElement | null>(null);

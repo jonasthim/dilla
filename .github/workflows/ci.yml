@@ -21,6 +21,8 @@ jobs:
       - run: npm run test:docs-check
       - run: npm run test:brief-check
       - run: npm run test:copy-check
+      - run: npm run test:css-check
+      - run: npm run check:css
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -109,7 +111,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
+          v='1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -231,7 +233,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
+          v='1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -283,7 +285,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
+          v='1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -363,7 +365,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
+          v='1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -517,11 +519,13 @@ jobs:
       - run: npm run test:e2e:core:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      # web-3 task 10: VOICE-E2E. Headless Firefox needs an audio server, or every AudioContext stays suspended.
+      # Web3.9 CI2: before the web suite too, whose afk and layout specs place calls (a suspended context reads
+      # no level, so the fake microphone's tone counts as speech and an idle desktop is never moved).
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # web-3 task 10: VOICE-E2E. Headless Firefox needs an audio server, or every AudioContext stays suspended.
-      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
@@ -618,13 +622,13 @@ jobs:
       - run: go vet ./...
       - name: The pinned module graph still compiles cgo-free
         run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      # Every package but internal/ds, which go-ds runs: together they are ./... (the checker pins
-      # both lines). internal/ds under -race took ~7.5 min of a 4-core machine's ~8 min alone and
+      # Every package but internal/ds and internal/api, which go-ds and go-api run: together they are
+      # ./... (the checker pins all three lines). internal/ds under -race took ~7.5 min of a 4-core machine's ~8 min alone and
       # pushed this job past its 25 minutes on the runner (run 36697379567). The API package
-      # alone reached its former 15-minute package timeout while still advancing under -race
-      # on run 39143866608, so it has a 20-minute package budget within this 30-minute job.
+      # alone took ~620 s locally under -race and hit a 20-minute timeout here (run 39486567482), so
+      # go-api runs it with a budget of its own.
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
         env:
           GORACE: halt_on_error=1
       # I8: these five video publishing tests are gated out of -race due to the pinned LiveKit race.
@@ -655,6 +659,29 @@ jobs:
           path: internal/mlswasi/testdata
       - name: The delivery service's tests with the race detector
         run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
+        env:
+          GORACE: halt_on_error=1
+
+  go-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # internal/api under the race detector takes about 620 s on a 4-core machine and ran into a
+    # 20-minute package timeout on the runner (run 39486567482), so it has a job and a budget of its
+    # own; the go job leaves it out and the checker pins both halves.
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: The API package's tests with the race detector
+        run: go test -race -shuffle=on -timeout 30m ./internal/api/...
         env:
           GORACE: halt_on_error=1
 
@@ -773,6 +800,12 @@ jobs:
         run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+      # web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api; -run keeps the rest of
+      # that package (SQLite only, in the go job) out of this one.
+      - name: The AFK and channel-parent tests against Postgres
+        run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
   go-release:
     runs-on: ubuntu-latest
@@ -815,7 +848,7 @@ jobs:
     # and the Dockerfile copies it in, so the image job fetches rust-wasi's
     # artifact into the build context first. `go`, `go-ds` and `go-lint` gate the push.
     # The web client from web-build is fetched into internal/web/dist, where the builder's `go build` embeds it.
-    needs: [go, go-ds, go-lint, rust-wasi, web-build]
+    needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:

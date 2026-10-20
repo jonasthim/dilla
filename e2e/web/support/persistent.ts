@@ -1,7 +1,8 @@
 import { test as base, expect, type BrowserContext, type BrowserType, type Page, type TestInfo } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 
-export const PROFILE_ROOT = '/tmp/dw';
+/** Where the browsers' profile directories go. A lane that shares its machine with others sets DILLA_E2E_PROFILES, since each lane empties `<project>-<worker>` at the start of a test. */
+export const PROFILE_ROOT = process.env.DILLA_E2E_PROFILES ?? '/tmp/dw';
 export function profileDirFor(project: string, workerIndex: number): string {
   return `${PROFILE_ROOT}/${project}-${workerIndex}`;
 }

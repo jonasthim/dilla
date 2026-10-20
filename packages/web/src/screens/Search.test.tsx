@@ -35,3 +35,26 @@ it('announces a missing row and focuses a surviving textbox', async () => {
   expect(screen.getByRole('status')).toHaveTextContent('That message is no longer available');
   expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
 });
+
+// J1, R-S4: on a desktop the palette is the one modal dialog (no wrapper of its own): the shell stays in the DOM and Escape gives focus back.
+it('is the palette’s own modal dialog on a desktop, over a shell that stays mounted, and Escape returns focus', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  const Host = ({ open }: { open: boolean }) => <>
+    <main><button type="button">opener</button></main>
+    <Search open={open} query="" scope="all" requestId={0} currentRequestId={0} hits={[]} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />
+  </>;
+  const view = render(<Host open={false} />);
+  screen.getByRole('button', { name: 'opener' }).focus();
+  view.rerender(<Host open />);
+  const dialog = screen.getByRole('dialog', { name: 'Search your messages' });
+  expect(dialog).toHaveClass('d-search-palette-dialog');
+  expect(document.querySelectorAll('dialog')).toHaveLength(1);
+  expect(document.querySelector('.dw-search')).toBeNull();
+  expect(screen.getByRole('button', { name: 'opener', hidden: true })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledOnce();
+  view.rerender(<Host open={false} />);
+  expect(screen.getByRole('button', { name: 'opener' })).toHaveFocus();
+});
