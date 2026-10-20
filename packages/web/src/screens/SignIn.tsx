@@ -110,7 +110,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [busyStep, setBusyStep] = useState<Shown | null>(null);
   const [backupMode, setBackupMode] = useState(false);
   const [backup, setBackup] = useState('');
-  // A backup code signed this browser in: the done step says how many remain.
+  // A backup code was sent with the key: the done step says how many remain. Back at the login the code was refused or
+  // the ceremony began again, so the flag clears.
   const [usedBackup, setUsedBackup] = useState(false);
   const [factorDone, setFactorDone] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   const { text: announcement, announce } = useAnnouncer();
@@ -162,7 +163,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // R7: the factor step counts from when it shows until the ceremony returns to the login.
   useEffect(() => {
     if (phase === 'signin-totp' || phase === 'signin-passkey') setFactorShown(true);
-    else if (phase === 'signin-login' || phase === 'needs-signup') setFactorShown(false);
+    else if (phase === 'signin-login' || phase === 'needs-signup') { setFactorShown(false); setUsedBackup(false); }
   }, [phase]);
   // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
   // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
@@ -248,10 +249,12 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     // R6: a held backup code goes now, with the key; the instance checks the assertion before the code.
     if (backupHeld) {
       begin('backup', 'key');
+      // The code is spent from the moment it is sent: a call that then fails on the key (a retry goes through signInKey)
+      // has still used one, so the done step says how many remain whichever call finishes the sign-in.
+      setUsedBackup(true);
       run('backup', client.call({ m: 'signInBackupCode', code: normaliseBackupCode(backup), recoveryKey: key }), () => {
         setKey('');
         setBackup('');
-        setUsedBackup(true);
       });
       return;
     }

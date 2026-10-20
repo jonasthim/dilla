@@ -176,6 +176,54 @@ describe('the code step (flow 10 state 16)', () => {
     expect(screen.queryByText(/backup codes? left/)).toBeNull();
   });
 
+  it('says how many codes are left even when the backup code was spent by a call that failed on the key, and the retry used signInKey', async () => {
+    let first = true;
+    const script: Script = (c, f) => {
+      if (c.m === 'signInBackupCode' && first) {
+        first = false;
+        move(f, held);
+        return Promise.reject(refusal({ code: 'E_RECOVERY_KEY', status: 400 }));
+      }
+      return worker()(c, f);
+    };
+    const { fake, user } = setup('signin-login', script);
+    await login(user);
+    fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 8, hasPassword: true });
+    await user.click(button(en['factorSignin.useBackup']));
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(user);
+    await waitFor(() => { expect(fake.callsOf('signInBackupCode')).toHaveLength(1); });
+    await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
+    await user.click(button('Add this browser'));
+    await waitFor(() => { expect(fake.callsOf('signInKey')).toHaveLength(1); });
+    expect(h1()).toHaveTextContent('You’re in');
+    expect(screen.getByText('You have 8 backup codes left. Make new ones in Settings, under sign-in.')).toBeInTheDocument();
+  });
+
+  it('says nothing about backup codes after a refused code sent the person back to the login and a code from the app signed them in', async () => {
+    let first = true;
+    const script: Script = (c, f) => {
+      if (c.m === 'signInBackupCode' && first) {
+        first = false;
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
+        return Promise.reject(refusal({ code: 'E_UNAUTHENTICATED', status: 401 }));
+      }
+      return worker()(c, f);
+    };
+    const { fake, user } = setup('signin-login', script);
+    await login(user);
+    await user.click(button(en['factorSignin.useBackup']));
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(user);
+    await waitFor(() => { expect(h1()).toHaveTextContent('Sign in to dilla.test'); });
+    await login(user);
+    fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 9, hasPassword: true });
+    await user.type(field('Code'), '123456{Enter}');
+    await addWithKey(user);
+    expect(h1()).toHaveTextContent('You’re in');
+    expect(screen.queryByText(/backup codes? left/)).toBeNull();
+  });
+
   it('a refused backup code returns to the login with the password cleared, and the next login sends no key', async () => {
     const script: Script = (c, f) => {
       if (c.m === 'signInBackupCode') {
