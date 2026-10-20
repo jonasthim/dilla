@@ -2937,14 +2937,19 @@ describe('web3.9 VOICE-FIX fix round 1 (I1): concurrentCapture', () => {
     ['Firefox on iOS (FxiOS)', `${IPHONE} ${WEBKIT} FxiOS/131.0 Mobile/15E148 Safari/605.1.15`, false],
     ['Edge on iOS (EdgiOS)', `${IPHONE} ${WEBKIT} EdgiOS/130.0.2849.80 Version/18.0 Mobile/15E148 Safari/604.1`, false],
     ['an unknown user agent', 'curl/8.10.1', false],
+    // Final review I-1: getBrowser sets no os on Android, so the user agent itself rules phones and tablets out.
+    ['Chrome on Android', `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36`, false],
+    ['Chrome on an Android tablet', `Mozilla/5.0 (Linux; Android 14; SM-X710) ${CHROMIUM}`, false],
+    ['Firefox on Android', 'Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0', false],
+    ['Samsung Internet', 'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/122.0.0.0 Mobile Safari/537.36', false],
   ];
   for (const [name, ua, want] of rows) {
     it(`${name}: ${String(want)}`, () => {
-      expect(concurrentCapture(getBrowser(ua, true))).toBe(want);
+      expect(concurrentCapture(getBrowser(ua, true), ua)).toBe(want);
     });
   }
   it('no browser details: false', () => {
-    expect(concurrentCapture(undefined)).toBe(false);
+    expect(concurrentCapture(undefined, '')).toBe(false);
   });
 });
 
