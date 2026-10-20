@@ -68,9 +68,19 @@ export function voiceStateWords(view: VoiceParticipantView, labels: VoiceStateLa
   if (view.screen) out.push({ key: 'screen', glyph: <Icon name="monitor-up" size={14} />, text: labels.screen, glyphOnly: true });
   if (view.speaking) out.push({ key: 'speaking', glyph: <StateDot tone="ok" />, text: labels.speaking, glyphOnly: true });
   if (view.state === 'connecting') out.push({ key: 'connecting', glyph: <StateDot tone="pending" />, text: labels.connecting, glyphOnly: false });
-  if (view.state === 'not-heard') out.push({ key: 'not-heard', glyph: '?', text: labels.notHeard, glyphOnly: false });
+  if (view.state === 'not-heard' && !silentByChoice(view)) out.push({ key: 'not-heard', glyph: '?', text: labels.notHeard, glyphOnly: false });
   if (view.state === 'unverified') out.push({ key: 'unverified', glyph: '!', text: labels.unverified, glyphOnly: false });
   return out;
+}
+
+/**
+ * web3.8 FX I2: a person who says they are muted or deafened (their own voice_state) and sends no camera or screen is
+ * not expected to send a frame, so a stream nobody has heard yet is shown as the muted glyph alone, not "not heard yet".
+ * The stream state itself stays `not-heard` (nothing was verified, and no media is shown before it is); a person who says
+ * they send (unmuted, or a camera or screen) and is not heard keeps the word, and an `unverified` device keeps its own.
+ */
+function silentByChoice(view: VoiceParticipantView): boolean {
+  return (view.muted || view.deafened) && !view.video && !view.screen;
 }
 
 /**

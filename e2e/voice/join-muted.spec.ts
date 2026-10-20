@@ -265,6 +265,18 @@ test('a join that starts muted shows bob the muted glyph, and the voice_state ca
       return mine === undefined ? null : (mine.flags & 2) === 2;
     }, { ...POLL, message: 'her own participant says self_mute' }).toBe(true);
     await expect(tile(bob.page, 'alice').locator('.d-call-tile__state[data-state="muted"]')).toBeVisible({ timeout: WAIT });
+
+    await test.step('web3.8 FX I2: bob sees her muted, never "not heard yet", while she sends nothing; unmuted she is heard', async () => {
+      const hers = tile(bob.page, 'alice');
+      // Nothing of hers was verified (no frame went out), and the stage does not pretend otherwise.
+      await expect(hers).toHaveAttribute('data-voice-state', 'not-heard', { timeout: WAIT });
+      await bob.page.waitForTimeout(3_000);
+      await expect(hers.locator('.d-call-tile__state[data-state="not-heard"]')).toHaveCount(0);
+      await expect(hers).not.toContainText(copy('voice.state.notHeard'));
+      await panelMute(alice).click();
+      await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+      await expect(hers).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+    });
   } finally {
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);

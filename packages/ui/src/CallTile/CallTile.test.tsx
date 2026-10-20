@@ -68,6 +68,27 @@ describe('CallTile', () => {
     expect(screen.getByText('connecting')).toBeInTheDocument();
   });
 
+  it('web3.8 FX I2: a self-muted or deafened person who sends no camera or screen is shown muted, not "not heard yet"', () => {
+    const { container, rerender } = render(<CallTile view={{ ...view, state: 'not-heard', muted: true }} {...rest} />);
+    expect(screen.queryByText('not heard yet')).toBeNull();
+    expect(screen.getByRole('img', { name: 'muted' })).toBeInTheDocument();
+    // The stream state itself is kept as it is: nothing was verified.
+    expect(container.querySelector('.d-call-tile')).toHaveAttribute('data-voice-state', 'not-heard');
+    rerender(<CallTile view={{ ...view, state: 'not-heard', deafened: true }} {...rest} />);
+    expect(screen.queryByText('not heard yet')).toBeNull();
+    // Said unmuted (so expected to send), and nothing verifiable arrived: still "not heard yet".
+    rerender(<CallTile view={{ ...view, state: 'not-heard' }} {...rest} />);
+    expect(screen.getByText('not heard yet')).toBeInTheDocument();
+    // Muted but sending a camera or a screen: those frames are expected, so the word stays until they verify.
+    rerender(<CallTile view={{ ...view, state: 'not-heard', muted: true, video: true }} {...rest} />);
+    expect(screen.getByText('not heard yet')).toBeInTheDocument();
+    rerender(<CallTile view={{ ...view, state: 'not-heard', muted: true, screen: true }} {...rest} />);
+    expect(screen.getByText('not heard yet')).toBeInTheDocument();
+    // An unknown device stays unverified whatever it says about itself.
+    rerender(<CallTile view={{ ...view, state: 'unverified', muted: true }} {...rest} />);
+    expect(screen.getByText('unverified stream')).toBeInTheDocument();
+  });
+
   it('the caption wraps the name and the states in one row: name, icons, then the stream-state words', () => {
     const { container } = render(<CallTile view={{ ...view, muted: true, video: true, state: 'unverified' }} {...rest} />);
     const caption = container.querySelector('.d-call-tile__caption')!;
