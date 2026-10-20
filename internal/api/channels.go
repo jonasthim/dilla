@@ -970,9 +970,16 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "list channels", err)
 		return
 	}
+	// m-3: the AFK pointer is read once for the whole listing, not once per channel resolved.
+	afk, err := c.repo.GetCommunityAFK(r.Context(), cid)
+	if err != nil {
+		c.fail(w, r, "list channels", err)
+		return
+	}
+	resolveCtx := withAFKPointer(r.Context(), cid, afk)
 	visible := make(map[id.ID]bool, len(channels))
 	for _, ch := range channels {
-		bits, err := c.res.Resolve(r.Context(), s.UserID, ch)
+		bits, err := c.res.Resolve(resolveCtx, s.UserID, ch)
 		if err != nil {
 			c.fail(w, r, "list channels", err)
 			return

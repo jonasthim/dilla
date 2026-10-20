@@ -236,13 +236,35 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 		if s.Overwrite, err = repo.ListOverwrites(ctx, *channelID); err != nil {
 			return Snapshot{}, err
 		}
-		afk, err := repo.GetCommunityAFK(ctx, communityID)
+		afk, err := afkPointerOf(ctx, repo, communityID)
 		if err != nil {
 			return Snapshot{}, err
 		}
 		s.AFK = afk.ChannelID != nil && *afk.ChannelID == *channelID
 	}
 	return s, nil
+}
+
+// afkPointerKey carries one community's AFK pointer through a request that resolves many of its
+// channels (m-3): the channel listing reads it once instead of once per channel.
+type afkPointerKey struct{}
+
+type afkPointerCache struct {
+	cid id.ID
+	cfg store.CommunityAFK
+}
+
+// withAFKPointer is ctx carrying cfg as community cid's AFK pointer for afkPointerOf.
+func withAFKPointer(ctx context.Context, cid id.ID, cfg store.CommunityAFK) context.Context {
+	return context.WithValue(ctx, afkPointerKey{}, afkPointerCache{cid: cid, cfg: cfg})
+}
+
+// afkPointerOf is the pointer ctx carries for cid (withAFKPointer), else the stored one.
+func afkPointerOf(ctx context.Context, repo store.Repository, cid id.ID) (store.CommunityAFK, error) {
+	if c, ok := ctx.Value(afkPointerKey{}).(afkPointerCache); ok && c.cid == cid {
+		return c.cfg, nil
+	}
+	return repo.GetCommunityAFK(ctx, cid)
 }
 
 // Resolver is the request-scoped front end handlers use. It is the one place a

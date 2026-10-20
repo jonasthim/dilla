@@ -858,6 +858,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   instance starts, and the snapshot creates it lazily if it is still missing. A web3.8 community
   whose administrator had picked an AFK channel gets a new built-in channel with the stored timeout,
   and the old channel becomes an ordinary voice channel (its name, overwrites and live call stay).
+  An overwrite left on the built-in channel (by a rollback to an older release) is removed at the
+  next start.
 - **What may change.** Administrators may rename it and move it (position and category, under the
   category rule of § Channels). `DELETE /v1/channels/{id}` on it is `403 E_FORBIDDEN` `the AFK
   channel cannot be deleted`; a `PATCH` that names its topic, mode, visibility or slow mode is

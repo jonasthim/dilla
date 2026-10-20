@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +27,14 @@ const afkBuiltinName = "AFK"
 
 // afkBuiltinDetail is the audit detail of the system row that marks a channel as the built-in AFK.
 const afkBuiltinDetail = "afk.builtin"
+
+// afkBuiltinSettings is the built-in AFK channel's settings_json (R-AFK1): the marker the backfill
+// reads to tell the built-in channel from a web3.8 pick. No route writes settings_json and it is not on
+// the wire, so the marker cannot be lost or forged by a client.
+const afkBuiltinSettings = `{"afk":"builtin"}`
+
+// isBuiltinAFK reports whether ch carries the built-in marker.
+func isBuiltinAFK(ch store.ChannelRow) bool { return string(ch.SettingsJSON) == afkBuiltinSettings }
 
 // afkPendingTTL is how long a move the sweep decided stays pending for its device (R4, R33).
 const afkPendingTTL = 10 * time.Minute
@@ -85,7 +93,7 @@ func createBuiltinAFK(ctx context.Context, tx store.Repository, com store.Commun
 		Visibility:        VisPrivate,
 		Name:              afkBuiltinName,
 		Position:          AFKBuiltinPosition,
-		SettingsJSON:      []byte("{}"),
+		SettingsJSON:      []byte(afkBuiltinSettings),
 		HostPolicyVersion: com.PolicyVersion,
 		Created:           now,
 	}
@@ -103,16 +111,18 @@ func createBuiltinAFK(ctx context.Context, tx store.Repository, com store.Commun
 	return row, nil
 }
 
-// ensureCommunityAFK is the per-community transaction of the backfill and of the lazy ensure: it takes
-// the community row lock, asks done whether the pointer as it stands under the lock is already the
-// built-in channel, and otherwise writes a new one with the stored timeout kept. The old pointed
-// channel is left as it is: from this commit on it is an ordinary voice channel. After the commit
-// the new channel's members are materialised. created is false when done answered true.
+// ensureCommunityAFK is the per-community transaction of the backfill and of the lazy ensure. It
+// takes the community row lock, reads the pointer and the channel it names as they stand under the
+// lock, and asks done whether that channel will do. If it will not, a new built-in channel is written
+// with the stored timeout kept; the old pointed channel is left as it is, and from this commit on it is
+// an ordinary voice channel. If the pointed channel is the built-in one, any overwrite on it is removed
+// (R-AFK2: a rollback to web3.8 could have written one). After the commit the members of the channel
+// that was created or cleaned are materialised. created is true only when a channel was written.
 func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid id.ID, now int64,
-	done func(ctx context.Context, tx store.Repository, cfg store.CommunityAFK) (bool, error), log *slog.Logger,
+	done func(ch store.ChannelRow, live bool) bool, log *slog.Logger,
 ) (store.ChannelRow, bool, error) {
 	var afk store.ChannelRow
-	created := false
+	created, cleaned := false, false
 	err := repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.LockCommunity(ctx, cid); err != nil {
 			return err
@@ -125,12 +135,17 @@ func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid
 		if err != nil {
 			return err
 		}
-		ok, err := done(ctx, tx, cfg)
+		ch, live, err := livePointer(ctx, tx, cid, cfg)
 		if err != nil {
 			return err
 		}
-		if ok {
-			return nil
+		if done(ch, live) {
+			if !live || !isBuiltinAFK(ch) {
+				return nil
+			}
+			afk = ch
+			cleaned, err = stripAFKOverwrites(ctx, tx, ch, now)
+			return err
 		}
 		afk, err = createBuiltinAFK(ctx, tx, com, cfg.TimeoutSeconds, now)
 		if err != nil {
@@ -139,13 +154,36 @@ func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid
 		created = true
 		return nil
 	})
-	if err != nil || !created {
+	if err != nil {
 		return afk, false, err
 	}
-	if err := MaterialiseChannelMembers(ctx, repo, dsvc, afk, now); err != nil {
-		log.ErrorContext(ctx, "materialise channel members", "channel", afk.ID, "err", err)
+	if created || cleaned {
+		if err := MaterialiseChannelMembers(ctx, repo, dsvc, afk, now); err != nil {
+			log.ErrorContext(ctx, "materialise channel members", "channel", afk.ID, "err", err)
+		}
 	}
-	return afk, true, nil
+	return afk, created, nil
+}
+
+// stripAFKOverwrites deletes every overwrite on the built-in AFK channel ch, with a system audit row
+// each (R-AFK2), and reports whether there was one. The caller holds the community row lock.
+func stripAFKOverwrites(ctx context.Context, tx store.Repository, ch store.ChannelRow, now int64) (bool, error) {
+	rows, err := tx.ListOverwrites(ctx, ch.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, o := range rows {
+		if err := tx.DeleteOverwrite(ctx, ch.ID, o.TargetKind, o.TargetID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return false, err
+		}
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.overwrite.delete", Target: ch.ID.String(),
+			Detail: fmt.Sprintf("%d:%s", o.TargetKind, o.TargetID), At: now,
+		}); err != nil {
+			return false, err
+		}
+	}
+	return len(rows) > 0, nil
 }
 
 // livePointer reports whether cfg names a live channel of community cid.
@@ -163,103 +201,48 @@ func livePointer(ctx context.Context, repo store.Repository, cid id.ID, cfg stor
 	return ch, ch.CommunityID != nil && *ch.CommunityID == cid, nil
 }
 
-// builtinAFKIDs is the set of channel ids that audit rows mark as built-in AFK channels: action
-// channel.create, detail afk.builtin and no actor. Only rows at or after since are read.
-//
-// ListAudit answers the newest rows first above a lower bound, so it cannot be paged downwards; the
-// rows since the oldest candidate channel was created are read in one call instead (every built-in
-// row is written in the transaction that creates its channel, at the channel's created time).
-func builtinAFKIDs(ctx context.Context, repo store.Repository, since int64) (map[id.ID]bool, error) {
-	rows, err := repo.ListAudit(ctx, since, math.MaxInt32)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[id.ID]bool)
-	for _, a := range rows {
-		if a.Actor != nil || a.Action != "channel.create" || a.Detail != afkBuiltinDetail {
-			continue
-		}
-		if cid, err := id.Parse(a.Target); err == nil {
-			out[cid] = true
-		}
-	}
-	return out, nil
-}
+// builtinDone is the backfill's question (R1, R-AFK1): the pointer names a live channel of the
+// community that carries the built-in marker.
+func builtinDone(ch store.ChannelRow, live bool) bool { return live && isBuiltinAFK(ch) }
 
 // EnsureAFKChannels backfills every live community that is not done (R1). Never inside a request.
 //
-// Done means the community's pointer names a live channel of the community that an audit row marks
-// as built in. Every other live community (no row, a NULL pointer, or a web3.8 pointer at an
-// administrator's pick) gets a new built-in channel, its own transaction under the community row
-// lock. A failure for one community is logged and the others go on; the answer is how many were
-// created.
+// Done means the community's pointer names a live channel of the community whose settings_json is
+// the built-in marker (R-AFK1), decided inside the community's own transaction under its row lock, so
+// two processes that run it at once against one database still write one channel per community. Every
+// other live community (no row, a NULL pointer, or a web3.8 pointer at an administrator's pick) gets
+// a new built-in channel. A built-in channel that carries an overwrite loses it (R-AFK2). A failure
+// for one community is logged and the others go on; the answer is how many channels were created.
 func EnsureAFKChannels(ctx context.Context, repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) (int, error) {
-	type candidate struct {
-		cid     id.ID
-		pointed *store.ChannelRow // the live channel the pointer names, or nil
-	}
-	var all []candidate
-	since := int64(math.MaxInt64)
+	n := 0
 	var after id.ID
 	for {
 		page, err := repo.ListCommunities(ctx, after, afkBackfillPage)
 		if err != nil {
-			return 0, err
+			return n, err
 		}
 		for _, com := range page {
-			cfg, err := repo.GetCommunityAFK(ctx, com.ID)
+			skip, err := afkSettled(ctx, repo, com.ID)
 			if err != nil {
 				log.ErrorContext(ctx, "afk backfill", "community", com.ID, "err", err)
 				continue
 			}
-			ch, live, err := livePointer(ctx, repo, com.ID, cfg)
+			if skip {
+				continue
+			}
+			_, created, err := ensureCommunityAFK(ctx, repo, dsvc, com.ID, clk.Now().Unix(), builtinDone, log)
 			if err != nil {
 				log.ErrorContext(ctx, "afk backfill", "community", com.ID, "err", err)
 				continue
 			}
-			c := candidate{cid: com.ID}
-			if live {
-				c.pointed = &ch
-				since = min(since, ch.Created)
+			if created {
+				n++
 			}
-			all = append(all, c)
 		}
 		if len(page) < afkBackfillPage {
 			break
 		}
 		after = page[len(page)-1].ID
-	}
-	builtin := map[id.ID]bool{}
-	if since != math.MaxInt64 {
-		var err error
-		if builtin, err = builtinAFKIDs(ctx, repo, since); err != nil {
-			return 0, err
-		}
-	}
-	done := func(ctx context.Context, tx store.Repository, cid id.ID, cfg store.CommunityAFK) (bool, error) {
-		_, live, err := livePointer(ctx, tx, cid, cfg)
-		if err != nil {
-			return false, err
-		}
-		return live && builtin[*cfg.ChannelID], nil
-	}
-	n := 0
-	for _, c := range all {
-		if c.pointed != nil && builtin[c.pointed.ID] {
-			continue
-		}
-		cid := c.cid
-		_, created, err := ensureCommunityAFK(ctx, repo, dsvc, cid, clk.Now().Unix(),
-			func(ctx context.Context, tx store.Repository, cfg store.CommunityAFK) (bool, error) {
-				return done(ctx, tx, cid, cfg)
-			}, log)
-		if err != nil {
-			log.ErrorContext(ctx, "afk backfill", "community", cid, "err", err)
-			continue
-		}
-		if created {
-			n++
-		}
 	}
 	if n > 0 {
 		log.Info("afk backfill", "created", n)
@@ -267,14 +250,30 @@ func EnsureAFKChannels(ctx context.Context, repo store.Repository, dsvc DS, clk 
 	return n, nil
 }
 
+// afkSettled is the backfill's read before any lock: the pointer already names the community's
+// built-in channel and that channel has no overwrite, so there is nothing to write. Anything else goes
+// on to the transaction, which decides again under the lock.
+func afkSettled(ctx context.Context, repo store.Repository, cid id.ID) (bool, error) {
+	cfg, err := repo.GetCommunityAFK(ctx, cid)
+	if err != nil {
+		return false, err
+	}
+	ch, live, err := livePointer(ctx, repo, cid, cfg)
+	if err != nil || !builtinDone(ch, live) {
+		return false, err
+	}
+	ow, err := repo.ListOverwrites(ctx, ch.ID)
+	if err != nil {
+		return false, err
+	}
+	return len(ow) == 0, nil
+}
+
 // ensureAFK is the lazy ensure of GET /v1/communities/{id}/afk (R1): the backfill's per-community
 // transaction, for a pointer that is NULL or names no live channel.
 func (h *Calls) ensureAFK(ctx context.Context, cid id.ID) (store.CommunityAFK, error) {
 	_, created, err := ensureCommunityAFK(ctx, h.repo, h.dsvc, cid, h.clk.Now().Unix(),
-		func(ctx context.Context, tx store.Repository, cfg store.CommunityAFK) (bool, error) {
-			_, live, err := livePointer(ctx, tx, cid, cfg)
-			return live, err
-		}, h.log)
+		func(_ store.ChannelRow, live bool) bool { return live }, h.log)
 	if err != nil {
 		return store.CommunityAFK{}, err
 	}
