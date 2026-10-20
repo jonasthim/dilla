@@ -55,6 +55,8 @@ export interface AppShellProps {
   tabBar?: ReactNode;
   /** The phone's call strip; rendered on both panes of a phone. */
   callBar?: ReactNode;
+  /** Phone: told when typing starts or stops (a field has focus and the soft keyboard is up), so the caller can swap chrome for a cue. */
+  onTypingChange?(typing: boolean): void;
   /** web3.7.1: a page above the shell on a phone (Settings): main, rail, sidebar, aside and call bar are inert; the tab bar stays live. */
   covered?: boolean;
   /**
@@ -137,7 +139,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  */
 export function AppShell({
   skipLabel, rail, sidebar, header, children, composer, statusBar, bottom, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
-  layout, phonePane = 'list', tabBar, callBar, covered, page, paneWidths, onPaneResize, resizeLabels,
+  layout, phonePane = 'list', tabBar, callBar, onTypingChange, covered, page, paneWidths, onPaneResize, resizeLabels,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -280,6 +282,9 @@ export function AppShell({
   const [fieldFocus, setFieldFocus] = useState(false);
   const [keyboardUp, setKeyboardUp] = useState(true);
   const typing = fieldFocus && keyboardUp;
+  const typingCb = useRef(onTypingChange);
+  typingCb.current = onTypingChange;
+  useEffect(() => { typingCb.current?.(typing); }, [typing]);
   useEffect(() => {
     const root = rootRef.current;
     if (!phone || root === null) { setFieldFocus(false); return; }

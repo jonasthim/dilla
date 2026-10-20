@@ -6,3 +6,4 @@
 .d-phone-header__back + .d-phone-header__title { padding-left: 0; }
 .d-phone-header__marker { display: inline-flex; flex-shrink: 0; padding-left: 0.5rem; color: var(--fg-3); }
 .d-phone-header__actions { margin-left: auto; display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
+.d-phone-header__dot { flex: none; width: 0.5rem; height: 0.5rem; margin-left: 0.5rem; border-radius: 50%; background: var(--accent); }

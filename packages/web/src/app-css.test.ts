@@ -24,6 +24,17 @@ describe('the phone layout of voice (360 px)', () => {
     expect(css).not.toMatch(/\.dw-voice-stage \.d-call-tile \{/);
   });
 
+  it('H7: on a phone the voice preview\'s join is 44 tall; the stage keeps its 18px gutter', () => {
+    expect(css).toMatch(/\[data-layout="phone"\] \.dw-voice-stage \.dw-voice-join \{[^}]*min-height:\s*2\.75rem/);
+    const stage = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../ui/src/CallStage/CallStage.css'), 'utf8');
+    expect(stage).toMatch(/\[data-layout="phone"\] \.d-call-stage \{[^}]*--d-stage-px:\s*1\.125rem/);
+  });
+
+  it('H1/H2: no footer rule is left for the phone\'s DM list, and no bare tab heading', () => {
+    expect(css).not.toMatch(/\.dw-phone-footer/);
+    expect(css).not.toMatch(/\.dw-phone-heading/);
+  });
+
   it('I5: no stage toolbar floats over the tiles: the controls are in normal flow', () => {
     expect(rule(phone, '.dw-voice-stage .d-call-stage__controls')).toMatch(/position:\s*static/);
     expect(rule(phone, '.dw-dm-call .d-call-stage__controls')).toMatch(/position:\s*static/);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
+import { formatDay } from '../../strings/index.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
@@ -387,6 +388,85 @@ describe('focus handoffs (F4)', () => {
     fireEvent.blur(grid.querySelector('button') as HTMLElement, { relatedTarget: composer() });
     expect(grid).not.toBeInTheDocument();
     expect(composer()).toHaveFocus();
+  });
+});
+
+describe('grouping, day dividers and the present bar (R29)', () => {
+  const MIN = 60;
+  const DAY = 24 * 60 * MIN;
+  // Noon today, so that a few minutes either way never cross midnight.
+  const NOON = new Date().setHours(12, 0, 0, 0) / 1000;
+  const authors = () => Array.from(document.querySelectorAll('.d-message-row__author:not(.d-sr-only)')).map(e => e.textContent);
+  it('folds three messages of one author within 7 minutes into one author line', () => {
+    renderConversation({ items: [
+      peerRow(P1, '1', 'one', { ts: NOON }), peerRow(P2, '2', 'two', { ts: NOON + 3 * MIN }), peerRow(O1, '3', 'three', { ts: NOON + 9 * MIN }),
+    ] });
+    // The gap is measured to the message above, not to the first of the run: 3 min, then 6 min.
+    expect(authors()).toEqual(['bob']);
+    expect(rowOf(P1)).not.toHaveAttribute('data-grouped');
+    expect(rowOf(P2)).toHaveAttribute('data-grouped', 'true');
+    expect(rowOf(O1)).toHaveAttribute('data-grouped', 'true');
+  });
+  it('starts a new group after a gap of more than 7 minutes, and at another author', () => {
+    renderConversation({ items: [
+      peerRow(P1, '1', 'one', { ts: NOON }), peerRow(P2, '2', 'two', { ts: NOON + 8 * MIN }), ownRow(O1, '3', 'three', { ts: NOON + 8 * MIN + 1 }),
+    ] });
+    expect(authors()).toEqual(['bob', 'bob', 'Ada L']);
+    expect(rowOf(P2)).not.toHaveAttribute('data-grouped');
+    expect(rowOf(O1)).not.toHaveAttribute('data-grouped');
+  });
+  it('does not fold a reply, nor a row that cannot be read, into the run above it', () => {
+    renderConversation({ items: [
+      peerRow(P1, '1', 'one'), peerRow(P2, '2', 'two', { reply: reply() }), peerRow(O1, '3', '', { state: 'cannot-read' }),
+    ] });
+    expect([P1, P2, O1].map(id => rowOf(id).getAttribute('data-grouped'))).toEqual([null, null, null]);
+  });
+  it('divides the days: one divider before each day, named by its date, yesterday or today', () => {
+    renderConversation({ items: [
+      peerRow(P1, '1', 'old', { ts: NOON - 5 * DAY }), peerRow(P2, '2', 'yesterday', { ts: NOON - DAY }), ownRow(O1, '3', 'today', { ts: NOON }),
+    ] });
+    expect(within(screen.getByRole('log')).getAllByRole('separator').map(s => s.getAttribute('aria-label'))).toEqual([
+      formatDay(NOON - 5 * DAY), en['layout.log.yesterday'], en['layout.log.today'],
+    ]);
+  });
+  it('never folds two messages across a day divider', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'a', { ts: NOON - DAY }), peerRow(P2, '2', 'b', { ts: NOON - DAY + 60 }), peerRow(O1, '3', 'c', { ts: NOON })] });
+    expect(rowOf(P2)).toHaveAttribute('data-grouped', 'true');
+    expect(rowOf(O1)).not.toHaveAttribute('data-grouped');
+  });
+  it('shows the present bar once the log is scrolled away from the newest message, and Ctrl+End goes to it', async () => {
+    const { user } = renderConversation({ items: [peerRow(P1, '1', 'one'), peerRow(P2, '2', 'two')] });
+    const log = screen.getByRole('log');
+    expect(screen.queryByRole('button', { name: en['layout.log.jump'] })).toBeNull();
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 500 });
+    log.scrollTop = 200;
+    fireEvent.scroll(log);
+    expect(screen.getByRole('button', { name: en['layout.log.jump'] })).toBeInTheDocument();
+    expect(screen.getByText(en['layout.log.older'], { selector: 'span' })).toBeInTheDocument();
+    act(() => rowOf(P2).focus());
+    await user.keyboard('{Control>}{End}{/Control}');
+    expect(log.scrollTop).toBe(2000);
+    // The scroll event of that move is what a browser sends; at the end the bar goes.
+    fireEvent.scroll(log);
+    expect(screen.queryByRole('button', { name: en['layout.log.jump'] })).toBeNull();
+  });
+  it('the jump button scrolls to the newest message too', async () => {
+    const { user } = renderConversation({ items: [peerRow(P1, '1', 'one')] });
+    const log = screen.getByRole('log');
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1500 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 500 });
+    log.scrollTop = 0;
+    fireEvent.scroll(log);
+    await user.click(screen.getByRole('button', { name: en['layout.log.jump'] }));
+    expect(log.scrollTop).toBe(1500);
+  });
+  it('tags a web client on hover only, and a bot always', () => {
+    renderConversation({ items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, ts: NOON + 3600 })] });
+    expect(rowOf(O1).querySelector('.d-tag')?.closest('[data-reveal="hover"]')).not.toBeNull();
+    expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
+    expect(rowOf(P1).querySelector('[data-reveal="hover"]')).toBeNull();
+    expect(rowOf(P1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'bot');
   });
 });
 

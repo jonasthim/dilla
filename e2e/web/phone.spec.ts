@@ -211,14 +211,31 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.locator('.d-app-shell')).toHaveAttribute('data-typing', 'true');
       const typing = await composer.boundingBox();
       expect(typing!.y + typing!.height, 'the composer ends inside the viewport while typing').toBeLessThanOrEqual(await page.evaluate(() => window.visualViewport?.height ?? innerHeight));
+      // H1/H3: with the keyboard up the 48 header and the composer are both on screen and no call bar is (no call is up here).
+      const viewport = await page.evaluate(() => window.visualViewport?.height ?? innerHeight);
+      const header = await page.locator('.d-app-shell__main .d-phone-header').boundingBox();
+      expect(header!.y, 'the header is at the top of the viewport').toBeGreaterThanOrEqual(0);
+      expect(header!.height, 'the header is a 48 bar').toBeGreaterThanOrEqual(48);
+      expect(header!.y + header!.height, 'the header sits above the composer').toBeLessThanOrEqual(typing!.y);
+      expect(typing!.y, 'the composer is in the viewport').toBeLessThan(viewport);
+      await expect(page.locator('.d-call-bar')).toHaveCount(0);
+      await expect(page.locator('.d-phone-header__dot')).toHaveCount(0);
       await sendText(page, 'general', 'hej');
       await expect(messageRow(page, 'general', 'hej')).toBeVisible();
-      // Tapping the message log blurs the composer: the tab bar comes back and the scale is still 1.
-      await page.getByRole('log').tap();
+      // Leaving the composer: the tab bar comes back and the scale is still 1.
+      await composer.evaluate(el => { el.blur(); });
       await expect(composer).not.toBeFocused();
       await softKeyboard(page, false);
       await expect(tabBar(page)).toBeVisible();
       expect(await scale(page), 'visualViewport.scale after leaving the composer').toBe(1);
+      // R30: a message's actions are not on screen until a tap on it, and a second tap puts them away.
+      const row = messageRow(page, 'general', 'hej');
+      const actions = row.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
+      await expect(actions).toHaveCount(0);
+      await row.locator('.d-message-row__body').tap();
+      await expect(actions).toBeVisible();
+      await row.locator('.d-message-row__body').tap();
+      await expect(actions).toHaveCount(0);
       await expectAccessible(page, 'the channel view');
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
@@ -262,6 +279,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('a thread sheet opens from the chip on a real click', async () => {
       const row = messageRow(page, 'general', 'hej');
       await row.focus();
+      await page.keyboard.press('Enter'); // Enter on the focused row reveals its actions (R30)
       await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
       const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
       await expect(reply).toBeVisible({ timeout: WAIT });
@@ -377,13 +395,18 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await tab(page, 'nav.tab.activity').tap();
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
       await expect(listHeading(page, 'activity.title')).toBeFocused();
-      await expect(page.getByText(copy('activity.empty'), { exact: true }).or(page.getByText(copy('activity.since'), { exact: true }))).toBeVisible();
+      await expect(page.getByRole('region', { name: copy('activity.empty'), exact: true })).toBeVisible();
+      expect((await page.locator('.d-app-shell__sidebar .d-phone-header').boundingBox())!.height, 'a 48 header on Activity').toBeGreaterThanOrEqual(48);
       await expectAccessible(page, 'Activity');
 
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
-      await expect(page.getByRole('heading', { level: 1, name: copy('you.title'), exact: true })).toBeFocused();
+      await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
       await expect(page.getByRole('heading', { name: copy('you.status'), exact: true })).toBeVisible();
+      // H1/H6: a 48 header on the tab root, and the status is a 44 row, not a native select.
+      expect((await page.locator('.dw-you .d-phone-header').boundingBox())!.height).toBeGreaterThanOrEqual(48);
+      await expect(page.locator('.dw-you select')).toHaveCount(0);
+      await expectTapTargets(page.getByRole('button', { name: new RegExp(copy('presence.label')) }), 'the status row');
       for (const fact of ['shell.status.node', 'shell.status.link', 'shell.status.gen', 'shell.status.devices']) {
         await expect(page.locator('.dw-you__facts dt').filter({ hasText: copy(fact) })).toBeVisible();
       }
@@ -584,8 +607,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
       await expectComposerReady(page, 'general');
       await sendText(page, 'general', 'hej');
       const row = messageRow(page, 'general', 'hej');
-      await row.focus();
-      await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
+      await row.locator('.d-message-row__body').tap();
+      await row.getByRole('button', { name: copy('thread.open'), exact: true }).tap();
       const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
       await expect(reply).toBeVisible({ timeout: WAIT });
       await reply.fill('svar');

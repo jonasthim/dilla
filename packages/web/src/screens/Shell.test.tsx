@@ -786,7 +786,8 @@ describe('timeline', () => {
     expect(within(log).getByText('device 29292929')).toBeInTheDocument();
     expect(within(log).getAllByText('web')).toHaveLength(3);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
-    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
+    // Eight rows each name their time once; the one row folded into its author's run shows it in the gutter as well (R29).
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(9);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
     expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();

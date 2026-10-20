@@ -234,7 +234,7 @@ describe('the phone shell: tabs', () => {
     expect(screen.queryByRole('navigation', { name: t('shell.rail.label') })).toBeNull();
     await user.click(tab('you'));
     expect(here()).toBe('/you');
-    expect(await screen.findByRole('heading', { level: 1, name: t('you.title') })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: t('you.title') })).toBeInTheDocument();
   });
 
   it('counts DMs unread on Home, and activity as channel mentions plus DM unread', async () => {
@@ -430,7 +430,7 @@ describe('the phone shell: tabs', () => {
 
   it('opens an unvisited tab at its root', async () => {
     const { user } = phone({ path: '/you' });
-    await screen.findByRole('heading', { level: 1, name: t('you.title') });
+    await screen.findByRole('heading', { level: 2, name: t('you.title') });
     await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}`);
   });
@@ -602,6 +602,77 @@ describe('the phone shell: settings', () => {
     const header = await waitFor(() => { const h = document.querySelector<HTMLElement>('.d-phone-header'); expect(h).not.toBeNull(); return h!; });
     await user.click(within(header).getByRole('button', { name: t('nav.back') }));
     expect(here()).toBe('/you');
+  });
+});
+
+describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
+  it('Home on a server: the server name in the 48 head, with search, settings and, for a manager, the "+"', async () => {
+    const { client } = phone({ path: `/c/${A}` });
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const head = gear.closest('.d-channel-list__head') as HTMLElement;
+    expect(within(head).getByRole('heading', { level: 1 })).toHaveTextContent('Midgard');
+    manage(client);
+    expect(within(head).getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
+  });
+
+  it('Home on @: "direct messages" in the head with the new-message action, and no footer', async () => {
+    const { user } = phone({ path: '/dm' });
+    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
+    expect(head).not.toBeNull();
+    const add = within(head).getByRole('button', { name: t('shell.dms.new') });
+    expect(add.querySelector('svg[data-icon="square-pen"]')).not.toBeNull();
+    expect(document.querySelector('.dw-phone-footer')).toBeNull();
+    expect(screen.getAllByRole('button', { name: t('shell.dms.new') })).toHaveLength(1);
+    await user.click(add);
+    expect(await screen.findByRole('dialog', { name: t('shell.dms.newTitle') })).toBeInTheDocument();
+  });
+
+  it('Activity and You each open with a phone header holding their title', async () => {
+    const { user } = phone({ path: '/activity' });
+    for (const title of [t('activity.title'), t('you.title')]) {
+      const heading = await screen.findByRole('heading', { level: 2, name: title });
+      expect(heading.closest('header')).toHaveClass('d-phone-header');
+      if (title === t('activity.title')) await user.click(tab('you'));
+    }
+  });
+
+  it('a DM view puts its call in the header, and the strip keeps no second button', async () => {
+    const { user, sessions } = phone({ path: `/dm/${DM}` });
+    const call = await screen.findByRole('button', { name: t('call.start') });
+    expect(call.closest('.d-phone-header')).not.toBeNull();
+    expect(call.querySelector('svg[data-icon="phone"]')).not.toBeNull();
+    expect(screen.getAllByRole('button', { name: t('call.start') })).toHaveLength(1);
+    await user.click(call);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+  });
+
+  describe('while typing', () => {
+    async function inCall() {
+      const app = phone({ path: `/c/${A}/${GENV}` });
+      await app.user.click(await screen.findByRole('button', { name: 'join voice' }));
+      await waitFor(() => expect(app.sessions).toHaveLength(1));
+      app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+      goto(`/c/${A}/${TEXT}`);
+      await screen.findByRole('group', { name: t('voice.dock.region') });
+      return app;
+    }
+    it('drops the call bar and shows an accent dot after the title, named by the bar\'s own label', async () => {
+      await inCall();
+      const label = t('nav.call.open', { where: 'general' });
+      const header = () => document.querySelector('.d-app-shell__main .d-phone-header') as HTMLElement;
+      expect(within(header()).queryByRole('img', { name: label })).toBeNull();
+      act(() => { screen.getByRole('textbox', { name: /message/ }).focus(); });
+      await waitFor(() => expect(screen.queryByRole('group', { name: t('voice.dock.region') })).toBeNull());
+      expect(within(header()).getByRole('img', { name: label })).toHaveClass('d-phone-header__dot');
+      act(() => { (document.activeElement as HTMLElement).blur(); });
+      await screen.findByRole('group', { name: t('voice.dock.region') });
+      expect(within(header()).queryByRole('img', { name: label })).toBeNull();
+    });
+    it('shows no dot when no call is up', () => {
+      phone({ path: `/c/${A}/${TEXT}` });
+      act(() => { screen.getByRole('textbox', { name: /message/ }).focus(); });
+      expect(document.querySelector('.d-phone-header__dot')).toBeNull();
+    });
   });
 });
 

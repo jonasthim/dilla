@@ -18,7 +18,7 @@ export interface ChannelHeaderProps {
    */
   overflow?: { label: string; items: readonly ActionMenuItem[]; onSelect(id: string): void };
   /** On a phone: a PhoneHeader in place of the desktop header, with a back control and `menu` as its action. */
-  phone?: { backLabel: string; onBack(): void; menu?: ReactNode };
+  phone?: { backLabel: string; onBack(): void; menu?: ReactNode; /** A call is up and the call bar has stepped aside while typing: the dot after the title, named by this. */ dotLabel?: string };
 }
 
 /**
@@ -38,7 +38,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
   const [menuOpen, setMenuOpen] = useState(false);
   if (phone !== undefined) {
     return (
-      <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu}
+      <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu} dotLabel={phone.dotLabel}
         marker={readable ? <span role="img" aria-label={readableLabel ?? 'Readable by this server'}><Icon name="eye" size={14} /></span> : undefined}
         title={<><span className="d-channel-header__bracket" aria-hidden="true">{kind === 'announcement' || kind === 'voice' ? <>[ <Icon name={kind === 'voice' ? 'volume-2' : 'megaphone'} size={14} /></> : opening(kind)}</span>{name}<span className="d-channel-header__bracket" aria-hidden="true"> ]</span></>} />
     );

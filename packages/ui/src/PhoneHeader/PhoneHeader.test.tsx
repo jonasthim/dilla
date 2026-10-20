@@ -15,6 +15,14 @@ describe('PhoneHeader', () => {
     render(<PhoneHeader title="general" />);
     expect(screen.getByRole('heading', { level: 2, name: 'general' })).toHaveClass('d-phone-header__title');
   });
+  it('shows an image-named dot after the title only when given a dot label', () => {
+    const { rerender } = render(<PhoneHeader title="general" />);
+    expect(screen.queryByRole('img')).toBeNull();
+    rerender(<PhoneHeader title="general" dotLabel="open the call in room" />);
+    const dot = screen.getByRole('img', { name: 'open the call in room' });
+    expect(dot).toHaveClass('d-phone-header__dot');
+    expect(screen.getByRole('heading', { level: 2 }).nextElementSibling).toBe(dot);
+  });
   it('has no back button without onBack', () => {
     render(<PhoneHeader title="general" backLabel="back" actions={<button type="button">more</button>} />);
     expect(screen.queryByRole('button', { name: 'back' })).toBeNull();

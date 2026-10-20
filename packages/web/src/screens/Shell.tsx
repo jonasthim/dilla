@@ -26,7 +26,7 @@ import {
   nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
-import { callPhase, DmCall, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
@@ -237,6 +237,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   }, []);
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).
+  // The phone keyboard is up over a focused field (AppShell says so): the call bar steps aside for a dot in the header (H3).
+  const [keyTyping, setTyping] = useState(false);
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
@@ -905,7 +907,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   let main: ReactNode = null;
   if (dm !== null) {
     main = openError !== null ? openFailed(dm.id, openError) : <>
-      <DmCall v={voiceCtx} channelId={dm.id} name={dm.name} />
+      <DmCall v={voiceCtx} channelId={dm.id} name={dm.name} startInHeader={phone} />
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
@@ -1012,7 +1014,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     const openAdmin = (tab: AdminTab) => { if (community !== null) openAdminFor(community.id, tab); };
     // Final fix B1: "edit channel" sits in the channel header (M2), not here.
     // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
-    const headerAction = !voiceHere ? undefined : (
+    // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
+    // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
+    const openDmPicker = () => {
+      if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
+      setPickerOpen(true);
+    };
+    // H2: on a phone the DM list's one action lives in its 48 head (a square-pen), not in a footer row of its own.
+    const headerAction = phone && onDms ? <IconButton icon="square-pen" label={t('shell.dms.new')} onClick={openDmPicker} /> : !voiceHere ? undefined : (
       <>
         {canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
@@ -1051,15 +1060,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
         content={content}
-        // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
-        // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
-        footer={onDms ? (() => {
-          const newDm = <Button variant="ghost" onClick={() => {
-            if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
-            setPickerOpen(true);
-          }}>{t('shell.dms.new')}</Button>;
-          return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
-        })() : undefined} />
+        footer={onDms && !phone ? <Button variant="ghost" onClick={openDmPicker}>{t('shell.dms.new')}</Button> : undefined} />
     </div>);
   }
 
@@ -1188,10 +1189,15 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const searchItem = { id: 'search', label: t('search.open') };
   const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
   const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
-  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} /> : null) : channel !== null
+  // H3: while typing, the call bar steps aside and the header's dot says the call is still up (named as the bar's open button).
+  const callBarUp = phone && call.channelId !== null && !(phonePane === 'view' && call.channelId === (voiceChannel?.id ?? dm?.id));
+  const dotLabel = callBarUp && keyTyping && call.channelId !== null ? t('nav.call.open', { where: callWhere(call.channelId) }) : undefined;
+  const dotProp = dotLabel === undefined ? {} : { dotLabel };
+  const dmCall = phone && dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
+  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dotLabel={dotLabel} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
-      phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
+      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
           onSelect={id => {
@@ -1218,10 +1224,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           else if (id === 'edit') setEditChannelId(channel.id);
         } }} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
-      phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
+      phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (<>
+        {dmCall === null ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
-      ) } : undefined}
+      </>) } : undefined}
       actions={<>
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
         <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
@@ -1408,14 +1415,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     ]} />
   );
   // The call bar stands on a phone while this device is in a call and its stage is not on screen.
-  const stageOnScreen = phonePane === 'view' && call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id);
   const callTarget = call.channelId === null ? null : dms?.some(d => d.id === call.channelId) === true
     ? { name: 'dm', channelId: call.channelId } as const
     : (() => {
       const home = (railSlices.flat() as ChannelSummary[]).find(c => c.id === call.channelId)?.communityId;
       return home === undefined ? null : { name: 'channel', communityId: home, channelId: call.channelId } as const;
     })();
-  const callBar = !phone || call.channelId === null || stageOnScreen ? undefined : (
+  // H3: not rendered while typing; the header's dot stands for it.
+  const callBar = !callBarUp || keyTyping || call.channelId === null ? undefined : (
     <CallBar phase={callPhase(voiceCtx)} where={whereOf(call.channelId)} muted={call.state?.muted ?? false}
       labels={{ open: t('nav.call.open', { where: callWhere(call.channelId) }), mute: t('voice.mute'), leave: t('voice.leave'), region: t('voice.dock.region') }}
       onOpen={() => { if (callTarget !== null) navigate(callTarget); }} onMute={call.toggleMute} onLeave={() => call.leave()} />
@@ -1448,7 +1455,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list > li > :first-child')[at] ?? null;
     openedId.current = null;
     openSettings.current = null;
-    const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-empty-state h2');
+    const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-phone-header__title, .d-app-shell__sidebar .d-empty-state h2');
     if (target === null) return;
     target.tabIndex = row === null ? -1 : target.tabIndex;
     target.focus();
@@ -1638,7 +1645,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <AppShell
         skipLabel={t('shell.skip')}
         {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
-        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
+        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} onTypingChange={setTyping} covered={phone && (overlay || adminFor !== null)}
         page={phone ? <>{adminPage}{props.page}</> : undefined}
         rail={phone && phoneTab !== 'home' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={homeSelected ? null : communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}

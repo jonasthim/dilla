@@ -488,6 +488,16 @@ describe('phone layout', () => {
     expect(screen.getByTestId('call-bar').parentElement!.compareDocumentPosition(screen.getByTestId('tab-bar').parentElement!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it('typing: onTypingChange hears false first, then true on focus and false on blur', () => {
+    const heard: boolean[] = [];
+    render(<ComposedShell shell={phone({ phonePane: 'view', onTypingChange: (v: boolean) => heard.push(v) })} />);
+    expect(heard.at(-1)).toBe(false);
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+    expect(heard.at(-1)).toBe(true);
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).blur(); });
+    expect(heard.at(-1)).toBe(false);
+  });
+
   it('typing: focusing a textarea marks the shell and hides the tab bar; blur brings both back', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
     const wrapper = screen.getByTestId('tab-bar').parentElement!;
