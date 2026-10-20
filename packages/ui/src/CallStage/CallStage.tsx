@@ -53,7 +53,7 @@ function groupCode(code: string): string {
 
 const TILE_GAP_PX = 12; // 0.75rem at the root size the stage is laid out for; the CSS gap is the same 0.75rem.
 
-/** D2: below this stage width (the 1024 desktop, less the rail and the sidebar), two columns win a near tie. */
+/** D2: below this width of the stage's own tile area (not the viewport: the rail, sidebar and aside come off it, so this covers viewports up to about 1410), two columns win a near tie. */
 const NARROW_STAGE_PX = 1100;
 /** D2: a column count within this share of the widest tile counts as a tie. */
 const NEAR_TIE = 0.95;
@@ -61,7 +61,7 @@ const NEAR_TIE = 0.95;
 /**
  * The column count c in 1..n that makes the 16:9 tiles of an n-tile grid widest in a `w` x `h` area with `gap` between
  * them: the tile width is `min((w - gap(c-1))/c, ((h - gap(r-1))/r) * 16/9)` with `r = ceil(n/c)`. A tie goes to
- * the fewer columns, except in a stage under 1100 px wide (D2, the 1024 desktop): there the next column count wins when
+ * the fewer columns, except in a tile area under 1100 px wide (D2, viewports up to about 1410): there the next column count wins when
  * its tile is within 5 % of the widest, because a side-by-side pair that fills the width beats a stack that leaves dead
  * bands at both sides.
  */

@@ -99,20 +99,23 @@ describe('VoiceDock (R26)', () => {
     expect(screen.getByRole('button', { name: 'share screen' })).toHaveFocus();
   });
 
-  it('roving skips an inert camera or share but they keep their description', async () => {
+  it('an inert camera stays in the roving order and keeps its description; activating it does nothing', async () => {
     const why = { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' };
-    render(<VoiceDock {...dock} labels={{ ...dock.labels, why }} canCamera={false} paused />);
+    const onCamera = vi.fn();
+    render(<VoiceDock {...dock} labels={{ ...dock.labels, why }} canCamera={false} paused onCamera={onCamera} />);
     const bar = screen.getByRole('toolbar', { name: 'voice controls' });
     const camera = within(bar).getByRole('button', { name: 'camera' });
     expect(camera).toHaveAttribute('aria-disabled', 'true');
-    expect(camera.tabIndex).toBe(-1);
     expect(camera).toHaveAccessibleDescription('paused');
     await userEvent.keyboard('{Tab}');
-    expect(within(bar).getByRole('button', { name: 'share screen' })).toHaveFocus();
-    await userEvent.keyboard('{ArrowRight}');
+    expect(camera).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}{ArrowRight}');
     expect(within(bar).getByRole('button', { name: 'leave' })).toHaveFocus();
     await userEvent.keyboard('{ArrowRight}');
-    expect(within(bar).getByRole('button', { name: 'share screen' })).toHaveFocus();
+    expect(camera).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(onCamera).not.toHaveBeenCalled();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('camera');
   });
 
   it('a keyboard-focused control shows its tooltip', async () => {

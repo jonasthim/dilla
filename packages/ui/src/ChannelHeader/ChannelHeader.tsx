@@ -27,7 +27,7 @@ export interface ChannelHeaderProps {
  * server can read the channel, the topic, and the caller's `actions` at the end. The megaphone is its own flex item, a
  * sibling of the name (C3). The title keeps 8rem and the name an ellipsis; the topic gives way first. Below 36rem of the
  * header's own width (a container query, so the aside being open counts) the `data-foldable` actions hide and `overflow`
- * shows (C1, R27).
+ * shows (C1, R27). Without `overflow` nothing folds: a foldable action stays visible.
  */
 function opening(kind: 'channel' | 'dm' | 'announcement') {
   if (kind === 'announcement') return '[ ';
@@ -44,7 +44,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
     );
   }
   return (
-    <header className="d-channel-header">
+    <header className="d-channel-header" data-overflow={overflow !== undefined ? 'true' : undefined}>
       <div className="d-channel-header__title">
         <span className="d-channel-header__bracket" aria-hidden="true">{opening(kind)}</span>
         {kind === 'announcement' ? <span className="d-channel-header__glyph" aria-hidden="true"><Icon name="megaphone" size={14} /></span> : null}

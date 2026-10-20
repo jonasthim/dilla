@@ -31,6 +31,16 @@ export const AsideNarrowClose: Story = {
     if (close === null) throw new Error('the overlay drawer has no close button');
   },
 };
+// UI-3 review I1, B1: with the aside open at 1024 (the overlay) and at 1440 (a column), the members bar and the header bar end at the same y.
+const barsAlign = (name: string) => ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const header = canvasElement.querySelector<HTMLElement>('.d-channel-header');
+  const bar = canvasElement.querySelector<HTMLElement>('.d-member-list__bar');
+  if (header === null || bar === null) throw new Error(`${name}: no header or members bar`);
+  const [h, b] = [header.getBoundingClientRect().bottom, bar.getBoundingClientRect().bottom];
+  if (Math.abs(h - b) > 0.5) throw new Error(`${name}: the header bar ends at y=${String(h)}, the members bar at y=${String(b)}`);
+};
+export const Aside1024Bars: Story = { render: () => <div style={{ width: 1024, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div>, play: barsAlign('Aside1024Bars') };
+export const Aside1440Bars: Story = { render: () => <div style={{ width: 1440, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div>, play: barsAlign('Aside1440Bars') };
 export const AsideNarrow: Story = { render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell shell={withAside} /></div> };
 export const Offline: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell banner /></div> };
 // web3.8 (R4): the desktop shell has no status bar, so the link banner is the only word on the link, in the banner slot as on a phone.

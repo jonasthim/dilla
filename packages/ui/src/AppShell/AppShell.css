@@ -20,7 +20,9 @@
    container). From 64rem of shell width base.css makes it a fourth grid column. */
 .d-app-shell__aside { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; width: min(20rem, 100%); overflow-y: auto; background: var(--surface); border-left: 1px solid var(--hairline); box-shadow: var(--shadow-2); }
 /* Final fix I2: the drawer's close button, at its top and to the right (the side the drawer came from). */
-.d-app-shell__aside-head { display: flex; justify-content: flex-end; padding: 0.75rem 0.75rem 0; }
+/* web3.9 (B1, UI-3 review I1): it sits inside the aside's own 48 bar (the members bar), not in a row above it, so the bar
+   lands at the same y as the main header in every layout. */
+.d-app-shell__aside-head { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; justify-content: flex-end; height: var(--bar-h); padding: 0 0.75rem; }
 /* The modal drawer's backdrop: behind the aside, over the (inert) shell. A column has none. */
 .d-app-shell__backdrop { position: absolute; inset: 0; z-index: 24; background: rgba(0, 0, 0, 0.5); }
 /* web3.8 (U2): with splitters the column aside lets its splitter hang over its left edge, so the scrolling moves to a body inside it. */

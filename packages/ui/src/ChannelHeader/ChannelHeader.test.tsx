@@ -44,6 +44,14 @@ describe('ChannelHeader', () => {
     expect(screen.getByRole('button', { name: 'members' })).not.toHaveAttribute('data-foldable');
   });
 
+  it('without overflow a foldable action is never folded away (CSS pin: the fold needs data-overflow)', () => {
+    const { container } = render(<ChannelHeader name="general" actions={<IconButton icon="pin" label="pinned messages" data-foldable="true" />} />);
+    expect(container.querySelector('.d-channel-header')).not.toHaveAttribute('data-overflow');
+    const q = css.match(/@container d-channel-header \(max-width: 36rem\) \{([\s\S]*?)\n\}/)![1]!;
+    expect(q).toMatch(/\.d-channel-header\[data-overflow\] \.d-channel-header__actions \[data-foldable\]/);
+    expect(q).not.toMatch(/(^|\n)\s*\.d-channel-header__actions \[data-foldable\]/);
+  });
+
   it('has no "more" menu without overflow', () => {
     const { container } = render(<ChannelHeader name="general" actions={<IconButton icon="pin" label="pinned messages" />} />);
     expect(container.querySelector('.d-channel-header__more')).toBeNull();
