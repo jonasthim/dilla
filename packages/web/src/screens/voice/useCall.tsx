@@ -866,10 +866,14 @@ export function useCall(o: UseCallOptions): CallView {
         if (!live.current.stageShown(id)) setLasting(t('voice.blocked'));
       } else {
         // Off the stage, nothing else would say why the call ended (review I6).
+        // The bookkeeping is never held; only the visible notice and the spoken line wait (the hold changes timing, not words).
+        removedFrom.current = id;
         sayRemoved(id, () => {
           setNotice({ channelId: id, key: 'voice.removed' });
-          removedFrom.current = id;
-          if (!live.current.stageShown(id)) setLasting(t('voice.removed'));
+          // The worker's re-read may have said the channel is gone for this device meanwhile: that line is the right one.
+          const now = client.get('call');
+          const gone = now?.channelId === id && now.phase === 'removed' && now.error?.code === 'E_NOT_FOUND';
+          if (!live.current.stageShown(id)) setLasting(t(gone ? 'voice.removedNotMember' : 'voice.removed'));
         });
       }
       setPauseFocusPending(false);

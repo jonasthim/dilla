@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
-import { BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
+import { A, MUSIC, BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
@@ -342,5 +342,19 @@ describe('fix round 3 (wave 2 client review m5)', () => {
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
       error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));
+  });
+  it('in a community with an AFK channel the hold changes the timing, not the words (WEB-AFK review I-2)', async () => {
+    const app = await inHarbour();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(screen.getByRole('button', { name: /^lobby/ }));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
+    await new Promise(r => setTimeout(r, 200));
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+      error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));
+    // The hold ends: the line stays the server line.
+    await new Promise(r => setTimeout(r, 2_400));
+    expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember'));
   });
 });
