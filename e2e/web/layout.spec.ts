@@ -738,3 +738,107 @@ test('FA1: phone targets are 44 high outside the shell, and the invites section 
   await expectPhoneTargets(page, 'the invite link dialog at 390', '.d-invite-link');
 });
 
+
+// ---------------------------------------------------------------------------------------------------
+// web3.9 FA2 (AUDIT-2 N1, N2, N4, D4): the DM and voice layout. Each visual element has its room: the desktop call is an icon in
+// the DM header (no band under it), "message someone" an icon in the DM list's head (no footer), the voice preview keeps its
+// title, people and join in one column at the top, and a phone's call controls pin directly above the tab bar.
+
+test('the DM and the voice layout give each element its room', async ({ page, playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
+  test.skip(browserName === 'webkit', 'a call needs the media stack; this check measures Chromium and Firefox');
+  const h = started();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Bea', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Ydalir');
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  const link = await makeInviteLink(page, 'Ydalir');
+  const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
+  try {
+    const cy = second.pages()[0] ?? (await second.newPage());
+    await cy.goto(new URL(link).pathname);
+    const openLink = cy.getByRole('link', { name: 'Open dilla in this browser', exact: true });
+    await expect(openLink).toBeVisible({ timeout: WAIT });
+    await guard.attach(second);
+    await openLink.click();
+    await completeSignUp(cy, newAccount('Cy', h.control), instance);
+    await expect(railItem(cy, 'Ydalir')).toBeVisible({ timeout: WAIT });
+    await homeTile(cy).click();
+    await cy.getByRole('button', { name: copy('shell.dms.new'), exact: true }).click();
+    await cy.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true }).getByRole('button', { name: copy('shell.dms.open'), exact: true }).click();
+    const dmBox = cy.getByRole('textbox', { name: copy('shell.dm.composer', { name: 'Bea' }), exact: true });
+    await expect(dmBox).toBeEnabled({ timeout: WAIT });
+    await dmBox.fill('hello Bea');
+    await dmBox.press('Enter');
+    await expect(cy.getByRole('log').locator('.d-message-row').filter({ hasText: 'hello Bea' })).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+
+    // The AFK channel's path: a click on a desktop voice row joins, and a reload at the path leaves the call (the preview).
+    await nav(page).getByRole('button', { name: copy('voice.open', { name: 'AFK' }), exact: true }).click();
+    await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
+    const afkPath = new URL(page.url()).pathname;
+
+    // N1, N2: the DM list and the DM.
+    await homeTile(page).click();
+    await expect(dmsNav(page).getByRole('button', { name: /^Cy/ })).toBeVisible({ timeout: WAIT });
+    await expect.soft(page.locator('.d-channel-list__head').getByRole('button', { name: copy('shell.dms.new'), exact: true }), 'N2 "message someone" is a button in the DM list head').toBeVisible({ timeout: WAIT });
+    expect.soft(await boxes(page, '.d-channel-list__footer'), 'N2 the DM list has no footer row').toEqual([]);
+    expect.soft(await page.locator('.d-channel-list').getByRole('button', { name: copy('shell.dms.new'), exact: true }).count(), 'N2 one "message someone" action').toBe(1);
+    const dmHead = (await boxes(page, '.d-channel-list__head'))[0];
+    const dmNew = (await boxes(page, '.d-channel-list__head button'))[0];
+    if (dmHead !== undefined && dmNew !== undefined) {
+      expect.soft(dmNew.y >= dmHead.y - TOL && dmNew.b <= dmHead.b + TOL, 'N2 the action stands inside the 48 head').toBe(true);
+    }
+    await dmsNav(page).getByRole('button', { name: /^Cy/ }).click();
+    await expect(page.getByRole('log')).toBeVisible({ timeout: WAIT });
+    const header = (await boxes(page, '.d-channel-header'))[0];
+    await expect.soft(page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }), 'N1 the call is a button in the DM header').toBeVisible({ timeout: WAIT });
+    const callBox = (await boxes(page, '.d-channel-header button[aria-label]')).find(b => b.t === copy('call.start'));
+    if (header !== undefined && callBox !== undefined) {
+      expect.soft(callBox.y >= header.y - TOL && callBox.b <= header.b + TOL && callBox.r <= header.r + TOL, 'N1 the call button stands inside the header').toBe(true);
+      expect.soft(callBox.w, 'N1 the call is an icon, not a text button').toBeLessThanOrEqual(44 + TOL);
+    }
+    expect.soft((await boxes(page, '.dw-call-strip')).map(b => b.h), 'N1 no band under the header: the call strip is collapsed').toEqual((await boxes(page, '.dw-call-strip')).map(() => 0));
+    const log = (await boxes(page, '[role="log"]'))[0];
+    if (header !== undefined && log !== undefined) expect.soft(log.y - header.b, 'N1 the log starts directly under the header').toBeLessThanOrEqual(8);
+
+    // N4: the AFK preview, one column at the top.
+    await page.goto(afkPath);
+    await expect(page.locator('.dw-voice-join')).toBeVisible({ timeout: WAIT });
+    const join = (await boxes(page, '.dw-voice-join'))[0];
+    const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
+    expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
+    if (join !== undefined && texts.length > 0) {
+      const lowest = Math.max(...texts.map(b => b.b));
+      expect.soft(join.y - lowest, `N4 the join sits within 120 of its text (${texts.map(b => `${b.t}@${b.x.toFixed(0)},${b.y.toFixed(0)}`).join(' | ')} join@${join.x.toFixed(0)},${join.y.toFixed(0)})`).toBeLessThanOrEqual(120);
+      expectOne('N4 the preview texts and the join share one left edge', [...texts.map(b => b.x), join.x], [...texts.map(b => b.t), 'join']);
+    }
+    await expectNoOverflow(page, '1440x900', 'the AFK preview');
+
+    // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+    const phoneJoin = page.locator('.dw-voice-join');
+    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
+    const pjoin = (await boxes(page, '.dw-voice-join'))[0];
+    const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
+    if (pjoin !== undefined && ptexts.length > 0) {
+      expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
+    }
+    await phoneJoin.click();
+    await expect(page.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
+    const tabs = (await boxes(page, '.d-tab-bar'))[0];
+    const controls = (await boxes(page, '.d-call-stage__controls'))[0];
+    expect.soft(tabs !== undefined && controls !== undefined, 'D4 the tab bar and the controls are on screen').toBe(true);
+    if (tabs !== undefined && controls !== undefined) {
+      expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
+      expect.soft(tabs.y - controls.b, 'D4 the controls do not sink into the tab bar').toBeGreaterThanOrEqual(-TOL);
+    }
+  } finally {
+    await second.close();
+    rmSync(secondDir, { recursive: true, force: true });
+  }
+});

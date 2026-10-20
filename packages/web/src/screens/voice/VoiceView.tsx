@@ -378,13 +378,12 @@ function StripNotice({ notice, refObj }: { notice: CallStageNotice | null; refOb
 }
 
 /**
- * The DM call strip under the conversation header (flow 06 "DM call"): `call.start` with no live call, `call.join` with
- * one, the outgoing ring's text while this device's call rings the others; while in the DM's call, its stage sits above
- * the log. A call block never reaches the composer: the strip says it, the composer stays as the text group's gate has it.
+ * The DM call (flow 06): the call button is an icon in the conversation header (N1); a notice about the call is a strip under
+ * the header, and none stands there otherwise. While in the DM's call, its stage sits above the log. A call block never reaches the composer: the strip says it, the composer stays as the text group's gate has it.
  */
 /**
  * What a DM's call button does and says (`call.start`, or `call.join` while a call is live), or null where there is nothing to
- * start: this device is in the call, or the join is held. A phone puts it in the header (H2); the strip keeps the desktop's.
+ * start: this device is in the call, or the join is held. It is an icon in the DM header on every layout (H2, N1).
  */
 export function dmCallStart(v: VoiceContext, channelId: string): { label: string; onStart: () => void } | null {
   if (v.call.channelId === channelId || joinHeld(v, channelId)) return null;
@@ -392,7 +391,7 @@ export function dmCallStart(v: VoiceContext, channelId: string): { label: string
   return { label: t(live ? 'call.join' : 'call.start'), onStart: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } };
 }
 
-export function DmCall({ v, channelId, name, startInHeader = false }: { v: VoiceContext; channelId: string; name: string; startInHeader?: boolean }): React.JSX.Element {
+export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
   const outgoing = v.slice?.channelId === channelId ? v.slice.outgoing : null;
   // A ring lasts 30 s (R5, useCall's clock): once that long has passed with nobody answering, the strip says so.
   const inThisCall = v.call.channelId === channelId;
@@ -407,28 +406,21 @@ export function DmCall({ v, channelId, name, startInHeader = false }: { v: Voice
   const stripRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<HTMLDivElement>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
-  const live = (v.voice?.[channelId]?.participants.length ?? 0) > 0;
   const notice = inThisCall ? null : stageNotice(v, channelId);
-  const held = joinHeld(v, channelId);
   // WB a11y I1: a failed call, a removal or an end swaps the stage for the strip under focus; focus goes to the notice
   // that says why, else the call button (the stage's own focus rule covers the join).
   useFocusRescue([stripRef, callRef], inThisCall ? 'joined' : 'idle', () => (inThisCall ? null
-    : notice !== null ? noticeRef.current : stripRef.current?.querySelector<HTMLElement>('.dw-call-strip__start')
-      ?? (startInHeader ? document.querySelector<HTMLElement>('[data-dm-call-start]') : null)));
-  // The strip is always the first element, in a call too (empty and collapsed there), so its status region is never
-  // mounted with its text (WB a11y I2).
+    : notice !== null ? noticeRef.current : document.querySelector<HTMLElement>('[data-dm-call-start]')));
   return (
     <>
-      {/* On a phone the start button is in the header: with nothing to say there is no strip, so no second hairline under the bar. */}
-      {startInHeader && notice === null ? null : <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
+      {/* The call button is in the header (N1). The strip is always the first element, empty and collapsed (no band, no hairline)
+          until there is a notice, so its status region is never mounted with its text (WB a11y I2). */}
+      <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
         data-call-phase={inThisCall ? undefined : v.slice?.channelId === channelId ? v.slice.phase : 'idle'}
-        data-empty={inThisCall && notice === null ? 'true' : undefined}>
+        data-empty={notice === null ? 'true' : undefined}>
         <StripNotice notice={notice} refObj={noticeRef} />
         {notice?.action != null ? <Button className="dw-call-strip__action" onClick={() => notice.action?.onAction()}>{notice.action.label}</Button> : null}
-        {inThisCall || held || startInHeader ? null : (
-          <Button className="dw-call-strip__start" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
-        )}
-      </div>}
+      </div>
       {inThisCall ? (
         <div ref={callRef} className="dw-dm-call" data-view={view}>
           <div className="dw-dm-call__bar">

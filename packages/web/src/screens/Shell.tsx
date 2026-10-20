@@ -493,7 +493,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     // WB a11y m5: only the call's own row, or its own DM's call button; else the `@` tile, where the dock was
     // (never another DM's call button, never the page).
     const target = document.querySelector<HTMLElement>(`button.d-voice-row[aria-label="${CSS.escape(t('voice.open', { name }))}"]`)
-      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('.dw-call-strip__start') : null)
+      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('[data-dm-call-start]') : null)
       ?? document.querySelector<HTMLElement>('.d-community-rail__home, .dw-sidebar h1');
     target?.focus();
     setLeftFrom(null);
@@ -914,7 +914,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   let main: ReactNode = null;
   if (dm !== null) {
     main = openError !== null ? openFailed(dm.id, openError) : <>
-      <DmCall v={voiceCtx} channelId={dm.id} name={dm.name} startInHeader={phone} />
+      <DmCall v={voiceCtx} channelId={dm.id} name={dm.name} />
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
@@ -1016,8 +1016,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
       setPickerOpen(true);
     };
-    // H2: on a phone the DM list's one action lives in its 48 head (a square-pen), not in a footer row of its own.
-    const headerAction = phone && onDms ? <IconButton icon="square-pen" label={t('shell.dms.new')} onClick={openDmPicker} /> : !voiceHere ? undefined : (
+    // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
+    const headerAction = onDms ? <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} /> : !voiceHere ? undefined : (
       <>
         {canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
@@ -1055,8 +1055,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
-        content={content}
-        footer={onDms && !phone ? <Button variant="ghost" onClick={openDmPicker}>{t('shell.dms.new')}</Button> : undefined} />
+        content={content} />
     </div>);
   }
 
@@ -1191,7 +1190,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const dot = callBarUp && keyTyping && call.channelId !== null
     ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) navigate(callTarget); } } : undefined;
   const dotProp = dot === undefined ? {} : { dot };
-  const dmCall = phone && dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
+  const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
@@ -1228,6 +1227,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       </>) } : undefined}
       actions={<>
+        {/* N1: on a desktop the call is an icon in the header, as on a phone (there it sits in the menu slot). */}
+        {dmCall === null || phone ? null : <IconButton icon="phone" data-dm-call-start="" label={dmCall.label} onClick={dmCall.onStart} />}
         {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
         <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
       </>}
