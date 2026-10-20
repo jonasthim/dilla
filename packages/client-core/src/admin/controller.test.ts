@@ -424,6 +424,19 @@ describe('AdminController: server and channel edits', () => {
     expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'voice', position: 1 });
   });
 
+  it('createCategory skips the AFK position 2^30 before the afk: slice is read (R-AFK6)', async () => {
+    const w = world();
+    const AFK = id16(0x61);
+    w.routes.listChannels.mockResolvedValue([channelRow(0xc1, 0), channelRow(0x61, 2 ** 30, { kind: 1, name: 'AFK' })]);
+    // The AFK snapshot never answers: the slice stays unread while the create runs.
+    w.routes.getAFK.mockReturnValue(new Promise(() => undefined));
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.some((c) => c.id === toHex(AFK))).toBe(true));
+    expect(w.last(`afk:${CID}`) ?? null).toBeNull();
+    expect(await run(w, { m: 'createCategory', communityId: CID, name: 'voice' })).toMatchObject({ ok: true });
+    expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'voice', position: 1 });
+  });
+
   it('a 403 on a channel edit reads the permissions of its server again', async () => {
     const w = world();
     await toReady(w);

@@ -43,7 +43,7 @@ import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerL
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
-import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
+import { ADMIN_VALIDATORS, AdminController, nextPosition } from '../admin/controller';
 import { PERM } from '../admin/perm';
 import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
@@ -2200,12 +2200,11 @@ export class Controller {
   private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
     announce?: { roleIds: string[] }, parentId?: string): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    // R42: the built-in AFK channel sits at 2^30; the next position is taken from the other channels.
+    // R42: the built-in AFK channel sits at 2^30; the next position is taken from the other channels. R-AFK6: positions at
+    // or above that reservation never count, so a create before the `afk:` slice is read still lands above AFK.
     const afkId = this.slices.get(`afk:${communityId}`)?.channelId ?? null;
-    let position = 0;
-    for (const [knownId, known] of this.channels) {
-      if (known.communityId === communityId && knownId !== afkId) position = Math.max(position, known.row.position + 1);
-    }
+    const position = nextPosition([...this.channels].filter(([knownId, known]) => known.communityId === communityId && knownId !== afkId)
+      .map(([, known]) => known.row.position));
     // A private channel is private from birth: the overwrites go in the create (wave 2a).
     // An announcement channel is a text channel whose @everyone may not send, read-only from birth in the same way.
     const routeKind: NewChannelKind = kind === 'announcement' ? 'text' : kind;

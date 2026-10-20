@@ -14,6 +14,16 @@ import { accessOf } from './rank';
 export const BAN_SECONDS_MIN = 3600;
 export const BAN_SECONDS_MAX = 3_153_600_000;
 
+/** The built-in AFK channel's position (R42, the server's AFKBuiltinPosition = 1 << 30): reserved by the server. */
+export const AFK_BUILTIN_POSITION = 2 ** 30;
+/** The position after a community's last channel, ignoring every position at or above the AFK reservation (R-AFK6): a
+ *  create right after the community, before its `afk:` slice is read, still lands above the AFK channel. */
+export function nextPosition(positions: Iterable<number>): number {
+  let next = 0;
+  for (const p of positions) if (p < AFK_BUILTIN_POSITION) next = Math.max(next, p + 1);
+  return next;
+}
+
 export type AdminRoutes = Pick<Routes, 'getPermissions' | 'listRoles' | 'listOverwrites' | 'patchCommunity' | 'deleteCommunity' | 'leaveCommunity'
   | 'transferOwnership' | 'createCategory' | 'patchChannel' | 'deleteChannel' | 'kickMember' | 'putBan' | 'deleteBan' | 'listBans'
   | 'listInvites' | 'revokeInvite'>;
@@ -216,9 +226,8 @@ export class AdminController {
 
   async createCategory(communityId: string, name: string): Promise<{ channelId: string }> {
     this.requireListed(communityId);
-    let position = 0;
     const afkId = this.deps.get(`afk:${communityId}`)?.channelId ?? null;
-    for (const { id: known, row } of this.deps.channelsOf(communityId)) if (known !== afkId) position = Math.max(position, row.position + 1);
+    const position = nextPosition(this.deps.channelsOf(communityId).filter(({ id: known }) => known !== afkId).map(({ row }) => row.position));
     const created = await this.guarded(communityId, () => this.deps.routes.createCategory(fromHex(communityId), { name, position }));
     this.deps.structureChanged(communityId);
     this.deps.setChannel(communityId, { id: created.id, kind: 2, mode: created.mode, visibility: created.visibility, parentId: null,

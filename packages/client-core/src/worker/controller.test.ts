@@ -5059,6 +5059,23 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'next', position: 1 });
   });
 
+  it('a create right after the community skips the AFK position 2^30 before the afk: slice is read (R-AFK6)', async () => {
+    const w = world();
+    const AFK = new Uint8Array(16).fill(0x61);
+    w.routes.listChannels.mockResolvedValue([
+      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
+      { id: AFK, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'AFK', topic: '', position: 2 ** 30, slowmode: 0, seq: 0n, textGroupId: null },
+    ]);
+    // The AFK snapshot never answers: the slice stays unread while the create runs.
+    w.routes.getAFK.mockReturnValue(new Promise(() => undefined));
+    await toReady(w);
+    await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(AFK))).toBe(true));
+    expect(w.last(`afk:${toHex(COMMUNITY)}`) ?? null).toBeNull();
+    w.call(89, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'voice', name: 'general' });
+    await vi.waitFor(() => expect(w.ret(89)).toMatchObject({ ok: true }));
+    expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'voice', name: 'general', position: 1 });
+  });
+
   it('createChannel with a parentId creates in that category in one request, with no follow-up move', async () => {
     const w = world();
     await toReady(w);
