@@ -2,7 +2,6 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelList, type ChannelListProps } from './ChannelList.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const CHANNELS = [
@@ -20,8 +19,11 @@ const BADGED: ChannelListProps['channels'] = [
 // L-COPY-02 shell.channels.rowLabel and shell.channels.rowLabelMuted, filled in as en.ts's t() will.
 const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>
   c.muted ? `${c.name}, muted, mentions ${c.mentions}` : `${c.name}, unread ${c.unread}, mentions ${c.mentions}`;
-const tabs = <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-  tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} />;
+// The legacy `tabs` slot takes any node; a plain tablist stands in for the retired SidebarTabs.
+const tabs = <div role="tablist" aria-label="sidebar">
+  <button type="button" role="tab" aria-selected="true">channels</button>
+  <button type="button" role="tab" aria-selected="false" tabIndex={-1}>direct messages</button>
+</div>;
 
 function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
   return { label: 'channels', title: 'Midgard Crew', channels: CHANNELS, activeId: 't', onSelect: vi.fn(), emptyLabel: 'No channels yet.', ...over };

@@ -1,13 +1,13 @@
 // web3.7 W-Phone-4: the phone shell at 390 x 844 (flow 12), from an empty host and through the UI only: the sign-up steps
 // keep the page unzoomed (field sizes of 16 px and up, a visual viewport that stays at scale 1), a server starts in the
-// tab bar's servers list, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
+// tab bar's Home tab, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
 // the network, every tap target is 44 x 44 CSS px, and focus lands where flow 12 says. Chromium and WebKit only: Firefox has
 // no mobile emulation (R23).
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
-  expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
@@ -165,7 +165,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       signedUp = ada;
     });
 
-    // 2. A server from the servers tab; the tab bar names four places and the status bar is gone.
+    // 2. A server from Home; the tab bar names three places (home, activity, you) and the status bar is gone.
     await test.step('start the server', async () => {
       await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -179,8 +179,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.locator('.d-composer textarea')).not.toBeFocused();
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
-      await expect(tabBar(page).getByRole('link')).toHaveCount(4);
-      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+      await expect(tabBar(page).getByRole('link')).toHaveCount(3);
+      expect(await tabBar(page).getByRole('link').evaluateAll((links) => links.map((l) => l.textContent?.trim()))).toEqual([copy('home.tab'), copy('nav.tab.activity'), copy('nav.tab.you')]);
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      // Home shows the rail with the @ tile first, and the list pane.
+      await expect(railNav(page)).toBeVisible();
+      await expect(railNav(page).getByRole('button').first()).toHaveAccessibleName(copy('home.tile'));
+      await expect(homeTile(page)).not.toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       listPath = new URL(page.url()).pathname;
@@ -275,12 +280,15 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
 
     // The tab bar is the way out of a view: the current tab goes to its list, and the tabs keep their memory.
     await test.step('tapping the current tab in a channel view shows the channel list', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       await expect(page).toHaveURL(new RegExp(`${listPath}$`));
-      await tab(page, 'nav.tab.dms').tap();
-      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
-      await tab(page, 'nav.tab.servers').tap();
+      // The @ tile stays on Home: the DM list shows in the list pane, and the server's tile brings its channels back.
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(page).toHaveURL(/\/dm$/);
+      await railItem(page, SERVER).tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
       await channelRow(page, 'general').tap();
       await expect(back(page)).toBeVisible({ timeout: WAIT });
@@ -291,12 +299,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(channelRow(page, 'general')).toBeFocused();
-      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
     });
 
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
+      await expectTapTargets(homeTile(page), 'the @ tile');
       // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
       // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
       const search = page.getByRole('button', { name: copy('search.open'), exact: true });
@@ -353,10 +362,17 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     });
 
     // 5. The other tabs name themselves, and a tap on a tab puts focus on its heading.
-    await test.step('the DMs, Activity and You tabs', async () => {
-      await tab(page, 'nav.tab.dms').tap();
-      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
-      await expect(listHeading(page, 'shell.dms.label')).toBeFocused();
+    await test.step('the @ tile on Home, then the Activity and You tabs', async () => {
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(page.getByText(copy('shell.dms.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
+      await expectTapTargets(page.getByRole('button', { name: copy('shell.dms.new'), exact: true }), 'message someone');
+      await expectAccessible(page, 'Home with @ selected');
+      // Home remembers where it was left; leave it on the server list for the steps below.
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
 
       await tab(page, 'nav.tab.activity').tap();
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
@@ -390,7 +406,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
 
     // Server settings is a page under the tabs too, and Escape closes it.
     await test.step('server settings keeps the tab bar and closes on Escape', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
@@ -401,9 +417,22 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible();
     });
 
+    // A deep link to /dm is Home with the @ tile selected, on a fresh page.
+    await test.step('a /dm deep link lands on Home with @ selected', async () => {
+      await page.goto('/dm');
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(page).toHaveURL(/\/dm$/);
+      await expectAccessible(page, '/dm deep link');
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
+
     // 6. The link banner follows the network.
     await test.step('offline shows the link banner, online removes it', async () => {
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       offlineLogged = guard.consoleErrors.length;
       await context.setOffline(true);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeVisible({ timeout: WAIT });
@@ -429,7 +458,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
       await context.setOffline(false);
       await expect(text).toBeHidden({ timeout: WAIT });
-      await tab(page, 'nav.tab.servers').tap();
+      await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });
 
@@ -532,6 +561,19 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await signIn(page, account, instance);
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
     await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+    await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
+      await expect(tabBar(page).getByRole('link')).toHaveCount(3);
+      await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
+      await expectTapTargets(homeTile(page), 'the @ tile at 844 x 390');
+      await homeTile(page).tap();
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
+      await expectAccessible(page, 'Home with @ selected at 844 x 390');
+      await page.goto('/dm');
+      await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
     expect(await page.evaluate(() => document.documentElement.hasAttribute('data-phone-shell')), 'the phone shell locks the page by an attribute').toBe(true);
     expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('hidden');
 

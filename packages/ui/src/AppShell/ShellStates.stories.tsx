@@ -13,7 +13,6 @@ import { Dialog } from '../Dialog/Dialog.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t, formatTime } from '../../../web/src/strings/index.ts';
 
@@ -73,10 +72,6 @@ function Screen(p: { resize?: Pick<AppShellProps, 'paneWidths' | 'onPaneResize' 
         sidebar={servers.length ? (
           <ChannelList title="Midgard"
             label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
-            tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop} tabs={[
-              { id: 'channels', label: t('shell.tabs.channels'), count: p.badges ? 3 : 0, mentions: p.badges ? 1 : 0 },
-              { id: 'dms', label: t('shell.tabs.dms'), count: p.badges ? 2 : 0 },
-            ]} />}
             channels={tab === 'dms' ? DMS : CHANNELS.map(c => ({ ...c, ...(p.badges ? BADGES[c.id] : {}) }))}
             activeId={tab === 'dms' ? (p.dm ? 'bob' : null) : active} onSelect={noop}
             emptyLabel={t(tab === 'dms' ? 'shell.dms.empty' : 'shell.channels.empty')} rowLabel={rowLabel}

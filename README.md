@@ -88,7 +88,7 @@ pins, mentions, images and files), comparing safety numbers, search, settings, t
 known limits. [Voice, calls and media files](docs/user/voice.md) covers voice channels, the stage, DM calls and ringing,
 camera and screen share, push to talk, the call code, AFK channels, sounds, and audio and video files.
 
-![The app on a phone: the servers tab](docs/user/screenshots/phone-servers.png)
+![The app on a phone: the servers tab](docs/user/screenshots/phone-home.png)
 
 ## Repository layout
 

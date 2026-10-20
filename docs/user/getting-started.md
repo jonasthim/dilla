@@ -790,7 +790,7 @@ a channel's history starts when this browser joined it.
 On a screen as narrow as a phone's (under about 770 pixels wide), and on a phone held sideways, the app shows one thing
 at a time, with four tabs at the bottom. It works in the phone's browser; there is no separate app.
 
-![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, with the voice channels in the same list and a join voice button on each, and the four tabs at the bottom](screenshots/phone-servers.png)
+![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, with the voice channels in the same list and a join voice button on each, and the four tabs at the bottom](screenshots/phone-home.png)
 
 ### The four tabs
 

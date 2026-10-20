@@ -763,12 +763,11 @@ export function readManifest(): { v: number; files: ManifestFile[] } {
   return JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages', 'web', 'dist', 'dilla-manifest.json'), 'utf8')) as { v: number; files: ManifestFile[] };
 }
 
-// web-2a (task 22): the sidebar tabs, DMs, notifications.
-export function sidebarTab(page: Page, tab: 'channels' | 'dms'): Locator {
-  const label = copy(tab === 'channels' ? 'shell.tabs.channels' : 'shell.tabs.dms');
-  // A tab's name is its label, followed by its Pill's hidden count when it has one.
-  return page.getByRole('tablist', { name: copy('shell.tabs.label'), exact: true })
-    .getByRole('tab', { name: new RegExp(`^${escapeRegExp(label)}`) });
+// web3.9: the `@` Home tile, the rail's first item, is the way to the direct messages (there are no sidebar tabs).
+/** The `@` tile. Its name is `home.tile`, followed by ", unread N, mentions M" while it carries a count; `aria-current="page"`
+ *  while the DM list shows, and `data-unread` / `data-mentions` hold its counts. */
+export function homeTile(page: Page): Locator {
+  return railNav(page).getByRole('button', { name: new RegExp(`^${escapeRegExp(copy('home.tile'))}(,|$)`) });
 }
 export function dmsNav(page: Page): Locator { return page.getByRole('navigation', { name: copy('shell.dms.label'), exact: true }); }
 /** The one message log on screen (a DM's log is named by the DM's name, which the spec does not fix). */

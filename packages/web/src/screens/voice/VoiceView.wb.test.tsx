@@ -213,12 +213,12 @@ describe('keyboard, rings and the voice section (wb-web-a11y m1, m3, m4, m5)', (
     expect(join).toHaveAccessibleDescription('music');
   });
 
-  it('m5: leaving from the dock on another DM focuses the sidebar tab, not that DM call button', async () => {
+  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM call button', async () => {
     const app = await inVoice();
     window.history.pushState(null, '', `/dm/${DM}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
     await main().findByRole('button', { name: 'call' });
     await app.user.click(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
-    await waitFor(() => expect(document.activeElement).toHaveAttribute('role', 'tab'));
+    await waitFor(() => expect(document.activeElement).toHaveAccessibleName('direct messages'));
   });
 });

@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
@@ -47,9 +46,7 @@ const ACTIONS = <>
 // long channel name is cut inside its row and never widens the list.
 export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, actions: ACTIONS, actionsLabel: 'server actions',
   channels: [...BADGED, { id: 'f', name: 'fika-på-fredag-och-veckans-planering', kind: 'text', readable: false },
-    { id: 'm', name: 'midsommar-'.repeat(10), kind: 'voice', readable: false }],
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} /> },
+    { id: 'm', name: 'midsommar-'.repeat(10), kind: 'voice', readable: false }] },
   play: ({ canvasElement }) => {
     const buttons = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-channel-list__actions .d-btn')).map(b => b.getBoundingClientRect());
     if (buttons.length !== 2 || buttons[0].top !== buttons[1].top) {
@@ -59,9 +56,6 @@ export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, 
     const list = canvasElement.querySelector<HTMLElement>('.d-channel-list');
     if (list === null || list.scrollWidth > list.clientWidth + 1) throw new Error(`WithActions: the list is ${String(list?.scrollWidth)} wide`);
   } };
-export const WithTabs: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED,
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages', count: 2 }]} /> } };
 export const AnnouncementSlow: Story = { args: { activeId: 'g', channels: [
   { id: 'n', name: 'news', kind: 'announcement', readable: false, unread: 2 },
   { id: 'g', name: 'general', kind: 'text', readable: false, badge: 'slow mode' },
@@ -96,8 +90,6 @@ const ONE_LIST = [
 ] as const;
 const ONE_LIST_ARGS = {
   activeId: 'g', rowLabel: ROW_LABEL, channels: ONE_LIST, voice: VOICE,
-  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
-    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} />,
 };
 const oneListPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
   expectGlyphLine(canvasElement, 'OneList');

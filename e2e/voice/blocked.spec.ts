@@ -16,7 +16,7 @@ import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
   onboard, openVoice, peerName, self, sentCount, stage, tile,
 } from './support/voice';
-import { dmComposer, dmsNav, openSettings, sidebarTab } from '../web/support/app';
+import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
 
 watchContexts(test);
 
@@ -243,7 +243,7 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     const a = await self(alice.page);
     const dm = await peer.openDm(a.user);
     await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, POLL).toBe(2);
-    await sidebarTab(alice.page, 'dms').click();
+    await homeTile(alice.page).click();
     await dmsNav(alice.page).locator('.d-chrow').first().click();
     await expect(alice.page).toHaveURL(new RegExp(`/dm/${dm.channel_id}$`), { timeout: WAIT });
     await expect(dmComposer(alice.page)).toBeEnabled({ timeout: WAIT });

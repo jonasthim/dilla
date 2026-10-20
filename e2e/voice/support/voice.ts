@@ -10,8 +10,8 @@ import {
   type PeerCallRead, type PeerCallStarted, type PeerSetup,
 } from '../../web/support/driver';
 import {
-  channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, expectShell, instanceInvite, messageRow, namedRow,
-  openSettings, railItem, railNav, sendText, sidebarTab, signUp, type Account, type SettingsSection,
+  channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, homeTile, expectShell, instanceInvite, messageRow, namedRow,
+  openSettings, railItem, railNav, sendText, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
 import { WAIT, mediaWorkers, type Person } from './peer-browser';
 
@@ -163,10 +163,10 @@ export async function introduce(peer: VoicePeer, people: readonly Person[], brow
   }
 }
 
-/** Opens a DM with `name` from the DMs tab's `message someone` picker (a member of the open server); answers its id. */
+/** Opens a DM with `name` from the `@` tile's `message someone` picker (a member of the open server); answers its id. */
 export async function openDmWith(page: Page, community: string, name: string): Promise<string> {
   await railItem(page, community).click();
-  await sidebarTab(page, 'dms').click();
+  await homeTile(page).click();
   await page.getByRole('button', { name: copy('shell.dms.new'), exact: true }).click();
   const picker = page.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true });
   await picker.getByRole('listitem').filter({ hasText: name }).getByRole('button', { name: copy('shell.dms.open'), exact: true }).click();
@@ -227,13 +227,13 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
 }
 
 /**
- * Opens the DM `dmId` from the DMs tab, by its row's name (the other person's), once the page lists it, and waits until
+ * Opens the DM `dmId` from the `@` tile's list, by its row's name (the other person's), once the page lists it, and waits until
  * this device has joined the DM's group (the composer is enabled only while the group is `active`). A DM is listed as
  * soon as its Welcome is seen, while its group is still `none`, and the worker drops a typing frame of a group that is
  * not active (controller.ts incomingTypingFrame): a one-shot signal sent before the join is lost for good.
  */
 export async function openDm(page: Page, dmId: string, name: string): Promise<void> {
-  await sidebarTab(page, 'dms').click();
+  await homeTile(page).click();
   await namedRow(dmsNav(page), name).click();
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });

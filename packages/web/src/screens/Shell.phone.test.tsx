@@ -26,6 +26,7 @@ function phone(o: VoiceHarnessOptions = {}) {
 }
 const tabs = () => screen.queryByRole('navigation', { name: t('nav.tabs.label') });
 const tab = (name: string) => within(tabs()!).getByRole('link', { name });
+const homeTile = () => within(screen.getByRole('navigation', { name: t('shell.rail.label') })).getByRole('button', { name: t('home.tile') });
 const goto = (path: string, state: unknown = null) => {
   act(() => {
     window.history.pushState(state, '', path);
@@ -37,11 +38,11 @@ const manage = (fake: ReturnType<typeof renderVoiceShell>['client']) =>
   act(() => { fake.publish(`permissions:${A}`, { loaded: true, manageChannels: true } as never); });
 
 describe('the phone shell: the servers list', () => {
-  it('shows the tab bar, stays on the server (no first-channel redirect) and has no status bar or sidebar tabs', async () => {
+  it('shows the tab bar, stays on the server (no first-channel redirect) and has no status bar or sidebar tabs, and exactly three tabs', async () => {
     phone({ path: `/c/${A}` });
     await screen.findByRole('navigation', { name: t('shell.channels.label') });
-    expect(within(tabs()!).getAllByRole('link').map(l => l.textContent)).toEqual(['servers', 'DMs', 'activity', 'you']);
-    expect(tab('servers')).toHaveAttribute('aria-current', 'page');
+    expect(within(tabs()!).getAllByRole('link').map(l => l.textContent)).toEqual(['home', 'activity', 'you']);
+    expect(tab('home')).toHaveAttribute('aria-current', 'page');
     expect(here()).toBe(`/c/${A}`);
     expect(screen.queryByRole('region', { name: t('shell.status.label') })).toBeNull();
     expect(screen.queryByRole('tablist')).toBeNull();
@@ -201,28 +202,31 @@ describe('the phone shell: the link banner', () => {
 });
 
 describe('the phone shell: tabs', () => {
-  it('goes to the DMs, activity and you tabs and shows each screen without a rail', async () => {
+  it('@ shows the DMs on Home; activity and you show each screen without a rail', async () => {
     const { user } = phone({ path: `/c/${A}` });
     await screen.findByRole('navigation', { name: t('shell.channels.label') });
     expect(screen.getByRole('navigation', { name: t('shell.rail.label') })).toBeInTheDocument();
-    await user.click(tab('DMs'));
+    // Home shows the rail and the list pane; the @ tile shows the DMs in the list pane, still on Home.
+    await user.click(homeTile());
     expect(here()).toBe('/dm');
     expect(await screen.findByRole('button', { name: 'bob' })).toBeInTheDocument();
-    expect(screen.queryByRole('navigation', { name: t('shell.rail.label') })).toBeNull();
-    expect(tab('DMs')).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('navigation', { name: t('shell.rail.label') })).toBeInTheDocument();
+    expect(homeTile()).toHaveAttribute('aria-current', 'page');
+    expect(tab('home')).toHaveAttribute('aria-current', 'page');
     await user.click(tab('activity'));
     expect(here()).toBe('/activity');
     expect(await screen.findByText(t('activity.empty'))).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: t('shell.rail.label') })).toBeNull();
     await user.click(tab('you'));
     expect(here()).toBe('/you');
     expect(await screen.findByRole('heading', { level: 1, name: t('you.title') })).toBeInTheDocument();
   });
 
-  it('counts DMs unread, and activity as channel mentions plus DM unread', async () => {
+  it('counts DMs unread on Home, and activity as channel mentions plus DM unread', async () => {
     const { client } = phone({ path: '/dm' });
     await screen.findByRole('button', { name: 'bob' });
     act(() => client.set('badges', { [TEXT]: { unread: 5, mentions: 2 }, [DM]: { unread: 3, mentions: 0 } }));
-    expect(tab(t('nav.tab.unread', { name: 'DMs', count: 3 }))).toBeInTheDocument();
+    expect(tab(t('nav.tab.unread', { name: 'home', count: 3 }))).toBeInTheDocument();
     expect(tab(t('nav.tab.unread', { name: 'activity', count: 5 }))).toBeInTheDocument();
   });
 
@@ -230,9 +234,9 @@ describe('the phone shell: tabs', () => {
     const { user } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: 'lobby' }));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
-    goto('/dm', { phoneBack: true });
-    await screen.findByRole('button', { name: 'bob' });
-    await user.click(tab('servers'));
+    goto('/activity', { phoneBack: true });
+    await screen.findByText(t('activity.empty'));
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
   });
 
@@ -240,19 +244,22 @@ describe('the phone shell: tabs', () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
     await screen.findByRole('main');
     expect(tabs()).not.toBeNull();
-    expect(tab('servers')).toHaveAttribute('aria-current', 'page');
-    await user.click(tab('servers'));
+    expect(tab('home')).toHaveAttribute('aria-current', 'page');
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}`);
     expect(await screen.findByRole('navigation', { name: t('shell.channels.label') })).toBeInTheDocument();
   });
 
-  it('opens the remembered DMs route from a channel, and servers again returns to that channel list', async () => {
+  it('Home opens where it was left: a DM, then a channel', async () => {
     const { user } = phone({ path: `/dm/${DM}` });
     await screen.findByRole('main');
-    goto(`/c/${A}/${TEXT}`, { phoneBack: true });
-    await user.click(tab('DMs'));
+    goto('/activity', { phoneBack: true });
+    await screen.findByText(t('activity.empty'));
+    await user.click(tab('home'));
     expect(here()).toBe(`/dm/${DM}`);
-    await user.click(tab('servers'));
+    goto(`/c/${A}/${TEXT}`, { phoneBack: true });
+    goto('/activity', { phoneBack: true });
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
   });
 
@@ -277,9 +284,9 @@ describe('the phone shell: tabs', () => {
     const { user } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: t('admin.open') }));
     expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
-    await user.click(tab('DMs'));
+    await user.click(tab('you'));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('admin.title') })).toBeNull());
-    expect(here()).toBe('/dm');
+    expect(here()).toBe('/you');
     expect(document.querySelector('main')).not.toHaveAttribute('inert');
   });
 
@@ -300,7 +307,7 @@ describe('the phone shell: tabs', () => {
     const { user } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: 'lobby' }));
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(back).toHaveBeenCalledTimes(1);
   });
 
@@ -310,7 +317,7 @@ describe('the phone shell: tabs', () => {
     goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: '/activity' });
     await screen.findByRole('textbox', { name: 'message #lobby' });
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(back).not.toHaveBeenCalled();
     expect(here()).toBe(`/c/${A}`);
   });
@@ -334,7 +341,7 @@ describe('the phone shell: tabs', () => {
       goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
       await screen.findByRole('textbox', { name: 'message #lobby' });
       const { back, pop } = backToDms();
-      await user.click(tab('servers'));
+      await user.click(tab('home'));
       expect(back).toHaveBeenCalledTimes(1);
       act(() => pop());
       await waitFor(() => expect(here()).toBe(`/c/${A}`));
@@ -350,7 +357,7 @@ describe('the phone shell: tabs', () => {
         window.dispatchEvent(new PopStateEvent('popstate'));
       });
       const replace = vi.spyOn(window.history, 'replaceState');
-      await user.click(tab('servers'));
+      await user.click(tab('home'));
       expect(back).toHaveBeenCalledTimes(1);
       expect(replace).toHaveBeenCalledTimes(1); // the mock's own
       expect(here()).toBe(`/c/${A}`);
@@ -365,10 +372,10 @@ describe('the phone shell: tabs', () => {
       const added = vi.spyOn(window, 'addEventListener');
       const removed = vi.spyOn(window, 'removeEventListener');
       const popstate = (spy: typeof added) => spy.mock.calls.filter(c => c[0] === 'popstate').length;
-      await user.click(tab('servers'));
+      await user.click(tab('home'));
       const afterFirst = { added: popstate(added), removed: popstate(removed) };
       expect(afterFirst.added).toBeGreaterThan(0);
-      await user.click(tab('servers'));
+      await user.click(tab('home'));
       // The second tap adds its own listener and first removes the one the first tap left.
       expect(popstate(added)).toBeGreaterThan(afterFirst.added);
       expect(popstate(removed)).toBeGreaterThan(afterFirst.removed);
@@ -378,21 +385,20 @@ describe('the phone shell: tabs', () => {
     });
   });
 
-  it('a DM opened from the servers list: the DMs tab lands on /dm', async () => {
+  it('a DM opened from the server list: the current Home tab goes back to that list', async () => {
     const { user } = phone({ path: `/c/${A}` });
     await screen.findByRole('navigation', { name: t('shell.channels.label') });
     goto(`/dm/${DM}`, { phoneBack: true, phoneFrom: `/c/${A}` });
     await screen.findByRole('textbox');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    await user.click(tab('DMs'));
-    expect(back).not.toHaveBeenCalled();
-    expect(here()).toBe('/dm');
+    await user.click(tab('home'));
+    expect(back).toHaveBeenCalledTimes(1);
   });
 
   it('opens an unvisited tab at its root', async () => {
     const { user } = phone({ path: '/you' });
     await screen.findByRole('heading', { level: 1, name: t('you.title') });
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}`);
   });
 });
@@ -402,10 +408,9 @@ describe('the phone shell: history', () => {
     const { user } = phone({ path: `/c/${A}` });
     await screen.findByRole('navigation', { name: t('shell.channels.label') });
     const before = window.history.length;
-    await user.click(tab('DMs'));
     await user.click(tab('activity'));
     await user.click(tab('you'));
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(window.history.length).toBe(before);
     expect(window.history.state).toBeNull();
   });
@@ -415,7 +420,7 @@ describe('the phone shell: history', () => {
     await user.click(await screen.findByRole('button', { name: 'lobby' }));
     goto('/activity', { phoneBack: true });
     await screen.findByText(t('activity.empty'));
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     await user.click(screen.getByRole('button', { name: t('nav.back') }));
@@ -520,7 +525,7 @@ describe('the phone shell: settings', () => {
     await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
     expect(tabs()).not.toBeNull();
     expect(screen.getByRole('dialog', { name: t('settings.title') })).not.toHaveAttribute('aria-modal');
-    await user.click(tab('servers'));
+    await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}`);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
   });
@@ -581,10 +586,11 @@ describe('the desktop keeps its shell', () => {
     await waitFor(() => expect(here()).toBe(`/c/${A}/${TEXT}`));
   });
 
-  it('shows the DMs tab on /dm with no DM open', async () => {
+  it('selects the @ tile on /dm with no DM open, and shows the DM list', async () => {
     media(false);
     renderVoiceShell({ path: '/dm' });
-    expect(await screen.findByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('button', { name: t('home.tile') })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('navigation', { name: t('shell.dms.label') })).toBeInTheDocument();
     expect(here()).toBe('/dm');
     expect(screen.queryByRole('navigation', { name: t('nav.tabs.label') })).toBeNull();
   });

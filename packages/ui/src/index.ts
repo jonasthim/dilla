@@ -72,8 +72,6 @@ export { QrCode } from './QrCode/QrCode.tsx';
 export type { QrCodeProps } from './QrCode/QrCode.tsx';
 export { RecoveryKeyField } from './RecoveryKeyField/RecoveryKeyField.tsx';
 export type { RecoveryKeyFieldProps } from './RecoveryKeyField/RecoveryKeyField.tsx';
-export { SidebarTabs } from './SidebarTabs/SidebarTabs.tsx';
-export type { SidebarTabsProps } from './SidebarTabs/SidebarTabs.tsx';
 export { MessageToolbar } from './MessageToolbar/MessageToolbar.tsx';
 export type { MessageToolbarProps } from './MessageToolbar/MessageToolbar.tsx';
 export { ReactionBar } from './ReactionBar/ReactionBar.tsx';

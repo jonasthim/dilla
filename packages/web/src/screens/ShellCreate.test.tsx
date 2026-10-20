@@ -76,12 +76,12 @@ describe('a fresh instance (flow 07)', () => {
     expect(screen.getByRole('dialog', { name: 'Start a server' })).toBeInTheDocument();
   });
 
-  it('ends the rail with join and new server, both captioned', () => {
+  it('starts the rail with the @ tile and ends it with join and new server, both captioned', () => {
     setup('/');
     const buttons = within(rail()).getAllByRole('button');
-    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['join a server', 'new server']);
-    expect(within(buttons[0]).getByText('join')).toBeInTheDocument();
-    expect(within(buttons[1]).getByText('new')).toBeInTheDocument();
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['direct messages', 'join a server', 'new server']);
+    expect(within(buttons[1]).getByText('join')).toBeInTheDocument();
+    expect(within(buttons[2]).getByText('new')).toBeInTheDocument();
   });
 
   it('starts a server from the rail: it is created with #general and a voice general, opened on #general, focus in its composer', async () => {
@@ -175,7 +175,7 @@ describe('a fresh instance (flow 07)', () => {
   it('with no server, the direct messages say why there is no one to message', async () => {
     const { user } = setup('/');
     const sidebar = screen.getByRole('navigation', { name: 'direct messages' });
-    expect(within(sidebar).getByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(rail()).getByRole('button', { name: 'direct messages' })).toHaveAttribute('aria-current', 'page');
     await user.click(within(sidebar).getByRole('button', { name: 'message someone' }));
     const dialog = screen.getByRole('dialog', { name: 'Message someone' });
     expect(dialog).toHaveTextContent('There is no one to message yet: direct messages are with people you share a server with. Start a server and invite someone, or join one.');
@@ -188,7 +188,7 @@ describe('a server’s actions (flow 07)', () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     const head = document.querySelector('.d-channel-list__head')!;
     expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
-    const panel = screen.getByRole('tabpanel');
+    const panel = screen.getByRole('navigation', { name: 'channels' });
     expect(within(panel).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
     view.unmount();
@@ -199,10 +199,10 @@ describe('a server’s actions (flow 07)', () => {
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
   });
 
-  it('the "+" is not on the direct messages tab', async () => {
+  it('the "+" is not on the direct messages list behind the @ tile', async () => {
     const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
-    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    await user.click(within(rail()).getByRole('button', { name: 'direct messages' }));
     expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
   });
 
@@ -267,7 +267,7 @@ describe('a server’s actions (flow 07)', () => {
 
   it('a server with only you: the picker says to invite people first', async () => {
     const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }], members: [ME_MEMBER] });
-    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    await user.click(within(rail()).getByRole('button', { name: 'direct messages' }));
     await user.click(screen.getByRole('button', { name: 'message someone' }));
     expect(screen.getByRole('dialog', { name: 'Message someone' }))
       .toHaveTextContent('No one else is in this server yet. Invite people first, then message them here.');

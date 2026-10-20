@@ -64,7 +64,7 @@ const PHONE = DOC_VIEWPORTS.phone;
 // web3.7: the phone shell's images of docs/user/getting-started.md ("On your phone") are shot at 390×844, the size the
 // phone shell was designed and tested at, from the same browser as the desktop ones.
 export const PHONE_APP = { width: 390, height: 844 };
-export const PHONE_SHOTS = ['phone-servers', 'phone-channel', 'phone-activity', 'phone-callbar'];
+export const PHONE_SHOTS = ['phone-home', 'phone-channel', 'phone-activity', 'phone-callbar'];
 export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover',
   'voice-stage', 'voice-dock', 'voice-settings', 'voice-blocked', 'call-ring', 'media-player']
   .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })))
@@ -257,6 +257,8 @@ async function kickFromServer(controlUrl, dataDir, name, actor, target) {
 // The browser side: the onboarding and shell, driven by the copy of packages/web/src/strings/en.ts.
 
 const byText = (page, role, key, vars) => page.getByRole(role, { name: t(key, vars), exact: true });
+/** The `@` tile (web3.9), the rail's first item: it carries the DM counts in `data-unread` and its name once a count shows. */
+const homeTile = (page) => byText(page, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${t('home.tile')}(,|$)`) });
 /** The gear in the user panel at the bottom left (web3.8): the rail has no settings button. */
 const gear = (page) => page.locator('.d-user-panel').getByRole('button', { name: t('panel.settings'), exact: true });
 const composer = (page, channel) => page.getByRole('textbox', { name: t('shell.composer.label', { channel }), exact: true });
@@ -470,7 +472,6 @@ async function connected(page) {
 /** Opens the voice channel `name` of the server `server`, presses `join voice` and waits for a connected call. */
 async function joinVoice(page, server, name) {
   await railServer(page, server).click();
-  await page.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
   await voiceRow(page, name).click();
   await stage(page).getByRole('button', { name: t('voice.join'), exact: true }).click();
   await connected(page);
@@ -880,7 +881,7 @@ async function main(argv) {
     await shoot('shell-unread-badge');
 
     // Open a DM from the member picker, then show its conversation.
-    await byText(mira, 'tab', 'shell.tabs.dms').click();
+    await homeTile(mira).click();
     await byText(mira, 'button', 'shell.dms.new').click();
     const picker = byText(mira, 'dialog', 'shell.dms.newTitle');
     await picker.getByRole('listitem').filter({ hasText: PEOPLE.ada.display })
@@ -895,15 +896,13 @@ async function main(argv) {
     await shoot('dm-conversation');
 
     // Return to the channel before the removal proof below.
-    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true })
-      .getByRole('tab', { name: /^channels/ }).click();
+    await railServer(mira, SERVER).click();
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
 
-    // Ada answers the DM while Mira reads #general: the DMs tab counts it, and #loot (still unread) keeps the
-    // server's badge in the rail.
-    // The tab's name carries its pill's words once a count shows, so it is matched by its start.
-    await pages.ada.getByRole('tab', { name: new RegExp(`^${t('shell.tabs.dms')}`) }).click();
+    // Ada answers the DM while Mira reads #general: the @ tile counts it, and #loot (still unread) keeps the
+    // server's badge in the rail. The tile's name carries its counts once they show, so it is matched by its start.
+    await homeTile(pages.ada).click();
     await pages.ada.getByRole('button', { name: new RegExp(`^${PEOPLE.mira.display}`) }).click();
     const adaDm = pages.ada.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.mira.display }), exact: true });
     await adaDm.and(pages.ada.locator(':enabled')).waitFor({ timeout: WAIT });
@@ -911,13 +910,12 @@ async function main(argv) {
     await adaDm.press('Enter');
     await pages.ada.getByRole('log', { name: t('shell.dm.log', { name: PEOPLE.mira.display }) })
       .locator('.d-message-row[data-state="ok"]').filter({ hasText: 'rope is packed' }).waitFor({ timeout: WAIT });
-    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true })
-      .locator('[data-count="1"]').filter({ hasText: t('shell.tabs.dms') }).waitFor({ timeout: WAIT });
+    await homeTile(mira).and(mira.locator('[data-unread="1"]')).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('shell-dm-badge');
 
     // web3.7: the phone shell, at 390×844. Mira's page flips to the phone layout live: the channel she is reading is a
-    // pushed view with a back, the lists are behind it, and the tab bar names four tabs. What she received since this
+    // pushed view with a back, the lists are behind it, and the tab bar names three tabs. What she received since this
     // tab opened (the mention, the DM from Ada) is in the activity tab.
     const phoneTabs = mira.getByRole('navigation', { name: t('nav.tabs.label'), exact: true });
     const phoneTab = (key) => phoneTabs.getByRole('link', { name: new RegExp(`^${t(key)}`) });
@@ -956,7 +954,7 @@ async function main(argv) {
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
         await ui('phone-settings-tabbar', theme);
         await phoneBack.click();
-        await phoneTab('nav.tab.servers').click();
+        await phoneTab('home.tab').click();
         await composer(mira, 'general').waitFor({ timeout: WAIT });
         await channelMenu.click();
         await mira.getByRole('menuitem', { name: t('members.toggle'), exact: true }).click();
@@ -972,13 +970,13 @@ async function main(argv) {
     await phoneBack.click();
     await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
     await settle(mira);
-    await shoot('phone-servers');
+    await shoot('phone-home');
     await phoneTab('nav.tab.activity').click();
     await mira.getByRole('heading', { name: t('activity.title'), exact: true }).waitFor({ timeout: WAIT });
     await mira.getByText(t('activity.dm'), { exact: false }).first().waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('phone-activity');
-    await phoneTab('nav.tab.servers').click();
+    await phoneTab('home.tab').click();
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
     await mira.setViewportSize(DESKTOP);
@@ -1172,7 +1170,6 @@ async function main(argv) {
     // wave fixed the not-member report a later frame used to clear, which kept that removal from showing).
     await peer.request('call_join', { actor: 'peer', channel: watch.voice_channel_id });
     await railServer(mira, 'Bridge Watch').click();
-    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
     await voiceRow(mira, 'watch-voice').click();
     await stage(mira).getByRole('button', { name: t('voice.join'), exact: true }).click();
     await shootState(mira, 'voice-blocked');

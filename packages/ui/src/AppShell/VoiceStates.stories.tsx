@@ -9,7 +9,6 @@ import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
-import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
@@ -87,8 +86,6 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
           joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
           <ChannelList title="Midgard" label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
-            tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop}
-              tabs={[{ id: 'channels', label: t('shell.tabs.channels'), count: 0 }, { id: 'dms', label: t('shell.tabs.dms'), count: 0 }]} />}
             channels={tab === 'dms' ? [{ id: 'bob', name: 'bob', kind: 'dm' as const, readable: false }]
               : [{ id: 'general', name: 'general', kind: 'text' as const, readable: false },
                 { id: 'harbour', name: 'harbour', kind: 'voice' as const, readable: false },

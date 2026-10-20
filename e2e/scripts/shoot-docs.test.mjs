@@ -44,7 +44,7 @@ test('every screenshot the voice guide names is one the shooter makes', () => {
 
 test('the phone set is shot at 390 by 844 and every image of "On your phone" is one the shooter makes', () => {
   assert.deepEqual(PHONE_APP, { width: 390, height: 844 });
-  assert.deepEqual(PHONE_SHOTS, ['phone-servers', 'phone-channel', 'phone-activity', 'phone-callbar']);
+  assert.deepEqual(PHONE_SHOTS, ['phone-home', 'phone-channel', 'phone-activity', 'phone-callbar']);
   const guide = readFileSync(new URL('../../docs/user/getting-started.md', import.meta.url), 'utf8');
   const named = [...guide.matchAll(/screenshots\/(phone-[a-z0-9-]+)\.png/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(named)].sort(), [...PHONE_SHOTS].sort());

@@ -3,7 +3,7 @@ import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, LinkBanner, PhoneHeader,
-  SidebarTabs, TabBar, UnsupportedVoice,
+  TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -90,8 +90,6 @@ export const LIST_REFRESH_MS = 15_000;
 const TYPING_RENEW_MS = 5_000;
 /** No device speaking: the voice rows of calls this device is not in (product walk M3). */
 const NOBODY: ReadonlySet<string> = new Set();
-
-type SidebarTab = 'channels' | 'dms';
 
 /** True when focus was dropped to the document, as it is when the focused element leaves the DOM. */
 function focusLost(): boolean {
@@ -476,11 +474,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
-    // WB a11y m5: only the call's own row, or its own DM's call button; else the sidebar's active tab, where the dock was
+    // WB a11y m5: only the call's own row, or its own DM's call button; else the `@` tile, where the dock was
     // (never another DM's call button, never the page).
     const target = document.querySelector<HTMLElement>(`button.d-voice-row[aria-label="${CSS.escape(t('voice.open', { name }))}"]`)
       ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('.dw-call-strip__start') : null)
-      ?? document.querySelector<HTMLElement>('.dw-sidebar [role="tab"][aria-selected="true"]');
+      ?? document.querySelector<HTMLElement>('.d-community-rail__home, .dw-sidebar h1');
     target?.focus();
     setLeftFrom(null);
   }, [leftFrom, whereOf, dm?.id]);
@@ -680,19 +678,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     client.call({ m: 'markRead', channelId: openId }).catch(report);
   }, [openId, timelineLoaded, visible, badge?.unread, badge?.mentions, lastKey, client, report]);
 
-  // The sidebar tab: DMs on a DM route, channels otherwise; it follows the route between the two, and a tab click
-  // changes it without navigating. State adjusted during render, React's pattern for derived state.
-  // WORKER-WEB-02: with no server listed, the shell opens on the DMs tab (DMs belong to no server).
+  // The `@` Home tile (desktop and phone): selected on a DM route and on /dm, and with no server listed (WORKER-WEB-02: DMs
+  // belong to no server, so the shell opens on them). Selecting it navigates; the route is the one source of truth.
   const noServer = communities !== undefined && communities.length === 0;
-  const routeTab: SidebarTab | null = base.name === 'dm' || base.name === 'dms' ? 'dms' : base.name === 'channel' ? 'channels' : null;
-  const startTab: SidebarTab | null = routeTab ?? (noServer ? 'dms' : null);
-  const [tab, setTab] = useState<SidebarTab>(startTab ?? 'channels');
-  const [tabFor, setTabFor] = useState<SidebarTab | null>(startTab);
-  if (tabFor !== startTab) {
-    setTabFor(startTab);
-    if (startTab !== null) setTab(startTab);
-  }
-
+  const homeSelected = base.name === 'dm' || base.name === 'dms' || (noServer && base.name !== 'channel');
   // Alt+ArrowUp/Down select the previous/next listed channel from anywhere on a channel route.
   const channelRoute = base.name === 'channel';
   useEffect(() => {
@@ -950,7 +939,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, ...rowBadge(badges, settings, d.id) }));
-  const channelCounts = sumBadges(channelRows);
   const dmCounts = sumBadges(dmRows);
   // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
   const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
@@ -997,7 +985,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     sidebar = <You onOpenSettings={section => { openSettings.current = section; navigate({ name: 'settings', section, from: null }); }} />;
   } else if (phone || community !== null || hasDms || noServer) {
     // Flow 07: with no server the sidebar still stands, on the DMs tab, so its picker can say why it is empty.
-    const onDms = phone ? phoneTab === 'dms' : tab === 'dms';
+    const onDms = homeSelected;
     const serverId = community?.id ?? null;
     let content: ReactNode;
     if (!onDms && community !== null && selectError !== null) {
@@ -1035,12 +1023,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         ) : undefined}
         // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
         titleKind={phone && onDms ? 'plain' : 'server'}
-        tabs={phone ? undefined : <>
-          <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
-            { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
-            { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
-          ]} />
-        </>}
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
@@ -1343,7 +1325,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The tabs (flow 12): a tab opens where it was last left, else at its root; the counts are what the sidebar's badges sum to.
   const serverRoot: Route = (routeCommunity ?? fallbackCommunity) !== null
     ? { name: 'channel', communityId: (routeCommunity ?? fallbackCommunity) as string, channelId: null } : { name: 'root' };
-  const tabRoot = (to: PhoneTab): Route => to === 'servers' ? serverRoot : to === 'dms' ? { name: 'dms' } : { name: to };
+  const tabRoot = (to: PhoneTab): Route => to === 'home' ? serverRoot : { name: to };
   const tabTarget = (to: PhoneTab): Route => {
     const kept = rememberedTab(to);
     if (kept !== null) {
@@ -1352,9 +1334,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     }
     return tabRoot(to);
   };
+  // Home's badge is what the `@` tile carries: unread direct messages (servers carry theirs on the rail).
+  const homeCount = dmCounts.unread;
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
-  const tabLabel = (to: PhoneTab) => t(`nav.tab.${to}`);
-  const tabItem = (to: PhoneTab, icon: 'server' | 'message-square' | 'activity' | 'user', count?: number) => ({
+  const tabLabel = (to: PhoneTab) => t(to === 'home' ? 'home.tab' : `nav.tab.${to}`);
+  const tabItem = (to: PhoneTab, icon: 'server' | 'activity' | 'user', count?: number) => ({
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
@@ -1392,7 +1376,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         }, { once: true });
       } else openTab(to, current);
     }} items={[
-      tabItem('servers', 'server'), tabItem('dms', 'message-square', dmCounts.unread), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
+      tabItem('home', 'server', homeCount), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
     ]} />
   );
   // The call bar stands on a phone while this device is in a call and its stage is not on screen.
@@ -1430,7 +1414,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     }
     const opened = openedId.current;
     // The list's rows (voice rows among them, web3.8) are in the order of their ids; the row is found by position, never by its text.
-    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.map(c => c.id);
+    const rowIds = homeSelected ? (dms ?? []).map(d => d.id) : ordered.map(c => c.id);
     const at = opened === null ? -1 : rowIds.indexOf(opened);
     const row = openSettings.current !== null ? document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`)
       : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list > li > :first-child')[at] ?? null;
@@ -1440,7 +1424,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     if (target === null) return;
     target.tabIndex = row === null ? -1 : target.tabIndex;
     target.focus();
-  }, [paneKey, phone, phonePane, phoneTab, dms, ordered]);
+  }, [paneKey, phone, phonePane, phoneTab, homeSelected, dms, ordered]);
   const [updateEntry, setUpdateEntry] = useState<string | null>(null);
   const [threadEditing, setThreadEditing] = useState(false);
   const recentUpdateCall = call.recentlyEnded !== null && Date.now() - call.recentlyEnded.at < 15_000
@@ -1498,8 +1482,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
-        if (saved.tab === 'channels' || saved.tab === 'dms') setTab(saved.tab);
-        const view = validViewPlace(saved.view);
+                const view = validViewPlace(saved.view);
         if (view !== null) setPendingView(view);
         if (saved.search?.open === true && typeof saved.search.query === 'string' && saved.search.query.length <= 2_000
           && (saved.search.scope === 'all' || saved.search.scope === 'community' || saved.search.scope === 'channel')) {
@@ -1581,7 +1564,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       try {
         const files = targetId === null ? [] : await client.call({ m: 'checkpointFiles', channelId: targetId }) as File[];
         const resumeId = call.channelId ?? call.recoveryChannelId ?? recentUpdateCall?.channelId ?? null;
-        await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab, view: captureViewPlace(),
+        await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab: homeSelected ? 'dms' : 'channels', view: captureViewPlace(),
           search: { open: searchOpen, query: searchQuery, scope: searchScope, id: searchId },
           call: resumeId === null ? null
             : { channelId: resumeId,
@@ -1596,7 +1579,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         if (lock !== null) lock.inert = false;
       }
     })();
-  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, tab,
+  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
     searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
@@ -1629,11 +1612,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
         page={phone ? <>{adminPage}{props.page}</> : undefined}
-        rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
+        rail={phone && phoneTab !== 'home' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={homeSelected ? null : communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
           createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
-          itemLabel={railLabel} />}
+          itemLabel={railLabel}
+          home={{ label: t('home.tile'), itemLabel: t('home.tileLabel', { unread: dmCounts.unread, mentions: dmCounts.mentions }),
+            selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => navigate({ name: 'dms' }) }} />}
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}

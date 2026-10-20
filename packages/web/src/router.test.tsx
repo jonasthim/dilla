@@ -157,12 +157,17 @@ describe('the phone routes', () => {
     expect(routeOf('/you')).toEqual({ name: 'you' });
   });
 
+  it('/dm is Home with the @ tile selected: it parses to dms, which belongs to the home tab', () => {
+    expect(parseRoute('/dm', '')).toEqual({ name: 'dms' });
+    expect(tabOf(parseRoute('/dm', ''))).toBe('home');
+  });
+
   it('tabOf names the tab of every route', () => {
-    expect(tabOf({ name: 'channel', communityId: C, channelId: null })).toBe('servers');
-    expect(tabOf({ name: 'root' })).toBe('servers');
-    expect(tabOf({ name: 'welcome', invite: null, signin: null })).toBe('servers');
-    expect(tabOf({ name: 'dm', channelId: DM })).toBe('dms');
-    expect(tabOf({ name: 'dms' })).toBe('dms');
+    expect(tabOf({ name: 'channel', communityId: C, channelId: null })).toBe('home');
+    expect(tabOf({ name: 'root' })).toBe('home');
+    expect(tabOf({ name: 'welcome', invite: null, signin: null })).toBe('home');
+    expect(tabOf({ name: 'dm', channelId: DM })).toBe('home');
+    expect(tabOf({ name: 'dms' })).toBe('home');
     expect(tabOf({ name: 'activity' })).toBe('activity');
     expect(tabOf({ name: 'you' })).toBe('you');
     expect(tabOf({ name: 'settings', section: 'devices', from: null })).toBe('you');
