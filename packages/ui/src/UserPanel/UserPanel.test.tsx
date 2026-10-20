@@ -30,7 +30,7 @@ describe('UserPanel', () => {
     expect(screen.getByText('@ada')).toHaveAttribute('title', '@ada');
   });
 
-  it('is a plain div with no role and no name; its control group carries the region name', () => {
+  it('is a plain div with no role and no name; its toolbar carries the region name', () => {
     const { container } = render(<UserPanel {...panel()} />);
     const root = container.firstElementChild!;
     expect(root).toHaveClass('d-user-panel');
@@ -38,14 +38,14 @@ describe('UserPanel', () => {
     expect(root).not.toHaveAttribute('role');
     expect(root).not.toHaveAttribute('aria-label');
     expect(root).not.toHaveAttribute('aria-labelledby');
-    expect(screen.getByRole('group', { name: 'your account' })).toBeInTheDocument();
-    expect(screen.getAllByRole('group')).toHaveLength(1);
-    expect(screen.queryByRole('toolbar')).toBeNull();
+    expect(screen.getByRole('toolbar', { name: 'your account' })).toBeInTheDocument();
+    expect(screen.getAllByRole('toolbar')).toHaveLength(1);
+    expect(screen.getAllByRole('toolbar')).toHaveLength(1);
   });
 
-  it('names mute and deafen in the group, as toggles carrying the shortcuts', () => {
+  it('names mute and deafen in the toolbar, as toggles carrying the shortcuts', () => {
     render(<UserPanel {...panel({ muted: true })} />);
-    const bar = screen.getByRole('group', { name: 'your account' });
+    const bar = screen.getByRole('toolbar', { name: 'your account' });
     const mute = within(bar).getByRole('button', { name: 'mute' });
     const deafen = within(bar).getByRole('button', { name: 'deafen' });
     expect(mute).toHaveAttribute('aria-pressed', 'true');
@@ -54,7 +54,7 @@ describe('UserPanel', () => {
     expect(deafen).toHaveAttribute('aria-keyshortcuts', VOICE_SHORTCUTS.deafen);
   });
 
-  it('mute and deafen call their handlers; the settings button, outside the group, calls onSettings', async () => {
+  it('mute and deafen call their handlers; the settings button, outside the toolbar, calls onSettings', async () => {
     const [onMute, onDeafen, onSettings] = [vi.fn(), vi.fn(), vi.fn()];
     render(<UserPanel {...panel({ onMute, onDeafen, onSettings })} />);
     await userEvent.click(screen.getByRole('button', { name: 'mute' }));
@@ -62,7 +62,7 @@ describe('UserPanel', () => {
     expect(onMute).toHaveBeenCalledTimes(1);
     expect(onDeafen).toHaveBeenCalledTimes(1);
     const gear = screen.getByRole('button', { name: 'settings' });
-    expect(within(screen.getByRole('group')).queryByRole('button', { name: 'settings' })).toBeNull();
+    expect(within(screen.getByRole('toolbar')).queryByRole('button', { name: 'settings' })).toBeNull();
     expect(gear.querySelector('[data-icon="settings"]')).not.toBeNull();
     await userEvent.click(gear);
     expect(onSettings).toHaveBeenCalledTimes(1);
@@ -75,8 +75,8 @@ describe('UserPanel', () => {
     expect(who).toHaveTextContent('Ada Lovelace');
     expect(who).toHaveTextContent('@ada');
     expect(who.querySelector('.d-avatar')).not.toBeNull();
-    // The name block, mute, deafen and the gear are the four tab stops.
-    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(4);
+    // The name block, the toolbar (one stop: mute, deafen) and the gear are the three tab stops.
+    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(3);
   });
 
   it('opens a status menu with the four statuses, and a choice calls onChoose with its id', async () => {
@@ -134,6 +134,23 @@ describe('UserPanel', () => {
     }
     expect(document.querySelectorAll('.d-user-panel .d-icon-button[data-size="32"]')).toHaveLength(3);
     expect(document.querySelector('.d-voice-toolbar')).toBeNull();
+  });
+
+  it('mute and deafen are one roving Tab stop: arrows wrap, Home/End jump, Tab goes on to the gear', async () => {
+    render(<UserPanel {...panel()} />);
+    const bar = screen.getByRole('toolbar', { name: 'your account' });
+    await userEvent.keyboard('{Tab}{Tab}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'deafen' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    expect(within(bar).getByRole('button', { name: 'deafen' })).toHaveFocus();
+    await userEvent.keyboard('{Home}');
+    expect(within(bar).getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{Tab}');
+    expect(screen.getByRole('button', { name: 'settings' })).toHaveFocus();
   });
 
   it('shows the shortcut in the mute tooltip on keyboard focus', async () => {

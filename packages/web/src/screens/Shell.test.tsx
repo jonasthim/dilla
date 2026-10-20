@@ -1355,10 +1355,7 @@ describe('keyboard', () => {
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: Online$/ }));
     await user.tab();
-    expect(document.activeElement).toBe(within(screen.getByRole('group', { name: 'your account' })).getByRole('button', { name: 'mute' }));
-    // web3.9 (E3): mute and deafen are two icon buttons, each its own stop, no longer one roving toolbar stop.
-    await user.tab();
-    expect(document.activeElement).toBe(within(screen.getByRole('group', { name: 'your account' })).getByRole('button', { name: 'deafen' }));
+    expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'user settings' }));
     await user.tab();

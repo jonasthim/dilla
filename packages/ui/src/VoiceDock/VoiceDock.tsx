@@ -3,6 +3,7 @@ import { VOICE_ICONS, voiceWhy, type VoiceWhyLabels } from '../CallControls/Call
 import './VoiceDock.css';
 import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
+import { useIconToolbar } from '../internal/iconToolbar.ts';
 import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface VoiceDockProps {
@@ -76,7 +77,7 @@ const PHASE_GLYPH = {
 /**
  * The voice dock above the user panel while this device is in voice, as Discord's (R26): line 1 the status ("voice
  * connected", a button with `onStatus`), line 2 where ("{channel} · {server}"), then camera, share and leave as 32px icon
- * buttons in one row. No meter, no card: a hairline top and the panel's 12px inset. Mute and deafen live in the user
+ * buttons in one row (one roving Tab stop, `role="toolbar"`). No meter, no card: a hairline top and the panel's 12px inset. Mute and deafen live in the user
  * panel. A camera or share that cannot act is aria-disabled and says why as its description. Its one `role="status"`
  * region announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
@@ -86,6 +87,7 @@ export function VoiceDock({
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
+  const bar = useIconToolbar();
   const text = {
     connecting: labels.connecting,
     connected: labels.connected.replaceAll('{where}', where),
@@ -110,7 +112,7 @@ export function VoiceDock({
       </div>
       {meter !== undefined ? <div className="d-voice-dock__meter">{meter}</div> : null}
       {showControls ? (
-        <div role="group" aria-label={labels.region} className="d-voice-dock__controls">
+        <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-voice-dock__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
           {onCamera !== undefined && labels.camera !== undefined ? (
             <>
               <IconButton icon={camera ? VOICE_ICONS.camera.iconOn : VOICE_ICONS.camera.icon} label={labels.camera} pressed={camera}

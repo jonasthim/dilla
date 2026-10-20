@@ -178,7 +178,7 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
     await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
     expect(main().getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     await toLobby();
-    expect(within(screen.getByRole('group', { name: 'your account' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByRole('button', { name: 'unmute' })).toBeNull();
   });
 });
@@ -218,7 +218,7 @@ describe('keyboard, rings and the voice section (wb-web-a11y m1, m3, m4, m5)', (
     window.history.pushState(null, '', `/dm/${DM}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
     await main().findByRole('button', { name: 'call' });
-    await app.user.click(within(screen.getByRole('group', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
+    await app.user.click(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.activeElement).toHaveAttribute('role', 'tab'));
   });
 });

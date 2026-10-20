@@ -1,6 +1,7 @@
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { Avatar, type Presence } from '../Avatar/Avatar.tsx';
 import { VOICE_ICONS, VOICE_SHORTCUTS } from '../CallControls/CallControls.tsx';
+import { useIconToolbar } from '../internal/iconToolbar.ts';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { useId, useState } from 'react';
 import './UserPanel.css';
@@ -37,12 +38,13 @@ const DOT: Record<UserPanelProps['status']['current'], Presence> = { online: 'on
  * The desktop user panel at the bottom left (web3.8, item 13), 52 high (web3.9): the avatar, the name with `@username`,
  * mute and deafen as pressed toggles that own the shortcuts (`aria-keyshortcuts`), and the settings gear, all three the
  * same 32px `IconButton`s as the voice dock (E3). A plain div with no role and no name: "your account" is named once, by
- * the group of its toggles. The avatar and name block is a menu button for the status
+ * the toolbar of its toggles (one roving Tab stop). The avatar and name block is a menu button for the status
  * (Discord-style), with the current status as a dot on the avatar.
  */
 export function UserPanel({ name, username, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status }: UserPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const nameId = useId();
+  const bar = useIconToolbar();
   return (
     <div className="d-user-panel">
       <ActionMenu label={status.label} className="d-user-panel__menu" triggerClassName="d-user-panel__who" open={menuOpen} onOpenChange={setMenuOpen}
@@ -57,7 +59,7 @@ export function UserPanel({ name, username, muted, deafened, shortcuts, labels, 
             <span className="d-user-panel__username" title={`@${username}`}>@{username}</span>
           </span>
         </>} />
-      <div role="group" aria-label={labels.region} className="d-user-panel__controls">
+      <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-user-panel__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
         <IconButton icon={muted ? VOICE_ICONS.mute.iconOn : VOICE_ICONS.mute.icon} label={labels.mute} pressed={muted}
           keys={chord(shortcuts?.mute)} aria-keyshortcuts={VOICE_SHORTCUTS.mute} onClick={onMute} />
         <IconButton icon={deafened ? VOICE_ICONS.deafen.iconOn : VOICE_ICONS.deafen.icon} label={labels.deafen} pressed={deafened}

@@ -52,9 +52,9 @@ describe('VoiceDock (R26)', () => {
     expect(screen.getByText('voice connected')).toBeInTheDocument();
   });
 
-  it('camera, share and leave are 32px icon buttons in one group, each with a tooltip anchor; there is no mute or deafen', () => {
+  it('camera, share and leave are 32px icon buttons in one toolbar, each with a tooltip anchor; there is no mute or deafen', () => {
     const { container } = render(<VoiceDock {...dock} onMute={() => {}} onDeafen={() => {}} />);
-    const group = screen.getByRole('group', { name: 'voice controls' });
+    const group = screen.getByRole('toolbar', { name: 'voice controls' });
     const buttons = within(group).getAllByRole('button');
     expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['camera', 'share screen', 'leave']);
     for (const b of buttons) {
@@ -67,6 +67,54 @@ describe('VoiceDock (R26)', () => {
     expect(container.querySelector('.d-voice-toolbar')).toBeNull();
   });
 
+  it('is one toolbar with one Tab stop; ArrowLeft/Right wrap, Home/End go to the ends, Tab leaves in one stop', async () => {
+    render(<><VoiceDock {...dock} /><button type="button">after</button></>);
+    const bar = screen.getByRole('toolbar', { name: 'voice controls' });
+    const name = (n: string) => within(bar).getByRole('button', { name: n });
+    expect(within(bar).getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(1);
+    await userEvent.keyboard('{Tab}');
+    expect(name('camera')).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(name('share screen')).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}{ArrowRight}');
+    expect(name('camera')).toHaveFocus();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(name('leave')).toHaveFocus();
+    await userEvent.keyboard('{Home}');
+    expect(name('camera')).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    expect(name('leave')).toHaveFocus();
+    // The stop follows focus: Tab out and Shift+Tab back lands on leave.
+    await userEvent.keyboard('{Tab}');
+    expect(screen.getByRole('button', { name: 'after' })).toHaveFocus();
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(name('leave')).toHaveFocus();
+  });
+
+  it('the tooltip shows on focus while roving, and Alt/Ctrl/Meta/Shift arrows are left alone', async () => {
+    render(<VoiceDock {...dock} />);
+    await userEvent.keyboard('{Tab}{ArrowRight}');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('share screen');
+    await userEvent.keyboard('{Control>}{ArrowRight}{/Control}');
+    expect(screen.getByRole('button', { name: 'share screen' })).toHaveFocus();
+  });
+
+  it('roving skips an inert camera or share but they keep their description', async () => {
+    const why = { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' };
+    render(<VoiceDock {...dock} labels={{ ...dock.labels, why }} canCamera={false} paused />);
+    const bar = screen.getByRole('toolbar', { name: 'voice controls' });
+    const camera = within(bar).getByRole('button', { name: 'camera' });
+    expect(camera).toHaveAttribute('aria-disabled', 'true');
+    expect(camera.tabIndex).toBe(-1);
+    expect(camera).toHaveAccessibleDescription('paused');
+    await userEvent.keyboard('{Tab}');
+    expect(within(bar).getByRole('button', { name: 'share screen' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'leave' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(within(bar).getByRole('button', { name: 'share screen' })).toHaveFocus();
+  });
+
   it('a keyboard-focused control shows its tooltip', async () => {
     render(<VoiceDock {...dock} />);
     await userEvent.keyboard('{Tab}');
@@ -76,7 +124,7 @@ describe('VoiceDock (R26)', () => {
 
   it('without camera and share handlers (or their labels) the dock keeps leave only', () => {
     render(<VoiceDock {...dock} onCamera={undefined} onShare={undefined} />);
-    expect(within(screen.getByRole('group', { name: 'voice controls' })).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(['leave']);
+    expect(within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(['leave']);
   });
 
   it.each([['connecting', 'span.d-state-dot[data-tone="pending"]'], ['reconnecting', 'span.d-state-dot[data-tone="pending"]'],
@@ -86,9 +134,9 @@ describe('VoiceDock (R26)', () => {
     expect(container.querySelector('.d-voice-dock__glyph')?.textContent).toBe('');
   });
 
-  it('with controls={false} there is no group, but the status, where and the status region stay', () => {
+  it('with controls={false} there is no toolbar, but the status, where and the status region stay', () => {
     render(<VoiceDock {...dock} controls={false} announcement="Joined harbour." />);
-    expect(screen.queryByRole('group')).toBeNull();
+    expect(screen.queryByRole('toolbar')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByText('voice connected')).toBeInTheDocument();
     expect(screen.getByText('harbour · Midgard Crew')).toBeInTheDocument();
@@ -107,7 +155,7 @@ describe('VoiceDock (R26)', () => {
   it('camera, share and leave call their handlers', async () => {
     const handlers = { onCamera: vi.fn(), onShare: vi.fn(), onLeave: vi.fn() };
     render(<VoiceDock {...dock} {...handlers} />);
-    for (const b of within(screen.getByRole('group', { name: 'voice controls' })).getAllByRole('button')) await userEvent.click(b);
+    for (const b of within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button')) await userEvent.click(b);
     for (const fn of Object.values(handlers)) expect(fn).toHaveBeenCalledTimes(1);
   });
 
