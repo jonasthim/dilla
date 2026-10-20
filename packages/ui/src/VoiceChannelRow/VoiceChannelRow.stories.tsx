@@ -19,10 +19,13 @@ export function expectGlyphLine(root: HTMLElement, story: string): void {
     if (name === null) throw new Error(`${story}: a row has no name`);
     const line = name.getBoundingClientRect();
     const box = row.getBoundingClientRect();
-    if (box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
-    for (const glyph of Array.from(row.querySelectorAll<HTMLElement>('svg.d-icon, .d-state-dot'))) {
+    // A caption is one line high. A sidebar person row is --row-h-sub high (R25): its glyphs sit on the name's centre line.
+    const sidebar = row.classList.contains('d-voice-row__person');
+    if (!sidebar && box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
+    for (const glyph of Array.from(row.querySelectorAll<HTMLElement>(':scope > svg.d-icon, :scope > .d-state-dot, .d-voice-row__state svg.d-icon, .d-voice-row__state .d-state-dot, .d-call-tile__state svg.d-icon, .d-call-tile__state .d-state-dot'))) {
       const r = glyph.getBoundingClientRect();
-      if (r.top < line.top - 2 || r.bottom > line.bottom + 2) {
+      const off = sidebar ? Math.abs((r.top + r.bottom) / 2 - (line.top + line.bottom) / 2) > 2 : r.top < line.top - 2 || r.bottom > line.bottom + 2;
+      if (off) {
         throw new Error(`${story}: a glyph at ${String(r.top)}-${String(r.bottom)} is off the name's line ${String(line.top)}-${String(line.bottom)}`);
       }
     }
@@ -37,16 +40,16 @@ const meta = {
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
+      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
       },
     },
-    onOpen: () => {},
+    onOpen: () => {}, onJoin: () => {},
   },
-  // The sidebar's width.
-  decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
+  // The sidebar's width, in the list item that positions the join icon.
+  decorators: [Story => <div className="d-voice-item" style={{ width: 240 }}><Story /></div>],
 } satisfies Meta<typeof VoiceChannelRow>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -56,6 +59,13 @@ export const Live: Story = {};
 /** No one in voice: no count and no sub-rows. */
 export const Empty: Story = { args: { participants: [] } };
 /** This device is in it, and the main pane shows it. */
+/** The join icon shows on focus or hover (here: focused); joined shows the connected glyph instead, never both. */
+export const JoinFocused: Story = {
+  play: ({ canvasElement }) => {
+    canvasElement.querySelector<HTMLElement>('.d-voice-row__join button')?.focus();
+    expectGlyphLine(canvasElement, 'JoinFocused');
+  },
+};
 export const JoinedCurrent: Story = {
   args: { current: true, joined: true, participants: [person('ada', { speaking: true }), person('bo', { muted: true }), person('you')] },
 };
@@ -75,5 +85,7 @@ export const LongNameWithGlyphs: Story = {
     person('relay', { bot: true, web: false, state: 'unverified', muted: true })] },
 };
 /** The same list in each theme. */
+/** The mute and deafen glyphs sit in the person's trailing slot; a speaking person's avatar has the accent ring. */
+export const SpeakingAndMuted: Story = { args: { participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] } };
 export const EveryStateLight: Story = { ...EveryState, globals: { theme: 'light' } };
 export const EveryStateHighContrast: Story = { ...EveryState, globals: { theme: 'high-contrast' } };

@@ -1,15 +1,16 @@
 .d-channel-list { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg-2); border-right: 1px solid var(--hairline); }
-.d-channel-list__title { margin: 0; padding: 0.875rem var(--row-pad-x) 0.75rem; font-family: var(--font-serif-italic); font-style: italic; font-weight: var(--weight-body); font-size: var(--text-lg); color: var(--fg); border-bottom: 1px solid var(--hairline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The header row is --bar-h (48) tall with the title, then the header action. */
+.d-channel-list__title { display: flex; align-items: center; flex: none; box-sizing: border-box; height: var(--bar-h); margin: 0; padding: 0 var(--row-pad-x); font-family: var(--font-serif-italic); font-style: italic; font-weight: var(--weight-body); font-size: var(--text-lg); color: var(--fg); border-bottom: 1px solid var(--hairline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* A heading that is not the server name is mono, not the display serif (Mesh brief; walk 37 #9). */
 .d-channel-list__title[data-kind="plain"] { font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); }
 /* A control at the right of the name (the phone's server menu): the row carries the hairline, not the heading. */
-.d-channel-list__head { display: flex; align-items: center; padding-right: 0.25rem; border-bottom: 1px solid var(--hairline); }
-.d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; border-bottom: 0; }
+.d-channel-list__head { display: flex; align-items: center; flex: none; box-sizing: border-box; height: var(--bar-h); padding-right: 0.25rem; border-bottom: 1px solid var(--hairline); }
+.d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; height: auto; border-bottom: 0; }
 /* The head's icon buttons: 32px on desktop, 44px on a phone. */
 .d-channel-list__head-btn { flex: none; min-width: 2rem; min-height: 2rem; padding: 0; justify-content: center; }
 [data-layout="phone"] .d-channel-list__head-btn { min-width: 2.75rem; min-height: 2.75rem; }
 /* The server's actions sit under its name, above the tabs; the hairline moves below them. */
-.d-channel-list__title:has(+ .d-channel-list__actions) { border-bottom: 0; padding-bottom: 0.375rem; }
+.d-channel-list__title:has(+ .d-channel-list__actions) { height: auto; border-bottom: 0; padding: 0.875rem var(--row-pad-x) 0.375rem; }
 /* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they
    wrap only when a larger text size leaves no room. */
 .d-channel-list__actions { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0 var(--row-pad-x) 0.625rem; border-bottom: 1px solid var(--hairline); }
@@ -18,27 +19,19 @@
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
 .d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .d-channel-list__footer { flex-shrink: 0; padding: 0.5rem var(--row-pad-x) 0.75rem; border-top: 1px solid var(--hairline); }
-/* web3.8: the list's own header row holds one right-aligned action (the "+" for a new channel), above the rows. */
-.d-channel-list__list-head { display: flex; justify-content: flex-end; align-items: center; flex: none; padding: 0.25rem 0.5rem 0; }
-/* A voice row with its join button: the button sits in the row's own cell, at its end, shown while the row is hovered or
-   focused (always on a device without hover). It reserves no column, so a hidden join never shortens the row, its
-   highlight or its name; the people span the full width below. */
-.d-channel-list__voice { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; }
-.d-channel-list__voice > .d-voice-row { grid-column: 1; grid-row: 1; min-width: 0; }
-.d-channel-list__voice > .d-voice-row__people { grid-column: 1 / -1; }
-.d-channel-list__join { grid-column: 1; grid-row: 1; justify-self: end; align-self: center; margin-right: 0.25rem; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
-.d-channel-list__voice:hover > .d-channel-list__join, .d-channel-list__voice:focus-within > .d-channel-list__join { opacity: 1; }
-/* The join and the member count share the row's end and never overlap (G1). With a pointer, the join replaces the count while
-   it shows (hover or focus inside the item), and nothing is reserved. Without hover, and in the phone layout, the join is
-   always shown: the row reserves its width with right padding, so the count sits just before it. */
-@media (hover: hover) {
-  .d-channel-list__voice:hover > .d-voice-row .d-voice-row__count,
-  .d-channel-list__voice:focus-within > .d-voice-row .d-voice-row__count { visibility: hidden; }
-}
-@media (hover: none) {
-  .d-channel-list__join { opacity: 1; }
-  .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
-}
-[data-layout="phone"] .d-channel-list__join { opacity: 1; }
-[data-layout="phone"] .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
-@media (prefers-reduced-motion: reduce) { .d-channel-list__join { transition: none; } }
+/* A category header (R12): a button row, --row-h tall, a micro uppercase label, the chevron in the 16px glyph column (turned
+   -90deg when collapsed), the trailing "+" in the slot. The label starts at the same x as every row's name. */
+.d-channel-list__cat { position: relative; display: flow-root; }
+.d-channel-list__cat-head { display: flex; align-items: center; gap: 0.5rem; width: 100%; height: var(--row-h); box-sizing: border-box; padding: 0 0.5rem; margin: var(--list-gap) 0; font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.d-channel-list__cat-head:hover { background: var(--surface-2); color: var(--fg); }
+.d-channel-list__cat-chevron { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1rem /* 16px */; transition: transform var(--duration-fast); }
+.d-channel-list__cat-head[data-collapsed="true"] .d-channel-list__cat-chevron { transform: rotate(-90deg); }
+.d-channel-list__cat-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; }
+/* The "+" is drawn over the header's own slot (a button cannot sit inside the header's button), shown while the header is
+   hovered or focused and always on a device without hover. */
+.d-channel-list__cat-add { position: absolute; top: var(--list-gap); right: 0.5rem; height: var(--row-h); display: flex; align-items: center; }
+.d-channel-list__cat-add { opacity: 0; transition: opacity var(--duration-fast); }
+.d-channel-list__cat:hover .d-channel-list__cat-add, .d-channel-list__cat:focus-within .d-channel-list__cat-add { opacity: 1; }
+@media (hover: none) { .d-channel-list__cat-add { opacity: 1; } }
+[data-layout="phone"] .d-channel-list__cat-add { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .d-channel-list__cat-add, .d-channel-list__cat-chevron { transition: none; } }

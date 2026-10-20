@@ -91,6 +91,35 @@ describe('ChannelRow', () => {
     render(<ChannelRow name="general" kind="text" unread={3} mentions={1} ariaLabel="general, unread 3, mentions 1" onSelect={() => {}} />);
     expect(screen.getByRole('button', { name: 'general, unread 3, mentions 1' })).toHaveAttribute('aria-label', 'general, unread 3, mentions 1');
   });
+  // web3.9 (UI-2): one row grammar.
+  it('holds the mention pill in the trailing slot when both counts are set, and the unread pill when only that is', () => {
+    const { container, rerender } = render(<ChannelRow name="screenshots" kind="text" unread={3} mentions={12} onSelect={() => {}} />);
+    const slot = container.querySelector('.d-slot');
+    expect(slot?.querySelectorAll('.d-pill')).toHaveLength(1);
+    expect(slot?.querySelector('.d-pill')).toHaveAttribute('data-kind', 'mention');
+    expect(slot?.parentElement).toBe(screen.getByRole('button'));
+    rerender(<ChannelRow name="screenshots" kind="text" unread={3} onSelect={() => {}} />);
+    expect(container.querySelector('.d-slot .d-pill')).toHaveAttribute('data-kind', 'unread');
+    rerender(<ChannelRow name="screenshots" kind="text" onSelect={() => {}} />);
+    expect(container.querySelector('.d-slot')).not.toBeNull();
+    expect(container.querySelector('.d-slot .d-pill')).toBeNull();
+  });
+  it('draws the lock as a 12px Lucide icon named Private, after the name, and no lock emoji', () => {
+    const { container } = render(<ChannelRow name="sauna" kind="voice" private onSelect={() => {}} />);
+    const lock = screen.getByRole('img', { name: 'Private' });
+    const icon = lock.querySelector('svg');
+    expect(icon).toHaveAttribute('data-icon', 'lock');
+    expect(icon).toHaveAttribute('width', '12');
+    const name = container.querySelector('.d-chrow__name') as Node;
+    expect(Boolean(name.compareDocumentPosition(lock) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(container.textContent).not.toContain('🔒');
+  });
+  it('is a data-row, with the 16px glyph column holding # or an icon and a voice row using volume-2', () => {
+    const { container } = render(<><ChannelRow name="a" kind="text" onSelect={() => {}} /><ChannelRow name="b" kind="voice" onSelect={() => {}} /></>);
+    for (const row of container.querySelectorAll('.d-chrow')) expect(row).toHaveAttribute('data-row');
+    expect(container.querySelector('.d-chrow[data-kind="text"] .d-chrow__glyph')?.textContent).toBe('#');
+    expect(container.querySelector('.d-chrow[data-kind="voice"] .d-chrow__glyph svg')).toHaveAttribute('data-icon', 'volume-2');
+  });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelRow name="loot" kind="text" active unread={4} onSelect={() => {}} /></div>);
     await expectNoAxeViolations(container);

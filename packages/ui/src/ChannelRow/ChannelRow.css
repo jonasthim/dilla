@@ -1,14 +1,16 @@
-.d-chrow { display: flex; align-items: center; gap: 8px; width: 100%; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+/* One row grammar (R10-R14): --row-h tall, --list-gap between rows, a 16px glyph column, the name, then the trailing slot.
+   The name starts at 8 + 16 + 8 = 32px in every row type of the sidebar (R11). */
+.d-chrow { position: relative; display: flex; align-items: center; gap: 0.5rem; width: 100%; height: var(--row-h); box-sizing: border-box; padding: 0 0.5rem; margin: var(--list-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
 .d-chrow:hover { background: var(--surface-2); color: var(--fg); }
-.d-chrow[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 3px 0 0 var(--accent); }
-.d-chrow:not([data-unread="0"]), .d-chrow:not([data-mentions="0"]) { color: var(--fg); font-weight: 700; }
+/* Unread: a bright name and a 4px tick at the left edge, not bold. Selected (R14): the fill and a 2px accent bar there. */
+.d-chrow:not([data-unread="0"]), .d-chrow:not([data-mentions="0"]) { color: var(--fg); box-shadow: inset 4px 0 0 var(--fg-2); }
+.d-chrow[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
 /* A muted row dims its glyph and name only: its mention pill keeps full contrast (ruling 15). */
 .d-chrow[data-muted="true"] .d-chrow__glyph, .d-chrow[data-muted="true"] .d-chrow__name { opacity: var(--opacity-muted); }
-.d-chrow__glyph { width: 0.75rem /* 12px */; text-align: center; color: var(--fg-3); }
-.d-chrow__lock { font-size: var(--text-micro); filter: grayscale(1); opacity: 0.7; }
+.d-chrow__glyph { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1rem /* 16px */; color: var(--fg-3); }
+.d-chrow__lock { display: inline-flex; flex: none; color: var(--fg-3); }
 .d-chrow__spacer { flex: 1; }
 .d-chrow__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.d-chrow__dot { display: inline-block; width: 0.5rem; height: 0.5rem; vertical-align: middle; background: currentColor; border-radius: var(--r-pill); }
+.d-chrow__dot { display: inline-block; width: 0.5rem; height: 0.5rem; background: currentColor; border-radius: var(--r-pill); }
 /* web3.7: a note after the name ("slow mode"), quiet, cut before it widens the row. */
 .d-chrow__badge { flex-shrink: 0; white-space: nowrap; padding: 0 0.25rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-sm); }
-.d-chrow__glyph .d-icon { display: block; margin: 0 auto; }

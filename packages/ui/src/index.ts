@@ -39,7 +39,7 @@ export type { AppShellProps } from './AppShell/AppShell.tsx';
 export { CommunityRail } from './CommunityRail/CommunityRail.tsx';
 export type { CommunityRailProps } from './CommunityRail/CommunityRail.tsx';
 export { ChannelList } from './ChannelList/ChannelList.tsx';
-export type { ChannelListProps } from './ChannelList/ChannelList.tsx';
+export type { ChannelListProps, ChannelListChannel } from './ChannelList/ChannelList.tsx';
 export { ChannelHeader } from './ChannelHeader/ChannelHeader.tsx';
 export type { ChannelHeaderProps } from './ChannelHeader/ChannelHeader.tsx';
 export { MessageLog } from './MessageLog/MessageLog.tsx';

@@ -3,29 +3,78 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
-const css = readFileSync(fileURLToPath(new URL('./ChannelList.css', import.meta.url)), 'utf8');
-const rule = (selector: string) => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+const list = read('./ChannelList.css');
+const chrow = read('../ChannelRow/ChannelRow.css');
+const slot = read('../TrailingSlot/TrailingSlot.css');
+const rule = (css: string, selector: string) => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
 
-describe('a voice row with its join (WS5 fix round 1, F1)', () => {
-  it('keeps one column: the hidden join reserves no width, so the row and its highlight span the whole item', () => {
-    expect(rule('.d-channel-list__voice')).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)\s*;/);
-    expect(rule('.d-channel-list__voice')).not.toMatch(/grid-template-columns:[^;]*auto/);
+// web3.9 (UI-2, R10-R14): one row grammar for channel rows, voice rows and category headers.
+describe('the row grammar (CSS pin)', () => {
+  it('a channel row is var(--row-h) tall with var(--list-gap) above and below', () => {
+    const d = rule(chrow, '.d-chrow');
+    expect(d).toMatch(/height: var\(--row-h\);/);
+    expect(d).toMatch(/margin: var\(--list-gap\) 0;/);
   });
-  it('puts the join in the row’s cell, at its end', () => {
-    const join = rule('.d-channel-list__join');
-    expect(join).toMatch(/grid-column:\s*1\s*;/);
-    expect(join).toMatch(/grid-row:\s*1\s*;/);
-    expect(join).toMatch(/justify-self:\s*end/);
+  it('the glyph column is 16px and does not shrink', () => {
+    const d = rule(chrow, '.d-chrow__glyph');
+    expect(d).toMatch(/flex: none;/);
+    expect(d).toMatch(/width: 1rem/);
+  });
+  it('the name truncates with an ellipsis', () => {
+    const d = rule(chrow, '.d-chrow__name');
+    expect(d).toMatch(/min-width: 0;/);
+    expect(d).toMatch(/text-overflow: ellipsis;/);
+  });
+  it('the trailing slot is a fixed column that never shrinks', () => {
+    const d = rule(slot, '.d-slot');
+    expect(d).toMatch(/width: var\(--slot-w\);/);
+    expect(d).toMatch(/flex: none;/);
+  });
+  it('selected is the fill and a 2px inset accent bar; unread is a 4px inset tick, with no bold', () => {
+    expect(chrow).toMatch(/\.d-chrow\[aria-current="page"\] \{[^}]*background: var\(--surface-hi\);[^}]*box-shadow: inset 2px 0 0 var\(--accent\);/);
+    expect(chrow).toMatch(/\.d-chrow:not\(\[data-unread="0"\]\)[^{]*\{[^}]*box-shadow: inset 4px 0 0 /);
+    expect(chrow).not.toMatch(/font-weight: 700/);
+  });
+  it('the lock is an icon box, not text', () => {
+    expect(rule(chrow, '.d-chrow__lock')).not.toMatch(/font-size|filter/);
   });
 });
 
-describe('the join and the member count never overlap (WS5 fix round 2, G1)', () => {
-  it('on a pointer device the shown join replaces the count', () => {
-    expect(css).toMatch(/@media \(hover: hover\) \{[^}]*\.d-channel-list__voice:hover > \.d-voice-row \.d-voice-row__count[^}]*\.d-channel-list__voice:focus-within > \.d-voice-row \.d-voice-row__count[^}]*visibility:\s*hidden/);
+describe('the category header (CSS pin)', () => {
+  it('is var(--row-h) tall on the same padding and gap as a row, so its label starts at the name x', () => {
+    const d = rule(list, '.d-channel-list__cat-head');
+    expect(d).toMatch(/height: var\(--row-h\);/);
+    expect(d).toMatch(/padding: 0 0\.5rem;/);
+    expect(d).toMatch(/gap: 0\.5rem;/);
+    expect(d).toMatch(/margin: var\(--list-gap\) 0;/);
   });
-  it('on a phone the join is always shown and the row reserves its width, in the media query and the layout twin', () => {
-    expect(css).toMatch(/@media \(hover: none\) \{[\s\S]*?\.d-channel-list__voice:has\(> \.d-channel-list__join\) > \.d-voice-row \{ padding-right: [^;}]+; \}/);
-    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__voice:has\(> \.d-channel-list__join\) > \.d-voice-row \{ padding-right: [^;}]+; \}/);
-    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join \{ opacity: 1; \}/);
+  it('the chevron is in the 16px glyph column and turns -90deg when collapsed', () => {
+    const d = rule(list, '.d-channel-list__cat-chevron');
+    expect(d).toMatch(/flex: none;/);
+    expect(d).toMatch(/width: 1rem/);
+    expect(list).toMatch(/\[data-collapsed="true"\] \.d-channel-list__cat-chevron \{ transform: rotate\(-90deg\); \}/);
+  });
+  it('the label is micro, uppercase and tracked', () => {
+    const d = rule(list, '.d-channel-list__cat-label');
+    expect(d).toMatch(/font-size: var\(--text-micro\);/);
+    expect(d).toMatch(/letter-spacing: var\(--label-tracking\);/);
+    expect(d).toMatch(/text-transform: uppercase;/);
+  });
+  it('the "+" shares the slot right edge, shows on hover or focus, and always on a device without hover or on a phone', () => {
+    expect(rule(list, '.d-channel-list__cat-add')).toMatch(/right: 0\.5rem;/);
+    expect(list).toMatch(/\.d-channel-list__cat:focus-within \.d-channel-list__cat-add \{ opacity: 1; \}/);
+    expect(list).toMatch(/@media \(hover: none\) \{ \.d-channel-list__cat-add \{ opacity: 1; \} \}/);
+    expect(list).toMatch(/\[data-layout="phone"\] \.d-channel-list__cat-add \{ opacity: 1; \}/);
+  });
+});
+
+describe('the header row (CSS pin)', () => {
+  it('is var(--bar-h) tall, with and without a header action', () => {
+    expect(rule(list, '.d-channel-list__title')).toMatch(/height: var\(--bar-h\);/);
+    expect(rule(list, '.d-channel-list__head')).toMatch(/height: var\(--bar-h\);/);
+  });
+  it('the old list-header "+" row is gone', () => {
+    expect(list).not.toContain('list-head');
   });
 });
