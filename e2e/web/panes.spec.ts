@@ -92,16 +92,20 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect(sidebarSplitter(page)).toBeVisible();
   expect(await page.locator('.d-channel-header').evaluate(el => el.getBoundingClientRect().height), 'the header at 900 px').toBeLessThanOrEqual(52);
 
-  // 5. FX-misc m6: with the sidebar at its widest on an 800 px window main is 24rem (384 px), and the channel header still shows
-  // every action whole inside main: they wrap onto a second row instead of being clipped or pushed off screen.
+  // 5. FX-misc m6, as web3.9 UI-3 designed it: with the sidebar at its widest on an 800 px window main is 24rem (384 px). The header
+  // stays one 48 px bar (it no longer wraps); below 36rem of header width the foldable actions give way to the "more" menu, and every
+  // action still shown sits whole inside main.
   await page.setViewportSize({ width: 800, height: 800 });
   await sidebarSplitter(page).focus();
   await page.keyboard.press('End');
   const mainBox = async () => page.getByRole('main').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
   await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
   const header = page.locator('.d-channel-header');
-  const cells = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
-  expect(cells.length, 'the header actions').toBeGreaterThanOrEqual(3);
+  expect(await header.evaluate(el => el.getBoundingClientRect().height), 'the header stays one bar at 24rem').toBeLessThanOrEqual(52);
+  // A folded action is display:none (no box); what is left, the "more" menu among it, is measured.
+  const shown = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
+  const cells = shown.filter(c => c.width > 0);
+  expect(cells.length, 'the header actions still shown').toBeGreaterThanOrEqual(2);
   const bounds = await mainBox();
   for (const c of cells) {
     expect(c.width, `${c.name} keeps its width`).toBeGreaterThan(24);
