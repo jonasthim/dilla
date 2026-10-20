@@ -412,6 +412,18 @@ describe('AdminController: server and channel edits', () => {
       (l) => l.some((c) => c.id === toHex(id16(0x90)) && c.kind === 2 && c.name === 'voice' && c.position === 1))).toBe(true);
   });
 
+  it('createCategory skips the built-in AFK channel at 2^30 when it takes the next position (R42)', async () => {
+    const w = world();
+    const AFK = id16(0x61);
+    w.routes.listChannels.mockResolvedValue([channelRow(0xc1, 0), channelRow(0x61, 2 ** 30, { kind: 1, name: 'AFK' })]);
+    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${CID}`)?.channelId).toBe(toHex(AFK)));
+    await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.some((c) => c.id === toHex(AFK))).toBe(true));
+    expect(await run(w, { m: 'createCategory', communityId: CID, name: 'voice' })).toMatchObject({ ok: true });
+    expect(w.routes.createCategory).toHaveBeenCalledWith(COMMUNITY, { name: 'voice', position: 1 });
+  });
+
   it('a 403 on a channel edit reads the permissions of its server again', async () => {
     const w = world();
     await toReady(w);

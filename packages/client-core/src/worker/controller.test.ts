@@ -9,6 +9,7 @@ import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
+import type { DeviceRow } from '../http/routes';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
@@ -755,14 +756,35 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
 
   it('diagnostics counts only live devices and is set after ready without a page command (web3.9)', async () => {
     const w = world();
-    w.routes.listDevices.mockResolvedValue([
+    const rows: DeviceRow[] = [
       { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
-      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n as unknown as null, lastSeen: 1_699_999_000n },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n, lastSeen: 1_699_999_000n },
       { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
-    ]);
+    ];
+    w.routes.listDevices.mockResolvedValue(rows);
     await toReady(w);
     w.gateway.emit({ type: 'ready', info: READY_INFO });
     await vi.waitFor(() => expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2));
+  });
+
+  it('an older device read that answers last does not publish over a newer one', async () => {
+    const w = await ownWorld();
+    const older = deferred<Awaited<ReturnType<typeof w.routes.listDevices>>>();
+    const newer = deferred<Awaited<ReturnType<typeof w.routes.listDevices>>>();
+    w.routes.listDevices.mockImplementationOnce(() => older.promise).mockImplementationOnce(() => newer.promise);
+    w.call(9830, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.routes.listDevices).toHaveBeenCalledTimes(1));
+    w.call(9831, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.routes.listDevices).toHaveBeenCalledTimes(2));
+    const row = (id: Uint8Array, revokedAt: DeviceRow['revokedAt']): DeviceRow =>
+      ({ id, tier: 1, signerTier: 1, verifiedAt: null, revokedAt, lastSeen: 1_700_000_000n });
+    newer.resolve([row(DEVICE, null), row(OTHER_DEVICE, 1_699_000_000n), row(THIRD, null)]);
+    await vi.waitFor(() => expect(w.ret(9831)).toMatchObject({ ok: true }));
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2);
+    older.resolve([row(DEVICE, null), row(OTHER_DEVICE, null), row(THIRD, null)]);
+    await vi.waitFor(() => expect(w.ret(9830)).toMatchObject({ ok: true }));
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2);
+    expect(w.last<DeviceSummary[]>('devices')?.filter((d) => d.revokedAt === null)).toHaveLength(2);
   });
 
   // C3 fix m1: a failed device read neither fails the pass nor clears the count.

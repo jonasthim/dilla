@@ -2892,12 +2892,16 @@ export class Controller {
   // ---- devices (requirements 23-26) ----
 
   /** Requirement 25: the own list first, so a just-enrolled device shows as listed. */
+  private devicesReadSeq = 0;
   private async refreshDevices(refreshed?: { listed: boolean }): Promise<null> {
     const core = this.requireCore();
     const me = this.requireMe();
     const own = refreshed ?? await this.parts.refreshOwnDeviceList(core, this.routes, me.userId);
     if (!own.listed) { this.enterRevoked(); return null; }
+    // A read that began before a newer one must not publish over it (a ready-path read racing a revoke's).
+    const seq = ++this.devicesReadSeq;
     const rows = await this.routes.listDevices();
+    if (seq !== this.devicesReadSeq) return null;
     const entries = core.ownDeviceList().entries;
     const ownHex = toHex(me.deviceId);
     const devices: DeviceSummary[] = rows.map((r) => {

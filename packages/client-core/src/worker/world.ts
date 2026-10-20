@@ -8,7 +8,7 @@ import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescripto
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, Routes, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
+import { OWNER_TOP, Routes, type DeviceRow, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -406,7 +406,7 @@ export function world(opts: {
       state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
       return Promise.resolve({ channelId: DM_CHANNEL, created: true });
     }),
-    listDevices: vi.fn(() => { calls.push('listDevices'); return Promise.resolve([
+    listDevices: vi.fn((): Promise<DeviceRow[]> => { calls.push('listDevices'); return Promise.resolve([
       { id: OTHER_DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
       { id: DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
     ]); }),

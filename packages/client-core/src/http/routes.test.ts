@@ -1597,6 +1597,25 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
+  it('a pending of 2, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
+    const two = setup();
+    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 2]));
+    await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    for (const tail of [0xf5, 0xf4]) {
+      const head = encode([CHANNEL, 300, []]);
+      const raw = new Uint8Array([...head, tail]);
+      raw[0] = 0x84;
+      const raw1 = setup();
+      raw1.t.replies.push(bytesReply(200, raw));
+      await expect(raw1.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_TYPE' });
+    }
+  });
+  it('an exempt of false sends [id] like no flag', async () => {
+    const { routes, t } = setup();
+    t.replies.push(noContent());
+    await routes.sendAFKActivity(COMMUNITY, CHANNEL, false);
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([CHANNEL])));
+  });
   it('moveToAFK and leaveAFK no longer exist', () => {
     const { routes } = setup();
     // @ts-expect-error retired in web3.9
