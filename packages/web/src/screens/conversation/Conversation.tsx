@@ -16,8 +16,12 @@ import { PinsPanel } from './Pins.tsx';
 export const FLASH_MS = 1400;
 /** How far from the end, in CSS px, the log may be and still count as at the newest message (the log's own pin slack). */
 const AT_PRESENT_PX = 24;
-/** A scroll this soon after a reveal is the log keeping the end in view under the row that just grew, not the reader scrolling. */
-const REVEAL_SETTLE_MS = 250;
+/** A scroll this soon after a wheel, touch or scroll key is the reader's (a fling keeps scrolling after the finger lifts). */
+const USER_SCROLL_MS = 800;
+/** A press that never clicks (a drag, a long press) stops counting as the focus's cause after this long. */
+const POINTER_FOCUS_MS = 600;
+/** Keys that scroll the log without moving focus between rows (the arrows, Home and End do, and reveal the row they land on). */
+const SCROLL_KEYS = ['PageUp', 'PageDown'];
 export interface ConversationUi {
   reply: { msgId: string; author: string; excerpt: string } | null;
   editing: { msgId: string; value: string } | null;
@@ -86,9 +90,15 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a scroll of the log. `at` is when it was shown.
   const [revealFor, setRevealFor] = useState<{ log: string; key: string } | null>(null);
   const revealedKey = revealFor !== null && revealFor.log === p.logKey && items.some(i => i.key === revealFor.key) ? revealFor.key : null;
-  const revealedAt = useRef(0);
+  // The reader's own scrolling (wheel, touch, scroll keys); a scroll with none of these before it is the log's own.
+  const userScrollAt = useRef(0);
+  const pointerTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (pointerTimer.current !== null) window.clearTimeout(pointerTimer.current); }, []);
+  const byPointer = useRef(false); // a pointer press is under way was a pointer: a row it focuses is revealed by its tap, not by the focus
+  const dragged = useRef(false); // a touch that moved is a scroll; one that did not is a tap, and a tap's reveal grows the row
+  const markUserScroll = () => { userScrollAt.current = Date.now(); };
   const reveal = (key: string, on: boolean) => {
-    if (on) { revealedAt.current = Date.now(); setRevealFor({ log: p.logKey, key }); }
+    if (on) setRevealFor({ log: p.logKey, key });
     else setRevealFor(cur => (cur?.key === key ? null : cur));
   };
   // R29: the log is away from the newest message (the "viewing older messages" bar), per log.
@@ -198,7 +208,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     if (!(log instanceof HTMLElement) || log.getAttribute('role') !== 'log') return;
     const away = log.scrollHeight - log.scrollTop - log.clientHeight > AT_PRESENT_PX;
     setAwayFrom(away ? p.logKey : null);
-    if (Date.now() - revealedAt.current > REVEAL_SETTLE_MS) setRevealFor(null);
+    // Only the reader's own scroll hides it: a message arriving re-pins the log, and the log keeps the end in view under a row that grew.
+    if (Date.now() - userScrollAt.current < USER_SCROLL_MS) setRevealFor(null);
   };
   const rowKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === 'Escape') setRevealFor(null);
@@ -229,9 +240,24 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const closeLightbox = () => { closedLightbox.current = lightbox?.opener ?? null; setLightbox(null); };
 
   return <div ref={paneRef} className="dw-conversation" data-channel-id={p.channelId} onScrollCapture={onLogScroll}
+    onWheelCapture={markUserScroll} onTouchStartCapture={() => { dragged.current = false; }}
+    onTouchMoveCapture={() => { dragged.current = true; markUserScroll(); }}
+    onTouchEndCapture={() => { if (dragged.current) markUserScroll(); }}
+    onPointerDownCapture={() => {
+      // A pointer's press focuses a row between its pointerdown and its click (a touch's compatibility mousedown comes after
+      // pointerup); a focus() by script after the click is not the pointer's.
+      byPointer.current = true;
+      if (pointerTimer.current !== null) window.clearTimeout(pointerTimer.current);
+      pointerTimer.current = window.setTimeout(() => { byPointer.current = false; }, POINTER_FOCUS_MS);
+    }}
+    onClickCapture={() => { byPointer.current = false; }}
+    onKeyDownCapture={e => { byPointer.current = false; if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
     onFocus={e => { const row = (e.target as Element).closest<HTMLElement>('.d-message-row'); if (row) {
       const key = items.find(i => rowEls.current.get(i.key) === row)?.key;
       if (key) setActiveKey(key);
+      // I1: a row that takes keyboard focus shows its actions on a phone layout, as focus-within did when they were always there.
+      // A tap focuses the row too, but by pointer: the tap itself reveals it (and a second tap hides it).
+      if (key && e.target === row && !byPointer.current) reveal(key, true);
     } }}
     onDragEnter={e => { if (fileDrag(e)) { e.preventDefault(); setDragDepth(n => n + 1); } }}
     onDragOver={e => { if (fileDrag(e)) e.preventDefault(); }}

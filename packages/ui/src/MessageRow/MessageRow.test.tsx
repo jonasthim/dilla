@@ -359,6 +359,12 @@ describe('MessageRow mention colour dot', () => {
       fireEvent.keyDown(screen.getByRole('article'), { key: 'Escape' });
       expect(onReveal).toHaveBeenLastCalledWith(false);
     });
+    it('Enter on an already revealed row keeps it revealed (focus may have shown it); only Escape or a tap hides', () => {
+      const onReveal = vi.fn();
+      render(row({ onReveal, revealed: true }));
+      fireEvent.keyDown(screen.getByRole('article'), { key: 'Enter' });
+      expect(onReveal).toHaveBeenLastCalledWith(true);
+    });
     it('a click on a button inside the row does not toggle', async () => {
       const onReveal = vi.fn();
       render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '2 replies', onOpen: () => {} }} onReveal={onReveal} /></PhoneLayoutProvider>);

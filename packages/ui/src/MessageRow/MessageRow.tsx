@@ -126,7 +126,7 @@ export function MessageRow({
     }
     if (reveals && e.key === 'Enter' && e.target === e.currentTarget && !e.repeat) {
       e.preventDefault();
-      onReveal(revealed !== true);
+      onReveal(true);
       return;
     }
     if (e.key === 'Escape' && e.target !== e.currentTarget) {

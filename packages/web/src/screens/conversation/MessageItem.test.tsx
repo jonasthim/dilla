@@ -58,20 +58,49 @@ describe('a message row on a phone (R30)', () => {
     await user.keyboard('{Escape}');
     expect(toolbar(rowOf(P2))).toBeNull();
   });
-  it('hides it when the log scrolls', async () => {
+  it('hides it when the reader scrolls the log: a wheel, a touch drag, or Page Down', async () => {
     const { user } = renderConversation({ items: rows() });
-    await user.click(body(rowOf(P1)));
-    expect(toolbar(rowOf(P1))).not.toBeNull();
-    // The log sets its own scroll when the row grows under a reader at the end; that is not the reader scrolling.
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
-    fireEvent.scroll(screen.getByRole('log'));
-    expect(toolbar(rowOf(P1))).toBeNull();
+    const log = screen.getByRole('log');
+    for (const scroll of [
+      () => fireEvent.wheel(log),
+      () => { fireEvent.touchStart(log); fireEvent.touchMove(log); fireEvent.touchEnd(log); },
+      () => fireEvent.keyDown(log, { key: 'PageDown' }),
+    ]) {
+      await user.click(body(rowOf(P1)));
+      expect(toolbar(rowOf(P1))).not.toBeNull();
+      scroll();
+      fireEvent.scroll(log);
+      expect(toolbar(rowOf(P1))).toBeNull();
+    }
   });
-  it('keeps the reveal for the scroll the log makes while the row grows', async () => {
+  it('keeps it for a scroll the log makes itself: a message arriving, or the row growing under a tap', async () => {
     const { user } = renderConversation({ items: rows() });
+    const log = screen.getByRole('log');
     await user.click(body(rowOf(P1)));
-    fireEvent.scroll(screen.getByRole('log'));
+    fireEvent.scroll(log); // the log re-pins: no wheel, touch or key came before it
     expect(toolbar(rowOf(P1))).not.toBeNull();
+    // A tap is a touch that did not move: it is no scroll, and the scroll that follows it is the log's.
+    fireEvent.touchStart(log);
+    fireEvent.touchEnd(log);
+    fireEvent.scroll(log);
+    expect(toolbar(rowOf(P1))).not.toBeNull();
+  });
+  it('shows the toolbar of a row that takes keyboard focus, moves with focus, and Tab reaches its buttons (I1)', async () => {
+    const { user } = renderConversation({ items: rows() });
+    act(() => rowOf(P1).focus());
+    expect(toolbar(rowOf(P1))).not.toBeNull();
+    await user.keyboard('{ArrowDown}');
+    expect(rowOf(P2)).toHaveFocus();
+    expect(toolbar(rowOf(P1))).toBeNull();
+    expect(toolbar(rowOf(P2))).not.toBeNull();
+    await user.tab();
+    expect(within(toolbar(rowOf(P2))!).getAllByRole('button')[0]).toHaveFocus();
+    // Enter on a row that focus already revealed keeps it; Escape hides it.
+    act(() => rowOf(P2).focus());
+    await user.keyboard('{Enter}');
+    expect(toolbar(rowOf(P2))).not.toBeNull();
+    await user.keyboard('{Escape}');
+    expect(toolbar(rowOf(P2))).toBeNull();
   });
   it('does not reveal on a tap on a control of the row', async () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'first', { reactions: [{ emoji: '👍', count: 1, mine: false }] })] });
