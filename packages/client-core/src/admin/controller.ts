@@ -255,7 +255,8 @@ export class AdminController {
   }
 
   /** Moves a channel one step inside its parent. Positions that are strictly increasing trade between the mover and its
-   *  neighbour (two patches). With a tie anywhere in the run, the run is renumbered densely 0..n-1 in the new display
+   *  neighbour (two patches). With a tie anywhere in the run, or a position at or above the AFK reservation (R-AFK7), the
+   *  run is renumbered densely 0..n-1 in the new display
    *  order, and only the channels whose position changes are patched. Whatever happens, the lists are read again. */
   async moveChannel(channelId: string, direction: 'up' | 'down'): Promise<null> {
     const { communityId, row } = this.known(channelId);
@@ -267,7 +268,10 @@ export class AdminController {
     const to = direction === 'up' ? at - 1 : at + 1;
     const other = siblings[to] as { id: string; row: ChannelRow } | undefined;
     if (other === undefined) return null;
-    const strict = siblings.every((c, i) => i === 0 || c.row.position > (siblings[i - 1] as { row: ChannelRow }).row.position);
+    // R-AFK7: a run that holds the AFK reservation (2^30 and up) is renumbered densely, never swapped, so no ordinary channel
+    // inherits a position the next create would skip; AFK takes its new dense slot.
+    const strict = siblings.every((c, i) => i === 0 || c.row.position > (siblings[i - 1] as { row: ChannelRow }).row.position)
+      && siblings.every((c) => c.row.position < AFK_BUILTIN_POSITION);
     let changes: { row: ChannelRow; position: number }[];
     if (strict) {
       changes = [{ row, position: other.row.position }, { row: other.row, position: row.position }];
