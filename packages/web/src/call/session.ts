@@ -284,13 +284,15 @@ interface RemoteView {
   isSpeaking: boolean;
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
-  trackPublications?: Map<string, { track?: unknown }>;
+  trackPublications?: Map<string, { track?: unknown; source?: unknown }>;
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
 interface RemoteAudio {
   kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown;
   /** The decrypted track the element plays (livekit’s); web3.8 V1 reads its level when the element has no stream. */
   mediaStreamTrack?: MediaStreamTrack;
+  /** livekit's Track.Source, when the publication does not say it. */
+  source?: unknown;
 }
 interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
@@ -648,21 +650,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const playing = new Map<RemoteAudio, {
       el: HTMLMediaElement; identity: string; meter: LevelMeter | null; detector: SpeakingDetector; on: boolean;
     }>();
-    const pending = new Map<RemoteAudio, string>();
+    /** A held-back track's identity, and whether it is a microphone (web3.8 FX I1: only a microphone gets a meter). */
+    const pending = new Map<RemoteAudio, { identity: string; mic: boolean }>();
     /** Takes a subscribed remote audio track in: it is attached by the next applyGains once its gain is above 0. A no-op
-     *  for a track already attached, for video, and after the end. */
-    const queueAudio = (track: unknown, identity: string): void => {
+     *  for a track already attached, for video, and after the end. `pub` is its publication, which names its source. */
+    const queueAudio = (track: unknown, identity: string, pub?: unknown): void => {
       const t = track as RemoteAudio | null | undefined;
       if (ended || t == null || t.kind !== 'audio' || playing.has(t)) return;
-      pending.set(t, identity);
+      const source = (pub as { source?: unknown } | null | undefined)?.source ?? t.source;
+      pending.set(t, { identity, mic: source === SOURCE.microphone });
     };
     /** Fix round 2 (Minor 2): a device not in the roster yet has no known gain (its user, and so its volume, is unknown):
      *  it waits, and the roster change that names it (afterRoster → applyGains) attaches it. Nit 1: a track leaves
      *  `pending` only once it is attached; no host yet, or an attach that throws, keeps it for the next applyGains. */
     const attachPending = (): void => {
-      for (const [t, identity] of [...pending]) {
+      for (const [t, { identity, mic }] of [...pending]) {
         if (!roster.has(identity) || gainFor(identity) <= 0) continue;
-        if (attachAudio(t, identity)) pending.delete(t);
+        if (attachAudio(t, identity, mic)) pending.delete(t);
       }
       countAudio();
     };
@@ -673,7 +677,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const expected = attached + pending.size;
       if (state.audio.attached !== attached || state.audio.expected !== expected) set({ audio: { attached, expected } });
     };
-    const attachAudio = (t: RemoteAudio, identity: string): boolean => {
+    const attachAudio = (t: RemoteAudio, identity: string, mic: boolean): boolean => {
       if (playing.has(t)) return true;
       if (ended) return false;
       const host = audioHost();
@@ -686,9 +690,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       host.appendChild(el);
       // web3.8 V1: the level is read from the element's own (decrypted, played) track; Chromium routes WebRTC audio to
       // WebAudio only through the element livekit attached. A failure to make a meter is the fallback, never an error.
+      // web3.8 FX I1: only a microphone is metered. Screen-share audio is played but never counts as speaking, as the SFU's
+      // flag (livekit-server sums only TrackSource_MICROPHONE) never counted it.
       let tap: MediaStreamTrack | undefined;
-      try { tap = (el.srcObject as MediaStream | null)?.getAudioTracks()[0] ?? t.mediaStreamTrack; } catch { tap = t.mediaStreamTrack; }
-      playing.set(t, { el, identity, meter: makeMeter(tap), detector: new SpeakingDetector(), on: false });
+      if (mic) {
+        try { tap = (el.srcObject as MediaStream | null)?.getAudioTracks()[0] ?? t.mediaStreamTrack; } catch { tap = t.mediaStreamTrack; }
+      }
+      playing.set(t, { el, identity, meter: mic ? makeMeter(tap) : null, detector: new SpeakingDetector(), on: false });
       armSample();
       return true;
     };
@@ -706,13 +714,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     /** Every attached or held-back track, or those of one participant. */
     const detachAudioOf = (identity?: string): void => {
-      for (const [t, id] of [...pending]) if (identity === undefined || id === identity) pending.delete(t);
+      for (const [t, held] of [...pending]) if (identity === undefined || held.identity === identity) pending.delete(t);
       for (const [t, entry] of [...playing]) if (identity === undefined || entry.identity === identity) detachAudio(t);
       countAudio();
     };
     /** Review Focus 1: tracks subscribed before the listeners existed (while joinCall or the publish was in flight). */
     const sweepAudio = (): void => {
-      for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) queueAudio(pub.track, p.identity);
+      for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) queueAudio(pub.track, p.identity, pub);
     };
     /** Fix round 1 (M2): call audio is held back while the session’s context is not running. Fix round 2 (Minor 3): the
      *  context alone decides when there is one (the room’s canPlaybackAudio lags it); the room’s flag only without one. */
@@ -743,6 +751,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { micTrack.stop(); return; }
           applyMic();
+          // web3.8 FX I3: LiveKit stopped the old capture, so the own meter moves to the new one (own speaking, AFK).
+          restartOwnMeter();
           browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
@@ -1078,9 +1088,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       set({ error: endCodeOf(reason) });
       void leave('lost');
     };
-    const onSubscribed = (track: unknown, _pub: unknown, participant: unknown): void => {
+    const onSubscribed = (track: unknown, pub: unknown, participant: unknown): void => {
       if (ended) return;
-      queueAudio(track, (participant as RemoteView | undefined)?.identity ?? '');
+      queueAudio(track, (participant as RemoteView | undefined)?.identity ?? '', pub);
       onPeople(); // applyGains attaches it (unless its gain is 0), then the new gain node takes the person’s volume
     };
     const onUnsubscribed = (track: unknown): void => { detachAudio(track); if (!ended) onPeople(); };

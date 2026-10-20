@@ -1153,6 +1153,31 @@ describe('the product walk fixes', () => {
       expect(tileOf(call, BOB_DEV).speaking).toBe(false);
     });
 
+    it('web3.8 FX I1: screen-share audio never counts as speaking; only the microphone does, as the SFU fallback', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      // Bob is muted (no microphone track) and shares a screen with loud audio.
+      const p = f.addRemote(BOB_DEV);
+      f.verified.add(BOB_DEV);
+      const screenAudio = f.subscribeTrack(p, 'screen_share_audio').track;
+      f.subscribeTrack(p, 'screen_share');
+      m.levels.set(screenAudio.mst, 0.3);
+      await f.advance(200);
+      expect(screenAudio.attach).toHaveBeenCalled(); // it is still played
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      // He unmutes: his microphone's meter decides, the screen audio still does not.
+      const mic = f.subscribeTrack(p, 'microphone').track;
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      m.levels.set(mic.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      m.levels.set(mic.mst, 0);
+      await f.advance(400);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
     it('a track that is not attached (deafened) falls back to the SFU flag; paused gives false for every tile', async () => {
       const f = fakes();
       const m = withMeters(f);
@@ -1847,6 +1872,50 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(fresh.enabled).toBe(false);
     fresh.enabled = true;
     expect(fresh.enabled).toBe(false);
+  });
+
+  /** web3.8 FX I3: fake meters, their level set per track by the test; `last()` is the track the newest meter reads. */
+  const ownMeters = (f: ReturnType<typeof fakes>) => {
+    const levels = new Map<unknown, number>();
+    const made: Array<{ track: unknown; closed: boolean }> = [];
+    f.deps.createLevelMeter = (_ctx, track) => {
+      const entry = { track: track as unknown, closed: false };
+      made.push(entry);
+      return { read: () => (entry.closed ? 0 : levels.get(track) ?? 0), close: () => { entry.closed = true; } };
+    };
+    return { levels, made, last: () => made.filter((m) => !m.closed).at(-1)?.track };
+  };
+
+  it('FX I3: after the browser-path capture restart at the start, the own meter reads the new capture', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const m = ownMeters(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(m.last()).toBe(fresh);
+    m.levels.set(fresh, 0.2);
+    await f.advance(150);
+    expect(call.state.speaking).toBe(true);
+    expect(call.state.level).toBeGreaterThan(0);
+  });
+
+  it('FX I3: after the deferred restart on unmute, the own meter reads the new capture', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const m = ownMeters(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(0);
+    call.setMuted(false);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(m.last()).toBe(fresh);
+    m.levels.set(fresh, 0.2);
+    await f.advance(150);
+    expect(call.state.speaking).toBe(true);
   });
 
   it('a getter that throws changes nothing and fails no start', async () => {
