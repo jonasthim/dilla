@@ -195,12 +195,14 @@ export interface UseCallOptions {
   announce?(text: string): void;
   /**
    * web3.9 VOICE-AFK: the built-in AFK channels (a join of one is listen-only, R3), and this device's pending move (the
-   * server's sweep moved it, R33): the community, its AFK channel and that channel's name. A move joins once per
-   * `communityId:channelId` until `pending` turns null again (a failed one until the person's own join or leave).
+   * server's sweep moved it, R33): the community, its AFK channel, that channel's name, and `seq`, the `afk:` slice's seq
+   * of the read that said pending (fix round 3, R-AFK4). Each landed read that says pending starts at most one move: a
+   * move is keyed on `communityId:seq`. A failed move is held by `communityId:channelId` until the person's own join or
+   * leave, whatever later reads say. A read while this device is already in that AFK call does nothing.
    * Fix round 1 (I-2): `channels` is not the only source. A join of a channel it does not name yet waits for the
    * `afk:` slice of that channel's community (at most AFK_STATUS_WAIT_MS, then it fails closed without the microphone).
    */
-  afk?: { channels: ReadonlySet<string>; pending: { communityId: string; channelId: string; name: string } | null };
+  afk?: { channels: ReadonlySet<string>; pending: { communityId: string; channelId: string; name: string; seq: number } | null };
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -209,7 +211,7 @@ const KEY_D = 'd';
 /** A session that ended on its own: the notice that says why (WB client I3; flow 06 § States). */
 const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_REMOVED: 'voice.removed' };
 /** web3.9 VOICE-AFK: what the AFK move's join carries: the AFK channel's name, for `afk.moved` and the failed line, and
- *  the move's `communityId:channelId` key (fix round 1, I-3). */
+ *  the move's `communityId:channelId` identity, which a failure holds (fix round 1, I-3). */
 interface AfkMove { name: string; key: string }
 /** Fix round 1 (I-2): how long a join waits for the slices that say whether its channel is an AFK channel. */
 export const AFK_STATUS_WAIT_MS = 10_000;
@@ -841,19 +843,23 @@ export function useCall(o: UseCallOptions): CallView {
       teardown(s, 'removed');
     }
   }, [slice, session, client, announce, safely, teardown, afkCut]);
-  // web3.9 VOICE-AFK (R33): this device's pending move joins that community's AFK channel once per
-  // `communityId:channelId`; the key clears only when `pending` turns null, so the same move never joins twice and a
-  // failed join is never retried (the dock's line, `afkFailed`, offers it to the person).
-  // The effect runs on every new `pending` object (the shell may build one per render); the ref alone decides.
+  // web3.9 VOICE-AFK (R33): this device's pending move joins that community's AFK channel. Fix round 3 (R-AFK4): once per
+  // landed read that says pending (`communityId:seq`), so a second sweep's read is a second move even with no false or
+  // null read in between; the same read never joins twice, and a failed join is never retried (the dock's line,
+  // `afkFailed`, offers it to the person). The effect runs on every new `pending` object (the shell may build one per
+  // render); the refs alone decide.
   const pendingMove = o.afk?.pending ?? null;
   const movedKey = useRef<string | null>(null);
   useEffect(() => {
     if (pendingMove === null) { movedKey.current = null; return; }
-    const key = `${pendingMove.communityId}:${pendingMove.channelId}`;
-    // Fix round 1 (I-3): a failed move stays failed across null passages until the person's own join or leave.
-    if (movedKey.current === key || failedKey.current === key) return;
+    const key = `${pendingMove.communityId}:${pendingMove.seq}`;
+    const moveId = `${pendingMove.communityId}:${pendingMove.channelId}`;
+    // Fix round 1 (I-3): a failed move stays failed, whatever later reads say, until the person's own join or leave.
+    if (movedKey.current === key || failedKey.current === moveId) return;
     movedKey.current = key;
     listenIds.current.add(pendingMove.channelId);
+    // R-AFK4: a read while this device is already in (or joining) that AFK call is a no-op.
+    if (channelRef.current === pendingMove.channelId && (sessionRef.current !== null || starting.current)) return;
     // Fix round 1 (m-1): a stale `pending` never leaves a newer call: a start in progress, a call in another community,
     // or a call younger than the shortest AFK timeout is not the one the sweep cut.
     const current = channelRef.current;
@@ -861,7 +867,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (sessionRef.current !== null && current !== null
       && (communityOf(current) !== pendingMove.communityId || Date.now() - attachedAt.current < AFK_MIN_IDLE_MS)) return;
     moveWindow.current = { communityId: pendingMove.communityId, afkId: pendingMove.channelId, until: Date.now() + MOVE_WINDOW_MS };
-    joinRef.current(pendingMove.channelId, undefined, { name: pendingMove.name, key });
+    joinRef.current(pendingMove.channelId, undefined, { name: pendingMove.name, key: moveId });
   }, [pendingMove, communityOf]);
   useEffect(() => {
     if (recoveryChannelId === null) return;

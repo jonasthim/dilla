@@ -2276,6 +2276,11 @@ export class Controller {
     if (this.storeCleared || !this.listed(communityId)) return;
     for (const [channelId, known] of this.channels) if (known.communityId === communityId) this.channels.delete(channelId);
     for (const row of rows) this.channels.set(toHex(row.id), { communityId, row });
+    // web3.9 VOICE-AFK fix round 3 (N-3): a held snapshot with no AFK pointer (a failed lazy ensure) cannot say whether a
+    // newly listed channel is the built-in AFK channel, so it is unknown (null) until this re-read lands, and the page
+    // holds a join of it instead of reaching for the microphone. Set before the channels are published.
+    const held = this.slices.get(`afk:${communityId}`);
+    if (held != null && held.channelId === null) this.slices.set(`afk:${communityId}`, null);
     this.publishChannels(communityId);
     // C4 fix round 1: the role view is pushed once, after the access read below, not from the member list as well.
     if (members !== null) this.publishMembers(communityId, members, false);
@@ -2705,6 +2710,8 @@ export class Controller {
 
   /** web3.9 R-AFK3 (b): a failed AFK read is read again after 1 s, 2 s, 4 s … (at most 30 s) while the community stays listed. */
   private readonly afkRetry = new Map<string, { timer: number; attempt: number }>();
+  /** R-AFK4: the seq of the newest landed AFK read, across every community; it only rises. */
+  private afkLandedSeq = 0;
   private static readonly AFK_RETRY_MAX_MS = 30_000;
 
   private stopAFKRetry(communityId: string): void {
@@ -2730,8 +2737,9 @@ export class Controller {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
       this.stopAFKRetry(communityId);
+      // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, occupants: [] });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq, occupants: [] });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;

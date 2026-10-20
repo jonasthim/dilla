@@ -21,8 +21,8 @@ const B_AFK = 'bf'.repeat(16);
 const AFK_SET: ReadonlySet<string> = new Set([AFK_CH, B_AFK]);
 const NONE: ReadonlySet<string> = new Set();
 type Pending = NonNullable<UseCallOptions['afk']>['pending'];
-const move = (over: Partial<NonNullable<Pending>> = {}): NonNullable<Pending> => ({ communityId: A, channelId: AFK_CH, name: 'AFK', ...over });
-const moveB = () => move({ communityId: B, channelId: B_AFK, name: 'AFK' });
+const move = (over: Partial<NonNullable<Pending>> = {}): NonNullable<Pending> => ({ communityId: A, channelId: AFK_CH, name: 'AFK', seq: 1, ...over });
+const moveB = () => move({ communityId: B, channelId: B_AFK, name: 'AFK', seq: 2 });
 const MOVED = t('afk.moved', { channel: 'AFK' });
 const voice = (id: string, communityId: string, name: string, position = 1): ChannelSummary => ({
   id, communityId, kind: 1, mode: 0, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'unsupported' });
@@ -187,19 +187,21 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     const h = harness({ fails: (id) => id === AFK_CH });
     h.setAfk({ channels: AFK_SET, pending: move() });
     await waitFor(() => expect(h.v.afkFailed).not.toBeNull());
-    // Each re-read (op 54, a reconnect) clears the afk: slice first, then reads pending=1 again within the TTL.
+    // Each re-read (op 54, a reconnect) lands a new read (a new seq) that says pending=1 again within the TTL; a
+    // reconnect also passes through null (an offline status clears the slice).
     for (let i = 0; i < 3; i++) {
       h.setAfk({ channels: AFK_SET, pending: null });
       await flush();
-      h.setAfk({ channels: AFK_SET, pending: move() });
+      h.setAfk({ channels: AFK_SET, pending: move({ seq: 2 + i }) });
+      await flush();
+      h.setAfk({ channels: AFK_SET, pending: move({ seq: 20 + i }) });
       await flush();
     }
     expect(h.started).toHaveLength(1);
     expect(h.v.afkFailed).toEqual({ channelId: AFK_CH, name: 'AFK' });
-    // The person's own leave ends the hold: the next move of that key joins again.
+    // The person's own leave ends the hold: the next read that says pending joins again.
     act(() => h.v.leave());
-    h.setAfk({ channels: AFK_SET, pending: null });
-    h.setAfk({ channels: AFK_SET, pending: move() });
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 30 }) });
     await waitFor(() => expect(h.started).toHaveLength(2));
   });
 
@@ -210,10 +212,9 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     await waitFor(() => expect(h.v.afkFailed).not.toBeNull());
     fail = false;
     await h.joined(GENV);
-    // Later the sweep moves this call; the same key is a new move now.
+    // Later the sweep moves this call; its read is a new move now.
     clock.skew = AFK_MIN_IDLE_MS + 1_000;
-    h.setAfk({ channels: AFK_SET, pending: null });
-    h.setAfk({ channels: AFK_SET, pending: move() });
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 2 }) });
     await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, GENV, AFK_CH]));
   });
 
@@ -443,6 +444,43 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     expect(g.started).toHaveLength(1);
     expect(g.v.session).toBe(general);
     expect(general.leave).not.toHaveBeenCalled();
+  });
+
+  it('a second sweep in the same community moves again, exactly once (fix round 3, R-AFK4 / N-2)', async () => {
+    const h = harness();
+    // Move 1.
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 1 }) });
+    await waitFor(() => expect(h.v.session).toBe(h.sessions[0]));
+    // The person joins General in that community; the client's snapshot still says pending (no notify at admission).
+    const general = await h.joined(GENV);
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 1 }) });
+    // They idle past the timeout; sweep 2 cuts them, and its re-read lands pending=1 again: true to true, no null.
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 1 }) });
+    await waitFor(() => expect(general.leave).toHaveBeenCalledWith('removed'));
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 2 }) });
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, GENV, AFK_CH]));
+    expect(h.started[2].opts.listenOnly).toBe(true);
+    // The same read again: no third move.
+    h.setAfk({ channels: AFK_SET, pending: { ...move({ seq: 2 }) } });
+    await flush();
+    expect(h.started).toHaveLength(3);
+  });
+
+  it('two re-reads that say pending with no cut in between do not move twice (fix round 3, R-AFK4)', async () => {
+    const h = harness();
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 1 }) });
+    await waitFor(() => expect(h.v.session).toBe(h.sessions[0]));
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    // Already in the AFK call: each new read is a no-op.
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 2 }) });
+    await flush();
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 3 }) });
+    await flush();
+    expect(h.started).toHaveLength(1);
+    expect(h.sessions[0].leave).not.toHaveBeenCalled();
+    expect(h.v.session).toBe(h.sessions[0]);
   });
 
   it('the move is announced once', async () => {

@@ -30,23 +30,24 @@ describe('Controller', () => {
     const w = world();
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
     w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
     w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
     expect(w.last(key)).toBeNull();
     w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: false });
     w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
     w.gateway.emit({ type: 'ready', info: READY_INFO });
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false, occupants: [] }));
   });
   it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
     const w = world();
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false });
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
-    const before = { channelId: null, timeoutSeconds: 300, pending: false, occupants: [] };
-    await vi.waitFor(() => expect(w.last(key)).toEqual(before));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), pending: false }));
+    const before = w.last(key);
     const nulls = () => w.posted.filter((m) => m.t === 'slice' && m.name === key && m.value === null).length;
     const nullsBefore = nulls();
     let land: (v: { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }) => void = () => undefined;
@@ -58,7 +59,42 @@ describe('Controller', () => {
     expect(w.last(key)).toEqual(before);
     expect(nulls()).toBe(nullsBefore);
     land({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+  });
+  it('every landed AFK read gets a higher seq, also when it says the same (R-AFK4)', async () => {
+    const w = world();
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: true });
+    await toReady(w);
+    const key = `afk:${toHex(COMMUNITY)}` as const;
+    await vi.waitFor(() => expect(w.last<{ seq?: number }>(key)?.seq).toBeGreaterThan(0));
+    const first = w.last<{ seq: number; pending: boolean }>(key)!;
+    w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
+    await vi.waitFor(() => expect(w.last<{ seq: number }>(key)?.seq).toBeGreaterThan(first.seq));
+    expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), pending: true });
+  });
+  it('a held snapshot with no AFK pointer is unknown before a re-read publishes the channels (fix round 3, N-3)', async () => {
+    const w = world();
+    const AFK = new Uint8Array(16).fill(0x61);
+    await toReady(w);
+    const key = `afk:${toHex(COMMUNITY)}` as const;
+    const channelsKey = `channels:${toHex(COMMUNITY)}`;
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null }));
+    // A later ensure made the built-in AFK channel; the op 54 re-read lists it before its AFK read lands.
+    w.routes.listChannels.mockResolvedValue([
+      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
+      { id: AFK, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'AFK', topic: '', position: 2 ** 30, slowmode: 0, seq: 0n, textGroupId: null },
+    ]);
+    let land: (v: { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }) => void = () => undefined;
+    w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+    w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
+    await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(AFK))).toBe(true));
+    // Whenever the list naming AFK was published, the snapshot the page held for the community was null (unknown).
+    const listedAt = w.posted.findIndex((m) => m.t === 'slice' && m.name === channelsKey
+      && (m.value as ChannelSummary[]).some((c) => c.id === toHex(AFK)));
+    const afkBefore = w.posted.slice(0, listedAt).filter((m): m is SliceMessage => m.t === 'slice' && m.name === key).at(-1);
+    expect(afkBefore?.value).toBeNull();
+    land({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(AFK) }));
   });
   it('a failed AFK read retries at 1 s, 2 s, 4 s … until it lands (R-AFK3 b)', async () => {
     const w = world();
@@ -78,7 +114,7 @@ describe('Controller', () => {
       expect(calls()).toBe(3);
       await vi.advanceTimersByTimeAsync(4_000);
       expect(calls()).toBe(4);
-      await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+      await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
       // Landed: no more reads.
       await vi.advanceTimersByTimeAsync(120_000);
       expect(calls()).toBe(4);

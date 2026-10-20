@@ -201,6 +201,10 @@ export interface SlowState { until: number; queued: boolean }
  *  this device and it has not joined yet. */
 export interface AFKState {
   channelId: string | null; timeoutSeconds: number; pending: boolean;
+  /** web3.9 R-AFK4: rises with every landed read (one counter for the worker's life), so each read that says `pending`
+   *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
+   *  leave it out. */
+  seq?: number;
   /** @deprecated always empty since web3.9; WEB-AFK deletes it with its last reader. */
   occupants: readonly { userId: string; deviceId: string }[];
 }
