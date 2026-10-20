@@ -519,11 +519,13 @@ jobs:
       - run: npm run test:e2e:core:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      # web-3 task 10: VOICE-E2E. Headless Firefox needs an audio server, or every AudioContext stays suspended.
+      # Web3.9 CI2: before the web suite too, whose afk and layout specs place calls (a suspended context reads
+      # no level, so the fake microphone's tone counts as speech and an idle desktop is never moved).
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # web-3 task 10: VOICE-E2E. Headless Firefox needs an audio server, or every AudioContext stays suspended.
-      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit

@@ -304,10 +304,10 @@ jobs:
       - run: npm run test:e2e:core:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
@@ -1224,6 +1224,19 @@ test('firefox-web must start an audio server before the voice suite', () => {
   assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
 });
 
+// Web3.9 CI2: the web suite has calls too (afk.spec's idle move, the layout's AFK preview). Without the audio server
+// Firefox's AudioContext stays suspended, so a fake microphone's tone reaches no local meter and counts as speech.
+test('firefox-web must start an audio server before the web suite', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const web = '      - run: npm run test:e2e:web:firefox -w @dilla/e2e\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
+  const late = body.replace(audio, '').replace(voice, audio + voice);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server must start before the web suite')), problems.join('\n'));
+});
+
 // Web-3 task 10 (review M10): the voice rules match steps, so a comment never satisfies them, and the voice step's own
 // env is required.
 for (const engine of ['chromium', 'firefox']) {
@@ -1251,8 +1264,8 @@ test('a comment naming the audio server above the voice step does not stand in f
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
   const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
   const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  assert.ok(body.includes(audio + voice + env), 'fixture sanity: the audio server, then the voice suite');
-  const sneaky = body.replace(audio + voice + env, `      # sh scripts/ci-audio-server.sh\n${voice}${env}${audio}`);
+  assert.ok(body.includes(audio) && body.includes(voice + env), 'fixture sanity: the audio server, then the voice suite');
+  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice + env, `${voice}${env}${audio}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
   assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
   const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');

@@ -619,6 +619,10 @@ function checkVoiceSteps(jobs, problems) {
     const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
     if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
     else if (voiceAt >= 0 && audioAt > voiceAt) problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
+    // Web3.9 CI2: the web suite places calls too (afk.spec's idle move, the layout's AFK preview), so it needs the
+    // running AudioContext as well: suspended, a fake microphone's tone reaches no local meter and counts as speech.
+    const webAt = steps.findIndex((s) => s[0] === `run: npm run test:e2e:web:${engine} -w @dilla/e2e`);
+    if (audioAt >= 0 && webAt >= 0 && audioAt > webAt) problems.push(`ci.yml: ${job} audio server must start before the web suite`);
   }
 }
 
