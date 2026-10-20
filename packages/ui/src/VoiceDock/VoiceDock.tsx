@@ -27,6 +27,9 @@ export interface VoiceDockProps {
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
    *  `!canCamera` stands for it. */
   paused?: boolean;
+  /** A listen-only call (the AFK channel), as CallControls' `listenReason`: camera and share are aria-disabled and give
+   *  this reason (`afk.stage.muted`) in place of `labels.why`. */
+  listenReason?: string;
   /** Not drawn since web3.9 (R26). */
   shortcuts?: { mute: string; deafen: string };
   /** The latest polite announcement (join, leave, mute, deafen, the end of a pause, the outgoing ring); '' for none. */
@@ -80,10 +83,11 @@ const PHASE_GLYPH = {
  * region announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
-  phase, where, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
+  phase, where, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, listenReason,
   announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
-  const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
+  const why = listenReason !== undefined ? { camera: listenReason, share: listenReason }
+    : voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
   const bar = useIconToolbar();
   const text = {
@@ -98,8 +102,8 @@ export function VoiceDock({
       <span className="d-voice-dock__text">{text}</span>
     </>
   );
-  const cameraInert = busy || !canCamera;
-  const shareInert = busy || !canShare;
+  const cameraInert = busy || !canCamera || listenReason !== undefined;
+  const shareInert = busy || !canShare || listenReason !== undefined;
   return (
     <div className="d-voice-dock" data-phase={phase}>
       <div className="d-voice-dock__status">

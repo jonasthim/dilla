@@ -70,6 +70,30 @@ describe('voice in the shell', () => {
     for (const person of people) expect(person.querySelector('[data-state="muted"]')).not.toBeNull();
   });
 
+  it('final review I-2: in the AFK call the dock\u2019s camera and share are disabled with the stage\u2019s AFK reason', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    const dock = within(await screen.findByRole('toolbar', { name: t('voice.dock.region') }));
+    for (const name of ['camera', 'share screen']) {
+      const control = dock.getByRole('button', { name });
+      expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(control).toHaveAccessibleDescription(t('afk.stage.muted', { channel: 'music' }));
+      await app.user.click(control);
+    }
+    expect(app.session.setCamera).not.toHaveBeenCalled();
+    expect(dock.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('final review I-2 control: in an ordinary call the dock\u2019s camera is live', async () => {
+    await inVoice();
+    const dock = within(screen.getByRole('toolbar', { name: t('voice.dock.region') }));
+    expect(dock.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
   it('an ordinary voice call keeps its controls live and shows no muted-for-everyone line (control)', async () => {
     const app = await inVoice();
     expect(main().queryByText(t('afk.stage.muted', { channel: 'general' }))).toBeNull();
