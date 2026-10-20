@@ -177,4 +177,20 @@ describe('SearchPalette', () => {
       expect(css).toMatch(/\.d-search-palette-dialog::backdrop \{[^}]*background: color-mix/);
     });
   });
+  // J1: a result names its place, its author and its time, and a footer lists the three keys.
+  it('shows #channel, author and time on a result, and a KeyHint footer', async () => {
+    const withMeta = [{ id: 'm1', snippet: 'lamp one', location: '#general', author: 'Mira', time: '14:02' }, { id: 'm2', snippet: 'lamp two', location: 'Ada' }];
+    const hinted = { ...labels, hints: { move: 'to move', open: 'to open', close: 'to close' } };
+    const view = render(<SearchPalette open query="lamp" scope="all" hits={withMeta} labels={hinted} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />);
+    const first = screen.getByRole('option', { name: /lamp one/ });
+    expect(first).toHaveTextContent('#general');
+    expect(first).toHaveTextContent('Mira');
+    expect(first).toHaveTextContent('14:02');
+    expect(screen.getByRole('option', { name: /lamp two/ })).not.toHaveTextContent('Mira');
+    const foot = view.container.querySelector('.d-search-palette__hints')!;
+    expect(Array.from(foot.querySelectorAll('.d-keyhint')).map(k => k.textContent)).toEqual(['↑↓to move', '↵to open', 'escto close']);
+    // The footer carries the esc hint, so the Close button does not repeat it.
+    expect(screen.getByRole('button', { name: labels.close })).not.toHaveTextContent('esc');
+    await expectNoAxeViolations(view.container);
+  });
 });

@@ -662,6 +662,24 @@ it('publishes channel destinations for community and DM hits and drops unknown g
     { rank: 0n, groupId: ORPHAN_GROUP, seq: 3n }, 50);
 });
 
+// J1: a hit carries who wrote the row and when, read from the stored row; a row the core cannot find leaves both out.
+it('adds the author and the time of the stored row to a search hit', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.state.rows = [strangerRow(1)];
+  w.core.search.mockReturnValueOnce([
+    { groupId: GROUP, seq: 1n, snippet: 'known', rank: 0n, threadRoot: null },
+    { groupId: GROUP, seq: 9n, snippet: 'unread', rank: 0n, threadRoot: null },
+  ]);
+  w.call(997, { m: 'search', scope: 'all', id: null, query: 'a', cursor: null });
+  await vi.waitFor(() => expect(w.ret(997)).toMatchObject({ ok: true }));
+  const hits = w.last<{ hits: { seq: string; author?: string; ts?: number }[] }>('search')?.hits ?? [];
+  expect(hits[0]).toMatchObject({ seq: '1', ts: 1_700_000_000, author: toHex(STRANGER).slice(0, 8) });
+  expect(hits[1]).not.toHaveProperty('ts');
+  expect(hits[1]).not.toHaveProperty('author');
+});
+
 // Ruling (c) of 2026-10-13: the unlisted and validated-Remove Privacy states are derived in the worker from what the core
 // already answers (pendingLeaves reasons, deviceListIngest's quarantine count and verdict codes); no group id reaches the page.
 const STRANGER_UMK = new Uint8Array(32).fill(0xbb);

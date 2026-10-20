@@ -86,3 +86,11 @@ it('lists each contact as one settings row', () => {
   expect(rows[0].querySelector('.d-settings-row__control')).toContainElement(screen.getByRole('button', { name: 'Compare with Ada' }));
   expect(rows[1].querySelector('.d-settings-row__label')).toHaveTextContent('Bo');
 });
+
+// I7: Compare is a ghost button; the changed contact's alert holds the one accent action.
+it('draws every Compare as a ghost button', () => {
+  const records = [{ userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: true, changedUmk: null },
+    { userId: 'cc'.repeat(16), name: 'Mira', shared: true, umk: 'dd'.repeat(32), firstSeen: 1, verified: false, changedUmk: null }];
+  render(<Privacy records={records} onCompare={vi.fn()} />);
+  for (const name of ['Compare with Ada', 'Compare with Mira']) expect(screen.getByRole('button', { name })).toHaveAttribute('data-variant', 'ghost');
+});

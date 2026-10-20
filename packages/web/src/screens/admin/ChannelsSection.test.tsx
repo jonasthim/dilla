@@ -296,13 +296,15 @@ describe('private channels in the channels tab', () => {
   });
 });
 
-// I6, R39: edit and delete are icon actions in two trailing slots; the AFK row has edit and no delete, and the slot stays reserved.
+// I6, R39: move up, move down, edit and delete are icon actions in four trailing slots; the AFK row has edit and no delete, and the slot stays reserved.
 describe('the channel row actions', () => {
-  it('draws edit and delete as icon buttons in two trailing slots per row', () => {
+  it('draws move up, move down, edit and delete as icon buttons in four trailing slots per row', () => {
     setup();
     const row = screen.getByRole('button', { name: 'edit lobby' }).closest('li') as HTMLElement;
-    expect(row.querySelectorAll('.d-slot')).toHaveLength(2);
-    expect(within(row).getByRole('button', { name: 'edit lobby' }).querySelector('svg')).not.toBeNull();
+    expect(row.querySelectorAll('.d-slot')).toHaveLength(4);
+    for (const name of ['move lobby up', 'move lobby down', 'edit lobby']) expect(within(row).getByRole('button', { name }).querySelector('svg')).not.toBeNull();
+    // I6: the moves have no text label of their own.
+    expect(within(row).getByRole('button', { name: 'move lobby down' })).toHaveTextContent('');
     expect(within(row).getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
   });
   it('gives the AFK channel an edit and no delete, keeping the slot', () => {
@@ -316,7 +318,7 @@ describe('the channel row actions', () => {
     </CoreProvider></div>);
     const afk = screen.getByRole('button', { name: 'edit General voice' }).closest('li') as HTMLElement;
     expect(within(afk).queryByRole('button', { name: 'delete General voice' })).toBeNull();
-    expect(afk.querySelectorAll('.d-slot')).toHaveLength(2);
+    expect(afk.querySelectorAll('.d-slot')).toHaveLength(4);
     expect(screen.getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
   });
 });

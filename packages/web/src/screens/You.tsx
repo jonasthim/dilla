@@ -11,7 +11,7 @@ import { PresencePicker } from './PresencePicker.tsx';
 
 const CHEVRON = 'chevron-right';
 const SECTION_ICON: Record<SettingsSection, IconName> = {
-  devices: 'server', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'check', keyboard: 'hash', diagnostics: 'activity',
+  devices: 'monitor-smartphone', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'shield', keyboard: 'keyboard', diagnostics: 'activity',
 };
 
 /**
@@ -66,7 +66,7 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
           </li>
         ))}
       </ul>
-      <div className="dw-you__signout"><SignOutAction /></div>
+      <div className="dw-you__signout"><SignOutAction icon /></div>
     </div>
   );
 }

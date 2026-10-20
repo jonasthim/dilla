@@ -3846,9 +3846,14 @@ export class Controller {
       }
       const rows = hits.slice(0, 50).flatMap((h) => {
         const destination = destinations.get(toHex(h.groupId));
-        return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
+        if (destination === undefined) return [];
+        // J1: the row's sender and time, so the palette can show them; a row that cannot be read leaves both out.
+        const found = this.rowAt(this.requireCore(), h.groupId, h.seq);
+        const who = found?.row.senderUser ?? null;
+        return [{ ...destination, seq: h.seq.toString(),
           snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString(),
-          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot) }];
+          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot),
+          ...(found === null ? {} : { ts: Number(found.row.recvTs), ...(who === null ? {} : { author: this.nameOf(toHex(who)) }) }) }];
       });
       const last = hits.at(-1);
       if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,

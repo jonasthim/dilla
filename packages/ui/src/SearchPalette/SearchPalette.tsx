@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { KeyHint } from '../KeyHint/KeyHint.tsx';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SearchPalette.css';
 
@@ -7,8 +8,10 @@ export type SearchPaletteProps = {
   open: boolean;
   query: string;
   scope: 'channel' | 'community' | 'all';
-  hits: readonly { id: string; snippet: string; location: string }[];
-  labels: { search: string; empty: string; close: string; scope: { channel: string; community: string; all: string } };
+  /** `location` is the shown place (`#general`); `author` and `time` are optional and left out of the row when unknown (J1). */
+  hits: readonly { id: string; snippet: string; location: string; author?: string; time?: string }[];
+  /** `hints` are the footer's three phrases (J1): "to move", "to open", "to close"; with none given there is no footer. */
+  labels: { search: string; empty: string; close: string; scope: { channel: string; community: string; all: string }; hints?: { move: string; open: string; close: string } };
   /** A status that replaces the empty text, such as a picked hit that is no longer available. */
   status?: string;
   /** True: a desktop palette is a modal native dialog with a scrim, focus moves in on open and back to the opener on close (R-S4). Default: the inline section. */
@@ -74,9 +77,16 @@ export function SearchPalette({ open, query, scope, hits, labels, status, modal 
       aria-controls={options.length ? listId : undefined} aria-activedescendant={options.length ? options[activeIndex].id : undefined}
       value={query} onChange={event => { setActive(0); onQuery(event.target.value); }} onKeyDown={handleInputKey} />
     <div className="d-search-palette__scopes">{(['channel', 'community', 'all'] as const).map(item => <button type="button" key={item} aria-pressed={scope === item} onClick={() => onScope(item)}>{labels.scope[item]}</button>)}</div>
-    {options.length ? <div id={listId} role="listbox" aria-label={labels.search}>{options.map((hit, index) => <div role="option" id={hit.id} key={hit.id} aria-selected={index === activeIndex} onClick={() => pick(hit.id)}>{hit.snippet}<small>{hit.location}</small></div>)}</div> : null}
+    {options.length ? <div id={listId} role="listbox" aria-label={labels.search}>{options.map((hit, index) => <div role="option" id={hit.id} key={hit.id} aria-selected={index === activeIndex} onClick={() => pick(hit.id)}>
+      <span className="d-search-palette__meta"><span className="d-search-palette__where">{hit.location}</span>{hit.author ? <span className="d-search-palette__author">{hit.author}</span> : null}{hit.time ? <span className="d-search-palette__time">{hit.time}</span> : null}</span>
+      <span className="d-search-palette__snippet">{hit.snippet}</span></div>)}</div> : null}
     <div className="d-search-palette__status" role="status" aria-live="polite">{text}</div>
-    <Button variant="ghost" keyHint="esc" className="d-search-palette__close" onClick={onClose}>{labels.close}</Button>
+    <div className="d-search-palette__foot">
+      {labels.hints && !phone ? <div className="d-search-palette__hints">
+        <KeyHint keys={['↑', '↓']} label={labels.hints.move} /><KeyHint keys={['↵']} label={labels.hints.open} /><KeyHint keys={['esc']} label={labels.hints.close} />
+      </div> : null}
+      <Button variant="ghost" {...(labels.hints ? {} : { keyHint: 'esc' })} className="d-search-palette__close" onClick={onClose}>{labels.close}</Button>
+    </div>
   </section>;
   if (!asDialog) return palette;
   // Escape is handled on the section (it also covers IME composition); the native cancel is the fallback (a back gesture). A click on the scrim closes.

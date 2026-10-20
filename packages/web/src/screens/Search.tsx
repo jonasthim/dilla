@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { SearchPalette } from '@dilla/ui';
 import { usePhoneLayout } from '../layout.ts';
 import { t } from '../strings/index.ts';
+import { messageTime } from './shell-model.ts';
 
-export interface SearchHitView { id: string; channelId: string; communityId: string | null; seq: string; snippet: string; location: string }
+export interface SearchHitView { id: string; channelId: string; communityId: string | null; seq: string; snippet: string; location: string; author?: string; ts?: number }
 export interface SearchProps {
   open: boolean; query: string; scope: 'channel' | 'community' | 'all'; requestId: number; currentRequestId: number;
   hits: readonly SearchHitView[]; onQuery: (query: string) => void; onScope: (scope: 'channel' | 'community' | 'all') => void;
@@ -47,12 +48,16 @@ export function Search(p: SearchProps): React.JSX.Element | null {
     if (await p.onPick(hit)) p.onClose();
     else { setUnavailable(true); document.querySelector<HTMLInputElement>(`.d-search-palette ${TEXTBOX}`)?.focus(); }
   };
-  const palette = <SearchPalette open modal={!phone} query={p.query} scope={p.scope} hits={hits} onQuery={value => { setUnavailable(false); p.onQuery(value); }}
+  const now = Date.now();
+  // J1: a channel hit names its place with the hash; a conversation keeps the person's name.
+  const rows = hits.map(hit => ({ id: hit.id, snippet: hit.snippet, location: hit.communityId === null ? hit.location : `#${hit.location}`,
+    ...(hit.author === undefined ? {} : { author: hit.author }), ...(hit.ts === undefined ? {} : { time: messageTime(hit.ts, now) }) }));
+  const palette = <SearchPalette open modal={!phone} query={p.query} scope={p.scope} hits={rows} onQuery={value => { setUnavailable(false); p.onQuery(value); }}
     onScope={p.onScope} onPick={id => { void pick(id); }} onClose={p.onClose}
     status={unavailable ? t('search.unavailable') : undefined}
     labels={{ search: t('search.placeholder'), empty: !current || p.loading === true ? t('search.loading')
       : p.query.trim() === '' ? '' : p.scope === 'all' ? t('search.empty') : t('search.noResults'),
-      close: t('dialog.close'), scope: { channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all') } }} />;
+      close: t('dialog.close'), hints: { move: t('layout.search.hint.move'), open: t('layout.search.hint.open'), close: t('layout.search.hint.close') }, scope: { channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all') } }} />;
   if (!phone) return palette;
   return <dialog ref={root} className="dw-search" aria-label={t('search.placeholder')}
     onCancel={event => { event.preventDefault(); p.onClose(); }}>{palette}</dialog>;

@@ -14,8 +14,8 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT,
-  TEST_TIMEOUT, WAIT, channelRow, channelsNav, completeSignUp, copy, dmsNav, escapeRegExp, expectComposerReady, homeTile, makeInviteLink, newAccount, railItem, railNav,
-  sendText, signIn, signUp, test, type Account,
+  TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
+  sendText, settingsDialog, signIn, signUp, test, type Account,
 } from './support/app';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { PROFILE_ROOT } from './support/persistent';
@@ -837,6 +837,161 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
       expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
       expect.soft(tabs.y - controls.b, 'D4 the controls do not sink into the tab bar').toBeGreaterThanOrEqual(-TOL);
     }
+  } finally {
+    await second.close();
+    rmSync(secondDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------
+// web3.9 FA4 (AUDIT-2 J1, H5, H6, I6, I7): search results with #channel, author and time and a KeyHint footer; the You tab's icons
+// with sign out; no repeated title in a phone's settings view; the admin reorder as arrow icon buttons with truncated names; privacy
+// "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
+
+const THEMES = ['mesh', 'light', 'high-contrast'] as const;
+async function expectAccessibleInThemes(page: Page, state: string): Promise<void> {
+  const before = await page.evaluate(() => document.documentElement.dataset.theme ?? '');
+  try {
+    for (const theme of THEMES) {
+      await page.evaluate(t => { document.documentElement.dataset.theme = t; }, theme);
+      await expectAccessible(page, `${state} in the ${theme} theme`);
+    }
+  } finally { await page.evaluate(t => { if (t === '') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }, before); }
+}
+
+test('FA4: search rows, You icons, phone settings title, channel reorder and privacy Compare', async ({ page, playwright, browserName, launchOptions, headless, channel }, testInfo) => {
+  const h = started();
+  const CHAN = 'raid-planning-for-the-bridge-troll-and-the-long-winter-campaign';
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Cleo', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  await makeCategory(page, PLAN);
+  await makeChannelIn(page, PLAN, 'text', CHAN);
+  await makeChannelIn(page, PLAN, 'text', 'second');
+  await channelRow(page, 'general').click();
+  await expectComposerReady(page, 'general');
+  await sendText(page, 'general', 'lamp from Cleo');
+  const link = await makeInviteLink(page, SERVER);
+  const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
+  try {
+    const mira = second.pages()[0] ?? (await second.newPage());
+    await mira.goto(new URL(link).pathname);
+    const openLink = mira.getByRole('link', { name: 'Open dilla in this browser', exact: true });
+    await expect(openLink).toBeVisible({ timeout: WAIT });
+    await openLink.click();
+    await completeSignUp(mira, newAccount(FRIEND, h.control), instance);
+    await railItem(mira, SERVER).click();
+    await channelRow(mira, 'general').click();
+    await expectComposerReady(mira, 'general');
+    await sendText(mira, 'general', 'lamp from Mira');
+    await expect(page.getByRole('log').getByText('lamp from Mira')).toBeVisible({ timeout: WAIT });
+
+    // J1: each result names #channel, author and time; a footer lists the three keys; the palette is at most 40rem.
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: copy('search.placeholder'), exact: true }).fill('lamp');
+    const mine = page.getByRole('option', { name: /lamp from Mira/ });
+    await expect(mine).toBeVisible({ timeout: WAIT });
+    await attempt('J1 search result', async () => {
+      const text = (await mine.innerText()).replace(/\s+/g, ' ');
+      expect.soft(text, 'J1 the result names its channel with a hash').toContain('#general');
+      expect.soft(text, 'J1 the result names its author').toContain(FRIEND);
+      expect.soft(text, 'J1 the result shows a time').toMatch(/\d{1,2}:\d{2}/);
+      const own = (await page.getByRole('option', { name: /lamp from Cleo/ }).innerText()).replace(/\s+/g, ' ');
+      expect.soft(own, 'J1 the own result names its author').toContain('Cleo');
+      const hints = await boxes(page, '.d-search-palette__hints .d-keyhint');
+      expect.soft(hints.map(k => k.t), 'J1 the footer lists the three keys').toEqual([`↑↓${copy('layout.search.hint.move')}`, `↵${copy('layout.search.hint.open')}`, `esc${copy('layout.search.hint.close')}`]);
+      const list = (await boxes(page, '.d-search-palette [role="listbox"]'))[0];
+      const dialog = (await boxes(page, '.d-search-palette'))[0];
+      expect.soft(hints.length > 0 && list !== undefined && hints[0].y >= list.b - TOL, 'J1 the footer stands under the results').toBe(true);
+      expect.soft(dialog?.w ?? 999, 'J1 the palette is at most 40rem (640)').toBeLessThanOrEqual(640 + TOL);
+      const meta = (await boxes(page, '.d-search-palette__meta'))[0];
+      expect.soft(meta !== undefined && meta.h < 24, `J1 the meta line is one line (${String(meta?.h)})`).toBe(true);
+    });
+    await expectAccessibleInThemes(page, 'the search palette with results');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog.d-search-palette-dialog')).toBeHidden({ timeout: WAIT });
+
+    // I6: move up/down are 32px arrow icon buttons in trailing slots; one right edge; the long name is cut to one line.
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    const admin = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.channels'), exact: true }).click();
+    await expect(admin.locator('.dw-admin-row').first()).toBeVisible({ timeout: WAIT });
+    await attempt('I6 channel reorder', async () => {
+      expect.soft(await admin.locator('[data-move$=":up"]').count(), 'I6 a move-up control per channel and category').toBeGreaterThan(2);
+      for (const kind of ['up', 'down']) {
+        const all = await boxes(page, `[data-move$=":${kind}"]`, '.d-settings-frame__body');
+        for (const b of all) { expectAt(`I6 move ${kind} is 32 wide`, b.w, 32, 0.5); expectAt(`I6 move ${kind} is 32 high`, b.h, 32, 0.5); }
+        const glyphs = await admin.locator(`[data-move$=":${kind}"] svg`).count();
+        expect.soft(glyphs, `I6 every move ${kind} is an icon`).toBe(all.length);
+      }
+      expect.soft(await admin.locator('[data-move]').evaluateAll(els => els.map(e => (e.textContent ?? '').trim()).filter(Boolean)), 'I6 the moves carry no visible text').toEqual([]);
+      const rows = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
+      expectOne('I6 every channel row is as high as the others', rows.map(b => b.h), rows.map(b => b.t));
+      expect.soft(rows[0]?.h ?? 99, 'I6 the long-named row is 44 high, not wrapped').toBeLessThanOrEqual(44.5);
+      const trail = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
+      expectOne('I6 the trailing icons share one right edge', trail.map(b => b.r), trail.map(b => b.t));
+      // The longest name fits a wide dialog; at a phone's width it must be cut to one line, with the row still 44 high.
+      await page.setViewportSize({ width: 390, height: 844 });
+      const name = admin.locator('.dw-admin-row .dw-admin-name', { hasText: CHAN });
+      await expect.poll(() => name.evaluate(e => e.scrollWidth > e.clientWidth), { message: 'I6 the long name is cut at 390', timeout: WAIT }).toBe(true);
+      const cut = await name.evaluate(e => ({ h: e.getBoundingClientRect().height, ellipsis: getComputedStyle(e).textOverflow, ws: getComputedStyle(e).whiteSpace, row: e.closest('.dw-admin-row')?.getBoundingClientRect().height ?? 0 }));
+      expect.soft(cut.h, 'I6 the long name is one line high at 390').toBeLessThan(26);
+      const rowsPhone = await boxes(page, '.dw-admin-row', '.d-settings-frame__body');
+      expectOne('I6 every channel row is as high as the others at 390 (one line each)', rowsPhone.map(b => b.h), rowsPhone.map(b => b.t));
+      expect.soft(cut.row, 'I6 the long-named row is one line plus the 44 slots (<= 54) at 390').toBeLessThanOrEqual(54);
+      expect.soft(cut.ellipsis === 'ellipsis' && cut.ws === 'nowrap', `I6 the long name is cut with an ellipsis (${JSON.stringify(cut)})`).toBe(true);
+      const trailPhone = await boxes(page, '.dw-admin-row .d-manage-list__trail', '.d-settings-frame__body');
+      expectOne('I6 the trailing icons share one right edge at 390', trailPhone.map(b => b.r), trailPhone.map(b => b.t));
+      await page.setViewportSize({ width: 1440, height: 900 });
+    });
+    await expectAccessibleInThemes(page, 'the admin channel list');
+    await page.keyboard.press('Escape');
+    await expect(admin).toBeHidden({ timeout: WAIT });
+
+    // I7: every Compare is a ghost button; at most one accent action in the section.
+    const settings = await openSettings(page, 'privacy');
+    const compare = settings.getByRole('button', { name: copy('privacy.compare', { name: FRIEND }), exact: true });
+    await expect(compare).toBeVisible({ timeout: WAIT });
+    await attempt('I7 privacy compare', async () => {
+      expect.soft(await compare.getAttribute('data-variant'), 'I7 Compare is a ghost button').toBe('ghost');
+      expect.soft(await settings.locator('.dw-settings-section [data-variant="accent"]').count(), 'I7 at most one accent action in the section').toBeLessThanOrEqual(1);
+      const look = await compare.evaluate(e => ({ bg: getComputedStyle(e).backgroundColor, h: e.getBoundingClientRect().height }));
+      expect.soft(look.bg, 'I7 a ghost button has no fill').toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+      expect.soft(look.h, 'I7 Compare is one line high').toBeLessThanOrEqual(44);
+    });
+    await expectAccessibleInThemes(page, 'privacy');
+    await closeSettings(page);
+
+    // H6 and H5 on a phone: the You tab has an icon per row, including sign out; a settings view repeats no title.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
+    await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
+    await expect(page.locator('[data-settings-section]').first()).toBeVisible({ timeout: WAIT });
+    await attempt('H6 You icons', async () => {
+      const rowIcons = await boxes(page, '[data-settings-section] > svg:first-child');
+      const rowCount = await page.locator('[data-settings-section]').count();
+      expect.soft(rowIcons.length, 'H6 every settings row has a leading icon').toBe(rowCount);
+      const out = (await boxes(page, '.dw-you__signout svg'))[0];
+      expect.soft(out !== undefined, 'H6 sign out has an icon').toBe(true);
+      expectOne('H6 the icons share one left x, sign out included', [...rowIcons.map(b => b.x), ...(out === undefined ? [] : [out.x])], [...rowIcons.map(b => b.t || 'row'), 'sign out']);
+      const shapes = await page.locator('[data-settings-section] > svg:first-child').evaluateAll(els => els.map(e => e.innerHTML));
+      expect.soft(new Set(shapes).size, 'H6 each row has its own icon').toBe(shapes.length);
+    });
+    await expectAccessibleInThemes(page, 'the You tab');
+    await page.locator('[data-settings-section="privacy"]').click();
+    const phoneSettings = settingsDialog(page);
+    await expect(phoneSettings).toBeVisible({ timeout: WAIT });
+    await attempt('H5 phone settings title', async () => {
+      const headings = await boxes(page, 'h1, h2', '.d-settings-frame');
+      expect.soft(headings.filter(b => b.w > 2 && b.h > 2).map(b => b.t), 'H5 only the PhoneHeader title is drawn as a heading').toHaveLength(1);
+    });
+    await expectAccessibleInThemes(page, 'a phone settings view');
   } finally {
     await second.close();
     rmSync(secondDir, { recursive: true, force: true });

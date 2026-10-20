@@ -7,6 +7,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx';
 import { ChannelEditFlow } from './ChannelEditFlow.tsx';
+import './ChannelsSection.css';
 import { useRun, type SectionProps } from './shared.ts';
 
 const byOrder = (a: ChannelSummary, b: ChannelSummary): number => a.position - b.position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -87,15 +88,15 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
     }).finally(() => { moving.current = false; });
   };
 
-  // I6: edit and delete are icon actions in two fixed trailing slots (the ManageList grammar); the AFK row is `fixed`, so its delete slot
-  // stays empty and the edit icons keep one right edge. Moving a row up or down stays a text action, as before.
+  // I6: move up, move down, edit and delete are icon actions in four fixed trailing slots (the ManageList grammar); the AFK row is `fixed`,
+  // so its delete slot stays empty and the icons keep one right edge. A long name is cut to one line (the full name is its title).
   const afkId = useSlice(`afk:${communityId}`)?.channelId ?? null;
   const controls = (c: ChannelSummary, index: number, siblings: number) => (
     <span className="d-manage-list__trail">
-      <Button variant="ghost" data-move={`${c.id}:up`} aria-label={t('admin.channels.upLabel', { name: c.name })} disabled={index === 0}
-        onClick={() => move(c, 'up')}>{t('admin.channels.up')}</Button>
-      <Button variant="ghost" data-move={`${c.id}:down`} aria-label={t('admin.channels.downLabel', { name: c.name })} disabled={index === siblings - 1}
-        onClick={() => move(c, 'down')}>{t('admin.channels.down')}</Button>
+      <TrailingSlot><IconButton icon="arrow-up" label={t('admin.channels.upLabel', { name: c.name })} data-move={`${c.id}:up`} disabled={index === 0}
+        onClick={() => move(c, 'up')} /></TrailingSlot>
+      <TrailingSlot><IconButton icon="arrow-down" label={t('admin.channels.downLabel', { name: c.name })} data-move={`${c.id}:down`} disabled={index === siblings - 1}
+        onClick={() => move(c, 'down')} /></TrailingSlot>
       <TrailingSlot><IconButton icon="square-pen" label={t('admin.channels.editLabel', { name: c.name })} onClick={() => setTarget({ kind: 'edit', id: c.id })} /></TrailingSlot>
       <TrailingSlot>{c.id === afkId ? null
         : <IconButton icon="x" label={t('admin.channels.deleteLabel', { name: c.name })} onClick={() => setTarget({ kind: 'delete', id: c.id })} />}</TrailingSlot>
@@ -112,13 +113,13 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
       {groups.map((g, gi) => (
         <div key={g.category?.id ?? 'top'} className="dw-admin-group">
           <div className="dw-admin-grouphead d-manage-list__row" data-row>
-            <h3 className="dw-admin-name">{g.category?.name ?? t('admin.channels.noCategory')}</h3>
+            <h3 className="dw-admin-name" title={g.category?.name}>{g.category?.name ?? t('admin.channels.noCategory')}</h3>
             {g.category !== null ? controls(g.category, gi - 1, categories.length) : null}
           </div>
           <ul aria-label={g.category?.name ?? t('admin.channels.noCategory')} className="dw-admin-rows d-manage-list">
             {g.channels.map((c, i) => (
               <li key={c.id} className="dw-admin-row d-manage-list__row" data-row>
-                <span className="dw-admin-name">{shown(c)}</span>
+                <span className="dw-admin-name" title={shown(c)}>{shown(c)}</span>
                 {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
                 {controls(c, i, g.channels.length)}
               </li>

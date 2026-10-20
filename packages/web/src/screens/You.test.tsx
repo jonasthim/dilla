@@ -101,4 +101,14 @@ describe('You', () => {
     expect(screen.getByRole('button', { name: t('devices.signOut') })).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
+  // H6: every row has its own icon, and sign out has log-out.
+  it('gives every settings row a distinct icon, and sign out its own', () => {
+    setup();
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-settings-section]'));
+    expect(rows).toHaveLength(NAV.length);
+    const icons = rows.map(row => row.querySelector('svg')?.innerHTML ?? '');
+    expect(icons.every(svg => svg !== '')).toBe(true);
+    expect(new Set(icons).size).toBe(icons.length);
+    expect(screen.getByRole('button', { name: t('devices.signOut') }).querySelector('svg')).not.toBeNull();
+  });
 });

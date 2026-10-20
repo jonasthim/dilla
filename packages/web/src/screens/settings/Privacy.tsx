@@ -16,7 +16,7 @@ export function Privacy({ records, onCompare }: { records: readonly TrustSummary
       const changed = record.changedUmk !== null || record.blocked === 'E_UMK_CHANGED';
       const comparable = record.changedUmk !== null;
       const unlisted = record.unlisted === true;
-      const compareButton = <Button variant="accent" onClick={compare}>{t('privacy.compare', { name: record.name })}</Button>;
+      const compareButton = <Button variant="ghost" onClick={compare}>{t('privacy.compare', { name: record.name })}</Button>;
       return <li key={record.userId} data-doc-state={changed ? 'trust-changed' : undefined}>
         <SettingsRow id={`trust-${record.userId}`} label={record.name}>
           {/* The alert is for a contact the person can act on here; otherwise the state is plain text (M-04). */}

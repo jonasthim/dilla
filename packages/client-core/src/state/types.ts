@@ -118,7 +118,9 @@ export interface TrustSummary { userId: string; name: string; shared: boolean; u
  */
 export interface SendBlock { code: TrustBlock; own: boolean }
 export type SendBlocksState = Record<string, SendBlock>;
-export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null }[];
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null;
+    /** J1: who wrote the hit and when (unix seconds), read from the stored row; absent when the row cannot be read. */
+    author?: string; ts?: number }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }

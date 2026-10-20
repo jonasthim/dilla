@@ -50,6 +50,8 @@
  *   icons/pin.svg  55e8e5e04bcb671179fc1dd589abf09cf6a1e71301ff14eb739419cfab6011e7
  *   icons/users.svg  eeed488a1ec95ba730dd69996536fb65061d6ea273afb2429ae47e65eebf401c
  *   icons/ellipsis.svg  4f495cc72013ffdfec677f03b33a150f7b4dd741979283fd6853a09024bca112
+ *   icons/arrow-up.svg  8c22c25874c80bb062bef985d207d8f1d4a4d7847237d0a8cf720a3235968518
+ *   icons/arrow-down.svg  2b641c7a59d39450edfed72067fcc9940a1a316a737346af23b4b9103c0689f2
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -69,7 +71,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -307,6 +309,14 @@ export const ICONS = {
     ['circle', { cx: '12', cy: '12', r: '1' }],
     ['circle', { cx: '19', cy: '12', r: '1' }],
     ['circle', { cx: '5', cy: '12', r: '1' }],
+  ],
+  'arrow-up': [
+    ['path', { d: 'm5 12 7-7 7 7' }],
+    ['path', { d: 'M12 19V5' }],
+  ],
+  'arrow-down': [
+    ['path', { d: 'M12 5v14' }],
+    ['path', { d: 'm19 12-7 7-7-7' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

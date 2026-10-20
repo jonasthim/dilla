@@ -280,6 +280,11 @@ describe('SettingsFrame bar and footer (I8, R17)', () => {
     expect(rule(base, '.d-settings-frame[data-layout="phone"] .d-settings-frame__title')).toMatch(/clip-path: inset\(50%\);/);
   });
 
+  // H5: the PhoneHeader is the heading, so the section's own h2 is visually hidden on a phone and kept for its name and focus.
+  it('hides the section heading on a phone, where the PhoneHeader is the heading', () => {
+    expect(rule(css, '.d-settings-frame[data-layout="phone"] .d-settings-frame__body section > h2:first-child')).toMatch(/clip-path: inset\(50%\);/);
+  });
+
   it('a desktop frame has no data-layout', () => {
     render(<SettingsFrame {...props()} />);
     expect(screen.getByRole('dialog', { name: 'Settings' })).not.toHaveAttribute('data-layout');
