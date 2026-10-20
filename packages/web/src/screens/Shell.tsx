@@ -99,7 +99,7 @@ function focusLost(): boolean {
  * top layer first, then focuses its row (the palette's React state follows when the pick resolves).
  */
 function leaveSearchLayer(): void {
-  document.querySelector<HTMLDialogElement>('dialog.dw-search[open]')?.close();
+  document.querySelector<HTMLDialogElement>('dialog.d-search-palette-dialog[open], dialog.dw-search[open]')?.close();
 }
 
 /** Focuses the action of an EmptyState in one pane of the shell; false when there is none. */

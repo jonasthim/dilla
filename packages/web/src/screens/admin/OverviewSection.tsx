@@ -1,10 +1,11 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { Button, Select, TextField } from '@dilla/ui';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Button, Select, SettingsFooter, SettingsRow, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { SERVER_NAME_MAX_BYTES, nameProblem } from '../Create.tsx';
-import { forbidden, refused, statusIs, useRun, type SectionProps } from './shared.ts';
+import { FooterSlot, forbidden, refused, statusIs, useRun, type SectionProps } from './shared.ts';
 
 /** Overview: rename the server. The name is checked as the instance checks it; a 409 means someone changed it meanwhile. */
 export function OverviewSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
@@ -15,6 +16,7 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   const [saved, setSaved] = useState(false);
   // A refusal found before asking the server, and how many refusals of either kind were shown.
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
+  const footerEl = useContext(FooterSlot);
   const action = useRun();
   const afk = useSlice(`afk:${communityId}`);
   const channels = useSlice(`channels:${communityId}`);
@@ -76,17 +78,22 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   return (
     <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} tabIndex={-1}>{t('admin.overview.title')}</h2>
-      <form className="dw-admin-form" noValidate onSubmit={e => { e.preventDefault(); submit(); }}>
-        <TextField id={fieldId} label={t('admin.overview.name')} value={name}
-          onChange={v => { setName(v); setSaved(false); setLocal(null); action.reset(); }} hint={t('admin.overview.hint')}
-          error={error ?? undefined} required autoComplete="off" spellCheck={false} />
-        <div className="dw-settings-actions">
-          <Button type="submit" variant="accent" aria-disabled={action.busy || undefined}>
+      {/* One save bar for the section (R17), drawn into the frame's footer; the button submits this form from there. */}
+      <form id={`${base}-form`} className="dw-overview-form" noValidate onSubmit={e => { e.preventDefault(); submit(); }}>
+        <SettingsRow id={`${base}-name-row`} label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
+          <div className="dw-overview-field">
+            <TextField id={fieldId} label={t('admin.overview.name')} value={name}
+              onChange={v => { setName(v); setSaved(false); setLocal(null); action.reset(); }}
+              error={error ?? undefined} required autoComplete="off" spellCheck={false} />
+          </div>
+        </SettingsRow>
+      </form>
+      {footerEl === null ? null : createPortal(
+        <SettingsFooter status={saved ? t('admin.overview.saved') : undefined}>
+          <Button type="submit" form={`${base}-form`} variant="accent" aria-disabled={action.busy || undefined}>
             {action.busy ? t('admin.overview.saving') : t('admin.overview.save')}
           </Button>
-          {saved ? <p>{t('admin.overview.saved')}</p> : null}
-        </div>
-      </form>
+        </SettingsFooter>, footerEl)}
       <div className="dw-admin-form" aria-busy={!afkLoaded}>
         <h3>{t('admin.afk.title')}</h3>
         <p>{t('admin.afk.hint')}</p>

@@ -295,3 +295,28 @@ describe('private channels in the channels tab', () => {
     expect(screen.getByRole('switch', { name: en['chperm.private'] })).toHaveFocus();
   });
 });
+
+// I6, R39: edit and delete are icon actions in two trailing slots; the AFK row has edit and no delete, and the slot stays reserved.
+describe('the channel row actions', () => {
+  it('draws edit and delete as icon buttons in two trailing slots per row', () => {
+    setup();
+    const row = screen.getByRole('button', { name: 'edit lobby' }).closest('li') as HTMLElement;
+    expect(row.querySelectorAll('.d-slot')).toHaveLength(2);
+    expect(within(row).getByRole('button', { name: 'edit lobby' }).querySelector('svg')).not.toBeNull();
+    expect(within(row).getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
+  });
+  it('gives the AFK channel an edit and no delete, keeping the slot', () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`channels:${SERVER}`, CHANNELS);
+    fake.set(`afk:${SERVER}`, { channelId: GENERAL, timeoutSeconds: 300, occupants: [] });
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ChannelsSection communityId={SERVER} serverName="Midgard" announce={vi.fn()} />
+    </CoreProvider></div>);
+    const afk = screen.getByRole('button', { name: 'edit General voice' }).closest('li') as HTMLElement;
+    expect(within(afk).queryByRole('button', { name: 'delete General voice' })).toBeNull();
+    expect(afk.querySelectorAll('.d-slot')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
+  });
+});

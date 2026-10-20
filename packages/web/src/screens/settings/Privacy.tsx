@@ -1,5 +1,5 @@
 import type { TrustSummary } from '@dilla/client-core';
-import { Button, TrustAlert } from '@dilla/ui';
+import { Button, SettingsRow, TrustAlert } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 
 /**
@@ -18,18 +18,19 @@ export function Privacy({ records, onCompare }: { records: readonly TrustSummary
       const unlisted = record.unlisted === true;
       const compareButton = <Button variant="accent" onClick={compare}>{t('privacy.compare', { name: record.name })}</Button>;
       return <li key={record.userId} data-doc-state={changed ? 'trust-changed' : undefined}>
-        {/* The alert is for a contact the person can act on here; otherwise the state is plain text (M-04). */}
-        {changed && record.shared ? <TrustAlert kind="changed" name={record.name}
-          labels={{ changed: t(comparable ? 'privacy.changed' : 'privacy.changedNoKey'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: record.name }) }}
-          onVerify={comparable ? compare : undefined} />
-          : <strong className="dw-trust-name">{record.name}</strong>}
-        {changed && !record.shared ? <p className="dw-trust-state" data-tone="danger">{t(comparable ? 'privacy.changed' : 'privacy.changedNoKey')}</p>
-          : null}
-        {unlisted ? <p className="dw-trust-state" data-tone="warn">{t('privacy.unlisted')}</p>
-          : changed ? null
-          : record.verified ? <><p className="d-label dw-trust-state">{t('privacy.verifiedLabel')}</p><code className="dw-trust-key">{record.umk}</code></>
-          : <><p className="d-label dw-trust-state">{t('privacy.firstSeenLabel')}</p><p>{t('privacy.firstSeen', { name: record.name })}</p></>}
-        {!record.shared ? <p>{t('privacy.noShared')}</p> : !changed && !unlisted ? compareButton : null}
+        <SettingsRow id={`trust-${record.userId}`} label={record.name}>
+          {/* The alert is for a contact the person can act on here; otherwise the state is plain text (M-04). */}
+          {changed && record.shared ? <TrustAlert kind="changed" name={record.name}
+            labels={{ changed: t(comparable ? 'privacy.changed' : 'privacy.changedNoKey'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: record.name }) }}
+            onVerify={comparable ? compare : undefined} /> : null}
+          {changed && !record.shared ? <p className="dw-trust-state" data-tone="danger">{t(comparable ? 'privacy.changed' : 'privacy.changedNoKey')}</p>
+            : null}
+          {unlisted ? <p className="dw-trust-state" data-tone="warn">{t('privacy.unlisted')}</p>
+            : changed ? null
+            : record.verified ? <><p className="d-label dw-trust-state">{t('privacy.verifiedLabel')}</p><code className="dw-trust-key">{record.umk}</code></>
+            : <><p className="d-label dw-trust-state">{t('privacy.firstSeenLabel')}</p><p>{t('privacy.firstSeen', { name: record.name })}</p></>}
+          {!record.shared ? <p>{t('privacy.noShared')}</p> : !changed && !unlisted ? compareButton : null}
+        </SettingsRow>
       </li>;
     })}</ul>
   </section>;

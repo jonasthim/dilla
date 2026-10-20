@@ -147,3 +147,14 @@ it('keeps legacy On on Lightweight and offers Automatic explicitly', async () =>
   await user.click(screen.getByRole('radio',{name:'automatic'}));
   expect(settingCalls(fake).at(-1)).toEqual(['voice.noise','automatic']);
 });
+
+// I1, I2: the microphone test is a settings row beside the device rows VoiceSettings draws.
+describe('Settings → Voice grammar', () => {
+  it('puts the microphone test in a settings row', () => {
+    const { view } = setup();
+    const row = Array.from(view.container.querySelectorAll('.d-settings-row')).find(r => r.querySelector('.d-settings-row__label')?.textContent === 'test microphone');
+    expect(row).toBeDefined();
+    expect(row?.querySelector('.d-settings-row__control')).toContainElement(screen.getByRole('button', { name: 'test microphone' }));
+    expect(view.container.querySelectorAll('.d-settings-row').length).toBeGreaterThanOrEqual(5);
+  });
+});

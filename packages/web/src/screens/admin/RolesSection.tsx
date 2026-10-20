@@ -87,7 +87,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   const controls = (r: RoleSummary) => {
     const at = movable.findIndex(x => x.id === r.id);
     return (
-      <span className="dw-admin-controls">
+      <span className="dw-admin-controls d-manage-list__trail">
         <Button variant="ghost" aria-label={t('roles.editLabel', { name: r.name })} onClick={() => setTarget({ kind: 'edit', id: r.id })}>{t('roles.edit')}</Button>
         {r.id === everyoneId ? null : <>
           {at > 0 ? <Button variant="ghost" data-move={`${r.id}:up`} aria-label={t('roles.upLabel', { name: r.name })} onClick={() => move(r, 'up')}>{t('roles.up')}</Button> : null}
@@ -115,12 +115,12 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
           </> : null}
         </div>
       ) : (
-        <ul aria-label={t('roles.title')} className="dw-admin-rows dw-role-rows">
+        <ul aria-label={t('roles.title')} className="dw-admin-rows dw-role-rows d-manage-list">
           {ordered.map(r => {
             const everyone = r.id === everyoneId;
             const detail = [t(r.members === 1 ? 'roles.row.one' : 'roles.row.other', { count: r.members }), ...(locked(r) ? [t('roles.locked')] : [])];
             return (
-              <li key={r.id} className="dw-admin-row">
+              <li key={r.id} className="dw-admin-row d-manage-list__row" data-row>
                 <span className="dw-role-text">
                   <span className="dw-admin-name">{everyone ? t('roles.everyone') : r.name}</span>
                   <span className="dw-role-detail">{detail.join(' · ')}</span>

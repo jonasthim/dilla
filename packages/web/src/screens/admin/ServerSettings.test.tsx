@@ -115,6 +115,16 @@ describe('the overview section', () => {
     await user.click(screen.getByRole('button', { name: en['admin.afk.save'] }));
     expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, channelId: hidden, timeoutSeconds: 1800 }]);
   });
+  // R17, I5: the name is a settings row, and the save button lives in the frame's one footer, not in the body.
+  it('draws the name as a settings row and saves from the frame footer', () => {
+    setup(FULL);
+    const row = field().closest('.d-settings-row') as HTMLElement;
+    expect(row.querySelector('.d-settings-row__label')).toHaveTextContent(en['admin.overview.name']);
+    const save = screen.getByRole('button', { name: en['admin.overview.save'] });
+    expect(save.closest('.d-settings-frame__footer')).not.toBeNull();
+    expect(save.closest('.d-settings-frame__body')).toBeNull();
+    expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
+  });
   it('renames the server with the trimmed name and announces it', async () => {
     const { fake, user, announce } = setup(FULL);
     await rename(user, '  Midgard ');
@@ -146,6 +156,16 @@ describe('the overview section', () => {
 });
 
 describe('the danger section', () => {
+  // S7: the danger actions are settings rows, label left and button right.
+  it('draws the owner actions and the member leave as settings rows', () => {
+    setup(FULL, { tab: 'danger' });
+    expect(document.querySelectorAll('.d-settings-frame__body .d-settings-row')).toHaveLength(2);
+    expect(pane().getByRole('group', { name: en['admin.nav.delete'] })).toContainElement(pane().getByRole('button', { name: en['admin.nav.delete'] }));
+  });
+  it('draws a member leave as one settings row', () => {
+    setup(NONE, { tab: 'danger' });
+    expect(document.querySelectorAll('.d-settings-frame__body .d-settings-row')).toHaveLength(1);
+  });
   const open = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
     await user.click(pane().getByRole('button', { name }));
     return screen.findByRole('dialog', { name: new RegExp(name === 'hand over server' ? 'Hand' : name === 'leave server' ? 'Leave' : 'Delete') });
@@ -236,7 +256,8 @@ describe('fix round 1: loading, closing, minors', () => {
   });
   it('keeps no status region of its own: the announcer it was given says it', () => {
     setup(FULL);
-    expect(document.querySelector('.d-settings-frame [role="status"]')).toBeNull();
+    // The frame's one footer (SettingsFooter, R17) keeps its own polite status line; the body keeps none.
+    expect(document.querySelector('.d-settings-frame__body [role="status"]')).toBeNull();
   });
   it.each([
     ['leave', NONE, 'leave server', 'Leave', en['admin.leave.confirm'], `You left ${NAME}.`],

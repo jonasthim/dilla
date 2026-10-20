@@ -11,7 +11,7 @@ import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
 import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
-import type { Announce } from './shared.ts';
+import { FooterSlot, type Announce } from './shared.ts';
 
 export type AdminTab =
   | 'overview'
@@ -47,6 +47,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   if (community !== undefined) known.current = community;
   const shown = community ?? known.current;
   const [closed, setClosed] = useState(false);
+  const [footerEl, setFooterEl] = useState<HTMLElement | null>(null);
   const told = useRef(false);
   const finish = () => {
     if (told.current) return;
@@ -81,9 +82,10 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   const common = { communityId, serverName: shown.name, announce };
   return (
     <SettingsFrame modal={!phone} open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
-      nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}>
+      nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}
+      footer={active === 'overview' ? <div ref={setFooterEl} /> : undefined}>
       {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
-      {active === 'overview' ? <OverviewSection {...common} /> : null}
+      {active === 'overview' ? <FooterSlot.Provider value={footerEl}><OverviewSection {...common} /></FooterSlot.Provider> : null}
       {active === 'channels' ? <ChannelsSection {...common} /> : null}
       {active === 'roles' ? <RolesSection {...common} /> : null}
       {active === 'invites' ? <InvitesSection {...common} /> : null}

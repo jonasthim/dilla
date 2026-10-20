@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button, ConfirmDialog, ChannelSettings } from '@dilla/ui';
+import { Button, ConfirmDialog, ChannelSettings, IconButton, TrailingSlot } from '@dilla/ui';
 import { isPrivate, type ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
@@ -87,14 +87,18 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
     }).finally(() => { moving.current = false; });
   };
 
+  // I6: edit and delete are icon actions in two fixed trailing slots (the ManageList grammar); the AFK row is `fixed`, so its delete slot
+  // stays empty and the edit icons keep one right edge. Moving a row up or down stays a text action, as before.
+  const afkId = useSlice(`afk:${communityId}`)?.channelId ?? null;
   const controls = (c: ChannelSummary, index: number, siblings: number) => (
-    <span className="dw-admin-controls">
-      <Button variant="ghost" aria-label={t('admin.channels.editLabel', { name: c.name })} onClick={() => setTarget({ kind: 'edit', id: c.id })}>{t('admin.channels.edit')}</Button>
+    <span className="d-manage-list__trail">
       <Button variant="ghost" data-move={`${c.id}:up`} aria-label={t('admin.channels.upLabel', { name: c.name })} disabled={index === 0}
         onClick={() => move(c, 'up')}>{t('admin.channels.up')}</Button>
       <Button variant="ghost" data-move={`${c.id}:down`} aria-label={t('admin.channels.downLabel', { name: c.name })} disabled={index === siblings - 1}
         onClick={() => move(c, 'down')}>{t('admin.channels.down')}</Button>
-      <Button variant="ghost" aria-label={t('admin.channels.deleteLabel', { name: c.name })} onClick={() => setTarget({ kind: 'delete', id: c.id })}>{t('admin.channels.delete')}</Button>
+      <TrailingSlot><IconButton icon="square-pen" label={t('admin.channels.editLabel', { name: c.name })} onClick={() => setTarget({ kind: 'edit', id: c.id })} /></TrailingSlot>
+      <TrailingSlot>{c.id === afkId ? null
+        : <IconButton icon="x" label={t('admin.channels.deleteLabel', { name: c.name })} onClick={() => setTarget({ kind: 'delete', id: c.id })} />}</TrailingSlot>
     </span>
   );
 
@@ -107,13 +111,13 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
       {moveError !== null ? <p key={moveAttempt} role="alert" className="dw-admin-error">{moveError}</p> : null}
       {groups.map((g, gi) => (
         <div key={g.category?.id ?? 'top'} className="dw-admin-group">
-          <div className="dw-admin-grouphead">
+          <div className="dw-admin-grouphead d-manage-list__row" data-row>
             <h3 className="dw-admin-name">{g.category?.name ?? t('admin.channels.noCategory')}</h3>
             {g.category !== null ? controls(g.category, gi - 1, categories.length) : null}
           </div>
-          <ul aria-label={g.category?.name ?? t('admin.channels.noCategory')} className="dw-admin-rows">
+          <ul aria-label={g.category?.name ?? t('admin.channels.noCategory')} className="dw-admin-rows d-manage-list">
             {g.channels.map((c, i) => (
-              <li key={c.id} className="dw-admin-row">
+              <li key={c.id} className="dw-admin-row d-manage-list__row" data-row>
                 <span className="dw-admin-name">{shown(c)}</span>
                 {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
                 {controls(c, i, g.channels.length)}

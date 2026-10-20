@@ -36,6 +36,13 @@ async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item:
 }
 
 describe('MemberPane', () => {
+  // S3: the members aside has its own 48 bar (MemberList's `label`), so its hairline sits on the header's line.
+  it('draws the members bar, a heading named for the list', () => {
+    setup();
+    const bar = screen.getByRole('heading', { level: 2, name: 'members' });
+    expect(bar).toHaveClass('d-member-list__bar');
+    expect(screen.getByRole('region', { name: 'members' })).toContainElement(bar);
+  });
   it('waits for presence, then places offline members at the bottom with a spoken label', () => {
     const { fake } = setup();
     act(() => fake.set(`presence:${CID}`, null));

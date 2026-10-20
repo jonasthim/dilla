@@ -72,3 +72,17 @@ it('shows a changed contact with no key to compare without Compare', () => {
   expect(screen.queryByRole('button')).toBeNull();
   expect(screen.queryByText('First seen here — not verified')).toBeNull();
 });
+
+// I7: each contact is one settings row, the name on the left and its state and action on the right.
+it('lists each contact as one settings row', () => {
+  const records = [
+    { userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: true, changedUmk: null },
+    { userId: 'dd'.repeat(16), name: 'Bo', shared: true, umk: 'ee'.repeat(32), firstSeen: 1, verified: false, changedUmk: null },
+  ];
+  const { container } = render(<Privacy records={records} onCompare={vi.fn()} />);
+  const rows = Array.from(container.querySelectorAll('.d-settings-row'));
+  expect(rows).toHaveLength(2);
+  expect(rows[0].querySelector('.d-settings-row__label')).toHaveTextContent('Ada');
+  expect(rows[0].querySelector('.d-settings-row__control')).toContainElement(screen.getByRole('button', { name: 'Compare with Ada' }));
+  expect(rows[1].querySelector('.d-settings-row__label')).toHaveTextContent('Bo');
+});

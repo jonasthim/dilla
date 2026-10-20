@@ -17,6 +17,16 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   const search = page.getByRole('combobox', { name: copy('search.placeholder') });
   await search.fill('cafe');
   await expect(page.getByRole('option', { name: /café lamp/ })).toBeVisible({ timeout: WAIT });
+  // J1, R-S4: a desktop search is a centred overlay of at most 40rem over a shell that stays in the DOM, not a full-screen page.
+  const overlay = page.locator('dialog.d-search-palette-dialog');
+  const box = await overlay.boundingBox();
+  const viewport = page.viewportSize();
+  if (box === null || viewport === null) throw new Error('no search overlay box');
+  expect(box.width).toBeLessThanOrEqual(641);
+  expect(box.x).toBeGreaterThan(100);
+  expect(box.x + box.width / 2).toBeCloseTo(viewport.width / 2, 0);
+  await expect(page.locator('dialog.dw-search')).toHaveCount(0);
+  await expect(rowById(page, peer.channelName, first.msg_id)).toBeAttached();
   await expect(search).toBeFocused();
   await page.getByRole('option', { name: /café lamp/ }).click();
   await expect(rowById(page, peer.channelName, first.msg_id)).toBeFocused();
@@ -68,6 +78,13 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   await peer.waitForDevices(2, setup.channel_id);
   const sent = await peer.send('café compass');
   await expect(rowById(page, peer.channelName, sent.msg_id)).toContainText('café compass', { timeout: WAIT });
+  // Escape closes the overlay and returns focus to where search was opened.
+  await rowById(page, peer.channelName, sent.msg_id).focus();
+  await page.keyboard.press('ControlOrMeta+/');
+  await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toHaveCount(0);
+  await expect(rowById(page, peer.channelName, sent.msg_id)).toBeFocused();
   await page.keyboard.press('ControlOrMeta+/');
   const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
