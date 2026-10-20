@@ -192,7 +192,7 @@ describe('MessageLog', () => {
     it('shows both labels away from the present, and the button jumps', async () => {
       const p = present(false);
       render(withPresent(p));
-      expect(screen.getByText('viewing older messages')).toBeInTheDocument();
+      expect(screen.getByText('viewing older messages', { selector: '.d-message-log__present span' })).toBeInTheDocument();
       await userEvent.setup().click(screen.getByRole('button', { name: 'jump to present' }));
       expect(p.onJumpToPresent).toHaveBeenCalledTimes(1);
     });
@@ -201,6 +201,12 @@ describe('MessageLog', () => {
       render(withPresent(p));
       fireEvent.keyDown(screen.getByRole('button', { name: 'inside' }), { key: 'End', ctrlKey: true });
       expect(p.onJumpToPresent).toHaveBeenCalledTimes(1);
+    });
+    it('keeps the bar out of the live region and announces it once through a status', () => {
+      render(withPresent(present(false)));
+      const bar = screen.getByRole('button', { name: 'jump to present' });
+      expect(screen.getByRole('log').contains(bar)).toBe(false);
+      expect(screen.getByRole('status')).toHaveTextContent('viewing older messages');
     });
     it('shows no bar and ignores Ctrl+End at the present, passing the key on', () => {
       const p = present(true);

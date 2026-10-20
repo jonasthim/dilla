@@ -86,19 +86,29 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     onKeyDown?.(e);
   };
 
-  return (
+  const showBar = present !== undefined && !present.atPresent;
+  const log = (
     <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-relevant="additions" aria-label={label}
       aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onLogKeyDown}>
       {earlier ? <Button className="d-message-log__earlier" variant="ghost" onClick={earlier.onLoad}>{earlier.label}</Button> : null}
       {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>
-      {present && !present.atPresent ? (
+    </div>
+  );
+  if (present === undefined) return log;
+  // The bar sits beside the live region, not in it, so it is not read out as a log entry; its appearance is announced once
+  // by the polite status, which holds the older-messages text only while the bar shows.
+  return (
+    <div className="d-message-log-frame">
+      {log}
+      {showBar ? (
         <div className="d-message-log__present">
           <span>{present.olderLabel}</span>
           <span aria-hidden="true">·</span>
           <Button variant="ghost" onClick={present.onJumpToPresent}>{present.jumpLabel}</Button>
         </div>
       ) : null}
+      <p className="d-sr-only" role="status">{showBar ? present.olderLabel : ''}</p>
     </div>
   );
 }

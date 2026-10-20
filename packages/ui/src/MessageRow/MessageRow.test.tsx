@@ -332,7 +332,7 @@ describe('MessageRow mention colour dot', () => {
   describe('tap to reveal on a phone (R30)', () => {
     const toolbar = <MessageToolbar label="actions" tabbable={false} items={[{ id: 'reply', label: 'reply', onAction: () => {} }]} />;
     const row = (over: Partial<React.ComponentProps<typeof MessageRow>> = {}) => (
-      <PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={over.onReveal} revealed={over.revealed} /></PhoneLayoutProvider>
+      <PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={over.onReveal ?? (() => {})} revealed={over.revealed} /></PhoneLayoutProvider>
     );
     it('renders no toolbar until revealed', () => {
       const { rerender } = render(row());
@@ -371,6 +371,11 @@ describe('MessageRow mention colour dot', () => {
       expect(screen.getByRole('toolbar')).toBeInTheDocument();
       await userEvent.setup().click(screen.getByText(BODY));
       expect(onReveal).not.toHaveBeenCalled();
+    });
+
+    it('a phone caller with no onReveal still gets its toolbar', () => {
+      render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} /></PhoneLayoutProvider>);
+      expect(screen.getByRole('toolbar')).toBeInTheDocument();
     });
   });
 });

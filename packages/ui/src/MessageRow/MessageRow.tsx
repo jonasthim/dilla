@@ -142,7 +142,7 @@ export function MessageRow({
     if ((e.target as Element).closest(INTERACTIVE)) return;
     onReveal(revealed !== true);
   };
-  const showToolbar = toolbar !== undefined && (!phone || revealed === true);
+  const showToolbar = toolbar !== undefined && (!reveals || revealed === true);
 
   return (
     <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown} onClick={reveals ? onRowClick : undefined}

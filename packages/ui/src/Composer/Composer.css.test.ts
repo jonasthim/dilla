@@ -11,7 +11,7 @@ describe('the composer label and band (G1, G3)', () => {
     expect(css).not.toMatch(/\.d-composer:focus-within/);
   });
   it('pins its top edge to the user panel band', () => {
-    expect(css).toMatch(/\.d-composer \{[^}]*min-height:\s*var\(--d-composer-band, 0px\)/);
+    expect(css).toMatch(/\.d-composer \{[^}]*min-height:\s*var\(--d-composer-band, auto\)/);
     expect(css).toMatch(/\.d-composer \{[^}]*align-content:\s*end/);
   });
 });

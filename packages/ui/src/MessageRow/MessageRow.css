@@ -64,8 +64,8 @@
 .d-message-row__gutter { align-self: start; justify-self: end; padding-top: 0.125rem; font-size: var(--text-xs); line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
 .d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
 .d-message-row[data-grouped="true"] { margin-top: 0; }
-/* The device tag on a web client shows only while the row is hovered or holds focus (it stays in the accessible name). */
-.d-message-row__tag[data-reveal="hover"] { display: inline-flex; opacity: 0; }
-.d-message-row:hover .d-message-row__tag[data-reveal="hover"], .d-message-row:focus-within .d-message-row__tag[data-reveal="hover"], .d-message-row[data-revealed="true"] .d-message-row__tag[data-reveal="hover"] { opacity: 1; }
+/* The device tag on a web client shows only while the row is hovered or holds focus. Hidden, it is out of flow (no gap after the author) and visibility:hidden. */
+.d-message-row__tag[data-reveal="hover"] { display: inline-flex; position: absolute; visibility: hidden; }
+.d-message-row:hover .d-message-row__tag[data-reveal="hover"], .d-message-row:focus-within .d-message-row__tag[data-reveal="hover"], .d-message-row[data-revealed="true"] .d-message-row__tag[data-reveal="hover"] { position: static; visibility: visible; }
 /* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
 [data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent } from 'storybook/test';
 import { Composer } from './Composer.tsx';
 import { ReplyChip } from '../ReplyChip/ReplyChip.tsx';
 import { AttachmentTray } from '../AttachmentTray/AttachmentTray.tsx';
@@ -82,4 +83,26 @@ export const SlowModeNotice: Story = {
 };
 export const AnnouncementReadOnly: Story = {
   args: { notice: <span>Only some people can post in #news.</span>, label: 'message #news', placeholder: 'message #news' },
+};
+
+// web3.9 (G3): with the shell's band set to the user panel's height (52px here), the resting composer is exactly that
+// tall, so its top meets the panel's top; focus changes nothing; three lines grow it upward. Measured, not read from CSS.
+const BAND = '52px';
+const bandDecorator = (Story: () => ReactNode) => <div style={{ maxWidth: 720, ['--d-composer-band' as string]: BAND }}><Story /></div>;
+const formHeight = (root: HTMLElement) => (root.querySelector('form') as HTMLElement).getBoundingClientRect().height;
+export const BandAtRest: Story = {
+  decorators: [bandDecorator],
+  play: async ({ canvasElement }) => {
+    const rest = formHeight(canvasElement);
+    await expect(Math.round(rest)).toBe(52);
+    await userEvent.click(canvasElement.querySelector('textarea') as HTMLElement);
+    await expect(formHeight(canvasElement)).toBe(rest);
+  },
+};
+export const BandThreeLines: Story = {
+  args: { value: 'one\ntwo\nthree' },
+  decorators: [bandDecorator],
+  play: async ({ canvasElement }) => {
+    await expect(formHeight(canvasElement)).toBeGreaterThan(52);
+  },
 };
