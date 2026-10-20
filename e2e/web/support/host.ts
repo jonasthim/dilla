@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
 import { parseInvite } from './driver.ts';
 
-/** L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
+/** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
+ *  starts a host that offers 3 so the wire-2 client is refused. `keepData` leaves /tmp/dw/host-<port> in place at start and at stop,
+ *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
+ *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
@@ -18,10 +21,13 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
     '-core', WASI_CORE, '-log-level', 'warn', '-data-dir', dataDir, '-production-acl',
     ...(c.webRoot === null ? [] : ['-web-root', join(REPO_ROOT, c.webRoot)]),
     ...(c.webauthnOrigin === undefined ? [] : ['-webauthn-origin', c.webauthnOrigin]),
+    ...(c.wire === undefined ? [] : [`-wire=${String(c.wire)}`]),
     ...(c.sfu === undefined ? [] : ['-sfu', '-sfu-port', String(c.sfu.port), '-sfu-udp-port', String(c.sfu.udpPort),
       ...(c.sfu.departureTimeout === undefined ? [] : ['-sfu-departure-timeout', String(c.sfu.departureTimeout)])]),
   ];
 }
+
+export function removeHostData(port: number): void { rmSync(`/tmp/dw/host-${String(port)}`, { recursive: true, force: true }); }
 
 function waitForLine(child: ChildProcess, pattern: RegExp, what: string, timeoutMs: number): Promise<string> {
   return new Promise((resolveLine, reject) => {
@@ -65,12 +71,12 @@ export interface StartedHost { url: string; control: string; invite: string; sto
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const dataDir = `/tmp/dw/host-${c.port}`;
-  rmSync(dataDir, { recursive: true, force: true });
+  if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync('/tmp/dw', { recursive: true });
   mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
   const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
-  const teardown = async () => { await stop(host); log.end(); rmSync(dataDir, { recursive: true, force: true }); };
+  const teardown = async () => { await stop(host); log.end(); if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true }); };
   host.stdout?.on('data', (b: Buffer) => log.write(b.toString().replace(/DILLA_TESTKIT_INVITE=\S+/g, 'DILLA_TESTKIT_INVITE=[redacted]')));
   host.stderr?.on('data', (b: Buffer) => log.write(b));
   try {
