@@ -322,3 +322,47 @@ describe('the channel row actions', () => {
     expect(screen.getByRole('button', { name: 'delete lobby' })).toBeInTheDocument();
   });
 });
+
+// R-AFK8: AFK always stands last in its run at 2^30. Its row has no move controls (the slots stay reserved), and no
+// ordinary row can move past it: the last ordinary row above AFK cannot move down.
+describe('the AFK row in the channels tab (R-AFK8)', () => {
+  const AFK = 'c7'.repeat(16);
+  const withAFK = [...CHANNELS, row(AFK, 1, 'AFK', TALK, 2 ** 30)];
+  const mount = (afk: { channelId: string | null } | null) => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`channels:${SERVER}`, withAFK);
+    if (afk !== null) fake.set(`afk:${SERVER}`, { ...afk, timeoutSeconds: 300, pending: false });
+    const user = userEvent.setup();
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ChannelsSection communityId={SERVER} serverName="Midgard" announce={vi.fn()} />
+    </CoreProvider></div>);
+    return { fake, user };
+  };
+
+  it('gives AFK no move up or down, keeping all four slots and the edit', () => {
+    mount({ channelId: AFK });
+    const afk = btn('edit AFK').closest('li') as HTMLElement;
+    expect(within(afk).queryByRole('button', { name: 'move AFK up' })).toBeNull();
+    expect(within(afk).queryByRole('button', { name: 'move AFK down' })).toBeNull();
+    expect(afk.querySelectorAll('.d-slot')).toHaveLength(4);
+    expect(afk.querySelector('[data-move]')).toBeNull();
+  });
+
+  it('cannot move the last ordinary row above AFK down, and its up and the others stay as they were', async () => {
+    const { fake, user } = mount({ channelId: AFK });
+    expect(btn('move dev down')).toBeDisabled();
+    expect(btn('move dev up')).toBeEnabled();
+    expect(btn('move lobby down')).toBeEnabled();
+    await user.click(btn('move dev up'));
+    expect(fake.callsOf('moveChannel')).toEqual([{ m: 'moveChannel', channelId: DEV, direction: 'up' }]);
+  });
+
+  it('before the afk: slice is read, the channel at exactly 2^30 is treated as AFK', () => {
+    mount(null);
+    const afk = btn('edit AFK').closest('li') as HTMLElement;
+    expect(afk.querySelector('[data-move]')).toBeNull();
+    expect(btn('move dev down')).toBeDisabled();
+  });
+});

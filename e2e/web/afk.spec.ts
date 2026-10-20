@@ -13,7 +13,8 @@
 // What it proves (Jonas's decisions, wave plan R1-R5, brief R33-R35):
 // - every server has exactly one listen-only "AFK" voice channel, listed last;
 // - an administrator renames it and moves it into a category, but finds no delete and no permissions for it, and the
-//   instance refuses its delete (403 E_FORBIDDEN; an ordinary channel's delete passes);
+//   instance refuses its delete (403 E_FORBIDDEN; an ordinary channel's delete passes); it has no reorder controls and
+//   stays last in its category at 2^30 when a sibling moves (R-AFK8);
 // - the inactive timeout is 1, 5, 15, 30 or 60 minutes, 5 by default, with no off;
 // - an idle desktop is moved there by itself, listen-only (no microphone, no audio out), and `afk.moved` is said once and
 //   no removal line ever, on the moved person's screen reader and on that of the other person in the call he left;
@@ -380,7 +381,7 @@ test('2. Ada renames AFK "Idle" and moves it into the new category "Lounge"; BjÃ
   expect((await afkSnapshot(b)).channel, 'still the AFK channel').toBe(afkId);
 });
 
-test('3. no delete and no permissions for AFK in server settings, and the instance refuses its delete', async () => {
+test('3. no delete, no permissions and no reorder for AFK in server settings, the instance refuses its delete, and it stays last when a sibling moves', async () => {
   const a = person(ada, OWNER);
   const settings = await serverSettings(a.page, 'admin.nav.channels');
   await expect(button(settings, 'admin.channels.editLabel', { name: RENAMED })).toBeVisible({ timeout: WAIT });
@@ -434,6 +435,38 @@ test('3. no delete and no permissions for AFK in server settings, and the instan
     .toEqual({ status: 204, code: null });
   expect(await write(a, 'DELETE', `/v1/channels/${afkId}${overwrite}`), 'an overwrite delete on the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
   expect(await write(a, 'DELETE', `/v1/channels/${generalVoiceId}${overwrite}`), 'the control overwrite goes again').toEqual({ status: 204, code: null });
+
+  // R-AFK8: Idle has no reorder controls and stays last in Lounge at 2^30 when a sibling moves. Two ordinary voice channels
+  // join it there; the last of them cannot move down past Idle, and the other moves up.
+  await makeVoice(a.page, 'spare');
+  await makeVoice(a.page, 'extra');
+  const order = await serverSettings(a.page, 'admin.nav.channels');
+  const lounge = order.getByRole('list', { name: CATEGORY, exact: true });
+  const idleRow = lounge.getByRole('listitem').filter({ has: button(a.page, 'admin.channels.editLabel', { name: RENAMED }) });
+  await expect(idleRow).toHaveCount(1, { timeout: WAIT });
+  await expect(button(idleRow, 'admin.channels.upLabel', { name: RENAMED })).toHaveCount(0);
+  await expect(button(idleRow, 'admin.channels.downLabel', { name: RENAMED })).toHaveCount(0);
+  await expect(idleRow.locator('[data-move]')).toHaveCount(0);
+  await expect(idleRow.locator('.d-slot'), 'Idle keeps its four trailing slots').toHaveCount(4);
+  // The controls: the ordinary rows have theirs; the last one above Idle cannot move down.
+  await expect(button(lounge, 'admin.channels.downLabel', { name: 'extra' })).toBeDisabled();
+  await expect(button(lounge, 'admin.channels.downLabel', { name: 'spare' })).toBeEnabled();
+  await button(lounge, 'admin.channels.upLabel', { name: 'extra' }).click();
+  const loungeRows = () => lounge.locator('.dw-admin-name').allTextContents();
+  await expect.poll(loungeRows, { timeout: WAIT, message: 'extra moved above spare, Idle last' }).toEqual(['extra', 'spare', RENAMED]);
+  await closeServerSettings(a.page);
+  await expect.poll(async () => {
+    const rows = await listOrder(a.page);
+    return rows.slice(rows.indexOf(`category ${CATEGORY}`) + 1);
+  }, { timeout: WAIT, message: 'the channel list: Idle last in Lounge' }).toEqual(['extra', 'spare', RENAMED].map((name) => copy('voice.open', { name })));
+  const positions = new Map(arr(await read(a, `/v1/communities/${communityId}/channels`)).map((v) => [hex(arr(v)[0]), Number(arr(v)[7])]));
+  expect(positions.get(afkId), 'Idle keeps the reserved position 2^30').toBe(2 ** 30);
+  const made = (await channelsOf(a)).filter((c) => c.name === 'spare' || c.name === 'extra');
+  expect(made.map((c) => positions.get(c.id) ?? Infinity).every((p) => p < 2 ** 30), 'the ordinary channels stay below 2^30').toBe(true);
+  // Both go again, so the later steps see Lounge as before.
+  for (const c of made) expect(await write(a, 'DELETE', `/v1/channels/${c.id}`), `DELETE ${c.name}`).toEqual({ status: 204, code: null });
+  await expect(voiceRow(a.page, 'spare')).toHaveCount(0, { timeout: WAIT });
+  await expect(voiceRow(a.page, 'extra')).toHaveCount(0, { timeout: WAIT });
 });
 
 test('4. one timeout row: an idle desktop in general is moved to Idle by itself, listen-only, and told once; the peer in general hears no removal', async () => {

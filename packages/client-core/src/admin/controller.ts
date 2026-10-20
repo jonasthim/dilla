@@ -8,14 +8,14 @@ import { BAN_REASON_MAX_BYTES, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES,
 import type { ChannelRow, OverwriteRow, RoleRow, Routes } from '../http/routes';
 import type { BanSummary, CommunitySummary, InviteSummary, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
+import { AFK_BUILTIN_POSITION, isBuiltinAFK } from './afk';
 import { accessOf } from './rank';
 
 /** A ban lasts at least an hour and at most a hundred years (the page offers presets inside that). */
 export const BAN_SECONDS_MIN = 3600;
 export const BAN_SECONDS_MAX = 3_153_600_000;
 
-/** The built-in AFK channel's position (R42, the server's AFKBuiltinPosition = 1 << 30): reserved by the server. */
-export const AFK_BUILTIN_POSITION = 2 ** 30;
+export { AFK_BUILTIN_POSITION };
 /** The position after a community's last channel, ignoring every position at or above the AFK reservation (R-AFK6): a
  *  create right after the community, before its `afk:` slice is read, still lands above the AFK channel. */
 export function nextPosition(positions: Iterable<number>): number {
@@ -254,22 +254,25 @@ export class AdminController {
     return null;
   }
 
-  /** Moves a channel one step inside its parent. Positions that are strictly increasing trade between the mover and its
-   *  neighbour (two patches). With a tie anywhere in the run, or a position at or above the AFK reservation (R-AFK7), the
-   *  run is renumbered densely 0..n-1 in the new display
-   *  order, and only the channels whose position changes are patched. Whatever happens, the lists are read again. */
+  /** Moves a channel one step inside its parent, among the ordinary channels only (R-AFK8): the built-in AFK channel stays
+   *  last at 2^30, never moves and is never passed, so a move of AFK, or down from the last ordinary channel, sends nothing.
+   *  Positions that are strictly increasing and below 2^30 trade between the mover and its neighbour (two patches). With a
+   *  tie anywhere among the ordinary channels, or one of them at or above 2^30 (a rolled-back client's create), those are
+   *  renumbered densely 0..n-1 in the new display order, and only the channels whose position changes are patched.
+   *  Whatever happens, the lists are read again. */
   async moveChannel(channelId: string, direction: 'up' | 'down'): Promise<null> {
     const { communityId, row } = this.known(channelId);
+    const afkId = this.deps.get(`afk:${communityId}`)?.channelId ?? null;
+    if (isBuiltinAFK(channelId, row.position, afkId)) return null;
     const parent = row.parentId === null ? null : toHex(row.parentId);
     const siblings = this.deps.channelsOf(communityId)
-      .filter((c) => (c.row.parentId === null ? null : toHex(c.row.parentId)) === parent && (c.row.kind === 2) === (row.kind === 2))
+      .filter((c) => (c.row.parentId === null ? null : toHex(c.row.parentId)) === parent && (c.row.kind === 2) === (row.kind === 2)
+        && !isBuiltinAFK(c.id, c.row.position, afkId))
       .sort((a, b) => a.row.position - b.row.position || (a.id < b.id ? -1 : 1));
     const at = siblings.findIndex((c) => c.id === channelId);
     const to = direction === 'up' ? at - 1 : at + 1;
     const other = siblings[to] as { id: string; row: ChannelRow } | undefined;
     if (other === undefined) return null;
-    // R-AFK7: a run that holds the AFK reservation (2^30 and up) is renumbered densely, never swapped, so no ordinary channel
-    // inherits a position the next create would skip; AFK takes its new dense slot.
     const strict = siblings.every((c, i) => i === 0 || c.row.position > (siblings[i - 1] as { row: ChannelRow }).row.position)
       && siblings.every((c) => c.row.position < AFK_BUILTIN_POSITION);
     let changes: { row: ChannelRow; position: number }[];
