@@ -96,6 +96,8 @@ export function dillaRoomOptions(manager: DillaE2EEManager, caller: Partial<Room
   return {
     ...ROOM_DEFAULTS,
     ...allowed,
+    // web3.9 V-1 fix round 1 (m-4): forced, not a default: no caller turns LiveKit's beforeunload disconnect back on.
+    disconnectOnPageLeave: false,
     publishDefaults: {
       ...ROOM_DEFAULTS.publishDefaults,
       ...pick(allowed.publishDefaults, CALLER_PUBLISH_DEFAULTS),

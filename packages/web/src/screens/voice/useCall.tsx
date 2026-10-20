@@ -196,7 +196,9 @@ export interface UseCallOptions {
   /**
    * web3.9 VOICE-AFK: the built-in AFK channels (a join of one is listen-only, R3), and this device's pending move (the
    * server's sweep moved it, R33): the community, its AFK channel and that channel's name. A move joins once per
-   * `communityId:channelId` until `pending` turns null again.
+   * `communityId:channelId` until `pending` turns null again (a failed one until the person's own join or leave).
+   * Fix round 1 (I-2): `channels` is not the only source. A join of a channel it does not name yet waits for the
+   * `afk:` slice of that channel's community (at most AFK_STATUS_WAIT_MS, then it fails closed without the microphone).
    */
   afk?: { channels: ReadonlySet<string>; pending: { communityId: string; channelId: string; name: string } | null };
 }
@@ -206,8 +208,16 @@ const KEY_M = 'm';
 const KEY_D = 'd';
 /** A session that ended on its own: the notice that says why (WB client I3; flow 06 § States). */
 const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_REMOVED: 'voice.removed' };
-/** web3.9 VOICE-AFK: what the AFK move's join carries: the AFK channel's name, for `afk.moved` and the failed line. */
-interface AfkMove { name: string }
+/** web3.9 VOICE-AFK: what the AFK move's join carries: the AFK channel's name, for `afk.moved` and the failed line, and
+ *  the move's `communityId:channelId` key (fix round 1, I-3). */
+interface AfkMove { name: string; key: string }
+/** Fix round 1 (I-2): how long a join waits for the slices that say whether its channel is an AFK channel. */
+export const AFK_STATUS_WAIT_MS = 10_000;
+/** Fix round 1 (m-1): the longest a move's cut is silent after its join started. */
+export const MOVE_WINDOW_MS = 30_000;
+/** Fix round 1 (m-1): the shortest AFK timeout (R2: 60, 300, 900, 1800, 3600 s). A call younger than this is not the one
+ *  the sweep cut, so a `pending` read during it is stale. */
+export const AFK_MIN_IDLE_MS = 60_000;
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -256,13 +266,74 @@ export function useCall(o: UseCallOptions): CallView {
   const opener = useRef<HTMLElement | null>(null);
   const live = useRef(o);
   live.current = o;
-  /** web3.9 VOICE-AFK: the cut of call `id` is the AFK move's (its community has this device's pending move), so it is
-   *  silent: the move's own join follows and says where the person went. */
-  const afkCut = useCallback((id: string): boolean => {
-    const pending = live.current.afk?.pending ?? null;
-    if (pending === null) return false;
-    return (client.get(`channels:${pending.communityId}`) ?? []).some((c) => c.id === id);
+  /** web3.9 VOICE-AFK fix round 1 (I-2): the channels this hook joined listen-only, or was moved into; a recovery or a
+   *  restore of one of them stays listen-only whatever the slices say. In memory only. */
+  const listenIds = useRef(new Set<string>());
+  /** Fix round 1 (m-1): the move whose join is in flight, by community, until a deadline. Only a cut inside it is the
+   *  move's; a stale `pending` silences nothing. */
+  const moveWindow = useRef<{ communityId: string; afkId: string; until: number } | null>(null);
+  /** Fix round 1 (I-3): the key of a move whose join failed. It survives `pending`'s null passages (every community
+   *  re-read clears the slice first) and clears only on the person's own join or leave. */
+  const failedKey = useRef<string | null>(null);
+  /** Fix round 1 (m-1): when the current call attached; a call younger than the shortest AFK timeout is not the one cut. */
+  const attachedAt = useRef(0);
+  /** The community whose channel list holds `id`, or null while no loaded list does. */
+  const communityOf = useCallback((id: string): string | null => {
+    for (const c of client.get('communities') ?? []) {
+      if ((client.get(`channels:${c.id}`) ?? []).some((ch) => ch.id === id)) return c.id;
+    }
+    return null;
   }, [client]);
+  /** Whether a join of `id` is listen-only: 'afk', 'not', or 'unknown' while its community's `afk:` slice is unread. */
+  const afkStatus = useCallback((id: string): 'afk' | 'not' | 'unknown' => {
+    if (listenIds.current.has(id) || live.current.afk?.channels.has(id) === true) return 'afk';
+    if ((client.get('dms') ?? []).some((d) => d.id === id)) return 'not';
+    const cid = communityOf(id);
+    if (cid === null) return 'unknown';
+    const afk = client.get(`afk:${cid}`);
+    if (afk == null) return 'unknown';
+    return afk.channelId === id ? 'afk' : 'not';
+  }, [client, communityOf]);
+  /** Fix round 1 (I-2): resolves whether `id` is an AFK channel, waiting (at most AFK_STATUS_WAIT_MS) for the slices that
+   *  say so. A wait that runs out rejects E_UNAVAILABLE: the join fails closed and never reaches the microphone. */
+  const resolveAfk = useCallback((id: string, signal: AbortSignal): Promise<boolean> => new Promise<boolean>((resolve, reject) => {
+    const first = afkStatus(id);
+    if (first !== 'unknown') { resolve(first === 'afk'); return; }
+    let offs: Array<() => void> = [];
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const off of offs) off();
+      offs = [];
+      signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const watch = (): void => {
+      for (const off of offs) off();
+      offs = [client.subscribe('communities', check), client.subscribe('dms', check),
+        ...(client.get('communities') ?? []).flatMap((c) => [client.subscribe(`channels:${c.id}`, check), client.subscribe(`afk:${c.id}`, check)])];
+    };
+    function check(): void {
+      const now = afkStatus(id);
+      if (now !== 'unknown') finish(() => resolve(now === 'afk'));
+      else queueMicrotask(() => { if (!settled) watch(); });
+    }
+    const onAbort = (): void => finish(() => reject(Object.assign(new Error('E_ABORTED'), { code: 'E_ABORTED' })));
+    const timer = setTimeout(() => finish(() => reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', afkUnknown: true }))),
+      AFK_STATUS_WAIT_MS);
+    signal.addEventListener('abort', onAbort, { once: true });
+    watch();
+  }), [client, afkStatus]);
+  /** web3.9 VOICE-AFK: the cut of call `id` is the AFK move's, so it is silent: the move's own join follows and says where
+   *  the person went. Fix round 1 (m-1): only while that join is in flight, before its deadline, for a channel of the
+   *  move's community other than its AFK channel. */
+  const afkCut = useCallback((id: string): boolean => {
+    const w = moveWindow.current;
+    if (w === null || Date.now() > w.until || id === w.afkId) return false;
+    return communityOf(id) === w.communityId;
+  }, [communityOf]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -328,6 +399,7 @@ export function useCall(o: UseCallOptions): CallView {
 
   const attach = useCallback((next: PageCall, id: string) => {
     answered.current = false;
+    attachedAt.current = Date.now();
     sessionRef.current = next;
     channelRef.current = id;
     setSession(next);
@@ -393,7 +465,11 @@ export function useCall(o: UseCallOptions): CallView {
       setRecoverySharing(false);
     }
     setRecentlyEnded(null);
-    if (channelRef.current === id && (starting.current || sessionRef.current !== null)) { closeContext(made); return; }
+    if (channelRef.current === id && (starting.current || sessionRef.current !== null)) {
+      closeContext(made);
+      if (move !== undefined && moveWindow.current?.afkId === id) moveWindow.current = null;
+      return;
+    }
     // web3.3 fix round 2 (Minor 1): the call’s AudioContext is made here, synchronously in the press, before any await
     // (the leave in flight, the module load, a switch’s leave); the session it is handed to closes it on every way out,
     // and every path below that never hands it over (unsupported, cancelled, superseded, a failed load) closes it here.
@@ -406,8 +482,10 @@ export function useCall(o: UseCallOptions): CallView {
       return;
     }
     // web3.9 VOICE-AFK (R3): the AFK channel is listen-only by the server's grant; the session then never asks for the
-    // microphone. The move's join is listen-only even before the channel set names it (fail closed).
-    const listenOnly = move !== undefined || live.current.afk?.channels.has(id) === true;
+    // microphone. The move's join is listen-only even before the channel set names it (fail closed). Fix round 1 (I-2):
+    // every other join (a click, a restore after an update reload, a recovery) first learns whether its channel is an AFK
+    // channel, waiting for the slices that say so; it never reaches the microphone while that is unknown.
+    let listenOnly = move !== undefined;
     let handed = false;
     starting.current = true;
     const from = document.activeElement;
@@ -424,6 +502,9 @@ export function useCall(o: UseCallOptions): CallView {
           setUnsupported(true);
           return;
         }
+        if (!listenOnly) listenOnly = await resolveAfk(id, abort.signal);
+        if (listenOnly) listenIds.current.add(id);
+        if (abort.signal.aborted) return;
         // One call at a time: the current one is left first, and the next starts only once that leave is done.
         const previous = sessionRef.current;
         if (previous !== null) {
@@ -496,12 +577,20 @@ export function useCall(o: UseCallOptions): CallView {
         }
         const key = abort.signal.aborted ? null : joinFailureKey(code);
         if (key !== null) setNotice({ channelId: id, key });
-        // web3.9 VOICE-AFK: a failed move's join leaves the dock's line and stops; nothing retries it.
+        // web3.9 VOICE-AFK: a failed move's join leaves the dock's line and stops; nothing retries it (fix round 1, I-3:
+        // not even after `pending`'s null passages). Fix round 1 (I-1): with no call there is no dock, so the move and
+        // why it failed are said in the region that outlives the dock.
         if (move !== undefined && !abort.signal.aborted) {
+          failedKey.current = move.key;
           setAfkFailed({ channelId: id, name: move.name });
-          announce(t('afk.moved', { channel: move.name }));
+          const moved = t('afk.moved', { channel: move.name });
+          setLasting(key !== null ? `${moved}. ${t(key)}` : moved);
+        } else if ((e as { afkUnknown?: unknown } | null)?.afkUnknown === true && key !== null && !live.current.stageShown(id)) {
+          // Fix round 1 (I-2): fail closed, and said off the stage too.
+          setLasting(t(key));
         }
       } finally {
+        if (move !== undefined && moveWindow.current?.afkId === id) moveWindow.current = null;
         if (!handed) closeContext(ctx);
         if (startAbort.current === abort) startAbort.current = null;
         starting.current = false;
@@ -512,11 +601,12 @@ export function useCall(o: UseCallOptions): CallView {
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach, selfNow, watchSelf, announce]);
+  }, [deps, client, attach, detach, selfNow, watchSelf, announce, resolveAfk]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
-  const joinOnly = useCallback((id: string) => join(id), [join]);
+  // Fix round 1 (I-3): the person's own join ends a failed move's hold, so a later move of that key may join again.
+  const joinOnly = useCallback((id: string) => { failedKey.current = null; join(id); }, [join]);
   const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
     recoveryRef.current = id;
     recoveryCameraRef.current = camera;
@@ -528,6 +618,7 @@ export function useCall(o: UseCallOptions): CallView {
 
   const leave = useCallback((after?: CallNotice) => {
     setAfkFailed(null);
+    failedKey.current = null;
     recoveryRef.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
@@ -574,7 +665,9 @@ export function useCall(o: UseCallOptions): CallView {
   // kept in `voice.self`: leaving it restores the person's own state for the next call.
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
-    if (s === null || s.state.listenOnly) return;
+    if (s === null) return;
+    // Fix round 1 (m-2): the press says why nothing changed.
+    if (s.state.listenOnly) { announce(t('afk.stage.muted', { channel: live.current.whereOf(channelRef.current ?? '') })); return; }
     const on = !s.state.muted;
     s.setMuted(on);
     keepSelf(s);
@@ -751,10 +844,19 @@ export function useCall(o: UseCallOptions): CallView {
   useEffect(() => {
     if (pendingMove === null) { movedKey.current = null; return; }
     const key = `${pendingMove.communityId}:${pendingMove.channelId}`;
-    if (movedKey.current === key) return;
+    // Fix round 1 (I-3): a failed move stays failed across null passages until the person's own join or leave.
+    if (movedKey.current === key || failedKey.current === key) return;
     movedKey.current = key;
-    joinRef.current(pendingMove.channelId, undefined, { name: pendingMove.name });
-  }, [pendingMove]);
+    listenIds.current.add(pendingMove.channelId);
+    // Fix round 1 (m-1): a stale `pending` never leaves a newer call: a start in progress, a call in another community,
+    // or a call younger than the shortest AFK timeout is not the one the sweep cut.
+    const current = channelRef.current;
+    if (starting.current) return;
+    if (sessionRef.current !== null && current !== null
+      && (communityOf(current) !== pendingMove.communityId || Date.now() - attachedAt.current < AFK_MIN_IDLE_MS)) return;
+    moveWindow.current = { communityId: pendingMove.communityId, afkId: pendingMove.channelId, until: Date.now() + MOVE_WINDOW_MS };
+    joinRef.current(pendingMove.channelId, undefined, { name: pendingMove.name, key });
+  }, [pendingMove, communityOf]);
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;

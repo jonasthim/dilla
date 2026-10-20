@@ -1,21 +1,32 @@
 // web3.9 VOICE-AFK: the shell's side of the AFK move. A pending move (the server's sweep moved this device, R33) joins the
 // community's AFK channel once, listen-only, says so once, and never retries; a failed join leaves the dock's line.
+// Fix round 1: every join into an AFK channel is listen-only even while the slices lag (I-2), a failed move survives the
+// community re-reads (I-3), it is said where it is heard (I-1), and a stale `pending` neither silences a cut nor leaves a
+// newer call (m-1).
 import { createElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, renderHook, waitFor } from '@testing-library/react';
-import { SETTINGS } from '@dilla/client-core';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { SETTINGS, type AFKState, type ChannelSummary } from '@dilla/client-core';
 import type { PageCallOptions } from '../../call/session.ts';
 import { t } from '../../strings/index.ts';
 import { A, CHANNELS, FakeClient, FakeSession, GENV, callState } from '../../test/fake-client.ts';
-import { useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
+import {
+  AFK_MIN_IDLE_MS, AFK_STATUS_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule,
+} from './useCall.tsx';
 
 const AFK_CH = 'af'.repeat(16);
 const B = 'b7'.repeat(16);
+const B_GEN = 'b8'.repeat(16);
 const B_AFK = 'bf'.repeat(16);
 const AFK_SET: ReadonlySet<string> = new Set([AFK_CH, B_AFK]);
+const NONE: ReadonlySet<string> = new Set();
 type Pending = NonNullable<UseCallOptions['afk']>['pending'];
 const move = (over: Partial<NonNullable<Pending>> = {}): NonNullable<Pending> => ({ communityId: A, channelId: AFK_CH, name: 'AFK', ...over });
+const moveB = () => move({ communityId: B, channelId: B_AFK, name: 'AFK' });
 const MOVED = t('afk.moved', { channel: 'AFK' });
+const voice = (id: string, communityId: string, name: string, position = 1): ChannelSummary => ({
+  id, communityId, kind: 1, mode: 0, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'unsupported' });
+const afkOf = (channelId: string | null): AFKState => ({ channelId, timeoutSeconds: 300, pending: false, occupants: [] });
 
 /** As the real session: a listen-only call stays muted whatever is pressed (setMuted is a no-op). */
 class Session extends FakeSession {
@@ -27,13 +38,26 @@ class Session extends FakeSession {
 
 const flush = async () => { await act(async () => { for (let i = 0; i < 10; i++) await new Promise<void>((r) => setTimeout(r, 0)); }); };
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptions['afk'] } = {}) {
+/** The page clock moves on by `ms` (Date.now only; timers keep real time). */
+const clock = { skew: 0 };
+function skewClock(): void {
+  clock.skew = 0;
+  const real = Date.now.bind(Date);
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + clock.skew);
+}
+
+function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptions['afk']; lagging?: boolean } = {}) {
+  skewClock();
   const client = new FakeClient();
   client.set('settings', {});
-  client.set(`channels:${A}`, [...CHANNELS,
-    { id: AFK_CH, communityId: A, kind: 1, mode: 0, name: 'AFK', topic: '', parentId: null, position: 1 << 30, slowmode: 0, announcement: false, group: 'unsupported' }]);
+  client.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }, { id: B, name: 'Asgard', owner: 'ee'.repeat(16) }]);
+  client.set('dms', []);
+  client.set(`channels:${A}`, [...CHANNELS, voice(AFK_CH, A, 'AFK', 1 << 30)]);
+  client.set(`channels:${B}`, [voice(B_GEN, B, 'hall'), voice(B_AFK, B, 'AFK', 1 << 30)]);
+  // `lagging`: the afk: slices are still being read (null), as after an update reload.
+  if (o.lagging !== true) { client.set(`afk:${A}`, afkOf(AFK_CH)); client.set(`afk:${B}`, afkOf(B_AFK)); }
   client.set('call', callState());
   const log: string[] = [];
   const sessions: Session[] = [];
@@ -48,6 +72,7 @@ function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptio
     isVoiceSupported: () => ({ ok: true as const, path: 'insertable-streams' as const }),
     localDecodeList: () => 'vp8',
     browserDeps: (bridge) => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
+    // A start stands for the session's: an ordinary one asks for the microphone, a listen-only one never does.
     startPageCall: vi.fn<VoiceModule['startPageCall']>(async (_deps, target, opts) => {
       started.push({ channelId: target.channelId, opts });
       await Promise.resolve();
@@ -75,14 +100,22 @@ function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptio
   const view = renderHook((p: { afk?: UseCallOptions['afk'] }) => {
     const v = useCall({
       client, call: client.get('call'), settings: client.get('settings') ?? {},
-      whereOf: (id) => (id === AFK_CH ? 'AFK' : 'general'), onLeft: () => undefined, stageShown: () => false,
+      whereOf: (id) => (id === AFK_CH || id === B_AFK ? 'AFK' : 'general'), onLeft: () => undefined, stageShown: () => false,
       ...(p.afk !== undefined ? { afk: p.afk } : {}),
     });
     if (said.at(-1) !== v.announcement) said.push(v.announcement);
     return v;
   }, { wrapper, initialProps: { afk: o.afk ?? { channels: AFK_SET, pending: null } } });
   const setAfk = (afk: NonNullable<UseCallOptions['afk']>) => { act(() => view.rerender({ afk })); };
-  return { client, log, sessions, started, module, view, said, setAfk, holdLoad,
+  /** Joins `id` by the person's press and waits until its session is attached. */
+  const joined = async (id: string) => {
+    const n = sessions.length;
+    act(() => view.result.current.join(id));
+    await waitFor(() => expect(sessions).toHaveLength(n + 1));
+    await waitFor(() => expect(view.result.current.session).toBe(sessions[n]));
+    return sessions[n];
+  };
+  return { client, log, sessions, started, module, view, said, setAfk, holdLoad, joined,
     get v() { return view.result.current; } };
 }
 
@@ -100,20 +133,22 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     h.setAfk({ channels: AFK_SET, pending: { ...move() } });
     await flush();
     expect(h.started).toHaveLength(1);
-    // A new key joins again (another community's AFK channel).
-    h.setAfk({ channels: AFK_SET, pending: move({ communityId: B, channelId: B_AFK, name: 'AFK' }) });
+    // A new key joins again (another community's AFK channel), once the person is out of the call it would leave.
+    act(() => h.v.leave());
+    await flush();
+    h.setAfk({ channels: AFK_SET, pending: moveB() });
     await waitFor(() => expect(h.sessions).toHaveLength(2));
     expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, B_AFK]);
     // Left, the same move still does nothing: the key clears only when pending turns null; then it joins again.
     act(() => h.v.leave());
     await flush();
-    h.setAfk({ channels: AFK_SET, pending: move({ communityId: B, channelId: B_AFK, name: 'AFK' }) });
+    h.setAfk({ channels: AFK_SET, pending: moveB() });
     await flush();
     expect(h.started).toHaveLength(2);
     h.setAfk({ channels: AFK_SET, pending: null });
     await flush();
     expect(h.started).toHaveLength(2);
-    h.setAfk({ channels: AFK_SET, pending: move({ communityId: B, channelId: B_AFK, name: 'AFK' }) });
+    h.setAfk({ channels: AFK_SET, pending: moveB() });
     await waitFor(() => expect(h.sessions).toHaveLength(3));
     expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, B_AFK, B_AFK]);
   });
@@ -125,6 +160,8 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     await waitFor(() => expect(h.v.afkFailed).toEqual({ channelId: AFK_CH, name: 'AFK' }));
     expect(h.started).toHaveLength(1);
     expect(h.v.channelId).toBeNull();
+    // Fix round 1 (I-1): with no dock, the move and why it failed go to the region that outlives the dock.
+    expect(h.v.lasting).toBe(`${MOVED}. ${t('voice.failed')}`);
     // No retry: not by the same move again, not by time, not through the recovery loop.
     h.setAfk({ channels: AFK_SET, pending: move() });
     await act(async () => { await new Promise<void>((r) => setTimeout(r, 1_200)); });
@@ -146,24 +183,107 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     expect(h.v.afkFailed).toBeNull();
   });
 
+  it('a failed move followed by three community re-reads is one join attempt (fix round 1, I-3)', async () => {
+    const h = harness({ fails: (id) => id === AFK_CH });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.v.afkFailed).not.toBeNull());
+    // Each re-read (op 54, a reconnect) clears the afk: slice first, then reads pending=1 again within the TTL.
+    for (let i = 0; i < 3; i++) {
+      h.setAfk({ channels: AFK_SET, pending: null });
+      await flush();
+      h.setAfk({ channels: AFK_SET, pending: move() });
+      await flush();
+    }
+    expect(h.started).toHaveLength(1);
+    expect(h.v.afkFailed).toEqual({ channelId: AFK_CH, name: 'AFK' });
+    // The person's own leave ends the hold: the next move of that key joins again.
+    act(() => h.v.leave());
+    h.setAfk({ channels: AFK_SET, pending: null });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.started).toHaveLength(2));
+  });
+
+  it('the person’s own join also ends a failed move’s hold (fix round 1, I-3)', async () => {
+    let fail = true;
+    const h = harness({ fails: (id) => id === AFK_CH && fail });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.v.afkFailed).not.toBeNull());
+    fail = false;
+    await h.joined(GENV);
+    // Later the sweep moves this call; the same key is a new move now.
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    h.setAfk({ channels: AFK_SET, pending: null });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, GENV, AFK_CH]));
+  });
+
   it('joining the AFK channel by click is listen-only', async () => {
     const h = harness();
-    act(() => h.v.join(AFK_CH));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await h.joined(AFK_CH);
     expect(h.started[0].opts.listenOnly).toBe(true);
     // Control: an ordinary channel is not.
     act(() => h.v.leave());
     await flush();
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(2));
+    await h.joined(GENV);
     expect(h.started[1].opts.listenOnly ?? false).toBe(false);
+  });
+
+  it('a click into the AFK channel is listen-only from the afk: slice alone (fix round 1, I-2)', async () => {
+    const h = harness({ afk: { channels: NONE, pending: null } });
+    await h.joined(B_AFK);
+    expect(h.started[0].opts.listenOnly).toBe(true);
+  });
+
+  it('a restore into AFK while the slice lags asks for no microphone, and joins listen-only once it arrives (fix round 1, I-2)', async () => {
+    const h = harness({ lagging: true, afk: { channels: NONE, pending: null } });
+    act(() => h.v.restore(AFK_CH, false, false));
+    await flush();
+    // Held: no start, so nothing asked for the microphone.
+    expect(h.started).toHaveLength(0);
+    act(() => { h.client.set(`afk:${A}`, afkOf(AFK_CH)); });
+    await waitFor(() => expect(h.started).toHaveLength(1));
+    expect(h.started[0].channelId).toBe(AFK_CH);
+    expect(h.started[0].opts.listenOnly).toBe(true);
+  });
+
+  it('a restore into an ordinary channel waits for the same slice and then asks for the microphone (control)', async () => {
+    const h = harness({ lagging: true, afk: { channels: NONE, pending: null } });
+    act(() => h.v.restore(GENV, false, false));
+    await flush();
+    expect(h.started).toHaveLength(0);
+    act(() => { h.client.set(`afk:${A}`, afkOf(AFK_CH)); });
+    await waitFor(() => expect(h.started).toHaveLength(1));
+    expect(h.started[0].opts.listenOnly ?? false).toBe(false);
+  });
+
+  it('a join whose AFK status never loads fails closed: no microphone, and the failure is shown (fix round 1, I-2)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const h = harness({ lagging: true, afk: { channels: NONE, pending: null } });
+    act(() => h.v.restore(AFK_CH, false, false));
+    await act(() => vi.advanceTimersByTimeAsync(AFK_STATUS_WAIT_MS + 100));
+    expect(h.started).toHaveLength(0);
+    expect(h.v.notice).toEqual({ channelId: AFK_CH, key: 'voice.failed' });
+    expect(h.v.lasting).toBe(t('voice.failed'));
+    expect(h.v.channelId).toBeNull();
+  });
+
+  it('a lost AFK call recovers listen-only while the slices lag (fix round 1, I-2)', async () => {
+    const h = harness({ lagging: true, afk: { channels: NONE, pending: null } });
+    h.setAfk({ channels: NONE, pending: move() });
+    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await waitFor(() => expect(h.v.session).toBe(h.sessions[0]));
+    expect(h.started[0].opts.listenOnly).toBe(true);
+    // The room is lost; the recovery joins the same channel by itself, with nothing in the slices naming it AFK.
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.started[1].channelId).toBe(AFK_CH);
+    expect(h.started[1].opts.listenOnly).toBe(true);
   });
 
   it('leaving the AFK call keeps voice.self', async () => {
     const h = harness();
     const selfWrites = () => h.client.callsOf('setSetting').filter((c) => c.key === SETTINGS.voiceSelf);
-    act(() => h.v.join(AFK_CH));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await h.joined(AFK_CH);
     act(() => h.v.toggleDeafen());
     act(() => h.v.toggleDeafen());
     act(() => h.v.toggleMute());
@@ -174,17 +294,24 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     await flush();
     expect(selfWrites()).toEqual([]);
     // Control: an ordinary call's mute is kept for the next call, as before.
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(2));
+    await h.joined(GENV);
     act(() => h.v.toggleMute());
     expect(selfWrites()).toEqual([{ m: 'setSetting', key: SETTINGS.voiceSelf, value: 'muted' }]);
   });
 
+  it('a mute press in AFK says everyone is muted there (fix round 1, m-2)', async () => {
+    const h = harness();
+    await h.joined(AFK_CH);
+    act(() => h.v.toggleMute());
+    await waitFor(() => expect(h.v.announcement).toBe(t('afk.stage.muted', { channel: 'AFK' })));
+    expect(h.sessions[0].state.muted).toBe(true);
+  });
+
   it('the cut before a move is silent', async () => {
     const h = harness();
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
-    const first = h.sessions[0];
+    const first = await h.joined(GENV);
+    // The call has run past the shortest AFK timeout, so it is the one the sweep cuts.
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
     // The move is known while the cut arrives; its join waits on the call module.
     const release = h.holdLoad();
     h.setAfk({ channels: AFK_SET, pending: move() });
@@ -201,8 +328,7 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
 
   it('a cut with no move pending still says why (control)', async () => {
     const h = harness();
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await h.joined(GENV);
     act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
     h.setAfk({ channels: AFK_SET, pending: null });
     await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
@@ -211,25 +337,61 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
 
   it('a cut in another community than the move’s still says why (control)', async () => {
     const h = harness();
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await h.joined(GENV);
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
     h.holdLoad();
-    h.setAfk({ channels: AFK_SET, pending: move({ communityId: B, channelId: B_AFK }) });
+    h.setAfk({ channels: AFK_SET, pending: moveB() });
     act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
-    h.setAfk({ channels: AFK_SET, pending: move({ communityId: B, channelId: B_AFK }) });
+    h.setAfk({ channels: AFK_SET, pending: moveB() });
     await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
   });
 
   it('the room’s own removal before a move is silent too', async () => {
     const h = harness();
-    act(() => h.v.join(GENV));
-    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    await h.joined(GENV);
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
     h.holdLoad();
     h.setAfk({ channels: AFK_SET, pending: move() });
     act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
     expect(h.v.session).toBeNull();
     expect(h.v.notice).toBeNull();
     expect(h.v.lasting).toBe('');
+  });
+
+  it('a stale pending after the move silences no later cut (fix round 1, m-1)', async () => {
+    const h = harness();
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    // The move's join is done; the client still reads pending (the server cleared it at admission, no notice yet).
+    act(() => h.v.leave());
+    await flush();
+    await h.joined(GENV);
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
+    expect(h.v.lasting).toBe(t('voice.removed'));
+    expect(h.started).toHaveLength(2);
+  });
+
+  it('a stale pending never leaves a newer call (fix round 1, m-1)', async () => {
+    const h = harness();
+    // A call in another community: the move is not for it.
+    const hall = await h.joined(B_GEN);
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await flush();
+    expect(h.started).toHaveLength(1);
+    expect(h.v.session).toBe(hall);
+    expect(hall.leave).not.toHaveBeenCalled();
+    // A call in the move's community that started after the cut (younger than the shortest timeout): not undone.
+    const g = harness();
+    const general = await g.joined(GENV);
+    g.setAfk({ channels: AFK_SET, pending: move() });
+    await flush();
+    expect(g.started).toHaveLength(1);
+    expect(g.v.session).toBe(general);
+    expect(general.leave).not.toHaveBeenCalled();
   });
 
   it('the move is announced once', async () => {
@@ -246,5 +408,42 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     await act(async () => { await new Promise<void>((r) => setTimeout(r, 300)); });
     expect(h.said.filter((s) => s === MOVED)).toHaveLength(1);
     expect(h.v.announcement).toBe(MOVED);
+  });
+});
+
+describe('web3.9 VOICE-AFK fix round 1 (I-1): a failed move is heard in the document', () => {
+  it('the failed move’s line reaches the live region that outlives the dock', async () => {
+    skewClock();
+    const client = new FakeClient();
+    client.set('settings', {});
+    client.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    client.set('dms', []);
+    client.set(`channels:${A}`, [...CHANNELS, voice(AFK_CH, A, 'AFK', 1 << 30)]);
+    client.set(`afk:${A}`, afkOf(AFK_CH));
+    client.set('call', callState());
+    const module: VoiceModule = {
+      isVoiceSupported: () => ({ ok: true as const, path: 'insertable-streams' as const }),
+      localDecodeList: () => 'vp8',
+      browserDeps: (bridge) => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
+      startPageCall: vi.fn<VoiceModule['startPageCall']>(() => Promise.reject(Object.assign(new Error('E_CALL_FULL'), { code: 'E_CALL_FULL' }))),
+      bindPushToTalk: () => () => undefined,
+      volumesFromSettings: () => ({}),
+    };
+    const deps: VoiceDeps = { load: () => Promise.resolve(module), createCallContext: () => null,
+      createSounds: () => ({ play: () => undefined, startRing: () => undefined, stopRing: () => undefined, dispose: () => undefined }) };
+    // The shell's two regions as Shell renders them: the dock's (only with a call) and the one that outlives it.
+    function Probe({ afk }: { afk: NonNullable<UseCallOptions['afk']> }) {
+      const v = useCall({ client, call: client.get('call'), settings: {}, whereOf: () => 'AFK', onLeft: () => undefined,
+        stageShown: () => false, afk });
+      return createElement('div', null,
+        v.channelId !== null ? createElement('div', { className: 'd-voice-dock' }, createElement('p', { role: 'status' }, v.announcement)) : null,
+        createElement('p', { className: 'd-sr-only dw-voice-lasting', role: 'status' }, v.lasting));
+    }
+    const tree = (afk: NonNullable<UseCallOptions['afk']>) => createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Probe, { afk }));
+    const view = render(tree({ channels: AFK_SET, pending: null }));
+    view.rerender(tree({ channels: AFK_SET, pending: move() }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(`${MOVED}. ${t('voice.full')}`));
+    expect(document.querySelector('.d-voice-dock')).toBeNull();
+    expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(MOVED);
   });
 });

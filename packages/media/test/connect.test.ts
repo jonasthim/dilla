@@ -114,6 +114,11 @@ describe('joinCall (DEV-27)', () => {
     expect(h.state.rooms[0].opts.disconnectOnPageLeave).toBe(false);
   });
 
+  it('a caller cannot turn disconnectOnPageLeave back on (V-1 fix round 1, m-4)', async () => {
+    await joinCall(options({ roomOptions: { disconnectOnPageLeave: true } }));
+    expect(h.state.rooms[0].opts.disconnectOnPageLeave).toBe(false);
+  });
+
   it('roomOptions cannot replace the manager, turn dynacast, RED or backup codecs on, or add frame metadata (I1)', async () => {
     const other = { e2eeManager: { isDataChannelEncryptionEnabled: false } };
     await joinCall(options({
