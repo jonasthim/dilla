@@ -68,6 +68,7 @@ The link banner (`nav.link.offline`, `nav.link.connecting`) is `role="status"`. 
 - `activity.mention='mentioned you in #{channel}'`
 - `activity.dm='direct message'`
 - `activity.elsewhere='unread elsewhere'`
+- `activity.emptyTitle='Nothing new'`
 - `activity.since='Since this tab opened.'`
 - `you.title='you'`
 - `you.status='this device'`

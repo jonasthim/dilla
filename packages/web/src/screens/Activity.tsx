@@ -42,7 +42,7 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
     return (
       <div className="dw-phone-pane dw-phone-pane--empty">
         <PhoneHeader title={t('activity.title')} />
-        <div className="dw-phone-pane__frame"><EmptyState title={t('activity.empty')} body={t('activity.since')} /></div>
+        <div className="dw-phone-pane__frame"><EmptyState title={t('activity.emptyTitle')} body={t('activity.since')} /></div>
       </div>
     );
   }

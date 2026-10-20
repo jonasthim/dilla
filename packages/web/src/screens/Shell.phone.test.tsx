@@ -230,7 +230,7 @@ describe('the phone shell: tabs', () => {
     expect(tab('home')).toHaveAttribute('aria-current', 'page');
     await user.click(tab('activity'));
     expect(here()).toBe('/activity');
-    expect(await screen.findByText(t('activity.empty'))).toBeInTheDocument();
+    expect(await screen.findByText(t('activity.emptyTitle'))).toBeInTheDocument();
     expect(screen.queryByRole('navigation', { name: t('shell.rail.label') })).toBeNull();
     await user.click(tab('you'));
     expect(here()).toBe('/you');
@@ -250,7 +250,7 @@ describe('the phone shell: tabs', () => {
     await user.click(await screen.findByRole('button', { name: 'lobby' }));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
     goto('/activity', { phoneBack: true });
-    await screen.findByText(t('activity.empty'));
+    await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
   });
@@ -269,7 +269,7 @@ describe('the phone shell: tabs', () => {
     const { user } = phone({ path: `/dm/${DM}` });
     await screen.findByRole('main');
     goto('/activity', { phoneBack: true });
-    await screen.findByText(t('activity.empty'));
+    await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('home'));
     expect(here()).toBe(`/dm/${DM}`);
     goto(`/c/${A}/${TEXT}`, { phoneBack: true });
@@ -290,7 +290,7 @@ describe('the phone shell: tabs', () => {
     await waitFor(() => expect(here()).toBe('/activity'));
     expect(back).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('complementary')).toBeNull();
-    expect(await screen.findByText(t('activity.empty'))).toBeInTheDocument();
+    expect(await screen.findByText(t('activity.emptyTitle'))).toBeInTheDocument();
     expect(window.history.length).toBe(length);
     expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
   });
@@ -452,7 +452,7 @@ describe('the phone shell: history', () => {
     const { user } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: 'lobby' }));
     goto('/activity', { phoneBack: true });
-    await screen.findByText(t('activity.empty'));
+    await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('home'));
     expect(here()).toBe(`/c/${A}/${TEXT}`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);

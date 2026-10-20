@@ -395,7 +395,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await tab(page, 'nav.tab.activity').tap();
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
       await expect(listHeading(page, 'activity.title')).toBeFocused();
-      await expect(page.getByRole('region', { name: copy('activity.empty'), exact: true })).toBeVisible();
+      await expect(page.getByRole('region', { name: copy('activity.emptyTitle'), exact: true })).toBeVisible();
       expect((await page.locator('.d-app-shell__sidebar .d-phone-header').boundingBox())!.height, 'a 48 header on Activity').toBeGreaterThanOrEqual(48);
       await expectAccessible(page, 'Activity');
 

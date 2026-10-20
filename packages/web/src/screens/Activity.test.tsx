@@ -68,7 +68,7 @@ describe('Activity', () => {
     const { view } = setup();
     // H8: the header stays, and the empty state is the framed region under it, named by its own sentence.
     expect(screen.getByRole('heading', { level: 2, name: t('activity.title') }).closest('header')).toHaveClass('d-phone-header');
-    const frame = screen.getByRole('region', { name: t('activity.empty') });
+    const frame = screen.getByRole('region', { name: t('activity.emptyTitle') });
     expect(frame).toHaveClass('d-empty-state');
     expect(frame.parentElement).toHaveClass('dw-phone-pane__frame');
     expect(within(frame).getByText(t('activity.since'))).toBeInTheDocument();
@@ -100,7 +100,7 @@ describe('Activity', () => {
     const row = screen.getByRole('button', { name: /general/ });
     expect(row).toHaveTextContent('1 mention');
     expect(row).not.toHaveTextContent('unread');
-    expect(screen.queryByText(t('activity.empty'))).toBeNull();
+    expect(screen.queryByText(t('activity.emptyTitle'))).toBeNull();
   });
 
   it('has no axe violations with rows', async () => {
