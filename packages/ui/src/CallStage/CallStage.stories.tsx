@@ -181,11 +181,27 @@ function StageDemo(props: CallStageProps & { initialFocus?: string | null }) {
   return <CallStage {...props} tiles={props.tiles.map(t => (t.view.video || t.source === 'screen' ? { ...t, media } : t))} focusedId={focusedId} onFocus={setFocusedId} />;
 }
 const stageBox = (Story: () => React.JSX.Element) => (
-  <div style={{ width: 960, height: 620, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)' }}><Story /></div>
+  <div style={{ width: '100%', maxWidth: 960, height: 620, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)' }}><Story /></div>
 );
 
+/** The stage's phone layout (CallStage.css) follows the browser viewport, not the story frame: the story shooter also runs at 360×740. */
+const onPhone = (): boolean => window.matchMedia('(max-width: 47.99rem)').matches;
+/** Phone (R9): one column for up to two tiles and two above, every tile inside the area's width, no filmstrip. */
+function expectPhoneStage(root: HTMLElement, story: string, n: number): void {
+  const tiles = Array.from(root.querySelectorAll<HTMLElement>('li.d-call-stage__tile'));
+  const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
+  const columns = new Set(tiles.map(li => Math.round(li.getBoundingClientRect().left)));
+  if (tiles.length !== n) throw new Error(`${story}: ${String(tiles.length)} tiles, expected ${String(n)}`);
+  if (columns.size !== (n > 2 ? 2 : 1)) throw new Error(`${story}: ${String(columns.size)} columns on a phone, expected ${String(n > 2 ? 2 : 1)}`);
+  for (const li of tiles) {
+    const r = li.getBoundingClientRect();
+    if (r.left < area.left - 1 || r.right > area.right + 1) throw new Error(`${story}: a phone tile overflows the area's width`);
+  }
+  expectVisibleTargets(root, story);
+}
 /** The tiles are 16:9, none overflows the area, and they are as wide as the area allows (no tile is smaller than a row's worth). */
 function expectGrid(root: HTMLElement, story: string, n: number): void {
+  if (onPhone()) { expectPhoneStage(root, story, n); return; }
   const tiles = Array.from(root.querySelectorAll<HTMLElement>('li.d-call-stage__tile'));
   const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
   if (tiles.length !== n) throw new Error(`${story}: ${String(tiles.length)} tiles, expected ${String(n)}`);
@@ -200,6 +216,16 @@ function expectGrid(root: HTMLElement, story: string, n: number): void {
 function expectFocused(root: HTMLElement, story: string): void {
   const stage = root.querySelector('.d-call-stage');
   if (stage?.hasAttribute('data-focused-stage') !== true) throw new Error(`${story}: the stage is not focused`);
+  if (onPhone()) {
+    // Phone: no filmstrip; the focused tile goes first and takes the area's full width.
+    const first = root.querySelector<HTMLElement>('li[data-focused="true"]')!.getBoundingClientRect();
+    const rest = Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"]')).map(li => li.getBoundingClientRect());
+    const box = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
+    if (first.width < box.width - 2) throw new Error(`${story}: the focused tile is ${String(first.width)} wide on a phone, in ${String(box.width)}`);
+    if (rest.some(r => r.top < first.bottom - 1)) throw new Error(`${story}: a phone tile is not under the focused tile`);
+    expectVisibleTargets(root, story);
+    return;
+  }
   const big = root.querySelector<HTMLElement>('li[data-focused="true"]')!.getBoundingClientRect();
   const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
   const strip = Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"]')).map(li => li.getBoundingClientRect());
