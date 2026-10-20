@@ -1,15 +1,16 @@
-// E-reload (web3.7, R31): a reload in a call leaves exactly one tile for the reloaded person, and a reload that is never
-// followed by a rejoin leaves no ghost either. The second half suppresses every page-leave event (an init script that
-// stops `pagehide` and `beforeunload` before any other listener sees them): the app's own pagehide leave, and LiveKit's
-// page-leave disconnect (Room `disconnectOnPageLeave`, on by default, listens to both), whose room end the call session
-// takes as a lost room and answers with the worker's self-Remove. FX-RELOAD (web3.9): with `beforeunload` let through,
-// that self-Remove raced the reload, and when it landed first (Firefox in CI, run 39393759704) the old device had left
-// before the new page booted, so the sweep had nothing to read. Locally the SFU still drops the reloaded participant within about
-// 300 ms, so without help the peer-visible checks (bob's roster and tiles) could not tell the sweep from the SFU. The
-// second half therefore holds back the SFU's `participant_left` webhook (S3's test-host hook, `withholdLeft`): the
-// instance never hears of the departure, and only alice's boot sweep (her self-Remove, one read and one proposal) can take
-// her old device out of bob's roster. That roster check is red with the sweep's Remove stubbed (web3.8 E1, recorded in
-// E1-report.md). The request check still pins that the sweep reads the call; sweep.test.ts covers the self-Remove.
+// E-reload (web3.7, R31): a reload in a call leaves exactly one tile for the reloaded person, and a reload that is
+// never followed by a rejoin leaves no ghost either. The second half blocks both page-leave events, `pagehide` and
+// `beforeunload` (an init script that stops them before any other listener sees them), so it models a tab that vanishes
+// with no leave at all, whatever any listener on the page (the app's, or LiveKit's `disconnectOnPageLeave`) would do.
+// FX-RELOAD (web3.9): with `beforeunload` let through, LiveKit's page-leave disconnect ended the room, the old worker
+// sent its own self-Remove, and when that won the race (Firefox in CI, run 39393759704) the new page had nothing to
+// sweep. Locally the SFU still drops the reloaded participant within about 300 ms, so without help the peer-visible
+// checks (bob's roster and tiles) could not tell the sweep from the SFU. The second half therefore holds back the SFU's
+// `participant_left` webhook (S3's test-host hook, `withholdLeft`): the instance never hears of the departure, and only
+// alice's boot sweep (her self-Remove, one read and one proposal) can take her old device out of bob's roster. That
+// roster check is red with the sweep's Remove stubbed (web3.8 E1, recorded in E1-report.md). The request check still
+// pins that the sweep reads the call, and that nothing of alice's is proposed before it; sweep.test.ts covers the
+// self-Remove.
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
@@ -28,12 +29,12 @@ async function rosterDevices(page: Page): Promise<string[]> {
   return (s?.roster ?? []).map((r) => r.deviceId).sort();
 }
 
-/** The page-leave events whose listeners must never run on a suppressed page: the app's leave listens to `pagehide`,
- *  LiveKit's page-leave disconnect to both. */
+/** The page-leave events whose listeners must never run on a suppressed page: both of them, whichever of the page's
+ *  listeners (the app's leave, a library's page-leave disconnect) would hear one. */
 const PAGE_LEAVE = ['pagehide', 'beforeunload'] as const;
 
-/** Stops every page-leave event before any listener below the capture phase on `window` can see it (the app's and
- *  LiveKit's, both on `window` with no capture): no leave of any kind is sent as the page goes away. The init script
+/** Stops every page-leave event before any listener below the capture phase on `window` can see it (every listener
+ *  the page adds there without capture): no leave of any kind is sent as the page goes away. The init script
  *  reaches documents loaded after it is added; it takes the event names as its argument. */
 function suppressPageLeave(types: readonly string[]): void {
   for (const type of types) window.addEventListener(type, (e) => e.stopImmediatePropagation(), { capture: true });
