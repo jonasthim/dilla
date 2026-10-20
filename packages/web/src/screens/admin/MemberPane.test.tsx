@@ -41,8 +41,14 @@ describe('MemberPane', () => {
     act(() => fake.set(`presence:${CID}`, null));
     expect(screen.getByRole('status')).toHaveTextContent('Loading members');
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle' }));
-    expect(screen.getByRole('heading', { name: 'Offline — 1' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'offline — 1' })).toBeInTheDocument();
     expect(screen.getByText('Do Not Disturb')).toBeInTheDocument();
+  });
+  it('orders a hoisted role section, then online, then offline, each with its count', () => {
+    const { fake } = setup();
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    const titles = screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent);
+    expect(titles).toEqual(['mods — 2', 'online — 1', 'offline — 1']);
   });
   it('keeps keyboard focus on a member action when presence moves its row', () => {
     const { fake } = setup();
@@ -56,7 +62,7 @@ describe('MemberPane', () => {
   it('lists groups with the owner and you tags', async () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'members — 2' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'online — 2' })).toBeInTheDocument();
     expect(screen.getByText('owner')).toBeInTheDocument();
     expect(screen.getByText('you')).toBeInTheDocument();
     await expectNoAxeViolations(view.container);

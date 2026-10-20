@@ -83,7 +83,7 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
     <div style={{ ['--d-shell-h' as string]: 'calc(100dvh - 32px)' }}>
       <AppShell skipLabel={t('shell.skip')} ring={p.ring}
         rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
-          joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
+          addLabel={t('layout.rail.add')} onAdd={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
           <ChannelList title="Midgard" label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
             channels={tab === 'dms' ? [{ id: 'bob', name: 'bob', kind: 'dm' as const, readable: false }]

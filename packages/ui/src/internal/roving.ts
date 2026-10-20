@@ -21,8 +21,7 @@ export function useRovingFocus(activeIndex: number): RovingFocus {
 
   const items = (): HTMLButtonElement[] =>
     Array.from(ref.current?.children ?? [])
-      // An ActionMenu's trigger (the rail's add tile) is the button inside the item's menu wrapper.
-      .map(child => child.firstElementChild?.matches('.d-action-menu') ? child.firstElementChild.firstElementChild : child.firstElementChild)
+      .map(child => child.firstElementChild)
       .filter((el): el is HTMLButtonElement => el instanceof HTMLButtonElement);
 
   const apply = (index: number) => {

@@ -565,7 +565,7 @@ describe('review round 1', () => {
     screen.getByRole('button', { name: 'voice general' }).focus();
     await app.user.tab();
     expect(document.activeElement).toHaveAccessibleName('join voice');
-    expect(document.activeElement?.closest('.d-channel-list__voice')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
+    expect(document.activeElement?.closest('.d-voice-item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
   });
 
   // Product walk M4: the SFU's own speaking (the session's state.speaking), no longer the meter level.
@@ -701,12 +701,14 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
     const app = await inVoice();
     let release: () => void = () => undefined;
     app.session.leaveGate = new Promise<void>(resolve => { release = resolve; });
-    await app.user.click(screen.getByRole('button', { name: 'voice music' }));
+    // A row click joins on a desktop (web3.9), so the stage is opened by the route here and joined from its button.
+    const go = (id: string) => act(() => { window.history.pushState(null, '', `/c/${A}/${id}`); window.dispatchEvent(new PopStateEvent('popstate')); });
+    go(MUSIC);
     await waitFor(() => expect(window.location.pathname).toContain(MUSIC));
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.log).toContain('leave:switch'));
     // While the switch’s leave runs, the person picks general again: the music join is superseded before it started.
-    await app.user.click(screen.getByRole('button', { name: 'voice general' }));
+    go(GENV);
     await waitFor(() => expect(window.location.pathname).toContain(GENV));
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     expect(app.callContexts).toHaveLength(3);
@@ -1120,5 +1122,23 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
       act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
       await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
     });
+  });
+});
+
+// web3.9 (C4): a voice channel's stage opens with the channel header in its 48 bar; a DM call has none.
+describe('the voice stage header (web3.9)', () => {
+  it('shows the voice channel header in the stage bar on a desktop, with the volume glyph', async () => {
+    renderVoiceShell({ path: `/c/${A}/${GENV}` });
+    const stage = (await main().findByRole('button', { name: 'join voice' })).closest('section') as HTMLElement;
+    const bar = stage.querySelector('.d-call-stage__bar') as HTMLElement;
+    expect(within(bar).getByRole('heading', { name: 'general' })).toBeInTheDocument();
+    expect(bar.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
+  });
+
+  it('a DM call stage has no channel header', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    expect(document.querySelector('.d-call-stage__bar')).toBeNull();
   });
 });

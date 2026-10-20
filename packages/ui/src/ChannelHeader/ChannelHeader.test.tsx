@@ -116,6 +116,14 @@ describe('ChannelHeader', () => {
     expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ news ]');
   });
 
+  it('heads a voice channel with the volume glyph in place of #, named by the name alone', () => {
+    const { container } = render(<ChannelHeader name="harbour" kind="voice" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'harbour' })).toBeInTheDocument();
+    expect(container.querySelector('[data-icon="volume-2"]')?.closest('.d-channel-header__glyph')).not.toBeNull();
+    expect(container.textContent).not.toContain('#');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ harbour ]');
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelHeader name="lfg" topic="looking for group" readable /></div>);
     await expectNoAxeViolations(container);

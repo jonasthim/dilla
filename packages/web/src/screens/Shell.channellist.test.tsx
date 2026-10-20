@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import type { ChannelSummary } from '@dilla/client-core';
 import { A, BOB, BOB_DEV, callState, OWN_DEV, renderVoiceShell } from '../test/fake-client.ts';
 import { ME } from '../test/fixtures.ts';
@@ -56,7 +56,6 @@ describe('one channel list (web3.8 item 12)', () => {
     expect(names).toEqual(['ada', 'bob']);
     expect(item.querySelector('[data-speaking="true"]')).toBeNull();
     await app.user.click(lounge);
-    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('call', callState({ phase: 'in', channelId: VV, callId: VV }));
     act(() => app.session.update({ speaking: true }));
@@ -89,5 +88,103 @@ describe('one channel list (web3.8 item 12)', () => {
     await app.user.click(within(list()).getAllByRole('button', { name: 'join voice' })[0]);
     await waitFor(() => expect(app.log).toContain(`callJoin:${VV}`));
     expect(window.location.pathname).toBe(`/c/${A}/${VV}`);
+  });
+});
+
+// web3.9 (WEB-LIST): categories that fold, a "+" that moves with them, one-click join.
+const CA = '61'.repeat(16);
+const CB = '62'.repeat(16);
+const RP = '63'.repeat(16);
+const RL = '64'.repeat(16);
+const RV = '65'.repeat(16);
+const LC = '66'.repeat(16);
+const kid = (id: string, name: string, kind: 0 | 1, position: number, parentId: string): ChannelSummary => ({ ...ch(id, name, kind, position), parentId });
+const CATEGORISED = [ch(TA, 'alpha', 0, 0), ch(CA, 'raids', 2, 10), kid(RP, 'plans', 0, 0, CA), kid(RL, 'loot', 0, 1, CA),
+  kid(RV, 'war room', 1, 2, CA), ch(CB, 'lounge', 2, 20), kid(LC, 'chat', 0, 0, CB)];
+const FOLDED = `channels.collapsed.${CA}`;
+function mountCategories(settings: Record<string, string> = {}, path = `/c/${A}/${RP}`) {
+  const app = renderVoiceShell({ path: `/c/${A}/${TA}`, settings });
+  act(() => app.client.publish(`channels:${A}`, CATEGORISED));
+  // The route follows the list, which the harness seeds without these channels.
+  act(() => { window.history.pushState(null, '', path); window.dispatchEvent(new PopStateEvent('popstate')); });
+  return app;
+}
+const manage = (app: ReturnType<typeof mount>) => act(() => app.client.publish(`permissions:${A}`, { loaded: true, manageChannels: true } as never));
+const head = (name: string) => within(list()).getByRole('button', { name });
+const has = (name: string | RegExp) => within(list()).queryByRole('button', { name }) !== null;
+
+describe('categories (web3.9)', () => {
+  it('folding a category writes channels.collapsed.<id> = 1 and keeps its active and unread rows', async () => {
+    const app = mountCategories();
+    act(() => app.client.publish('badges', { [RL]: { unread: 3, mentions: 0 } }));
+    await within(list()).findByRole('button', { name: 'raids' });
+    expect(head('raids')).toHaveAttribute('aria-expanded', 'true');
+    expect(has('voice war room')).toBe(true);
+    await app.user.click(head('raids'));
+    expect(app.client.callsOf('setSetting')).toEqual([{ m: 'setSetting', key: FOLDED, value: '1' }]);
+    act(() => app.client.publish('settings', { [FOLDED]: '1' }));
+    expect(head('raids')).toHaveAttribute('aria-expanded', 'false');
+    expect(has(/^plans/)).toBe(true);
+    expect(has(/^loot/)).toBe(true);
+    expect(has('voice war room')).toBe(false);
+    expect(has(/^chat/)).toBe(true);
+  });
+
+  it('unfolding writes null', async () => {
+    const app = mountCategories({ [FOLDED]: '1' });
+    expect(await within(list()).findByRole('button', { name: 'raids' })).toHaveAttribute('aria-expanded', 'false');
+    await app.user.click(head('raids'));
+    expect(app.client.callsOf('setSetting')).toEqual([{ m: 'setSetting', key: FOLDED, value: null }]);
+  });
+
+  it('a remount reads the setting back', async () => {
+    mountCategories({ [FOLDED]: '1' });
+    expect(await within(list()).findByRole('button', { name: 'raids' })).toHaveAttribute('aria-expanded', 'false');
+    cleanup();
+    mountCategories({ [FOLDED]: '1' });
+    expect(await within(list()).findByRole('button', { name: 'raids' })).toHaveAttribute('aria-expanded', 'false');
+    expect(has('voice war room')).toBe(false);
+  });
+
+  it("a manager's category \"+\" opens the create flow with that parent", async () => {
+    const app = mountCategories();
+    app.client.handler = c => Promise.resolve(c.m === 'createChannel' ? { channelId: '77'.repeat(16) } : null);
+    await within(list()).findByRole('button', { name: 'raids' });
+    expect(screen.queryByRole('button', { name: 'new channel in raids' })).toBeNull();
+    manage(app);
+    await app.user.click(screen.getByRole('button', { name: 'new channel in raids' }));
+    await app.user.type(await screen.findByRole('textbox', { name: 'Channel name' }), 'Bosses{Enter}');
+    await waitFor(() => expect(app.client.callsOf('updateChannel')).toHaveLength(1));
+    expect(app.client.callsOf('createChannel')).toHaveLength(1);
+    expect(app.client.callsOf('updateChannel')[0]).toMatchObject({ channelId: '77'.repeat(16), name: null, topic: null, parent: CA, slowmode: null });
+  });
+
+  it('the new-channel "+" sits in the sidebar head with no categories, and moves to the category headers with them', async () => {
+    const app = mount();
+    manage(app);
+    const heads = () => document.querySelector('.d-channel-list__head') as HTMLElement;
+    await within(list()).findByRole('button', { name: 'voice lounge' });
+    expect(within(heads()).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
+    act(() => app.client.publish(`channels:${A}`, CATEGORISED));
+    expect(within(heads()).queryByRole('button', { name: 'new channel' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'new channel in lounge' })).toBeInTheDocument();
+  });
+});
+
+describe('one-click voice join on desktop (web3.9)', () => {
+  it('a click on a voice row opens it and joins', async () => {
+    const app = mount();
+    await app.user.click(await within(list()).findByRole('button', { name: 'voice studio' }));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${VW}`));
+    expect(window.location.pathname).toBe(`/c/${A}/${VW}`);
+  });
+
+  it('a click on the row of the voice channel already joined only opens it', async () => {
+    const app = mount();
+    await app.user.click(await within(list()).findByRole('button', { name: 'voice studio' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await app.user.click(within(list()).getByRole('button', { name: /^alpha/ }));
+    await app.user.click(within(list()).getByRole('button', { name: 'voice studio' }));
+    expect(app.log.filter(l => l === `callJoin:${VW}`)).toHaveLength(1);
   });
 });

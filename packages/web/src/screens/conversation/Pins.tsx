@@ -1,15 +1,11 @@
 // Pins for the open conversation.
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { TimelineItem } from '@dilla/client-core';
-import { Button, PinsDialog } from '@dilla/ui';
+import { PinsDialog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { authorName, messageTime, plainBody, type NameBook } from '../shell-model.ts';
-
-export function PinsButton(p: { onOpen(): void }): React.JSX.Element {
-  return <Button variant="ghost" size="md" onClick={() => p.onOpen()}>{t('shell.pins.open')}</Button>;
-}
 
 export interface PinsPanelProps { channelId: string; open: boolean; title: string; book: NameBook; items: readonly TimelineItem[];
   now: number; /** Under the title; absent in a DM, where nothing is gated. */ note?: string | undefined; /** False hides the unpin buttons (the viewer may not pin here). */ canUnpin?: boolean; onClose(): void; onJump(msgId: string): void; onError(e: unknown): void }

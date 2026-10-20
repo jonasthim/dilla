@@ -50,12 +50,13 @@ describe('a focused tile control clears the pinned toolbar (WCAG 2.4.11)', () =>
 });
 
 describe('the one channel list (web3.8 item 12)', () => {
-  it('has no voice-section rules left, and the join and the "+" are 44 px targets on a phone', () => {
+  it('has no voice-section rules left, and the retired text join and the old "+" have none either (web3.9: both are icon buttons, 44 px by base.css)', () => {
     expect(css).not.toContain('dw-voice-section');
     expect(css).not.toContain('dw-new-channel');
-    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join, \[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
-    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.d-channel-list__join, \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
-    expect(rule(css, '[data-layout="phone"] .dw-channel-add')).toMatch(/min-width:\s*2\.75rem;\s*min-height:\s*2\.75rem/);
+    expect(css).not.toContain('dw-channel-add');
+    expect(css).not.toContain('d-channel-list__join');
+    expect(css).toMatch(/\[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
   });
 });
 

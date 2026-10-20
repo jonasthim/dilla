@@ -63,10 +63,16 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Enter');
   await expectShell(page);
 
-  // Join the peer's server through the rail's join button (the rail's one tab stop while it has no
-  // server) and the dialog.
+  // Join the peer's server through the rail's "+" tile: the rail's one tab stop while it has no server is the @ tile, and
+  // ArrowDown reaches the "+" tile; its dialog opens on the first choice, "join a server", then the join dialog.
   const rail = railNav(page);
-  await tabTo(page, rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }));
+  const addTile = rail.getByRole('button', { name: copy('layout.rail.add'), exact: true });
+  await tabTo(page, rail.getByRole('button', { name: /^direct messages/ }));
+  await press('ArrowDown');
+  await expect(addTile).toBeFocused();
+  await press('Enter');
+  const addDialog = page.getByRole('dialog', { name: copy('layout.add.title'), exact: true });
+  await expect(addDialog.getByRole('button', { name: copy('layout.add.join'), exact: true })).toBeFocused({ timeout: WAIT });
   await press('Enter');
   const dialog = page.getByRole('dialog', { name: copy(COPY.joinTitle), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
@@ -77,7 +83,8 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await expect(dialog).toBeHidden({ timeout: WAIT });
 
   // Rail and channel list by their single tab stops (the active item, else the first).
-  await tabTo(page, rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }));
+  // The rail remembers the last tile focused: the "+" tile, one above the server's.
+  await tabTo(page, addTile);
   await press('ArrowUp');
   await expect(railItem(page, peer.communityName)).toBeFocused();
   await press('Enter');
@@ -175,8 +182,9 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // Web3.8 (WS8): the server's one action is the settings gear beside its name, a stop before the tabs ("leave server" lives
   // in settings, "invite link" under settings → Invites, and the "+" is the owner's). The splitter sits outside the channel
   // list, so it is not counted here.
-  expect(stops.get(2), 'the sidebar is three tab stops: the "server settings" gear, the tabs and the rows').toBe(3);
-  expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
+  // web3.9: the sidebar tabs are gone (the @ tile holds direct messages), so the sidebar is the gear and the rows.
+  expect(stops.get(2), 'the sidebar is two tab stops: the "server settings" gear and the rows').toBe(2);
+  expect(stops.get(1), 'the rail is one tab stop, its "+" tile included').toBe(1);
   expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.

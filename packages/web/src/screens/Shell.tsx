@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
-  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, LinkBanner, PhoneHeader,
+  ActionMenu, AddServerDialog, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, IconButton, LinkBanner, PhoneHeader,
   TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
@@ -17,7 +17,6 @@ import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
-import { PinsButton } from './conversation/Pins.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
 import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
@@ -60,7 +59,6 @@ export function focusUserSettings(): void {
 }
 
 /** The icon of the channel list's new-channel button. */
-const PLUS = 'plus';
 const SEARCH = 'search';
 const SETTINGS = 'settings';
 const CATEGORY = 2;
@@ -117,7 +115,7 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * when focus is not in the row (a pointer that does not focus buttons).
  */
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
-type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean };
+type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null };
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
 type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
@@ -221,6 +219,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
+  // The category a channel is created in (its header's "+"), or null for the top level.
+  const [channelParent, setChannelParent] = useState<string | null>(null);
+  // The rail's "+": one dialog whose two choices are the existing join and create flows.
+  const [addOpen, setAddOpen] = useState(false);
   // Web3.8 (R18): the pane widths the person chose, kept in this browser. The ui never re-clamps what is stored; it clamps
   // what it shows, and only a drag or a key reports a new width.
   const [paneWidths, setPaneWidths] = useState(readPaneWidths);
@@ -935,11 +937,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const everyoneDenied = (id: string) => (overwrites?.[id] ?? []).some(o => o.kind === 0 && o.targetId === access?.everyoneId && (o.deny & PERM.sendMessages) !== 0);
   const isAnnouncement = (c: ChannelSummary) => c.kind === 0 && (c.announcement || everyoneDenied(c.id));
   const channelRows: ListRow[] = ordered.map(c => ({
-    id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1,
+    id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1, parentId: c.parentId,
     ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, ...rowBadge(badges, settings, d.id) }));
   const dmCounts = sumBadges(dmRows);
+  // R36: a category folds on this device only, the setting `channels.collapsed.<id>` = '1'; unfolding deletes it.
+  const collapsedKey = (id: string) => `channels.collapsed.${id}`;
+  const categoryRows = (channels ?? []).filter(c => c.kind === CATEGORY)
+    .sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1))
+    .map(c => ({ id: c.id, name: c.name, collapsed: settings?.[collapsedKey(c.id)] === '1' }));
+  const toggleCategory = (id: string) => {
+    const folded = categoryRows.find(c => c.id === id)?.collapsed === true;
+    client.call({ m: 'setSetting', key: collapsedKey(id), value: folded ? null : '1' }).catch(report);
+  };
   // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
   const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
   const voiceRows = ordered.filter(isVoice).map(c => ({ id: c.id, name: c.name, readable: false, current: c.id === channelId,
@@ -1003,6 +1014,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
     const headerAction = !voiceHere ? undefined : (
       <>
+        {canManageChannels && categoryRows.length === 0 ? (
+          <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
+        ) : null}
         {phone ? (
           <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={() => startSearch('all')}>
             <Icon name={SEARCH} size={18} /></Button>
@@ -1015,12 +1029,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         headerAction={headerAction}
-        // Web3.8 (item 11): the new-channel "+" sits at the right of the list's own header, for a person who can manage
-        // channels, on the channels tab and the phone's servers list, never on the DMs tab.
-        listAction={voiceHere && canManageChannels ? (
-          <Button variant="ghost" className="dw-channel-add" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
-            <Icon name={PLUS} size={16} /></Button>
-        ) : undefined}
+        // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
+        // category header carries its own, for a person who can manage channels.
+        categories={onDms ? undefined : categoryRows}
+        onToggleCategory={toggleCategory}
+        {...(voiceHere && canManageChannels && !onDms ? { onAddInCategory: (id: string) => { setChannelParent(id); setChannelOpen(true); },
+          addInCategoryLabel: (name: string) => t('layout.category.add', { name }) } : {})}
         // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
         titleKind={phone && onDms ? 'plain' : 'server'}
         channels={onDms ? dmRows : channelRows}
@@ -1028,7 +1042,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
           onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
-        onSelect={id => navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
+        onSelect={id => {
+          navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
+          // R24: on a desktop a click on a voice row opens it and joins; a phone's tap only opens it (the 44px icon joins).
+          const room = voiceRooms[id];
+          if (!onDms && !phone && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
+        }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
         content={content}
@@ -1184,23 +1203,31 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           }} />
       ) } : undefined}
       actions={<>
-        {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
-        {openId !== null ? <Button data-thread-list-toggle="" pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())}>
-          {t('thread.list')}</Button> : null}
-        <Button variant="ghost" size="md" onClick={() => startSearch('channel')}>{t('search.open')}</Button>
-        {canManageChannels ? <Button onClick={() => setEditChannelId(channel.id)}>{t('admin.channel.open')}</Button> : null}
-        <Button data-members-toggle="" pressed={membersShown} onClick={toggleMembers}>
-          {t('members.toggle')}</Button>
-      </>} />
+        {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
+        {openId !== null ? <IconButton data-foldable="" data-thread-list-toggle="" icon="messages-square" label={t('thread.list')}
+          pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())} /> : null}
+        <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
+        {canManageChannels ? <IconButton data-foldable="" icon="settings" label={t('admin.channel.open')} onClick={() => setEditChannelId(channel.id)} /> : null}
+        <IconButton data-members-toggle="" icon="users" label={t('members.toggle')} pressed={membersShown} onClick={toggleMembers} />
+      </>}
+      overflow={{ label: t('layout.header.more'), items: [...pinsItem, ...listItem, searchItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : [])],
+        onSelect: id => {
+          if (id === 'search') startSearch('channel');
+          else if (id === 'pins') pinsOpen();
+          else if (id === 'threads') { if (sideNow?.view === 'list') closeSide(); else openList(); }
+          else if (id === 'edit') setEditChannelId(channel.id);
+        } }} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
           items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       ) } : undefined}
       actions={<>
-        {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
-        <Button variant="ghost" size="md" onClick={() => startSearch('channel')}>{t('search.open')}</Button>
-      </>} /> : null;
+        {openId !== null ? <IconButton data-foldable="" icon="pin" label={t('shell.pins.open')} onClick={pinsOpen} /> : null}
+        <IconButton data-foldable="" icon="search" label={t('search.open')} onClick={() => startSearch('channel')} />
+      </>}
+      overflow={{ label: t('layout.header.more'), items: [...pinsItem, searchItem],
+        onSelect: id => { if (id === 'search') startSearch('channel'); else pinsOpen(); } }} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 
@@ -1615,8 +1642,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         page={phone ? <>{adminPage}{props.page}</> : undefined}
         rail={phone && phoneTab !== 'home' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={homeSelected ? null : communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
-          joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
-          createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
+          addLabel={t('layout.rail.add')} onAdd={() => setAddOpen(true)}
           itemLabel={railLabel}
           home={{ label: t('home.tile'), itemLabel: t('home.tileLabel', { unread: dmCounts.unread, mentions: dmCounts.mentions }),
             selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => navigate({ name: 'dms' }) }} />}
@@ -1673,6 +1699,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           issueSearch(searchQuery, scope, scope === 'all' ? null : scope === 'community' ? communityId : targetId); }}
         onPick={async hit => { const opened = await pickSearchHit(hit); if (opened) searchOpener.current = null; return opened; }}
         onClose={() => { restoreSearchFocus.current = searchOpener.current; searchOpener.current = null; setSearchOpen(false); }} />
+      <AddServerDialog open={addOpen} title={t('layout.add.title')} joinLabel={t('layout.add.join')} createLabel={t('layout.add.create')}
+        closeLabel={t('dialog.close')} onClose={() => setAddOpen(false)} onJoin={() => setJoinOpen(true)} onCreate={() => setCreateOpen(true)} />
       <JoinCommunity open={joinOpen} initialInvite={joinInvite ?? undefined} initialError={joinError ?? undefined}
         onClose={closeJoin} onJoined={onJoined} />
       <UnsupportedVoice open={call.unsupported} labels={{ title: t('voice.unsupported.title'), body: t('voice.unsupported.body'),
@@ -1687,7 +1715,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           setCreateOpen(false);
           navigate({ name: 'channel', communityId: id, channelId: general }, true);
         }} />
-      <CreateChannelFlow open={channelOpen} community={community} onClose={() => setChannelOpen(false)}
+      <CreateChannelFlow open={channelOpen} community={community} parentId={channelParent} onClose={() => setChannelOpen(false)}
         onDone={(id, kind) => {
           if (kind === 'text') pendingFocus.current = { id, from: targetId };
           setChannelOpen(false);

@@ -5,7 +5,7 @@
 import { expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
+import { addServerVia, TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
 import { REPO_ROOT, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -32,7 +32,7 @@ test.afterAll(async () => { await host?.stop(); });
 /** Ada starts a server, opens server settings → Invites, makes a link and returns its URL. */
 async function makeLink(page: Page, h: StartedHost): Promise<string> {
   await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
-  await page.getByRole('navigation').getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

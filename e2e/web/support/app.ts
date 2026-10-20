@@ -62,7 +62,6 @@ export const COPY = {
   finish: 'onboarding.done.next',
   skipLink: 'shell.skip',
   railLabel: 'shell.rail.label',
-  railJoin: 'shell.rail.join',
   joinTitle: 'join.title',
   joinInvite: 'join.invite',
   joinSubmit: 'join.submit',
@@ -507,9 +506,15 @@ export async function expectShell(page: Page): Promise<void> {
   await expect(onboardingFrame(page)).toHaveCount(0);
 }
 
+/** The rail's one "+" tile opens the add dialog (web3.9); its choice opens the existing join or create flow. */
+export async function addServerVia(page: Page, choice: 'join' | 'create'): Promise<void> {
+  await railNav(page).getByRole('button', { name: copy('layout.rail.add'), exact: true }).click();
+  await page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy(choice === 'join' ? 'layout.add.join' : 'layout.add.create'), exact: true }).click();
+}
+
 export async function joinCommunity(page: Page, peer: Peer, setup: PeerSetup): Promise<void> {
-  const rail = railNav(page);
-  await rail.getByRole('button', { name: copy(COPY.railJoin), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = page.getByRole('dialog', { name: copy(COPY.joinTitle), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByLabel(copy(COPY.joinInvite), { exact: true }).fill(setup.invite_code);

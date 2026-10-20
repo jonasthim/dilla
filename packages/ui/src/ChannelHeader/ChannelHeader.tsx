@@ -9,7 +9,7 @@ export interface ChannelHeaderProps {
   topic?: string;
   readable?: boolean;
   readableLabel?: string;
-  kind?: 'channel' | 'dm' | 'announcement';
+  kind?: 'channel' | 'dm' | 'announcement' | 'voice';
   /** A cluster of 32px `IconButton`s (R27). A child with `data-foldable` folds into the "⋯" menu below 36rem of header width. */
   actions?: ReactNode;
   /**
@@ -29,8 +29,8 @@ export interface ChannelHeaderProps {
  * header's own width (a container query, so the aside being open counts) the `data-foldable` actions hide and `overflow`
  * shows (C1, R27). Without `overflow` nothing folds: a foldable action stays visible.
  */
-function opening(kind: 'channel' | 'dm' | 'announcement') {
-  if (kind === 'announcement') return '[ ';
+function opening(kind: 'channel' | 'dm' | 'announcement' | 'voice') {
+  if (kind === 'announcement' || kind === 'voice') return '[ ';
   return kind === 'dm' ? '[ @ ' : '[ # ';
 }
 
@@ -40,14 +40,14 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
     return (
       <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu}
         marker={readable ? <span role="img" aria-label={readableLabel ?? 'Readable by this server'}><Icon name="eye" size={14} /></span> : undefined}
-        title={<><span className="d-channel-header__bracket" aria-hidden="true">{kind === 'announcement' ? <>[ <Icon name="megaphone" size={14} /></> : opening(kind)}</span>{name}<span className="d-channel-header__bracket" aria-hidden="true"> ]</span></>} />
+        title={<><span className="d-channel-header__bracket" aria-hidden="true">{kind === 'announcement' || kind === 'voice' ? <>[ <Icon name={kind === 'voice' ? 'volume-2' : 'megaphone'} size={14} /></> : opening(kind)}</span>{name}<span className="d-channel-header__bracket" aria-hidden="true"> ]</span></>} />
     );
   }
   return (
     <header className="d-channel-header" data-overflow={overflow !== undefined ? 'true' : undefined}>
       <div className="d-channel-header__title">
         <span className="d-channel-header__bracket" aria-hidden="true">{opening(kind)}</span>
-        {kind === 'announcement' ? <span className="d-channel-header__glyph" aria-hidden="true"><Icon name="megaphone" size={14} /></span> : null}
+        {kind === 'announcement' || kind === 'voice' ? <span className="d-channel-header__glyph" aria-hidden="true"><Icon name={kind === 'voice' ? 'volume-2' : 'megaphone'} size={14} /></span> : null}
         <h2 className="d-channel-header__name">{name}</h2>
         <span className="d-channel-header__bracket" aria-hidden="true"> ]</span>
       </div>

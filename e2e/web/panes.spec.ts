@@ -2,7 +2,7 @@
 // the mouse and with the keyboard, the width is kept across a reload (localStorage `dilla.paneWidths`, read and written only
 // in layout.ts), Enter resets it, Home and End go to the limits, and the aside has a splitter only while it is a column.
 import { expect, type Page } from '@playwright/test';
-import { TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
+import { addServerVia, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -34,7 +34,7 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   if (h === null) throw new Error('the empty test host did not start');
   await page.setViewportSize({ width: 1280, height: 800 });
   await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

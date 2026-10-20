@@ -13,9 +13,9 @@ export interface MemberListMember {
 }
 export interface MemberListGroup {
   id: string;
-  /** `role` is a hoisted role (the default), `online` and `offline` are the presence sections; offline rows are dimmed (R28). With a kind the heading reads `{title} — {n}`; without one the title is drawn as given (legacy callers that count themselves). */
-  kind?: 'role' | 'online' | 'offline';
-  /** The section's name; the heading reads `{title} — {n}`. */
+  /** `role` is a hoisted role, `online` and `offline` are the presence sections; offline rows are dimmed (R28). */
+  kind: 'role' | 'online' | 'offline';
+  /** The section's raw name; the heading reads `{title} — {n}`, the count is drawn here. */
   title: string;
   color?: number | null;
   members: readonly MemberListMember[];
@@ -66,9 +66,9 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
       ) : shown.length === 0 ? (
         <p className="d-member-list__note">{emptyLabel}</p>
       ) : shown.map(group => (
-        <div key={group.id} className="d-member-list__group" data-kind={group.kind ?? 'role'}>
+        <div key={group.id} className="d-member-list__group" data-kind={group.kind}>
           <h3 className={`d-member-list__title${group.color ? ' d-member-list__title--colored' : ''}`}
-            style={group.color ? { '--d-group-color': hex(group.color) } as CSSProperties : undefined}>{group.kind === undefined ? group.title : `${group.title} — ${String(group.members.length)}`}</h3>
+            style={group.color ? { '--d-group-color': hex(group.color) } as CSSProperties : undefined}>{`${group.title} — ${String(group.members.length)}`}</h3>
           <ul className="d-member-list__rows" role="list">
             {group.members.map(m => (
               <li key={m.id} className="d-member-list__row" data-row="" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>

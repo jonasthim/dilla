@@ -291,7 +291,9 @@ export function CreateServerFlow(props: {
  * follows it into a dialog reopened meanwhile (review I2).
  */
 export function CreateChannelFlow(props: {
-  open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
+  open: boolean; community: { id: string; name: string } | null;
+  /** The category the channel is made in (its header's "+"); null or absent is the top level. */
+  parentId?: string | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
   const client = useCore();
   const [picked, setKind] = useState<NewChannelKind>('text');
@@ -363,6 +365,11 @@ export function CreateChannelFlow(props: {
         const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown,
           ...(sendPrivate ? { private: { roleIds } } : {}), ...(chosen === 'announcement' ? { announce: { roleIds: announceIds } } : {}) }), 'channelId');
         if (id !== null) rememberMade(client, id);
+        // The create command makes a top-level channel; a category's "+" then moves it in. The channel exists either way,
+        // so a refused move leaves it at the top level (server settings → channels can place it).
+        if (id !== null && props.parentId != null) {
+          await client.call({ m: 'updateChannel', channelId: id, name: null, topic: null, parent: props.parentId, slowmode: null }).catch(() => undefined);
+        }
         if (!mine()) return;
         if (id === null) fail(t('create.channel.error.other', { code: BAD_RESULT.code }));
         else props.onDone(id, chosen);

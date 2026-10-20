@@ -9,7 +9,7 @@ const HOME = { label: 'direct messages', selected: false, unread: 0, mentions: 0
 const meta = {
   title: 'Shell/CommunityRail', component: CommunityRail,
   args: { label: 'servers', items: [{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls' }, { id: 'c3', name: 'raid planning' }],
-    activeId: 'a1', onSelect: () => {}, joinLabel: 'join a server', onJoin: () => {} },
+    activeId: 'a1', onSelect: () => {}, addLabel: 'add a server', onAdd: () => {} },
   decorators: [Story => <div style={{ width: 72, height: 420 }}><Story /></div>],
 } satisfies Meta<typeof CommunityRail>;
 export default meta;
@@ -19,21 +19,18 @@ export const NoneActive: Story = { args: { activeId: null } };
 export const Empty: Story = { args: { items: [], activeId: null } };
 export const Badges: Story = { args: { items: ITEMS } };
 export const WithSettings: Story = { args: { settingsLabel: 'settings', onSettings: () => {} } };
-/** Join and create as two tiles (the shell until WEB-LIST), no captions. */
-export const WithCreate: Story = { args: { createLabel: 'new server', onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} } };
-export const FreshInstance: Story = { args: { items: [], activeId: null, createLabel: 'new server', onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} } };
+export const FreshInstance: Story = { args: { items: [], activeId: null, settingsLabel: 'settings', onSettings: () => {} } };
 
 // web3.9 (UI-2): the `@` tile first, a hairline, the servers, one dashed "+" tile, the pill at the left edge.
-const FULL = { items: ITEMS, activeId: 'a1', home: HOME, addLabel: 'add a server', onAdd: () => {}, createLabel: 'new server', onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} };
+const FULL = { items: ITEMS, activeId: 'a1', home: HOME, addLabel: 'add a server', onAdd: () => {}, settingsLabel: 'settings', onSettings: () => {} };
 const rgb = (c: string): [number, number, number] => { const m = /rgba?\(([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/.exec(c); if (m === null) throw new Error(`cannot read colour ${c}`); return [Number(m[1]), Number(m[2]), Number(m[3])]; };
 const lum = ([r, g, b]: [number, number, number]) => { const f = (v: number) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
 /** Unread is the left-edge pill alone (no visible count); a mention is a count at the tile's bottom right, readable at 3:1 or better. */
 const badgePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLElement }) => {
-  if (canvasElement.querySelectorAll('.d-community-rail__badge:not([data-modern])').length > 0) throw new Error(`${story}: a top-right count shows`);
   for (const sr of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-sr-only'))) {
     const r = sr.getBoundingClientRect(); if (r.width > 1 || r.height > 1) throw new Error(`${story}: an unread count is visible`);
   }
-  const mention = canvasElement.querySelector<HTMLElement>('.d-community-rail__badge[data-modern] .d-pill');
+  const mention = canvasElement.querySelector<HTMLElement>('.d-community-rail__badge .d-pill');
   if (mention === null) return;
   const tile = mention.closest('.d-community-rail__item') as HTMLElement;
   const t = tile.getBoundingClientRect(); const m = mention.getBoundingClientRect();

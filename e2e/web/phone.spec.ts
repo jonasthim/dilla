@@ -5,7 +5,7 @@
 // no mobile emulation (R23).
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
-import {
+import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account,
@@ -167,7 +167,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
 
     // 2. A server from Home; the tab bar names three places (home, activity, you) and the status bar is gone.
     await test.step('start the server', async () => {
-      await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+      await addServerVia(page, 'create');
       const dialog = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');

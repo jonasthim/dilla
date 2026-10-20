@@ -102,7 +102,7 @@ export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { them
 
 // web3.9 (UI-2): the row grammar. One name x and one trailing-slot right edge down the whole list.
 const MIXED_VOICE = {
-  ...VOICE, iconJoin: true,
+  ...VOICE,
   rooms: {
     v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] },
     v2: { joined: true, participants: [person('you')] },

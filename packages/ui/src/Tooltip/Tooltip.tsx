@@ -43,6 +43,8 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
   const touched = useRef(false);
   const [shown, setShown] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  // A top tooltip with no room above its control (a bar at the top of the window) opens below it instead, so it never covers the control.
+  const [flipped, setFlipped] = useState(false);
 
   const clear = useCallback(() => {
     window.clearTimeout(showTimer.current);
@@ -59,15 +61,18 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
     const vh = document.documentElement.clientHeight;
     let left: number;
     let top: number;
+    let below = false;
     if (placement === 'right') {
       left = a.right + GAP;
       top = a.top + a.height / 2 - t.height / 2;
     } else {
       left = a.left + a.width / 2 - t.width / 2;
       top = placement === 'top' ? a.top - t.height - GAP : a.bottom + GAP;
+      if (placement === 'top' && top < MARGIN) { top = a.bottom + GAP; below = true; }
     }
     left = Math.max(MARGIN, Math.min(left, vw - t.width - MARGIN));
     top = Math.max(MARGIN, Math.min(top, vh - t.height - MARGIN));
+    setFlipped(below);
     setPos(p => (p.left === left && p.top === top ? p : { left, top }));
   }, [placement]);
   useLayoutEffect(() => { if (shown) place(); }, [shown, place, label, keys]);
@@ -133,7 +138,7 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
       {cloneElement(children, describedBy ? { 'aria-describedby': describedBy } : {})}
       {keys?.length ? <span id={chordId} className="d-sr-only">{keys.join(' ')}</span> : null}
       {shown ? createPortal(
-        <span ref={tip} role="tooltip" className="d-tooltip" data-placement={placement}
+        <span ref={tip} role="tooltip" className="d-tooltip" data-placement={placement === 'top' && flipped ? 'bottom' : placement}
           style={{ left: pos.left, top: pos.top }}>
           <span className="d-tooltip__label">{label}</span>
           {keys?.length ? <span aria-hidden="true"><KeyHint keys={keys} /></span> : null}

@@ -43,7 +43,7 @@ function Screen({ main, composer, after }: { main: ReactNode; composer?: ReactNo
   return <div style={{ ['--d-shell-h' as string]: '768px' }}>
     <AppShell skipLabel={t('shell.skip')}
       rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
-        joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
+        addLabel={t('layout.rail.add')} onAdd={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
       sidebar={<ChannelList label={t('shell.channels.label')} title="Midgard" activeId="general" onSelect={noop}
         emptyLabel={t('shell.channels.empty')} rowLabel={rowLabel}
         channels={[{ id: 'general', name: 'general', kind: 'text', readable: false }, { id: 'random', name: 'random', kind: 'text', readable: false }]} />}

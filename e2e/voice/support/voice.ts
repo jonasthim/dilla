@@ -9,7 +9,7 @@ import {
   WebDriver, testHostUrl, testkitEnv, type PeerActor, type PeerCallCheck, type PeerCallJoined, type PeerCallMembers,
   type PeerCallRead, type PeerCallStarted, type PeerSetup,
 } from '../../web/support/driver';
-import {
+import { addServerVia,
   channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, homeTile, expectShell, instanceInvite, messageRow, namedRow,
   openSettings, railItem, railNav, sendText, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
@@ -136,7 +136,7 @@ export async function instanceName(): Promise<string> {
 export async function onboard(person: Person, peer: VoicePeer, display: string): Promise<Account> {
   const account = await signUp(person.page, instanceInvite(), await instanceName(), display, process.env.DILLA_TESTKIT_CONTROL);
   const page = person.page;
-  await railNav(page).getByRole('button', { name: copy('shell.rail.join'), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = page.getByRole('dialog', { name: copy('join.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByLabel(copy('join.invite'), { exact: true }).fill(peer.setupDone.invite_code);
@@ -307,7 +307,8 @@ export async function openText(page: Page, community: string, channel: string): 
   await expect(page.getByRole('textbox', { name: copy('shell.composer.label', { channel }), exact: true })).toBeVisible({ timeout: WAIT });
 }
 
-/** Opens a voice channel's view from the sidebar. */
+/** Opens a voice channel's view from the sidebar. On a desktop a click on the row also joins (web3.9, R24), so a spec that
+ *  needs the stage before the join reaches it by the route, not through this helper. */
 export async function openVoice(page: Page, community: string, name: string): Promise<void> {
   await railItem(page, community).click();
   await voiceRow(page, name).click();
@@ -324,8 +325,12 @@ export function phaseOf(page: Page): Locator { return page.locator('[data-call-p
 /** `joinVoice`: opens the voice channel, presses `join voice`, and waits until the call phase is `in` and the page's
  *  session is connected (the dock's `data-phase`; leave and the controls act on a connected session). */
 export async function joinVoice(page: Page, community: string, name: string): Promise<void> {
-  await openVoice(page, community, name);
-  await stage(page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+  await railItem(page, community).click();
+  // The row's trailing join icon (web3.9) joins without the row's own click; it shows while the row is hovered or focused.
+  const row = voiceRow(page, name);
+  await row.hover();
+  await row.locator('xpath=ancestor::li[1]').getByRole('button', { name: copy('voice.join'), exact: true }).click();
+  await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
   await connected(page);
 }
 /** The call phase is `in` and the dock shows a connected session. */

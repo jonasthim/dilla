@@ -67,7 +67,9 @@ test('from an empty instance: start a server, invite a friend through a link, re
   const empty = page.getByRole('region', { name: copy('shell.noServer.title'), exact: true });
   await expect(empty).toBeVisible({ timeout: WAIT });
   // The control main's client lacked (dbe836b): the spec fails here against it.
-  const newServer = railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true });
+  const newServer = railNav(page).getByRole('button', { name: copy('layout.rail.add'), exact: true });
+  const chooseCreate = () => page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy('layout.add.create'), exact: true }).click();
   await expect(newServer).toBeVisible();
   await expect(button(empty, 'shell.noServer.create')).toBeVisible();
   await expect(button(empty, 'shell.noServer.action')).toBeVisible();
@@ -79,6 +81,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
   const serverName = start.getByRole('textbox', { name: copy('create.server.name'), exact: true });
   await newServer.focus();
   await page.keyboard.press('Enter');
+  await chooseCreate();
   await expect(serverName).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(start).toBeHidden();
@@ -86,6 +89,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
 
   // 2. "new server", a name, and #general opens with focus in its composer. The server also has a voice general.
   await newServer.click();
+  await chooseCreate();
   await expect(serverName).toBeFocused();
   await expectAccessible(page, 'start a server');
   await page.keyboard.type(SERVER);

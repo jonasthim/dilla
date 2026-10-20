@@ -64,6 +64,12 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
   return { fake, user, view };
 }
 const path = () => window.location.pathname;
+
+/** The rail's "+" opens the add dialog; its choice (join a server, new server) opens the existing flow. */
+async function addServer(user: ReturnType<typeof userEvent.setup>, choice: 'join a server' | 'new server') {
+  await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'add a server' }));
+  await user.click(within(screen.getByRole('dialog', { name: 'add a server' })).getByRole('button', { name: choice }));
+}
 /** The `@` tile: the rail's first item, direct messages and Home. */
 const homeTile = () => within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: /^direct messages/ });
 const composer = (name = 'general') => screen.getByRole('textbox', { name: `message #${name}` });
@@ -161,7 +167,7 @@ it('waits for an unsaved dialog to close before applying an update', async () =>
     store: { save: () => Promise.resolve(), load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
   const { fake, user } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
   fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
-  await user.click(screen.getByRole('button', { name: 'new server' }));
+  await addServer(user, 'new server');
   await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'unfinished');
   act(() => changed('/assets/new.js'));
   expect(screen.getByText(en['update.finishDialog'])).toBeInTheDocument();
@@ -653,13 +659,15 @@ describe('selection', () => {
     setup(`/c/${A}/${'ee'.repeat(16)}`);
     expect(path()).toBe(`/c/${A}/${GEN}`);
   });
-  it('lists channels in order without the category', () => {
+  it('lists channels in order, the category as a folding header before its children', () => {
     setup(`/c/${A}/${GEN}`);
     const list = screen.getByRole('navigation', { name: 'channels' });
     const text = list.textContent ?? '';
     expect(text).toContain('Midgard');
-    expect(text).not.toContain('more');
     const at = (s: string) => text.indexOf(s);
+    expect(within(list).getByRole('button', { name: 'more' })).toHaveAttribute('aria-expanded', 'true');
+    expect(at('more')).toBeLessThan(at('random'));
+    expect(at('lounge')).toBeLessThan(at('more'));
     expect(at('general')).toBeLessThan(at('random'));
     expect(at('random')).toBeLessThan(at('lobby'));
     // web3.8 (item 12): a voice channel stands in its position among the text rows, under no heading.
@@ -1143,7 +1151,7 @@ describe('servers and the join dialog', () => {
   it('joins from the rail, closes the dialog and opens the server', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     fake.handler = c => Promise.resolve(c.m === 'joinCommunity' ? { communityId: B } : null);
-    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await addServer(user, 'join a server');
     await user.type(screen.getByRole('textbox', { name: 'Invite' }), 'https://dilla.test/i/ABCD-EFGH');
     await user.click(screen.getByRole('button', { name: 'Join' }));
     expect(fake.callsOf('joinCommunity')).toEqual([{ m: 'joinCommunity', invite: 'ABCD-EFGH' }]);
@@ -1154,7 +1162,7 @@ describe('servers and the join dialog', () => {
     const NEW = '5b'.repeat(16);
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     fake.handler = c => Promise.resolve(c.m === 'joinCommunity' ? { communityId: NEW } : null);
-    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await addServer(user, 'join a server');
     await user.type(screen.getByRole('textbox', { name: 'Invite' }), 'ABCD-EFGH');
     await user.click(screen.getByRole('button', { name: 'Join' }));
     expect(path()).toBe(`/c/${NEW}`);
@@ -1371,6 +1379,9 @@ describe('keyboard', () => {
     await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
     await user.tab();
+    // The fold menu is a stop only below 36rem of header width (CSS hides it above); jsdom has no layout.
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
+    await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
@@ -1380,7 +1391,7 @@ describe('keyboard', () => {
   // Requirement 11: closing the join dialog puts focus in the composer.
   it('moves focus to the composer when the join dialog closes', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(screen.getByRole('button', { name: 'join a server' }));
+    await addServer(user, 'join a server');
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(composer()).toHaveFocus();
@@ -1400,12 +1411,15 @@ describe('sidebar actions and pane widths (web3.8)', () => {
   beforeEach(clean);
   afterEach(clean);
 
-  it('the owner sees "+" in the list header and no invite or "+ channel" button in the server header', () => {
-    setup(`/c/${A}/${GEN}`, { communities: OWNED });
+  it('the owner sees "+" on each category header when the server has categories, and in the sidebar head when it has none', () => {
+    const { view } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const header = document.querySelector('.d-channel-list__head') as HTMLElement;
     expect(within(header).queryByRole('button', { name: en['invite.open'] })).toBeNull();
     expect(within(header).queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
-    const plus = within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: en['create.channel.open'] });
+    expect(within(screen.getByRole('navigation', { name: 'channels' })).getByRole('button', { name: 'new channel in more' })).toBeInTheDocument();
+    view.unmount();
+    setup(`/c/${A}/${GEN}`, { communities: OWNED, before: fake => fake.set(`channels:${A}`, CHANNELS.filter(c => c.parentId === null && c.kind !== 2)) });
+    const plus = within(document.querySelector('.d-channel-list__head') as HTMLElement).getByRole('button', { name: en['create.channel.open'] });
     expect(plus).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: en['invite.open'] })).toBeNull();
   });
@@ -1713,5 +1727,40 @@ describe('devices and settings', () => {
   it('goes nowhere under a deep link to settings', () => {
     setup('/settings/devices');
     expect(path()).toBe('/settings/devices');
+  });
+});
+
+describe('the channel header actions (web3.9)', () => {
+  const OWNED = [{ id: A, name: 'Midgard', owner: ME.id }];
+  const header = () => document.querySelector('.d-channel-header') as HTMLElement;
+  const more = () => within(header()).getByRole('button', { name: en['layout.header.more'] });
+
+  it('are icon buttons named by their existing labels; pins, threads, search and edit fold, members stays', () => {
+    setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const bar = within(header());
+    const names = [en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open'], en['members.toggle']];
+    const icons = ['pin', 'messages-square', 'search', 'settings', 'users'];
+    names.forEach((name, i) => {
+      const b = bar.getByRole('button', { name });
+      expect(b.querySelector(`svg[data-icon="${icons[i]}"]`)).not.toBeNull();
+      expect(b.hasAttribute('data-foldable')).toBe(i < 4);
+    });
+    expect(more()).toBeInTheDocument();
+  });
+
+  it('the "more" menu holds the folding actions in order, and an item does what its button does', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    await user.click(more());
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open']]);
+    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
+  });
+
+  it('a member without manage channels has no edit action, in the bar or the menu', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(more());
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open']]);
+    await user.keyboard('{Escape}');
+    expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });
 });

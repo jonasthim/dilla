@@ -67,7 +67,7 @@ function Screen(p: { resize?: Pick<AppShellProps, 'paneWidths' | 'onPaneResize' 
       <AppShell
         skipLabel={t('shell.skip')}
         rail={<CommunityRail label={t('shell.rail.label')} items={servers.map(s => (p.badges && s.id === 'b' ? { ...s, unread: 2, mentions: 1 } : s))}
-          activeId={servers[0]?.id ?? null} onSelect={noop} joinLabel={t('shell.rail.join')} onJoin={noop}
+          activeId={servers[0]?.id ?? null} onSelect={noop} addLabel={t('layout.rail.add')} onAdd={noop}
           settingsLabel={t('shell.rail.settings')} onSettings={noop} itemLabel={itemLabel} />}
         sidebar={servers.length ? (
           <ChannelList title="Midgard"

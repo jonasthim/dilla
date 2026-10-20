@@ -61,6 +61,12 @@ function setup(path: string, opts: { communities?: CommunitySummary[]; members?:
   return { fake, user, view };
 }
 const path = () => window.location.pathname;
+
+/** The rail's "+" opens the add dialog; its choice (join a server, new server) opens the existing flow. */
+async function addServer(user: ReturnType<typeof userEvent.setup>, choice: 'join a server' | 'new server') {
+  await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'add a server' }));
+  await user.click(within(screen.getByRole('dialog', { name: 'add a server' })).getByRole('button', { name: choice }));
+}
 const rail = () => screen.getByRole('navigation', { name: 'servers' });
 
 afterEach(() => { vi.useRealTimers(); });
@@ -76,17 +82,19 @@ describe('a fresh instance (flow 07)', () => {
     expect(screen.getByRole('dialog', { name: 'Start a server' })).toBeInTheDocument();
   });
 
-  it('starts the rail with the @ tile and ends it with join and new server, both captioned', () => {
-    setup('/');
+  it('starts the rail with the @ tile and ends it with the one add tile, which opens a dialog of join and new server', async () => {
+    const { user } = setup('/');
     const buttons = within(rail()).getAllByRole('button');
-    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['direct messages', 'join a server', 'new server']);
-    expect(within(buttons[1]).getByText('join')).toBeInTheDocument();
-    expect(within(buttons[2]).getByText('new')).toBeInTheDocument();
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['direct messages', 'add a server']);
+    expect(rail().textContent).not.toMatch(/join|new/);
+    await user.click(buttons[1]);
+    const dialog = screen.getByRole('dialog', { name: 'add a server' });
+    expect(within(dialog).getAllByRole('button').map(b => b.textContent)).toEqual(expect.arrayContaining(['join a server', 'new server']));
   });
 
   it('starts a server from the rail: it is created with #general and a voice general, opened on #general, focus in its composer', async () => {
     const { fake, user } = setup('/');
-    await user.click(within(rail()).getByRole('button', { name: 'new server' }));
+    await addServer(user, 'new server');
     await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'Midgard Crew{Enter}');
     await waitFor(() => expect(path()).toBe(`/c/${NEW}/${GEN}`));
     expect(fake.calls.filter(c => c.m.startsWith('create'))).toEqual([
@@ -105,7 +113,7 @@ describe('a fresh instance (flow 07)', () => {
     })) as unknown as typeof window.matchMedia;
     try {
       const { user } = setup('/');
-      await user.click(within(rail()).getByRole('button', { name: 'new server' }));
+      await addServer(user, 'new server');
       await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'Midgard Crew{Enter}');
       await waitFor(() => expect(path()).toBe(`/c/${NEW}/${GEN}`));
       const box = await screen.findByRole('textbox', { name: 'message #general' });
@@ -123,7 +131,7 @@ describe('a fresh instance (flow 07)', () => {
     const { fake, user } = setup('/');
     const answer = worker(fake);
     fake.handler = c => (c.m === 'createChannel' && c.kind === 'voice' ? Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 })) : answer(c));
-    await user.click(within(rail()).getByRole('button', { name: 'new server' }));
+    await addServer(user, 'new server');
     await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'Midgard Crew{Enter}');
     const dialog = await screen.findByRole('dialog', { name: 'Start a server' });
     await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent('voice channel general was not added (E_UNAVAILABLE)'));
@@ -154,12 +162,15 @@ describe('a fresh instance (flow 07)', () => {
     });
     try {
       const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+      const tile = within(rail()).getByRole('button', { name: 'add a server' });
+      // The add dialog's choice closes it (focus back on the "+" tile) and opens the flow, so the tile is the flow's opener too.
       for (const [opener, title, field] of [
-        [within(rail()).getByRole('button', { name: 'new server' }), 'Start a server', 'Server name'],
+        [tile, 'Start a server', 'Server name'],
         [screen.getByRole('button', { name: 'new channel' }), 'New channel in Midgard', 'Channel name'],
       ] as const) {
         opener.focus();
         await user.keyboard('{Enter}');
+        if (opener === tile) await user.click(within(screen.getByRole('dialog', { name: 'add a server' })).getByRole('button', { name: 'new server' }));
         expect(screen.getByRole('dialog', { name: title })).toBeInTheDocument();
         expect(screen.getByRole('textbox', { name: field })).toHaveFocus();
         await user.keyboard('{Escape}');
@@ -187,7 +198,7 @@ describe('a server’s actions (flow 07)', () => {
   it('the header holds the server settings gear alone (leave lives in settings); the owner has the "+" in the list header, a member none', () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     const head = document.querySelector('.d-channel-list__head')!;
-    expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
+    expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['new channel', 'server settings']);
     const panel = screen.getByRole('navigation', { name: 'channels' });
     expect(within(panel).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();

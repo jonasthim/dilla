@@ -413,12 +413,12 @@ describe('phone layout', () => {
   });
 
   it('the phone drops the rail settings tile; the desktop keeps it', () => {
-    const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} joinLabel="join" onJoin={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
+    const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} addLabel="add a server" onAdd={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
     const shell = (layout: 'phone' | 'desktop') => (
       <AppShell layout={layout} skipLabel="skip" rail={railWith} sidebar={<p>s</p>} header={<h2>x</h2>} composer={null}><p>c</p></AppShell>
     );
     const phoneView = render(shell('phone'));
-    expect(screen.getByRole('button', { name: 'join' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'add a server' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
     phoneView.unmount();
     render(shell('desktop'));

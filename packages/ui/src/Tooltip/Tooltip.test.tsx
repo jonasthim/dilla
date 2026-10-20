@@ -178,6 +178,30 @@ describe('Tooltip (R15)', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  it('opens below a control that has no room above it, so it never covers the control; with room it stays above', () => {
+    render(<Tooltip label="new channel"><button type="button">new channel</button></Tooltip>);
+    const btn = screen.getByRole('button', { name: 'new channel' });
+    Object.defineProperty(document.documentElement, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(document.documentElement, 'clientWidth', { value: 1200, configurable: true });
+    const real = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return this.classList.contains('d-tooltip')
+        ? ({ top: 0, bottom: 24, left: 0, right: 60, width: 60, height: 24, x: 0, y: 0, toJSON() {} })
+        : real.call(this);
+    });
+    let top = 10;
+    btn.parentElement!.getBoundingClientRect = () => ({ top, bottom: top + 28, left: 50, right: 78, width: 28, height: 28, x: 50, y: top, toJSON() {} });
+    focus(btn);
+    const tip = () => screen.getByRole('tooltip');
+    expect(parseFloat(tip().style.top)).toBeGreaterThanOrEqual(top + 28);
+    expect(tip()).toHaveAttribute('data-placement', 'bottom');
+    act(() => btn.blur());
+    top = 200;
+    focus(btn);
+    expect(parseFloat(tip().style.top)).toBeLessThan(200);
+    expect(tip()).toHaveAttribute('data-placement', 'top');
+  });
+
   it('shows on keyboard focus after a touch pointer (a tablet with a hardware keyboard)', () => {
     const btn = mount();
     fireEvent.pointerDown(btn, { pointerType: 'touch' });

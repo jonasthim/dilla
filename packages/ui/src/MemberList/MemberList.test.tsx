@@ -161,17 +161,6 @@ describe('MemberList sections and rows (R28, F1)', () => {
     expect(css).toMatch(/\.d-member-list__group\[data-kind="offline"\] \.d-member-list__text \{[^}]*opacity: var\(--opacity-muted\)/);
   });
 
-  it('a group without a kind draws its title as given (legacy callers count themselves); with a kind the count is appended', () => {
-    render(<MemberList {...props({ groups: [{ id: 'g', title: 'Offline — 1', members: props().groups[0]!.members }] })} />);
-    expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent(/^Offline — 1$/);
-  });
-
-  it('a group without a kind is a role section', () => {
-    const p = props();
-    const { container } = render(<MemberList {...p} groups={[{ id: 'g', title: 'members', members: p.groups[0]!.members }]} />);
-    expect(container.querySelector('.d-member-list__group')).toHaveAttribute('data-kind', 'role');
-  });
-
   it('a row is two lines at var(--row-h-2) with a 32px avatar and presence corner; line 2 exists and is empty', () => {
     const { container } = render(<MemberList {...sectioned()} />);
     expect(css).toMatch(/\.d-member-list__row \{[^}]*min-height: var\(--row-h-2\)/);

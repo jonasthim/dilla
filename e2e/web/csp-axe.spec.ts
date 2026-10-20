@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import {
+import { addServerVia,
   COPY, HOST, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectHeading, expectShell, instanceInvite,
   joinCommunity, messageRow, nextButton, openChannel, railNav, readManifest, readRecoveryKey, splash, submitButton,
   tag, test, completeFactorStep, newAccount,
@@ -124,7 +124,7 @@ test('every state of the slice passes axe with target-size, in all three themes,
   expect(workerScript.headers()['content-type'], workerUrl).toBe('text/javascript; charset=utf-8');
   expect(workerScript.headers()['content-security-policy'], workerUrl).toBe(CSP);
 
-  await railNav(page).getByRole('button', { name: copy(COPY.railJoin), exact: true }).click();
+  await addServerVia(page, 'join');
   await expect(page.getByRole('dialog', { name: copy(COPY.joinTitle), exact: true })).toBeVisible({ timeout: WAIT });
   await expectAccessible(page, 'join dialog');
   await page.keyboard.press('Escape');

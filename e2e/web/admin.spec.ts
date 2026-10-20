@@ -4,7 +4,7 @@
 // onboarding shows is the one request the spec makes itself). Controls are found by role and accessible name, with the
 // copy keys of flow 08 (strings/{admin,members,moderation}.ts) through copy().
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
   signUp, test, channelRow, expectComposerReady,
 } from './support/app';
@@ -78,7 +78,7 @@ async function memberAction(page: Page, server: string, name: string, item: stri
 }
 /** Joins `server` with the invite link from the rail's "join" button. */
 async function joinWith(page: Page, link: string): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.join'), exact: true }).click();
+  await addServerVia(page, 'join');
   const dialog = dialogOf(page, 'join.title');
   await dialog.getByLabel(copy('join.invite'), { exact: true }).fill(link);
   await button(dialog, 'join.submit').click();
@@ -93,7 +93,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
 
   // 1. Ada signs up with the bootstrap invite and starts "Midgard Crew".
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

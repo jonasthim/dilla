@@ -261,12 +261,13 @@ describe('removed from the server while in voice (product walk I8)', () => {
     expect(await main().findByText(t('voice.removedNotMember'))).toBeInTheDocument();
     expect(main().queryByText(t('voice.removed'))).toBeNull();
     expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
-    const row = [...document.querySelectorAll('.d-channel-list__voice')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
+    const row = [...document.querySelectorAll('.d-voice-item')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
     expect(row).toBeDefined();
-    expect(row!.querySelector('.d-channel-list__join')).toBeNull();
+    expect(row!.querySelector('.d-voice-row__join')).toBeNull();
     // A removal from the call alone (the channel still visible) keeps the join.
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
     expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(row!.querySelector('.d-voice-row__join')).not.toBeNull();
   });
 });
 

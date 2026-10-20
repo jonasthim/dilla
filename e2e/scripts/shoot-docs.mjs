@@ -559,7 +559,8 @@ async function main(argv) {
 
     // "new server" in the rail: the dialog, with the name typed, then Enter.
     const rail = byText(ada, 'navigation', 'shell.rail.label');
-    await rail.getByRole('button', { name: t('create.rail.newLabel'), exact: true }).click();
+    await rail.getByRole('button', { name: t('layout.rail.add'), exact: true }).click();
+    await byText(ada, 'dialog', 'layout.add.title').getByRole('button', { name: t('layout.add.create'), exact: true }).click();
     const startDialog = byText(ada, 'dialog', 'create.server.title');
     const serverName = startDialog.getByRole('textbox', { name: t('create.server.name'), exact: true });
     await serverName.and(ada.locator(':focus')).waitFor({ timeout: WAIT });
@@ -570,12 +571,12 @@ async function main(argv) {
     // #general opens with the focus in its composer; Ada's browser is the first in it and so creates its group.
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
     await ada.getByRole('button', { name: t('voice.open', { name: 'general' }), exact: true }).waitFor({ timeout: WAIT });
-    // The rail up close: the server's tile, then "join a server" and "new server", beside the server's name and its
-    // actions; cut off below the "new server" tile (the settings gear lives in the user panel since web3.8).
+    // The rail up close: the @ tile, the server's tile and the one "+" tile, beside the server's name and its actions;
+    // cut off below the "+" tile (the settings gear lives in the user panel since web3.8).
     await settle(ada);
     const railFile = path.join(o.outDir, 'create-rail.png');
-    const newBox = await byText(ada, 'button', 'create.rail.newLabel').boundingBox();
-    if (newBox === null) throw new Error('the rail has no new server tile on screen');
+    const newBox = await byText(ada, 'button', 'layout.rail.add').boundingBox();
+    if (newBox === null) throw new Error('the rail has no add tile on screen');
     await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(newBox.y + newBox.height + 12) } });
     written.push(railFile);
 
@@ -1109,7 +1110,8 @@ async function main(argv) {
     peer = startPeer(publicUrl, controlUrl, instanceInvite);
     const watch = (await peer.request('setup', { community: 'Bridge Watch', channel: 'watch', voice: true }));
     await peer.request('register');
-    await byText(mira, 'button', 'shell.rail.join').click();
+    await byText(mira, 'button', 'layout.rail.add').click();
+    await byText(mira, 'dialog', 'layout.add.title').getByRole('button', { name: t('layout.add.join'), exact: true }).click();
     const join = byText(mira, 'dialog', 'join.title');
     await join.getByLabel(t('join.invite'), { exact: true }).fill(watch.invite_code);
     await join.getByRole('button', { name: t('join.submit'), exact: true }).click();

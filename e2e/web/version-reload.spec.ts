@@ -5,7 +5,7 @@
 // `reload.action`. Pressing it checkpoints the draft first (WS3), so the draft is back after the page has reloaded.
 // Ada's account lives in /tmp/dw/host-8515, which the three hosts of this suite share (`keepData`).
 import { expect, type Page, type TestInfo } from '@playwright/test';
-import { TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
+import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -85,7 +85,7 @@ test('a tab older than the host is refused two ways: banner, no reconnect, and R
   await page.setViewportSize({ width: 1280, height: 800 });
   const seen = await watch(page);
   await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

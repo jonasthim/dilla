@@ -39,7 +39,7 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
       banner={banner ? <Banner tone="warn" action={{ label: 'retry now', onAction: noop }}>offline · reconnecting to dilla.thim.dev</Banner> : shell?.banner}
       rail={<CommunityRail label="servers" activeId={tab === 'dms' ? null : 'a1'} onSelect={() => setTab('channels')}
         home={{ label: 'direct messages', itemLabel: 'direct messages, unread 2, mentions 0', selected: tab === 'dms', unread: 2, mentions: 0,
-          onSelect: () => setTab('dms') }} joinLabel="join a server" onJoin={noop}
+          onSelect: () => setTab('dms') }} addLabel="add a server" onAdd={noop}
         settingsLabel="settings" onSettings={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />}
       sidebar={<ChannelList label={tab === 'channels' ? 'channels' : 'direct messages'} title="Midgard Crew"

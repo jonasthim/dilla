@@ -5,7 +5,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, copy, expectAccessible, expectComposerReady, newChannelButton, openSettings, railNav,
   signUp, test, type SettingsSection,
 } from './support/app';
@@ -63,7 +63,7 @@ test('voice channels stand in order in the one channel list, with their people n
 
   // 1. Ada creates the server, then text alpha, voice lounge and text beta, in that order.
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -95,8 +95,8 @@ test('voice channels stand in order in the one channel list, with their people n
 
   await test.step('Ada joins lounge: she is nested under its row, speaking, with her glyphs on her name’s line', async () => {
     await noiseOff(page);
+    // web3.9 (R24): a click on a voice row opens it and joins.
     await lounge.click();
-    await page.getByRole('main').getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(page.locator('[data-call-phase]').first()).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     const item = lounge.locator('xpath=ancestor::li[1]');
     const person = item.locator('.d-voice-row__person').filter({ hasText: OWNER });

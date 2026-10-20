@@ -5,7 +5,7 @@
 // client); and Ada again on a fresh browser after a second reset. Nothing here seeds state. Controls are found by role and
 // accessible name, with the copy keys of flow 10 through copy().
 import { expect, type Page, type LaunchOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type TestInfo, type ViewportSize } from '@playwright/test';
-import {
+import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, makeInviteLink, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
   keyField, keySubmit, keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToKeyStep,
   signUp, submitButton, test, type Account, type Guard,
@@ -99,7 +99,7 @@ async function cleoReopens(
 
   // The inviter: a server and its invite link, made through the shipping client.
   await signUp(page, h.invite.split(',')[0] ?? '', instance, 'Ivar', h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');
@@ -153,7 +153,7 @@ test('a sign-up left at the factor choice joins the invited server after the for
 /** Ada signs up and starts a server in the page; used by both reset tests. */
 async function adaInTheShell(page: Page, h: StartedHost): Promise<Account> {
   const ada = await signUp(page, h.invite.split(',')[0] ?? '', instance, 'Ada', h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Asgard Crew');
   await page.keyboard.press('Enter');

@@ -7,7 +7,7 @@
 // channel he may not post in, which the host refuses with 403, and the same post relabelled as class 1 on its way out (the
 // lying sender), which the host cannot see and the receiver's core drops.
 import { expect, type Locator, type Page } from '@playwright/test';
-import {
+import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
   railItem, railNav, channelRow, composerBox, messageRow, logRegion, reactionChip, rowAction, sendText, signUp, test,
 } from './support/app';
@@ -76,7 +76,7 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
 
   // 1. Ada signs up with the bootstrap invite and starts "Midgard Crew"; Björn joins through her invite.
   await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  await addServerVia(page, 'create');
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
   await page.keyboard.press('Enter');

@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceDock,
+  AudioMeter, Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -296,8 +296,9 @@ const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp
  * one element and one CallStage instance throughout, so its notice region is never remounted with its text (that
  * would not be announced) and focus can be kept inside it when the controls swap for the join button or back.
  */
-function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channelId: string; title: string; outgoing: { text: string } | null; dm: boolean }) {
+function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; channelId: string; title: string; name?: string; outgoing: { text: string } | null; dm: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const phone = usePhoneLayout();
   const joined = v.call.channelId === channelId;
   useStageFocus(ref, v.call, joined);
   useFocusRescue([ref], joined ? 'joined' : 'idle', () => stageTarget(ref.current, joined));
@@ -319,7 +320,7 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={tiles} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <Controls v={v} paused={paused} dm={dm} />
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
@@ -330,7 +331,7 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
-  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} outgoing={null} dm={false} />;
+  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />;
 }
 
 /**

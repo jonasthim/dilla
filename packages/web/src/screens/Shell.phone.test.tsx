@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
-import { A, callState, CHANNELS, DM, GENV, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
+import { A, callState, CHANNELS, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
 
 /** A window of the given kind: only the phone query matches, so the wide-window defaults (the members column) stay off. */
 function media(phone: boolean) {
@@ -67,11 +67,26 @@ describe('the phone shell: the servers list', () => {
     expect(within(dialog).getByRole('button', { name: t('admin.nav.leave') })).toBeInTheDocument();
   });
 
-  it('labels the rail’s join and new buttons with visible captions (walk 24)', async () => {
-    phone({ path: `/c/${A}` });
+  it('has one "+" tile on the rail and no captions; it opens the add dialog', async () => {
+    const { user } = phone({ path: `/c/${A}` });
     const rail = await screen.findByRole('navigation', { name: t('shell.rail.label') });
-    expect(within(rail).getByText(t('create.rail.join'))).toBeVisible();
-    expect(within(rail).getByText(t('create.rail.new'))).toBeVisible();
+    expect(within(rail).queryByText(t('create.rail.join'))).toBeNull();
+    expect(within(rail).queryByText(t('create.rail.new'))).toBeNull();
+    await user.click(within(rail).getByRole('button', { name: t('layout.rail.add') }));
+    const dialog = await screen.findByRole('dialog', { name: t('layout.add.title') });
+    expect(within(dialog).getByRole('button', { name: t('layout.add.join') })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: t('layout.add.create') })).toBeInTheDocument();
+  });
+
+  it('a tap on a voice row only opens it; the join icon joins', async () => {
+    const app = phone({ path: `/c/${A}` });
+    await app.user.click(await screen.findByRole('button', { name: 'voice general' }));
+    await waitFor(() => expect(here()).toBe(`/c/${A}/${GENV}`));
+    expect(app.log).not.toContain(`callJoin:${GENV}`);
+    goto(`/c/${A}`);
+    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    await app.user.click(within(row).getByRole('button', { name: t('voice.join') }));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${MUSIC}`));
   });
 
   it('has no axe violations', async () => {

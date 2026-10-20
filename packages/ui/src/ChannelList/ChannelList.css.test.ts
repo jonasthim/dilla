@@ -74,8 +74,8 @@ describe('the header row (CSS pin)', () => {
     expect(rule(list, '.d-channel-list__title')).toMatch(/height: var\(--bar-h\);/);
     expect(rule(list, '.d-channel-list__head')).toMatch(/height: var\(--bar-h\);/);
   });
-  it('the legacy list-header "+" row and text join keep their rules until WEB-LIST', () => {
-    expect(list).toContain('.d-channel-list__list-head');
-    expect(list).toContain('.d-channel-list__join');
+  it('the retired list-header "+" row and text join have no rules', () => {
+    expect(list).not.toContain('.d-channel-list__list-head');
+    expect(list).not.toContain('.d-channel-list__join');
   });
 });

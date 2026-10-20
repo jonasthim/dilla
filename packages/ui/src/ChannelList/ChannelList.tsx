@@ -1,5 +1,4 @@
-import { useId, useLayoutEffect, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { Button } from '../Button/Button.tsx';
+import { useLayoutEffect, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { ChannelRow } from '../ChannelRow/ChannelRow.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
@@ -47,8 +46,6 @@ export interface ChannelListProps {
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
-  /** @deprecated removed in WEB-LIST. The lone list-header "+" row (A1) is replaced by each category header's "+" (`onAddInCategory`); rendered only while a caller still passes it. */
-  listAction?: ReactNode;
   /**
    * With it, every voice channel is a VoiceChannelRow in its place among the others: its people (by channel id; absent
    * is nobody) under the row. `labels.join` (required) is `voice.join`; with `onJoin` a row that is neither `joined` nor `held`
@@ -56,33 +53,9 @@ export interface ChannelListProps {
    */
   voice?: {
     labels: VoiceChannelRowProps['labels'];
-    /** The join is an icon button in the row's trailing slot. Without it the legacy text button is drawn (@deprecated, removed in WEB-LIST). */
-    iconJoin?: boolean;
     rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] }>>;
     onJoin?(id: string): void;
   };
-}
-
-/** @deprecated removed in WEB-LIST. The web3.8 voice row: a text join button beside the row, described by the channel's name. */
-function LegacyVoiceItem({ id, name, current, readable, room, voice, onOpen }: {
-  id: string; name: string; current: boolean; readable: boolean; room: { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] } | undefined;
-  voice: NonNullable<ChannelListProps['voice']>; onOpen(): void;
-}) {
-  const nameId = useId();
-  const joined = room?.joined ?? false;
-  return (
-    <li className="d-channel-list__voice" data-joined={joined ? 'true' : undefined}>
-      <VoiceChannelRow name={name} current={current} joined={joined} participants={room?.participants ?? []}
-        readable={readable} labels={voice.labels} onOpen={onOpen} />
-      {voice.onJoin === undefined || joined || room?.held === true ? null : (
-        <>
-          <span id={nameId} hidden>{name}</span>
-          <Button variant="ghost" size="sm" className="d-channel-list__join" tabIndex={-1} aria-describedby={nameId}
-            onClick={() => voice.onJoin?.(id)}>{voice.labels.join}</Button>
-        </>
-      )}
-    </li>
-  );
 }
 
 type Entry =
@@ -119,7 +92,7 @@ function entriesOf(channels: readonly ChannelListChannel[], categories: NonNulla
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, listAction, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
+export function ChannelList({ label, title, channels, categories = [], onToggleCategory, onAddInCategory, addInCategoryLabel, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
   const isJoined = (c: ChannelListChannel) => c.joined === true || (voice !== undefined && Object.hasOwn(voice.rooms, c.id) && voice.rooms[c.id].joined);
   const entries = entriesOf(channels, categories, activeId, isJoined);
   const roving = useRovingFocus(entries.findIndex(e => e.kind === 'channel' && e.channel.id === activeId));
@@ -127,7 +100,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
   const syncExtras = () => {
     for (const li of Array.from(roving.ref.current?.children ?? [])) {
       const row = li.firstElementChild;
-      const extra = li.querySelector<HTMLButtonElement>(':scope > .d-voice-row__join button, :scope > .d-channel-list__cat-add button, :scope > .d-channel-list__join');
+      const extra = li.querySelector<HTMLButtonElement>(':scope > .d-voice-row__join button, :scope > .d-channel-list__cat-add button');
       if (row instanceof HTMLButtonElement && extra !== null) extra.tabIndex = row.tabIndex;
     }
   };
@@ -143,9 +116,6 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     if (c.kind === 'voice' && voice !== undefined) {
       const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
       const joined = room?.joined ?? false;
-      if (voice.iconJoin !== true) {
-        return <LegacyVoiceItem key={c.id} id={c.id} name={c.name} current={c.id === activeId} readable={c.readable} room={room} voice={voice} onOpen={() => onSelect(c.id)} />;
-      }
       const canJoin = voice.onJoin !== undefined && !joined && room?.held !== true;
       return (
         <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined}>
@@ -184,7 +154,6 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       ))}
     </ul>
   );
-  const head = listAction !== undefined ? <div className="d-channel-list__list-head">{listAction}</div> : null;
   const foot = footer !== undefined ? <div className="d-channel-list__footer">{footer}</div> : null;
   return (
     <nav className="d-channel-list" aria-label={label}>
@@ -195,10 +164,10 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       {tabs !== undefined ? (
         <>
           {tabs}
-          <div className="d-channel-list__panel" role="tabpanel" aria-label={label}>{head}{body}{foot}</div>
+          <div className="d-channel-list__panel" role="tabpanel" aria-label={label}>{body}{foot}</div>
         </>
       ) : (
-        <>{head}{body}{foot}</>
+        <>{body}{foot}</>
       )}
     </nav>
   );

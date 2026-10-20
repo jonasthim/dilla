@@ -87,7 +87,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-call-strip[data-empty] { padding: 0; border-bottom: 0; }
 .dw-call-strip__notice:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 @container d-shell (max-width: 47.99rem) {
-  .d-channel-list__join, .dw-call-strip .d-btn { min-height: 2.75rem; }
+  .dw-call-strip .d-btn { min-height: 2.75rem; }
   /* Phone DM call (flow 06 § 360×740): the stage fills the pane; `messages` swaps it for the log and composer. */
   .dw-dm-call__bar { display: flex; justify-content: flex-end; padding: 0.25rem var(--row-pad-x); }
   .dw-dm-call { flex: 1 1 auto; max-height: none; }
@@ -107,9 +107,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 }
 /* web3.8 (R9, pre-flight C-7): the container rules above cannot see the viewport, and a landscape phone's shell is wide, so each
    phone rule has a twin keyed on the shell's own data-layout, with identical declarations; layout.test.ts pins the pairs. */
-[data-layout="phone"] .d-channel-list__join, [data-layout="phone"] .dw-call-strip .d-btn { min-height: 2.75rem; }
-/* Web3.8 (item 11): the channel list's "+" is a 44 px target on a phone. */
-[data-layout="phone"] .dw-channel-add { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+[data-layout="phone"] .dw-call-strip .d-btn { min-height: 2.75rem; }
 [data-layout="phone"] .dw-dm-call__bar { display: flex; justify-content: flex-end; padding: 0.25rem var(--row-pad-x); }
 [data-layout="phone"] .dw-dm-call { flex: 1 1 auto; max-height: none; }
 [data-layout="phone"] .d-app-shell__content:has(> .dw-dm-call[data-view="stage"]) > .dw-conversation { display: none; }
