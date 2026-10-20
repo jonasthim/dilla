@@ -8,3 +8,8 @@
 .d-settings-row__control { min-width: 0; max-width: 100%; }
 .d-settings-row__control .d-btn { height: auto; min-height: 1.75rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }
 .d-settings-row__control .d-btn[data-size="sm"] { min-height: 1.5rem; padding-block: 0.125rem; }
+/* web3.9 AUDIT-2 (H4): these two rules beat Button.css by specificity, so a phone repeats the 44 tier here (the refresh button was 24). Selects in a row (Select.css draws them 36) get it too. */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-settings-row__control .d-btn, .d-settings-row__control .d-btn[data-size="sm"] { min-height: 2.75rem; }
+  .d-settings-row__control select { min-height: 2.75rem; }
+}

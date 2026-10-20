@@ -8,3 +8,7 @@
 .d-toggle__switch[aria-disabled="true"] { cursor: not-allowed; opacity: var(--opacity-muted); }
 .d-toggle__hint { font-size: var(--text-sm); color: var(--fg-3); }
 @media (prefers-reduced-motion: reduce) { .d-toggle__track, .d-toggle__knob { transition: none; } }
+/* web3.9 AUDIT-2 (N3): the switch is a 44 high target on a phone; its 36 x 20 track stays as drawn inside it. */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-toggle__switch { min-height: 2.75rem; }
+}

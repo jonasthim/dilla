@@ -75,6 +75,15 @@ describe('the invites section', () => {
       await make(user);
       await waitFor(() => expect(fake.callsOf('createInvite')[0]?.maxUses).toBe(uses));
     });
+  it('draws the two limits as settings rows, the label on the left and the select in the control (I1)', () => {
+    const { view } = setup();
+    const rows = [...view.container.querySelectorAll('.d-settings-row')];
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.querySelector('.d-settings-row__label')?.textContent)).toEqual([en['admin.invites.expires'], en['admin.invites.uses']]);
+    for (const row of rows) expect(row.querySelector('.d-settings-row__control select')).not.toBeNull();
+    expect(view.container.querySelector('.d-select__label')).toBeNull();
+    expect(rows[1]?.querySelector('.d-settings-row__hint')?.textContent).toBe(en['admin.invites.limitsNote']);
+  });
   it('says a refused make by its copy, with a retry', async () => {
     const { fake, user } = setup();
     fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
