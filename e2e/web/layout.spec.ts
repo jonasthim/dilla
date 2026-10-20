@@ -12,7 +12,7 @@
 // data and the same browsers, before the rules are read.
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { addServerVia, REPO_ROOT,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, completeSignUp, copy, dmsNav, escapeRegExp, expectComposerReady, homeTile, makeInviteLink, newAccount, railItem, railNav,
   sendText, signIn, signUp, test, type Account,
@@ -25,7 +25,8 @@ import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
-const EMPTY: HostConfig = { port: 8615, control: 8616, webRoot: 'packages/web/dist', sfu: { port: 7900, udpPort: 7902 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
+const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? 8615);
+const EMPTY: HostConfig = { port: LAYOUT_PORT, control: LAYOUT_PORT + 1, webRoot: 'packages/web/dist', sfu: { port: 7900, udpPort: 7902 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Mira';
@@ -48,7 +49,8 @@ const PHONE = { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } as const;
 let host: StartedHost | null = null;
 let instance = '';
 
-test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT * 4 });
+// The two tests are independent (each makes its own accounts on the shared host), so one failing does not skip the other.
+test.describe.configure({ mode: 'default', timeout: TEST_TIMEOUT * 4 });
 // An action waits as long as one state may (the config leaves actions unbounded), so a missing control fails the check with time left.
 test.use({ baseURL: `http://127.0.0.1:${String(EMPTY.port)}`, actionTimeout: WAIT });
 
@@ -192,6 +194,25 @@ async function expectWrapsInLog(page: Page, tag: string, state: string): Promise
   expect.soft(m.lines, `a long word wraps onto more than one line in ${state} at ${tag}`).toBeGreaterThan(1);
   expect.soft(m.textRight, `the text's right edge is inside the log's content box in ${state} at ${tag} (${m.textRight.toFixed(1)} vs ${m.right.toFixed(1)})`).toBeLessThanOrEqual(m.right + TOL);
   expect.soft(m.textLeft, `the text's left edge is inside the log's content box in ${state} at ${tag}`).toBeGreaterThanOrEqual(m.left - TOL);
+}
+
+/** On Chromium, a notched phone: with a 47 px top inset the header clears it (48 + 47), and where base.css zeroes its padding-top
+ *  (the ring or the link banner already cleared the notch) it is exactly 48 in the same inset. Other engines have no override. */
+async function expectSafeAreaBar(page: Page, tag: string): Promise<void> {
+  if (page.context().browser()?.browserType().name() !== 'chromium') return;
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 47, bottom: 0, left: 0, right: 0 } });
+    const height = () => page.evaluate(() => document.querySelector('.d-phone-header')?.getBoundingClientRect().height ?? NaN);
+    await expect.poll(height, { message: `the phone header with a notch at ${tag}` }).toBeCloseTo(95, 0);
+    // The page's CSP forbids a style element; the CSSOM is allowed, and zeroing the padding is what base.css does in those states.
+    await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.setProperty('padding-top', '0', 'important'); });
+    expectAt(`B1 the phone header with a notch but its padding zeroed is 48 high at ${tag}`, await height(), 48, 0.5);
+    await page.evaluate(() => { document.querySelector<HTMLElement>('.d-phone-header')?.style.removeProperty('padding-top'); });
+  } finally {
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } }).catch(() => undefined);
+    await cdp.detach().catch(() => undefined);
+  }
 }
 
 /** A bar's bottom hairline: its bottom edge, measured from the top of `from` (the page, or the surface the bar stands on). */
@@ -540,6 +561,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await channelRow(page, 'general').click();
   await pane('view');
   await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header');
+  await expectSafeAreaBar(page, tag);
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
   await expectWrapsInLog(page, tag, 'a channel');
@@ -638,4 +660,3 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'no other save button').toBe(1);
 });
 
-export type { Locator };

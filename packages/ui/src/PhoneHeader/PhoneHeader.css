@@ -1,5 +1,5 @@
-/* The phone's top bar. min-height 3rem plus the notch's safe area; the back control and any action button are 44 px. */
-.d-phone-header { display: flex; align-items: center; gap: 0.25rem; min-height: calc(3rem + env(safe-area-inset-top)); box-sizing: border-box; padding: env(safe-area-inset-top) 0.5rem 0 0.25rem; background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
+/* The phone's top bar: 48 high with its 1px hairline (content 3rem - 1px, content-box), plus the notch's safe area as top padding unless base.css zeroes it; the back control and any action button are 44 px. */
+.d-phone-header { display: flex; align-items: center; gap: 0.25rem; min-height: calc(3rem - 1px); box-sizing: content-box; padding: env(safe-area-inset-top) 0.5rem 0 0.25rem; background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
 .d-phone-header .d-btn[data-size] { height: 2.75rem; min-width: 2.75rem; justify-content: center; padding: 0 0.5rem; }
 .d-phone-header .d-phone-header__back.d-btn[data-size] { padding: 0; color: var(--fg); }
 .d-phone-header__title { flex: 0 1 auto; min-width: 0; margin: 0; padding-left: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); color: var(--fg); }
