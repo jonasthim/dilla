@@ -33,6 +33,8 @@ export const SETTINGS = {
   voiceSelf: 'voice.self',
   soundVoice: 'sound.voice',                                 // join and leave sounds: 'on' (default) | 'off'
   soundRing: 'sound.ring',                                   // the ring: 'on' (default) | 'off'
+  // web3.9 (R36): '1' when a category is collapsed on this device; absent = expanded.
+  channelCollapsed: (categoryHex: string) => `channels.collapsed.${categoryHex}`,
 } as const;
 
 /** What an absent voice or sound key means (decision 8, round 2 R4: sounds are on by default). */
@@ -49,6 +51,7 @@ const NOTIFY_COMMUNITY = 'notify.community.';
 const MUTE_COMMUNITY = 'mute.community.';
 const EVERYONE_COMMUNITY = 'everyone.community.';
 const VOICE_VOLUME = 'voice.volume.';
+const CHANNEL_COLLAPSED = 'channels.collapsed.';
 const DEVICE_ID = /^[A-Za-z0-9+/=_-]{1,128}$/;
 const PTT_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -67,6 +70,7 @@ export function isSettingKey(key: string): boolean {
   if (key.startsWith(MUTE_COMMUNITY)) return HEX32.test(key.slice(MUTE_COMMUNITY.length));
   if (key.startsWith(EVERYONE_COMMUNITY)) return HEX32.test(key.slice(EVERYONE_COMMUNITY.length));
   if (key.startsWith(VOICE_VOLUME)) return HEX32.test(key.slice(VOICE_VOLUME.length));
+  if (key.startsWith(CHANNEL_COLLAPSED)) return HEX32.test(key.slice(CHANNEL_COLLAPSED.length));
   return false;
 }
 

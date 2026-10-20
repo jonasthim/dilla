@@ -37,7 +37,7 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 describe('voice in the shell', () => {
   it('shows the silent AFK room and its occupants without offering a media join', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
       occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
     const region = await main().findByRole('region', { name: t('voice.afk.title') });
     expect(region).toHaveTextContent('1 in AFK');
@@ -47,7 +47,7 @@ describe('voice in the shell', () => {
 
   it('closes its media session when this device is moved to AFK', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
       occupants: [{ userId: ME.id, deviceId: OWN_DEV }] });
     await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
     expect(app.session.state.phase).toBe('ended');
@@ -55,9 +55,9 @@ describe('voice in the shell', () => {
 
   it('reports actual input while a voice call remains open on another page', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, occupants: [] });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
       occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
@@ -71,7 +71,7 @@ describe('voice in the shell', () => {
 
   it('reports a short microphone utterance before the next polling interval', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, occupants: [] });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);

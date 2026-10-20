@@ -1056,12 +1056,11 @@ export class Controller {
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
-      case 'setAFK': return this.setAFK(command.communityId, command.channelId, command.timeoutSeconds);
-      case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId)).then(() => null);
-      case 'afkMove': return this.routes.moveToAFK(fromHex(command.communityId), fromHex(command.channelId))
-        .then(() => this.loadAFK(command.communityId)).then(() => null);
-      case 'afkLeave': return this.routes.leaveAFK(fromHex(command.communityId))
-        .then(() => this.loadAFK(command.communityId)).then(() => null);
+      case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
+      case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
+      // web3.9 retired the manual move: the deprecated commands answer null and send nothing (WEB-AFK deletes them).
+      case 'afkMove':
+      case 'afkLeave': return Promise.resolve(null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -1567,7 +1566,12 @@ export class Controller {
     if (core !== null && me !== null) {
       void this.barrier.track(this.ensureBackups(core));
       void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
-        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined));
+        .then((own) => {
+          if (!own.listed) return this.enterRevoked();
+          // Contract 6: the device count is read once per ready (from the list this pass just refreshed), so Diagnostics never reads 0.
+          void this.barrier.track(this.refreshDevices(own).then(() => undefined, () => undefined));
+          return this.repairBackupState(core);
+        }, () => undefined));
     }
     void this.barrier.track(this.refreshAfterReady());
     this.runPurges();
@@ -2205,9 +2209,11 @@ export class Controller {
   private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
     announce?: { roleIds: string[] }): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    // R42: the built-in AFK channel sits at 2^30; the next position is taken from the other channels.
+    const afkId = this.slices.get(`afk:${communityId}`)?.channelId ?? null;
     let position = 0;
-    for (const known of this.channels.values()) {
-      if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
+    for (const [knownId, known] of this.channels) {
+      if (known.communityId === communityId && knownId !== afkId) position = Math.max(position, known.row.position + 1);
     }
     // A private channel is private from birth: the overwrites go in the create (wave 2a).
     // An announcement channel is a text channel whose @everyone may not send, read-only from birth in the same way.
@@ -2710,15 +2716,14 @@ export class Controller {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, occupants: row.occupants.map(p => ({ userId: toHex(p.userId), deviceId: toHex(p.deviceId) })) });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, occupants: [] });
     } catch { /* reconnect or the next community_changed retries the snapshot */ }
   }
 
-  private async setAFK(communityId: string, channelId: string | null, timeoutSeconds: number): Promise<null> {
+  private async setAFK(communityId: string, timeoutSeconds: number): Promise<null> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    if (channelId !== null && !ID.test(channelId)) throw new Refusal('E_BAD_INPUT', 'invalid AFK channel');
     if (![60, 300, 900, 1800, 3600].includes(timeoutSeconds)) throw new Refusal('E_BAD_INPUT', 'invalid AFK timeout');
-    await this.routes.setAFKSettings(fromHex(communityId), channelId === null ? null : fromHex(channelId), timeoutSeconds);
+    await this.routes.setAFKSettings(fromHex(communityId), timeoutSeconds);
     await this.loadAFK(communityId);
     return null;
   }
@@ -2887,10 +2892,10 @@ export class Controller {
   // ---- devices (requirements 23-26) ----
 
   /** Requirement 25: the own list first, so a just-enrolled device shows as listed. */
-  private async refreshDevices(): Promise<null> {
+  private async refreshDevices(refreshed?: { listed: boolean }): Promise<null> {
     const core = this.requireCore();
     const me = this.requireMe();
-    const own = await this.parts.refreshOwnDeviceList(core, this.routes, me.userId);
+    const own = refreshed ?? await this.parts.refreshOwnDeviceList(core, this.routes, me.userId);
     if (!own.listed) { this.enterRevoked(); return null; }
     const rows = await this.routes.listDevices();
     const entries = core.ownDeviceList().entries;
@@ -2907,7 +2912,7 @@ export class Controller {
     devices.sort((a, b) => (a.own !== b.own ? (a.own ? -1 : 1)
       : a.lastSeen !== b.lastSeen ? b.lastSeen - a.lastSeen : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.slices.set('devices', devices);
-    this.deviceCount = devices.length;
+    this.deviceCount = devices.filter((d) => d.revokedAt === null).length;
     this.publishDiagnostics();
     return null;
   }

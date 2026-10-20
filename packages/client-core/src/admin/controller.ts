@@ -217,7 +217,8 @@ export class AdminController {
   async createCategory(communityId: string, name: string): Promise<{ channelId: string }> {
     this.requireListed(communityId);
     let position = 0;
-    for (const { row } of this.deps.channelsOf(communityId)) position = Math.max(position, row.position + 1);
+    const afkId = this.deps.get(`afk:${communityId}`)?.channelId ?? null;
+    for (const { id: known, row } of this.deps.channelsOf(communityId)) if (known !== afkId) position = Math.max(position, row.position + 1);
     const created = await this.guarded(communityId, () => this.deps.routes.createCategory(fromHex(communityId), { name, position }));
     this.deps.structureChanged(communityId);
     this.deps.setChannel(communityId, { id: created.id, kind: 2, mode: created.mode, visibility: created.visibility, parentId: null,

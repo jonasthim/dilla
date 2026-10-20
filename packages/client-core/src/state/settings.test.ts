@@ -177,3 +177,15 @@ describe('community settings (web3.5)', () => {
     expect(suppressesEveryone({ [SETTINGS.everyoneCommunity(COM)]: '0' }, COM)).toBe(false);
   });
 });
+
+describe('channels.collapsed.<categoryHex> (R36)', () => {
+  it('is a key with the value 1 and nothing else', () => {
+    const key = SETTINGS.channelCollapsed(HEX);
+    expect(key).toBe(`channels.collapsed.${HEX}`);
+    expect(isSettingKey(key)).toBe(true);
+    expect(isSettingValue(key, '1')).toBe(true);
+    expect(isSettingValue(key, '2')).toBe(false);
+    expect(isSettingKey('channels.collapsed.x')).toBe(false);
+    expect(isSettingKey(`channels.collapsed.${HEX}0`)).toBe(false);
+  });
+});

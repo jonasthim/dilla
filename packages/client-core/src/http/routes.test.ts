@@ -91,10 +91,16 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: 'AFK snapshot includes silent occupants', call: r => r.getAFK(COMMUNITY),
+    name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [CHANNEL, 300, [[USER, DEVICE]]]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, occupants: [{ userId: USER, deviceId: DEVICE }] },
+    reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true },
+  },
+  {
+    name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [null, 300, []]),
+    expected: { channelId: null, timeoutSeconds: 300, pending: false },
   },
   {
     name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
@@ -102,9 +108,14 @@ const CASES: Case[] = [
     sent: encode([CHANNEL]), reply: () => noContent(), expected: undefined,
   },
   {
-    name: 'AFK setting writes an existing channel and timeout', call: r => r.setAFKSettings(COMMUNITY, CHANNEL, 60),
+    name: 'AFK activity of an exempt report sends [id, true]', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL, true),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/afk/activity`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL, 1]), reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'AFK setting writes the timeout only', call: r => r.setAFKSettings(COMMUNITY, 300),
     method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/settings`, bucket: 'write', idempotent: true, auth: true,
-    sent: encode([CHANNEL, 60]), reply: () => noContent(), expected: undefined,
+    sent: encode([300]), reply: () => noContent(), expected: undefined,
   },
   {
     // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
@@ -1577,5 +1588,20 @@ describe('Routes: second-factor shapes and bounds', () => {
       expect(t.seen).toHaveLength(1);
       expect(t.sleeps).toEqual([]);
     }
+  });
+});
+
+describe('the built-in AFK channel routes (web3.9)', () => {
+  it('a 2-element snapshot is a decode error', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300]));
+    await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+  });
+  it('moveToAFK and leaveAFK no longer exist', () => {
+    const { routes } = setup();
+    // @ts-expect-error retired in web3.9
+    expect(routes.moveToAFK).toBeUndefined();
+    // @ts-expect-error retired in web3.9
+    expect(routes.leaveAFK).toBeUndefined();
   });
 });

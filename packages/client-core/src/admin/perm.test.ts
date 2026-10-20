@@ -89,6 +89,20 @@ describe('channelBitsOf', () => {
   });
 });
 
+describe('the AFK grant mirror (R35)', () => {
+  const noView = { owner: 'aa', everyoneId: 'ee', roles: [{ id: 'ee', position: 0, allow: PERM.sendMessages, deny: PERM.viewChannel }],
+    members: [{ userId: 'bb', roleIds: [] }], overwrites: [] as PermOverwrite[] };
+  it('gives a member exactly view and connect in the AFK channel, and nothing without the flag', () => {
+    expect(channelBitsOf(noView, 'bb')).toBe(0);
+    expect(channelBitsOf({ ...noView, afk: true }, 'bb')).toBe(PERM.viewChannel | PERM.connect);
+    expect(resolveChannel({ owner: 'aa', everyoneId: 'ee', roles: noView.roles, held: [] }, [], 'bb', true)).toBe(PERM.viewChannel | PERM.connect);
+  });
+  it('keeps the owner at every bit, and a non-member unknown', () => {
+    expect(channelBitsOf({ ...noView, afk: true }, 'aa')).toBe(PERM_ALL);
+    expect(channelBitsOf({ ...noView, afk: true }, 'cc')).toBeNull();
+  });
+});
+
 describe('isPrivate', () => {
   it('is true for an @everyone deny of view only', () => {
     expect(isPrivate([{ kind: 0, targetId: 'ee', allow: 0, deny: PERM.viewChannel }], 'ee')).toBe(true);

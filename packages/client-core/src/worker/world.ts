@@ -327,12 +327,10 @@ export function world(opts: {
       }] : []),
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
-    getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, occupants: [] })),
+    getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, pending: false })),
     getAFKSettings: vi.fn((_id: Uint8Array): Promise<AFKSettings> => Promise.resolve({ channelId: null, timeoutSeconds: 300 })),
     setAFKSettings: vi.fn(() => Promise.resolve()),
     sendAFKActivity: vi.fn(() => Promise.resolve()),
-    moveToAFK: vi.fn(() => Promise.resolve()),
-    leaveAFK: vi.fn(() => Promise.resolve()),
     createCommunity: vi.fn((name: string) => {
       calls.push('createCommunity');
       state.created.push({ id: NEW_COMMUNITY, name });

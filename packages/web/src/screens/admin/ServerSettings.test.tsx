@@ -107,7 +107,7 @@ describe('the overview section', () => {
     const hidden = 'fe'.repeat(16);
     fake.handler = command => Promise.resolve(command.m === 'getAFKSettings'
       ? { channelId: hidden, timeoutSeconds: 900 } : null);
-    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, occupants: [] });
+    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, pending: false, occupants: [] });
     const destination = screen.getByRole('combobox', { name: en['admin.afk.channel'] });
     await waitFor(() => expect(destination).toHaveValue(hidden));
     expect(screen.getByRole('option', { name: en['admin.afk.restricted'] })).toBeInTheDocument();

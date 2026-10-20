@@ -64,10 +64,10 @@ export type Command =
   | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
   | { m: 'presenceActivity' }
   | { m: 'getAFKSettings'; communityId: string }
-  | { m: 'setAFK'; communityId: string; channelId: string | null; timeoutSeconds: number }
-  | { m: 'afkActivity'; communityId: string; channelId: string }
-  | { m: 'afkMove'; communityId: string; channelId: string }
-  | { m: 'afkLeave'; communityId: string }
+  | { m: 'setAFK'; communityId: string; timeoutSeconds: number; /** @deprecated ignored; WEB-AFK removes it */ channelId?: string | null }
+  | { m: 'afkActivity'; communityId: string; channelId: string; exempt?: boolean }
+  | { m: 'afkMove'; communityId: string; channelId: string } // @deprecated: resolves null without a request; WEB-AFK deletes it
+  | { m: 'afkLeave'; communityId: string }                   // @deprecated: as afkMove
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)

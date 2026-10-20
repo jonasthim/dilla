@@ -107,18 +107,20 @@ export function channelBitsFrom(u: ResolvedUser, index: OverwriteIndex): number 
 
 /** perm.go ResolveChannel: the overwrites of the held roles in ascending role position, then the user's own, then the
  *  community-scoped bits restored from the base. An overwrite counts only for its own kind and target. */
-export function resolveChannel(input: PermInput, overwrites: readonly PermOverwrite[], userId: string): number {
-  return channelBitsFrom(resolveUser(input, userId), indexOverwrites(overwrites));
+export function resolveChannel(input: PermInput, overwrites: readonly PermOverwrite[], userId: string, afk?: boolean): number {
+  const bits = channelBitsFrom(resolveUser(input, userId), indexOverwrites(overwrites));
+  // R35: every member may view and connect to the built-in AFK channel; the owner and administrators keep PERM_ALL.
+  return afk === true && bits !== PERM_ALL ? bits | PERM.viewChannel | PERM.connect : bits;
 }
 
 /** The bits `userId` holds in a channel, or null when the user is not in `members` (unknown: the caller keeps today's
  *  behaviour). The owner holds everything. */
 export function channelBitsOf(s: { owner: string; everyoneId: string; roles: readonly PermRole[]; members: readonly PermMember[];
-  overwrites: readonly PermOverwrite[] }, userId: string): number | null {
+  overwrites: readonly PermOverwrite[]; afk?: boolean }, userId: string): number | null {
   if (userId === s.owner) return PERM_ALL;
   const member = s.members.find((m) => m.userId === userId);
   if (!member) return null;
-  return resolveChannel({ owner: s.owner, everyoneId: s.everyoneId, roles: s.roles, held: member.roleIds }, s.overwrites, userId);
+  return resolveChannel({ owner: s.owner, everyoneId: s.everyoneId, roles: s.roles, held: member.roleIds }, s.overwrites, userId, s.afk);
 }
 
 /** A channel is private when @everyone's overwrite denies viewing it. */

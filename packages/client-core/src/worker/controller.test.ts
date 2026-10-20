@@ -25,22 +25,47 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(993)).toEqual({ t: 'ret', id: 993, ok: true,
       value: { channelId: toHex(CHANNEL), timeoutSeconds: 900 } }));
   });
-  it('loads AFK occupants on ready and refreshes them after a community change and reconnect', async () => {
+  it('loads the AFK snapshot on ready and refreshes it after a community change and reconnect', async () => {
     const w = world();
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, occupants: [] }));
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60,
-      occupants: [{ userId: USER, deviceId: DEVICE }] });
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60,
-      occupants: [{ userId: toHex(USER), deviceId: toHex(DEVICE) }] }));
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
     w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
     expect(w.last(key)).toBeNull();
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, occupants: [] });
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: false });
     w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
     w.gateway.emit({ type: 'ready', info: READY_INFO });
-    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false, occupants: [] }));
+  });
+  it('setAFK sends only the timeout, reloads the slice, and refuses 120 with E_BAD_INPUT', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(994, { m: 'setAFK', communityId: toHex(COMMUNITY), timeoutSeconds: 900 });
+    await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
+    expect(w.routes.setAFKSettings).toHaveBeenCalledWith(COMMUNITY, 900);
+    w.routes.setAFKSettings.mockClear();
+    w.call(995, { m: 'setAFK', communityId: toHex(COMMUNITY), timeoutSeconds: 120 });
+    await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.setAFKSettings).not.toHaveBeenCalled();
+  });
+  it('afkActivity forwards exempt, and afkMove and afkLeave resolve null without a request', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(996, { m: 'afkActivity', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true }));
+    expect(w.routes.sendAFKActivity).toHaveBeenLastCalledWith(COMMUNITY, CHANNEL, undefined);
+    w.call(997, { m: 'afkActivity', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), exempt: true });
+    await vi.waitFor(() => expect(w.ret(997)).toMatchObject({ ok: true }));
+    expect(w.routes.sendAFKActivity).toHaveBeenLastCalledWith(COMMUNITY, CHANNEL, true);
+    const reads = w.routes.getAFK.mock.calls.length;
+    w.call(998, { m: 'afkMove', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL) });
+    w.call(999, { m: 'afkLeave', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(999)).toEqual({ t: 'ret', id: 999, ok: true, value: null }));
+    expect(w.ret(998)).toEqual({ t: 'ret', id: 998, ok: true, value: null });
+    expect(w.routes.getAFK).toHaveBeenCalledTimes(reads);
   });
 
   it('loads a presence snapshot on ready, applies frames, and reloads after reconnect', async () => {
@@ -726,6 +751,18 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
     expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 3, 256);
     expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
+
+  it('diagnostics counts only live devices and is set after ready without a page command (web3.9)', async () => {
+    const w = world();
+    w.routes.listDevices.mockResolvedValue([
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n as unknown as null, lastSeen: 1_699_999_000n },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+    ]);
+    await toReady(w);
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2));
   });
 
   // C3 fix m1: a failed device read neither fails the pass nor clears the count.
@@ -4887,6 +4924,22 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     const listed = sliceAt(w, `channels:${toHex(COMMUNITY)}`, (v) => (v as ChannelSummary[]).some((c) => c.id === channelId));
     expect(listed).toBeGreaterThan(-1);
     expect(listed).toBeLessThan(retAt(w, 83));
+  });
+
+  it('a new channel skips the AFK channel at 2^30 when it takes the next position (R42)', async () => {
+    const w = world();
+    const AFK = new Uint8Array(16).fill(0x61);
+    w.routes.listChannels.mockResolvedValue([
+      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
+      { id: AFK, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'AFK', topic: '', position: 2 ** 30, slowmode: 0, seq: 0n, textGroupId: null },
+    ]);
+    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${toHex(COMMUNITY)}`)?.channelId).toBe(toHex(AFK)));
+    await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(AFK))).toBe(true));
+    w.call(88, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'next' });
+    await vi.waitFor(() => expect(w.ret(88)).toMatchObject({ ok: true }));
+    expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'next', position: 1 });
   });
 
   it('a listed channel carries its slow mode into the channels slice, and a created one starts at 0', async () => {
