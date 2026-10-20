@@ -24,5 +24,7 @@
 .d-composer__attach:hover { color: var(--fg); background: var(--surface-hi); }
 .d-composer__attach:disabled { color: var(--fg-3); background: transparent; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .d-composer__attach { transition: none; } }
+/* Jonas's 44px primary-target rule: on a phone the attach button is a 44 x 44 target. */
+[data-layout="phone"] .d-composer__attach { width: 2.75rem; height: 2.75rem; }
 /* web3.7: the slow-mode countdown and the announcement channel's read-only line, above the box and after `top`. Text, never a block. */
 .d-composer__notice { margin: 0; font-size: var(--text-sm); color: var(--fg-2); overflow-wrap: anywhere; }

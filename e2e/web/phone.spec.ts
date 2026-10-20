@@ -201,6 +201,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
       expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+      await expectTapTargets(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button');
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
