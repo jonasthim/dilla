@@ -520,7 +520,7 @@ test('6. a phone in general is never moved, while its desktop twin idle beside i
   phone = null;
 });
 
-test('7. with view_channel left out of his roles community-wide, Björn still sees Idle and joins it listen-only', async () => {
+test('7. with view_channel left out of his roles community-wide, Björn still sees Idle and joins it listen-only (no call to be moved from: losing it disconnects)', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   await button(dock(b.page), 'voice.leave').click();

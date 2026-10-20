@@ -210,7 +210,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
 
     // 4. With the room open, Ada takes Staff from Björn: he is told, and the room leaves his list.
     await assign(page, FRIEND, STAFF, false);
-    await expect(announcer(page2)).toHaveText(copy('chperm.lostAccess', { name: ROOM }), { timeout: WAIT });
+    await expect(announcer(page2)).toHaveText(copy('chperm.lostAccess', { name: `#${ROOM}` }), { timeout: WAIT });
     await expect(channelRow(page2, ROOM)).toHaveCount(0, { timeout: WAIT });
     await expect(composerBox(page2, ROOM)).toHaveCount(0);
     await expect(channelRow(page2, 'general')).toBeVisible();

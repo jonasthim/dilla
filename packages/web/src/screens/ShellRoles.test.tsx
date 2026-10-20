@@ -28,13 +28,14 @@ const MEMBERS: MemberSummary[] = [
 const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 5, owner: false, manageCommunity: false, manageChannels: false,
   kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
-function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites?: Record<string, { kind: 0 | 1; targetId: string; allow: number; deny: number }[]> } = {}) {
-  window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites?: Record<string, { kind: 0 | 1; targetId: string; allow: number; deny: number }[]>;
+  start?: string; extra?: ChannelSummary[] } = {}) {
+  window.history.replaceState(null, '', `/c/${A}/${opts.start ?? GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: OWNER }]);
-  fake.set(`channels:${A}`, [ch(GEN, 'general', 0), ch(LOBBY, 'lobby', 1)]);
+  fake.set(`channels:${A}`, [ch(GEN, 'general', 0), ch(LOBBY, 'lobby', 1), ...(opts.extra ?? [])]);
   fake.set(`members:${A}`, MEMBERS);
   fake.set(`presence:${A}`, { [ME.id]: 'online', [BOB]: 'online' });
   fake.set(`roles:${A}`, opts.base === undefined ? ROLES : [role(EVERYONE, '@everyone', 0, opts.base), ROLES[1]]);
@@ -182,6 +183,16 @@ describe('lost access', () => {
     await pause();
     expect(seen).toEqual(['#general is no longer available to you.']);
     expect(seen[0]).not.toMatch(/see|hidden|deleted/);
+  });
+  it('names a lost voice channel by its bare name, never with a text channel’s # (E-AFK round 2)', async () => {
+    const VOICE = '5e'.repeat(16);
+    const lounge: ChannelSummary = { ...ch(VOICE, 'lounge', 2), kind: 1 };
+    const { fake } = setup({ start: VOICE, extra: [lounge] });
+    const seen = listen();
+    await pause();
+    act(() => { fake.publish(`channels:${A}`, [ch(GEN, 'general', 0), ch(LOBBY, 'lobby', 1)]); });
+    await pause();
+    expect(seen).toEqual(['lounge is no longer available to you.']);
   });
   it('tells the lost channel first and the new channel being read-only after it, both', async () => {
     const { fake } = setup({ overwrites: DENY_SEND(LOBBY) });

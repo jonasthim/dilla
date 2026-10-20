@@ -635,17 +635,18 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
 
   // (4b) Lost access: the open channel left the list while its server stays. Say so once; (4) takes the route to the server's
   // first channel, the draft stays in its store, and a dialog about the channel closes. Not told for a server that left.
-  const openSeen = useRef<{ communityId: string; id: string; name: string } | null>(null);
+  const openSeen = useRef<{ communityId: string; id: string; name: string; kind: number } | null>(null);
   useEffect(() => {
     const seen = openSeen.current;
     if (channel !== null) {
-      if (communityId !== null) openSeen.current = { communityId, id: channel.id, name: channel.name };
+      if (communityId !== null) openSeen.current = { communityId, id: channel.id, name: channel.name, kind: channel.kind };
       return;
     }
     if (seen === null || overlay || channels === undefined || communityId !== seen.communityId || channelId !== seen.id) return;
     openSeen.current = null;
     if (communities?.some(c => c.id === communityId) !== true) return;
-    announce(t('chperm.lostAccess', { name: seen.name }));
+    // A text channel is said as #name; a voice channel by its bare name (it has no #).
+    announce(t('chperm.lostAccess', { name: seen.kind === 0 ? `#${seen.name}` : seen.name }));
     setEditChannelId(open => (open === seen.id ? null : open));
   }, [overlay, channel, channels, communityId, channelId, communities, announce]);
   // The composer's cannot-send state is spoken once for each channel it is entered in (the draft and focus stay). The memo
