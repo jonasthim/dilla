@@ -172,10 +172,10 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(lap, `focus order ${lap.join(' > ')}`).toEqual([...lap].sort((a, b) => a - b));
   expect(new Set(lap).size, `each region entered once: ${lap.join(' > ')}`).toBe(lap.length);
   for (const required of [0, 1, 2, 3, 5, 6]) expect(lap).toContain(required);
-  // Flow 07 (web3.8): each server action is its own stop before the tabs. This person joined the peer's server, so they
-  // are a member, not its owner: "server settings" and "leave server" are their two actions ("invite link" lives under
-  // settings → Invites, and the "+" is the owner's). The splitter sits outside the channel list, so it is not counted here.
-  expect(stops.get(2), 'the sidebar is four tab stops: the member\'s "server settings" and "leave server", the tabs and the rows').toBe(4);
+  // Web3.8 (WS8): the server's one action is the settings gear beside its name, a stop before the tabs ("leave server" lives
+  // in settings, "invite link" under settings → Invites, and the "+" is the owner's). The splitter sits outside the channel
+  // list, so it is not counted here.
+  expect(stops.get(2), 'the sidebar is three tab stops: the "server settings" gear, the tabs and the rows').toBe(3);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
   expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
 

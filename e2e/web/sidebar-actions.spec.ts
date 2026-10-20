@@ -1,7 +1,7 @@
 // web3.8, WS4 (item 11): the sidebar's actions moved. From an empty host, Ada (the owner) starts "Midgard Crew" and makes a
 // channel through the "+" in the channel list's header; Björn (a member with the default @everyone: create invite, no manage
-// channels) has no "+", opens server settings, lands on Invites, makes a link and copies it. At 390x844 the server menu lists
-// neither invite nor new channel, and the list header has the "+" for Ada only.
+// channels) has no "+", opens server settings, lands on Invites, makes a link and copies it. At 390x844 the header has the search icon
+// and the gear (no menu), a member reaches leave under settings, and the list header has the "+" for Ada only.
 import { expect, type Page } from '@playwright/test';
 import {
   TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, expectAccessible, expectComposerReady, makeInviteLink, newAccount, newChannelButton,
@@ -33,17 +33,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => { await host?.stop(); });
 
 const button = (page: Page, key: string) => page.getByRole('button', { name: copy(key), exact: true });
-/** The phone's server menu opened: its items' names, then closed again. */
-async function serverMenuItems(page: Page): Promise<string[]> {
-  const menu = button(page, 'nav.server.menu');
-  await menu.click();
-  const names = await page.getByRole('menuitem').allTextContents();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('menuitem')).toHaveCount(0);
-  return names;
-}
-
-test('the owner adds a channel with the "+"; a member makes a link under server settings → Invites; a phone has neither in its menu', async ({
+test('the owner adds a channel with the "+"; a member makes a link under server settings → Invites; a phone has a gear and a search icon, no menu', async ({
   page, playwright, browserName, launchOptions, headless, channel, viewport,
 }, testInfo) => {
   const h = host;
@@ -90,6 +80,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await expect(button(page2, 'admin.open')).toBeVisible({ timeout: WAIT });
     await expect(newChannelButton(page2)).toHaveCount(0);
     await expect(button(page2, 'invite.open')).toHaveCount(0);
+    await expect(button(page2, 'admin.leave.open')).toHaveCount(0);
     await button(page2, 'admin.open').click();
     const settings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
     const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
@@ -115,17 +106,25 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await page2.keyboard.press('Escape');
     await expect(settings).toBeHidden();
 
-    // 3. At 390x844: the server menu lists neither invite nor new channel; the list header has the "+" for Ada only.
+    // 3. At 390x844: the header has the gear and search, no menu; the list header has the "+" for Ada only.
     await page.setViewportSize({ width: 390, height: 844 });
     await page2.setViewportSize({ width: 390, height: 844 });
     for (const p of [page, page2]) {
       const backButton = button(p, 'nav.back');
       await expect(backButton).toBeVisible({ timeout: WAIT });
       await backButton.click();
-      await expect(button(p, 'nav.server.menu')).toBeVisible({ timeout: WAIT });
+      await expect(button(p, 'admin.open')).toBeVisible({ timeout: WAIT });
+      await expect(button(p, 'search.open')).toBeVisible();
+      await expect(button(p, 'nav.server.menu')).toHaveCount(0);
+      await expect(button(p, 'admin.leave.open')).toHaveCount(0);
     }
-    expect(await serverMenuItems(page)).toEqual([copy('search.open'), copy('admin.open')]);
-    expect(await serverMenuItems(page2)).toEqual([copy('search.open'), copy('admin.open'), copy('admin.leave.open')]);
+    // A member reaches leave through the gear: server settings → leave server.
+    await button(page2, 'admin.open').click();
+    const phoneSettings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await expect(phoneSettings.getByRole('button', { name: copy('admin.nav.leave'), exact: true })).toBeVisible({ timeout: WAIT });
+    await page2.keyboard.press('Escape');
+    await expect(phoneSettings).toBeHidden();
+    await expect(button(page2, 'admin.open')).toBeFocused();
     await expect(newChannelButton(page)).toBeVisible();
     await expect(newChannelButton(page2)).toHaveCount(0);
 

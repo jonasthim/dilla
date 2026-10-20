@@ -1339,12 +1339,9 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
-    // Flow 07 (web3.8): the server's actions stand under its name, before the tabs: server settings, and leave for a member
-    // who does not own the server (the invite link lives under settings → Invites).
+    // Web3.8 (WS8): one gear beside the server's name, before the tabs; leave and delete live in server settings.
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'server settings' }));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'leave server' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
@@ -1405,7 +1402,7 @@ describe('sidebar actions and pane widths (web3.8)', () => {
 
   it('the owner sees "+" in the list header and no invite or "+ channel" button in the server header', () => {
     setup(`/c/${A}/${GEN}`, { communities: OWNED });
-    const header = screen.getByRole('group', { name: en['create.actions'] });
+    const header = document.querySelector('.d-channel-list__head') as HTMLElement;
     expect(within(header).queryByRole('button', { name: en['invite.open'] })).toBeNull();
     expect(within(header).queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
     const plus = within(screen.getByRole('tabpanel', { name: 'channels' })).getByRole('button', { name: en['create.channel.open'] });

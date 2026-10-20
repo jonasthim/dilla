@@ -297,23 +297,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
-      const menu = page.getByRole('button', { name: copy('nav.server.menu'), exact: true });
-      await expectTapTargets(menu, 'the server menu trigger');
-      // web3.8 (item 11): the owner's menu holds search and server settings (and "leave" only for a member); "new channel"
-      // is the "+" in the list header, and the invite link lives under server settings → Invites.
-      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
-      await menu.click();
-      await expect(page.getByRole('menuitem')).toHaveText([copy('search.open'), copy('admin.open')]);
-      await expectTapTargets(page.getByRole('menuitem'), 'the server menu items');
-      await page.keyboard.press('Escape');
+      // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
+      // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
+      const search = page.getByRole('button', { name: copy('search.open'), exact: true });
+      const gear = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
-      await expect(menu).toBeFocused();
+      await expectTapTargets(search, 'the search icon');
+      await expectTapTargets(gear, 'the settings gear');
+      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
     });
 
-    // Walk 1: a phone has no Control+K, so search opens from the servers list menu, full screen; a hit opens its channel.
-    await test.step('search from the servers list menu opens full screen and a hit opens its message', async () => {
-      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('search.open'), exact: true }).tap();
+    // Walk 1: a phone has no Control+K, so search opens from the servers list header, full screen; a hit opens its channel.
+    await test.step('search from the servers list header opens full screen and a hit opens its message', async () => {
+      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
       const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
       await expect(palette).toBeVisible({ timeout: WAIT });
       const box = await palette.boundingBox();
@@ -394,8 +391,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     // Server settings is a page under the tabs too, and Escape closes it.
     await test.step('server settings keeps the tab bar and closes on Escape', async () => {
       await tab(page, 'nav.tab.servers').tap();
-      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
       await expect(tabBar(page)).toBeVisible();

@@ -145,24 +145,36 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
-  it('shows server settings for every member and leave only for non-owners', () => {
+  it('the sidebar header holds one action, the gear named "server settings", beside the name; no leave button', () => {
     setup();
-    expect(screen.getByRole('button', { name: 'server settings' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'leave server' })).toBeInTheDocument();
-  });
-
-  it('owners have no leave button', () => {
-    setup(ME.id);
+    const nav = screen.getByRole('navigation', { name: 'channels' });
+    const gear = within(nav).getByRole('button', { name: 'server settings' });
+    expect(gear.closest('.d-channel-list__head')).toContainElement(screen.getByRole('heading', { level: 1, name: 'Midgard' }));
+    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(gear.textContent).toBe('');
+    expect(screen.queryByRole('group', { name: 'server actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();
+    expect(document.querySelector('.d-channel-list__head')!.querySelectorAll('button')).toHaveLength(1);
   });
 
-  it('opens server settings on the danger tab from leave', async () => {
+  it('a member reaches leave through server settings; the owner finds delete there', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'leave server' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'leave server' }));
     expect(within(dialog).getByRole('heading', { level: 2, name: 'leave server' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'leave server', current: 'page' })).toBeInTheDocument();
+  });
+
+  it('closing server settings returns focus to the gear', async () => {
+    const { fake, user } = setup();
+    act(() => { fake.publish(`permissions:${A}`, access()); });
+    const gear = screen.getByRole('button', { name: 'server settings' });
+    await user.click(gear);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(gear).toHaveFocus();
   });
 
   it('server settings opens on the invites tab for a member who holds only create invite (R20)', async () => {

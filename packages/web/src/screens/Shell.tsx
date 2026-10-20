@@ -61,6 +61,8 @@ export function focusUserSettings(): void {
 
 /** The icon of the channel list's new-channel button. */
 const PLUS = 'plus';
+const SEARCH = 'search';
+const SETTINGS = 'settings';
 const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
 const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
@@ -236,7 +238,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
-  const [serverMenuOpen, setServerMenuOpen] = useState(false);
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
   // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
@@ -1011,26 +1012,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     // owner holds ManageChannels; every member holds CreateInvite by default (@everyone), and a refusal is said in the dialog.
     const openAdmin = (tab: AdminTab) => { if (community !== null) openAdminFor(community.id, tab); };
     // Final fix B1: "edit channel" sits in the channel header (M2), not here.
-    const phoneServerMenu = !phone || !voiceHere ? undefined : (
-      <ActionMenu label={t('nav.server.menu')} icon="ellipsis-vertical" open={serverMenuOpen} onOpenChange={setServerMenuOpen}
-        items={[
-          { id: 'search', label: t('search.open') },
-          { id: 'admin', label: t('admin.open') },
-          ...(!owner ? [{ id: 'leave', label: t('admin.leave.open'), danger: true }] : []),
-        ]}
-        onSelect={id => {
-          if (id === 'search') startSearch('all');
-          else openAdmin(id === 'leave' ? 'danger' : 'overview');
-        }} />
+    // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
+    const headerAction = !voiceHere ? undefined : (
+      <>
+        {phone ? (
+          <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={() => startSearch('all')}>
+            <Icon name={SEARCH} size={18} /></Button>
+        ) : null}
+        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
+          <Icon name={SETTINGS} size={18} /></Button>
+      </>
     );
-    const actions = voiceHere && !phone ? <>
-      <Button data-admin-open="" onClick={() => openAdmin('overview')}>{t('admin.open')}</Button>
-      {!owner ? <Button onClick={() => openAdmin('danger')}>{t('admin.leave.open')}</Button> : null}
-    </> : undefined;
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        actions={actions} actionsLabel={t('create.actions')} headerAction={phoneServerMenu}
+        headerAction={headerAction}
         // Web3.8 (item 11): the new-channel "+" sits at the right of the list's own header, for a person who can manage
         // channels, on the channels tab and the phone's servers list, never on the DMs tab.
         listAction={voiceHere && canManageChannels ? (

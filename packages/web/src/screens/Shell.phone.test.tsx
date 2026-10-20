@@ -48,18 +48,22 @@ describe('the phone shell: the servers list', () => {
     expect(document.querySelector('.dw-voice-dock')).toBeNull();
   });
 
-  it('holds search, settings and leave in the server menu (no invite, no new channel); the list header has the "+" only for a person who may', async () => {
+  it('has the gear and the search icon beside the server name, no menu; the list header has the "+" only for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    const names = () => screen.getAllByRole('menuitem').map(i => i.textContent);
-    expect(names()).toEqual([t('search.open'), t('admin.open'), t('admin.leave.open')]);
-    await user.keyboard('{Escape}');
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const search = screen.getByRole('button', { name: t('search.open') });
+    const head = gear.closest('.d-channel-list__head') as HTMLElement;
+    expect(within(head).getAllByRole('button')).toEqual([search, gear]);
+    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(search.querySelector('svg[data-icon="search"]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: t('nav.server.menu') })).toBeNull();
+    expect(screen.queryByRole('button', { name: t('admin.leave.open') })).toBeNull();
     expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
     manage(client);
-    await user.click(screen.getByRole('button', { name: t('nav.server.menu') }));
-    expect(names()).toEqual([t('search.open'), t('admin.open'), t('admin.leave.open')]);
-    await user.keyboard('{Escape}');
     expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
+    await user.click(gear);
+    const dialog = await screen.findByRole('dialog', { name: t('admin.title') });
+    expect(within(dialog).getByRole('button', { name: t('admin.nav.leave') })).toBeInTheDocument();
   });
 
   it('labels the rail’s join and new buttons with visible captions (walk 24)', async () => {
@@ -71,7 +75,7 @@ describe('the phone shell: the servers list', () => {
 
   it('has no axe violations', async () => {
     const { view } = phone({ path: `/c/${A}` });
-    await screen.findByRole('button', { name: t('nav.server.menu') });
+    await screen.findByRole('button', { name: t('admin.open') });
     await expectNoAxeViolations(view.container);
   });
 });
@@ -79,8 +83,7 @@ describe('the phone shell: the servers list', () => {
 describe('the phone shell: search (walk 1)', () => {
   it('opens the full-screen search from the servers list menu', async () => {
     const { user } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('search.open') }));
+    await user.click(await screen.findByRole('button', { name: t('search.open') }));
     const dialog = screen.getByRole('dialog', { name: t('search.placeholder') });
     expect(dialog.className).toContain('dw-search');
     expect(screen.getByRole('combobox', { name: t('search.placeholder') })).toHaveFocus();
@@ -272,8 +275,7 @@ describe('the phone shell: tabs', () => {
 
   it('a tab tap closes server settings too', async () => {
     const { user } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('admin.open') }));
+    await user.click(await screen.findByRole('button', { name: t('admin.open') }));
     expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
     await user.click(tab('DMs'));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('admin.title') })).toBeNull());

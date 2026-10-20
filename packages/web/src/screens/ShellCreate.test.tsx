@@ -184,16 +184,17 @@ describe('a fresh instance (flow 07)', () => {
 });
 
 describe('a server’s actions (flow 07)', () => {
-  it('the header holds server settings (and leave, for a member); the owner has the "+" in the list header, a member none', () => {
+  it('the header holds the server settings gear alone (leave lives in settings); the owner has the "+" in the list header, a member none', () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
-    const group = screen.getByRole('group', { name: 'server actions' });
-    expect(within(group).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
+    const head = document.querySelector('.d-channel-list__head')!;
+    expect(within(head as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
     const panel = screen.getByRole('tabpanel');
     expect(within(panel).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
     view.unmount();
     setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
-    expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['server settings', 'leave server']);
+    expect(within(document.querySelector('.d-channel-list__head') as HTMLElement).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
+    expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
   });

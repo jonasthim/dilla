@@ -5,6 +5,9 @@
 /* A control at the right of the name (the phone's server menu): the row carries the hairline, not the heading. */
 .d-channel-list__head { display: flex; align-items: center; padding-right: 0.25rem; border-bottom: 1px solid var(--hairline); }
 .d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; border-bottom: 0; }
+/* The head's icon buttons: 32px on desktop, 44px on a phone. */
+.d-channel-list__head-btn { flex: none; min-width: 2rem; min-height: 2rem; padding: 0; justify-content: center; }
+[data-layout="phone"] .d-channel-list__head-btn { min-width: 2.75rem; min-height: 2.75rem; }
 /* The server's actions sit under its name, above the tabs; the hairline moves below them. */
 .d-channel-list__title:has(+ .d-channel-list__actions) { border-bottom: 0; padding-bottom: 0.375rem; }
 /* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they

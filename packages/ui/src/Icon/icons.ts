@@ -38,6 +38,7 @@
  *   icons/plus.svg  7f6af73bf1ff6c4bca3f18351c8d1bdec6749c0c2530c4de5da85d520c21df17
  *   icons/maximize.svg  1f790856b0de805ab62e871609f1990b89d227d472022e57a11fde015aad4826
  *   icons/minimize.svg  7daa304bc3dccac1f100304e66a41139662cc6c0ba3eba67480d97466a9ce02b
+ *   icons/search.svg  283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -57,7 +58,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -236,6 +237,10 @@ export const ICONS = {
     ['path', { d: 'M21 8h-3a2 2 0 0 1-2-2V3' }],
     ['path', { d: 'M3 16h3a2 2 0 0 1 2 2v3' }],
     ['path', { d: 'M16 21v-3a2 2 0 0 1 2-2h3' }],
+  ],
+  'search': [
+    ['path', { d: 'm21 21-4.34-4.34' }],
+    ['circle', { cx: '11', cy: '11', r: '8' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 
