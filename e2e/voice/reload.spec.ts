@@ -1,6 +1,10 @@
 // E-reload (web3.7, R31): a reload in a call leaves exactly one tile for the reloaded person, and a reload that is never
-// followed by a rejoin leaves no ghost either. The second half suppresses the pagehide leave (an init script that stops
-// the event before the app's own listener sees it). Locally the SFU still drops the reloaded participant within about
+// followed by a rejoin leaves no ghost either. The second half suppresses every page-leave event (an init script that
+// stops `pagehide` and `beforeunload` before any other listener sees them): the app's own pagehide leave, and LiveKit's
+// page-leave disconnect (Room `disconnectOnPageLeave`, on by default, listens to both), whose room end the call session
+// takes as a lost room and answers with the worker's self-Remove. FX-RELOAD (web3.9): with `beforeunload` let through,
+// that self-Remove raced the reload, and when it landed first (Firefox in CI, run 39393759704) the old device had left
+// before the new page booted, so the sweep had nothing to read. Locally the SFU still drops the reloaded participant within about
 // 300 ms, so without help the peer-visible checks (bob's roster and tiles) could not tell the sweep from the SFU. The
 // second half therefore holds back the SFU's `participant_left` webhook (S3's test-host hook, `withholdLeft`): the
 // instance never hears of the departure, and only alice's boot sweep (her self-Remove, one read and one proposal) can take
@@ -24,22 +28,28 @@ async function rosterDevices(page: Page): Promise<string[]> {
   return (s?.roster ?? []).map((r) => r.deviceId).sort();
 }
 
-/** Stops every `pagehide` before the app's listener (on `window`, no capture) can see it: the leave a page sends as it
- *  goes away never happens. The init script reaches documents loaded after it is added. */
-function suppressPagehide(): void {
-  window.addEventListener('pagehide', (e) => e.stopImmediatePropagation(), { capture: true });
+/** The page-leave events whose listeners must never run on a suppressed page: the app's leave listens to `pagehide`,
+ *  LiveKit's page-leave disconnect to both. */
+const PAGE_LEAVE = ['pagehide', 'beforeunload'] as const;
+
+/** Stops every page-leave event before any listener below the capture phase on `window` can see it (the app's and
+ *  LiveKit's, both on `window` with no capture): no leave of any kind is sent as the page goes away. The init script
+ *  reaches documents loaded after it is added; it takes the event names as its argument. */
+function suppressPageLeave(types: readonly string[]): void {
+  for (const type of types) window.addEventListener(type, (e) => e.stopImmediatePropagation(), { capture: true });
 }
 
-/** True when a `pagehide` dispatched on the page reaches no listener below the capture phase (the suppression holds). */
-async function pagehideIsSuppressed(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+/** True when each page-leave event dispatched on the page reaches no listener below the capture phase (the suppression
+ *  holds for both). */
+async function pageLeaveIsSuppressed(page: Page): Promise<boolean> {
+  return page.evaluate((types) => types.every((type) => {
     let reached = false;
     const probe = (): void => { reached = true; };
-    window.addEventListener('pagehide', probe);
-    window.dispatchEvent(new Event('pagehide'));
-    window.removeEventListener('pagehide', probe);
+    window.addEventListener(type, probe);
+    window.dispatchEvent(new Event(type, { cancelable: true }));
+    window.removeEventListener(type, probe);
     return !reached;
-  });
+  }), [...PAGE_LEAVE]);
 }
 
 test('a reload mid-call leaves one tile for alice, and a reload without a rejoin leaves none within the sweep bound', async ({ peerBrowser }) => {
@@ -63,10 +73,10 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
     });
 
     await test.step('alice reloads and rejoins: bob shows exactly one tile for her and lists her device once', async () => {
-      await alice.page.addInitScript(suppressPagehide);
+      await alice.page.addInitScript(suppressPageLeave, [...PAGE_LEAVE]);
       await alice.page.reload();
       await expectShellReady(alice.page);
-      await expect.poll(() => pagehideIsSuppressed(alice.page), { timeout: WAIT, message: 'the reloaded page carries the suppressing listener' }).toBe(true);
+      await expect.poll(() => pageLeaveIsSuppressed(alice.page), { timeout: WAIT, message: 'the reloaded page carries the suppressing listeners' }).toBe(true);
       await joinVoice(alice.page, peer.communityName, peer.voiceName);
       await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
       await expect(tile(bob.page, 'alice')).toHaveCount(1, { timeout: WAIT });
@@ -74,16 +84,23 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
       await expect.poll(async () => (await callSlice(bob.page))?.roster.filter((r) => r.deviceId === a.device).length, { timeout: WAIT }).toBe(1);
     });
 
-    await test.step('alice reloads again with the pagehide leave suppressed, the SFU\'s departure withheld and no rejoin: the boot sweep alone removes her old device', async () => {
-      expect(await pagehideIsSuppressed(alice.page), 'the page that is about to reload suppresses its pagehide leave').toBe(true);
+    await test.step('alice reloads again with every page-leave event suppressed, the SFU\'s departure withheld and no rejoin: the boot sweep alone removes her old device', async () => {
+      expect(await pageLeaveIsSuppressed(alice.page), 'the page that is about to reload suppresses its page-leave events').toBe(true);
       // A withheld departure is dropped for good, not queued: the instance keeps alice's device until her own sweep removes it.
       await withholdLeft(true);
-      // Pins that the boot sweep runs: alice's worker reads the call of the channel it was in, with no join pressed.
+      // Pins that the boot sweep runs: alice's worker reads the call of the channel it was in, with no join pressed. And
+      // that the page going away sent nothing of its own (FX-RELOAD): no proposal of alice's goes out before that read.
       const reads: string[] = [];
-      alice.context.on('request', (r) => { if (r.method() === 'GET' && new URL(r.url()).pathname === `/v1/channels/${s.voice_channel_id}/call`) reads.push(r.url()); });
+      const proposalsBeforeRead: string[] = [];
+      alice.context.on('request', (r) => {
+        const path = new URL(r.url()).pathname;
+        if (r.method() === 'GET' && path === `/v1/channels/${s.voice_channel_id}/call`) reads.push(r.url());
+        else if (r.method() === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/proposal$/.test(path) && reads.length === 0) proposalsBeforeRead.push(path);
+      });
       await alice.page.reload();
       await expectShellReady(alice.page);
       await expect.poll(() => reads.length, { timeout: SWEEP_BOUND, message: 'the reloaded page sweeps the call it left behind' }).toBeGreaterThan(0);
+      expect(proposalsBeforeRead, 'the page that went away sent no self-Remove of its own: the sweep writes first').toEqual([]);
       await expect.poll(() => rosterDevices(bob.page), { timeout: SWEEP_BOUND, message: 'bob\'s roster drops alice\'s old device' }).toEqual([b.device]);
       await expect(tile(bob.page, 'alice')).toHaveCount(0, { timeout: SWEEP_BOUND });
     });
