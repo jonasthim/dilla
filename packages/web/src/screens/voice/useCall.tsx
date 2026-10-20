@@ -502,6 +502,12 @@ export function useCall(o: UseCallOptions): CallView {
           setUnsupported(true);
           return;
         }
+        // Fix round 2 (R-AFK3 c): a join that must wait for its channel's AFK status shows as joining meanwhile: the dock
+        // for the new channel when there is no call, else the current call stays as it is until the switch.
+        if (!listenOnly && afkStatus(id) === 'unknown') {
+          if (sessionRef.current === null) { channelRef.current = id; setChannelId(id); }
+          setJoining(true);
+        }
         if (!listenOnly) listenOnly = await resolveAfk(id, abort.signal);
         if (listenOnly) listenIds.current.add(id);
         if (abort.signal.aborted) return;
@@ -601,7 +607,7 @@ export function useCall(o: UseCallOptions): CallView {
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach, selfNow, watchSelf, announce, resolveAfk]);
+  }, [deps, client, attach, detach, selfNow, watchSelf, announce, resolveAfk, afkStatus]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */

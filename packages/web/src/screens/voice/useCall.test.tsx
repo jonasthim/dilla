@@ -267,6 +267,57 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     expect(h.v.channelId).toBeNull();
   });
 
+  it('the fail-closed join keeps the previous call (fix round 2, m-5)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const h = harness();
+    const general = await h.joined(GENV);
+    // Community B's afk: read failed and nothing has landed since.
+    act(() => { h.client.set(`afk:${B}`, null); });
+    act(() => h.v.join(B_GEN));
+    await act(() => vi.advanceTimersByTimeAsync(AFK_STATUS_WAIT_MS + 100));
+    expect(h.started).toHaveLength(1);
+    expect(general.leave).not.toHaveBeenCalled();
+    expect(h.v.session).toBe(general);
+    expect(h.v.channelId).toBe(GENV);
+    expect(h.v.notice).toEqual({ channelId: B_GEN, key: 'voice.failed' });
+    expect(h.v.joining).toBe(false);
+  });
+
+  it('a click that waits shows the dock joining, and proceeds once a retried read lands (fix round 2, R-AFK3 c)', async () => {
+    const h = harness({ afk: { channels: NONE, pending: null } });
+    // A failed read left community B's snapshot null; the worker's retry lands it later.
+    act(() => { h.client.set(`afk:${B}`, null); });
+    act(() => h.v.join(B_AFK));
+    await flush();
+    expect(h.started).toHaveLength(0);
+    expect(h.v.channelId).toBe(B_AFK);
+    expect(h.v.joining).toBe(true);
+    expect(h.v.session).toBeNull();
+    act(() => { h.client.set(`afk:${B}`, afkOf(B_AFK)); });
+    await waitFor(() => expect(h.sessions).toHaveLength(1));
+    expect(h.started[0].opts.listenOnly).toBe(true);
+    expect(h.v.joining).toBe(false);
+    // And an ordinary channel of that community, after the same kind of wait, joins normally.
+    act(() => h.v.leave());
+    await flush();
+    act(() => { h.client.set(`afk:${B}`, null); });
+    act(() => h.v.join(B_GEN));
+    await flush();
+    expect(h.started).toHaveLength(1);
+    expect(h.v.joining).toBe(true);
+    act(() => { h.client.set(`afk:${B}`, afkOf(B_AFK)); });
+    await waitFor(() => expect(h.sessions).toHaveLength(2));
+    expect(h.started[1].opts.listenOnly ?? false).toBe(false);
+  });
+
+  it('with a snapshot present a join starts at once (fix round 2, R-AFK3 a)', async () => {
+    const h = harness();
+    act(() => h.v.join(B_GEN));
+    await flush();
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].opts.listenOnly ?? false).toBe(false);
+  });
+
   it('a lost AFK call recovers listen-only while the slices lag (fix round 1, I-2)', async () => {
     const h = harness({ lagging: true, afk: { channels: NONE, pending: null } });
     h.setAfk({ channels: NONE, pending: move() });

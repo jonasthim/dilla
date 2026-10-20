@@ -41,6 +41,71 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'ready', info: READY_INFO });
     await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false, occupants: [] }));
   });
+  it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
+    const w = world();
+    await toReady(w);
+    const key = `afk:${toHex(COMMUNITY)}` as const;
+    const before = { channelId: null, timeoutSeconds: 300, pending: false, occupants: [] };
+    await vi.waitFor(() => expect(w.last(key)).toEqual(before));
+    const nulls = () => w.posted.filter((m) => m.t === 'slice' && m.name === key && m.value === null).length;
+    const nullsBefore = nulls();
+    let land: (v: { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }) => void = () => undefined;
+    w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+    const reads = w.routes.getAFK.mock.calls.length;
+    w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
+    await vi.waitFor(() => expect(w.routes.getAFK.mock.calls.length).toBe(reads + 1));
+    // The read is in flight: the slice still holds the last snapshot, and was never set to null for it.
+    expect(w.last(key)).toEqual(before);
+    expect(nulls()).toBe(nullsBefore);
+    land({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+  });
+  it('a failed AFK read retries at 1 s, 2 s, 4 s … until it lands (R-AFK3 b)', async () => {
+    const w = world();
+    w.routes.getAFK.mockRejectedValueOnce(new Error('E_NETWORK')).mockRejectedValueOnce(new Error('E_NETWORK'))
+      .mockRejectedValueOnce(new Error('E_NETWORK'));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+    try {
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(w.last(key) ?? null).toBeNull();
+      const calls = () => w.routes.getAFK.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls()).toBe(2);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls()).toBe(3);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(calls()).toBe(4);
+      await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+      // Landed: no more reads.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(calls()).toBe(4);
+    } finally { vi.useRealTimers(); }
+  });
+  it('the AFK retry waits at most 30 s, and stops when the community is unloaded (R-AFK3 b)', async () => {
+    const w = world();
+    w.routes.getAFK.mockRejectedValue(new Error('E_NETWORK'));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+    try {
+      await toReady(w);
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(1));
+      const calls = () => w.routes.getAFK.mock.calls.length;
+      // 1 + 2 + 4 + 8 + 16 s, then 30 s steps (never 32 s).
+      await vi.advanceTimersByTimeAsync(31_100);
+      expect(calls()).toBe(6);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(calls()).toBe(6);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(calls()).toBe(7);
+      w.call(31, { m: 'leaveCommunity', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(31)).toMatchObject({ ok: true }));
+      const reads = calls();
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(calls()).toBe(reads);
+    } finally { vi.useRealTimers(); }
+  });
   it('setAFK sends only the timeout, reloads the slice, and refuses 120 with E_BAD_INPUT', async () => {
     const w = world();
     await toReady(w);

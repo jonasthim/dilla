@@ -1548,10 +1548,9 @@ export class Controller {
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
-    for (const community of this.slices.get('communities') ?? []) {
-      this.clearPresence(community.id);
-      this.clearAFK(community.id);
-    }
+    // R-AFK3 (a): the AFK snapshot is not cleared here; refreshAfterReady reads it again in place (an offline status
+    // already cleared it, so a reconnect does start from null).
+    for (const community of this.slices.get('communities') ?? []) this.clearPresence(community.id);
     void this.barrier.track(this.refreshPresenceChoice());
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
@@ -2282,7 +2281,7 @@ export class Controller {
     if (members !== null) this.publishMembers(communityId, members, false);
     this.clearPresence(communityId);
     void this.barrier.track(this.loadPresence(communityId));
-    this.clearAFK(communityId);
+    // R-AFK3 (a): read again in place; the previous snapshot stands until the new one lands.
     void this.barrier.track(this.loadAFK(communityId));
     this.updateExpected();
     this.publishBadges();
@@ -2704,20 +2703,48 @@ export class Controller {
   private static readonly PRESENCE_CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
   private readonly afkReadSeq = new Map<string, number>();
 
+  /** web3.9 R-AFK3 (b): a failed AFK read is read again after 1 s, 2 s, 4 s … (at most 30 s) while the community stays listed. */
+  private readonly afkRetry = new Map<string, { timer: number; attempt: number }>();
+  private static readonly AFK_RETRY_MAX_MS = 30_000;
+
+  private stopAFKRetry(communityId: string): void {
+    const retry = this.afkRetry.get(communityId);
+    if (retry === undefined) return;
+    this.deps.clearTimeout(retry.timer);
+    this.afkRetry.delete(communityId);
+  }
+
+  /** Unloads the snapshot (offline, a left or wiped community): null, any read in flight ignored, the retry stopped. */
   private clearAFK(communityId: string): void {
     this.afkReadSeq.set(communityId, (this.afkReadSeq.get(communityId) ?? 0) + 1);
+    this.stopAFKRetry(communityId);
     this.slices.set(`afk:${communityId}`, null);
   }
 
+  /** Reads the snapshot. R-AFK3 (a): the slice keeps its previous value until this read lands (a re-read never passes
+   *  through null), so a voice join that needs it is never held by a re-read. */
   private async loadAFK(communityId: string): Promise<void> {
     const seq = (this.afkReadSeq.get(communityId) ?? 0) + 1;
     this.afkReadSeq.set(communityId, seq);
     try {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
+      this.stopAFKRetry(communityId);
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
         timeoutSeconds: row.timeoutSeconds, pending: row.pending, occupants: [] });
-    } catch { /* reconnect or the next community_changed retries the snapshot */ }
+    } catch {
+      // A newer read, an unload or a cleared store owns the snapshot now.
+      if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
+      const previous = this.afkRetry.get(communityId);
+      if (previous !== undefined) this.deps.clearTimeout(previous.timer);
+      const attempt = previous?.attempt ?? 0;
+      const delay = Math.min(1_000 * 2 ** attempt, Controller.AFK_RETRY_MAX_MS);
+      const timer: number = this.deps.setTimeout(() => {
+        if (this.afkRetry.get(communityId)?.timer !== timer || this.storeCleared || !this.listed(communityId)) return;
+        void this.barrier.track(this.loadAFK(communityId));
+      }, delay);
+      this.afkRetry.set(communityId, { timer, attempt: attempt + 1 });
+    }
   }
 
   private async setAFK(communityId: string, timeoutSeconds: number): Promise<null> {
