@@ -3,7 +3,7 @@
 .d-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; align-items: center; gap: 0.75rem 1.5rem; padding: 0.75rem 0; border-bottom: 1px solid var(--hairline); min-width: 0; }
 /* Every row carries its own hairline: rows in different parents (list items, a section's last row before a dialog) each keep exactly one. */
 .d-settings-row__text { min-width: 0; }
-.d-settings-row__label { display: block; font-size: var(--text-base); font-weight: var(--weight-label); color: var(--fg); }
+.d-settings-row__label { display: block; margin: 0; font-size: var(--text-base); font-weight: var(--weight-label); color: var(--fg); }
 .d-settings-row__hint { margin: 0.125rem 0 0; max-width: 60ch; font-size: var(--text-sm); color: var(--fg-3); }
 .d-settings-row__control { min-width: 0; max-width: 100%; }
 .d-settings-row__control .d-btn { height: auto; min-height: 1.75rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }

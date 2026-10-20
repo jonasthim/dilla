@@ -2,7 +2,7 @@
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
 camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-2x, web-3.9).
+RELEASE-DATE, web-3.9).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 

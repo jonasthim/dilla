@@ -120,7 +120,7 @@ func TestAFKPatchRefusals(t *testing.T) {
 	}
 	denyInChannel(t, r.e, hidden, r.member, api.PermViewChannel)
 	name, topic := "away", "a topic"
-	one, pos := uint64(1), uint64(7)
+	one, pos := uint64(1), uint64(api.AFKBuiltinPosition)
 	zero := uint64(0)
 	path := "/v1/channels/" + r.afk.String()
 	// [name, topic, mode, visibility, parent_id, position, slowmode_seconds]
@@ -136,7 +136,8 @@ func TestAFKPatchRefusals(t *testing.T) {
 		{"slow mode", []any{nil, nil, nil, nil, nil, nil, one}, http.StatusForbidden, "E_FORBIDDEN"},
 		{"mode unchanged is still refused", []any{nil, nil, zero, nil, nil, nil, nil}, http.StatusForbidden, "E_FORBIDDEN"},
 		{"name (control)", []any{name, nil, nil, nil, nil, nil, nil}, http.StatusNoContent, ""},
-		{"position (control)", []any{nil, nil, nil, nil, nil, pos, nil}, http.StatusNoContent, ""},
+		{"position 2^30, unchanged (control)", []any{nil, nil, nil, nil, nil, pos, nil}, http.StatusNoContent, ""},
+		{"position 7 (R-AFK8)", []any{nil, nil, nil, nil, nil, uint64(7), nil}, http.StatusForbidden, "E_FORBIDDEN"},
 		{"parent to a visible category (control)", []any{nil, nil, nil, nil, open[:], nil, nil}, http.StatusNoContent, ""},
 		{"parent to a hidden category (R44)", []any{nil, nil, nil, nil, hidden[:], nil, nil}, http.StatusNotFound, "E_NOT_FOUND"},
 	} {
@@ -158,6 +159,117 @@ func TestAFKPatchRefusals(t *testing.T) {
 	if status, body := r.e.Do(http.MethodPatch, "/v1/channels/"+r.lounge.String(), r.memberTok,
 		[]any{nil, topic, nil, nil, nil, nil, nil}); status != http.StatusNoContent {
 		t.Fatalf("topic on lounge = %d (%x)", status, body)
+	}
+}
+
+// R-AFK8 (server half): the built-in AFK channel stays at 2^30, so a PATCH naming any other position is
+// refused with the other AFK refusals' code, and the same request on an ordinary channel lands.
+func TestAFKPositionPatchIsRefused(t *testing.T) {
+	r := newRefusalEnv(t)
+	mod := createRole(t, r.e, r.cid, r.ownerTok, "mod", 5, api.PermManageChannels)
+	grant(t, r.e, r.cid, r.ownerTok, r.member, mod, http.StatusNoContent)
+	builtin := uint64(api.AFKBuiltinPosition)
+	// [name, topic, mode, visibility, parent_id, position, slowmode_seconds]
+	for _, tc := range []struct {
+		name string
+		ch   id.ID
+		pos  uint64
+		want int
+		code string
+	}{
+		{"AFK to 7", r.afk, 7, http.StatusForbidden, "E_FORBIDDEN"},
+		{"AFK to 0", r.afk, 0, http.StatusForbidden, "E_FORBIDDEN"},
+		{"AFK to 2^30-1", r.afk, builtin - 1, http.StatusForbidden, "E_FORBIDDEN"},
+		{"AFK to 2^30+1", r.afk, builtin + 1, http.StatusForbidden, "E_FORBIDDEN"},
+		{"AFK at 2^30 (control)", r.afk, builtin, http.StatusNoContent, ""},
+		{"lounge to 7 (control)", r.lounge, 7, http.StatusNoContent, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The owner and a member with manage_channels are refused alike.
+			for _, tok := range []string{r.memberTok, r.ownerTok} {
+				status, body := r.e.Do(http.MethodPatch, "/v1/channels/"+tc.ch.String(), tok,
+					[]any{nil, nil, nil, nil, nil, tc.pos, nil})
+				r.refused(t, "PATCH position "+tc.name, status, body, tc.want, tc.code)
+			}
+		})
+	}
+	// A rename that also names a position is refused whole; the name alone still lands.
+	status, body := r.e.Do(http.MethodPatch, "/v1/channels/"+r.afk.String(), r.ownerTok,
+		[]any{"away", nil, nil, nil, nil, uint64(7), nil})
+	r.refused(t, "PATCH name and position", status, body, http.StatusForbidden, "E_FORBIDDEN")
+	if row, err := r.e.Repo.GetChannel(t.Context(), r.afk); err != nil || row.Name != "AFK" {
+		t.Fatalf("AFK after a refused rename = %+v, %v; want it unchanged", row, err)
+	}
+	status, body = r.e.Do(http.MethodPatch, "/v1/channels/"+r.afk.String(), r.ownerTok,
+		[]any{"away", nil, nil, nil, nil, nil, nil})
+	r.refused(t, "PATCH name (control)", status, body, http.StatusNoContent, "")
+	row, err := r.e.Repo.GetChannel(t.Context(), r.afk)
+	if err != nil || row.Position != builtin || row.Name != "away" {
+		t.Fatalf("AFK after the patches = %+v, %v; want away at 2^30", row, err)
+	}
+	if row, err := r.e.Repo.GetChannel(t.Context(), r.lounge); err != nil || row.Position != 7 {
+		t.Fatalf("lounge after the control = %+v, %v; want position 7", row, err)
+	}
+}
+
+// R-AFK8 (server half): 2^30 and above is the built-in AFK channel's, so an ordinary channel's PATCH
+// there is a validation error; 2^30-1 is the control.
+func TestAFKReservedPositionRefusedOnAnOrdinaryChannel(t *testing.T) {
+	r := newRefusalEnv(t)
+	builtin := uint64(api.AFKBuiltinPosition)
+	for _, tc := range []struct {
+		name string
+		pos  uint64
+		want int
+		code string
+	}{
+		{"2^30", builtin, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30+1", builtin + 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^31-1", 1<<31 - 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30-1 (control)", builtin - 1, http.StatusNoContent, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := r.e.Do(http.MethodPatch, "/v1/channels/"+r.lounge.String(), r.ownerTok,
+				[]any{nil, nil, nil, nil, nil, tc.pos, nil})
+			r.refused(t, "PATCH lounge to "+tc.name, status, body, tc.want, tc.code)
+		})
+	}
+	if row, err := r.e.Repo.GetChannel(t.Context(), r.lounge); err != nil || row.Position != builtin-1 {
+		t.Fatalf("lounge = %+v, %v; want position 2^30-1 from the control", row, err)
+	}
+}
+
+// R-AFK8 (server half): the same reserved range on create; 2^30-1 is the control.
+func TestAFKReservedPositionRefusedOnCreate(t *testing.T) {
+	r := newRefusalEnv(t)
+	builtin := uint64(api.AFKBuiltinPosition)
+	path := "/v1/communities/" + r.cid.String() + "/channels"
+	for _, tc := range []struct {
+		name string
+		pos  uint64
+		want int
+		code string
+	}{
+		{"2^30", builtin, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30+1", builtin + 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^31-1", 1<<31 - 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30-1 (control)", builtin - 1, http.StatusCreated, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds]
+			status, body := r.e.Do(http.MethodPost, path, r.ownerTok,
+				[]any{uint64(api.ChannelVoice), uint64(0), uint64(0), nil, "at " + tc.name, "", tc.pos, uint64(0)})
+			r.refused(t, "POST at "+tc.name, status, body, tc.want, tc.code)
+		})
+	}
+	all, err := r.e.Repo.ListChannels(t.Context(), r.cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range all {
+		if c.ID != r.afk && c.Position >= builtin {
+			t.Fatalf("an ordinary channel at %d after the refused creates: %+v", c.Position, c)
+		}
 	}
 }
 

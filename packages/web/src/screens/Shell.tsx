@@ -90,6 +90,12 @@ const TYPING_RENEW_MS = 5_000;
 const NOBODY: ReadonlySet<string> = new Set();
 
 /** True when focus was dropped to the document, as it is when the focused element leaves the DOM. */
+/** Final review M-1: cancels a pending retry of the AFK exempt report. */
+function stopRetry(timer: { current: number | null }): void {
+  if (timer.current !== null) window.clearTimeout(timer.current);
+  timer.current = null;
+}
+
 function focusLost(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
 }
@@ -442,26 +448,42 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // listening, another tab and another device do not refresh this call's AFK timer.
   const afkTrackingKey = useRef<string | null>(null);
   const afkLastReport = useRef(0);
-  // R5: a phone (or a coarse pointer) is exempt from the move; its first report after each join says so.
+  // R5: a phone (or a coarse pointer) is exempt from the move; its first report after each join says so. Final review
+  // M-1: that report is retried (1, 2, 4 s, doubling up to 30 s) until it is accepted or the call ends.
   const afkExemptSent = useRef<string | null>(null);
+  const afkExemptRetry = useRef<number | null>(null);
+  useEffect(() => () => stopRetry(afkExemptRetry), []);
   useEffect(() => {
     const channel = call.channelId;
+    // A call on another channel (the AFK one included) ends the earlier join's exempt report and its retry.
+    if (afkExemptSent.current !== null && afkExemptSent.current !== channel) { afkExemptSent.current = null; stopRetry(afkExemptRetry); }
     const home = (communities ?? []).findIndex((c, i) => railSlices[i]?.some(ch => ch.id === channel && ch.kind === 1));
     const callCommunityId = home < 0 ? null : communities?.[home]?.id ?? null;
     const callAFK = home < 0 ? null : afkLists[home];
     if (callCommunityId === null || channel === null || call.session === null || callAFK?.channelId === null || callAFK?.channelId === undefined
       || channel === callAFK.channelId) {
-      if (channel === null || call.session === null) { afkTrackingKey.current = null; afkExemptSent.current = null; }
+      if (channel === null || call.session === null) { afkTrackingKey.current = null; afkExemptSent.current = null; stopRetry(afkExemptRetry); }
       return;
     }
+    // Owned by this join until accepted: a failure retries while afkExemptSent still names this channel.
+    const sendExempt = (attempt: number) => {
+      void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel, exempt: true }).catch(() => {
+        if (afkExemptSent.current !== channel) return;
+        stopRetry(afkExemptRetry);
+        afkExemptRetry.current = window.setTimeout(() => {
+          afkExemptRetry.current = null;
+          if (afkExemptSent.current === channel) sendExempt(attempt + 1);
+        }, Math.min(30_000, 1_000 * 2 ** attempt));
+      });
+    };
     const activity = (fromMic = false) => {
       if ((!fromMic && document.visibilityState !== 'visible') || Date.now() - afkLastReport.current < 5_000) return;
       afkLastReport.current = Date.now();
       const exempt = afkExemptSent.current !== channel
         && (phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches));
       afkExemptSent.current = channel;
-      void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel, ...(exempt ? { exempt: true } : {}) })
-        .catch(() => undefined);
+      if (exempt) { stopRetry(afkExemptRetry); sendExempt(0); return; }
+      void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel }).catch(() => undefined);
     };
     const speech = () => { if (call.state?.speaking) activity(true); };
     const userActivity = () => activity();

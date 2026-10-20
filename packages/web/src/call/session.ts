@@ -139,9 +139,10 @@ export interface PageCallDeps {
 
 /** web3.9 VOICE-FIX fix round 1 (I1): whether this engine keeps a second capture of one microphone live beside the first.
  *  WebKit (Safari, and every iOS browser) ends the new one (livekit-client LocalTrack.ts:372-374), so there, and on any
- *  engine not on this allowlist, the parked restart stops first. */
-export function concurrentCapture(b: ReturnType<typeof getBrowser>): boolean {
-  return (b?.name === 'Chrome' || b?.name === 'Firefox') && b.os !== 'iOS';
+ *  engine not on this allowlist, the parked restart stops first. Final review I-1: desktop Chrome, Edge and Firefox only.
+ *  getBrowser sets no `os` on Android, so `ua` (the user agent getBrowser read) rules out anything Android or mobile. */
+export function concurrentCapture(b: ReturnType<typeof getBrowser>, ua: string): boolean {
+  return (b?.name === 'Chrome' || b?.name === 'Firefox') && b.os !== 'iOS' && !/android|mobile/i.test(ua);
 }
 
 function defaultAudioContext(): AudioContext | null {
@@ -224,7 +225,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     now: () => Date.now(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-    concurrentCapture: concurrentCapture(getBrowser()),
+    concurrentCapture: concurrentCapture(getBrowser(navigator.userAgent), navigator.userAgent),
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),

@@ -514,8 +514,9 @@ func TestChannelFieldBounds(t *testing.T) {
 			t.Errorf("%s: status %d, want 400", c.name, c.status)
 		}
 	}
-	// The bounds themselves are legal, and a topic may carry line breaks.
-	if status := post(0, 0, 0, strings.Repeat("n", 100), "line one\nline two", 1<<31-1, 21600); status != http.StatusCreated {
+	// The bounds themselves are legal, and a topic may carry line breaks. A create's position bound is
+	// 2^30-1: 2^30 and above is the built-in AFK channel's (R-AFK8, TestAFKReservedPositionRefusedOnCreate).
+	if status := post(0, 0, 0, strings.Repeat("n", 100), "line one\nline two", api.AFKBuiltinPosition-1, 21600); status != http.StatusCreated {
 		t.Fatalf("a channel at every bound = %d, want 201", status)
 	}
 }

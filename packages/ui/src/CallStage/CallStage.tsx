@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { CallTile, type CallTileProps } from '../CallTile/CallTile.tsx';
 import '../Button/Button.css';
 import './CallStage.css';
@@ -139,7 +139,9 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
     if (hideMedia && focusedId !== null) onFocus?.(null);
   }, [hideMedia, focusedId, onFocus]);
 
-  useEffect(() => {
+  // A layout effect: its column count and the orphan row it implies (D1) are committed before the first paint, so the
+  // grid never paints with the columns set and the last row not yet centred (a passive effect's re-render can land frames later).
+  useLayoutEffect(() => {
     const el = tilesRef.current;
     if (!stageMode || !el || typeof ResizeObserver === 'undefined') return;
     const measure = () => {

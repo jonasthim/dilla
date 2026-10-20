@@ -95,8 +95,11 @@
   .d-call-tile[data-stage] .d-call-tile__focus { position: relative; inset: auto; display: flex; flex-direction: column; height: auto; }
   .d-call-tile[data-stage] .d-call-tile__media, .d-call-tile[data-stage] .d-call-tile__avatar { position: relative; inset: auto; width: 100%; aspect-ratio: 16 / 9; }
   .d-call-tile[data-stage] .d-call-tile__caption {
-    position: static; max-width: 100%; padding: 0.375rem 0.5rem 0.25rem; background: none; border-radius: 0;
+    position: static; max-width: 100%; padding: 0.375rem 0.5rem 0.25rem; background: none; border-radius: 0; flex-wrap: wrap; row-gap: 0.125rem;
   }
+  /* Each element has its room: on a narrow tile the name keeps at least 8 characters and the state glyphs, tag and chip wrap to a
+     second line under it rather than squeezing it to a letter. The state words stay in the tree for screen readers. */
+  .d-call-tile[data-stage] .d-call-tile__name { max-width: 100%; min-width: min(8ch, 100%); }
   .d-call-tile[data-stage] .d-call-tile__volume { position: static; width: auto; padding: 0 0.5rem 0.25rem; background: none; border-radius: 0; opacity: 1; pointer-events: auto; }
 }
 /* D4: on the phone layout (landscape included) the avatar sits centred in its 16:9 box, and the volume has no hover, so it stays shown. */

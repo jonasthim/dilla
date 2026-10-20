@@ -506,6 +506,8 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
   }, [bannerText, pauseFocusPending, markPauseFocused]);
   if (id === null) return null;
   const phase = callPhase(v);
+  // Final review I-2: a listen-only call (the AFK channel) holds the dock's camera and share as the stage does, with its reason.
+  const listen = call.state?.listenOnly === true;
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
@@ -525,8 +527,9 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
         </div>
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
-        camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
+        camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused && !listen}
+        canShare={!paused && !listen && canCapture()} busy={call.session === null} paused={paused}
+        {...(listen ? { listenReason: t('afk.stage.muted', { channel: where }) } : {})}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: t('layout.dock.connected'),
           where: server === null ? where : t('layout.dock.where', { channel: where, server }),

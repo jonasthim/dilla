@@ -23,6 +23,16 @@ describe('SettingsRow', () => {
     expect(within(group).getByRole('button', { name: 'turn on' })).toBeInTheDocument();
   });
 
+  it('renders its label as a heading of the given level, still naming the group, without a heading by default', () => {
+    const { rerender } = render(<SettingsRow id="a" label="passkeys" headingLevel={3}><span>x</span></SettingsRow>);
+    const heading = screen.getByRole('heading', { name: 'passkeys', level: 3 });
+    expect(heading).toHaveAttribute('id', 'a-label');
+    expect(heading).toHaveClass('d-settings-row__label');
+    expect(screen.getByRole('group', { name: 'passkeys' })).toBeInTheDocument();
+    rerender(<SettingsRow id="a" label="passkeys"><span>x</span></SettingsRow>);
+    expect(screen.queryByRole('heading')).toBeNull();
+  });
+
   it('has no description without a hint', () => {
     render(<SettingsRow id="notify-default" label="notify me about"><span>x</span></SettingsRow>);
     expect(screen.getByRole('group', { name: 'notify me about' })).not.toHaveAttribute('aria-describedby');

@@ -347,9 +347,36 @@ export const Grid5SpeakingAndChip: Story = {
     expectGrid(canvasElement, 'Grid5SpeakingAndChip', 5);
     const chip = canvasElement.querySelector<HTMLElement>('.d-call-tile__chip');
     if (chip === null || chip.textContent !== '70 %') throw new Error('Grid5SpeakingAndChip: no 70 % chip');
-    const tile = chip.closest<HTMLElement>('.d-call-tile')!.getBoundingClientRect();
-    if (chip.getBoundingClientRect().right > tile.right - 40) throw new Error('Grid5SpeakingAndChip: the chip reaches the corner of the tile');
+    const tileEl = chip.closest<HTMLElement>('.d-call-tile')!;
+    const tile = tileEl.getBoundingClientRect();
+    if (onPhone()) {
+      // The phone tile is a column (CallTile.css): the caption, chip included, sits under the 16:9 media, so nothing covers the face
+      // and the full-screen corner is the media's, not the caption's; the chip stays inside its tile.
+      const media = tileEl.querySelector<HTMLElement>('.d-call-tile__media, .d-call-tile__avatar')!.getBoundingClientRect();
+      const box = chip.getBoundingClientRect();
+      if (box.top < media.bottom - 0.5) throw new Error('Grid5SpeakingAndChip: on a phone the chip sits over the media, not under it');
+      if (box.right > tile.right + 0.5 || box.left < tile.left - 0.5) throw new Error('Grid5SpeakingAndChip: on a phone the chip leaves its tile');
+    } else if (chip.getBoundingClientRect().right > tile.right - 40) throw new Error('Grid5SpeakingAndChip: the chip reaches the corner of the tile');
     if (canvasElement.querySelector('.d-call-tile[data-speaking="true"]') === null) throw new Error('Grid5SpeakingAndChip: nobody speaks');
+  },
+};
+/** Each element has its room: in a 2-column phone grid a long name beside the web tag, a mute glyph and a volume chip keeps its first 8 characters. */
+export const GridLongNames: Story = {
+  args: { tiles: ['Björn Ironside', 'Ragnhild Lothbrok', 'Ivar Ragnarsson', 'you'].map((n, i) => person(n, { video: i % 2 === 0, muted: true }, i === 3)).map((t, i) => (i < 3 ? { ...t, volume: 70 } : t)), code: null },
+  decorators: [stageBox], render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    for (const name of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-call-tile__name'))) {
+      const probe = document.createElement('span');
+      probe.textContent = name.textContent.slice(0, 8);
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap';
+      name.append(probe);
+      const need = probe.getBoundingClientRect().width;
+      probe.remove();
+      if (name.scrollWidth > name.clientWidth + 1 && name.clientWidth + 1 < need) {
+        throw new Error(`GridLongNames: "${name.textContent}" shows ${String(name.clientWidth)} px, under its first 8 characters (${String(need)} px)`);
+      }
+    }
   },
 };
 /** D3: the volume range is hidden until the pointer is over the tile or focus is inside it; the keyboard still reaches it. */
@@ -360,6 +387,11 @@ export const VolumeOnHoverAndFocus: Story = {
     await nextFrame();
     const vol = canvasElement.querySelector<HTMLElement>('li[data-stage] .d-call-tile__volume');
     if (vol === null) throw new Error('VolumeOnHoverAndFocus: no volume');
+    if (onPhone()) {
+      // The phone has no hover: the range stays shown under the caption (CallTile.css), and focus changes nothing.
+      if (getComputedStyle(vol).opacity !== '1') throw new Error('VolumeOnHoverAndFocus: on a phone the volume is hidden at rest');
+      return;
+    }
     if (getComputedStyle(vol).opacity !== '0') throw new Error('VolumeOnHoverAndFocus: the volume shows at rest');
     vol.querySelector<HTMLInputElement>('input')!.focus();
     await nextFrame();

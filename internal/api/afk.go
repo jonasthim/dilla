@@ -115,9 +115,11 @@ func createBuiltinAFK(ctx context.Context, tx store.Repository, com store.Commun
 // takes the community row lock, reads the pointer and the channel it names as they stand under the
 // lock, and asks done whether that channel will do. If it will not, a new built-in channel is written
 // with the stored timeout kept; the old pointed channel is left as it is, and from this commit on it is
-// an ordinary voice channel. If the pointed channel is the built-in one, any overwrite on it is removed
-// (R-AFK2: a rollback to web3.8 could have written one). After the commit the members of the channel
-// that was created or cleaned are materialised. created is true only when a channel was written.
+// an ordinary voice channel. If the pointed channel is the built-in one, its position, mode,
+// visibility, topic and slow mode are put back as built (R-AFK8, M-2) and any overwrite on it is removed (R-AFK2: a rollback to web3.8 could
+// have written one). Either way, every other channel at AFKBuiltinPosition or above is moved below it
+// (R-AFK8, lowerStrayChannels). After the commit the members of the channel that was created or cleaned
+// are materialised. created is true only when a channel was written.
 func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid id.ID, now int64,
 	done func(ch store.ChannelRow, live bool) bool, log *slog.Logger,
 ) (store.ChannelRow, bool, error) {
@@ -143,8 +145,15 @@ func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid
 			if !live || !isBuiltinAFK(ch) {
 				return nil
 			}
-			afk = ch
-			cleaned, err = stripAFKOverwrites(ctx, tx, ch, now)
+			var restored, stripped bool
+			if afk, restored, err = restoreBuiltinAFK(ctx, tx, ch, now); err != nil {
+				return err
+			}
+			if err := lowerStrayChannels(ctx, tx, cid, afk.ID, now); err != nil {
+				return err
+			}
+			stripped, err = stripAFKOverwrites(ctx, tx, afk, now)
+			cleaned = restored || stripped
 			return err
 		}
 		afk, err = createBuiltinAFK(ctx, tx, com, cfg.TimeoutSeconds, now)
@@ -152,7 +161,7 @@ func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid
 			return err
 		}
 		created = true
-		return nil
+		return lowerStrayChannels(ctx, tx, cid, afk.ID, now)
 	})
 	if err != nil {
 		return afk, false, err
@@ -163,6 +172,105 @@ func ensureCommunityAFK(ctx context.Context, repo store.Repository, dsvc DS, cid
 		}
 	}
 	return afk, created, nil
+}
+
+// builtinAFKDrift lists what of the built-in AFK channel ch differs from how createBuiltinAFK writes it,
+// as audit details naming the value it had: its position (R-AFK8: an earlier web3.9 build accepted a
+// PATCH of it), and its mode, visibility, topic and slow mode (M-2: a web3.8 rollback accepts a PATCH of
+// them, which web3.9 then refuses to undo). The name is the administrator's and is never reset.
+func builtinAFKDrift(ch store.ChannelRow) []string {
+	var out []string
+	if ch.Position != AFKBuiltinPosition {
+		out = append(out, fmt.Sprintf("afk.position:%d", ch.Position))
+	}
+	if ch.Mode != ModeE2EE {
+		out = append(out, fmt.Sprintf("afk.mode:%d", ch.Mode))
+	}
+	if ch.Visibility != VisPrivate {
+		out = append(out, fmt.Sprintf("afk.visibility:%d", ch.Visibility))
+	}
+	if ch.Topic != "" {
+		out = append(out, "afk.topic")
+	}
+	if ch.SlowmodeSeconds != 0 {
+		out = append(out, fmt.Sprintf("afk.slowmode:%d", ch.SlowmodeSeconds))
+	}
+	return out
+}
+
+// restoreBuiltinAFK puts every field builtinAFKDrift reports back to its built-in value, with one
+// system audit row per field, and returns the row as it now stands and whether anything changed. The
+// caller holds the community row lock.
+func restoreBuiltinAFK(ctx context.Context, tx store.Repository, ch store.ChannelRow, now int64) (store.ChannelRow, bool, error) {
+	drift := builtinAFKDrift(ch)
+	if len(drift) == 0 {
+		return ch, false, nil
+	}
+	ch.Position, ch.Mode, ch.Visibility, ch.Topic, ch.SlowmodeSeconds = AFKBuiltinPosition, ModeE2EE, VisPrivate, "", 0
+	if err := tx.UpdateChannel(ctx, ch); err != nil {
+		return store.ChannelRow{}, false, err
+	}
+	for _, d := range drift {
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.update", Target: ch.ID.String(), Detail: d, At: now,
+		}); err != nil {
+			return store.ChannelRow{}, false, err
+		}
+	}
+	return ch, true, nil
+}
+
+// lowerStrayChannels moves every live channel of community cid other than the AFK channel afkID that sits
+// at AFKBuiltinPosition or above (R-AFK8: a rolled-back web3.8 numbers a new channel max(position) + 1)
+// down to max(position below 2^30) + 1, + 2, … in their current order (position, then channel_id), each
+// with a null-actor channel.update audit row whose detail names the position it left (afk.reserved:<old>).
+// When they do not fit there (I-1: a channel already at or near 2^30-1), every channel other than afkID is
+// renumbered densely 0..n-1 in that order instead, each one that moves with an afk.renumber:<old> row, so
+// the lowering itself never fails and the rest of the ensure still commits. The caller holds the
+// community row lock.
+func lowerStrayChannels(ctx context.Context, tx store.Repository, cid, afkID id.ID, now int64) error {
+	all, err := tx.ListChannels(ctx, cid) // ordered by position, then channel_id
+	if err != nil {
+		return err
+	}
+	var next uint64
+	var ordinary, stray []store.ChannelRow
+	for _, c := range all {
+		switch {
+		case c.ID == afkID:
+			continue
+		case c.Position < AFKBuiltinPosition:
+			next = max(next, c.Position+1)
+		default:
+			stray = append(stray, c)
+		}
+		ordinary = append(ordinary, c)
+	}
+	if len(stray) == 0 {
+		return nil
+	}
+	moves, detail := stray, "afk.reserved:%d"
+	if next+uint64(len(stray)) > AFKBuiltinPosition {
+		moves, detail, next = ordinary, "afk.renumber:%d", 0
+	}
+	for _, c := range moves {
+		was := c.Position
+		c.Position = next
+		next++
+		if was == c.Position {
+			continue
+		}
+		if err := tx.UpdateChannel(ctx, c); err != nil {
+			return err
+		}
+		if err := tx.Audit(ctx, store.AuditRow{
+			Actor: nil, Action: "channel.update", Target: c.ID.String(),
+			Detail: fmt.Sprintf(detail, was), At: now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // stripAFKOverwrites deletes every overwrite on the built-in AFK channel ch, with a system audit row
@@ -251,7 +359,8 @@ func EnsureAFKChannels(ctx context.Context, repo store.Repository, dsvc DS, clk 
 }
 
 // afkSettled is the backfill's read before any lock: the pointer already names the community's
-// built-in channel and that channel has no overwrite, so there is nothing to write. Anything else goes
+// built-in channel, with its built-in settings (builtinAFKDrift) and no overwrite, and no other channel
+// of the community sits at AFKBuiltinPosition or above, so there is nothing to write. Anything else goes
 // on to the transaction, which decides again under the lock.
 func afkSettled(ctx context.Context, repo store.Repository, cid id.ID) (bool, error) {
 	cfg, err := repo.GetCommunityAFK(ctx, cid)
@@ -259,14 +368,23 @@ func afkSettled(ctx context.Context, repo store.Repository, cid id.ID) (bool, er
 		return false, err
 	}
 	ch, live, err := livePointer(ctx, repo, cid, cfg)
-	if err != nil || !builtinDone(ch, live) {
+	if err != nil || !builtinDone(ch, live) || len(builtinAFKDrift(ch)) > 0 {
 		return false, err
 	}
 	ow, err := repo.ListOverwrites(ctx, ch.ID)
+	if err != nil || len(ow) > 0 {
+		return false, err
+	}
+	all, err := repo.ListChannels(ctx, cid)
 	if err != nil {
 		return false, err
 	}
-	return len(ow) == 0, nil
+	for _, c := range all {
+		if c.ID != ch.ID && c.Position >= AFKBuiltinPosition {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ensureAFK is the lazy ensure of GET /v1/communities/{id}/afk (R1): the backfill's per-community
