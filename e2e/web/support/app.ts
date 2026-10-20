@@ -556,7 +556,7 @@ export async function sendText(page: Page, channel: string, text: string): Promi
 export async function expectAccessible(page: Page, state: string): Promise<void> {
   await page.evaluate(async () => {
     await document.fonts.ready;
-    await Promise.all(document.getAnimations({ subtree: true })
+    await Promise.all((document as unknown as { getAnimations(o: { subtree: boolean }): Animation[] }).getAnimations({ subtree: true })
       .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
       .map((animation) => animation.finished.catch(() => undefined)));
   });

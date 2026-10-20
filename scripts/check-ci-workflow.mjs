@@ -228,6 +228,7 @@ const REQUIRED_STEPS = {
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
     'npm run typecheck -w @dilla/client-core',
     'npm run typecheck -w @dilla/web',
+    'npm run typecheck:e2e',
     'npm run build -w @dilla/web',
     'npm run -w @dilla/web test:dist',
     'npm run build:harness -w @dilla/client-core',

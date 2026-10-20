@@ -392,6 +392,7 @@ jobs:
       - run: npm run typecheck -w @dilla/core-wasm
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
       - run: npm run build -w @dilla/web
       - run: npm run test:noise-release
       # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.

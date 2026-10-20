@@ -83,7 +83,7 @@ test('the enhanced microphone reaches the encrypted sender within the 80 ms budg
     const verifiedFramesAfterLoad=(await heardCount(bob.page,aliceDevice))-framesAtEnd;
     const decode=(chunks:Array<{received:number;pcm:string}>)=>chunks.map(c=>{const bytes=Buffer.from(c.pcm,'base64');return {received:c.received,pcm:new Float32Array(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength))};});
     const measurements=capture.tracks.map(tracks=>measureTrackDelay(decode(tracks[0]),decode(tracks[1])));
-    const result={addedDelayMs:measurements.every(m=>m.addedDelayMs!==null)?Math.max(...measurements.map(m=>m.addedDelayMs)):null,windows:measurements.flatMap((m,i)=>m.windows.map(w=>({...w,phase:i===0?'start':'end'})))};
+    const result={addedDelayMs:measurements.every(m=>m.addedDelayMs!==null)?Math.max(...measurements.map(m=>m.addedDelayMs)):null,windows:measurements.flatMap((m,i)=>m.windows.map((w:object)=>({...w,phase:i===0?'start':'end'})))};
     const metrics=capture.events.filter(e=>e.kind==='metrics').at(-1),p99ProcessingMs=processingP99(metrics);
     dialog=await openVoiceSettings(alice.page);const effectiveText=await dialog.innerText();await closeSettings(alice.page);
     const enhancedAtEnd=effectiveText.includes(copy('settings.voice.processor',{processor:'DeepFilterNet3'}));

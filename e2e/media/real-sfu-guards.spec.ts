@@ -4,7 +4,7 @@ import { DS_URL, CONTROL_URL, MediaDriver, epochWire, kidHex, testkitEnv, type C
 import { debugToken } from './support/lk';
 import type { DillaHarness, DillaHarness21 } from '../../packages/media/harness/main';
 
-type W = { harness: DillaHarness & DillaHarness21 };
+type W = { harness: DillaHarness & DillaHarness21 & { agentByteStreamProbe(topic: string): void; agentByteStreamCount(): number } };
 const HARNESS = 'http://127.0.0.1:5179/';
 
 test('audio stops at a failed worker and a dead sender refuses replaceTrack through the real SFU', async ({ browser }) => {

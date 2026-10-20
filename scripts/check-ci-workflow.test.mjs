@@ -223,6 +223,7 @@ jobs:
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
       - run: npm run build -w @dilla/web
       - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
@@ -1058,6 +1059,7 @@ for (const [job, needle] of [
   ['web-build', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
   ['web-build', 'npm run typecheck -w @dilla/client-core'],
   ['web-build', 'npm run typecheck -w @dilla/web'],
+  ['web-build', 'npm run typecheck:e2e'],
   ['web-build', 'npm run build -w @dilla/web'],
   ['web-build', 'npm run build:harness -w @dilla/client-core'],
   ['web-build', 'go test -tags webdist ./internal/web/...'],
