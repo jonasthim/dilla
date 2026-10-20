@@ -660,13 +660,20 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
       await inCall();
       const label = t('nav.call.open', { where: 'general' });
       const header = () => document.querySelector('.d-app-shell__main .d-phone-header') as HTMLElement;
-      expect(within(header()).queryByRole('img', { name: label })).toBeNull();
+      expect(within(header()).queryByRole('button', { name: label })).toBeNull();
       act(() => { screen.getByRole('textbox', { name: /message/ }).focus(); });
       await waitFor(() => expect(screen.queryByRole('group', { name: t('voice.dock.region') })).toBeNull());
-      expect(within(header()).getByRole('img', { name: label })).toHaveClass('d-phone-header__dot');
+      expect(within(header()).getByRole('button', { name: label })).toHaveClass('d-phone-header__dot');
       act(() => { (document.activeElement as HTMLElement).blur(); });
       await screen.findByRole('group', { name: t('voice.dock.region') });
-      expect(within(header()).queryByRole('img', { name: label })).toBeNull();
+      expect(within(header()).queryByRole('button', { name: label })).toBeNull();
+    });
+    it('the dot is a button that opens the call, as the bar does', async () => {
+      const app = await inCall();
+      act(() => { screen.getByRole('textbox', { name: /message/ }).focus(); });
+      const header = document.querySelector('.d-app-shell__main .d-phone-header') as HTMLElement;
+      await app.user.click(await within(header).findByRole('button', { name: t('nav.call.open', { where: 'general' }) }));
+      expect(here()).toBe(`/c/${A}/${GENV}`);
     });
     it('shows no dot when no call is up', () => {
       phone({ path: `/c/${A}/${TEXT}` });

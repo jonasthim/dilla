@@ -1191,10 +1191,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
   // H3: while typing, the call bar steps aside and the header's dot says the call is still up (named as the bar's open button).
   const callBarUp = phone && call.channelId !== null && !(phonePane === 'view' && call.channelId === (voiceChannel?.id ?? dm?.id));
-  const dotLabel = callBarUp && keyTyping && call.channelId !== null ? t('nav.call.open', { where: callWhere(call.channelId) }) : undefined;
-  const dotProp = dotLabel === undefined ? {} : { dotLabel };
+  // The dot is the call bar's open button, folded to 44 x 44: the same name, the same target.
+  const dot = callBarUp && keyTyping && call.channelId !== null
+    ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) navigate(callTarget); } } : undefined;
+  const dotProp = dot === undefined ? {} : { dot };
   const dmCall = phone && dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
-  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dotLabel={dotLabel} /> : null) : channel !== null
+  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (

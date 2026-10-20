@@ -6,4 +6,7 @@
 .d-phone-header__back + .d-phone-header__title { padding-left: 0; }
 .d-phone-header__marker { display: inline-flex; flex-shrink: 0; padding-left: 0.5rem; color: var(--fg-3); }
 .d-phone-header__actions { margin-left: auto; display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
-.d-phone-header__dot { flex: none; width: 0.5rem; height: 0.5rem; margin-left: 0.5rem; border-radius: 50%; background: var(--accent); }
+/* The call dot: a 44 x 44 button (a primary target) that draws an 8px accent dot and opens the call. */
+.d-phone-header__dot { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0; background: transparent; border: 0; cursor: pointer; }
+.d-phone-header__dot > span { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); }
+.d-phone-header__dot:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
