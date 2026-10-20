@@ -182,7 +182,8 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
-  channel. Everyone in it is muted.") and the move buttons, and no **delete**: it cannot be removed.
+  channel. Everyone in it is muted."), and no **delete** and no move up or down: it can be renamed and moved to another
+  category, but it always stays last in its list.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
   ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.

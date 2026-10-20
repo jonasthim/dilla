@@ -233,7 +233,7 @@ with each person (Settings → privacy) is still how you know who they are.
 ## AFK channels
 
 Every server has a voice channel called "AFK". It is made with the server, and a server's owner or anyone who manages
-channels can rename it and move it into a category, but nobody can delete it.
+channels can rename it and move it into a category (it always stays last in its list), but nobody can delete it.
 
 ![Mira in the AFK channel of Midgard Crew: the stage says "Everyone is muted in AFK"](screenshots/afk-call-desktop.png)
 
