@@ -11,7 +11,7 @@
 | a phone in voice | never moved |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
-| the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) with its two-choice menu |
+| the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) that opens one dialog (`layout.add.title`) with two choices (`layout.add.join`, `layout.add.create`) |
 | `@` selected on desktop | the DM list in the sidebar |
 | a server with categories | 32px category headers, one collapsed (`aria-expanded="false"`) keeping its current and unread rows, the trailing "+" (`layout.category.add`) for managers |
 | a voice row | one click joins on desktop; the trailing join icon (`voice.join`); participants with 24px avatars, the speaking ring and the mute and deafen glyphs in the slot |
@@ -72,6 +72,9 @@
 `layout.header.more='more'`
 `layout.category.add='new channel in {name}'`
 `layout.rail.add='add a server'`
+`layout.add.title='add a server'`
+`layout.add.join='join a server'`
+`layout.add.create='new server'`
 `home.tile='direct messages'`
 `home.tileLabel='direct messages, unread {unread}, mentions {mentions}'`
 `home.tab='home'`

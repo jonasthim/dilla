@@ -10,4 +10,7 @@ export const layout = {
   'layout.header.more': 'more',
   'layout.category.add': 'new channel in {name}',
   'layout.rail.add': 'add a server',
+  'layout.add.title': 'add a server',
+  'layout.add.join': 'join a server',
+  'layout.add.create': 'new server',
 };

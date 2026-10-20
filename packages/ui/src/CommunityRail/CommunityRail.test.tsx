@@ -260,43 +260,48 @@ describe('CommunityRail, the @ tile and the add tile', () => {
     expect(pillOf('home')).toHaveAttribute('data-pill', 'hover');
     expect(pillOf('home')).toHaveAttribute('aria-hidden', 'true');
   });
-  it('merges join and create into one "+" tile that opens a menu of the two actions', async () => {
+  it('merges join and create into one "+" tile that only asks to add (the dialog is the caller\'s)', async () => {
     const user = userEvent.setup();
-    const p = props({ addLabel: 'add a server', createLabel: 'new server', onCreate: vi.fn(), joinLabel: 'join a server' });
+    const onAdd = vi.fn();
+    const p = props({ addLabel: 'add a server', onAdd, createLabel: 'new server', onCreate: vi.fn(), joinLabel: 'join a server' });
     render(wrapped(p));
     expect(screen.queryByRole('button', { name: 'join a server' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'new server' })).toBeNull();
     const plus = btn('add a server');
-    expect(plus).toHaveAttribute('aria-haspopup', 'menu');
+    expect(plus).toHaveAttribute('aria-haspopup', 'dialog');
     await user.click(plus);
-    const menu = screen.getByRole('menu', { name: 'add a server' });
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['join a server', 'new server']);
-    await user.click(within(menu).getByRole('menuitem', { name: 'new server' }));
-    expect(p.onCreate).toHaveBeenCalledTimes(1);
-    expect(p.onJoin).not.toHaveBeenCalled();
+    expect(onAdd).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('menu')).toBeNull();
-    await user.click(plus);
-    await user.click(screen.getByRole('menuitem', { name: 'join a server' }));
-    expect(p.onJoin).toHaveBeenCalledTimes(1);
+    expect(p.onJoin).not.toHaveBeenCalled();
+    expect(p.onCreate).not.toHaveBeenCalled();
   });
   it('the "+" tile is a stop of the roving group and opens by keyboard', async () => {
     const user = userEvent.setup();
-    render(wrapped(props({ addLabel: 'add a server', createLabel: 'new server', onCreate: () => {} })));
+    const onAdd = vi.fn();
+    render(wrapped(props({ addLabel: 'add a server', onAdd })));
     await user.tab();
     await user.tab();
     await user.keyboard('{End}');
     expect(btn('add a server')).toHaveFocus();
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    await user.keyboard('{Escape}');
-    expect(btn('add a server')).toHaveFocus();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+  it('in the new design unread is the pill alone with no visible number, and a mention is a count badge at the bottom right', () => {
+    const { container } = render(wrapped(props({ items: BADGED, home: home({ unread: 3 }), addLabel: 'add a server', onAdd: () => {} })));
+    const owls = btn('Night Owls 4 unread');
+    expect(owls.querySelector('.d-community-rail__badge')).toBeNull();
+    expect(owls.querySelector('.d-sr-only .d-pill')).not.toBeNull();
+    expect(btn('home, 2 unread').querySelector('.d-community-rail__badge')).toBeNull();
+    const mention = btn('raid planning 2 mentions').querySelector('.d-community-rail__badge[data-modern]');
+    expect(mention?.querySelector('.d-pill')).toHaveAttribute('data-kind', 'mention');
+    expect(container.querySelectorAll('.d-community-rail__badge')).toHaveLength(1);
   });
   it('has no caption text anywhere', () => {
     const { container } = render(<CommunityRail {...props({ addLabel: 'add a server', joinCaption: 'join', createCaption: 'new' })} />);
     expect(container.textContent).not.toMatch(/\bjoin\b|\bnew\b/);
   });
   it('has no serious axe violations with the @ tile and the add tile', async () => {
-    const { container } = render(<div className="d-root"><CommunityRail {...props({ items: BADGED, itemLabel, home: home({ unread: 1 }), addLabel: 'add a server',
+    const { container } = render(<div className="d-root"><CommunityRail {...props({ items: BADGED, itemLabel, home: home({ unread: 1 }), addLabel: 'add a server', onAdd: () => {},
       createLabel: 'new server', onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} })} /></div>);
     await expectNoAxeViolations(container);
   });

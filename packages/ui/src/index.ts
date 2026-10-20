@@ -36,6 +36,8 @@ export { RecoveryKey } from './RecoveryKey/RecoveryKey.tsx';
 export type { RecoveryKeyProps } from './RecoveryKey/RecoveryKey.tsx';
 export { AppShell } from './AppShell/AppShell.tsx';
 export type { AppShellProps } from './AppShell/AppShell.tsx';
+export { AddServerDialog } from './AddServerDialog/AddServerDialog.tsx';
+export type { AddServerDialogProps } from './AddServerDialog/AddServerDialog.tsx';
 export { CommunityRail } from './CommunityRail/CommunityRail.tsx';
 export type { CommunityRailProps } from './CommunityRail/CommunityRail.tsx';
 export { ChannelList } from './ChannelList/ChannelList.tsx';
