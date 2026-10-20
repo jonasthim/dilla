@@ -7,4 +7,4 @@
 .d-settings-row__hint { margin: 0.125rem 0 0; max-width: 60ch; font-size: var(--text-sm); color: var(--fg-3); }
 .d-settings-row__control { min-width: 0; max-width: 100%; }
 .d-settings-row__control .d-btn { height: auto; min-height: 1.75rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }
-.d-settings-row__control .d-btn[data-size="sm"] { min-height: 1.375rem; padding-block: 0.125rem; }
+.d-settings-row__control .d-btn[data-size="sm"] { min-height: 1.5rem; padding-block: 0.125rem; }
