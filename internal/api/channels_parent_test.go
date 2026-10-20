@@ -146,6 +146,21 @@ func TestTheOwnerMayParentAnywhere(t *testing.T) {
 	createUnder(t, f.e, f.cid, f.ownerTok, 0, &f.hidden, "owners", http.StatusCreated)
 }
 
+// A PATCH that leaves parent_id alone is not a move: a moderator may still rename a channel that
+// sits under a category they cannot view, and its parent stays. R44 checks only a destination.
+func TestPatchWithoutParentLeavesAHiddenCategoryAlone(t *testing.T) {
+	f := parentEnv(t)
+	child := createUnder(t, f.e, f.cid, f.ownerTok, 0, &f.hidden, "child", http.StatusCreated)
+	if status, body := f.e.Do(http.MethodPatch, "/v1/channels/"+child.String(), f.mTok,
+		[]any{"renamed", nil, nil, nil, nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatalf("the moderator's rename of a child of the hidden category = %d (%x), want 204", status, body)
+	}
+	row := mustChannel(t, f.e, child)
+	if row.Name != "renamed" || row.ParentID == nil || *row.ParentID != f.hidden {
+		t.Fatalf("after the rename: name %q, parent %v, want \"renamed\" under %s", row.Name, row.ParentID, f.hidden)
+	}
+}
+
 // getParent is element 5, parent_id, of GET /v1/channels/{id} as tok reads it.
 func getParent(t *testing.T, e *env, ch id.ID, tok string) *id.ID {
 	t.Helper()
