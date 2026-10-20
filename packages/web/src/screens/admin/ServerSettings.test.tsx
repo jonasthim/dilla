@@ -155,10 +155,13 @@ describe('the overview section', () => {
     expect(save.closest('.d-settings-frame__body')).toBeNull();
     expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
   });
-  it('renames the server with the trimmed name and says saved once', async () => {
+  // I-3: the frame footer's polite status is the one voice of "saved"; the shell announcer is not called with it as well.
+  it('renames the server with the trimmed name and says it once, in the footer status', async () => {
     const { fake, user, announce } = setup(FULL);
     await rename(user, '  Midgard ');
-    await waitFor(() => expect(screen.getAllByText(en['admin.overview.saved'])).toHaveLength(1));
+    const status = document.querySelector('.d-settings-footer__status') as HTMLElement;
+    await waitFor(() => expect(status).toHaveTextContent(en['admin.overview.saved']));
+    expect(status).toHaveAttribute('aria-live', 'polite');
     expect(announce).not.toHaveBeenCalledWith(en['admin.overview.saved']);
     expect(fake.callsOf('renameCommunity')).toEqual([{ m: 'renameCommunity', communityId: SERVER, name: 'Midgard' }]);
   });

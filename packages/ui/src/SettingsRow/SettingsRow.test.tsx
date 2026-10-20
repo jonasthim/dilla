@@ -64,6 +64,13 @@ describe('SettingsRow grammar (R17)', () => {
     expect(rule).toMatch(/border-bottom: 1px solid var\(--hairline\);/);
   });
 
+  it('keeps one hairline under every row, whatever its parent, and lets a long button label grow its height', () => {
+    expect(row).not.toMatch(/\.d-settings-row:last-child/);
+    const button = /\.d-settings-row__control \.d-btn \{([^}]*)\}/.exec(row)?.[1] ?? '';
+    expect(button).toMatch(/height: auto;/);
+    expect(button).toMatch(/min-height: 1\.75rem;/);
+  });
+
   it('stacks the label over a full-width control on a phone layout and when the frame is narrow', () => {
     const phone = /\.d-settings-frame\[data-layout="phone"\] \.d-settings-row[^{]*\{([^}]*)\}/.exec(base)?.[1] ?? '';
     expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
