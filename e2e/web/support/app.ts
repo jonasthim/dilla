@@ -339,8 +339,11 @@ function newGuard(projectName: string): Guard {
         // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
         const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
+        // web3.9 V-2, extended to the web suite: on a reload in a call, Firefox closes the signal socket before the
+        // session's pagehide leave runs, and LiveKit logs this one line; the leave is then seen through the socket close.
         const firefoxBrowserAbort = projectName.startsWith('firefox') &&
-          (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()));
+          (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()) ||
+            m.text() === 'cannot send signal request before connected, type: leave JSHandle@object');
         if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
           consoleErrors.push(m.text());
         }
