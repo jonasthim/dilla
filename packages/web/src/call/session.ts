@@ -7,6 +7,7 @@
 // No key byte reaches the state, a log or an error here: keys.ts holds the only copies and zero-fills them.
 // This module is loaded only through load.ts (L-WEB-51), so livekit-client and RNNoise stay out of the entry chunk.
 import type { CallJoinResult, CoreClient, IceServerTuple } from '@dilla/client-core';
+import { getBrowser } from 'livekit-client';
 import {
   chooseVideoCodec, decodeCaps, DillaMicrophoneProcessor, noisePreference, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
@@ -127,6 +128,16 @@ export interface PageCallDeps {
   /** web3.8 V1: a level reader on one audio track in the call's context (an AnalyserNode, never connected to the
    *  destination); analyserMeter by default. Null means no local level: the SFU's speaker flag is the fallback. */
   createLevelMeter?(ctx: AudioContext, track: MediaStreamTrack): LevelMeter | null;
+  /** web3.9 VOICE-FIX fix round 1 (I1): true where this engine keeps a second capture of one microphone live beside the
+   *  first (concurrentCapture), so a parked restart may acquire before it swaps. Anything else stops first (restartTrack). */
+  concurrentCapture?: boolean;
+}
+
+/** web3.9 VOICE-FIX fix round 1 (I1): whether this engine keeps a second capture of one microphone live beside the first.
+ *  WebKit (Safari, and every iOS browser) ends the new one (livekit-client LocalTrack.ts:372-374), so there, and on any
+ *  engine not on this allowlist, the parked restart stops first. */
+export function concurrentCapture(b: ReturnType<typeof getBrowser>): boolean {
+  return (b?.name === 'Chrome' || b?.name === 'Firefox') && b.os !== 'iOS';
 }
 
 function defaultAudioContext(): AudioContext | null {
@@ -206,6 +217,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     now: () => Date.now(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    concurrentCapture: concurrentCapture(getBrowser()),
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),
@@ -744,6 +756,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
      *  cannot be enabled while the microphone must not send, so a mute during the hand-over never puts an open capture on
      *  the sender), handed to the sender with replaceTrack, and the old capture, which kept sending until then, is stopped
      *  only after the replace resolved. False when nothing was handed over: the old capture stays, and nothing retries. */
+    /** A capture's state read now (it changes across an await; a plain read would be narrowed). */
+    const isEnded = (t: MediaStreamTrack): boolean => t.readyState === 'ended';
     const handOver = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<boolean> => {
       if (track.replaceTrack === undefined) return false;
       const old = micTrack;
@@ -753,15 +767,25 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       guardMic(next);
       next.enabled = false;
       // A leave meanwhile, or a capture that already failed (Safari can end it while the old one runs): the old one stays.
-      if (ended || next.readyState === 'ended') { next.stop(); return false; }
+      if (ended || isEnded(next)) { next.stop(); return false; }
       try {
         await track.replaceTrack(next, true);
       } catch {
         // Not on the sender: the old capture stays. (One LiveKit already took is the session's from here on.)
         if (track.mediaStreamTrack !== next) { next.stop(); return false; }
       }
+      // Fix round 1 (M1): a new capture that ended during the replace gives the sender back the one the session holds,
+      // which is still live and still guarded (applyMic), so LiveKit's `enabled = !isMuted` stays fail-closed.
+      const held = micTrack;
+      if (isEnded(next) && held !== null && held !== next && !isEnded(held)) {
+        try { await track.replaceTrack(held, true); } catch { /* the sender keeps the ended track; the session's stays held */ }
+        next.stop();
+        return false;
+      }
+      // Fix round 1 (I2): a restart that ran meanwhile (a noise toggle) swapped in its own capture, which LiveKit does not
+      // stop for a user-provided track; it is stopped here with the old one, so no capture outlives the call.
       micTrack = next;
-      if (old !== next) old?.stop();
+      for (const t of new Set([old, held])) if (t !== null && t !== next) t.stop();
       return true;
     };
     const browserStatus = async (reason: ProcessorStatus['reason'] = null, parked = false): Promise<void> => {
@@ -774,7 +798,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         try {
           const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
           let swapped = true;
-          if (parked && track.replaceTrack !== undefined) swapped = await handOver(track, constraints);
+          // Fix round 1 (I1): only where a second capture of the microphone stays live beside the first (an allowlist,
+          // concurrentCapture); everywhere else, and with no answer, the stop-first restartTrack of web3.8.
+          if (parked && track.replaceTrack !== undefined && deps.concurrentCapture === true) swapped = await handOver(track, constraints);
           else {
             await track.restartTrack(constraints);
             if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;

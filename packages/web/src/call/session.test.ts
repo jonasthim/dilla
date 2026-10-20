@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
 import type { EpochKeys, JoinCallOptions } from '@dilla/media';
-import { startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
+import { getBrowser } from 'livekit-client';
+import { concurrentCapture, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
 const CH = 'c1'.repeat(16);
 const callId = 'a1'.repeat(16);
@@ -1944,28 +1945,35 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
    *  `enabled = true` on it (`!isMuted`, isMuted false). The pre-acquire is `pre`, installed once the call is up. */
   const handingOver = (f: ReturnType<typeof fakes>) => {
     const steps: string[] = [];
-    const { restarts } = reopening(f);
+    const { fresh, restarts } = reopening(f);
+    // Fix round 1 (I1): the hand-over runs only where the engine keeps two captures of one microphone live.
+    f.deps.concurrentCapture = true;
     const next = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
       kind: 'audio', stop: vi.fn(() => { steps.push('new.stop'); }), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }),
       getConstraints: () => ({}), applyConstraints: async () => undefined,
     });
     const seen: { atReplace?: boolean; userProvided?: boolean } = {};
     const holdReplace: { promise?: Promise<void> } = {};
-    let old: { stop: ReturnType<typeof vi.fn> } | null = null;
+    let old: { stop: ReturnType<typeof vi.fn>; track: unknown } | null = null;
+    /** Every track handed to replaceTrack, in order; `onReplace` runs as the replace resolves (fix round 1, M1). */
+    const replaced: unknown[] = [];
+    const hooks: { onReplace?: (n: MediaStreamTrack) => void } = {};
     const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
     f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
       const stop = vi.fn(() => { steps.push('old.stop'); });
       (track as unknown as { stop: unknown }).stop = stop;
-      old = { stop };
+      old = { stop, track };
       const pub = await real(track, o);
       const t = pub.track as unknown as { mediaStreamTrack: unknown; replaceTrack: (n: MediaStreamTrack, u?: boolean) => Promise<void> };
       t.replaceTrack = vi.fn(async (n: MediaStreamTrack, u?: boolean) => {
         steps.push('replaceTrack');
+        replaced.push(n);
         seen.atReplace = (n as unknown as { enabled: boolean }).enabled;
         seen.userProvided = u;
         await holdReplace.promise;
         t.mediaStreamTrack = n;
         (n as unknown as { enabled: boolean }).enabled = true;
+        hooks.onReplace?.(n);
       });
       return pub;
     });
@@ -1975,7 +1983,7 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
       return { getTracks: () => [next], getAudioTracks: () => [next], getVideoTracks: () => [] } as unknown as MediaStream;
     });
     const install = () => { f.deps.media.getUserMedia = pre; };
-    return { steps, restarts, next, seen, holdReplace, pre, install, old: () => old };
+    return { steps, restarts, fresh, next, seen, holdReplace, pre, install, replaced, hooks, old: () => old };
   };
 
   it('a deferred restart keeps the old capture until the new one is on the sender', async () => {
@@ -2095,6 +2103,73 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     prompt.resolve();
     await flush();
     expect(h.steps).toEqual(['getUserMedia', 'old.stop', 'new.stop']);
+  });
+
+  for (const flag of [false, undefined]) {
+    it(`a deferred restart on an engine without concurrent capture stops first (concurrentCapture ${String(flag)})`, async () => {
+      const f = fakes();
+      const h = handingOver(f);
+      if (flag === undefined) delete f.deps.concurrentCapture; else f.deps.concurrentCapture = flag;
+      const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+      open.push(call);
+      h.install();
+      await flush();
+      expect(h.restarts.n).toBe(0);
+      call.setMuted(false);
+      await flush();
+      expect(h.restarts.n).toBe(1);
+      expect(h.replaced).toEqual([]);
+      expect(h.pre).not.toHaveBeenCalled();
+      // The web3.8 guard still holds on that path.
+      call.setMuted(true);
+      expect(h.fresh.enabled).toBe(false);
+      h.fresh.enabled = true;
+      expect(h.fresh.enabled).toBe(false);
+    });
+  }
+
+  it('a noise toggle during the hand-over leaves every acquired capture stopped after leave', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    // While the pre-acquire waits, noise goes on and off again: the off reopens the capture through restartTrack (X).
+    await call.setNoise('lightweight');
+    await call.setNoise('off');
+    await flush();
+    expect(h.restarts.n).toBe(1);
+    prompt.resolve();
+    await flush();
+    await call.leave('user');
+    expect(h.old()!.stop).toHaveBeenCalled();
+    expect(h.fresh.stop).toHaveBeenCalled();
+    expect(h.next.stop).toHaveBeenCalled();
+  });
+
+  it('a capture that ends during the replace gives the sender back the old one', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    h.hooks.onReplace = (n) => { if (n === (h.next as unknown)) (n as unknown as { readyState: string }).readyState = 'ended'; };
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.replaced).toEqual([h.next, h.old()!.track]);
+    expect(h.replaced[1]).toBe(h.old()!.track);
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'replaceTrack', 'new.stop']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    // The old capture is still the one the mute governs.
+    call.setMuted(true);
+    expect((h.old()!.track as { enabled: boolean }).enabled).toBe(false);
   });
 
   it('a getter that throws changes nothing and fails no start', async () => {
@@ -2797,4 +2872,33 @@ it('PTT privacy is enforced by the track even when the denoiser is present', asy
     call.setMuted(true);expect(allowed.at(-1)).toBe(false);
     call.pushToTalk(false);call.setMuted(false);expect(allowed.at(-1)).toBe(false);
   } finally {await call.leave('user');}
+});
+
+describe('web3.9 VOICE-FIX fix round 1 (I1): concurrentCapture', () => {
+  const WEBKIT = 'AppleWebKit/605.1.15 (KHTML, like Gecko)';
+  const CHROMIUM = 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)';
+  const rows: Array<[string, string, boolean]> = [
+    ['Chrome on Linux', `Mozilla/5.0 (X11; Linux x86_64) ${CHROMIUM}`, true],
+    ['Chrome on Windows', `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${CHROMIUM}`, true],
+    ['Chrome on macOS', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${CHROMIUM}`, true],
+    ['Edge on Windows', `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${CHROMIUM} Edg/130.0.0.0`, true],
+    ['Firefox on Linux', 'Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0', true],
+    ['Firefox on macOS', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:131.0) Gecko/20100101 Firefox/131.0', true],
+    ['Safari on macOS', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${WEBKIT} Version/18.0 Safari/605.1.15`, false],
+    ['Safari on iPhone', `${IPHONE} ${WEBKIT} Version/18.0 Mobile/15E148 Safari/604.1`, false],
+    ['iPad Safari in desktop mode', `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${WEBKIT} Version/18.0 Safari/605.1.15`, false],
+    ['Chrome on iOS (CriOS)', `${IPHONE} ${WEBKIT} CriOS/130.0.6723.90 Mobile/15E148 Safari/604.1`, false],
+    ['Firefox on iOS (FxiOS)', `${IPHONE} ${WEBKIT} FxiOS/131.0 Mobile/15E148 Safari/605.1.15`, false],
+    ['Edge on iOS (EdgiOS)', `${IPHONE} ${WEBKIT} EdgiOS/130.0.2849.80 Version/18.0 Mobile/15E148 Safari/604.1`, false],
+    ['an unknown user agent', 'curl/8.10.1', false],
+  ];
+  for (const [name, ua, want] of rows) {
+    it(`${name}: ${String(want)}`, () => {
+      expect(concurrentCapture(getBrowser(ua, true))).toBe(want);
+    });
+  }
+  it('no browser details: false', () => {
+    expect(concurrentCapture(undefined)).toBe(false);
+  });
 });
