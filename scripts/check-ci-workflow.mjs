@@ -21,6 +21,8 @@ export const REQUIRED_JOBS = [
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
   // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
   'go-ds',
+  // internal/api under -race in a job of its own (CI run 39486567482): ~620 s locally, it outran the go job's 20m package timeout.
+  'go-api',
   // The scenario harness in its own job with its own timeout (final review): it needs both the
   // wasi core and the testkit binary, and in the go job it pushed a 4-vCPU runner past its budget.
   'go-harness',
@@ -253,7 +255,7 @@ const REQUIRED_STEPS = {
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
-    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
+    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)',
     'name: dilla-core-wasi',
     NON_RACE_STEP,
   ],
@@ -264,6 +266,14 @@ const REQUIRED_STEPS = {
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'go test -race -shuffle=on -timeout 20m ./internal/ds/...',
+  ],
+  // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
+  'go-api': [
+    'timeout-minutes: 40',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'go test -race -shuffle=on -timeout 30m ./internal/api/...',
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
@@ -328,12 +338,12 @@ const REQUIRED_STEPS = {
 /**
  * The `go` job's test step is a module-wide wildcard on purpose: every new internal/… package is
  * picked up with zero workflow edits. Narrowing it to a package list is how a whole subsystem
- * silently stops being tested, so the exact text is pinned. It leaves out exactly one package,
- * internal/ds, by its full import path, and only because the go-ds job (whose step is pinned in
- * REQUIRED_STEPS) runs it: the union of the two is still the whole module.
+ * silently stops being tested, so the exact text is pinned. It leaves out exactly two packages,
+ * internal/ds and internal/api, by their full import paths, and only because the go-ds and go-api jobs (whose
+ * steps are pinned in REQUIRED_STEPS) run them: the union of the two is still the whole module.
  */
 function assertTestStepIsNotNarrowed(workflow, fail) {
-  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
   }
@@ -477,7 +487,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
  * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_LLVM_VERSION = '1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83';
+export const WASM_LLVM_VERSION = '1:23.1.4~++20261019013947+4635269e3782-1~exp1~20261019134105.86';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
@@ -710,7 +720,7 @@ export function checkWorkflow(root) {
   if ('image' in jobs) {
     // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
     // rust-wasi is named too, because the job downloads its artifact.
-    for (const need of ['go', 'go-ds', 'go-lint', 'rust-wasi', 'web-build']) {
+    for (const need of ['go', 'go-ds', 'go-api', 'go-lint', 'rust-wasi', 'web-build']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
         problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
       }
@@ -748,6 +758,10 @@ export function checkWorkflow(root) {
 
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {
     problems.push('ci.yml: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+  }
+
+  if ('go-api' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-api'])) {
+    problems.push('ci.yml: job "go-api" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
   }
 
   if ('go-harness' in jobs) {

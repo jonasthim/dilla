@@ -60,8 +60,8 @@ test('Rust CI and release setup use the pinned rustup toolchain without third-pa
   }
 });
 
-// The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
-const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+// The go job's test step: every package but internal/ds and internal/api, which go-ds and go-api run (CI budget, fix wave).
+const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
 
 const GOOD_BASE = `name: ci
 on:
@@ -177,7 +177,7 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
       - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
@@ -361,6 +361,17 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...
 
+  go-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [rust-wasi]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...
+
   go-harness:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -445,7 +456,7 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
-    needs: [go, go-ds, go-lint, rust-wasi, web-build]
+    needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
@@ -678,9 +689,9 @@ test('a go job whose test step is narrowed to a package list is reported', () =>
 });
 
 // CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
-test('a go job that leaves out more than internal/ds is reported', () => {
+test('a go job that leaves out more than internal/ds and internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('grep -vx github.com/jonasthim/dilla/internal/ds', 'grep -v -e /internal/ds -e /internal/api')),
+    fixture(GOOD.replace('-e github.com/jonasthim/dilla/internal/api)', '-e github.com/jonasthim/dilla/internal/api -e github.com/jonasthim/dilla/internal/store)')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
 });
@@ -728,6 +739,37 @@ test('a go-ds job that stopped running internal/ds is reported', () => {
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
 });
 
+test('a workflow without the go-api job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/  go-api:[\s\S]*?\n\n/, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "go-api"')), problems.join('\n'));
+});
+
+test('a go-api job that stopped running internal/api is reported', () => {
+  const problems = checkWorkflow(
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/api/...\n', '')),
+  );
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('./internal/api/...')), problems.join('\n'));
+});
+
+test('a go-api job with a shorter budget is reported', () => {
+  const start = GOOD.indexOf('  go-api:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 30'))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
+});
+
+test('a go job that stopped leaving out internal/api is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(' -e github.com/jonasthim/dilla/internal/api', '')));
+  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+test('a go-api job without needs: rust-wasi is reported', () => {
+  const start = GOOD.indexOf('  go-api:\n');
+  const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('rust-wasi')), problems.join('\n'));
+});
+
 test('a go-ds job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
@@ -736,7 +778,7 @@ test('a go-ds job without needs: rust-wasi is reported', () => {
 });
 
 test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
@@ -871,12 +913,12 @@ test('setup-qemu-action anywhere in the workflow is reported', () => {
 // `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
 // reported as not waiting for go.
 test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
 });
 
@@ -1256,7 +1298,7 @@ test('a go-release job without needs: web-build is reported', () => {
 });
 
 test('an image job that does not wait for web-build is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
 });
 
