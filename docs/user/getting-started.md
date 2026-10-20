@@ -45,12 +45,12 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    also has a voice channel called general. You are its owner.
 
 The server rail now has two dashed tiles under your servers. **join** (an arrow into a bracket) is "join a server",
-for an invite someone sent you. **new** (a plus) is "new server". Under the server's name sits **server settings**,
+for an invite someone sent you. **new** (a plus) is "new server". Beside the server's name sits a gear, **server settings**,
 and the owner has a **+** ("new channel") at the top of the channel list. Invite links are made in server settings,
 under **invites** ([Invite people](#invite-people)).
 
 ![The rail and the top of the sidebar: the tile MC for Midgard Crew, the tile join with an arrow into a bracket and
-the tile new with a plus, and beside them Midgard Crew with the button server settings, and the + of the channel
+the tile new with a plus, and beside them Midgard Crew with the gear for server settings, and the + of the channel
 list](screenshots/create-rail.png)
 
 At phone width the empty app and the dialog look like this:
@@ -140,12 +140,13 @@ whose roles allow it; the owner can do everything here.
 
 ### Server settings
 
-Press **server settings** under the server's name. The dialog "Server settings" has a list of sections
+Press the gear (**server settings**) beside the server's name. The dialog "Server settings" has a list of sections
 ("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
 **channels** (manage channels), **invites** (create invites) and **bans** (ban members). The dialog opens on the
 first section you may see. The last section differs: a
-non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
-list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
+non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Leaving a server
+lives here, not in the sidebar. Tab stops once on the list and once on the section; Escape closes the dialog and focus
+goes back to the gear.
 
 **Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
@@ -215,7 +216,7 @@ kicking." (and the same for banning), or "{name} is no longer in {server}."
 
 ### Leave, hand over and delete
 
-Anyone but the owner can leave: **leave server** asks "Leave {server}?", "You leave every channel and call of
+Anyone but the owner can leave: open the gear beside the server's name, then **leave server** in the list of sections. It asks "Leave {server}?", "You leave every channel and call of
 {server}. To come back you need an invite." and says "You left {server}." The owner sees "You own {server}, so you
 cannot leave it. Hand it to another member or delete it."
 
@@ -690,8 +691,8 @@ From left to right:
   press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). A number on a server tile
   counts its unread channels. The rail has no settings button: settings are behind the gear in [the user
   panel](#the-user-panel).
-- **The channel list.** The server's name, **server settings** under it (and **leave server** for everyone but the
-  owner; see [Run your server](#run-your-server) and [Invite people](#invite-people)), the "channels" and "direct
+- **The channel list.** The server's name with a gear beside it, **server settings** (leave server is a section in
+  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), the "channels" and "direct
   messages" tabs and the channels, with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
   list](#one-channel-list)) and open the voice channel ([Voice, calls and media files](voice.md)). Channels the
@@ -747,7 +748,7 @@ The bottom left of the app is yours, across the rail and the channel list:
   ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
   press them, in a call or out of one;
 - **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
-- **your status**, behind your avatar and name: click it (or Tab to it and press Enter) to choose Online, Idle, Do Not Disturb or Invisible. A small dot on your avatar shows the current one. It follows your account to your other devices. Online
+- **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose Online, Idle, Do Not Disturb or Invisible; there is no status select in the sidebar. It follows your account to your other devices. Online
   becomes Idle after ten minutes without activity on any of your connected devices (a status you chose yourself
   stays). Do Not Disturb stops desktop notifications and the ring sound on every device; messages, badges and the
   in-app banner for a call still show. Invisible hides your status from other members, though not that you are typing
@@ -796,8 +797,9 @@ at a time, with four tabs at the bottom. It works in the phone's browser; there 
 The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A number on a tab counts what is new there
 ("{name}, {count} new" for a screen reader).
 
-- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **server
-  menu** (the three dots) has search, server settings and, for a member, leave server. The **+** for a new channel is at
+- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **search**
+  (a magnifier) and the gear for **server settings** sit beside the server's name; there is no menu. A member leaves
+  a server from the gear, under **leave server**. The **+** for a new channel is at
   the top of the channel list, for people who may manage channels, and invite links are made in server settings,
   under invites.
 - **DMs** lists your direct messages.

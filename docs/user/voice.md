@@ -43,7 +43,7 @@ Three states keep their words, because they are about trust and what you can hea
 | The tile says | What it means |
 |---|---|
 | "connecting" | They are joining; nothing of theirs is played yet |
-| "not heard yet" | They are in the call, and nothing from their device has been checked yet. It is not shown for someone who is muted or deafened and sends no camera or screen: their device sends nothing to check, so you see only the muted glyph |
+| "not heard yet" | They are in the call, and nothing from their device has been checked yet. It is not shown for someone who is muted or deafened and sends no camera or screen: their device sends nothing to check, so you see "muted" (or "deafened") and the glyph |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
 The `web` and `bot` tags stay as words after the name.
@@ -55,7 +55,8 @@ the call is paused for you. When a person's audio is not playing for you (you ar
 0 %), the dot follows the instance's own report instead, which is about a second behind.
 
 Each person's tile has "volume for {name}": it changes how loud that person is for you only, from 0 % to 200 %. The
-value shows beside it, and the mark in the middle is 100 %, the volume they arrive at. Your own tile has no volume.
+value shows beside it, and the mark in the middle is 100 %, the volume they arrive at. The volume sits at the foot of the
+tile (under the name on a phone), never over the face. Your own tile has no volume.
 
 ### The call panel
 
@@ -86,13 +87,13 @@ sharing it is a grid.
   and Enter or Space do the same.
 - **A new screen share** from someone else comes to the front on its own, when no tile is focused. It happens once
   for a share: if you unfocus it, it stays a tile. Your own screen never takes the focus.
-- **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Escape leaves
-  it.
+- **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Only a tile that
+  shows a camera or a screen has it (not an avatar), and only where the browser allows full screen. Escape leaves it.
 - Nothing restarts when you change the focus: the pictures keep playing.
 
 ![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
 
-At phone width the tiles take the full width, one above the other, the call's buttons sit under them, and every
+At phone width the tiles take the full width, one above the other (two columns once there are more than two), the call's buttons sit under them, and every
 control is at least 44 by 44 pixels. The call panel is replaced by [the call bar](#on-a-phone).
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
@@ -164,7 +165,7 @@ Settings → voice also holds:
   refuses, the call panel says "The output device did not change. Call sound plays where it did before." Firefox plays call
   sound on the system default device. A browser that cannot choose where sound plays says "This
   browser plays voice on the system default device."
-- **noise suppression** has **Automatic**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
+- **noise suppression** has **Automatic (beta)**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic (beta) ships in every release, and Lightweight leaves the beta. It currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
 - **Test microphone** records up to ten seconds locally. Capture stops before playback; **Close and discard** releases the recording. Testing is disabled during calls. It uses the selected input and suppression setting. No recording is uploaded.
 - **input level**: a meter of what your microphone hears.
 
