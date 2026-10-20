@@ -128,7 +128,7 @@ export function bobChanged(): TrustSummary {
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
     tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, noise: 'on', audioBlocked: false,
-    audio: { attached: 0, expected: 0 } };
+    audio: { attached: 0, expected: 0 }, listenOnly: false };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });

@@ -349,7 +349,8 @@ export function joinFailureKey(code: string): StringKey | null {
   }
 }
 
-/** The notice for the page call's microphone outcome (listen-only), or null when the microphone is on. */
-export function micNoticeKey(mic: 'ok' | 'denied' | 'missing' | 'failed'): StringKey | null {
+/** The notice for the page call's microphone outcome (listen-only), or null when the microphone is on. web3.9: 'listen'
+ *  (the AFK channel) has none here; its stage says so (WEB-AFK). */
+export function micNoticeKey(mic: 'ok' | 'denied' | 'missing' | 'failed' | 'listen'): StringKey | null {
   return mic === 'denied' ? 'voice.micDenied' : mic === 'missing' ? 'voice.micMissing' : mic === 'failed' ? 'voice.micFailed' : null;
 }

@@ -42,8 +42,12 @@ export interface PageCallState {
   camera: boolean;
   sharing: boolean;
   paused: boolean;
-  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only. */
-  mic: 'ok' | 'denied' | 'missing' | 'failed';
+  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only.
+   *  'listen': the AFK channel: the call is listen-only by the server's grant (web3.9 R3); no microphone is asked for. */
+  mic: 'ok' | 'denied' | 'missing' | 'failed' | 'listen';
+  /** web3.9 VOICE-AFK: started with PageCallOptions.listenOnly. Nothing is captured or published: mute stays on, camera and
+   *  share are refused (E_FORBIDDEN), and deafen still silences what is heard. */
+  listenOnly: boolean;
   /** The input mode in force (task-9 review I2: it follows Settings → Voice during a call). */
   mode: 'vad' | 'ptt';
   tiles: PageCallTile[];
@@ -187,6 +191,9 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /** web3.9 VOICE-AFK: the AFK channel, where the server's grant lets nobody publish (R3). The microphone is never acquired
+   *  (no permission prompt) or published, the call stays muted, and the camera and share are refused before any request. */
+  listenOnly?: boolean;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -365,9 +372,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     : null;
   // A refused device at the start leaves the system default playing.
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
-  let mic: Awaited<ReturnType<typeof acquireMic>>;
+  // web3.9 VOICE-AFK: a listen-only call never asks for the microphone, so it never prompts and has nothing to publish.
+  const listenOnly = opts.listenOnly === true;
+  let mic: Awaited<ReturnType<typeof acquireMic>> | { mic: 'listen' };
   try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = listenOnly ? { mic: 'listen' } : await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -532,8 +541,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false, audio: { attached: 0, expected: 0 },
+      noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      audioBlocked: false, audio: { attached: 0, expected: 0 }, listenOnly,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -547,7 +556,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const volumes: Volumes = { ...opts.volumes };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
-    let mutedBeforeDeafen = opts.self === 'deafened';
+    let mutedBeforeDeafen = listenOnly || opts.self === 'deafened';
     /** web3.8 MUTE: a mute or deafen pressed while the start runs (selfNow) joins the session's state before it is in use,
      *  never the other way. A deafen is applied as a mute first and then a deafen, so an undeafen keeps the microphone muted
      *  (R25: deafened goes back to muted, never to an open microphone). True when it changed anything. */
@@ -961,7 +970,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const list = p.canPublishSources ?? [];
       return list.length === 0 || list.includes(PERMISSION[what]);
     };
+    /** web3.9 VOICE-AFK: nobody sends in the AFK channel (the server refuses the share too, R3); refused before any request. */
+    const sendable = (): void => { if (listenOnly) throw new PageCallError('E_FORBIDDEN'); };
     const ensureShare = async (what: 'camera' | 'screen'): Promise<void> => {
+      sendable();
       if (shareOn && permitted(what)) return;
       let settle: (ok: boolean) => void = () => undefined;
       const granted = new Promise<boolean>((resolve) => { settle = resolve; });
@@ -1020,6 +1032,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setCamera = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopCamera(); await shareOffIfIdle(); return; }
+      sendable();
       usable();
       if (camera !== null) return;
       await ensureShare('camera');
@@ -1052,6 +1065,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setSharing = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopScreen(); await shareOffIfIdle(); return; }
+      sendable();
       usable();
       if (screen !== null) return;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
@@ -1300,7 +1314,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         return () => { listeners.delete(entry); };
       },
       setMuted(on) {
-        if (ended) return;
+        // web3.9 VOICE-AFK: listen-only stays muted; there is no microphone to open.
+        if (ended || listenOnly) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
         // With a local meter the own mic starts silent after an unmute (the detector needs its 50 ms again); without one
@@ -1319,7 +1334,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           ownDetector.reset(); ownOn = false; ownRms = 0;
           set({ deafened: true, muted: true, speaking: false });
         } else {
-          set({ deafened: false, muted: mutedBeforeDeafen });
+          set({ deafened: false, muted: listenOnly || mutedBeforeDeafen });
         }
         applyMic();
         applyGains();

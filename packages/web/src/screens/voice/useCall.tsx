@@ -172,6 +172,9 @@ export interface CallView {
   setVolume: (userId: string, volume: number) => void;
   /** web3.3: the "turn on audio" press while the browser holds call audio back (state.audioBlocked). */
   startAudio: () => void;
+  /** web3.9 VOICE-AFK: the AFK move's join that failed (the dock's line offers it again); cleared by the next join or leave.
+   *  The move is never retried by itself. */
+  afkFailed: { channelId: string; name: string } | null;
 }
 
 export interface UseCallOptions {
@@ -190,6 +193,12 @@ export interface UseCallOptions {
   selfShortcuts?: boolean;
   /** The shell's own polite announcer: outside a call there is no dock status region to say a mute or deafen. */
   announce?(text: string): void;
+  /**
+   * web3.9 VOICE-AFK: the built-in AFK channels (a join of one is listen-only, R3), and this device's pending move (the
+   * server's sweep moved it, R33): the community, its AFK channel and that channel's name. A move joins once per
+   * `communityId:channelId` until `pending` turns null again.
+   */
+  afk?: { channels: ReadonlySet<string>; pending: { communityId: string; channelId: string; name: string } | null };
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -197,6 +206,8 @@ const KEY_M = 'm';
 const KEY_D = 'd';
 /** A session that ended on its own: the notice that says why (WB client I3; flow 06 § States). */
 const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_REMOVED: 'voice.removed' };
+/** web3.9 VOICE-AFK: what the AFK move's join carries: the AFK channel's name, for `afk.moved` and the failed line. */
+interface AfkMove { name: string }
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -216,6 +227,7 @@ export function useCall(o: UseCallOptions): CallView {
   const [pauseFocusPending, setPauseFocusPending] = useState(false);
   const [notice, setNotice] = useState<CallNotice | null>(null);
   const [blockedMidCall, setBlockedMidCall] = useState<string | null>(null);
+  const [afkFailed, setAfkFailed] = useState<CallView['afkFailed']>(null);
   const stageFocus = useRef(false);
   const [unsupported, setUnsupported] = useState(false);
   const sessionRef = useRef<PageCall | null>(null);
@@ -226,8 +238,9 @@ export function useCall(o: UseCallOptions): CallView {
   const startAbort = useRef<AbortController | null>(null);
   /** WB client I1: a join (or a ring's answer) of another channel asked for while a start ran: it starts once that one
    *  has been cancelled. */
-  /** The join that waits for a cancelled start to end, with the call context made in its own press. */
-  const queuedJoin = useRef<{ id: string; ctx: AudioContext | null } | null>(null);
+  /** The join that waits for a cancelled start to end, with the call context made in its own press (and, for the AFK
+   *  move's join, the move). */
+  const queuedJoin = useRef<{ id: string; ctx: AudioContext | null; move?: AfkMove } | null>(null);
   /** WB client m1: the leave in flight; a join waits for it, so leave-then-join is not refused as a call in progress. */
   const leaving = useRef<Promise<unknown> | null>(null);
   const mounted = useRef(true);
@@ -243,6 +256,13 @@ export function useCall(o: UseCallOptions): CallView {
   const opener = useRef<HTMLElement | null>(null);
   const live = useRef(o);
   live.current = o;
+  /** web3.9 VOICE-AFK: the cut of call `id` is the AFK move's (its community has this device's pending move), so it is
+   *  silent: the move's own join follows and says where the person went. */
+  const afkCut = useCallback((id: string): boolean => {
+    const pending = live.current.afk?.pending ?? null;
+    if (pending === null) return false;
+    return (client.get(`channels:${pending.communityId}`) ?? []).some((c) => c.id === id);
+  }, [client]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -347,7 +367,9 @@ export function useCall(o: UseCallOptions): CallView {
           setRecoverySharing(sharingBeforeLoss);
         }
         detach();
-        if (next.state.error !== 'E_DISCONNECTED' && !recoverEnded) {
+        // web3.9 VOICE-AFK: the room's removal ahead of the AFK move is silent; the move follows.
+        const moving = next.state.error === 'E_REMOVED' && afkCut(id);
+        if (next.state.error !== 'E_DISCONNECTED' && !recoverEnded && !moving) {
           setNotice({ channelId: id, key });
           if (!live.current.stageShown(id)) setLasting(t(key));
         }
@@ -357,10 +379,12 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryRef.current === id && recoveryCameraRef.current) {
       void next.setCamera(true).catch(() => undefined);
     }
-  }, [announce, detach]);
+  }, [announce, detach, afkCut]);
 
-  /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). */
-  const join = useCallback((id: string, made?: AudioContext | null) => {
+  /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). `move`: this is
+   *  the AFK move's join (web3.9 VOICE-AFK): it is said once, and a failure sets `afkFailed` and is never retried. */
+  const join = useCallback((id: string, made?: AudioContext | null, move?: AfkMove) => {
+    setAfkFailed(null);
     if (recoveryRef.current !== null && recoveryRef.current !== id) {
       recoveryRef.current = null;
       setRecoveryChannelId(null);
@@ -377,10 +401,13 @@ export function useCall(o: UseCallOptions): CallView {
     if (starting.current) {
       // WB client I1: another channel (a ring's answer) while a start runs: that start is cancelled and this one follows.
       closeContext(queuedJoin.current?.ctx);
-      queuedJoin.current = { id, ctx };
+      queuedJoin.current = move !== undefined ? { id, ctx, move } : { id, ctx };
       startAbort.current?.abort();
       return;
     }
+    // web3.9 VOICE-AFK (R3): the AFK channel is listen-only by the server's grant; the session then never asks for the
+    // microphone. The move's join is listen-only even before the channel set names it (fail closed).
+    const listenOnly = move !== undefined || live.current.afk?.channels.has(id) === true;
     let handed = false;
     starting.current = true;
     const from = document.activeElement;
@@ -435,12 +462,15 @@ export function useCall(o: UseCallOptions): CallView {
           selfNow,
           watchSelf,
           ...(ctx !== null ? { audioContext: ctx } : {}),
+          ...(listenOnly ? { listenOnly: true } : {}),
         };
         handed = true;
         const next = await mod.startPageCall(callDeps, target, opts);
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);
+        // The move says where the person went, in place of the join's own line.
+        if (move !== undefined) announce(t('afk.moved', { channel: move.name }));
         setRecentlyEnded(null);
         if (recoveryRef.current === id) {
           recoveryRef.current = null;
@@ -466,6 +496,11 @@ export function useCall(o: UseCallOptions): CallView {
         }
         const key = abort.signal.aborted ? null : joinFailureKey(code);
         if (key !== null) setNotice({ channelId: id, key });
+        // web3.9 VOICE-AFK: a failed move's join leaves the dock's line and stops; nothing retries it.
+        if (move !== undefined && !abort.signal.aborted) {
+          setAfkFailed({ channelId: id, name: move.name });
+          announce(t('afk.moved', { channel: move.name }));
+        }
       } finally {
         if (!handed) closeContext(ctx);
         if (startAbort.current === abort) startAbort.current = null;
@@ -473,11 +508,11 @@ export function useCall(o: UseCallOptions): CallView {
         setJoining(false);
         const next = queuedJoin.current;
         queuedJoin.current = null;
-        if (next !== null && mounted.current) joinRef.current(next.id, next.ctx);
+        if (next !== null && mounted.current) joinRef.current(next.id, next.ctx, next.move);
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach, selfNow, watchSelf]);
+  }, [deps, client, attach, detach, selfNow, watchSelf, announce]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
@@ -492,6 +527,7 @@ export function useCall(o: UseCallOptions): CallView {
   }, [join]);
 
   const leave = useCallback((after?: CallNotice) => {
+    setAfkFailed(null);
     recoveryRef.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
@@ -534,9 +570,11 @@ export function useCall(o: UseCallOptions): CallView {
       () => { if (written.current === mine) { mine.held = true; carry(client, value); } },
     );
   }, [client, pushSelf]);
+  // web3.9 VOICE-AFK: a listen-only call (the AFK channel) stays muted, so its mute is a no-op, and neither press there is
+  // kept in `voice.self`: leaving it restores the person's own state for the next call.
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
-    if (s === null) return;
+    if (s === null || s.state.listenOnly) return;
     const on = !s.state.muted;
     s.setMuted(on);
     keepSelf(s);
@@ -547,7 +585,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (s === null) return;
     const on = !s.state.deafened;
     s.setDeafened(on);
-    keepSelf(s);
+    if (!s.state.listenOnly) keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
   const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
@@ -692,16 +730,31 @@ export function useCall(o: UseCallOptions): CallView {
         teardown(s, phase);
         return;
       }
+      // web3.9 VOICE-AFK: the cut ahead of the AFK move says nothing; the move's join follows and says where.
+      const moving = phase === 'removed' && afkCut(id);
       if (phase === 'blocked') setBlockedMidCall(id);
-      else { setNotice({ channelId: id, key: 'voice.removed' }); removedFrom.current = id; }
+      else if (!moving) { setNotice({ channelId: id, key: 'voice.removed' }); removedFrom.current = id; }
       // Off the stage, nothing else would say why the call ended (review I6).
-      if (!live.current.stageShown(id)) setLasting(t(phase === 'blocked' ? 'voice.blocked' : 'voice.removed'));
+      if (!moving && !live.current.stageShown(id)) setLasting(t(phase === 'blocked' ? 'voice.blocked' : 'voice.removed'));
       setPauseFocusPending(false);
       teardown(s, phase);
     } else {
       teardown(s, 'removed');
     }
-  }, [slice, session, client, announce, safely, teardown]);
+  }, [slice, session, client, announce, safely, teardown, afkCut]);
+  // web3.9 VOICE-AFK (R33): this device's pending move joins that community's AFK channel once per
+  // `communityId:channelId`; the key clears only when `pending` turns null, so the same move never joins twice and a
+  // failed join is never retried (the dock's line, `afkFailed`, offers it to the person).
+  // The effect runs on every new `pending` object (the shell may build one per render); the ref alone decides.
+  const pendingMove = o.afk?.pending ?? null;
+  const movedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (pendingMove === null) { movedKey.current = null; return; }
+    const key = `${pendingMove.communityId}:${pendingMove.channelId}`;
+    if (movedKey.current === key) return;
+    movedKey.current = key;
+    joinRef.current(pendingMove.channelId, undefined, { name: pendingMove.name });
+  }, [pendingMove]);
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
@@ -847,5 +900,6 @@ export function useCall(o: UseCallOptions): CallView {
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
     join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, startAudio,
+    afkFailed,
   };
 }
