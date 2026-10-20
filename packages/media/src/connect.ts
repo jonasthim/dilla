@@ -36,6 +36,9 @@ const STATUS_EVENT = 'participantEncryptionStatusChanged' satisfies `${RoomEvent
 export const ROOM_DEFAULTS: Partial<RoomOptions> = {
   adaptiveStream: false,
   dynacast: false,
+  // web3.9 V-1: LiveKit's default disconnects the room on beforeunload, so a navigation the browser later cancels dropped
+  // the call through the lost-room path (E_DISCONNECTED). The page session's own pagehide leave owns page leave.
+  disconnectOnPageLeave: false,
   publishDefaults: {
     audioPreset: { maxBitrate: 64_000, priority: 'high' },
     dtx: true,
