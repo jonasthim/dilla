@@ -57,3 +57,40 @@ test('on a phone the call bar opens the stage, which holds the one mute button, 
     await peer.close();
   }
 });
+
+// web3.8 FX (final review m9): a real phone has no getDisplayMedia, and its stage offers no share button. Chromium's
+// emulation keeps getDisplayMedia, so the page loses it here; with it, the same phone stage offers share (the control).
+test('on a phone without getDisplayMedia the stage offers no share button', async ({ peerBrowser }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  try {
+    await peer.setup();
+    await onboard(alice, peer, 'alice');
+    await peer.seat(1);
+    const page = alice.page;
+    await joinVoice(page, peer.communityName, peer.voiceName);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(stage(page)).toBeVisible({ timeout: WAIT });
+    const toolbar = stage(page).getByRole('toolbar');
+    const share = toolbar.getByRole('button', { name: copy('voice.shareOn'), exact: true });
+    const mute = toolbar.getByRole('button', { name: copy('voice.mute'), exact: true });
+    await expect(mute).toBeVisible({ timeout: WAIT });
+    await expect(share).toHaveCount(1);
+
+    await page.evaluate(() => { Reflect.deleteProperty(MediaDevices.prototype, 'getDisplayMedia'); });
+    expect(await page.evaluate(() => typeof navigator.mediaDevices.getDisplayMedia)).toBe('undefined');
+    // Any change of the call renders the toolbar again: a mute and an unmute.
+    await mute.click();
+    await expect(mute).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    await mute.click();
+    await expect(mute).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+    await expect(share).toHaveCount(0);
+    const leave = toolbar.getByRole('button', { name: copy('voice.leave'), exact: true });
+    await expect(leave).toBeVisible();
+    await leave.click();
+    await expect(toolbar).toHaveCount(0, { timeout: WAIT });
+  } finally {
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});
