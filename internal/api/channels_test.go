@@ -77,8 +77,9 @@ func TestInviteAndDiscoverableChannelsAreForcedReadable(t *testing.T) {
 // I10 (fix wave): a member discovers a community's channels in band. GET
 // /v1/communities/{id}/channels lists the live channels the caller may view, by position then
 // channel id, each [channel_id, kind, mode, visibility, parent_id|null, name, topic, position,
-// slowmode_seconds, seq, text_group_id|null]; a category is listed when it or a child of it is visible; a deleted
-// channel never is; a non-member gets 404, as for an unknown community.
+// slowmode_seconds, seq, text_group_id|null]; a category is listed only when the caller can view
+// it (R44, TestListingHidesAHiddenParent); a deleted channel never is; a non-member gets 404, as
+// for an unknown community.
 func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	cat, _, _ := newChannel(t, e, cid, ownerTok, uint64(api.ChannelCategory), 0, 0, "zeta")

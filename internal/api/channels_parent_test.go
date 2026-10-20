@@ -145,3 +145,34 @@ func TestTheOwnerMayParentAnywhere(t *testing.T) {
 	f := parentEnv(t)
 	createUnder(t, f.e, f.cid, f.ownerTok, 0, &f.hidden, "owners", http.StatusCreated)
 }
+
+// getParent is element 5, parent_id, of GET /v1/channels/{id} as tok reads it.
+func getParent(t *testing.T, e *env, ch id.ID, tok string) *id.ID {
+	t.Helper()
+	status, body := e.Do(http.MethodGet, "/v1/channels/"+ch.String(), tok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET channel = %d (%x)", status, body)
+	}
+	var row []cbor.RawMessage
+	mustUnmarshal(t, body, &row)
+	var parent *id.ID
+	mustUnmarshal(t, row[5], &parent)
+	return parent
+}
+
+func TestGetHidesAHiddenParent(t *testing.T) {
+	f := parentEnv(t)
+	child := createUnder(t, f.e, f.cid, f.ownerTok, 0, &f.hidden, "child", http.StatusCreated)
+	if got := getParent(t, f.e, child, f.bTok); got != nil {
+		t.Fatalf("the member's GET of the child names parent %s, want null", *got)
+	}
+	// Control: the owner reads the parent.
+	if got := getParent(t, f.e, child, f.ownerTok); got == nil || *got != f.hidden {
+		t.Fatalf("the owner's GET of the child = parent %v, want %s", got, f.hidden)
+	}
+	// Control: the member reads the parent of a child under a category they can view.
+	visible := createUnder(t, f.e, f.cid, f.ownerTok, 0, &f.open, "visible", http.StatusCreated)
+	if got := getParent(t, f.e, visible, f.bTok); got == nil || *got != f.open {
+		t.Fatalf("the member's GET under the visible category = parent %v, want %s", got, f.open)
+	}
+}

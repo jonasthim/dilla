@@ -716,6 +716,26 @@ func requireParentVisible(ctx context.Context, repo store.Repository, uid id.ID,
 	return nil
 }
 
+// parentVisible reports whether row has a live parent that uid holds PermViewChannel in: false
+// for a top-level row, a parent that names no live channel, and a category uid cannot view.
+func parentVisible(ctx context.Context, repo store.Repository, uid id.ID, row store.ChannelRow) (bool, error) {
+	if row.ParentID == nil {
+		return false, nil
+	}
+	parent, err := repo.GetChannel(ctx, *row.ParentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	bits, err := NewResolver(repo).Resolve(ctx, uid, parent)
+	if err != nil {
+		return false, err
+	}
+	return bits.Has(PermViewChannel), nil
+}
+
 // validChannelText bounds a channel's name or topic in bytes, requires UTF-8,
 // and refuses control characters: a NUL is legal in a SQLite TEXT column and
 // refused by Postgres, so without the check one request would succeed on one
@@ -977,10 +997,20 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
-	row, _, err := c.visible(r)
+	row, s, err := c.visible(r)
 	if err != nil {
 		c.fail(w, r, "get channel", err)
 		return
+	}
+	// R44, as the listing: a visible child never names a category the caller cannot view.
+	parent := row.ParentID
+	seen, err := parentVisible(r.Context(), c.repo, s.UserID, row)
+	if err != nil {
+		c.fail(w, r, "get channel", err)
+		return
+	}
+	if !seen {
+		parent = nil
 	}
 	tg, err := textGroupID(r.Context(), c.repo, row)
 	if err != nil {
@@ -989,7 +1019,7 @@ func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusOK, channelResp{
 		ChannelID: row.ID, CommunityID: row.CommunityID, Kind: uint64(row.Kind),
-		Mode: uint64(row.Mode), Visibility: uint64(row.Visibility), ParentID: row.ParentID,
+		Mode: uint64(row.Mode), Visibility: uint64(row.Visibility), ParentID: parent,
 		Name: row.Name, Topic: row.Topic, Position: row.Position,
 		SlowmodeSeconds: row.SlowmodeSeconds, Seq: row.Seq, TextGroupID: tg,
 	}); err != nil {
