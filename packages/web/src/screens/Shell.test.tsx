@@ -1488,7 +1488,9 @@ describe('direct messages', () => {
     expect(first).toHaveFocus();
     expect(within(rail).getByRole('button', { name: 'Midgard' })).not.toHaveAttribute('aria-current');
     const list = screen.getByRole('navigation', { name: 'direct messages' });
-    expect(within(list).getByRole('heading', { level: 1, name: 'Midgard' })).toBeInTheDocument();
+    // FB1: the Home sidebar is titled for the DMs, not for the server that was selected before.
+    expect(within(list).getByRole('heading', { level: 1, name: 'direct messages' })).toBeInTheDocument();
+    expect(within(list).queryByRole('heading', { name: 'Midgard' })).toBeNull();
     expect(within(list).getByRole('button', { name: 'message someone' })).toBeInTheDocument();
     expect(within(list).getByRole('button', { name: 'bob' })).toHaveAttribute('data-kind', 'dm');
     expect(screen.queryByRole('tablist')).toBeNull();
@@ -1505,7 +1507,7 @@ describe('direct messages', () => {
   it('with no server, the sidebar opens on the DMs and says there is no server in the @ tile’s empty list', async () => {
     const { user, view } = setup('/', { communities: [], before: withDms });
     const sidebar = screen.getByRole('navigation', { name: 'direct messages' });
-    expect(within(sidebar).getByRole('heading', { level: 1, name: 'dilla.test' })).toBeInTheDocument();
+    expect(within(sidebar).getByRole('heading', { level: 1, name: 'direct messages' })).toBeInTheDocument();
     expect(homeTile()).toHaveAttribute('aria-current', 'page');
     expect(within(sidebar).getByRole('button', { name: 'bob' })).toBeInTheDocument();
     await expectNoAxeViolations(view.container);

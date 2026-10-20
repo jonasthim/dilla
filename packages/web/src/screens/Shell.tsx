@@ -1032,7 +1032,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     );
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
-        title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
+        title={onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         headerAction={headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
@@ -1040,8 +1040,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         onToggleCategory={toggleCategory}
         {...(voiceHere && canManageChannels && !onDms ? { onAddInCategory: (id: string) => { setChannelParent(id); setChannelOpen(true); },
           addInCategoryLabel: (name: string) => t('layout.category.add', { name }) } : {})}
-        // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
-        titleKind={phone && onDms ? 'plain' : 'server'}
+        // Walk 9: only the server name keeps the display serif; the DM list heading (Home) is the plain mono one.
+        titleKind={onDms ? 'plain' : 'server'}
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,

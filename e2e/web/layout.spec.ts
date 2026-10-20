@@ -13,7 +13,7 @@
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
-import { addServerVia, REPO_ROOT,
+import { addServerVia, REPO_ROOT, attachInput, drawImage, messageRow, trayEntries,
   TEST_TIMEOUT, WAIT, channelRow, channelsNav, closeSettings, completeSignUp, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, homeTile, makeInviteLink, newAccount, openSettings, railItem, railNav,
   sendText, settingsDialog, signIn, signUp, test, type Account,
 } from './support/app';
@@ -996,4 +996,54 @@ test('FA4: search rows, You icons, phone settings title, channel reorder and pri
     await second.close();
     rmSync(secondDir, { recursive: true, force: true });
   }
+});
+
+// FB: the Home sidebar of a desktop is titled for the DMs, and at 360 a file card under images keeps its name inside the log.
+test('FB1, FB2: the desktop Home title is not the server name; a file card stacks under the images at 360 and keeps its name', async ({ page }) => {
+  const h = started();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Fia', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Vanaheim');
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  const fileName = 'quarterly-planning-notes-for-the-long-winter-campaign.bin';
+  const drawn = await drawImage(page, { width: 320, height: 240, type: 'image/png', seed: 3 });
+  const drawn2 = await drawImage(page, { width: 320, height: 240, type: 'image/png', seed: 4 });
+  await attachInput(page).setInputFiles([
+    { name: 'one.png', mimeType: 'image/png', buffer: drawn.bytes },
+    { name: 'two.png', mimeType: 'image/png', buffer: drawn2.bytes },
+    { name: fileName, mimeType: 'application/octet-stream', buffer: Buffer.alloc(70_000, 7) },
+  ]);
+  await expect(trayEntries(page)).toHaveCount(3, { timeout: WAIT });
+  for (let i = 0; i < 3; i++) await expect(trayEntries(page).nth(i)).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+  const text = `mixed ${String(Date.now())}`;
+  await sendText(page, 'general', text);
+  await expect(messageRow(page, 'general', text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+
+  const channelPath = new URL(page.url()).pathname;
+  await homeTile(page).click();
+  const title = dmsNav(page).getByRole('heading', { level: 1 });
+  await expect.soft(title, 'FB1 the Home sidebar is titled for the direct messages').toHaveText(copy('shell.dms.label'), { timeout: WAIT });
+  await expect.soft(title, 'FB1 not the server name').not.toHaveText('Vanaheim');
+
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto(channelPath);
+  const row = messageRow(page, 'general', text);
+  await expect(row).toBeVisible({ timeout: WAIT });
+  await expect(row.locator('.d-attachment-card__file .d-attachment-card__name')).toBeVisible({ timeout: WAIT });
+  const log = (await boxes(page, '[role="log"]'))[0];
+  const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
+  const name = (await boxes(page, '.d-attachment-card__file .d-attachment-card__name'))[0];
+  const images = await boxes(page, '.d-attachment-card[data-kind="image"]');
+  expect(log !== undefined && card !== undefined && name !== undefined && images.length > 0, 'FB2 the log, an image card and the file card are drawn').toBe(true);
+  if (log === undefined || card === undefined || name === undefined) return;
+  expect.soft(name.w, 'FB2 the file name has room').toBeGreaterThan(40);
+  expect.soft(card.r, 'FB2 the file card is not wider than the log').toBeLessThanOrEqual(log.r + TOL);
+  expect.soft(card.x, 'FB2 the file card starts inside the log').toBeGreaterThanOrEqual(log.x - TOL);
+  expect.soft(card.y, 'FB2 the file card stands under the images').toBeGreaterThanOrEqual(Math.max(...images.map(b => b.b)) - TOL);
+  const ellipsed = await page.locator('.d-attachment-card__file .d-attachment-card__name').first().evaluate(e => getComputedStyle(e).textOverflow);
+  expect.soft(ellipsed, 'FB2 a long name is cut with an ellipsis').toBe('ellipsis');
 });

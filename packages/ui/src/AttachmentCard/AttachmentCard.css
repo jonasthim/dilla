@@ -13,6 +13,8 @@
 .d-attachment-card__size { flex-shrink: 0; font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
 .d-attachment-card__file .d-attachment-card__size { margin-right: auto; }
 .d-attachment-card__save { flex-shrink: 0; }
+/* FB2: a file card's save button is named for the file, so it may shrink and cut that label with an ellipsis; the card's own name keeps the room. */
+.d-attachment-card__file .d-attachment-card__save { flex-shrink: 1; min-width: 5rem; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-attachment-card__state { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
 /* A failed open: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-attachment-card[data-state="failed"] .d-attachment-card__state { color: var(--danger); }
