@@ -4,6 +4,8 @@ import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { expectVoiceTargets, nextFrame } from '../CallControls/CallControls.stories.tsx';
+import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const STATE: CallTileProps['labels']['state'] = {
@@ -319,3 +321,67 @@ export const Focused9: Story = focusedNineStory('mesh');
 export const Focused9Light: Story = focusedNineStory('light');
 export const Focused9HighContrast: Story = focusedNineStory('high-contrast');
 
+
+// D1: a partial last row is centred in the area, not left under the first column.
+function expectOrphanCentred(root: HTMLElement, story: string, expected: boolean): void {
+  if (onPhone()) return;
+  const orphans = Array.from(root.querySelectorAll<HTMLElement>('li[data-orphan]')).map(li => li.getBoundingClientRect());
+  if (!expected) { if (orphans.length > 0) throw new Error(`${story}: ${String(orphans.length)} orphan tiles in a full grid`); return; }
+  if (orphans.length === 0) throw new Error(`${story}: no orphan tile`);
+  const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
+  const mid = (Math.min(...orphans.map(r => r.left)) + Math.max(...orphans.map(r => r.right))) / 2;
+  if (Math.abs(mid - (area.left + area.right) / 2) > 2) throw new Error(`${story}: the last row is centred at ${String(mid)}, the area at ${String((area.left + area.right) / 2)}`);
+}
+/** Three tiles at desktop widths: two columns, the third centred under them. */
+export const Grid3Orphan: Story = {
+  args: { tiles: people(3), code: null }, decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectGrid(canvasElement, 'Grid3Orphan', 3); expectOrphanCentred(canvasElement, 'Grid3Orphan', true); },
+};
+/** Five tiles, one of them speaking (the ring) and one at 70 % (the chip in its caption, away from the corner). */
+export const Grid5SpeakingAndChip: Story = {
+  args: { tiles: people(5).map((t, i) => (i === 0 ? { ...t, volume: 70 } : t)), code: null }, decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    expectGrid(canvasElement, 'Grid5SpeakingAndChip', 5);
+    const chip = canvasElement.querySelector<HTMLElement>('.d-call-tile__chip');
+    if (chip === null || chip.textContent !== '70 %') throw new Error('Grid5SpeakingAndChip: no 70 % chip');
+    const tile = chip.closest<HTMLElement>('.d-call-tile')!.getBoundingClientRect();
+    if (chip.getBoundingClientRect().right > tile.right - 40) throw new Error('Grid5SpeakingAndChip: the chip reaches the corner of the tile');
+    if (canvasElement.querySelector('.d-call-tile[data-speaking="true"]') === null) throw new Error('Grid5SpeakingAndChip: nobody speaks');
+  },
+};
+/** D3: the volume range is hidden until the pointer is over the tile or focus is inside it; the keyboard still reaches it. */
+export const VolumeOnHoverAndFocus: Story = {
+  args: { tiles: people(2), code: null }, decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame();
+    const vol = canvasElement.querySelector<HTMLElement>('li[data-stage] .d-call-tile__volume');
+    if (vol === null) throw new Error('VolumeOnHoverAndFocus: no volume');
+    if (getComputedStyle(vol).opacity !== '0') throw new Error('VolumeOnHoverAndFocus: the volume shows at rest');
+    vol.querySelector<HTMLInputElement>('input')!.focus();
+    await nextFrame();
+    await new Promise(r => setTimeout(r, 250));
+    if (getComputedStyle(vol).opacity !== '1') throw new Error('VolumeOnHoverAndFocus: the volume stays hidden while focused');
+  },
+};
+/** C4: the voice ChannelHeader is the stage's 48 bar, its hairline at y=48 over the full stage width. */
+export const WithHeader: Story = {
+  args: {
+    header: (
+      <ChannelHeader name="voice harbour" actions={<><IconButton icon="users" label="members" /><IconButton icon="search" label="search" /></>} />
+    ),
+    tiles: people(3), code: null,
+  },
+  decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    const stage = canvasElement.querySelector<HTMLElement>('.d-call-stage')!.getBoundingClientRect();
+    const bar = canvasElement.querySelector<HTMLElement>('.d-call-stage__bar')!.getBoundingClientRect();
+    if (Math.abs(bar.bottom - stage.top - 48) > 0.5) throw new Error(`WithHeader: the bar's hairline is at y=${String(bar.bottom - stage.top)}, not 48`);
+    if (Math.abs(bar.width - stage.width) > 1) throw new Error('WithHeader: the bar is not the stage width');
+  },
+};

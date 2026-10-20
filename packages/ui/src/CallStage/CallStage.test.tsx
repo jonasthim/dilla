@@ -105,6 +105,24 @@ describe('CallStage', () => {
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
 
+  it('the header slot renders before the title and the tiles, as the stage\'s 48 bar (C4)', () => {
+    const { container } = render(<CallStage {...base} header={<header data-testid="bar">voice harbour</header>} />);
+    const bar = screen.getByTestId('bar');
+    const section = container.querySelector('.d-call-stage')!;
+    expect(bar.parentElement).toHaveClass('d-call-stage__bar');
+    expect(section.firstElementChild).toBe(bar.parentElement);
+    expect(bar.parentElement!.compareDocumentPosition(container.querySelector('.d-call-stage__tiles')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The section keeps its name, from a visually hidden title: the slot's own heading is not a second visible title.
+    expect(screen.getByRole('region', { name: 'voice harbour' })).toBeInTheDocument();
+    expect(container.querySelector('h2.d-call-stage__title')).toBeNull();
+  });
+
+  it('without a header slot the stage keeps its visible title', () => {
+    const { container } = render(<CallStage {...base} />);
+    expect(container.querySelector('.d-call-stage__bar')).toBeNull();
+    expect(container.querySelector('h2.d-call-stage__title')).not.toBeNull();
+  });
+
   describe('stage (grid, focus, full screen)', () => {
     function src(name: string, source: 'camera' | 'screen' | 'avatar', media: MediaStream | null, more: Partial<CallTileProps> = {}): CallTileProps {
       const t = tile(name, media);
@@ -132,7 +150,7 @@ describe('CallStage', () => {
     });
 
     it.each([
-      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
+      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [3, 1200, 700, 2], [2, 1024, 600, 2], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
     ])('stageColumns picks the column count that maximises the 16:9 tile: n=%i in %ix%i is %i', (n, w, h, cols) => {
       expect(stageColumns(n, w, h, 12)).toBe(cols);
     });
@@ -359,6 +377,20 @@ describe('CallStage', () => {
         expect(ul).toHaveAttribute('data-tiles', 'stage');
         expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('1');
         expect(ul.style.getPropertyValue('--d-tile-w')).not.toBe('');
+      });
+
+      it('D1: the last tile of a partial row is the orphan; full rows and a single column have none', () => {
+        const three = [src('ada', 'camera', sA), src('bo', 'camera', sB), src('cy', 'camera', null)];
+        const { container, rerender } = render(<CallStage {...base} tiles={three} focusedId={null} onFocus={() => {}} />);
+        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
+        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('2');
+        const lis = () => [...container.querySelectorAll('li.d-call-stage__tile')];
+        expect(lis().map(l => l.hasAttribute('data-orphan'))).toEqual([false, false, true]);
+        rerender(<CallStage {...base} tiles={[...three, src('di', 'camera', null)]} focusedId={null} onFocus={() => {}} />);
+        expect(lis().some(l => l.hasAttribute('data-orphan'))).toBe(false);
+        rerender(<CallStage {...base} tiles={three.slice(0, 2)} focusedId={null} onFocus={() => {}} />);
+        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('1');
+        expect(lis().some(l => l.hasAttribute('data-orphan'))).toBe(false);
       });
 
       it('without onFocus nothing is written and the area keeps the old layout', () => {

@@ -1,6 +1,7 @@
 /* The desktop user panel (web3.8, item 13): avatar, name block, mute and deafen, the settings gear, in one row at the
-   bottom left under the rail and the sidebar. Its buttons are at least 2rem square (above WCAG 2.5.8's 24px). */
-.d-user-panel { display: flex; align-items: center; gap: 0.5rem; min-width: 0; padding: 0.5rem; background: var(--bg-2); border-top: 1px solid var(--hairline); }
+   bottom left under the rail and the sidebar. web3.9 (E3, G3): 52 high, its top meeting the composer band (UI-4 sets that
+   half), and its buttons are the dock's 32px IconButtons. */
+.d-user-panel { box-sizing: border-box; display: flex; align-items: center; gap: 0.5rem; height: 3.25rem; min-width: 0; padding: 0 0.75rem; background: var(--bg-2); border-top: 1px solid var(--hairline); }
 /* The avatar and name block is the status menu's trigger (a button, so keyboard reachable); the menu hangs above it. */
 .d-user-panel__menu { display: flex; flex: 1 1 auto; min-width: 0; }
 .d-user-panel__who {
@@ -18,13 +19,6 @@
 .d-user-panel__menu .d-action-menu__item[aria-checked="true"] { font-weight: var(--weight-display); box-shadow: inset 2px 0 0 var(--accent); }
 .d-user-panel__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--fg); }
 .d-user-panel__username { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
-.d-user-panel__controls { flex: none; flex-wrap: nowrap; }
-.d-user-panel .d-voice-toolbar .d-voice-toolbar__control { min-width: 2rem; min-height: 2rem; padding: 0 0.25rem; }
-.d-user-panel__settings {
-  flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; padding: 0;
-  font: inherit; color: var(--fg-2); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer;
-  transition: background var(--duration-fast), color var(--duration-fast);
-}
-.d-user-panel__settings:hover { background: var(--surface-2); color: var(--fg); }
-.d-user-panel__settings:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
-@media (forced-colors: active) { .d-user-panel__settings { border-color: ButtonBorder; } }
+.d-user-panel__controls { display: flex; flex: none; align-items: center; gap: 0.125rem; }
+/* Muted and deafened read as the dock's pressed toggle (accent glyph, 2px bar), tinted danger because they silence you. */
+.d-user-panel .d-icon-button[aria-pressed="true"] { color: var(--danger); box-shadow: inset 0 -2px 0 0 var(--danger); }

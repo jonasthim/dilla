@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -21,6 +22,7 @@ const labels: CallTileProps['labels'] = {
   volume: 'volume for ada',
   volumeValue: '{n} %',
 };
+const css = readFileSync(`${process.cwd()}/src/CallTile/CallTile.css`, 'utf8');
 const rest = { own: false, volume: 100, media: null, labels, onVolume: () => {} };
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
@@ -42,13 +44,48 @@ describe('CallTile', () => {
     expect(container.querySelector('audio')).toBeNull();
   });
 
-  it('speaking is shown by a named dot as well as the outline', () => {
-    const { container } = render(<CallTile view={{ ...view, speaking: true }} {...rest} />);
-    const dot = screen.getByRole('img', { name: 'speaking' });
-    expect(dot).toHaveAttribute('title', 'speaking');
-    expect(dot.querySelector('.d-state-dot')).toHaveAttribute('data-tone', 'ok');
-    expect(dot).toHaveAttribute('data-state', 'speaking');
+  it('R25: speaking is a 2px accent ring on the tile edge and on the avatar, with no StateDot; the word stays for assistive tech', () => {
+    const { container } = render(<CallTile view={{ ...view, speaking: true }} {...rest} onFocusTile={() => {}} />);
     expect(container.querySelector('.d-call-tile')).toHaveAttribute('data-speaking', 'true');
+    expect(container.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'true');
+    expect(container.querySelector('.d-state-dot')).toBeNull();
+    expect(container.querySelector('[data-state="speaking"]')).toBeNull();
+    expect(container.querySelector('.d-call-tile__states .d-sr-only')).toHaveTextContent('speaking');
+    expect(css).toMatch(/\.d-call-tile\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
+    expect(css).toMatch(/\.d-call-tile__avatar-ring\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
+  });
+
+  it('not speaking: no ring, no speaking word', () => {
+    const { container } = render(<CallTile view={view} {...rest} onFocusTile={() => {}} />);
+    expect(container.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'false');
+    expect(container.querySelector('.d-call-tile')).toHaveAttribute('data-speaking', 'false');
+    expect(container.querySelector('.d-call-tile__states .d-sr-only')).toBeNull();
+  });
+
+  it("D3: the stage tile's volume range is hidden until hover or focus-within (CSS pin), and stays in the tree for the keyboard", () => {
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__volume \{[^}]*opacity: 0;[^}]*pointer-events: none/);
+    expect(css).toMatch(/\.d-call-tile\[data-stage\]:hover \.d-call-tile__volume,\s*\.d-call-tile\[data-stage\]:focus-within \.d-call-tile__volume \{[^}]*opacity: 1;[^}]*pointer-events: auto/);
+    render(<CallTile view={view} {...rest} onFocusTile={() => {}} />);
+    expect(screen.getByRole('slider', { name: 'volume for ada' })).toBeInTheDocument();
+  });
+
+  it('a quiet chip shows the volume in the caption when it is not 100, and none at 100', () => {
+    const { container, rerender } = render(<CallTile view={view} {...rest} volume={70} onFocusTile={() => {}} />);
+    const chip = container.querySelector('.d-call-tile__caption .d-call-tile__chip')!;
+    expect(chip).toHaveTextContent('70 %');
+    expect(chip).toHaveAttribute('aria-hidden', 'true');
+    rerender(<CallTile view={view} {...rest} volume={100} onFocusTile={() => {}} />);
+    expect(container.querySelector('.d-call-tile__chip')).toBeNull();
+    rerender(<CallTile view={view} {...rest} volume={150} />);
+    expect(container.querySelector('.d-call-tile__chip')).toHaveTextContent('150 %');
+    expect(css).toMatch(/\.d-call-tile__chip \{[^}]*font-family: var\(--font-mono\);[^}]*background: var\(--surface-hi\)/);
+  });
+
+  it('the own tile and a screen tile have no chip', () => {
+    const { container, rerender } = render(<CallTile view={view} {...rest} own volume={70} />);
+    expect(container.querySelector('.d-call-tile__chip')).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="screen" volume={70} />);
+    expect(container.querySelector('.d-call-tile__chip')).toBeNull();
   });
 
   it('shows each glyph-only state as a named image, the stream states as glyph plus word, and the state hook', () => {

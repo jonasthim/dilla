@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { CallTile, type CallTileProps } from '../CallTile/CallTile.tsx';
 import '../Button/Button.css';
 import './CallStage.css';
@@ -21,12 +21,17 @@ export interface CallStageProps {
   /** The stage's heading, e.g. 'voice harbour' or the DM's name. */
   title: string;
   /** The tiles, in one stable order, keyed by `id` (R27). `focused` and `onFocusTile` are injected here, never passed. */
-  tiles: readonly Omit<CallTileProps, 'focused' | 'onFocusTile'>[];
+  tiles: readonly Omit<CallTileProps, 'focused' | 'onFocusTile' | 'orphan'>[];
   /** The focused tile's id, or null for the grid. An id that names no current tile renders the grid. Additive: without
    *  `onFocus` the tiles have no focus button (pre-flight C-2). */
   focusedId?: string | null;
   /** Focus a tile (`id`) or clear the focus (`null`): a click on a tile's focus button, Escape, or a pause notice. */
   onFocus?(id: string | null): void;
+  /**
+   * The stage's 48 bar (C4): where the voice `ChannelHeader` goes. When given, it comes first, full width, and the stage's own
+   * title is only the section's visually hidden name.
+   */
+  header?: ReactNode;
   /** The call code, 30 digits (spaces are ignored), or null when there is none yet. */
   code: string | null;
   /** A notice on the stage: the RV-3 pause banner (with its `voice.pausedAction`), a block notice or a transient one. */
@@ -48,10 +53,17 @@ function groupCode(code: string): string {
 
 const TILE_GAP_PX = 12; // 0.75rem at the root size the stage is laid out for; the CSS gap is the same 0.75rem.
 
+/** D2: below this stage width (the 1024 desktop, less the rail and the sidebar), two columns win a near tie. */
+const NARROW_STAGE_PX = 1100;
+/** D2: a column count within this share of the widest tile counts as a tie. */
+const NEAR_TIE = 0.95;
+
 /**
  * The column count c in 1..n that makes the 16:9 tiles of an n-tile grid widest in a `w` x `h` area with `gap` between
  * them: the tile width is `min((w - gap(c-1))/c, ((h - gap(r-1))/r) * 16/9)` with `r = ceil(n/c)`. A tie goes to
- * the fewer columns.
+ * the fewer columns, except in a stage under 1100 px wide (D2, the 1024 desktop): there the next column count wins when
+ * its tile is within 5 % of the widest, because a side-by-side pair that fills the width beats a stack that leaves dead
+ * bands at both sides.
  */
 export function stageColumns(n: number, w: number, h: number, gap: number): number {
   let best = 1;
@@ -59,6 +71,11 @@ export function stageColumns(n: number, w: number, h: number, gap: number): numb
   for (let c = 1; c <= n; c++) {
     const width = tileWidth(c, n, w, h, gap);
     if (width > bestWidth + 1e-9) { best = c; bestWidth = width; }
+  }
+  if (w < NARROW_STAGE_PX) {
+    for (let c = 1; c <= n; c++) {
+      if (c > best && tileWidth(c, n, w, h, gap) >= bestWidth * NEAR_TIE) return c;
+    }
   }
   return best;
 }
@@ -80,13 +97,14 @@ function tileWidth(c: number, n: number, w: number, h: number, gap: number): num
  * and `data-focused` on the tile, and CSS grid does the rest (R27). In the grid a ResizeObserver writes
  * `--d-stage-cols` and `--d-tile-w` from `stageColumns`. Escape unfocuses a tile, unless full screen is on.
  */
-export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, code, notice, controls, outgoing, labels }: CallStageProps) {
+export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, code, notice, controls, outgoing, labels }: CallStageProps) {
   const titleId = useId();
   const tilesRef = useRef<HTMLUListElement>(null);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const focusedFor = useRef<string | null>(null);
+  const [cols, setCols] = useState(0);
   const noticeText = notice?.text ?? null;
   const focusOnce = notice?.focusOnce ?? false;
 
@@ -114,6 +132,8 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
   // A lone focused tile keeps the grid: a filmstrip row of nothing would only shrink it.
   const focusedLayout = focusedHere && tiles.length > 1;
   const tileCount = tiles.length;
+  // D1: how many tiles sit in a partial last row of the grid (0: the rows are full, or there is no grid row to centre).
+  const orphans = stageMode && !focusedLayout && cols > 1 ? tileCount % cols : 0;
 
   useEffect(() => {
     if (hideMedia && focusedId !== null) onFocus?.(null);
@@ -129,6 +149,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
       const cols = stageColumns(tileCount, w, h, gap);
       const width = tileWidth(cols, tileCount, w, h, gap);
       el.style.setProperty('--d-stage-cols', String(cols));
+      setCols(cols);
       el.style.setProperty('--d-tile-w', `${String(Math.max(0, Math.floor(width)))}px`);
     };
     measure();
@@ -147,8 +168,11 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
   return (
     <section className="d-call-stage" aria-labelledby={titleId} data-media-hidden={hideMedia ? 'true' : undefined}
       data-focused-stage={focusedLayout ? 'true' : undefined} onKeyDown={onStageKey}>
-      <header className="d-call-stage__head">
-        <h2 id={titleId} className="d-call-stage__title">{title}</h2>
+      {header !== undefined && header !== null ? <div className="d-call-stage__bar">{header}</div> : null}
+      <header className="d-call-stage__head" data-bare={header !== undefined && header !== null ? 'true' : undefined}>
+        {header !== undefined && header !== null
+          ? <span id={titleId} className="d-sr-only">{title}</span>
+          : <h2 id={titleId} className="d-call-stage__title">{title}</h2>}
         {outgoing !== null ? <p className="d-call-stage__outgoing">{outgoing.text}</p> : null}
         {code !== null ? (
           <details ref={detailsRef} className="d-call-stage__code" onKeyDown={onCodeKey}>
@@ -178,13 +202,16 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
       ) : (
         <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles" data-tiles={stageMode ? 'stage' : undefined}
           data-many={tiles.length > 2 ? 'true' : undefined}
-          style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
-          {tiles.map(t => {
+          style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties
+            : orphans > 0 ? { '--d-orphan-n': orphans } as React.CSSProperties : undefined}>
+          {tiles.map((t, i) => {
             const id = idOf(t);
             const focused = focusedHere && id === focusedId;
+            // D1: the last tile of a partial row. Only the grid has rows; the filmstrip and a lone column have none.
+            const orphan = orphans > 0 && i >= tiles.length - orphans;
             return (
               <CallTile key={id} {...t} media={hideMedia ? null : t.media}
-                focused={focused} onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined} />
+                focused={focused} orphan={orphan} onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined} />
             );
           })}
         </ul>

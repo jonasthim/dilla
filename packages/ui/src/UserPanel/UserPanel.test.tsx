@@ -30,7 +30,7 @@ describe('UserPanel', () => {
     expect(screen.getByText('@ada')).toHaveAttribute('title', '@ada');
   });
 
-  it('is a plain div with no role and no name; its toolbar carries the region name', () => {
+  it('is a plain div with no role and no name; its control group carries the region name', () => {
     const { container } = render(<UserPanel {...panel()} />);
     const root = container.firstElementChild!;
     expect(root).toHaveClass('d-user-panel');
@@ -38,13 +38,14 @@ describe('UserPanel', () => {
     expect(root).not.toHaveAttribute('role');
     expect(root).not.toHaveAttribute('aria-label');
     expect(root).not.toHaveAttribute('aria-labelledby');
-    expect(screen.getByRole('toolbar', { name: 'your account' })).toBeInTheDocument();
-    expect(screen.getAllByRole('toolbar')).toHaveLength(1);
+    expect(screen.getByRole('group', { name: 'your account' })).toBeInTheDocument();
+    expect(screen.getAllByRole('group')).toHaveLength(1);
+    expect(screen.queryByRole('toolbar')).toBeNull();
   });
 
-  it('names mute and deafen in the toolbar, as toggles carrying the shortcuts', () => {
+  it('names mute and deafen in the group, as toggles carrying the shortcuts', () => {
     render(<UserPanel {...panel({ muted: true })} />);
-    const bar = screen.getByRole('toolbar', { name: 'your account' });
+    const bar = screen.getByRole('group', { name: 'your account' });
     const mute = within(bar).getByRole('button', { name: 'mute' });
     const deafen = within(bar).getByRole('button', { name: 'deafen' });
     expect(mute).toHaveAttribute('aria-pressed', 'true');
@@ -53,7 +54,7 @@ describe('UserPanel', () => {
     expect(deafen).toHaveAttribute('aria-keyshortcuts', VOICE_SHORTCUTS.deafen);
   });
 
-  it('mute and deafen call their handlers; the settings button, outside the toolbar, calls onSettings', async () => {
+  it('mute and deafen call their handlers; the settings button, outside the group, calls onSettings', async () => {
     const [onMute, onDeafen, onSettings] = [vi.fn(), vi.fn(), vi.fn()];
     render(<UserPanel {...panel({ onMute, onDeafen, onSettings })} />);
     await userEvent.click(screen.getByRole('button', { name: 'mute' }));
@@ -61,7 +62,7 @@ describe('UserPanel', () => {
     expect(onMute).toHaveBeenCalledTimes(1);
     expect(onDeafen).toHaveBeenCalledTimes(1);
     const gear = screen.getByRole('button', { name: 'settings' });
-    expect(within(screen.getByRole('toolbar')).queryByRole('button', { name: 'settings' })).toBeNull();
+    expect(within(screen.getByRole('group')).queryByRole('button', { name: 'settings' })).toBeNull();
     expect(gear.querySelector('[data-icon="settings"]')).not.toBeNull();
     await userEvent.click(gear);
     expect(onSettings).toHaveBeenCalledTimes(1);
@@ -74,8 +75,8 @@ describe('UserPanel', () => {
     expect(who).toHaveTextContent('Ada Lovelace');
     expect(who).toHaveTextContent('@ada');
     expect(who.querySelector('.d-avatar')).not.toBeNull();
-    // The name block, the toolbar and the gear are the three tab stops.
-    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(3);
+    // The name block, mute, deafen and the gear are the four tab stops.
+    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(4);
   });
 
   it('opens a status menu with the four statuses, and a choice calls onChoose with its id', async () => {
@@ -123,12 +124,28 @@ describe('UserPanel', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Online' })).toHaveAttribute('aria-checked', 'false');
   });
 
-  it('mute and deafen are at least 2rem square too (CSS pin)', () => {
-    expect(panelCss).toMatch(/\.d-user-panel \.d-voice-toolbar \.d-voice-toolbar__control \{[^}]*min-width: 2rem; min-height: 2rem/);
+  it('E3: mute, deafen and the gear are the same 32px icon buttons as the dock, with tooltips', () => {
+    render(<UserPanel {...panel()} />);
+    for (const name of ['mute', 'deafen', 'settings']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveClass('d-icon-button');
+      expect(b).toHaveAttribute('data-size', '32');
+      expect(b.parentElement).toHaveClass('d-tooltip-anchor');
+    }
+    expect(document.querySelectorAll('.d-user-panel .d-icon-button[data-size="32"]')).toHaveLength(3);
+    expect(document.querySelector('.d-voice-toolbar')).toBeNull();
   });
 
-  it('the settings button is at least 2rem square (CSS pin)', () => {
-    expect(panelCss).toMatch(/\.d-user-panel__settings \{[^}]*min-width: 2rem; min-height: 2rem/);
+  it('shows the shortcut in the mute tooltip on keyboard focus', async () => {
+    render(<UserPanel {...panel()} />);
+    screen.getByRole('button', { name: 'mute' }).focus();
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl Shift M');
+  });
+
+  it('is 52 high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: 3\.25rem/m);
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*border-top: 1px solid var\(--hairline\)/m);
+    expect(panelCss).not.toContain('d-user-panel__settings');
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

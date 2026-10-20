@@ -1,21 +1,59 @@
 import { readFileSync } from 'node:fs';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelHeader } from './ChannelHeader.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const css = readFileSync(`${process.cwd()}/src/ChannelHeader/ChannelHeader.css`, 'utf8');
 
 describe('ChannelHeader', () => {
-  it('stays one row at normal widths and wraps only while main is narrow (CSS pins, I2)', () => {
-    // The base header never wraps, so a long topic or name is cut with its ellipsis (Product walk I2).
+  it('is one 48 bar row: it never wraps, the name keeps 8rem, the actions never shrink (CSS pins, B1, C1)', () => {
     expect(css).not.toMatch(/^\.d-channel-header \{[^}]*flex-wrap/m);
-    expect(css).toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--channel-header-h\)/m);
+    expect(css).toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--bar-h\)/m);
+    expect(css).not.toContain('--channel-header-h');
+    expect(css).not.toContain('data-main-narrow');
+    expect(css).toMatch(/^\.d-channel-header__title \{[^}]*min-width: 8rem/m);
+    expect(css).toMatch(/^\.d-channel-header__name \{[^}]*text-overflow: ellipsis/m);
     expect(css).toMatch(/^\.d-channel-header__actions \{[^}]*flex-shrink: 0/m);
-    // The shell marks a main under 28rem; only then do the header and its actions wrap.
-    expect(css).toMatch(/\[data-main-narrow\] \.d-channel-header \{[^}]*flex-wrap: wrap;[^}]*height: auto;[^}]*min-height: var\(--channel-header-h\)/);
-    expect(css).toMatch(/\[data-main-narrow\] \.d-channel-header__actions \{[^}]*flex-wrap: wrap;[^}]*flex-shrink: 1;[^}]*min-width: 0/);
+    expect(css).toMatch(/^\.d-channel-header \{[^}]*container: d-channel-header \/ inline-size/m);
+  });
+
+  it('folds the foldable actions into the "more" menu below 36rem of header width (CSS pin, R27)', () => {
+    const q = css.match(/@container d-channel-header \(max-width: 36rem\) \{([\s\S]*?)\n\}/);
+    expect(q).not.toBeNull();
+    expect(q![1]).toMatch(/\[data-foldable\][^{]*\{[^}]*display: none/);
+    expect(q![1]).toMatch(/\.d-channel-header__more \{[^}]*display: inline-flex/);
+    expect(css).toMatch(/^\.d-channel-header__more \{[^}]*display: none/m);
+  });
+
+  it('puts the foldable actions into a "more" menu named by overflow.label, with the same items', async () => {
+    const onSelect = vi.fn();
+    const items = [{ id: 'pins', label: 'pinned messages' }, { id: 'threads', label: 'threads' }];
+    render(<ChannelHeader name="general" overflow={{ label: 'more', items, onSelect }}
+      actions={<><IconButton icon="pin" label="pinned messages" data-foldable="true" /><IconButton icon="users" label="members" /></>} />);
+    const more = screen.getByRole('button', { name: 'more' });
+    expect(more).toHaveAttribute('aria-haspopup', 'menu');
+    await userEvent.setup().click(more);
+    expect(within(screen.getByRole('menu', { name: 'more' })).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['pinned messages', 'threads']);
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: 'threads' }));
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith('threads');
+    // The fold is CSS: both the foldable button and the menu are in the tree, the foldable one marked.
+    expect(screen.getByRole('button', { name: 'pinned messages' })).toHaveAttribute('data-foldable', 'true');
+    expect(screen.getByRole('button', { name: 'members' })).not.toHaveAttribute('data-foldable');
+  });
+
+  it('has no "more" menu without overflow', () => {
+    const { container } = render(<ChannelHeader name="general" actions={<IconButton icon="pin" label="pinned messages" />} />);
+    expect(container.querySelector('.d-channel-header__more')).toBeNull();
+  });
+
+  it('actions are a cluster of 32px icon buttons; a pressed toggle has aria-pressed', () => {
+    render(<ChannelHeader name="general" actions={<><IconButton icon="pin" label="pinned messages" pressed /><IconButton icon="users" label="members" pressed={false} /></>} />);
+    expect(screen.getByRole('button', { name: 'pinned messages' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'pinned messages' })).toHaveAttribute('data-size', '32');
+    expect(screen.getByRole('button', { name: 'members' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('names the channel in a level-two heading without the decorative brackets', () => {
@@ -50,20 +88,24 @@ describe('ChannelHeader', () => {
     const brackets = () => [...container.querySelectorAll('.d-channel-header__bracket')];
     expect(brackets().map(b => b.textContent)).toEqual(['[ @ ', ' ]']);
     expect(brackets().map(b => b.getAttribute('aria-hidden'))).toEqual(['true', 'true']);
-    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ @ ada ]');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ @ ada ]');
     expect(container.textContent).not.toContain('#');
     rerender(<ChannelHeader name="general" />);
     expect(brackets().map(b => b.textContent)).toEqual(['[ # ', ' ]']);
     rerender(<ChannelHeader name="general" kind="channel" />);
-    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ # general ]');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ # general ]');
   });
 
   it('heads an announcement channel with the megaphone in place of #, named by the name alone', () => {
     const { container } = render(<ChannelHeader name="news" kind="announcement" />);
     expect(screen.getByRole('heading', { level: 2, name: 'news' })).toBeInTheDocument();
-    expect(container.querySelector('.d-channel-header__name [data-icon="megaphone"]')).not.toBeNull();
+    // C3: the megaphone is its own flex item beside the name, never inside it.
+    const glyph = container.querySelector('[data-icon="megaphone"]')!.closest('.d-channel-header__glyph')!;
+    const name = screen.getByRole('heading', { level: 2, name: 'news' });
+    expect(glyph.parentElement).toBe(name.parentElement);
+    expect(name).not.toContainElement(glyph as HTMLElement);
     expect(container.textContent).not.toContain('#');
-    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ news ]');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ news ]');
   });
 
   it('has no serious axe violations', async () => {

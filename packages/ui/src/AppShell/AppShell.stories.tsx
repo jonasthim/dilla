@@ -15,8 +15,9 @@ export const ShellNarrow: Story = { render: () => <div style={{ width: 360, ['--
 const members = (
   <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet." onAction={() => {}}
     groups={[
-      { id: 'mods', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [] }] },
-      { id: 'members', title: 'members', members: [{ id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }] }] },
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [], presence: 'online' }] },
+      { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }], presence: 'online' }] },
+      { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u3', name: 'Cleo', tags: [], actionsLabel: 'actions for Cleo', actions: [], presence: 'offline' }] },
     ]} />
 );
 const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };
@@ -93,5 +94,28 @@ export const BottomPanelWithStatus: Story = {
     const panel = canvasElement.querySelector<HTMLElement>('.d-app-shell__panel');
     if (status === null || panel === null) throw new Error('no status bar or panel');
     if (status.getBoundingClientRect().top < panel.getBoundingClientRect().bottom - 1) throw new Error('the status bar is not below the panel');
+  },
+};
+
+/**
+ * B1, R12: the main header and the members bar both have their hairline at y=48 from the shell's top, and the user panel is 52 high.
+ * (The sidebar head is UI-2's half of the same line; the E-GEO rect checks cover all four at integration.)
+ */
+export const Desktop: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, bottom: userPanel }} /></div>,
+  globals: { theme: 'mesh' },
+  play: ({ canvasElement }) => {
+    const shell = canvasElement.querySelector<HTMLElement>('.d-app-shell')!.getBoundingClientRect();
+    const edge = (selector: string) => {
+      const el = canvasElement.querySelector<HTMLElement>(selector);
+      if (el === null) throw new Error(`Desktop: no ${selector}`);
+      return el.getBoundingClientRect().bottom - shell.top;
+    };
+    for (const selector of ['.d-channel-header', '.d-member-list__bar']) {
+      const y = edge(selector);
+      if (Math.abs(y - 48) > 0.5) throw new Error(`Desktop: the hairline of ${selector} is at y=${String(y)}, not 48`);
+    }
+    const panel = canvasElement.querySelector<HTMLElement>('.d-user-panel')!.getBoundingClientRect();
+    if (Math.abs(panel.height - 52) > 0.5) throw new Error(`Desktop: the user panel is ${String(panel.height)} high, not 52`);
   },
 };

@@ -10,11 +10,20 @@ function expectPanelTargets(root: HTMLElement, story: string): void {
     }
   }
 }
+/** E3, G3: the panel is 52 high, and its buttons are the dock's 32px icon buttons. */
+function expectPanelBar(root: HTMLElement, story: string): void {
+  const panel = root.querySelector<HTMLElement>('.d-user-panel');
+  if (panel === null) throw new Error(`${story}: no panel`);
+  const h = panel.getBoundingClientRect().height;
+  if (Math.abs(h - 52) > 0.5) throw new Error(`${story}: the panel is ${String(h)} high, not 52`);
+  const sizes = Array.from(panel.querySelectorAll<HTMLElement>('.d-icon-button')).map(b => b.getAttribute('data-size'));
+  if (sizes.length !== 3 || sizes.some(z => z !== '32')) throw new Error(`${story}: the panel's icon buttons are ${sizes.join()}, not three at 32`);
+}
 /** The row stays one line at the sidebar's width: the controls do not wrap and the name block gives way. */
 function expectOneLine(root: HTMLElement, story: string): void {
   const panel = root.querySelector<HTMLElement>('.d-user-panel');
   if (panel === null) throw new Error(`${story}: no panel`);
-  const tops = Array.from(panel.querySelectorAll<HTMLElement>('.d-user-panel__who, .d-user-panel__controls, .d-user-panel__settings')).map(e => Math.round(e.getBoundingClientRect().top));
+  const tops = Array.from(panel.querySelectorAll<HTMLElement>('.d-user-panel__who, .d-user-panel__controls, .d-user-panel > .d-tooltip-anchor .d-icon-button')).map(e => Math.round(e.getBoundingClientRect().top));
   if (Math.max(...tops) - Math.min(...tops) > 4) throw new Error(`${story}: the panel wraps (tops ${tops.join(', ')})`);
   if (panel.scrollWidth > panel.clientWidth + 1) throw new Error(`${story}: the panel overflows sideways`);
 }
@@ -27,7 +36,7 @@ function expectEdges(root: HTMLElement, story: string): void {
   const panel = root.querySelector<HTMLElement>('.d-user-panel');
   const who = root.querySelector<HTMLElement>('.d-user-panel__who');
   const avatar = root.querySelector<HTMLElement>('.d-user-panel__who .d-avatar');
-  const gear = root.querySelector<HTMLElement>('.d-user-panel__settings');
+  const gear = root.querySelector<HTMLElement>('.d-user-panel > .d-tooltip-anchor:last-child .d-icon-button');
   if (panel === null || who === null || avatar === null || gear === null) throw new Error(`${story}: no panel, avatar or gear`);
   const box = panel.getBoundingClientRect();
   const style = getComputedStyle(panel);
@@ -57,7 +66,7 @@ const meta = {
   },
   // The sidebar's default width.
   decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
-  play: ({ canvasElement }) => { expectPanelTargets(canvasElement, 'UserPanel'); expectOneLine(canvasElement, 'UserPanel'); expectEdges(canvasElement, 'UserPanel'); },
+  play: ({ canvasElement }) => { expectPanelTargets(canvasElement, 'UserPanel'); expectOneLine(canvasElement, 'UserPanel'); expectEdges(canvasElement, 'UserPanel'); expectPanelBar(canvasElement, 'UserPanel'); },
 } satisfies Meta<typeof UserPanel>;
 export default meta;
 type Story = StoryObj<typeof meta>;

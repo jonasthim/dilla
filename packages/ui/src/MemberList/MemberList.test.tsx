@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -5,15 +6,16 @@ import { MemberList, type MemberListProps } from './MemberList.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
+const css = readFileSync(`${process.cwd()}/src/MemberList/MemberList.css`, 'utf8');
 const kickBan = [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }];
 function props(over: Partial<MemberListProps> = {}): MemberListProps {
   return {
     label: 'members', loading: false, loadingLabel: 'Loading members…', emptyLabel: 'No members yet.', onAction: vi.fn(),
     groups: [
-      { id: 'mods', title: 'moderators', color: 0xe74c3c, members: [
+      { id: 'mods', kind: 'role', title: 'moderators', color: 0xe74c3c, members: [
         { id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: kickBan },
       ] },
-      { id: 'members', title: 'members', members: [
+      { id: 'members', kind: 'online', title: 'online', members: [
         { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: kickBan },
         { id: 'u3', name: 'You', tags: ['you'], actionsLabel: 'actions for You', actions: [] },
       ] },
@@ -27,7 +29,7 @@ afterEach(() => { delete document.documentElement.dataset.theme; });
 describe('MemberList', () => {
   it('has one section per group with an h3, and its rows in a list', () => {
     render(<MemberList {...props()} />);
-    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['moderators', 'members']);
+    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['moderators — 1', 'online — 2']);
     const lists = screen.getAllByRole('list');
     expect(lists).toHaveLength(2);
     expect(within(lists[0]!).getAllByRole('listitem')).toHaveLength(1);
@@ -50,6 +52,7 @@ describe('MemberList', () => {
     render(<MemberList {...props()} />);
     const row = screen.getByText('Astrid').closest('li')!;
     expect(row).toHaveTextContent('owner');
+    expect(row).toHaveAttribute('data-row');
   });
 
   it('a right-click opens the row’s menu at the pointer', () => {
@@ -120,7 +123,7 @@ describe('MemberList', () => {
   it('with no members it shows the empty label', () => {
     const { rerender } = render(<MemberList {...props({ groups: [] })} />);
     expect(screen.getByText('No members yet.')).toBeInTheDocument();
-    rerender(<MemberList {...props({ groups: [{ id: 'g', title: 'members', members: [] }] })} />);
+    rerender(<MemberList {...props({ groups: [{ id: 'g', kind: 'role', title: 'members', members: [] }] })} />);
     expect(screen.getByText('No members yet.')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 3 })).toBeNull();
   });
@@ -135,9 +138,70 @@ describe('MemberList', () => {
   });
 });
 
+describe('MemberList sections and rows (R28, F1)', () => {
+  const sectioned = () => props({
+    groups: [
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: [], actionsLabel: 'a', actions: [], presence: 'online' }] },
+      { id: 'on', kind: 'online', title: 'online', members: [
+        { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'a', actions: [], presence: 'online' },
+        { id: 'u3', name: 'Cleo', tags: [], actionsLabel: 'a', actions: [], presence: 'idle' },
+      ] },
+      { id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'u4', name: 'Dag', tags: [], actionsLabel: 'a', actions: [], presence: 'offline' }] },
+    ],
+  });
+
+  it('has three section headers with counts, in groups order', () => {
+    render(<MemberList {...sectioned()} />);
+    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['moderators — 1', 'online — 2', 'offline — 1']);
+  });
+
+  it('marks each section with its kind, and dims the offline rows with the muted opacity token (CSS pin)', () => {
+    const { container } = render(<MemberList {...sectioned()} />);
+    expect([...container.querySelectorAll('.d-member-list__group')].map(g => g.getAttribute('data-kind'))).toEqual(['role', 'online', 'offline']);
+    expect(css).toMatch(/\.d-member-list__group\[data-kind="offline"\] \.d-member-list__text \{[^}]*opacity: var\(--opacity-muted\)/);
+  });
+
+  it('a group without a kind is a role section', () => {
+    const p = props();
+    const { container } = render(<MemberList {...p} groups={[{ id: 'g', title: 'members', members: p.groups[0]!.members }]} />);
+    expect(container.querySelector('.d-member-list__group')).toHaveAttribute('data-kind', 'role');
+  });
+
+  it('a row is two lines at var(--row-h-2) with a 32px avatar and presence corner; line 2 exists and is empty', () => {
+    const { container } = render(<MemberList {...sectioned()} />);
+    expect(css).toMatch(/\.d-member-list__row \{[^}]*min-height: var\(--row-h-2\)/);
+    const row = screen.getByText('Bjorn').closest('li')!;
+    const avatar = row.querySelector('.d-avatar')!;
+    expect(avatar).toHaveAttribute('data-size', 'row');
+    expect(avatar.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'online');
+    const line2 = row.querySelector('.d-member-list__line2')!;
+    expect(line2).not.toBeNull();
+    expect(line2.textContent).toBe('');
+    expect(row.querySelector('.d-member-list__line1')).toContainElement(screen.getByText('Bjorn'));
+    expect(container.querySelectorAll('[data-row]')).toHaveLength(4);
+  });
+
+  it('a row without presence draws no corner', () => {
+    render(<MemberList {...props()} />);
+    expect(screen.getByText('Bjorn').closest('li')!.querySelector('.d-avatar__presence')).toBeNull();
+  });
+
+  it('the label is the 48 bar heading and names the region', () => {
+    render(<MemberList {...sectioned()} />);
+    expect(screen.getByRole('heading', { level: 2, name: 'members' })).toHaveClass('d-member-list__bar');
+    expect(screen.getByRole('region', { name: 'members' })).toBeInTheDocument();
+    expect(css).toMatch(/\.d-member-list__bar \{[^}]*height: var\(--bar-h\)/);
+  });
+
+  it('has no bar without a label', () => {
+    const { container } = render(<MemberList {...sectioned()} label={undefined} />);
+    expect(container.querySelector('.d-member-list__bar')).toBeNull();
+  });
+});
+
 describe('MemberList role colour dot', () => {
   const withColors = () => props({
-    groups: [{ id: 'g', title: 'members', members: [
+    groups: [{ id: 'g', kind: 'role', title: 'members', members: [
       { id: 'a', name: 'Astrid', tags: [], actionsLabel: 'actions for Astrid', actions: [], color: 0xe74c3c },
       { id: 'b', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [], color: null },
       { id: 'c', name: 'Cleo', tags: [], actionsLabel: 'actions for Cleo', actions: [], color: 0 },
@@ -145,16 +209,16 @@ describe('MemberList role colour dot', () => {
     ] }],
   });
 
-  it('draws an aria-hidden dot in the colour before the name of a coloured member only', () => {
+  it('draws an aria-hidden dot in the colour after the name of a coloured member only (one name x per list)', () => {
     const { container } = render(<MemberList {...withColors()} />);
     const rows = screen.getAllByRole('listitem');
     const dot = rows[0]!.querySelector('.d-role-dot') as HTMLElement;
     expect(dot).not.toBeNull();
     expect(dot).toHaveAttribute('aria-hidden', 'true');
     expect(dot.style.getPropertyValue('--d-swatch')).toBe('#e74c3c');
-    expect(dot.compareDocumentPosition(rows[0]!.querySelector('.d-member-list__name')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rows[0]!.querySelector('.d-member-list__name')!.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelectorAll('.d-role-dot')).toHaveLength(1);
-    expect(rows[0]!.textContent).toBe('Astrid');
+    expect(rows[0]!.querySelector('.d-member-list__name')!.textContent).toBe('Astrid');
   });
 
   it('has no serious axe violations with dots', async () => {

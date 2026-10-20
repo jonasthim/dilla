@@ -1,14 +1,17 @@
-import type { ReactNode } from 'react';
-import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, voiceWhy, type ToolbarControl, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
+import { useId, type ReactNode } from 'react';
+import { VOICE_ICONS, voiceWhy, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 import { Icon } from '../Icon/Icon.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface VoiceDockProps {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'paused';
-  /** The voice channel's or the DM's name, filled into `{where}`. */
+  /** The voice channel's or the DM's name; the second line when `labels.where` is not given, and filled into `{where}` of the status labels. */
   where: string;
+  /** Not drawn since web3.9 (R26): the user panel owns mute and deafen. Kept so existing callers still type-check. */
   muted: boolean;
+  /** Not drawn since web3.9 (R26): see `muted`. */
   deafened: boolean;
   /** The camera is live (a pressed toggle). Shown only with `onCamera`. */
   camera?: boolean;
@@ -18,39 +21,46 @@ export interface VoiceDockProps {
   canCamera?: boolean;
   /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
   canShare?: boolean;
-  /** True while joining (the stage's `busy`): camera and share are aria-disabled. Mute, deafen and leave stay live. */
+  /** True while joining (the stage's `busy`): camera and share are aria-disabled. Leave stays live. */
   busy?: boolean;
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
    *  `!canCamera` stands for it. */
   paused?: boolean;
-  /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
+  /** Not drawn since web3.9 (R26). */
   shortcuts?: { mute: string; deafen: string };
   /** The latest polite announcement (join, leave, mute, deafen, the end of a pause, the outgoing ring); '' for none. */
   announcement: string;
   labels: {
-    /** `voice.dock.region`: the toolbar's name. */
+    /** `voice.dock.region`: the control group's name. */
     region: string;
     connecting: string;
-    /** `voice.dock.connected`, with `{where}`. */
+    /** `voice.dock.connected` ("voice connected"); a `{where}` in it is still filled. */
     connected: string;
+    /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 2. Without it, line 2 is `where`. */
+    where?: string;
     reconnecting: string;
-    /** `voice.dock.paused`, with `{where}`. */
+    /** `voice.dock.paused`; a `{where}` in it is still filled. */
     paused: string;
-    mute: string; deafen: string; leave: string;
+    /** Not drawn since web3.9 (R26). */
+    mute: string; deafen: string;
+    leave: string;
     /** `voice.cameraOn`; needed with `onCamera`. */
     camera?: string;
     /** `voice.shareOn`; needed with `onShare`. */
     share?: string;
-    /** The reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
+    /** The reasons an inert camera or share gives (`voice.why.*`), read as its description; none without it. */
     why?: VoiceWhyLabels;
   };
-  /** False renders where, the meter and the status region, and no toolbar (the phone's call bar holds the controls). Default true. */
+  /** False renders the two status lines and the status region, and no controls (the phone's call bar holds the controls). Default true. */
   controls?: boolean;
-  /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
+  /** Ignored since web3.9 (R26: the dock has no meter; the full meter lives in Settings → Voice). WEB-DOCK deletes it with its last caller. */
   meter?: ReactNode;
-  /** Mute and deafen show only with their handler: on a desktop the user panel owns them (web3.8, R3), so the dock gets neither. */
+  /** Ignored since web3.9 (R26). */
   onMute?(): void;
+  /** Ignored since web3.9 (R26). */
   onDeafen?(): void;
+  /** With it, line 1 ("voice connected") is a button: it opens Diagnostics (R26). */
+  onStatus?(): void;
   /** Toggles the camera, as the stage's control does. Without it (or `labels.camera`) the dock shows no camera control. */
   onCamera?(): void;
   /** Toggles screen sharing, as the stage's control does. Without it (or `labels.share`) the dock shows no share control. */
@@ -64,45 +74,61 @@ const PHASE_GLYPH = {
 } as const;
 
 /**
- * The voice dock above the user panel while this device is in voice: where it is (a glyph plus the words), the
- * optional meter, then mute and deafen (only with their handlers), camera, share screen and leave as one toolbar of icon buttons with roving focus
- * (`voice.dock.region`), the stage's controls under the stage's rules. Its one `role="status"` region announces join,
- * leave, mute, deafen and the end of a pause (flow 06).
+ * The voice dock above the user panel while this device is in voice, as Discord's (R26): line 1 the status ("voice
+ * connected", a button with `onStatus`), line 2 where ("{channel} · {server}"), then camera, share and leave as 32px icon
+ * buttons in one row. No meter, no card: a hairline top and the panel's 12px inset. Mute and deafen live in the user
+ * panel. A camera or share that cannot act is aria-disabled and says why as its description. Its one `role="status"`
+ * region announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
-  phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, shortcuts,
-  announcement, labels, controls: showControls = true, meter, onMute, onDeafen, onCamera, onShare, onLeave,
+  phase, where, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
+  announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
+  const ids = useId();
   const text = {
     connecting: labels.connecting,
     connected: labels.connected.replaceAll('{where}', where),
     reconnecting: labels.reconnecting,
     paused: labels.paused.replaceAll('{where}', where),
   }[phase];
-  const controls: ToolbarControl[] = [];
-  if (onMute !== undefined) {
-    controls.push({ id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute });
-  }
-  if (onDeafen !== undefined) {
-    controls.push({ id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen });
-  }
-  if (onCamera !== undefined && labels.camera !== undefined) {
-    controls.push({ id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera });
-  }
-  if (onShare !== undefined && labels.share !== undefined) {
-    controls.push({ id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare });
-  }
-  // The divider sets leave apart from mute and deafen; with neither before it (the user panel owns them) it would be orphaned.
-  controls.push({ id: 'leave', label: labels.leave, danger: true, ...VOICE_ICONS.leave, apart: onMute !== undefined || onDeafen !== undefined, onAction: onLeave });
+  const line1 = (
+    <>
+      <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
+      <span className="d-voice-dock__text">{text}</span>
+    </>
+  );
+  const cameraInert = busy || !canCamera;
+  const shareInert = busy || !canShare;
   return (
     <div className="d-voice-dock" data-phase={phase}>
-      <p className="d-voice-dock__where">
-        <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
-        <span className="d-voice-dock__text">{text}</span>
-      </p>
-      {meter !== undefined ? <div className="d-voice-dock__meter">{meter}</div> : null}
-      {showControls ? <VoiceToolbar label={labels.region} controls={controls} className="d-voice-dock__controls" /> : null}
+      <div className="d-voice-dock__status">
+        {onStatus !== undefined
+          ? <button type="button" className="d-voice-dock__line1" onClick={onStatus}>{line1}</button>
+          : <p className="d-voice-dock__line1">{line1}</p>}
+        <p className="d-voice-dock__where" title={labels.where ?? where}>{labels.where ?? where}</p>
+      </div>
+      {showControls ? (
+        <div role="group" aria-label={labels.region} className="d-voice-dock__controls">
+          {onCamera !== undefined && labels.camera !== undefined ? (
+            <>
+              <IconButton icon={camera ? VOICE_ICONS.camera.iconOn : VOICE_ICONS.camera.icon} label={labels.camera} pressed={camera}
+                aria-disabled={cameraInert ? true : undefined} aria-describedby={cameraInert && why.camera ? `${ids}-camera` : undefined}
+                onClick={cameraInert ? undefined : onCamera} />
+              {cameraInert && why.camera ? <span id={`${ids}-camera`} className="d-sr-only">{why.camera}</span> : null}
+            </>
+          ) : null}
+          {onShare !== undefined && labels.share !== undefined ? (
+            <>
+              <IconButton icon={sharing ? VOICE_ICONS.share.iconOn : VOICE_ICONS.share.icon} label={labels.share} pressed={sharing}
+                aria-disabled={shareInert ? true : undefined} aria-describedby={shareInert && why.share ? `${ids}-share` : undefined}
+                onClick={shareInert ? undefined : onShare} />
+              {shareInert && why.share ? <span id={`${ids}-share`} className="d-sr-only">{why.share}</span> : null}
+            </>
+          ) : null}
+          <IconButton icon={VOICE_ICONS.leave.icon} label={labels.leave} className="d-voice-dock__leave" onClick={onLeave} />
+        </div>
+      ) : null}
       <p className="d-sr-only" role="status">{announcement}</p>
     </div>
   );
