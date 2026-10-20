@@ -814,14 +814,23 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := c.lockManageable(r, tx, current); err != nil {
 			return err
 		}
-		// R2: the built-in AFK channel may be renamed and moved, and nothing else.
-		if req.Topic != nil || req.Mode != nil || req.Visibility != nil || req.SlowmodeSeconds != nil {
+		// R2: the built-in AFK channel may be renamed and moved to another category, and nothing else.
+		// R-AFK8: it stays at AFKBuiltinPosition, last in its run, and every other channel stays below it.
+		settings := req.Topic != nil || req.Mode != nil || req.Visibility != nil || req.SlowmodeSeconds != nil
+		if settings || req.Position != nil {
 			afk, err := tx.GetCommunityAFK(r.Context(), *current.CommunityID)
 			if err != nil {
 				return err
 			}
-			if afk.ChannelID != nil && *afk.ChannelID == current.ID {
+			isAFK := afk.ChannelID != nil && *afk.ChannelID == current.ID
+			if isAFK && settings {
 				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its kind, mode, visibility, topic and slow mode")
+			}
+			if isAFK && req.Position != nil && *req.Position != AFKBuiltinPosition {
+				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its position")
+			}
+			if !isAFK && req.Position != nil && *req.Position >= AFKBuiltinPosition {
+				return server.Errorf(server.CodeInvalidRequest, "position must be below %d, which the AFK channel holds", AFKBuiltinPosition)
 			}
 		}
 		row, err := tx.GetChannel(r.Context(), current.ID)

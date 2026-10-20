@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -124,6 +125,104 @@ func TestEnsureAFKStripsOverwritesOnTheBuiltIn(t *testing.T) {
 	}
 	if ptr, _ := afkPointer(t, e, cid); ptr != afk {
 		t.Fatal("the strip moved the pointer")
+	}
+}
+
+// R-AFK8 (server half): a built-in AFK channel moved off 2^30 (a dev instance that ran an earlier web3.9
+// build accepted the move) is put back by the next ensure, with a null-actor audit row; an ordinary
+// channel's position is untouched, and a second run writes nothing.
+func TestEnsureAFKRestoresThePosition(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := t.Context()
+			clk := newEnv(t).Clk
+			log := slog.New(slog.DiscardHandler)
+			owner := id.New()
+			if err := repo.CreateUser(ctx, newAPITestUser(owner, "u", policyT0)); err != nil {
+				t.Fatal(err)
+			}
+			cid := id.New()
+			if err := repo.CreateCommunity(ctx, store.CommunityRow{ID: cid, Owner: owner, Name: "c",
+				PolicyJSON: []byte("{}"), PolicyVersion: 1, Created: policyT0}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: owner, Joined: policyT0}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutRole(ctx, store.RoleRow{ID: id.New(), CommunityID: cid, Name: "@everyone",
+				Allow: uint64(api.DefaultEveryoneAllow), Created: policyT0}); err != nil {
+				t.Fatal(err)
+			}
+			lounge := id.New()
+			if err := repo.CreateChannel(ctx, store.ChannelRow{ID: lounge, CommunityID: &cid, Kind: api.ChannelVoice,
+				Name: "lounge", Position: 7, SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: policyT0}); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := api.EnsureAFKChannels(ctx, repo, nil, clk, log); err != nil || n != 1 {
+				t.Fatalf("seeding run = %d, %v; want 1", n, err)
+			}
+			cfg, err := repo.GetCommunityAFK(ctx, cid)
+			if err != nil || cfg.ChannelID == nil {
+				t.Fatalf("pointer = %+v, %v", cfg, err)
+			}
+			afk := *cfg.ChannelID
+			row, err := repo.GetChannel(ctx, afk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row.Position, row.Name = 7, "Idle" // what an earlier web3.9 build let a PATCH write
+			if err := repo.UpdateChannel(ctx, row); err != nil {
+				t.Fatal(err)
+			}
+			restores := func() int {
+				rows, err := repo.ListAudit(ctx, 0, 10_000)
+				if err != nil {
+					t.Fatalf("ListAudit: %v", err)
+				}
+				n := 0
+				for _, a := range rows {
+					if a.Action == "channel.update" && a.Target == afk.String() && strings.HasPrefix(a.Detail, "afk.position:") {
+						if a.Actor != nil || a.Detail != "afk.position:7" {
+							t.Fatalf("restore audit row = %+v; want a null actor and the position it left", a)
+						}
+						n++
+					}
+				}
+				return n
+			}
+			if n, err := api.EnsureAFKChannels(ctx, repo, nil, clk, log); err != nil || n != 0 {
+				t.Fatalf("restoring run = %d, %v; want 0 created", n, err)
+			}
+			got, err := repo.GetChannel(ctx, afk)
+			if err != nil || got.Position != api.AFKBuiltinPosition || got.Name != "Idle" {
+				t.Fatalf("AFK after the ensure = %+v, %v; want Idle back at 2^30", got, err)
+			}
+			if n := restores(); n != 1 {
+				t.Fatalf("restore audit rows = %d, want 1", n)
+			}
+			if ptr, err := repo.GetCommunityAFK(ctx, cid); err != nil || ptr.ChannelID == nil || *ptr.ChannelID != afk {
+				t.Fatalf("the restore moved the pointer: %+v, %v", ptr, err)
+			}
+			if l, err := repo.GetChannel(ctx, lounge); err != nil || l.Position != 7 {
+				t.Fatalf("lounge = %+v, %v; want position 7 (control)", l, err)
+			}
+			// Idempotent: the second run changes nothing and audits nothing. An overwrite on the AFK channel
+			// takes it past the unlocked pre-check into the transaction, where the restore decides again.
+			if err := repo.PutOverwrite(ctx, store.OverwriteRow{ChannelID: afk, TargetKind: 1, TargetID: owner,
+				Allow: uint64(api.PermPinMessages)}); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := api.EnsureAFKChannels(ctx, repo, nil, clk, log); err != nil || n != 0 {
+				t.Fatalf("second run = %d, %v; want 0", n, err)
+			}
+			again, err := repo.GetChannel(ctx, afk)
+			if err != nil || again.Position != api.AFKBuiltinPosition || again.Seq != got.Seq {
+				t.Fatalf("AFK after the second run = %+v, %v", again, err)
+			}
+			if n := restores(); n != 1 {
+				t.Fatalf("restore audit rows after the second run = %d, want 1", n)
+			}
+		})
 	}
 }
 

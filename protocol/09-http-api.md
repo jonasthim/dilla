@@ -458,7 +458,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 - `name` is 1–100 bytes and `topic` at most 1024 bytes of UTF-8, with no control character (a
   topic may carry line breaks and tabs). `position` is at most 2 147 483 647 and
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
-  by `channel_id` (bytewise), the same on every engine.
+  by `channel_id` (bytewise), the same on every engine. Position `2^30` and above belongs to the
+  built-in AFK channel (§ Voice): a `PATCH` that puts any other channel there is `400
+  E_INVALID_REQUEST`, and one that names a position other than `2^30` for the AFK channel itself is
+  `403 E_FORBIDDEN` `the AFK channel keeps its position`.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
 - `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
   an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
@@ -860,8 +863,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   and the old channel becomes an ordinary voice channel (its name, overwrites and live call stay).
   An overwrite left on the built-in channel (by a rollback to an older release) is removed at the
   next start.
-- **What may change.** Administrators may rename it and move it (position and category, under the
-  category rule of § Channels). `DELETE /v1/channels/{id}` on it is `403 E_FORBIDDEN` `the AFK
+- **What may change.** Administrators may rename it and move it to another category (under the
+  category rule of § Channels); its position stays `2^30` (§ Channels), and the next start puts it
+  back there if it is anywhere else. `DELETE /v1/channels/{id}` on it is `403 E_FORBIDDEN` `the AFK
   channel cannot be deleted`; a `PATCH` that names its topic, mode, visibility or slow mode is
   `403 E_FORBIDDEN` `the AFK channel keeps its kind, mode, visibility, topic and slow mode`; `PUT`
   and `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` on it are `403 E_FORBIDDEN` `the AFK
