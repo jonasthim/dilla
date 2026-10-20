@@ -189,6 +189,20 @@ describe('one-click voice join on desktop (web3.9)', () => {
     expect(window.location.pathname).toBe(`/c/${A}/${VW}`);
   });
 
+  it('moving keyboard focus over voice rows never joins; only activating one does', async () => {
+    const app = mount();
+    const studio = await within(list()).findByRole('button', { name: 'voice studio' });
+    act(() => studio.focus());
+    await app.user.keyboard('{ArrowUp}{ArrowDown}{ArrowUp}{ArrowDown}');
+    await app.user.tab();
+    await app.user.tab({ shift: true });
+    expect(app.log.filter(l => l.startsWith('callJoin'))).toEqual([]);
+    expect(app.client.callsOf('callJoin')).toHaveLength(0);
+    act(() => within(list()).getByRole('button', { name: 'voice studio' }).focus());
+    await app.user.keyboard('{Enter}');
+    await waitFor(() => expect(app.log).toContain(`callJoin:${VW}`));
+  });
+
   it('a click on the row of the voice channel already joined only opens it', async () => {
     const app = mount();
     await app.user.click(await within(list()).findByRole('button', { name: 'voice studio' }));

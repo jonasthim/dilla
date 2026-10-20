@@ -86,6 +86,16 @@ test('from an empty instance: start a server, invite a friend through a link, re
   await page.keyboard.press('Escape');
   await expect(start).toBeHidden();
   await expect(newServer).toBeFocused();
+  // The same for the join flow opened from the add dialog: Escape returns focus to the "+" tile.
+  await newServer.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
+    .getByRole('button', { name: copy('layout.add.join'), exact: true }).click();
+  const joinDialog = page.getByRole('dialog', { name: copy('join.title'), exact: true });
+  await expect(joinDialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(joinDialog).toBeHidden();
+  await expect(newServer).toBeFocused();
 
   // 2. "new server", a name, and #general opens with focus in its composer. The server also has a voice general.
   await newServer.click();

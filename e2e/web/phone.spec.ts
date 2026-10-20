@@ -599,21 +599,19 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     });
 
     // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts
-    // the elements the twinned rules select (the DM call pane, the channel list's join, a call-strip button) in the shell and
+    // the elements the twinned rules select (the DM call pane, a call-strip button) in the shell and
     // reads what the data-layout twins do to them (the same technique as the call bar probe in test 1).
-    await test.step('the DM call pane fills the layout, and the channel-list join and call-strip buttons are 44 px', async () => {
+    await test.step('the DM call pane fills the layout, and the call-strip buttons are 44 px', async () => {
       const probe = await page.evaluate(() => {
         const content = document.querySelector('.d-app-shell__content')!;
         const call = document.createElement('div');
         call.className = 'dw-dm-call';
-        call.innerHTML = '<button type="button" class="d-btn d-channel-list__join" data-size="sm"></button>';
         const strip = document.createElement('div');
         strip.className = 'dw-call-strip';
         strip.innerHTML = '<button type="button" class="d-btn" data-size="sm"></button>';
         content.append(call, strip);
         const out = {
           maxHeight: getComputedStyle(call).maxHeight,
-          join: call.querySelector('button')!.getBoundingClientRect().height,
           strip: strip.querySelector('button')!.getBoundingClientRect().height,
         };
         call.remove();
@@ -621,7 +619,6 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
         return out;
       });
       expect(probe.maxHeight, 'the phone DM call fills the pane (the desktop one is capped at 40%)').toBe('none');
-      expect(probe.join, 'the join button is a 44 px target').toBeGreaterThanOrEqual(44);
       expect(probe.strip, 'a call-strip button is a 44 px target').toBeGreaterThanOrEqual(44);
     });
   } finally {

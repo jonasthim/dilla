@@ -24,8 +24,9 @@ describe('ChannelHeader', () => {
     const q = css.match(/@container d-channel-header \(max-width: 36rem\) \{([\s\S]*?)\n\}/);
     expect(q).not.toBeNull();
     expect(q![1]).toMatch(/\[data-foldable\][^{]*\{[^}]*display: none/);
-    expect(q![1]).toMatch(/\.d-channel-header__more \{[^}]*display: inline-flex/);
-    expect(css).toMatch(/^\.d-channel-header__more \{[^}]*display: none/m);
+    expect(q![1]).toMatch(/\.d-channel-header \.d-channel-header__more \{[^}]*display: inline-flex/);
+    // Two classes: ActionMenu.css sets `.d-action-menu { display: inline-block }` later in the bundle, and one class would lose to it.
+    expect(css).toMatch(/^\.d-channel-header \.d-channel-header__more \{[^}]*display: none/m);
   });
 
   it('puts the foldable actions into a "more" menu named by overflow.label, with the same items', async () => {

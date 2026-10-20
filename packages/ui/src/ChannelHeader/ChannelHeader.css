@@ -14,12 +14,12 @@
 /* R27: the caller's icon buttons, pushed to the end; they never shrink. */
 .d-channel-header__actions { margin-left: auto; display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
 /* The "⋯" menu is shown only while the header is narrow; its trigger is a 32px icon button like the rest. */
-.d-channel-header__more { display: none; }
+.d-channel-header .d-channel-header__more { display: none; }
 .d-channel-header__more .d-channel-header__more-trigger { width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 0; color: var(--fg-2); }
 .d-channel-header__more .d-channel-header__more-trigger:hover, .d-channel-header__more .d-channel-header__more-trigger[aria-expanded="true"] { color: var(--fg); background: var(--surface-hi); border-color: transparent; }
 /* Below 36rem of header width the foldable actions hide (their tooltip anchor with them) when there is a menu to take them, the topic goes, and the menu shows. */
 @container d-channel-header (max-width: 36rem) {
   .d-channel-header[data-overflow] .d-channel-header__actions [data-foldable], .d-channel-header[data-overflow] .d-channel-header__actions .d-tooltip-anchor:has(> [data-foldable]) { display: none; }
-  .d-channel-header__more { display: inline-flex; }
+  .d-channel-header .d-channel-header__more { display: inline-flex; }
   .d-channel-header__topic { display: none; }
 }
