@@ -294,7 +294,7 @@ interface RemoteAudio {
   /** livekit's Track.Source, when the publication does not say it. */
   source?: unknown;
 }
-interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
+interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; replaceTrack?(track: MediaStreamTrack, userProvidedTrack?: boolean): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
 /** The earliest expiry, in ms, among the TURN usernames (`<expiry seconds>:<…>`), or null. */
@@ -739,7 +739,32 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
      *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
     let restartWaiting: { reason: ProcessorStatus['reason'] } | null = null;
-    const browserStatus = async (reason: ProcessorStatus['reason'] = null): Promise<void> => {
+    /** web3.9 VOICE-FIX: the parked restart is a pre-acquire. LiveKit's restartTrack stops the old capture before it asks
+     *  for the new one, which lost the first words after the open. Here the new capture is acquired first, guarded (it
+     *  cannot be enabled while the microphone must not send, so a mute during the hand-over never puts an open capture on
+     *  the sender), handed to the sender with replaceTrack, and the old capture, which kept sending until then, is stopped
+     *  only after the replace resolved. False when nothing was handed over: the old capture stays, and nothing retries. */
+    const handOver = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<boolean> => {
+      if (track.replaceTrack === undefined) return false;
+      const old = micTrack;
+      let next: MediaStreamTrack | undefined;
+      try { next = (await deps.media.getUserMedia({ audio: constraints })).getAudioTracks()[0]; } catch { return false; }
+      if (next === undefined) return false;
+      guardMic(next);
+      next.enabled = false;
+      // A leave meanwhile, or a capture that already failed (Safari can end it while the old one runs): the old one stays.
+      if (ended || next.readyState === 'ended') { next.stop(); return false; }
+      try {
+        await track.replaceTrack(next, true);
+      } catch {
+        // Not on the sender: the old capture stays. (One LiveKit already took is the session's from here on.)
+        if (track.mediaStreamTrack !== next) { next.stop(); return false; }
+      }
+      micTrack = next;
+      if (old !== next) old?.stop();
+      return true;
+    };
+    const browserStatus = async (reason: ProcessorStatus['reason'] = null, parked = false): Promise<void> => {
       if (!micTrack) return;
       let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
       const track = micPub?.track;
@@ -747,13 +772,21 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       restartWaiting = wanted && !sendNow() ? { reason } : null;
       if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
-          await track.restartTrack({ ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 });
-          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
-          if (ended) { micTrack.stop(); return; }
-          applyMic();
-          // web3.8 FX I3: LiveKit stopped the old capture, so the own meter moves to the new one (own speaking, AFK).
-          restartOwnMeter();
-          browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+          let swapped = true;
+          if (parked && track.replaceTrack !== undefined) swapped = await handOver(track, constraints);
+          else {
+            await track.restartTrack(constraints);
+            if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+          }
+          // A failed hand-over keeps the old capture and reports what it observed, as a failed restart does.
+          if (swapped) {
+            if (ended) { micTrack.stop(); return; }
+            applyMic();
+            // web3.8 FX I3: the old capture is stopped, so the own meter moves to the new one (own speaking, AFK).
+            restartOwnMeter();
+            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+          }
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
       reportStatus({requested: noisePreference(state.noise), effective: state.noise === 'off' ? 'off' : 'browser', browserNoise, reason, vad: 'unavailable'});
@@ -828,7 +861,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (send && restartWaiting !== null && processor === null) {
         const waited = restartWaiting;
         restartWaiting = null;
-        void browserStatus(waited.reason).catch(() => undefined);
+        void browserStatus(waited.reason, true).catch(() => undefined);
       }
       if (send === micSending) return;
       micSending = send;

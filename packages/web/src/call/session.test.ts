@@ -1938,6 +1938,165 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(call.state.speaking).toBe(true);
   });
 
+  /** web3.9 VOICE-FIX: as `reopening`, and the published LiveKit track can take a capture the session acquired itself
+   *  (LocalAudioTrack.replaceTrack). `steps` records the order of the pre-acquire, the replace and the old capture's stop;
+   *  `atReplace` is the new capture's `enabled` at the moment it reaches the sender. As LiveKit, the replace then sets
+   *  `enabled = true` on it (`!isMuted`, isMuted false). The pre-acquire is `pre`, installed once the call is up. */
+  const handingOver = (f: ReturnType<typeof fakes>) => {
+    const steps: string[] = [];
+    const { restarts } = reopening(f);
+    const next = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(() => { steps.push('new.stop'); }), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }),
+      getConstraints: () => ({}), applyConstraints: async () => undefined,
+    });
+    const seen: { atReplace?: boolean; userProvided?: boolean } = {};
+    const holdReplace: { promise?: Promise<void> } = {};
+    let old: { stop: ReturnType<typeof vi.fn> } | null = null;
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const stop = vi.fn(() => { steps.push('old.stop'); });
+      (track as unknown as { stop: unknown }).stop = stop;
+      old = { stop };
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; replaceTrack: (n: MediaStreamTrack, u?: boolean) => Promise<void> };
+      t.replaceTrack = vi.fn(async (n: MediaStreamTrack, u?: boolean) => {
+        steps.push('replaceTrack');
+        seen.atReplace = (n as unknown as { enabled: boolean }).enabled;
+        seen.userProvided = u;
+        await holdReplace.promise;
+        t.mediaStreamTrack = n;
+        (n as unknown as { enabled: boolean }).enabled = true;
+      });
+      return pub;
+    });
+    const pre = vi.fn(async (c: MediaStreamConstraints) => {
+      void c;
+      steps.push('getUserMedia');
+      return { getTracks: () => [next], getAudioTracks: () => [next], getVideoTracks: () => [] } as unknown as MediaStream;
+    });
+    const install = () => { f.deps.media.getUserMedia = pre; };
+    return { steps, restarts, next, seen, holdReplace, pre, install, old: () => old };
+  };
+
+  it('a deferred restart keeps the old capture until the new one is on the sender', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    expect(h.steps).toEqual([]);
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.restarts.n).toBe(0);
+    expect(h.seen.userProvided).toBe(true);
+    expect(h.pre.mock.calls[0][0]).toMatchObject({ audio: { deviceId: { exact: 'chosen' }, noiseSuppression: false, echoCancellation: true, autoGainControl: true } });
+    // The new capture is the one the session's mute governs from here on.
+    expect(h.next.enabled).toBe(true);
+    call.setMuted(true);
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('the pre-acquired track is guarded before it reaches the sender', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    // Muted again before the new capture is on the sender.
+    call.setMuted(true);
+    prompt.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.seen.atReplace).toBe(false);
+    // LiveKit's `enabled = !isMuted` after the replace does not open it either: the end state is disabled.
+    expect(h.next.enabled).toBe(false);
+    h.next.enabled = true;
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('the pre-acquired track stays closed when a mute lands while the replace runs', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    const replace = deferred<void>();
+    h.holdReplace.promise = replace.promise;
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack']);
+    call.setMuted(true);
+    replace.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack', 'old.stop']);
+    expect(h.next.enabled).toBe(false);
+  });
+
+  it('a failed pre-acquire keeps the old capture and does not loop', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.pre.mockImplementationOnce(async () => { h.steps.push('getUserMedia'); throw Object.assign(new Error('busy'), { name: 'NotReadableError' }); });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    expect(h.restarts.n).toBe(0);
+    for (let i = 0; i < 2; i++) {
+      call.setMuted(true);
+      await flush();
+      call.setMuted(false);
+      await flush();
+    }
+    expect(h.pre).toHaveBeenCalledTimes(1);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+    expect(h.restarts.n).toBe(0);
+  });
+
+  it('a pre-acquired capture that has already ended is not handed over', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    (h.next as unknown as { readyState: string }).readyState = 'ended';
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'new.stop']);
+    expect(h.old()!.stop).not.toHaveBeenCalled();
+  });
+
+  it('a leave while the pre-acquire runs stops the new capture and never hands it over', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const prompt = deferred<void>();
+    const inner = h.pre.getMockImplementation()!;
+    h.pre.mockImplementation(async (c) => { const s = await inner(c); await prompt.promise; return s; });
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    await call.leave('user');
+    prompt.resolve();
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'old.stop', 'new.stop']);
+  });
+
   it('a getter that throws changes nothing and fails no start', async () => {
     const f = fakes();
     const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'muted', selfNow: () => { throw new Error('gone'); } });
