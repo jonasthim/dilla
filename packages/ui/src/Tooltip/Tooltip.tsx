@@ -51,8 +51,8 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
   useEffect(() => clear, [clear]);
 
   // Place the tooltip against the anchor, then keep it inside the viewport.
-  useLayoutEffect(() => {
-    if (!shown || !anchor.current || !tip.current) return;
+  const place = useCallback(() => {
+    if (!anchor.current || !tip.current) return;
     const a = anchor.current.getBoundingClientRect();
     const t = tip.current.getBoundingClientRect();
     const vw = document.documentElement.clientWidth;
@@ -68,8 +68,26 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
     }
     left = Math.max(MARGIN, Math.min(left, vw - t.width - MARGIN));
     top = Math.max(MARGIN, Math.min(top, vh - t.height - MARGIN));
-    setPos({ left, top });
-  }, [shown, placement, label, keys]);
+    setPos(p => (p.left === left && p.top === top ? p : { left, top }));
+  }, [placement]);
+  useLayoutEffect(() => { if (shown) place(); }, [shown, place, label, keys]);
+
+  // A scroll in any ancestor (capture, so the sidebar's own scroll counts) or a resize moves the control: follow it, once per frame.
+  useEffect(() => {
+    if (!shown) return undefined;
+    let frame = 0;
+    const onMove = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => { frame = 0; place(); });
+    };
+    document.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
+    return () => {
+      document.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [shown, place]);
 
   // Dismissible without moving the pointer or the focus (1.4.13): Escape, taken only while shown, before anything behind sees it.
   useEffect(() => {
@@ -101,7 +119,7 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
     if (touched.current) { clear(); setShown(false); }
   };
   const onFocus = (e: FocusEvent) => {
-    if (touched.current || !canFocusVisible(e.target as Element)) return;
+    if (!canFocusVisible(e.target as Element)) return;
     clear();
     setShown(true);
   };

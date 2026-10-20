@@ -37,7 +37,7 @@ describe('IconButton', () => {
 
   it('keys set aria-keyshortcuts', () => {
     render(<IconButton icon="search" label="search" keys={['Ctrl', 'K']} />);
-    expect(screen.getByRole('button', { name: 'search' })).toHaveAttribute('aria-keyshortcuts', 'Ctrl+K');
+    expect(screen.getByRole('button', { name: 'search' })).toHaveAttribute('aria-keyshortcuts', 'Control+K');
   });
 
   it('data-size follows size, default 32', () => {

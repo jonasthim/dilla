@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes } from 'react';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
+import { ariaKeyshortcuts } from '../internal/ariaKeys.ts';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 import './IconButton.css';
 
@@ -11,7 +12,7 @@ export type IconButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'chi
   size?: 28 | 32 | 40 | 44;
   /** A toggle: sets aria-pressed; pressed draws the accent glyph and a 2px bottom bar (R27), never colour alone. */
   pressed?: boolean;
-  /** The chord shown in the tooltip, and `aria-keyshortcuts` (joined with +). */
+  /** The chord shown in the tooltip, and `aria-keyshortcuts` (display names mapped to ARIA key names, joined with +). */
   keys?: string[];
   /** False for a control whose label is visible beside it (default true). */
   tooltip?: boolean;
@@ -22,7 +23,7 @@ const GLYPH: Record<NonNullable<IconButtonProps['size']>, number> = { 28: 16, 32
 export function IconButton({ icon, label, size = 32, pressed, keys, tooltip = true, type = 'button', className, ...rest }: IconButtonProps) {
   const button = (
     <button type={type} className={['d-icon-button', className].filter(Boolean).join(' ')} data-size={size} aria-label={label}
-      aria-pressed={pressed} aria-keyshortcuts={keys?.length ? keys.join('+') : undefined} {...rest}>
+      aria-pressed={pressed} aria-keyshortcuts={keys?.length ? ariaKeyshortcuts(keys) : undefined} {...rest}>
       <Icon name={icon} size={GLYPH[size]} />
     </button>
   );

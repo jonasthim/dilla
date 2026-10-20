@@ -48,6 +48,18 @@ test('a custom property set in a TSX style object counts as declared', () => {
   } finally { rmSync(root, { recursive: true }); }
 });
 
+test('a quoted name in a story or a test file is not a declaration', () => {
+  const root = fixture({
+    ...TOKENS,
+    'packages/ui/src/a.css': '.a { color: hsl(var(--hue) 45% 42%); padding: var(--gap); }\n',
+    'packages/ui/src/a.stories.tsx': "const s = { ['--hue' as string]: '1' };\n",
+    'packages/ui/src/a.test.ts': "const t = '--gap';\n",
+  });
+  try {
+    assert.deepEqual(checkCssVars(root), ['packages/ui/src/a.css:1 var(--hue)', 'packages/ui/src/a.css:1 var(--gap)']);
+  } finally { rmSync(root, { recursive: true }); }
+});
+
 test('the tree itself has no undefined custom property', () => {
   assert.deepEqual(checkCssVars(new URL('..', import.meta.url).pathname), []);
 });

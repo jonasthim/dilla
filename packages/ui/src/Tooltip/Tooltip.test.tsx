@@ -149,4 +149,40 @@ describe('Tooltip (R15)', () => {
     vi.useRealTimers();
     await expectNoAxeViolations(document.body);
   });
+
+  it('follows its control when a container scrolls or the window resizes, one frame at a time', () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 16));
+    vi.stubGlobal('cancelAnimationFrame', (h: number) => window.clearTimeout(h));
+    render(<div data-testid="scroller"><Tooltip label="mute"><button type="button">mute</button></Tooltip></div>);
+    const btn = screen.getByRole('button', { name: 'mute' });
+    Object.defineProperty(document.documentElement, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(document.documentElement, 'clientWidth', { value: 1200, configurable: true });
+    let top = 100;
+    btn.parentElement!.getBoundingClientRect = () => ({ top, bottom: top + 20, left: 50, right: 70, width: 20, height: 20, x: 50, y: top, toJSON() {} });
+    focus(btn);
+    const at = () => parseFloat(screen.getByRole('tooltip').style.top);
+    const before = at();
+    top = 40;
+    fireEvent.scroll(screen.getByTestId('scroller'));
+    fireEvent.scroll(screen.getByTestId('scroller'));
+    advance(16);
+    expect(at()).toBe(before - 60);
+    top = 200;
+    fireEvent(window, new Event('resize'));
+    advance(16);
+    expect(at()).toBe(before + 100);
+    act(() => btn.blur());
+    top = 10;
+    fireEvent.scroll(screen.getByTestId('scroller'));
+    advance(16);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('shows on keyboard focus after a touch pointer (a tablet with a hardware keyboard)', () => {
+    const btn = mount();
+    fireEvent.pointerDown(btn, { pointerType: 'touch' });
+    focus(btn);
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+  });
 });
+

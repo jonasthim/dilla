@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // `var(--space-6)` and `var(--focus)` this way). This lists every such use as `file:line var(--name)`.
 //
 // Declared: a `--name:` in the generated tokens, in any .css under the roots below, or a custom property set from script,
-// written as a quoted '--name' in a .ts/.tsx under them (the Avatar's `--avatar-hue`, the shell's `--d-sidebar-w`).
+// written as a quoted '--name' in a .ts/.tsx under them (not a *.test.* or *.stories.* file, which never ships) (the Avatar's `--avatar-hue`, the shell's `--d-sidebar-w`).
 // Used: `var(--name)` or `var(--name )`. A `var(--name, fallback)` is allowed: the properties the web app sets from JS
 // (`--d-sidebar-w`, `--d-vvh`) always carry one. Comments are not read.
 export const TOKENS = 'packages/design-tokens/dist/tokens.css';
@@ -37,7 +37,7 @@ export function checkCssVars(root) {
     if (!existsSync(dir)) continue;
     for (const f of walk(dir)) {
       if (f.endsWith('.css')) cssFiles.push(f);
-      else if (/\.tsx?$/.test(f)) scriptFiles.push(f);
+      else if (/\.tsx?$/.test(f) && !/\.(test|stories)\./.test(f)) scriptFiles.push(f);
     }
   }
   const declared = new Set();

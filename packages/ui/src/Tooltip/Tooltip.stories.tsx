@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { Tooltip } from './Tooltip.tsx';
 import { Button } from '../Button/Button.tsx';
 
+// Layout classes go on the wrapper (`d-tooltip-anchor`, an inline-flex span), not on the child: the child sits inside it.
 const meta = {
   title: 'Primitives/Tooltip', component: Tooltip,
   args: { label: 'mute', keys: ['Ctrl', 'M'], children: <Button>mute</Button> },
