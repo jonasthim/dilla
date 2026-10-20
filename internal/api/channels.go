@@ -566,6 +566,9 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if err := requireParentVisible(r.Context(), tx, s.UserID, row); err != nil {
+			return err
+		}
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
@@ -688,6 +691,31 @@ func validChannel(ctx context.Context, repo store.Repository, row store.ChannelR
 	return nil
 }
 
+// requireParentVisible is R44: a channel's parent must be a category its author can see. It is
+// nil for a top-level row. A parent that names no live channel is left to validChannel's own 400;
+// one the caller cannot view answers 404 E_NOT_FOUND, as the channel itself would, so a create or
+// a move never confirms that a hidden category exists.
+func requireParentVisible(ctx context.Context, repo store.Repository, uid id.ID, row store.ChannelRow) error {
+	if row.ParentID == nil {
+		return nil
+	}
+	parent, err := repo.GetChannel(ctx, *row.ParentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // validChannel answers it
+		}
+		return err
+	}
+	bits, err := NewResolver(repo).Resolve(ctx, uid, parent)
+	if err != nil {
+		return err
+	}
+	if !bits.Has(PermViewChannel) {
+		return server.Errorf(server.CodeNotFound, "no such object")
+	}
+	return nil
+}
+
 // validChannelText bounds a channel's name or topic in bytes, requires UTF-8,
 // and refuses control characters: a NUL is legal in a SQLite TEXT column and
 // refused by Postgres, so without the check one request would succeed on one
@@ -795,6 +823,11 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if req.SlowmodeSeconds != nil {
 			row.SlowmodeSeconds = *req.SlowmodeSeconds
 		}
+		if req.ParentID != nil {
+			if err := requireParentVisible(r.Context(), tx, s.UserID, row); err != nil {
+				return err
+			}
+		}
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
@@ -877,9 +910,11 @@ type listedChannel struct {
 }
 
 // list is GET /v1/communities/{id}/channels (fix wave I10): the community's live
-// channels the caller may view, ordered by position then channel_id, with a
-// category listed when it or one of its children is visible. A caller who is not
-// a member, like an unknown or deleted community, gets 404.
+// channels the caller may view, ordered by position then channel_id. A category is
+// listed only when the caller can view it (R44): a visible child never reveals its
+// parent, and a child whose category the caller cannot view is listed with
+// parent_id null. A caller who is not a member, like an unknown or deleted
+// community, gets 404.
 func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -914,9 +949,6 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 		}
 		if bits.Has(PermViewChannel) {
 			visible[ch.ID] = true
-			if ch.ParentID != nil {
-				visible[*ch.ParentID] = true // the category of a visible child
-			}
 		}
 	}
 	out := make([]listedChannel, 0, len(channels))
@@ -929,9 +961,13 @@ func (c *Channels) list(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, "list channels", err)
 			return
 		}
+		parent := ch.ParentID
+		if parent != nil && !visible[*parent] {
+			parent = nil // a category the caller cannot view is never named
+		}
 		out = append(out, listedChannel{
 			ChannelID: ch.ID, Kind: uint64(ch.Kind), Mode: uint64(ch.Mode),
-			Visibility: uint64(ch.Visibility), ParentID: ch.ParentID, Name: ch.Name, Topic: ch.Topic,
+			Visibility: uint64(ch.Visibility), ParentID: parent, Name: ch.Name, Topic: ch.Topic,
 			Position: ch.Position, SlowmodeSeconds: ch.SlowmodeSeconds, Seq: ch.Seq, TextGroupID: tg,
 		})
 	}
