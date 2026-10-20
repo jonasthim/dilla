@@ -80,8 +80,6 @@
 /* Final fix I3: the ring (z-index 30) is above the sheet (aside 25, backdrop 24); the sheet starts under it, so its back button stays reachable. */
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside { top: var(--d-ring-h, 0px); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside .d-phone-header { padding-top: 0; }
-/* The phone's rail tiles are 44px, with their caption (join, new) visible under the glyph. */
-.d-app-shell[data-layout="phone"] .d-community-rail__glyph { width: 2.75rem; height: 2.75rem; }
 /* web3.9 (R10, R13): a finger needs taller rows and a wider trailing column; the rows stay flush (no gap). `[data-phone]` is the
    thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
 .d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
@@ -94,9 +92,7 @@
 /* The server menu and its items: 44px on a phone. */
 .d-app-shell[data-layout="phone"] .d-action-menu__trigger { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
 .d-app-shell[data-layout="phone"] .d-action-menu__item { min-height: 2.75rem; }
-/* A finger, not a pointer: the sidebar's rows and the rail's tiles are 44px tall on a phone. */
-.d-app-shell[data-layout="phone"] .d-chrow { min-height: 2.75rem; }
-.d-app-shell[data-layout="phone"] .d-community-rail__item { width: 2.75rem; height: 2.75rem; }
+/* A finger, not a pointer: the sidebar's rows are --row-h (44 on a phone, above) and the rail's tiles are 48 already. */
 .d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__callbar) .d-composer { padding-bottom: 0.5rem; }
 /* The tab bar pads the home indicator once: the composers above it (the thread pane's too) add none, until the bar steps aside while typing. */
