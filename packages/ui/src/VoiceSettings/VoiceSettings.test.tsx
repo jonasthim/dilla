@@ -11,7 +11,7 @@ const labels: VoiceSettingsProps['labels'] = {
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
   pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
-  noise: 'noise suppression', automatic: 'Automatic', lightweight: 'Lightweight', off: 'Off', level: 'input level',
+  noise: 'noise suppression', automatic: 'automatic', lightweight: 'lightweight', off: 'off', level: 'input level',
 };
 const base: VoiceSettingsProps = {
   inputs: [{ id: 'mic-1', label: 'USB microphone' }, { id: 'mic-2', label: 'Headset' }], outputs: [{ id: 'out-1', label: 'Speakers' }],
@@ -49,7 +49,7 @@ describe('VoiceSettings', () => {
     expect(screen.queryByRole('button', { name: /set key/ })).toBeNull();
     await userEvent.click(screen.getByRole('radio', { name: 'push to talk' }));
     expect(onMode).toHaveBeenCalledWith('ptt');
-    await userEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'off' }));
     expect(onNoise).toHaveBeenCalledWith('off');
     expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '4');
     rerender(<VoiceSettings {...base} mode="ptt" />);

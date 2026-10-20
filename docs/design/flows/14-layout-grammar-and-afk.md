@@ -2,29 +2,29 @@
 
 ## States
 
-| State | UI | Notes |
-|---|---|---|
-| a new server | the channel list shows `AFK` last, with the voice glyph | |
-| the AFK channel renamed and moved into a category | | |
-| idle in voice on desktop | the device leaves its call and joins the AFK call listen-only; every tile and row shows `mic-off`; the stage header reads `afk.stage.muted` | |
-| the AFK join failed | the dock line `afk.moved` with `afk.moved.join` | |
-| a phone in voice | never moved | |
-| server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer | |
-| channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row | |
-| the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) with its two-choice menu | |
-| `@` selected on desktop | the DM list in the sidebar | |
-| a server with categories | 32px category headers, one collapsed (`aria-expanded="false"`) keeping its current and unread rows, the trailing "+" (`layout.category.add`) for managers | |
-| a voice row | one click joins on desktop; the trailing join icon (`voice.join`); participants with 24px avatars, the speaking ring and the mute and deafen glyphs in the slot | |
-| the dock | `layout.dock.connected` over `layout.dock.where`, then camera, share and leave; no meter | |
-| the header at 1440 | the icon cluster | |
-| the header below 36rem | pins and threads folded into `layout.header.more` | |
-| the members aside | hoisted roles, `layout.members.online`, `layout.members.offline` dimmed, two-line rows | |
-| the message log | grouping within 7 minutes, the date divider (`layout.log.today`, `layout.log.yesterday`, else the day), and `layout.log.older` with `layout.log.jump` | |
-| the phone | tabs Home (`home.tab`), Activity, You; `/dm` lands on Home with `@` selected | |
-| the phone PhoneHeader | a 48 PhoneHeader on each tab root with its lone actions | |
-| the phone with typing | typing with the call up shows a dot after the title instead of the call bar | |
-| a message tap-to-reveal | tap a message to reveal its toolbar; a second tap, Escape or a scroll hides it | |
-| a tooltip | on hover (400 ms) and on focus (at once), with its KeyHint chord, dismissed by Escape | |
+| State | UI |
+|---|---|
+| a new server | the channel list shows `AFK` last, with the voice glyph |
+| the AFK channel renamed and moved into a category | |
+| idle in voice on desktop | the device leaves its call and joins the AFK call listen-only; every tile and row shows `mic-off`; the stage header reads `afk.stage.muted` |
+| the AFK join failed | the dock line `afk.moved` with `afk.moved.join` |
+| a phone in voice | never moved |
+| server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
+| channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
+| the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) with its two-choice menu |
+| `@` selected on desktop | the DM list in the sidebar |
+| a server with categories | 32px category headers, one collapsed (`aria-expanded="false"`) keeping its current and unread rows, the trailing "+" (`layout.category.add`) for managers |
+| a voice row | one click joins on desktop; the trailing join icon (`voice.join`); participants with 24px avatars, the speaking ring and the mute and deafen glyphs in the slot |
+| the dock | `layout.dock.connected` over `layout.dock.where`, then camera, share and leave; no meter |
+| the header at 1440 | the icon cluster |
+| the header below 36rem | pins and threads folded into `layout.header.more` |
+| the members aside | hoisted roles, `layout.members.online`, `layout.members.offline` dimmed, two-line rows |
+| the message log | grouping within 7 minutes, the date divider (`layout.log.today`, `layout.log.yesterday`, else the day), and `layout.log.older` with `layout.log.jump` |
+| the phone | tabs Home (`home.tab`), Activity, You; `/dm` lands on Home with `@` selected |
+| the phone PhoneHeader | a 48 PhoneHeader on each tab root with its lone actions |
+| the phone with typing | typing with the call up shows a dot after the title instead of the call bar |
+| a message tap-to-reveal | tap a message to reveal its toolbar; a second tap, Escape or a scroll hides it |
+| a tooltip | on hover (400 ms) and on focus (at once), with its KeyHint chord, dismissed by Escape |
 
 ## Keyboard map
 

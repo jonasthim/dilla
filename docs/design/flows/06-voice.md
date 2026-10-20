@@ -9,6 +9,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | state | shown | worker fact | announcement |
 |---|---|---|---|
 | idle | voice rows with `voice.join` on focus or hover; no dock | `call.phase` idle | none |
+| AFK (since v0.1.0-web3.9) | the AFK channel is an ordinary voice call, joined listen-only (see flow 14); every grant is listen-only, no share; a device idle in voice joins it muted and shows `mic-off` everywhere | `call.phase` in, listen-only (no publish grant) | none; the join is automatic or announced by the AFK move (flow 14) |
 | no one in voice | the row shows no sub-rows and no count; the stage says `voice.empty` | `voice[channel]` absent | none |
 | live, not joined | the row shows `voice.count` and one sub-row per person with their state words; `voice.join` / `call.join` | `voice[channel]` has participants, `call.phase` idle | none |
 | joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining | none |
@@ -336,6 +337,9 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `call.ring.notifyTitle='{name} is calling'`, `call.ring.notifyBody='Open dilla to answer.'`
 - `call.outgoing.ringing='ringing {names}'`, `call.outgoing.declined='{name} declined.'`, `call.outgoing.noAnswer='No answer.'`
 - `call.outgoing.notRung='{names} not rung: called too recently.'` (the participants the instance did not ring, its pair bound of 15 s and 20 an hour; added 2026-10-14, product walk I6)
+
+*AFK:*
+- `voice.afk.*` (`voice.afk.title`, `voice.afk.loading`, `voice.afk.silent`, `voice.afk.count`, `voice.afk.move`, `voice.afk.leave`) — unused since v0.1.0-web3.9 (the AFK channel is now an ordinary voice call; see flow 14)
 
 *Media players:*
 - `media.play='play {name}'`, `media.loading='loading'`
