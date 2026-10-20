@@ -642,6 +642,8 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
     expect(call.closest('.d-phone-header')).not.toBeNull();
     expect(call.querySelector('svg[data-icon="phone"]')).not.toBeNull();
     expect(screen.getAllByRole('button', { name: t('call.start') })).toHaveLength(1);
+    // Nothing to say in the strip: it is not rendered, so no second hairline sits under the 48 bar.
+    expect(document.querySelector('.dw-call-strip')).toBeNull();
     await user.click(call);
     await waitFor(() => expect(sessions).toHaveLength(1));
   });

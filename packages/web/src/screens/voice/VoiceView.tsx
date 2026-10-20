@@ -396,7 +396,8 @@ export function DmCall({ v, channelId, name, startInHeader = false }: { v: Voice
   // mounted with its text (WB a11y I2).
   return (
     <>
-      <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
+      {/* On a phone the start button is in the header: with nothing to say there is no strip, so no second hairline under the bar. */}
+      {startInHeader && notice === null ? null : <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
         data-call-phase={inThisCall ? undefined : v.slice?.channelId === channelId ? v.slice.phase : 'idle'}
         data-empty={inThisCall && notice === null ? 'true' : undefined}>
         <StripNotice notice={notice} refObj={noticeRef} />
@@ -404,7 +405,7 @@ export function DmCall({ v, channelId, name, startInHeader = false }: { v: Voice
         {inThisCall || held || startInHeader ? null : (
           <Button className="dw-call-strip__start" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
         )}
-      </div>
+      </div>}
       {inThisCall ? (
         <div ref={callRef} className="dw-dm-call" data-view={view}>
           <div className="dw-dm-call__bar">
