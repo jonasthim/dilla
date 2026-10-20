@@ -142,7 +142,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-admin-tag { color: var(--fg-2); font-size: var(--text-xs); }
 .dw-composer-cannot { margin: 0; padding: var(--row-gap) var(--group-gap); color: var(--fg-2); }
 
-/* Second factor set-up (flow 10): the QR code beside its setup key; the key and Copy on one line, wrapping at 360 px */
+/* Second factor set-up (flow 10): the QR code beside its setup key; the key and Copy on one line; on a phone (30rem and below) Copy drops under the key and the key is set tighter so all 32 characters show */
 .dw-factor-key { display: flex; flex-wrap: wrap; gap: var(--group-gap); align-items: flex-start; }
 .dw-factor-key__text { flex: 1 1 14rem; min-width: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-factor-key__field { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: 0; }
@@ -150,12 +150,19 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 /* web3.9 L3: Copy is a 36px suffix attached to the field (shared hairline), the same height as the input */
 .dw-factor-key__field > .d-btn { height: 2.25rem; flex: none; margin-left: -1px; border-radius: 0 var(--r-md) var(--r-md) 0; }
 .dw-factor-key__field .d-text-field__input { height: 2.25rem; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-/* web3.9 L2: a ghost action in the onboarding and sign-in column is a link, its text on the column's x */
-.d-onboarding-frame .d-btn[data-variant="ghost"] { padding-inline: 0; }
+/* web3.9 L2: a ghost action in the body of the onboarding and sign-in column is a link (the footer Back keeps its padding), its text on the column's x */
+.d-onboarding-frame__body .d-btn[data-variant="ghost"] { padding-inline: 0; }
 .dw-factor-key__field .d-text-field__input { font-family: var(--font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
-.dw-factor-ack { display: flex; align-items: center; gap: var(--row-gap); min-height: 24px; }
+.dw-factor-ack { display: flex; align-items: flex-start; gap: 0.5rem; min-height: 24px; }
+.dw-factor-ack > label { padding-top: 2px; }
 .dw-factor-ack > input { width: 24px; height: 24px; flex: none; margin: 0; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }
+@media (max-width: 30rem) {
+  .dw-factor-key__field { flex-wrap: wrap; }
+  .dw-factor-key__field > .d-text-field { flex-basis: 100%; }
+  .dw-factor-key__field .d-text-field__input { border-radius: var(--r-md); padding-inline: 0.5rem; letter-spacing: -0.04em; }
+  .dw-factor-key__field > .d-btn { margin-left: 0; margin-top: var(--row-gap); border-radius: var(--r-md); }
+}
 .dw-factor-exit { display: flex; justify-content: center; padding: var(--row-gap); }
 /* Flow 10 at 1280: the backup codes in two columns (walk M2). Two whole codes side by side need about 42rem; the onboarding
    column is 37rem, so on a window with room the box of codes leaves it by 3rem each side (its label and buttons stay in

@@ -69,7 +69,9 @@ describe('a long chosen name never widens the page (product walk I2)', () => {
 
 describe('web3.9 WEB-AUTH: the auth column edges (L2, L3)', () => {
   it('L2: a ghost action inside the onboarding frame has no side padding, so its text sits on the column\'s x', () => {
-    expect(rule(css, '.d-onboarding-frame .d-btn[data-variant="ghost"]')).toMatch(/padding-inline:\s*0/);
+    expect(rule(css, '.d-onboarding-frame__body .d-btn[data-variant="ghost"]')).toMatch(/padding-inline:\s*0/);
+    expect(css).not.toMatch(/\.d-onboarding-frame \.d-btn\[data-variant="ghost"\]/);
+    expect(css).not.toMatch(/__footer[^{]*data-variant="ghost"/);
   });
 
   it('L3: the setup key\'s Copy is a 36px suffix attached to the field, on one line', () => {
@@ -85,5 +87,11 @@ describe('web3.9 WEB-AUTH: the auth column edges (L2, L3)', () => {
     const box = rule(css, '.dw-factor-ack > input');
     expect(box).toMatch(/width:\s*24px;\s*height:\s*24px/);
     expect(box).toMatch(/margin:\s*0/);
+    expect(rule(css, '.dw-factor-ack')).toMatch(/gap:\s*0\.5rem/);
+  });
+
+  it('M4: on a phone Copy wraps under the setup key, which is set tighter so it shows whole', () => {
+    expect(css).toMatch(/@media \(max-width: 30rem\) \{\s*\.dw-factor-key__field \{ flex-wrap: wrap; \}/);
+    expect(css).toMatch(/\.dw-factor-key__field \.d-text-field__input \{[^}]*letter-spacing: -0\.04em/);
   });
 });

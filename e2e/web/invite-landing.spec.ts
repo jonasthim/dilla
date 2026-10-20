@@ -71,6 +71,10 @@ test('the invite page names the community, keeps its limits and is shot in both 
     expect(headers['referrer-policy']).toBe('no-referrer');
     expect(headers['x-content-type-options']).toBe('nosniff');
     expect(headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'");
+    // The same-origin JetBrains Mono under font-src 'self' actually loaded (a moved asset would fall back quietly).
+    await view.evaluate(() => document.fonts.ready);
+    expect(await view.evaluate(() => document.fonts.check('13.5px "JetBrains Mono"'))).toBe(true);
+    expect(await view.evaluate(() => Array.from(document.fonts).some(f => f.family.includes('JetBrains Mono') && f.status === 'loaded'))).toBe(true);
 
     await expect(view.getByRole('heading', { level: 1, name: `You have been invited to ${SERVER}` })).toBeVisible();
     await expect(view.getByText(`on ${instance}`, { exact: true })).toBeVisible();
@@ -87,6 +91,8 @@ test('the invite page names the community, keeps its limits and is shot in both 
       for (const colorScheme of ['dark', 'light'] as const) {
         await view.setViewportSize(size);
         await view.emulateMedia({ colorScheme });
+        const open = await view.locator('a.open').boundingBox();
+        expect(open?.height).toBe(name === 'phone' ? 44 : 36);
         await view.screenshot({ path: join(SHOTS, `invite-${name}-${colorScheme}.png`) });
       }
     }

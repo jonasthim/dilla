@@ -709,6 +709,22 @@ func TestLandingBootstrapInviteHasNoCommunity(t *testing.T) {
 	}
 }
 
+// R-A2: the page's one action is a 36px button for a fine pointer and a 44px primary target on a
+// phone or any coarse pointer. The page has no script, so the query is its own.
+func TestLandingOpenLinkIs44OnPhone(t *testing.T) {
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	_, page := landingBody(t, e, code)
+	for _, want := range []string{
+		".open{display:inline-flex;align-items:center;min-height:2.25rem",
+		"@media (pointer: coarse), (max-width: 40rem){.open{min-height:2.75rem}}",
+		`<span class="tile" aria-hidden="true">D</span>DILLA<span class="caret"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the landing page lacks %q:\n%s", want, page)
+		}
+	}
+}
+
 func TestLandingHasNoScriptNoFormOneLink(t *testing.T) {
 	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
 	_, page := landingBody(t, e, code)
@@ -880,7 +896,7 @@ func TestLandingTokensMatchMesh(t *testing.T) {
 		t.Fatalf("the page has no light scheme:\n%s", page)
 	}
 	pageDark, pageLight := page[:cut], page[cut:]
-	decl := regexp.MustCompile(`--(bg|surface|fg|fg-2|accent|accent-ink|hairline):\s*(#[0-9A-Fa-f]{6})`)
+	decl := regexp.MustCompile(`--(bg|bg-2|surface|fg|fg-2|accent|accent-ink|hairline):\s*(#[0-9A-Fa-f]{6})`)
 	find := func(src, name string) string {
 		for _, m := range decl.FindAllStringSubmatch(src, -1) {
 			if m[1] == name {
@@ -889,7 +905,7 @@ func TestLandingTokensMatchMesh(t *testing.T) {
 		}
 		return ""
 	}
-	for _, name := range []string{"bg", "surface", "fg", "fg-2", "accent", "accent-ink", "hairline"} {
+	for _, name := range []string{"bg", "bg-2", "surface", "fg", "fg-2", "accent", "accent-ink", "hairline"} {
 		for _, side := range []struct{ tokens, page string }{{dark, pageDark}, {light, pageLight}} {
 			want, got := find(side.tokens, name), find(side.page, name)
 			if want == "" || !strings.EqualFold(got, want) {

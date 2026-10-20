@@ -91,7 +91,8 @@ var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:{{if .Font}}"JetBrains Mono",{{end}}ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:13.5px;line-height:1.5}
 .bar{display:flex;align-items:center;gap:7px;height:2rem;padding:0 12px;background:var(--bg-2);border-bottom:1px solid var(--hairline);font-weight:700;letter-spacing:.14em}
-.tile{display:inline-flex;align-items:center;justify-content:center;width:1.125rem;height:1.125rem;background:var(--accent);color:var(--accent-ink);border-radius:2px;font-size:.75rem;letter-spacing:0}
+.tile{display:inline-flex;align-items:center;justify-content:center;width:1.125rem;height:1.125rem;background:var(--accent);color:var(--accent-ink);border-radius:2px;font-size:.6875rem;letter-spacing:0}
+.caret{width:6px;height:12px;background:var(--accent)}
 main{width:100%;max-width:37rem;margin:0 auto;padding:3rem 1.5rem}
 h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.02em;overflow-wrap:anywhere}
 .on{margin:.25rem 0 0;color:var(--fg-2);overflow-wrap:anywhere}
@@ -99,11 +100,12 @@ h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.0
 .code{display:block;padding:.75rem;background:var(--surface);border:1px solid var(--hairline);font-size:1.125rem;overflow-wrap:anywhere}
 .meta{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem}
 .open{display:inline-flex;align-items:center;min-height:2.25rem;margin-top:1.5rem;padding:0 1rem;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none}
+@media (pointer: coarse), (max-width: 40rem){.open{min-height:2.75rem}}
 .open:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
 .note{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem;overflow-wrap:anywhere}
 </style>
 </head><body>
-<header class="bar"><span class="tile" aria-hidden="true">d</span>DILLA</header>
+<header class="bar"><span class="tile" aria-hidden="true">D</span>DILLA<span class="caret" aria-hidden="true"></span></header>
 <main>
 {{if .Community}}<h1>You have been invited to {{.Community}}</h1>
 <p class="on">on {{.Instance}}</p>{{else}}<h1>You have been invited to {{.Instance}}</h1>{{end}}

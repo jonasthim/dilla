@@ -31,20 +31,21 @@ import (
 // A field a later task fills is declared nil here and named with that task, so
 // no task silently widens a struct another task owns.
 type Deps struct {
-	Presence *PresenceService
-	Repo     store.Repository
-	Clock    clock.Clock
-	Log      *slog.Logger
-	Limiter  *server.RateLimiter
-	Metrics  *obs.Metrics
-	Instance store.InstanceRow
-	Domain   string
-	// LandingFont is the same-origin path of the web client's JetBrains Mono woff2 the invite
-	// landing page names in its @font-face (LandingFont(webFS)); "" keeps the system stack (R43).
-	LandingFont  string
+	Presence     *PresenceService
+	Repo         store.Repository
+	Clock        clock.Clock
+	Log          *slog.Logger
+	Limiter      *server.RateLimiter
+	Metrics      *obs.Metrics
+	Instance     store.InstanceRow
+	Domain       string
 	Config       *config.Config
 	Registration config.Registration
 	Sessions     *auth.Sessions
+
+	// LandingFont is the same-origin path of the web client's JetBrains Mono woff2 the invite
+	// landing page names in its @font-face (LandingFont(webFS)); "" keeps the system stack (R43).
+	LandingFont string
 
 	// ExternalSenderPub is the public half of the instance's current external-sender signing
 	// key (protocol/03 § Instance keys), elements 9 and 10 of GET /v1/instance with
