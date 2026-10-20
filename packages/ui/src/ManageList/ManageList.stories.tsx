@@ -19,3 +19,26 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const Busy: Story = { args: { busyId: 'i1' } };
 export const Empty: Story = { args: { rows: [] } };
+
+const channels = [
+  { id: 'c1', title: 'general', detail: ['text'], action: null, edit: { ariaLabel: 'edit general' }, remove: { ariaLabel: 'delete general' } },
+  { id: 'c2', title: 'standup', detail: ['voice'], action: null, edit: { ariaLabel: 'edit standup' }, remove: { ariaLabel: 'delete standup' } },
+  // The built-in AFK channel is fixed: no delete (R39), and the slot stays reserved.
+  { id: 'c3', title: 'AFK', detail: ['voice, built in'], action: null, fixed: true, edit: { ariaLabel: 'edit AFK' }, remove: { ariaLabel: 'delete AFK' } },
+];
+export const Channels: Story = { args: { label: 'channels', rows: channels, onEdit: () => {}, onDelete: () => {} } };
+export const ChannelBusy: Story = { args: { label: 'channels', rows: channels, busyId: 'c1', onEdit: () => {}, onDelete: () => {} } };
+// Privacy rows (I7): one ghost button per row in the trailing area.
+export const Privacy: Story = {
+  args: {
+    label: 'members',
+    rows: [
+      { id: 'm1', title: 'Astrid', detail: ['can see your status'], action: { label: 'hide', ariaLabel: 'hide status from Astrid' } },
+      { id: 'm2', title: 'Bjorn', detail: ['cannot see your status'], action: { label: 'show', ariaLabel: 'show status to Bjorn' } },
+    ],
+  },
+};
+export const Phone: Story = {
+  args: { label: 'channels', rows: channels, onEdit: () => {}, onDelete: () => {} },
+  decorators: [Story => <div data-phone style={{ width: '22.5rem' }}><Story /></div>],
+};

@@ -12,3 +12,11 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const Devices: Story = {};
 export const Notifications: Story = { args: { activeId: 'notifications' } };
+// 16px icons in the glyph column, the names aligned (the settings sections of web3.9).
+const WITH_ICONS = [
+  { id: 'general', label: 'general', icon: 'settings' }, { id: 'privacy', label: 'privacy', icon: 'shield' }, { id: 'keyboard', label: 'keyboard', icon: 'keyboard' },
+  { id: 'devices', label: 'devices', icon: 'monitor-smartphone' }, { id: 'voice', label: 'voice', icon: 'headphones' }, { id: 'sign-out', label: 'sign out', icon: 'log-out' },
+] as const;
+export const WithIcons: Story = { args: { activeId: 'privacy', items: WITH_ICONS } };
+// One item without an icon keeps the empty glyph column, so its name still starts at the same x.
+export const MixedIcons: Story = { args: { activeId: 'general', items: [WITH_ICONS[0], { id: 'about', label: 'about' }, WITH_ICONS[1]] } };

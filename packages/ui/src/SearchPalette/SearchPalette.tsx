@@ -1,5 +1,6 @@
-import { useId, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SearchPalette.css';
 
 export type SearchPaletteProps = {
@@ -23,11 +24,21 @@ function composing(event: KeyboardEvent): boolean {
 
 /**
  * The search palette: a combobox textbox that keeps focus while the arrows move the active result, the scopes, the
- * results and Close. One polite status stays mounted and only its text changes (M-03).
+ * results and Close. One polite status stays mounted and only its text changes (M-03). On a desktop it is a centred overlay of
+ * at most 40rem over the app (J1), which stays mounted behind it; opening focuses the textbox and closing returns focus to the opener.
  */
 export function SearchPalette({ open, query, scope, hits, labels, status, onQuery, onScope, onPick, onClose }: SearchPaletteProps) {
   const [active, setActive] = useState(0);
   const listId = useId();
+  const phone = usePhoneLayout();
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Focus goes to the textbox on open and back to whatever opened the palette when it closes (contract 2).
+  useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inputRef.current?.focus();
+    return () => { if (opener?.isConnected) opener.focus(); };
+  }, [open]);
   const options = hits.slice(0, 50);
   if (!open) return null;
   const activeIndex = Math.min(active, Math.max(0, options.length - 1));
@@ -44,8 +55,8 @@ export function SearchPalette({ open, query, scope, hits, labels, status, onQuer
     if (!composing(event)) onClose();
   };
   const text = status ?? (options.length ? '' : labels.empty);
-  return <section className="d-search-palette" role="search" aria-label={labels.search} onKeyDown={handleKey}>
-    <input type="text" role="combobox" aria-label={labels.search} aria-expanded={options.length > 0} aria-autocomplete="list"
+  return <section className="d-search-palette" data-layout={phone ? 'phone' : undefined} role="search" aria-label={labels.search} onKeyDown={handleKey}>
+    <input ref={inputRef} type="text" role="combobox" aria-label={labels.search} aria-expanded={options.length > 0} aria-autocomplete="list"
       aria-controls={options.length ? listId : undefined} aria-activedescendant={options.length ? options[activeIndex].id : undefined}
       value={query} onChange={event => { setActive(0); onQuery(event.target.value); }} onKeyDown={handleInputKey} />
     <div className="d-search-palette__scopes">{(['channel', 'community', 'all'] as const).map(item => <button type="button" key={item} aria-pressed={scope === item} onClick={() => onScope(item)}>{labels.scope[item]}</button>)}</div>

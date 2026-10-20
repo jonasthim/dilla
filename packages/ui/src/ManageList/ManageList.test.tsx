@@ -69,4 +69,66 @@ describe('ManageList', () => {
       unmount();
     }
   });
+
+  // I6: admin rows carry icon actions (edit, delete) in the trailing slot; a fixed row (the AFK channel) has no delete.
+  describe('icon actions', () => {
+    const channels = (over: Partial<ManageListProps> = {}): ManageListProps => props({
+      label: 'channels', onEdit: vi.fn(), onDelete: vi.fn(),
+      rows: [
+        { id: 'c1', title: 'general', detail: [], action: null, edit: { ariaLabel: 'edit general' }, remove: { ariaLabel: 'delete general' } },
+        { id: 'c2', title: 'AFK', detail: [], action: null, fixed: true, edit: { ariaLabel: 'edit AFK' }, remove: { ariaLabel: 'delete AFK' } },
+      ],
+      ...over,
+    });
+
+    it('names the icon buttons by their aria labels and reports the row', async () => {
+      const user = userEvent.setup();
+      const p = channels();
+      render(<ManageList {...p} />);
+      await user.click(screen.getByRole('button', { name: 'edit general' }));
+      expect(p.onEdit).toHaveBeenCalledExactlyOnceWith('c1');
+      await user.click(screen.getByRole('button', { name: 'delete general' }));
+      expect(p.onDelete).toHaveBeenCalledExactlyOnceWith('c1');
+    });
+
+    it('a fixed row has no delete action but keeps its edit (control: the other row has both)', () => {
+      render(<ManageList {...channels()} />);
+      expect(screen.getByRole('button', { name: 'edit AFK' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'delete AFK' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'delete general' })).toBeInTheDocument();
+    });
+
+    it('a fixed row still reserves the delete slot, so the edit icons stay on one line', () => {
+      render(<ManageList {...channels()} />);
+      const rows = screen.getAllByRole('listitem');
+      expect(rows[0].querySelectorAll('.d-slot')).toHaveLength(2);
+      expect(rows[1].querySelectorAll('.d-slot')).toHaveLength(2);
+    });
+
+    it('busyId disables both icons of that row only', () => {
+      render(<ManageList {...channels({ busyId: 'c1' })} />);
+      expect(screen.getByRole('button', { name: 'edit general' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'delete general' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'edit AFK' })).toBeEnabled();
+    });
+
+    it('draws the square-pen and x icons', () => {
+      render(<ManageList {...channels()} />);
+      expect(screen.getByRole('button', { name: 'edit general' }).querySelector('[data-icon="square-pen"]')).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'delete general' }).querySelector('[data-icon="x"]')).not.toBeNull();
+    });
+
+    it('a text action (privacy rows, I7) is one ghost button in the trailing area', () => {
+      render(<ManageList {...props()} />);
+      const button = screen.getByRole('button', { name: 'revoke invite 1' });
+      expect(button).toHaveClass('d-btn');
+      expect(button.closest('.d-manage-list__trail')).not.toBeNull();
+    });
+
+    it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s', async theme => {
+      document.documentElement.dataset.theme = theme;
+      const { container } = render(<div className="d-root"><ManageList {...channels()} /></div>);
+      await expectNoAxeViolations(container);
+    });
+  });
 });

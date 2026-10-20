@@ -166,3 +166,6 @@ export { CallBar } from './CallBar/CallBar.tsx';
 export type { CallBarProps } from './CallBar/CallBar.tsx';
 export { LinkBanner } from './LinkBanner/LinkBanner.tsx';
 export type { LinkBannerProps } from './LinkBanner/LinkBanner.tsx';
+export { KeyboardTable } from './KeyboardTable/KeyboardTable.tsx';
+export type { KeyboardTableProps } from './KeyboardTable/KeyboardTable.tsx';
+export { SettingsFooter } from './SettingsFrame/SettingsFooter.tsx';

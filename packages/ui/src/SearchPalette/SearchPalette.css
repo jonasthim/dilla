@@ -1,4 +1,7 @@
 .d-search-palette { display: grid; gap: .75rem; width: min(100%, 42rem); min-width: 0; padding: 1rem; background: var(--surface); color: var(--fg); border: 1px solid var(--edge); border-radius: var(--r-md); font-family: var(--font-mono); }
+/* J1: on a desktop the palette is a centred overlay of at most 40rem over the app, which stays mounted behind it. A phone keeps the
+   inline palette (data-layout="phone" is set from the shell's layout context). */
+.d-search-palette:not([data-layout="phone"]) { position: fixed; top: 12vh; left: 50%; transform: translateX(-50%); z-index: 60; width: min(calc(100vw - 2rem), 40rem); max-height: calc(100dvh - 12vh - 1rem); overflow: auto; border-color: var(--accent); box-shadow: var(--shadow-2); }
 /* W-08: the textbox boundary is a text field's (--edge on --surface-2), not a hairline. */
 .d-search-palette input { width: 100%; min-width: 24px; min-height: 36px; padding: .5rem; font: inherit; color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-sm); }
 .d-search-palette__scopes { display: flex; flex-wrap: wrap; gap: .5rem; }

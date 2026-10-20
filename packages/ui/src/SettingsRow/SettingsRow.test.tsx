@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { SettingsRow } from './SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -37,5 +37,38 @@ describe('SettingsRow', () => {
       </div>,
     );
     await expectNoAxeViolations(container);
+  });
+});
+
+// R17, I2: a two-column grid with a 16rem control column; on a phone the label stacks over a full-width control (H5).
+// jsdom computes no layout, so these read the rules themselves (the Settings/SettingsRow stories measure the result).
+describe('SettingsRow grammar (R17)', () => {
+  let row = '';
+  let base = '';
+  beforeAll(async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    row = fs.readFileSync(`${cwd}/src/SettingsRow/SettingsRow.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    base = fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  });
+
+  it('marks the row with data-row', () => {
+    render(<SettingsRow id="a" label="a"><span>x</span></SettingsRow>);
+    expect(screen.getByRole('group', { name: 'a' })).toHaveAttribute('data-row');
+  });
+
+  it('is a grid with a label column and a 16rem control column, a hairline under each row', () => {
+    const rule = /\.d-settings-row \{([^}]*)\}/.exec(row)?.[1] ?? '';
+    expect(rule).toMatch(/display: grid;/);
+    expect(rule).toMatch(/grid-template-columns: minmax\(0, 1fr\) 16rem;/);
+    expect(rule).toMatch(/border-bottom: 1px solid var\(--hairline\);/);
+  });
+
+  it('stacks the label over a full-width control on a phone layout and when the frame is narrow', () => {
+    const phone = /\.d-settings-frame\[data-layout="phone"\] \.d-settings-row[^{]*\{([^}]*)\}/.exec(base)?.[1] ?? '';
+    expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
+    expect(base).toMatch(/\[data-phone\] \.d-settings-row/);
+    const narrow = /@container d-settings \(max-width: 44\.99rem\) \{([\s\S]*?)\n\}/.exec(base)?.[1] ?? '';
+    expect(narrow).toMatch(/\.d-settings-row \{ grid-template-columns: minmax\(0, 1fr\);/);
   });
 });

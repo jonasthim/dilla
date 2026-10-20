@@ -141,4 +141,12 @@
   .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); overflow: visible; min-height: auto; }
   .d-settings-frame .d-settings-frame__pane { min-height: auto; }
   .d-settings-frame .d-settings-frame__body { overflow: visible; }
+  /* R17: a narrow frame stacks the label over a full-width control, as a phone does. */
+  .d-settings-frame .d-settings-row { grid-template-columns: minmax(0, 1fr); }
 }
+/* web3.9 (R17, H5, I6): the settings frame and its rows on a phone layout. The frame is a dialog, so it carries its own data-layout. */
+.d-settings-frame[data-layout="phone"] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
+.d-settings-frame[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
+.d-settings-frame[data-layout="phone"] .d-settings-row, [data-phone] .d-settings-row { grid-template-columns: minmax(0, 1fr); }
+/* H5: the frame's title is not repeated on a phone (the page below it carries the section's own heading); it stays the dialog's name and focus target. */
+.d-settings-frame[data-layout="phone"] .d-settings-frame__title { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

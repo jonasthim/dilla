@@ -6,6 +6,9 @@ import { Segmented } from '../Segmented/Segmented.tsx';
 import { Toggle } from '../Toggle/Toggle.tsx';
 import { DeviceRow } from '../DeviceRow/DeviceRow.tsx';
 import { Button } from '../Button/Button.tsx';
+import { SettingsFooter } from './SettingsFooter.tsx';
+import { KeyboardTable } from '../KeyboardTable/KeyboardTable.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 
 // Every string is L-COPY-02's (settings.*, devices.*, notify.*). The composed Screens/Settings stories of
 // task 19 quote en.ts; these show the frame itself.
@@ -93,4 +96,42 @@ export const Narrow: Story = {
 // column; .storybook/test-runner.ts scrolls it and checks that the last control comes into view.
 export const ZoomedIn: Story = {
   render: () => <div style={{ ['--d-settings-w' as string]: '20rem', ['--d-settings-h' as string]: '16rem' }}><Frame section="devices" /></div>,
+};
+
+const FOOTER = <SettingsFooter status="Unsaved changes"><Button variant="ghost" onClick={noop}>reset</Button><Button variant="accent" onClick={noop}>save</Button></SettingsFooter>;
+function Keyboard() {
+  return (
+    <section aria-labelledby="keys-title">
+      <h2 id="keys-title">Keyboard</h2>
+      <KeyboardTable caption="Keyboard shortcuts" rows={[{ action: 'search', keys: ['ctrl', 'k'] }, { action: 'previous channel', keys: ['alt', '↑'] }, { action: 'next channel', keys: ['alt', '↓'] }, { action: 'close', keys: ['esc'] }]} />
+    </section>
+  );
+}
+// One hairline at y=48 across the side title and the bar, and the one sticky save footer (R17, I8).
+export const WithFooter: Story = {
+  render: () => (
+    <SettingsFrame open title="Settings" closeLabel="Close settings" onClose={noop} footer={FOOTER}
+      nav={<SettingsNav label="settings sections" items={ITEMS} activeId="notifications" onSelect={noop} />}>
+      <NotificationsSection />
+    </SettingsFrame>
+  ),
+};
+export const KeyboardSection: Story = {
+  render: () => (
+    <SettingsFrame open title="Settings" closeLabel="Close settings" onClose={noop}
+      nav={<SettingsNav label="settings sections" items={ITEMS} activeId="appearance" onSelect={noop} />}>
+      <Keyboard />
+    </SettingsFrame>
+  ),
+};
+// A phone layout: a full-width page, the title not repeated, rows stacked, 44px targets.
+export const Phone: Story = {
+  render: () => (
+    <PhoneLayoutProvider value>
+      <SettingsFrame open modal={false} title="Settings" closeLabel="Close settings" onClose={noop} footer={FOOTER}
+        nav={<SettingsNav label="settings sections" items={ITEMS} activeId="notifications" onSelect={noop} />}>
+        <NotificationsSection />
+      </SettingsFrame>
+    </PhoneLayoutProvider>
+  ),
 };
