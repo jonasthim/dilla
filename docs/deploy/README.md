@@ -374,7 +374,10 @@ The `DILLA_WEB_DIST` test checks those exact bytes before either release binary 
 certificate issuance and a migration. It runs as the `dillad` user with only
 `CAP_NET_BIND_SERVICE`, keeps its state in `/var/lib/dillad` (mode 0700) and reads
 `/etc/dilla/dilla.toml`.
-`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service.
+`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service. It has `PartOf=dilla.service`, so
+stopping or restarting `dilla` stops or restarts the media sidecar with it; run `systemctl daemon-reload` after copying
+the unit by hand (`install.sh --upgrade` does). `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
+rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad

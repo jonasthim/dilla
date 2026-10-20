@@ -397,6 +397,8 @@ check_common_install() { # NAME
 	cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "$REL/dilla_core_wasi.wasm" || problems="$problems|the core is not beside the binary"
 	cmp -s "$ROOT/etc/systemd/system/dilla.service" "$UNIT" || problems="$problems|the installed unit differs from deploy/dilla.service"
 	cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the media unit differs from deploy/dilla-media.service"
+	has "$(cat "$MEDIA_UNIT")" "PartOf=dilla.service" || problems="$problems|deploy/dilla-media.service lacks PartOf=dilla.service"
+	has "$(cat "$ROOT/etc/systemd/system/dilla-media.service")" "PartOf=dilla.service" || problems="$problems|the media unit install.sh wrote lacks PartOf=dilla.service"
 	[ "$(mode_of "$ROOT/etc/dilla/dilla.toml")" = 640 ] || problems="$problems|dilla.toml mode $(mode_of "$ROOT/etc/dilla/dilla.toml"), want 640"
 	[ "$(mode_of "$ROOT/var/lib/dillad")" = 700 ] || problems="$problems|/var/lib/dillad mode $(mode_of "$ROOT/var/lib/dillad"), want 700"
 	[ "$(mode_of "$ROOT/usr/local/bin/dillad")" = 755 ] || problems="$problems|dillad mode $(mode_of "$ROOT/usr/local/bin/dillad"), want 755"

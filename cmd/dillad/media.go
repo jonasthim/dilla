@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
+
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
@@ -21,8 +24,12 @@ import (
 func runMedia(args []string, stdout, stderr io.Writer) error {
 	fs, cfgPath := newFlagSet("media", stderr)
 	probe := fs.Bool("probe", false, "check whether the media sidecar accepts RoomService requests")
+	rooms := fs.Bool("rooms", false, "list the sidecar's live rooms and their participants")
 	if err := parse(fs, args, stdout); err != nil {
 		return err
+	}
+	if *probe && *rooms {
+		return usageError(stderr, "media", "--probe and --rooms are exclusive")
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -30,44 +37,99 @@ func runMedia(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if *probe {
+	if *probe || *rooms {
+		verb := "media probe"
+		if *rooms {
+			verb = "media rooms"
+		}
 		if !cfg.LiveKit.Enabled || cfg.LiveKit.Mode != "sidecar" {
-			return fmt.Errorf("media probe: livekit.enabled must be true and livekit.mode must be sidecar: %w", exit.Config)
+			return fmt.Errorf("%s: livekit.enabled must be true and livekit.mode must be sidecar: %w", verb, exit.Config)
 		}
 		secret, err := os.ReadFile(cfg.LiveKit.APISecretFile)
 		if err != nil {
-			return fmt.Errorf("media probe: livekit.api_secret_file: %w: %w", err, exit.Config)
+			return fmt.Errorf("%s: livekit.api_secret_file: %w: %w", verb, err, exit.Config)
 		}
 		remote := sfu.NewRemote(sfuConfig(cfg.LiveKit, string(secret)))
-		if err := waitRemoteSFU(ctx, remote, 20*time.Second); err != nil {
-			return fmt.Errorf("media probe: %w: %w", err, exit.Unavailable)
+		if *rooms {
+			return mediaRooms(ctx, remote, stdout, 20*time.Second)
 		}
-		return nil
+		return mediaProbe(ctx, remote, stdout, 20*time.Second)
 	}
 	return serveMedia(ctx, cfg, stdout, stderr)
 }
 
 type roomLister interface {
 	Rooms(context.Context) ([]string, error)
+	Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error)
+}
+
+// mediaProbe waits for the sidecar and prints how many rooms are live.
+func mediaProbe(ctx context.Context, remote roomLister, stdout io.Writer, deadline time.Duration) error {
+	rooms, err := waitRemoteSFURooms(ctx, remote, deadline)
+	if err != nil {
+		return fmt.Errorf("media probe: %w: %w", err, exit.Unavailable)
+	}
+	_, err = fmt.Fprintf(stdout, "media probe: ok, %d live rooms\n", len(rooms))
+	return err
+}
+
+// mediaRooms prints each live room (sorted) as "<room>\t<n> participants", then the participants'
+// identities (sorted) indented by two spaces; an empty SFU prints "no live rooms".
+func mediaRooms(ctx context.Context, remote roomLister, stdout io.Writer, deadline time.Duration) error {
+	rooms, err := waitRemoteSFURooms(ctx, remote, deadline)
+	if err != nil {
+		return fmt.Errorf("media rooms: %w: %w", err, exit.Unavailable)
+	}
+	if len(rooms) == 0 {
+		_, err = fmt.Fprintln(stdout, "no live rooms")
+		return err
+	}
+	sort.Strings(rooms)
+	for _, room := range rooms {
+		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		parts, err := remote.Participants(pctx, room)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("media rooms: %w: %w", err, exit.Unavailable)
+		}
+		ids := make([]string, 0, len(parts))
+		for _, p := range parts {
+			ids = append(ids, p.GetIdentity())
+		}
+		sort.Strings(ids)
+		fmt.Fprintf(stdout, "%s\t%d participants\n", room, len(ids))
+		for _, i := range ids {
+			fmt.Fprintf(stdout, "  %s\n", i)
+		}
+	}
+	return nil
+}
+
+func waitRemoteSFU(ctx context.Context, remote roomLister, deadline time.Duration) error {
+	_, err := waitRemoteSFURooms(ctx, remote, deadline)
+	return err
 }
 
 // A systemd Type=simple or Compose process can exist before LiveKit accepts requests. A
-// successful authenticated RoomService call is the readiness signal shared by serve and install.
-func waitRemoteSFU(ctx context.Context, remote roomLister, deadline time.Duration) error {
+// successful authenticated RoomService call is the readiness signal shared by serve and install;
+// it returns the rooms that call listed.
+func waitRemoteSFURooms(ctx context.Context, remote interface {
+	Rooms(context.Context) ([]string, error)
+}, deadline time.Duration) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	var last error
 	for {
 		probeCtx, stop := context.WithTimeout(ctx, 2*time.Second)
-		_, err := remote.Rooms(probeCtx)
+		rooms, err := remote.Rooms(probeCtx)
 		stop()
 		if err == nil {
-			return nil
+			return rooms, nil
 		}
 		last = err
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("sidecar did not become ready: %w: %w", last, ctx.Err())
+			return nil, fmt.Errorf("sidecar did not become ready: %w: %w", last, ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
