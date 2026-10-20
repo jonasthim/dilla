@@ -6,6 +6,7 @@ import {
   SCREEN_AUDIO,
   SCREEN_AUDIO_BITRATE_BPS,
   SCREEN_AUDIO_CAPTURE,
+  SCREEN_DISPLAY_HINTS,
   micOptions,
   screenAudioOptions,
   decodeCaps,
@@ -38,6 +39,17 @@ describe('publish presets', () => {
       noiseSuppression: false,
       autoGainControl: false,
       channelCount: 2,
+      restrictOwnAudio: true,
+    });
+  });
+
+  it('a share asks to leave out the call\'s own sound and states every display hint (#37)', () => {
+    expect(SCREEN_AUDIO_CAPTURE.restrictOwnAudio).toBe(true);
+    expect(SCREEN_DISPLAY_HINTS).toEqual({
+      systemAudio: 'include',
+      windowAudio: 'system',
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'exclude',
     });
   });
 });
