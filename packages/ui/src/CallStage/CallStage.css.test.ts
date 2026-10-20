@@ -41,6 +41,12 @@ describe('the phone stage (CSS pin)', () => {
     expect(rule(phone(stage), '.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"][data-many]')).toMatch(/repeat\(2, minmax\(0, 1fr\)\)/);
   });
 
+  it('an odd last tile spans both columns instead of sitting alone at half width', () => {
+    expect(rule(phone(stage), '.d-call-stage .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(odd)')).toMatch(/grid-column: 1 \/ -1/);
+    // With a focused tile first (it spans both), the rest start at 2: an even last child is the odd one out.
+    expect(rule(phone(stage), '.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even)')).toMatch(/grid-column: 1 \/ -1/);
+  });
+
   it('a phone tile is as tall as its content, not a 16:9 box', () => {
     expect(rule(phone(stage), '.d-call-stage__tile[data-stage]')).toMatch(/aspect-ratio: auto/);
     expect(rule(phone(tile), '.d-call-tile[data-stage] .d-call-tile__avatar')).toMatch(/position: relative;[^}]*aspect-ratio: 16 \/ 9/);

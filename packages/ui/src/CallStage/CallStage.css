@@ -73,5 +73,9 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; grid-column: 1 / -1; }
+  /* An odd last tile spans both columns rather than sitting alone at half width. With a focused tile first (it spans both
+     and is counted in the DOM), the rest pair up from child 2, so the odd one out is an even last child. */
+  .d-call-stage .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even) { grid-column: 1 / -1; }
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
 }

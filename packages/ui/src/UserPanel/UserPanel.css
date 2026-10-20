@@ -9,6 +9,10 @@
 }
 .d-user-panel__who:hover, .d-user-panel__who[aria-expanded="true"] { color: var(--fg); background: var(--surface-2); border-color: transparent; }
 .d-user-panel__who:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* The status button fills the menu and starts its content at the left: ActionMenu's own trigger centres its content
+   (inline-flex, justify-content: center) and loads after this sheet in the bundle, so its centring must be beaten here. */
+.d-user-panel .d-user-panel__menu { display: flex; }
+.d-user-panel__menu .d-user-panel__who { flex: 1 1 auto; justify-content: flex-start; }
 .d-user-panel__text { display: grid; min-width: 0; }
 .d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; }
 .d-user-panel__menu .d-action-menu__item[aria-checked="true"] { font-weight: var(--weight-display); box-shadow: inset 2px 0 0 var(--accent); }

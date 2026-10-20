@@ -19,6 +19,28 @@ function expectOneLine(root: HTMLElement, story: string): void {
   if (panel.scrollWidth > panel.clientWidth + 1) throw new Error(`${story}: the panel overflows sideways`);
 }
 
+/**
+ * Left-aligned, as in Discord: the avatar sits on the panel's left padding edge (inside the status button's own padding),
+ * the gear on its right padding edge, and the name block takes the free width between them.
+ */
+function expectEdges(root: HTMLElement, story: string): void {
+  const panel = root.querySelector<HTMLElement>('.d-user-panel');
+  const who = root.querySelector<HTMLElement>('.d-user-panel__who');
+  const avatar = root.querySelector<HTMLElement>('.d-user-panel__who .d-avatar');
+  const gear = root.querySelector<HTMLElement>('.d-user-panel__settings');
+  if (panel === null || who === null || avatar === null || gear === null) throw new Error(`${story}: no panel, avatar or gear`);
+  const box = panel.getBoundingClientRect();
+  const style = getComputedStyle(panel);
+  const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+  const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+  const whoStyle = getComputedStyle(who);
+  const inner = left + parseFloat(whoStyle.borderLeftWidth) + parseFloat(whoStyle.paddingLeft);
+  const a = avatar.getBoundingClientRect().left;
+  if (Math.abs(a - inner) > 1) throw new Error(`${story}: the avatar starts at ${String(a)}, not at ${String(inner)} (the panel's left padding edge)`);
+  const g = gear.getBoundingClientRect().right;
+  if (Math.abs(g - right) > 1) throw new Error(`${story}: the gear ends at ${String(g)}, not at the panel's right padding edge ${String(right)}`);
+}
+
 const meta = {
   title: 'Shell/UserPanel', component: UserPanel,
   excludeStories: [],
@@ -35,7 +57,7 @@ const meta = {
   },
   // The sidebar's default width.
   decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
-  play: ({ canvasElement }) => { expectPanelTargets(canvasElement, 'UserPanel'); expectOneLine(canvasElement, 'UserPanel'); },
+  play: ({ canvasElement }) => { expectPanelTargets(canvasElement, 'UserPanel'); expectOneLine(canvasElement, 'UserPanel'); expectEdges(canvasElement, 'UserPanel'); },
 } satisfies Meta<typeof UserPanel>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -49,3 +71,9 @@ export const MutedAndDeafenedLight: Story = { args: { muted: true, deafened: tru
 export const MutedAndDeafenedHighContrast: Story = { args: { muted: true, deafened: true }, globals: { theme: 'high-contrast' } };
 /** A long name truncates; the controls keep their size. */
 export const LongName: Story = { args: { name: 'Augusta Ada King-Noel, Countess of Lovelace', username: 'countess.of.lovelace' } };
+
+/** The sidebar dragged wide: the avatar stays on the left edge and the gear on the right. */
+export const WideSidebar: Story = {
+  decorators: [Story => <div style={{ width: 360 }}><Story /></div>],
+  globals: { theme: 'mesh' },
+};

@@ -197,6 +197,11 @@ function expectPhoneStage(root: HTMLElement, story: string, n: number): void {
     const r = li.getBoundingClientRect();
     if (r.left < area.left - 1 || r.right > area.right + 1) throw new Error(`${story}: a phone tile overflows the area's width`);
   }
+  // An odd last tile does not sit alone beside an empty cell: it spans both columns.
+  if (n > 2 && n % 2 === 1) {
+    const last = tiles[tiles.length - 1].getBoundingClientRect();
+    if (last.width < area.width - 2) throw new Error(`${story}: the odd last tile is ${String(last.width)} wide in ${String(area.width)}`);
+  }
   expectVisibleTargets(root, story);
 }
 /** The tiles are 16:9, none overflows the area, and they are as wide as the area allows (no tile is smaller than a row's worth). */
@@ -297,6 +302,9 @@ export const Grid1HighContrast: Story = gridStory(1, 'high-contrast');
 export const Grid2: Story = gridStory(2, 'mesh');
 export const Grid2Light: Story = gridStory(2, 'light');
 export const Grid2HighContrast: Story = gridStory(2, 'high-contrast');
+/** Three tiles: on a phone the odd last one spans both columns. */
+export const Grid3: Story = gridStory(3, 'mesh');
+export const Grid5: Story = gridStory(5, 'mesh');
 export const Grid4: Story = gridStory(4, 'mesh');
 export const Grid4Light: Story = gridStory(4, 'light');
 export const Grid4HighContrast: Story = gridStory(4, 'high-contrast');
