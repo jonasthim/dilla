@@ -1,4 +1,4 @@
-.d-channel-header { display: flex; align-items: center; gap: 0.75rem; height: var(--channel-header-h); padding: 0 var(--row-pad-x); background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
+.d-channel-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; row-gap: 0.5rem; min-height: var(--channel-header-h); padding: 0.5rem var(--row-pad-x); box-sizing: border-box; background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
 /* The channel name is never case-transformed (pre-flight ruling (c)): names of servers, channels and people keep their case. */
 /* Product walk I2: a long name is cut with an ellipsis inside the header, never widening the page; the brackets and the
    caller's actions stay whole. */
@@ -9,4 +9,6 @@
 .d-channel-header__readable { color: var(--fg-3); }
 .d-channel-header__topic { margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* web-2b (L-UI-54): the caller's actions (the pins button), pushed to the end of the header. */
-.d-channel-header__actions { margin-left: auto; display: flex; gap: 0.5rem; flex-shrink: 0; }
+.d-channel-header__actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
+/* FX-misc (final review m6): the splitter lets main reach 24rem, which does not fit the actions beside the name. The header wraps
+   whatever the shell's width: the actions take a row of their own (wrapping among themselves) instead of being cut or pushed off screen. */

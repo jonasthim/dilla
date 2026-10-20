@@ -1,10 +1,20 @@
+import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelHeader } from './ChannelHeader.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
+const css = readFileSync(`${process.cwd()}/src/ChannelHeader/ChannelHeader.css`, 'utf8');
+
 describe('ChannelHeader', () => {
+  it('wraps its actions onto their own row at any shell width, never clipping them (CSS pin, 24rem main)', () => {
+    expect(css).toMatch(/\.d-channel-header \{[^}]*flex-wrap: wrap;[^}]*min-height: var\(--channel-header-h\)/);
+    expect(css).not.toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--channel-header-h\)/);
+    expect(css).toMatch(/\.d-channel-header__actions \{[^}]*flex-wrap: wrap;[^}]*min-width: 0/);
+    expect(css).not.toMatch(/\.d-channel-header__actions \{[^}]*flex-shrink: 0/);
+  });
+
   it('names the channel in a level-two heading without the decorative brackets', () => {
     const { container } = render(<ChannelHeader name="general" />);
     expect(container.firstElementChild?.tagName).toBe('HEADER');

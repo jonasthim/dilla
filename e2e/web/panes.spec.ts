@@ -88,6 +88,29 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect(asideSplitter(page)).toHaveCount(0);
   await expect(sidebarSplitter(page)).toBeVisible();
 
-  // 5. Accessible.
+  // 5. FX-misc m6: with the sidebar at its widest on an 800 px window main is 24rem (384 px), and the channel header still shows
+  // every action whole inside main: they wrap onto a second row instead of being clipped or pushed off screen.
+  await page.setViewportSize({ width: 800, height: 800 });
+  await sidebarSplitter(page).focus();
+  await page.keyboard.press('End');
+  const mainBox = async () => page.getByRole('main').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
+  await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
+  const header = page.locator('.d-channel-header');
+  const cells = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
+  expect(cells.length, 'the header actions').toBeGreaterThanOrEqual(3);
+  const bounds = await mainBox();
+  for (const c of cells) {
+    expect(c.width, `${c.name} keeps its width`).toBeGreaterThan(24);
+    expect(c.left, `${c.name} starts inside main`).toBeGreaterThanOrEqual(bounds.left - 1);
+    expect(c.right, `${c.name} ends inside main`).toBeLessThanOrEqual(bounds.right + 1);
+  }
+  expect(await header.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'the header does not scroll sideways').toBe(true);
+  await expect(header.getByRole('heading', { level: 2 })).toBeVisible();
+  const name = await header.getByRole('heading', { level: 2 }).evaluate(el => el.getBoundingClientRect().width);
+  expect(name, 'the channel name keeps some width').toBeGreaterThan(40);
+  await sidebarSplitter(page).focus();
+  await page.keyboard.press('Enter');
+
+  // 6. Accessible.
   await expectAccessible(page, 'the panes with their splitters');
 });
