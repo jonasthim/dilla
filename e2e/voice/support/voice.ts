@@ -600,17 +600,23 @@ export async function watchAudio(person: { page: Page }): Promise<void> {
 }
 
 /** What the page's open peer connections send as audio now: each audio sender's track ('on', 'off', or 'none'), the
- *  outbound audio packets and bytes summed over every connection, and the media-source audio energy, or null where the
- *  browser reports none (Firefox has no media-source `totalAudioEnergy`). */
-export async function audioOut(person: { page: Page }): Promise<{ senders: string[]; packets: number; bytes: number; energy: number | null }> {
+ *  outbound audio packets and bytes summed over every connection, the media-source audio energy, or null where there is
+ *  none (Firefox has no media-source `totalAudioEnergy`; a listen-only call has no audio source at all), how many watched
+ *  connections are `connected`, and how many outbound audio streams their stats report. */
+export async function audioOut(person: { page: Page }): Promise<{
+  senders: string[]; packets: number; bytes: number; energy: number | null; connected: number; outbound: number;
+}> {
   return person.page.evaluate(async () => {
     const w = window as unknown as { __watch: Watch };
     const senders: string[] = [];
     let packets = 0;
     let bytes = 0;
     let energy: number | null = null;
+    let connected = 0;
+    let outbound = 0;
     for (const pc of w.__watch.pcs) {
       if (pc.connectionState === 'closed') continue;
+      if (pc.connectionState === 'connected') connected += 1;
       for (const t of pc.getTransceivers()) {
         if (t.receiver.track.kind !== 'audio' || t.currentDirection === 'recvonly' || t.direction === 'recvonly' || t.currentDirection === 'stopped') continue;
         const track = t.sender.track;
@@ -618,11 +624,11 @@ export async function audioOut(person: { page: Page }): Promise<{ senders: strin
       }
       const stats = await pc.getStats();
       stats.forEach((r: { type: string; kind?: string; packetsSent?: number; bytesSent?: number; totalAudioEnergy?: number }) => {
-        if (r.type === 'outbound-rtp' && r.kind === 'audio') { packets += r.packetsSent ?? 0; bytes += r.bytesSent ?? 0; }
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') { outbound += 1; packets += r.packetsSent ?? 0; bytes += r.bytesSent ?? 0; }
         if (r.type === 'media-source' && r.kind === 'audio' && typeof r.totalAudioEnergy === 'number') energy = (energy ?? 0) + r.totalAudioEnergy;
       });
     }
-    return { senders, packets, bytes, energy };
+    return { senders, packets, bytes, energy, connected, outbound };
   });
 }
 
@@ -641,9 +647,15 @@ const LIVE_BYTES_PER_HALF_S = 1_000;
 /** Every audio track she handed over was disabled when it was handed, no captured microphone track ever turned enabled,
  *  each audio sender's track is disabled now, no audio energy has reached a sender, and once settled only DTX frames go
  *  out, over `holdMs` (1 s unless given).
- *  `listenOnly` (web3.9, the AFK call, R3): the call never asks for the microphone, so since the watch was (re)set no
- *  microphone was captured and no audio track was handed over at all, and no audio packet goes out while it holds. */
+ *  `listenOnly` (web3.9, the AFK call, R3): the call never asks for the microphone. The check needs a watched connection
+ *  that is `connected` (so a call the watch never saw fails, never passes vacuously); since the watch was (re)set no
+ *  microphone was captured and no audio track was handed over at all; any audio sender carries no live track; and no
+ *  connection reports an outbound audio stream, before or after the hold. */
 export async function sendsNoAudio(person: { page: Page }, o: { listenOnly?: boolean; holdMs?: number } = {}): Promise<void> {
+  if (o.listenOnly === true) {
+    await expect.poll(async () => (await audioOut(person)).connected, { ...POLL, message: 'a watched peer connection of the call is connected' })
+      .toBeGreaterThan(0);
+  }
   const senderShape = o.listenOnly === true ? /^((off|none)(,(off|none))*)?$/ : /^(off|none)(,(off|none))*$/;
   await expect.poll(async () => (await audioOut(person)).senders.join(','), { ...POLL, message: 'her audio senders' }).toMatch(senderShape);
   const watch = await person.page.evaluate(() => {
@@ -659,7 +671,12 @@ export async function sendsNoAudio(person: { page: Page }, o: { listenOnly?: boo
   }
   expect(watch.opened, 'times a microphone track turned enabled').toBe(0);
   const first = await audioOut(person);
-  if (first.energy === null) {
+  if (o.listenOnly === true) {
+    // A listen-only call has no audio source, so there is no energy to read in any browser: the proof is the connected
+    // watch, no capture, no hand-off and no outbound audio stream.
+    expect(first.outbound, 'outbound audio streams in a listen-only call').toBe(0);
+    test.info().annotations.push({ type: 'audio-energy', description: 'listen-only: no audio source; capture, hand-offs and outbound-rtp are the proof' });
+  } else if (first.energy === null) {
     // No media-source energy in this browser (Firefox): the proof rests on the disabled hand-offs and `opened == 0`
     // above, and the frame size below. Said in the report, never checked as a vacuous 0.
     test.info().annotations.push({ type: 'audio-energy', description: 'not reported by this browser; hand-offs, opened and frame size are the proof' });
@@ -673,8 +690,26 @@ export async function sendsNoAudio(person: { page: Page }, o: { listenOnly?: boo
   if (after.energy !== null) expect(after.energy, 'audio energy while muted').toBe(0);
   const bytes = after.bytes - before.bytes;
   const packets = after.packets - before.packets;
-  if (o.listenOnly === true) expect(packets, 'audio packets sent in a listen-only call').toBe(0);
+  if (o.listenOnly === true) {
+    expect(after.connected, 'the watched call is still connected after the hold').toBeGreaterThan(0);
+    expect(after.outbound, 'outbound audio streams in a listen-only call').toBe(0);
+    expect(packets, 'audio packets sent in a listen-only call').toBe(0);
+  }
   expect(packets === 0 ? 0 : bytes / packets, 'bytes per audio packet while muted, once settled (DTX frames only)').toBeLessThanOrEqual(DTX_BYTES_PER_PACKET);
+}
+
+/** The microphone is back (web3.9 E-AFK, after leaving a listen-only call): since the watch was (re)set it was captured, an
+ *  enabled audio track was handed to a peer connection, and an audio sender carries it live. Byte-free, so it holds with
+ *  noise suppression on (which silences the fake tone). */
+export async function micLive(person: { page: Page }): Promise<void> {
+  await expect.poll(async () => {
+    const w = await person.page.evaluate(() => {
+      const r = (window as unknown as { __watch: Watch }).__watch;
+      return { captured: r.captured, enabled: r.handed.filter((h) => h.enabled).length };
+    });
+    const out = await audioOut(person);
+    return w.captured >= 1 && w.enabled >= 1 && out.senders.includes('on');
+  }, { ...POLL, message: 'the microphone is captured, handed over enabled and sent' }).toBe(true);
 }
 
 /** The control for the measure above: once she unmutes, the tone goes out (live-sized bytes, and energy where reported). */

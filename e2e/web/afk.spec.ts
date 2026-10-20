@@ -1,10 +1,14 @@
 // web3.9 E-AFK: the built-in AFK channel, from an empty instance and from a web3.8 one. This suite starts a test host of its
 // own with its in-process LiveKit, and runs a server through the shipping clients: Ada the owner and Björn a member, each in
 // a desktop browser of their own, and Björn again in a phone-emulated browser (a second device of his). The instance's API
-// is called by the spec only to read (ids, the AFK snapshot) and for the refusals the UI never offers (a delete of the AFK
-// channel, with its control on an ordinary channel); the instance clock is moved through the control listener, and the
-// upgrade case points the community at an administrator's pick as web3.8 stored it (POST /debug/afk/legacy) before the
-// host restarts on the same data.
+// is called by the spec only to read (ids, the AFK snapshot) and for the refusals the UI never offers (a delete, a topic
+// patch and a permission overwrite of the AFK channel, each with its control on an ordinary channel); the instance clock is
+// moved through the control listener, and the upgrade case points the community at an administrator's pick as web3.8
+// stored it (POST /debug/afk/legacy, the only legacy hook the test host has) before the host restarts on the same data.
+// That community already holds a built-in AFK (Idle) when the pointer moves; a database with no built-in at all, a missing
+// row and a NULL pointer are SRV-AFK's TestEnsureAFKChannels.
+// An idle move relies on noise suppression silencing the fake microphone's steady tone: speech counts as activity
+// (Shell.tsx), so noise suppression stays on until step 9.
 //
 // What it proves (Jonas's decisions, wave plan R1-R5, brief R33-R35):
 // - every server has exactly one listen-only "AFK" voice channel, listed last;
@@ -12,7 +16,7 @@
 //   instance refuses its delete (403 E_FORBIDDEN; an ordinary channel's delete passes);
 // - the inactive timeout is 1, 5, 15, 30 or 60 minutes, 5 by default, with no off;
 // - an idle desktop is moved there by itself, listen-only (no microphone, no audio out), and `afk.moved` is said once and
-//   `voice.removed` never, on the moved person's screen and on the other's;
+//   no removal line ever, on the moved person's screen reader and on that of the other person in the call he left;
 // - a phone is never moved (its desktop twin, idle beside it in the same call, is);
 // - a member whose roles leave out view_channel community-wide still sees AFK and joins it listen-only (he has no other
 //   channel to idle in then: a call he is in ends when his view or connect goes, so "moved from there" has no path);
@@ -32,8 +36,8 @@ import {
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { PROFILE_ROOT } from './support/persistent';
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
-import { connected, dock, noiseOff, phaseOf, sendsAudio, sendsNoAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
-import { arr, decode, encode, type CborValue } from '../../packages/client-core/src/cbor/index';
+import { connected, dock, micLive, noiseOff, phaseOf, sendsAudio, sendsNoAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
+import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
 import { RETRY } from '../../packages/client-core/src/http/client';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -63,6 +67,8 @@ let bjorn: Person | null = null;
 let phone: Person | null = null;
 /** While the host restarts, a browser's refused connections are expected; nothing else is. */
 let restarting = false;
+/** While a move's cut is expected (steps 4, 6 and 8), LiveKit's lines about it are; nowhere else. */
+let cutting = false;
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({ baseURL: ORIGIN });
@@ -111,7 +117,7 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
     if (!firefox && BY_DESIGN_RESOURCE_LINE.test(text)) return;
     if (firefox && (ABORTED_FONT_LINE.test(text) || ABORTED_JUGGLER_LINE.test(text) || FAVICON_LINE.test(text))) return;
     if (restarting && RESTART_LINE.test(text)) return;
-    if (CUT_LINE.test(text)) return;
+    if (cutting && CUT_LINE.test(text)) return;
     p.errors.push(`${name}: ${text}`);
   });
   context.on('weberror', (e) => { p.errors.push(`${name}: ${String(e.error())}`); });
@@ -162,6 +168,23 @@ async function channelsOf(p: Person): Promise<{ id: string; kind: number; parent
   return arr(await read(p, `/v1/communities/${communityId}/channels`)).map((v) => {
     const a = arr(v);
     return { id: hex(a[0]), kind: Number(a[1]), parent: a[4] === null ? null : hex(a[4]), name: String(a[5]) };
+  });
+}
+/** A write to the instance's API with this person's session, as the client sends it; answers the status and the error code. */
+async function write(p: Person, method: 'PATCH' | 'PUT' | 'DELETE', path: string, body?: CborInput): Promise<{ status: number; code: string | null }> {
+  const res = await fetch(`${ORIGIN}${path}`, {
+    method, headers: { accept: 'application/cbor', 'content-type': 'application/cbor', authorization: p.bearer },
+    ...(body === undefined ? {} : { body: Buffer.from(encode(body)) }),
+  });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const code = res.status >= 400 && bytes.length > 0 ? String(arr(decode(bytes))[0]) : null;
+  return { status: res.status, code };
+}
+/** The next activity report of this person's device that the instance accepts (204): arm it before the action that sends it. */
+function activityAccepted(p: Person): Promise<unknown> {
+  return p.context.waitForEvent('requestfinished', { timeout: WAIT, predicate: (r) => r.method() === 'POST'
+    && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity` }).then(async (r) => {
+    expect((await r.response())?.status(), `${p.name}'s activity report`).toBe(204);
   });
 }
 /** Moves the instance clock forward (POST /debug/clock); the AFK sweep runs on its own 5 s tick. */
@@ -272,6 +295,7 @@ test.afterAll(async () => {
 });
 // eslint-disable-next-line no-empty-pattern
 test.afterEach(async ({}, testInfo) => {
+  cutting = false;
   // The runner traces only its own context: on a failure the people's pages are attached as they stand.
   if (testInfo.status !== testInfo.expectedStatus) {
     for (const p of [ada, bjorn, phone]) {
@@ -361,8 +385,8 @@ test('3. no delete and no permissions for AFK in server settings, and the instan
   const settings = await serverSettings(a.page, 'admin.nav.channels');
   await expect(button(settings, 'admin.channels.editLabel', { name: RENAMED })).toBeVisible({ timeout: WAIT });
   await expect(button(settings, 'admin.channels.deleteLabel', { name: RENAMED })).toHaveCount(0);
-  // The control: an ordinary voice channel has its delete.
-  await expect(button(settings, 'admin.channels.deleteLabel', { name: 'general' }).first()).toBeVisible();
+  // The control: the ordinary voice channel general has its delete (text general is listed first).
+  await expect(button(settings, 'admin.channels.deleteLabel', { name: 'general' }).last()).toBeVisible();
 
   await button(settings, 'admin.channels.editLabel', { name: RENAMED }).click();
   const edit = dialogOf(a.page, 'admin.channel.titleVoice', { name: RENAMED });
@@ -371,7 +395,6 @@ test('3. no delete and no permissions for AFK in server settings, and the instan
   await expect(edit.getByRole('combobox', { name: copy('admin.channel.category'), exact: true })).toBeVisible();
   await expect(edit.getByRole('heading', { name: copy('chperm.title'), exact: true })).toHaveCount(0);
   await expect(edit.getByRole('switch', { name: copy('chperm.private'), exact: true })).toHaveCount(0);
-  await expect(edit.getByRole('textbox', { name: copy('admin.channel.topic'), exact: true })).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel’s settings');
   await button(edit, 'admin.cancel').click();
   await expect(edit).toBeHidden();
@@ -396,9 +419,24 @@ test('3. no delete and no permissions for AFK in server settings, and the instan
   expect(deleted.ok(), `DELETE of an ordinary voice channel (${String(deleted.status())})`).toBe(true);
   await expect(voiceRow(a.page, 'spare')).toHaveCount(0, { timeout: WAIT });
   expect((await channelsOf(a)).filter((c) => c.id === afkId), 'AFK is still there').toHaveLength(1);
+
+  // R2: its settings and its permissions are refused by the instance too, each beside the same write on voice general.
+  // PATCH /v1/channels/{id}: [name, topic, mode, visibility, parent, position, slowmode].
+  const topic = [null, 'a topic', null, null, null, null, null];
+  expect(await write(a, 'PATCH', `/v1/channels/${afkId}`, topic), 'a topic on the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
+  expect(await write(a, 'PATCH', `/v1/channels/${generalVoiceId}`, topic), 'the same topic on voice general').toEqual({ status: 204, code: null });
+  const everyone = arr(await read(a, `/v1/communities/${communityId}/roles`)).map((v) => arr(v)).find((row) => row[1] === '@everyone');
+  const everyoneId = hex(everyone?.[0]);
+  const overwrite = `/overwrites/0/${everyoneId}`;
+  // [allow, deny]: allow view channels, which @everyone already holds, so the control changes nothing anyone sees.
+  expect(await write(a, 'PUT', `/v1/channels/${afkId}${overwrite}`, [1, 0]), 'an overwrite on the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
+  expect(await write(a, 'PUT', `/v1/channels/${generalVoiceId}${overwrite}`, [1, 0]), 'the same overwrite on voice general')
+    .toEqual({ status: 204, code: null });
+  expect(await write(a, 'DELETE', `/v1/channels/${afkId}${overwrite}`), 'an overwrite delete on the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
+  expect(await write(a, 'DELETE', `/v1/channels/${generalVoiceId}${overwrite}`), 'the control overwrite goes again').toEqual({ status: 204, code: null });
 });
 
-test('4. one timeout row: an idle desktop in general is moved to Idle by itself, listen-only, and told once', async () => {
+test('4. one timeout row: an idle desktop in general is moved to Idle by itself, listen-only, and told once; the peer in general hears no removal', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   const settings = await serverSettings(a.page, 'admin.nav.overview');
@@ -418,15 +456,30 @@ test('4. one timeout row: an idle desktop in general is moved to Idle by itself,
   await closeServerSettings(a.page);
   await expect.poll(async () => (await afkSnapshot(a)).timeout, { timeout: WAIT }).toBe(60);
 
-  // Björn joins general voice with one click and does nothing.
+  // Ada joins voice general and stays active; Björn joins it with one click and does nothing. Each device's first activity
+  // report (sent when its session attaches) has landed before the clock moves (M3).
+  const adaFirst = activityAccepted(a);
+  await voiceRow(a.page, 'general').click();
+  await connected(a.page);
+  await adaFirst;
+  const bjornFirst = activityAccepted(b);
   await voiceRow(b.page, 'general').click();
   await connected(b.page);
+  await bjornFirst;
   await expect(dock(b.page)).toContainText('general');
   await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toBeVisible({ timeout: WAIT });
   await watchAudio(b);
   await resetSaid(a);
   await resetSaid(b);
-  await advanceClock(PAST_TIMEOUT_S);
+  cutting = true;
+  // Half the timeout, then Ada's own input (an activity report is sent at most every 5 s), then past it for Björn only.
+  await advanceClock(30);
+  await a.page.waitForTimeout(5_500);
+  const adaActive = activityAccepted(a);
+  await a.page.mouse.move(400, 300);
+  await a.page.mouse.move(420, 320);
+  await adaActive;
+  await advanceClock(PAST_TIMEOUT_S - 30);
 
   await expect(dock(b.page)).toContainText(RENAMED, { timeout: WAIT });
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveAttribute('data-phase', 'connected', { timeout: WAIT });
@@ -447,18 +500,26 @@ test('4. one timeout row: an idle desktop in general is moved to Idle by itself,
   expect(bSaid.filter((s) => s.includes(moved)), `Björn's screen reader says the move once (heard: ${JSON.stringify(bSaid)})`).toHaveLength(1);
   expect(bSaid.filter((s) => removedLines.some((r) => s.includes(r))), 'Björn is never told he was removed').toEqual([]);
   for (const r of removedLines) await expect(b.page.getByText(r)).toHaveCount(0);
+  // Ada, the other person in the call he left, is still in general (her input kept her) and hears no removal and no move.
+  await expect(dock(a.page)).toContainText('general');
+  await expect(dock(a.page).locator('.d-voice-dock')).toHaveAttribute('data-phase', 'connected');
   const aSaid = await said(a);
   expect(aSaid.filter((s) => removedLines.some((r) => s.includes(r))), `Ada's screen reader never says removed (heard: ${JSON.stringify(aSaid)})`).toEqual([]);
   expect(aSaid.filter((s) => s.includes(moved)), 'Björn’s move is not said to Ada').toEqual([]);
+  for (const r of removedLines) await expect(a.page.getByText(r)).toHaveCount(0);
   expect((await afkSnapshot(b)).pending, 'the move is no longer pending once he joined').toBe(false);
 });
 
 test('5. Björn goes back to general with his own mute state; Ada clicks Idle and joins it listen-only', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
+  // Re-watched before the click: what follows is the return alone. His microphone is captured again, handed over enabled
+  // and sent live (he was unmuted before the move), before any reload.
+  await watchAudio(b);
   await voiceRow(b.page, 'general').click();
   await expect(dock(b.page)).toContainText('general', { timeout: WAIT });
   await connected(b.page);
+  await micLive(b);
   await expect(panelMute(b)).toHaveAttribute('aria-pressed', 'false');
   await expect(stage(b.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toHaveCount(0, { timeout: WAIT });
   await expect(stage(b.page)).not.toContainText(copy('afk.stage.muted', { channel: 'general' }));
@@ -502,11 +563,13 @@ test('6. a phone in general is never moved, while its desktop twin idle beside i
   await expect(dock(b.page)).toContainText('general');
 
   await resetSaid(ph);
+  cutting = true;
   await advanceClock(PAST_TIMEOUT_S);
   // The control: the desktop, idle in the same call, is moved; the phone stays.
   await expect(dock(b.page)).toContainText(RENAMED, { timeout: WAIT });
   await expect(roomPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await sweepRan(ph);
+  cutting = false;
   await advanceClock(PAST_TIMEOUT_S);
   await sweepRan(ph);
   await expect(phaseOf(ph.page)).toHaveAttribute('data-call-phase', 'in');
@@ -550,9 +613,12 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
 test('8. a failed move leaves the dock line with join, nothing retries it, and join joins', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
+  const first = activityAccepted(b);
   await voiceRow(b.page, 'general').click();
   await expect(dock(b.page)).toContainText('general', { timeout: WAIT });
   await connected(b.page);
+  await first;
+  await resetSaid(b);
   // The move's join is refused with 503 E_UNAVAILABLE. A 503 is retried below the join by design: the transport paces
   // RETRY.maxAttempts attempts (client.ts), and the join reads the call once more after a 503 start (L-HTTP-105, join.ts),
   // so one join is 2 x RETRY.maxAttempts requests. The route answers 503 to all of them; what must not come is a second
@@ -571,11 +637,17 @@ test('8. a failed move leaves the dock line with join, nothing retries it, and j
     await route.continue();
   });
   try {
+    cutting = true;
     await advanceClock(PAST_TIMEOUT_S);
     const line = b.page.locator('.d-banner').filter({ hasText: copy('afk.moved', { channel: RENAMED }) });
     await expect(line).toBeVisible({ timeout: WAIT });
     await expect(button(line, 'afk.moved.join')).toBeVisible();
+    // The failed move says where he was moved and why it failed, never a removal.
+    const heard = await said(b);
+    expect(heard.filter((t) => [copy('voice.removed'), copy('voice.removedNotMember')].some((x) => t.includes(x))),
+      `no removal line (heard: ${JSON.stringify(heard)})`).toEqual([]);
     expect(attempts, 'the attempts of the move’s one join').toBe(oneJoin);
+    cutting = false;
     await b.page.waitForTimeout(10_000);
     expect(attempts, 'no second join in 10 s').toBe(oneJoin);
     await expect(line).toBeVisible();
@@ -645,6 +717,12 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await expect(edit.getByText(copy('afk.channel.note'), { exact: true })).toHaveCount(0);
   await button(edit, 'admin.cancel').click();
   await expect(edit).toBeHidden();
+  await button(settings, 'admin.channels.editLabel', { name: 'lounge' }).click();
+  const picked = dialogOf(a.page, 'admin.channel.titleVoice', { name: 'lounge' });
+  await expect(picked.getByRole('heading', { name: copy('chperm.title'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(picked.getByText(copy('afk.channel.note'), { exact: true })).toHaveCount(0);
+  await button(picked, 'admin.cancel').click();
+  await expect(picked).toBeHidden();
   await closeServerSettings(a.page);
 
   // A second start adds nothing.
