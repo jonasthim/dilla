@@ -347,8 +347,16 @@ export const Grid5SpeakingAndChip: Story = {
     expectGrid(canvasElement, 'Grid5SpeakingAndChip', 5);
     const chip = canvasElement.querySelector<HTMLElement>('.d-call-tile__chip');
     if (chip === null || chip.textContent !== '70 %') throw new Error('Grid5SpeakingAndChip: no 70 % chip');
-    const tile = chip.closest<HTMLElement>('.d-call-tile')!.getBoundingClientRect();
-    if (chip.getBoundingClientRect().right > tile.right - 40) throw new Error('Grid5SpeakingAndChip: the chip reaches the corner of the tile');
+    const tileEl = chip.closest<HTMLElement>('.d-call-tile')!;
+    const tile = tileEl.getBoundingClientRect();
+    if (onPhone()) {
+      // The phone tile is a column (CallTile.css): the caption, chip included, sits under the 16:9 media, so nothing covers the face
+      // and the full-screen corner is the media's, not the caption's; the chip stays inside its tile.
+      const media = tileEl.querySelector<HTMLElement>('.d-call-tile__media, .d-call-tile__avatar')!.getBoundingClientRect();
+      const box = chip.getBoundingClientRect();
+      if (box.top < media.bottom - 0.5) throw new Error('Grid5SpeakingAndChip: on a phone the chip sits over the media, not under it');
+      if (box.right > tile.right + 0.5 || box.left < tile.left - 0.5) throw new Error('Grid5SpeakingAndChip: on a phone the chip leaves its tile');
+    } else if (chip.getBoundingClientRect().right > tile.right - 40) throw new Error('Grid5SpeakingAndChip: the chip reaches the corner of the tile');
     if (canvasElement.querySelector('.d-call-tile[data-speaking="true"]') === null) throw new Error('Grid5SpeakingAndChip: nobody speaks');
   },
 };
@@ -360,6 +368,11 @@ export const VolumeOnHoverAndFocus: Story = {
     await nextFrame();
     const vol = canvasElement.querySelector<HTMLElement>('li[data-stage] .d-call-tile__volume');
     if (vol === null) throw new Error('VolumeOnHoverAndFocus: no volume');
+    if (onPhone()) {
+      // The phone has no hover: the range stays shown under the caption (CallTile.css), and focus changes nothing.
+      if (getComputedStyle(vol).opacity !== '1') throw new Error('VolumeOnHoverAndFocus: on a phone the volume is hidden at rest');
+      return;
+    }
     if (getComputedStyle(vol).opacity !== '0') throw new Error('VolumeOnHoverAndFocus: the volume shows at rest');
     vol.querySelector<HTMLInputElement>('input')!.focus();
     await nextFrame();
