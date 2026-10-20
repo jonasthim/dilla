@@ -166,6 +166,34 @@ async function expectNoOverflow(page: Page, tag: string, state: string): Promise
   expect.soft(out.scrolls, `main does not scroll sideways in ${state} at ${tag}`).toBe(false);
 }
 
+/** A long unbroken word wraps inside the log: the text's own rects, not the box that clips them, stay in the log's content box. */
+async function expectWrapsInLog(page: Page, tag: string, state: string): Promise<void> {
+  await expect(page.getByRole('log').getByText(LONG_WORD).first(), `the long message reaches the log in ${state} at ${tag}`).toBeVisible({ timeout: WAIT });
+  const m = await page.evaluate((word) => {
+    const log = document.querySelector('[role="log"]');
+    if (log === null) return null;
+    const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      if (!(n.textContent ?? '').includes(word)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      const rects = [...range.getClientRects()];
+      const box = log.getBoundingClientRect();
+      const cs = getComputedStyle(log);
+      const scrollbar = (log as HTMLElement).offsetWidth - (log as HTMLElement).clientWidth - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
+      const left = box.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+      const right = box.right - parseFloat(cs.borderRightWidth) - scrollbar - parseFloat(cs.paddingRight);
+      return { lines: rects.length, textLeft: Math.min(...rects.map(r => r.left)), textRight: Math.max(...rects.map(r => r.right)), left, right };
+    }
+    return undefined;
+  }, LONG_WORD);
+  expect.soft(m, `the long message is in the log in ${state} at ${tag}`).toBeTruthy();
+  if (m === null || m === undefined) return;
+  expect.soft(m.lines, `a long word wraps onto more than one line in ${state} at ${tag}`).toBeGreaterThan(1);
+  expect.soft(m.textRight, `the text's right edge is inside the log's content box in ${state} at ${tag} (${m.textRight.toFixed(1)} vs ${m.right.toFixed(1)})`).toBeLessThanOrEqual(m.right + TOL);
+  expect.soft(m.textLeft, `the text's left edge is inside the log's content box in ${state} at ${tag}`).toBeGreaterThanOrEqual(m.left - TOL);
+}
+
 /** A bar's bottom hairline: its bottom edge, measured from the top of `from` (the page, or the surface the bar stands on). */
 async function barBottom(page: Page, bar: string, from?: string): Promise<number | null> {
   return page.evaluate(({ bar: sel, from: top }) => {
@@ -309,6 +337,10 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
       await signIn(phone, ada, instance);
     }
     lap('phone signed in');
+    // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
+    await openPath(page, serverPath);
+    await channelRow(page, 'general').click();
+    await sendText(page, 'general', `and again ${LONG_WORD}`);
     for (const size of SIZES.filter(s => s.phone)) {
       await phone.setViewportSize({ width: size.width, height: size.height });
       await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
@@ -510,6 +542,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await expectBar(page, tag, 'the phone header (channel)', '.d-phone-header');
   await expectTargets(page, tag, 'a channel');
   await expectNoOverflow(page, tag, 'a channel');
+  await expectWrapsInLog(page, tag, 'a channel');
   await toList();
 
   // The voice stage, by its path (a tap on a voice row only opens it, but its join icon joins).
@@ -573,12 +606,10 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
 }
 
 // ---------------------------------------------------------------------------------------------------
-// The built-in AFK channel (WEB-AFK): its row is a voice row on the list's grammar, and its timeout is a settings row in the
-// Overview on the settings grammar. Written against the integrated build of this lane, where WEB-AFK has not landed; the
-// controller re-enables it at integration.
+// The built-in AFK channel (WEB-AFK): its row is a voice row on the list's grammar, and its timeout is a settings row under
+// the name row in the Overview, on the settings grammar, with the section's one save in the frame's footer.
 
 test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }) => {
-  test.fixme(true, 'lands with WEB-AFK');
   const h = started();
   await page.setViewportSize({ width: 1440, height: 900 });
   await signUp(page, h.invite.split(',')[0], instance, 'Bea', h.control);
@@ -593,12 +624,18 @@ test('the AFK row and the AFK timeout setting keep the grammar', async ({ page }
   await expectListGrammar(page, 'AFK 1440x900', '.d-channel-list__list', '.d-chrow__name, .d-voice-row__name', 'channel list with the AFK row');
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+  const nameRow = settings.locator('.d-settings-row').filter({ hasText: copy('admin.overview.name') });
   const timeout = settings.locator('.d-settings-row').filter({ hasText: copy('afk.timeout.label') });
   await expect(timeout, 'the AFK timeout is a settings row in the Overview').toBeVisible({ timeout: WAIT });
+  const [nameBox, timeoutBox] = [await nameRow.boundingBox(), await timeout.boundingBox()];
+  expect.soft(nameBox !== null && timeoutBox !== null && timeoutBox.y > nameBox.y, 'the timeout row stands under the name row').toBe(true);
   const labels = await boxes(page, '.d-settings-row__label', '.d-settings-frame__body');
+  expect.soft(labels.length, 'the Overview has its name and timeout rows').toBeGreaterThanOrEqual(2);
   expectOne('A5 the Overview rows share one label x', labels.map(b => b.x), labels.map(b => b.t));
   const controls = await boxes(page, '.d-settings-row__control', '.d-settings-frame__body');
   expectOne('A4 the Overview rows share one control right edge', controls.map(b => b.r), controls.map(b => b.t));
+  await expect(settings.locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true }), 'one save in the footer').toHaveCount(1);
+  expect.soft(await settings.getByRole('button', { name: copy('admin.overview.save'), exact: true }).count(), 'no other save button').toBe(1);
 });
 
 export type { Locator };
