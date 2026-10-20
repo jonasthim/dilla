@@ -459,9 +459,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   topic may carry line breaks and tabs). `position` is at most 2 147 483 647 and
   `slowmode_seconds` at most 21 600. A community's channels are ordered by `position`, ties broken
   by `channel_id` (bytewise), the same on every engine. Position `2^30` and above belongs to the
-  built-in AFK channel (§ Voice): a `PATCH` that puts any other channel there is `400
-  E_INVALID_REQUEST`, and one that names a position other than `2^30` for the AFK channel itself is
-  `403 E_FORBIDDEN` `the AFK channel keeps its position`.
+  built-in AFK channel (§ Voice): a `POST` or `PATCH` that puts any other channel there is `400
+  E_INVALID_REQUEST`, a `PATCH` that names a position other than `2^30` for the AFK channel itself
+  is `403 E_FORBIDDEN` `the AFK channel keeps its position`, and the next start moves any other
+  channel found there (one an older release created) below `2^30`, keeping their order.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
 - `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
   an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
@@ -862,7 +863,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   whose administrator had picked an AFK channel gets a new built-in channel with the stored timeout,
   and the old channel becomes an ordinary voice channel (its name, overwrites and live call stay).
   An overwrite left on the built-in channel (by a rollback to an older release) is removed at the
-  next start.
+  next start, which also puts back its built-in mode, visibility, topic and slow mode.
 - **What may change.** Administrators may rename it and move it to another category (under the
   category rule of § Channels); its position stays `2^30` (§ Channels), and the next start puts it
   back there if it is anywhere else. `DELETE /v1/channels/{id}` on it is `403 E_FORBIDDEN` `the AFK

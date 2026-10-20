@@ -572,6 +572,10 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
+		// R-AFK8: 2^30 and above is the built-in AFK channel's, which no route creates.
+		if row.Position >= AFKBuiltinPosition {
+			return reservedPosition()
+		}
 		if err := tx.CreateChannel(r.Context(), row); err != nil {
 			return err
 		}
@@ -758,6 +762,11 @@ func validChannelText(field, s string, minBytes, maxBytes int, multiline bool) e
 	return nil
 }
 
+// reservedPosition is the refusal of an ordinary channel at AFKBuiltinPosition or above (R-AFK8).
+func reservedPosition() error {
+	return server.Errorf(server.CodeInvalidRequest, "position must be below %d, which the AFK channel holds", AFKBuiltinPosition)
+}
+
 type patchChannelReq struct {
 	_               struct{} `cbor:",toarray"`
 	Name            *string
@@ -830,7 +839,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its position")
 			}
 			if !isAFK && req.Position != nil && *req.Position >= AFKBuiltinPosition {
-				return server.Errorf(server.CodeInvalidRequest, "position must be below %d, which the AFK channel holds", AFKBuiltinPosition)
+				return reservedPosition()
 			}
 		}
 		row, err := tx.GetChannel(r.Context(), current.ID)

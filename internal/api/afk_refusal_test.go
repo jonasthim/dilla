@@ -239,6 +239,40 @@ func TestAFKReservedPositionRefusedOnAnOrdinaryChannel(t *testing.T) {
 	}
 }
 
+// R-AFK8 (server half): the same reserved range on create; 2^30-1 is the control.
+func TestAFKReservedPositionRefusedOnCreate(t *testing.T) {
+	r := newRefusalEnv(t)
+	builtin := uint64(api.AFKBuiltinPosition)
+	path := "/v1/communities/" + r.cid.String() + "/channels"
+	for _, tc := range []struct {
+		name string
+		pos  uint64
+		want int
+		code string
+	}{
+		{"2^30", builtin, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30+1", builtin + 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^31-1", 1<<31 - 1, http.StatusBadRequest, "E_INVALID_REQUEST"},
+		{"2^30-1 (control)", builtin - 1, http.StatusCreated, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds]
+			status, body := r.e.Do(http.MethodPost, path, r.ownerTok,
+				[]any{uint64(api.ChannelVoice), uint64(0), uint64(0), nil, "at " + tc.name, "", tc.pos, uint64(0)})
+			r.refused(t, "POST at "+tc.name, status, body, tc.want, tc.code)
+		})
+	}
+	all, err := r.e.Repo.ListChannels(t.Context(), r.cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range all {
+		if c.ID != r.afk && c.Position >= builtin {
+			t.Fatalf("an ordinary channel at %d after the refused creates: %+v", c.Position, c)
+		}
+	}
+}
+
 func TestAFKOverwriteRefused(t *testing.T) {
 	r := newRefusalEnv(t)
 	for _, ch := range []struct {
