@@ -256,6 +256,15 @@ describe('ChannelList, one list with voice rooms in place', () => {
     expect(rows.map(r => r.classList.contains('d-voice-row'))).toEqual([false, true, false, true, false]);
   });
 
+  it('a speaking person has the ring on the sub-row and no speaking glyph; the word stays for assistive technology', () => {
+    const { container } = render(<ChannelList {...props({ channels: mixed, voice: voice() })} />);
+    const ada = container.querySelector('.d-voice-row__person[data-speaking="true"]')!;
+    expect(ada).toHaveTextContent('ada');
+    expect(ada.querySelector('[data-state="speaking"], .d-state-dot')).toBeNull();
+    expect(ada.querySelector('.d-sr-only')).toHaveTextContent('speaking');
+    expect(container.querySelectorAll('.d-voice-row__person[data-speaking="true"]')).toHaveLength(1);
+  });
+
   it('the voice row has the volume-2 icon and no badge, even with unread: 3 (guard, green at start: the voice branch never passed one)', () => {
     render(<ChannelList {...props({ channels: mixed, voice: voice(), rowLabel })} />);
     const row = screen.getByRole('button', { name: 'voice harbour' });

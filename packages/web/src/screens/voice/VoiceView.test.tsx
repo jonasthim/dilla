@@ -260,7 +260,7 @@ describe('voice in the shell', () => {
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
-    expect(screen.getByText('in general')).toBeInTheDocument();
+    expect(screen.getByText(t('layout.dock.connected'))).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
@@ -624,10 +624,10 @@ describe('web3.3: the browser holds call audio back', () => {
   });
 });
 
-describe('web3.4 V2: the dock says how many it hears', () => {
+describe('web3.4 V2: the stage says how many it hears (web3.9: it left the dock)', () => {
   it('shows "hearing {attached} of {expected}" with its counts while any remote audio is expected, and nothing otherwise', async () => {
     const app = await inVoice();
-    const line = () => document.querySelector('.dw-voice-dock [data-audio-expected]');
+    const line = () => document.querySelector('.dw-voice-stage [data-audio-expected]'); // web3.9 R26: on the stage, no longer in the dock
     expect(line()).toBeNull();
     // Deafened: a newcomer's track is expected but held back.
     act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
@@ -637,7 +637,7 @@ describe('web3.4 V2: the dock says how many it hears', () => {
     expect(shown).toHaveAttribute('data-audio-expected', '2');
     // A diagnostic, not news: no status region of its own (the dock's one region says what changes).
     expect(shown.closest('[role="status"]')).toBeNull();
-    await expectNoAxeViolations(document.querySelector('.dw-voice-dock')!);
+    await expectNoAxeViolations(document.querySelector('.dw-voice-stage__lines')!);
     act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
     await waitFor(() => expect(line()).toHaveAttribute('data-audio-attached', '2'));
     expect(line()).toHaveTextContent(t('voice.diag.tracks', { attached: 2, expected: 2 }));
@@ -1140,5 +1140,69 @@ describe('the voice stage header (web3.9)', () => {
     await app.user.click(await main().findByRole('button', { name: 'call' }));
     await main().findByRole('toolbar', { name: 'call controls' });
     expect(document.querySelector('.d-call-stage__bar')).toBeNull();
+  });
+});
+
+// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, "voice connected", channel · server, three icon buttons; speaking is a
+// ring on the list row and on the tile and nothing else.
+describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
+  const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;
+  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null }];
+
+  it('has no meter, no level text and no line, and keeps the dock to its two lines and three buttons', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    act(() => app.session.update({ level: 40, audio: { attached: 1, expected: 2 } }));
+    await offStage();
+    const dock = dockEl();
+    expect(dock.querySelector('.d-audio-meter, [role="meter"], .d-voice-dock__meter')).toBeNull();
+    expect(dock).not.toHaveTextContent(t('settings.voice.level'));
+    expect(dock.querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
+  });
+
+  it('line 1 reads "voice connected" and opens Diagnostics; line 2 reads the channel and the server', async () => {
+    const app = await inVoice();
+    await offStage();
+    const status = within(dockEl()).getByRole('button', { name: t('layout.dock.connected') });
+    expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('general · Midgard');
+    await app.user.click(status);
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
+  });
+
+  it('camera, share and leave are 32px icon buttons', async () => {
+    await inVoice();
+    await offStage();
+    const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
+    expect(buttons).toHaveLength(3);
+    for (const b of buttons) { expect(b).toHaveClass('d-icon-button'); expect(b).toHaveAttribute('data-size', '32'); }
+  });
+
+  it('a remote tile at volume 70 shows "70 %" in its chip', async () => {
+    const app = await inVoice({ settings: { [`voice.volume.${BOB}`]: '70' } });
+    act(() => app.session.update({ tiles: remote(false) }));
+    await waitFor(() => expect(document.querySelector('.d-call-tile__chip')).toHaveTextContent('70 %'));
+  });
+
+  it('a speaking participant has the ring on the list row and on the tile and no other speaking mark', async () => {
+    const app = await inVoice({ voice: { [GENV]: { callId: GENV, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false },
+      { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    ] } } });
+    act(() => app.session.update({ tiles: remote(true) }));
+    const tile = await waitFor(() => { const e = document.querySelector('.d-call-tile[data-speaking="true"]'); expect(e).not.toBeNull(); return e!; });
+    expect(tile.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'true');
+    expect(tile.querySelector('[data-state="speaking"]')).toBeNull();
+    await waitFor(() => expect(document.querySelector('.d-voice-row__person[data-speaking="true"]')).not.toBeNull());
+    expect(document.querySelector('[data-state="speaking"]')).toBeNull();
+    await offStage();
+    expect(dockEl().querySelector('[data-speaking], [data-state="speaking"]')).toBeNull();
+  });
+
+  it('push to talk and the hearing count stand on the stage, not in the dock', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
+    const stage = main().getByRole('toolbar', { name: 'voice channel controls' }).closest('.dw-voice-stage')!;
+    await waitFor(() => expect(stage.querySelector('.dw-voice-dock__mode')).toHaveTextContent(t('voice.dock.ptt', { key: 'Pause' })));
+    expect(stage.querySelector('[data-audio-expected]')).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
+    expect(dockEl().querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
   });
 });

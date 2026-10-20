@@ -32,11 +32,9 @@ describe('VoiceDock (R26)', () => {
     expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('harbour');
   });
 
-  it('draws no meter unless a legacy caller passes one (deprecated, removed in WEB-DOCK)', () => {
-    const { container, rerender } = render(<VoiceDock {...dock} />);
-    expect(container.querySelector('.d-voice-dock__meter, .d-audio-meter')).toBeNull();
-    rerender(<VoiceDock {...dock} meter={<div data-testid="meter" />} />);
-    expect(screen.getByTestId('meter').parentElement).toHaveClass('d-voice-dock__meter');
+  it('draws no meter (the legacy `meter` prop is gone, WEB-DOCK)', () => {
+    const { container } = render(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-dock__meter, .d-audio-meter, [role="meter"]')).toBeNull();
   });
 
   it('the status is a button calling onStatus (it opens Diagnostics, R26)', async () => {

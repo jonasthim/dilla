@@ -29,7 +29,7 @@
 .d-voice-row__states { display: flex; align-items: center; flex-wrap: nowrap; gap: 0.375rem; min-width: 0; overflow: hidden; white-space: nowrap; }
 .d-voice-row__person > .d-slot { grid-column: 5; }
 .d-voice-row__avatar { display: inline-flex; flex: none; }
-/* Speaking is the accent ring on the square avatar, beside the speaking state glyph (never colour alone). */
+/* Speaking is the accent ring on the square avatar, with no glyph beside it (Jonas, WEB-DOCK: speaking shows only as a ring); the word stays as `.d-sr-only`. */
 .d-voice-row__person[data-speaking="true"] .d-avatar { box-shadow: 0 0 0 2px var(--accent); }
 .d-voice-row__person-name { flex: 0 1 auto; min-width: 0; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-voice-row__states > .d-tag { flex: none; }

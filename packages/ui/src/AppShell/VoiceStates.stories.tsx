@@ -10,7 +10,6 @@ import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
-import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
 import { CallControls } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
@@ -64,7 +63,7 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave') }}
-        meter={<AudioMeter level={6} label={t('settings.voice.level')} />} onMute={noop} onDeafen={noop} onLeave={noop} />
+        onMute={noop} onDeafen={noop} onLeave={noop} />
     </div>
   );
 }

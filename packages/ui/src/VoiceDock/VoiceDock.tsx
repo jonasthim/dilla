@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useId } from 'react';
 import { VOICE_ICONS, voiceWhy, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 import { Icon } from '../Icon/Icon.tsx';
@@ -54,8 +54,6 @@ export interface VoiceDockProps {
   };
   /** False renders the two status lines and the status region, and no controls (the phone's call bar holds the controls). Default true. */
   controls?: boolean;
-  /** @deprecated — removed in WEB-DOCK. R26: the dock has no meter. A caller that still passes one (with the push-to-talk and hearing lines inside it) keeps them drawn, so the app loses no function before WEB-DOCK rewires them. */
-  meter?: ReactNode;
   /** Ignored since web3.9 (R26). */
   onMute?(): void;
   /** Ignored since web3.9 (R26). */
@@ -83,7 +81,7 @@ const PHASE_GLYPH = {
  */
 export function VoiceDock({
   phase, where, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
-  announcement, labels, controls: showControls = true, meter, onStatus, onCamera, onShare, onLeave,
+  announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
@@ -110,7 +108,6 @@ export function VoiceDock({
           : <p className="d-voice-dock__line1">{line1}</p>}
         <p className="d-voice-dock__where" title={labels.where ?? where}>{labels.where ?? where}</p>
       </div>
-      {meter !== undefined ? <div className="d-voice-dock__meter">{meter}</div> : null}
       {showControls ? (
         <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-voice-dock__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
           {onCamera !== undefined && labels.camera !== undefined ? (

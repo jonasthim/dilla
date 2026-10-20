@@ -53,8 +53,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-dock__paused, .dw-voice-dock__audio { display: grid; gap: var(--row-gap); margin: 0.5rem 0.5rem 0; padding: 0.5rem 0.625rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
 .dw-voice-dock__paused p, .dw-voice-dock__audio p { margin: 0; }
 .dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { justify-self: start; }
-/* Product walk M7: the input mode is a line of its own under the meter, never squeezed beside it. */
-.d-voice-dock .d-voice-dock__meter { flex-direction: column; align-items: stretch; gap: 0.25rem; }
+/* web3.9 WEB-DOCK (R26): the dock has no meter or lines; product walk M7's push-to-talk line and web3.4 V2's hearing line stand under the stage's controls (the class names stay). */
+.dw-voice-stage__lines { display: grid; justify-items: center; gap: 0.25rem; margin-top: 0.5rem; }
 .dw-voice-dock__mode { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
 .dw-voice-dock__hearing { margin: 0; font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .dw-voice-dock__mode .d-btn { min-height: 2.5rem; }
@@ -63,6 +63,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; scroll-padding-bottom: 4.5rem; /* the pinned toolbar: button + 2 x 0.5rem */ }
 /* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own). */
+/* web3.9 (controller addition, UI-4): the composer's resting band is as tall as the desktop user panel (3.25rem = 52px, measured in e2e/web/panes.spec.ts), so their tops meet; a phone has no user panel. */
+.d-app-shell:not([data-layout="phone"]) { --d-composer-band: 3.25rem; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
 /* web3.8 WS7: the grid or the focused tile fills what the heading, the notice and the toolbar leave. */

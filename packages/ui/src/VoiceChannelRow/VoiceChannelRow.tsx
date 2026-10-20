@@ -36,7 +36,7 @@ const SLOT_STATES = new Set(['muted', 'deafened']);
  * join icon is a sibling drawn over that slot (a button cannot sit inside the row's button), shown while the row is
  * hovered or focused and always on a device without hover; never both it and the connected glyph. Under the row, one
  * sub-row per person (R25, A7) at `--row-h-sub`, indented so the avatar starts at the name's x, with the speaking ring on
- * the avatar and the mute and deafen glyphs in the slot. The row and its parts are siblings, so the button stays the first
+ * the avatar (the only visible speaking mark, WEB-DOCK; the word stays for assistive technology) and the mute and deafen glyphs in the slot. The row and its parts are siblings, so the button stays the first
  * element of a list item (the roving lists find it there); a caller outside ChannelList wraps them in `.d-voice-item`.
  */
 export function VoiceChannelRow({ name, current, joined, participants, readable, labels, onOpen, onJoin }: VoiceChannelRowProps) {
@@ -80,7 +80,8 @@ export function VoiceChannelRow({ name, current, joined, participants, readable,
                       {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
                     </>
                   ) : null}
-                  <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key))} prefix="d-voice-row" />
+                  <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key) && w.key !== 'speaking')} prefix="d-voice-row" />
+                  {p.speaking ? <>{' '}<span className="d-sr-only">{labels.state.speaking}</span></> : null}
                 </span>
                 <TrailingSlot>
                   <VoiceStates words={words.filter(w => SLOT_STATES.has(w.key))} prefix="d-voice-row" />

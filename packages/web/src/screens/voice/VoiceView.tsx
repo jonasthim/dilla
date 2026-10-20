@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  AudioMeter, Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
+  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -237,6 +237,20 @@ function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
+/** web3.9 R26: the push-to-talk key and the hearing count left the dock; they stand under the stage's controls. */
+function StageLines({ v }: { v: VoiceContext }) {
+  const s = v.call.state;
+  const ptt = s?.mode === 'ptt';
+  const hearing = s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
+  if (!ptt && !hearing) return null;
+  return (
+    <div className="dw-voice-stage__lines">
+      {ptt ? <PttLine v={v} /> : null}
+      <HearingLine audio={s?.audio} silent={s?.deafened === true || s?.paused === true} />
+    </div>
+  );
+}
+
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
   const canShare = canCapture();
@@ -322,7 +336,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
       <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
-        controls={joined ? <Controls v={v} paused={paused} dm={dm} />
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} />{!dm ? <StageLines v={v} /> : null}</>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>
@@ -468,12 +482,15 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The call panel above the user panel while this device is in voice (flow 06): where, the input meter, then
- * camera, share screen and leave (no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
+ * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26): "voice connected"
+ * (a button to Diagnostics), "{channel} · {server}", then camera, share screen and leave (no meter and no line: the input level stays in
+ * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
  */
-export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
+export function Dock({ v, where, server, stageShown, onStatus }: {
+  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean; onStatus: () => void;
+}): React.JSX.Element | null {
   const { call } = v;
   const bannerRef = useRef<HTMLDivElement>(null);
   const id = call.channelId;
@@ -510,15 +527,11 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
         canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         announcement={call.announcement}
-        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
+        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: t('layout.dock.connected'),
+          where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
-        meter={<>
-          <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
-          {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
-          <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
-        </>}
-        onCamera={call.toggleCamera} onShare={call.toggleShare}
+        onStatus={onStatus} onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );

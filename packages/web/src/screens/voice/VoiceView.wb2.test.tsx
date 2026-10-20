@@ -150,7 +150,10 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
     expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
-    await waitFor(() => expect(sidebar().getAllByRole('img', { name: t('voice.state.speaking') }).length).toBeGreaterThan(0));
+    // web3.9: the ring is the mark (no glyph); the word stays for assistive technology.
+    await waitFor(() => expect(sidebar().getByText(t('voice.state.speaking'))).toBeInTheDocument());
+    expect(document.querySelector('.dw-sidebar .d-voice-row__person[data-speaking="true"]')).not.toBeNull();
+    expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
   });
 });
 
@@ -246,7 +249,8 @@ describe('the dock says where and how (product walk M7, M8)', () => {
     await app.user.click(await main().findByRole('button', { name: 'call' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     const where = t('call.where', { name: 'bob' });
-    await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('voice.dock.connected', { where })));
+    await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('layout.dock.connected')));
+    expect(document.querySelector('.d-voice-dock__where')).toHaveTextContent(where);
     expect(dockStatus()).toHaveTextContent(t('voice.announce.joined', { where }));
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.announce.left', { where })));

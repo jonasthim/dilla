@@ -1423,6 +1423,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       const home = (railSlices.flat() as ChannelSummary[]).find(c => c.id === call.channelId)?.communityId;
       return home === undefined ? null : { name: 'channel', communityId: home, channelId: call.channelId } as const;
     })();
+  // The dock's second line names the call's channel and its server; a DM call has no server (its `where` already reads "the call with {name}").
+  const dockServer = call.channelId === null || dms?.some(d => d.id === call.channelId) === true ? null
+    : (communities ?? []).find(c => c.id === (railSlices.flat() as ChannelSummary[]).find(ch => ch.id === call.channelId)?.communityId)?.name ?? null;
   // H3: not rendered while typing; the header's dot stands for it.
   const callBar = !callBarUp || keyTyping || call.channelId === null ? undefined : (
     <CallBar phase={callPhase(voiceCtx)} where={whereOf(call.channelId)} muted={call.state?.muted ?? false}
@@ -1658,6 +1661,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
+            server={dockServer} onStatus={() => navigate({ name: 'settings', section: 'diagnostics', from: null })}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
           <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
             onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })} />

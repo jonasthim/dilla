@@ -330,7 +330,7 @@ export async function openVoiceOnly(page: Page, community: string, peer: VoicePe
   await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
 }
 
-/** The voice dock (flow 06), present while this device is in voice. */
+/** The voice dock (flow 06), present while this device is in voice: "voice connected", channel · server and three icon buttons; no meter or level text (web3.9 R26). */
 export function dock(page: Page): Locator { return page.locator('.dw-voice-dock'); }
 /** The call stage or voice view of the open route. */
 export function stage(page: Page): Locator { return page.locator('.dw-voice-stage'); }
