@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-17 ("web-3.8"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-2x ("web-3.9"): starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -25,14 +25,15 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
 2. **Open dilla** opens the app, which has no server in it yet:
 
    ![The app on a new instance: the main pane says "You are not in a server yet" with the buttons Start a server
-   and Join a server, and the rail on the left has the tiles join and new](screenshots/create-empty-desktop.png)
+   and Join a server, and the rail on the left has the @ tile and the + tile](screenshots/create-empty-desktop.png)
 
    "You are not in a server yet" "Start a server and invite your friends, or join one with an invite someone sent
    you." The sidebar stands on **direct messages**: it says "no direct messages yet" and offers **message someone**.
    Pressing that opens a picker which says "There is no one to message yet: direct messages are with people you share
    a server with. Start a server and invite someone, or join one."
-3. Press **Start a server**, or the **new** tile in the server rail. With the keyboard, Tab to the rail, which is one
-   stop, then press the Down arrow (or End, then Up) until **new server** has focus, and press Enter. The dialog
+3. Press **Start a server**, or the **+** tile ("add a server") in the server rail and then **new server**. With the
+   keyboard, Tab to the rail, which is one stop, then press the Down arrow (or End) until **add a server** has focus,
+   and press Enter. The dialog
    "Start a server" says "You own it: you add its channels and invite people. It starts with a text channel and a
    voice channel, both called general."
 
@@ -44,14 +45,19 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
 5. The dialog closes, the server is selected and `#general` opens with the cursor in its message field. The server
    also has a voice channel called general. You are its owner.
 
-The server rail now has two dashed tiles under your servers. **join** (an arrow into a bracket) is "join a server",
-for an invite someone sent you. **new** (a plus) is "new server". Beside the server's name sits a gear, **server settings**,
-and the owner has a **+** ("new channel") at the top of the channel list. Invite links are made in server settings,
-under **invites** ([Invite people](#invite-people)).
+The server rail is now: the **@** tile for your direct messages at the top, a line, your servers, and one dashed **+**
+tile ("add a server") under them. The **+** opens one window, "add a server", with two choices: **join a server**, for an
+invite someone sent you, and **new server**. Beside the server's name sits a gear, **server settings**, and the owner has a
+**+** ("new channel") at the top of the channel list. Invite links are made in server settings, under **invites**
+([Invite people](#invite-people)).
 
-![The rail and the top of the sidebar: the tile MC for Midgard Crew, the tile join with an arrow into a bracket and
-the tile new with a plus, and beside them Midgard Crew with the gear for server settings, and the + of the channel
-list](screenshots/create-rail.png)
+![The rail and the top of the sidebar: the @ tile, the tile MC for Midgard Crew and the dashed + tile, and beside them
+Midgard Crew with the + for a new channel and the gear for server settings](screenshots/create-rail.png)
+
+On a phone the same top of the list is on the **home** tab:
+
+![The top of the home tab at 360 pixels wide: the @ tile, the server tile and the + tile, and Midgard Crew with the + for a
+new channel, the magnifier and the gear](screenshots/create-rail-phone.png)
 
 At phone width the empty app and the dialog look like this:
 
@@ -105,8 +111,9 @@ browser joined are not shown." Everything sent after that reaches them.
 ## Add a channel
 
 The owner, and anyone whose roles let them manage channels, sees a **+** ("new channel") at the top of the channel
-list. It is there on the **channels** tab of a wide window and in the phone's servers list, never on **direct
-messages**, and a person who may not manage channels has no **+**. Press it.
+list while the server has no categories. Once it has categories, each category has its own **+** ("new channel in
+{name}"), which shows when you point at the category or tab to it, and the new channel starts in that category. The
+**+** is never on the direct messages list, and a person who may not manage channels has none. Press it.
 
 ![The dialog "New channel in Midgard Crew", opened from the + in the channel list: Kind with text selected, then voice
 and announcement, Channel name loot, "Shown as #loot. Up to 100 characters (fewer for some letters)." and the buttons
@@ -154,12 +161,16 @@ a name.", "That name is too long. A server name is up to 255 characters (fewer f
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
 time. Check the name and save again.
 
-Under the name, **Overview** also holds "AFK channel": choose an existing voice channel as the "AFK destination" and
-a "Move after" time (1, 5, 15, 30 or 60 minutes), then **Save AFK settings** ("AFK settings saved."). "Idle people in
-voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel."
-The server moves a device that has had no keyboard, pointer, touch or microphone speech for that long; quiet listening
-counts as idle. The AFK channel shows "{n} in AFK" and has **Move to AFK** and **Leave AFK** for doing it by hand
-([Voice, calls and media files](voice.md#afk-channels)).", look at the name that is there now and save again.
+Under the name, **Overview** holds the "inactive timeout": how long someone can sit idle in a voice channel on a computer
+before the server moves them to the server's AFK channel ("Members idle in voice this long move to AFK and are muted.
+Phones are not moved."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
+There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
+files](voice.md#afk-channels)).
+
+![Server settings → overview: the server name and the "inactive timeout" set to 5 minutes](screenshots/afk-settings-desktop.png)
+
+The field says why when saving did not work: "Someone else changed the server at the same time. Check the name and save
+again." means you should look at the name that is there now and save again.
 
 **Channels** lists the channels under their categories ("no category" holds the rest). Each row has **edit**, **move
 up**, **move down** and **delete**; the screen announces "{name} moved." after a move.
@@ -170,6 +181,8 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   can change the "Channel name" ("Up to 100 characters (fewer for some letters)."), the "Topic" of a text channel ("Shown under the channel name.
   Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
+- The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
+  channel. Everyone in it is muted.") and the move buttons, and no **delete**: it cannot be removed.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
   ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.
@@ -194,9 +207,12 @@ again.
 
 The **members** button in the channel header opens the list of "members of {server}", grouped by role: one group
 for each role shown apart, highest first ("{name} — {count}"), then "members". A row can carry the tags `owner`,
-`you` and `bot`. On a wide window the list is a column beside the conversation. On a phone, or any window narrower
+`you` and `bot`. Each row is two lines tall: the name and tags on the first, and the second kept for a status line
+(nothing fills it yet). On a wide window the list is a column beside the conversation. On a phone, or any window narrower
 than 64 rem, it is a panel over the screen: focus moves into it, and **close members**, Escape or a tap outside it
 closes it. Focus goes back to **members**.
+
+![The member list beside #general: Ada with the tag owner, Björn, and Mira with the tag you, each with a status dot](screenshots/members-desktop.png)
 
 Each row has an **actions for {name}** button. Right-click on the row, or Shift+F10 or the ContextMenu key with the
 row focused, opens the same menu. In the menu, Down and Up move between the items, Home and End jump to the first and
@@ -328,7 +344,8 @@ knows who is in it.
 
 People who lose a channel keep the messages they already have. Someone who gains one sees only messages sent after
 they join it, whatever their roles. A channel that leaves your list, because it was hidden from you or deleted, is
-announced as "#{name} is no longer available to you."; the app cannot tell which it was.
+announced as "{name} is no longer available to you." (with a # before the name of a text channel); the app cannot tell
+which it was.
 
 ### Per-channel settings
 
@@ -686,19 +703,21 @@ in #general and the message field](screenshots/shell-conversation.png)
 
 From left to right:
 
-- **The server rail.** One tile per server you are in, with its initials, then two dashed tiles. **join** (an
-  arrow into a bracket) is "join a server": paste a server invite ("A server invite, as a code or a link.") and
-  press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). A number on a server tile
-  counts its unread channels. The rail has no settings button: settings are behind the gear in [the user
+- **The server rail.** It is 72 pixels wide. At the top is the **@** tile, "direct messages" ([Home and direct
+  messages](#home-and-direct-messages)); under a line come your servers, one tile each with its initials, and under
+  them one dashed **+** tile, "add a server". The **+** opens "add a server" with two choices: **join a server**, where
+  you paste a server invite ("A server invite, as a code or a link.") and press **Join**, and **new server**
+  ([Start a server](#start-a-server)). A number on a server tile counts its unread channels, and on the **@** tile your
+  unread direct messages. The rail has no settings button: settings are behind the gear in [the user
   panel](#the-user-panel).
 - **The channel list.** The server's name with a gear beside it, **server settings** (leave server is a section in
-  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), the "channels" and "direct
-  messages" tabs and the channels, with a **+** at the top for people who may manage channels ([Add a
+  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
+  [categories](#servers-and-categories), with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
-  list](#one-channel-list)) and open the voice channel ([Voice, calls and media files](voice.md)). Channels the
+  list](#one-channel-list)), and one click joins one ([Voice, calls and media files](voice.md)). Channels the
   server can read ("Readable by this server") are listed, and selecting one shows "This channel does not open here
   yet". An unread channel has a badge, and mentions have their own count. Opening a channel marks it read.
-- **The conversation.** The channel's name and topic at the top, the messages, and the message field
+- **The conversation.** The channel's name at the top, with a row of icons at the right ([The header](#the-header)), the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag when it
   was sent from a browser, and the time. A message is at most 4000 bytes; in the last 400 the field shows
   how many are left. While a message is on its way it shows "sending…"; one that could not be sent shows "not sent" with
@@ -714,6 +733,38 @@ app](screenshots/link-offline-desktop.png)
 At phone width the app is arranged differently, with a tab bar at the bottom ([On your phone](#on-your-phone)):
 
 ![The same conversation at 360 pixels wide](screenshots/shell-phone.png)
+
+### Home and direct messages
+
+The **@** tile at the top of the rail opens your direct messages, on a computer and on a phone. The sidebar then lists
+your direct messages instead of a server's channels, and the **@** tile stays selected until you pick a server. A badge
+on the **@** tile counts your unread direct messages. A link to a direct message opens it with **@** selected too. On a
+phone, the app has three tabs, **home**, **activity** and **you** ([On your phone](#on-your-phone)), and the direct
+messages are behind the **@** tile of **home**.
+
+![Home: the @ tile selected, the list of direct messages with Ada's unread reply, and the conversation](screenshots/home-dms-desktop.png)
+
+### Servers and categories
+
+Channels sit in categories. Click a category's name to collapse it, and again to open it. A collapsed category still
+shows the channel you are in, channels with new messages and the voice channel you are in, so nothing you need is hidden.
+Which categories are collapsed is remembered in this browser only, not in your account. People who manage channels add a
+channel to a category with the **+** at its right ("new channel in {name}"); make categories in server settings → channels
+([Run your server](#run-your-server)).
+
+![The channel list with the category Raids open and the category Boats collapsed](screenshots/categories-desktop.png)
+
+### The header
+
+The top of a conversation has icons for **pins**, **threads**, **search**, **edit channel** (for people who manage
+channels) and **members**. Point at an icon, or Tab to it, to see its name and its shortcut. In a narrow window some of
+them fold into **more**.
+
+![The members icon in the channel header with its name shown below it](screenshots/header-tooltip-desktop.png)
+
+A long conversation groups messages from one person within a few minutes under one name and time, and puts a divider at
+each new day ("today", "yesterday", then the date). When you have scrolled up, "viewing older messages" shows with **jump
+to present**; Control+End does the same.
 
 ### Desktop layout
 
@@ -734,9 +785,10 @@ user panel at the bottom left](screenshots/voice-dock-desktop.png)
 
 Text and voice channels are in one list, in the order the server gives them (and its categories). A voice channel has
 a speaker icon. While people are in it, it shows how many, and the people in the call are listed under it, each with
-small icons for what they are doing (muted, deafened, camera, screen share and speaking; point at an icon for its
-name). There is no separate "voice" section and no "active voice" list. Pressing a voice channel opens it; the join
-button is on its screen ([Voice, calls and media files](voice.md)).
+small icons for what they are doing (muted, deafened, camera, screen share; point at an icon for its name) and a ring
+around the avatar of whoever is speaking. There is no separate "voice" section and no "active voice" list. On a computer,
+one click on a voice channel joins it; on a phone, tap it to see who is there, then join ([Voice, calls and media
+files](voice.md)). The server's "AFK" channel is in the list too ([AFK channels](voice.md#afk-channels)).
 
 ### The user panel
 
@@ -766,12 +818,12 @@ While you are in a call, [the call panel](voice.md#the-call-panel) sits above th
 | Alt+Arrow Up, Alt+Arrow Down | Opens the previous or next channel, from anywhere in the app |
 | Escape | In the message list: back to the message field. In a dialog: closes it |
 | Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the border between the channel list and the conversation, the user panel (with the call panel above it, in a call), the channel header, the messages, the message field |
-| Arrow keys | Move within the server rail (your servers, then join, then new server) and the channel list, which are one Tab stop each. On a border between panes they resize it ([Desktop layout](#desktop-layout)) |
+| Arrow keys | Move within the server rail (the @ tile, your servers, then add a server) and the channel list, which are one Tab stop each. On a border between panes they resize it ([Desktop layout](#desktop-layout)) |
+| Ctrl+End | In a conversation: jumps to the newest message |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
 | Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
 | Control/⌘+Shift+M, Control/⌘+Shift+D | Mute or unmute, deafen or undeafen: in a call, or before one to set how the next call starts ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
 
-The sidebar tabs are one more Tab stop. Arrow Left and Arrow Right switch between "channels" and "direct messages".
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
 
 Every step of the sign-up works with the keyboard alone: Tab to a field or button, Space ticks the
@@ -788,21 +840,24 @@ a channel's history starts when this browser joined it.
 ## On your phone
 
 On a screen as narrow as a phone's (under about 770 pixels wide), and on a phone held sideways, the app shows one thing
-at a time, with four tabs at the bottom. It works in the phone's browser; there is no separate app.
+at a time, with three tabs at the bottom. It works in the phone's browser; there is no separate app.
 
-![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, with the voice channels in the same list and a join voice button on each, and the four tabs at the bottom](screenshots/phone-home.png)
+![The home tab: the @ tile and your servers in a column at the left, the channels of Midgard Crew beside them in categories, with a join icon on each voice channel, and the three tabs at the bottom](screenshots/phone-home.png)
 
-### The four tabs
+### The three tabs
 
-The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A number on a tab counts what is new there
-("{name}, {count} new" for a screen reader).
+The tab bar ("sections") has **home**, **activity** and **you**. A number on a tab counts what is new there ("{name}, {count} new"
+for a screen reader).
 
-- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **search**
-  (a magnifier) and the gear for **server settings** sit beside the server's name; there is no menu. A member leaves
-  a server from the gear, under **leave server**. The **+** for a new channel is at
-  the top of the channel list, for people who may manage channels, and invite links are made in server settings,
-  under invites.
-- **DMs** lists your direct messages.
+- **home** holds the **@** tile and your servers in a column at the left, and beside it the channels of the one you
+  chose. The **search** (a magnifier) and the gear for **server settings** sit beside the server's name; there is no
+  menu. A member leaves a server from the gear, under **leave server**. The **+** for a new channel is at the top of the
+  channel list for people who may manage channels, and invite links are made in server settings, under invites. Tap a
+  voice channel to see who is in it, then join.
+- The **@** tile on **home** shows your direct messages beside the rail. They are not a tab of their own.
+
+![Home with the @ tile selected: the list of direct messages](screenshots/home-dms-phone.png)
+
 - **activity** lists the mentions and direct messages that came in, and "unread elsewhere" for channels with
   something new. It lists what arrived since you opened dilla in this tab, and says so: "Since this tab opened."
   Nothing new says "Nothing new. Mentions and direct messages show up here."
@@ -813,7 +868,7 @@ The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A n
 
 ### Opening a channel and going back
 
-Choosing a channel or a direct message opens it over the whole screen, with the four tabs still at the bottom. When
+Choosing a channel or a direct message opens it over the whole screen, with the three tabs still at the bottom. When
 you tap the message box (or any other field), the tabs step aside so that the message box sits right above the keyboard,
 and they come back when you leave the field. Tapping the tab you are already in takes you to that tab's list, and tapping
 another tab takes you to where you were in it. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
@@ -821,6 +876,10 @@ button or swipe does the same. The **channel menu** at the right holds the chann
 **threads**. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
 
 ![A channel: back at the top left, the channel name, the channel menu, the messages and the message box](screenshots/phone-channel.png)
+
+On a phone, tap a message to show what you can do with it (**react**, **reply** and **reply in thread**); tap it again, or scroll, to hide them.
+
+![A message tapped on a phone: react, reply and reply in thread above the message](screenshots/message-reveal-phone.png)
 
 Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
 closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
@@ -836,7 +895,7 @@ pixels tall and wide. See [Voice, calls and media files](voice.md#on-a-phone).
 
 ### Sideways, Safari and sharing
 
-- **A phone held sideways** gets the phone layout too: one thing at a time, the four tabs, and the same 44-pixel
+- **A phone held sideways** gets the phone layout too: one thing at a time, the three tabs, and the same 44-pixel
   controls. Tablets and short desktop windows keep the desktop layout.
 - **A Safari private window** cannot keep dilla's data, so the app says so instead of failing: "This window cannot keep
   dilla’s data". "dilla needs storage that lasts. Private windows and some privacy settings turn it off. Open this
@@ -1020,20 +1079,20 @@ scrolls as one column.
 
 ## 8. Badges, direct messages and notifications
 
-![Mira in #general: the server tile in the rail shows 1, #loot shows 1, and the direct messages tab shows 1
+![Mira in #general: the server tile in the rail shows 1, #loot shows 1, and the @ tile shows 1
 for a reply from Ada](screenshots/shell-dm-badge.png)
 
 A channel with unread messages shows a count, and mentions have their own count. The server's tile in the
-rail counts its unread channels, and each sidebar tab adds up its rows: here #loot is unread and Ada has
+rail counts its unread channels, and the **@** tile counts your unread direct messages: here #loot is unread and Ada has
 answered a direct message. Opening a channel or a direct message marks it read. Your own messages, from any
 of your browsers, never count as unread.
 
 ![A channel and server rail with unread badges](screenshots/shell-unread-badge.png)
 
-In **direct messages**, choose **message someone** ("Pick a member of this server."), choose **message** next
+Under the **@** tile, choose **message someone** ("Pick a member of this server."), choose **message** next
 to a person and write. A direct message someone else starts appears without reloading. Direct messages stay
-reachable when you are in no server, or when a server did not load: the **direct messages** tab is still
-there, and the channels tab says what is wrong. Starting a new one needs a server, because the list of
+reachable when you are in no server, or when a server did not load: the **@** tile is still
+there, and the channel list says what is wrong. Starting a new one needs a server, because the list of
 people comes from it.
 
 ![A direct message with Ada](screenshots/dm-conversation.png)
@@ -1233,17 +1292,19 @@ this conversation failed the identity check. Sending is paused here until it’s
 
 ![Search results for "bridge" across everything](screenshots/search-results-desktop.png)
 
-Search looks only through the messages this browser holds and has decrypted; nothing is sent to the instance.
+Search opens as a window over the app. It looks only through the messages this browser holds and has decrypted; nothing is
+sent to the instance. Each result shows the #channel (or the person, in a direct message), the author and the time, with
+the message under them.
 
 1. Press **Control+K** (⌘+K on a Mac) for "everything", or **Control+/** in a conversation for "this conversation".
 2. Type into "Search your messages". The scope buttons are "this conversation", "this community" and "everything".
 3. Arrow Down and Arrow Up move through the results while the cursor stays in the field; Enter or a click opens the
-   message and puts the focus on it. Escape closes search from anywhere in it, and gives the focus back to where
-   it was. While search is open, the rest of the app cannot be reached with Tab.
+   message and puts the focus on it. The window's footer reminds you: arrows to move, Enter to open, Escape to close. Escape
+   closes search from anywhere in it, and gives the focus back to where it was. While search is open, the rest of the app cannot be reached with Tab.
 
 "Searching your messages" shows while it searches, "No results in this scope" when nothing matched, and "That
-message is no longer available" when the message was deleted or its conversation is gone. Search has no button on a
-phone yet: it opens with a keyboard only.
+message is no longer available" when the message was deleted or its conversation is gone. On a computer the **search** icon
+in the channel header opens it too, and on a phone the magnifier beside the server's name does.
 
 ![Search at 360 pixels wide](screenshots/search-results-phone.png)
 
@@ -1297,7 +1358,7 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (2026-10-17)
+## 11. Known limits (2026-10-2x)
 
 - No native phone or desktop app (on a phone, the web client has [its own layout](#on-your-phone)). A second browser needs the recovery key and the password, and the second factor
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
@@ -1310,7 +1371,7 @@ and when the other tab closes it takes over by itself.
   pins and mentioning everyone are checked only by members' apps, and the role view is not verified by the group
   ([Who checks the rules](#who-checks-the-rules)). People who gain a channel see only messages sent after they join
   it. Five permissions have no effect yet ([Permissions that do nothing yet](#permissions-that-do-nothing-yet)).
-- Tabs open from before web-3.8 must reload: they show "This server needs a newer client. Reload the page." with a
+- Tabs open from before web-3.9 must reload: they show "This server needs a newer client. Reload the page." with a
   **reload** button that keeps your draft ([Other messages](#other-messages)).
 - Threads show their first 200 replies, a thread cannot start on a reply, and there is no unread count for a thread on
   its own.
@@ -1322,8 +1383,7 @@ and when the other tab closes it takes over by itself.
 - Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
   permissions have no effect yet. Only the author can delete a message.
 - Your status is shared only inside the servers you are in. Notifications require an open tab and browser permission.
-- Search opens only from the keyboard (Control/⌘+K, Control+/); a phone or tablet without a keyboard cannot open it yet.
-  Search finds only text this browser holds, never files.
+- Search finds only text this browser holds, never files.
 - Messages from before this browser joined a channel are not shown.
 - The first key seen for a person is trusted as first seen until you compare numbers, and an instance can hold back
   a newer device list at that moment. Numbers are compared by reading them aloud only: no QR code, and no number for
@@ -1354,8 +1414,9 @@ the changed contact in the conversation, search, diagnostics and a second tab ar
 The test peer has no display name of its own (the testkit driver cannot set one), so it shows as its username
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
-identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
-common phone size, from the same session: the servers tab, a channel, the activity tab and the call bar. The own-account
+identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.9 ada makes the categories Raids and Boats and sets the inactive timeout (server settings), mira opens Home, taps a
+message on the phone, joins the AFK channel and shoots the dock, the member list and a header tooltip. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
+common phone size, from the same session: the home tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. Every person sets up an authenticator app at sign-up, with codes computed for the test host's clock, and
@@ -1367,6 +1428,7 @@ removed person sees" the script removes mira on ada's authority through the inst
 
 ```sh
 cargo build -p dilla-testkit --release --locked
+bash core/dilla-core-wasm/build-wasm-pkg.sh
 npm run build -w @dilla/web
 npm run build:harness -w @dilla/client-core
 GO=/path/to/go npm run docs:shots -w @dilla/e2e

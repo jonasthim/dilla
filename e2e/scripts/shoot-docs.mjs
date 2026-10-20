@@ -23,6 +23,7 @@
 //      from #general, the dock; then all three leave;
 //   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
 //      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
+//   4d. (web3.9 adds home-dms, categories, the AFK call and its timeout, the dock, members, the header tooltip and the message reveal: WEB39_SHOTS)
 //   4d. (web3.7) shoots the phone shell at 390×844 for getting-started.md's "On your phone": mira's channel, the servers list,
 //      the activity tab and, while she is in "harbour", the call bar (PHONE_SHOTS);
 //   5. removes mira from the server on ada's authority (the owner's DELETE /v1/communities/{id}/members/{user},
@@ -92,11 +93,16 @@ const LOOT = 'loot';
 const VOICE = 'harbour';
 // web-3.1 (flow 07): ada's create-flow images, each at both viewports, and the rail on its own.
 export const CREATE_SHOTS = ['create-empty', 'create-server', 'create-channel', 'create-invite']
-  .flatMap((state) => ['desktop', 'phone'].map((viewport) => `${state}-${viewport}`)).concat(['create-rail']);
+  .flatMap((state) => ['desktop', 'phone'].map((viewport) => `${state}-${viewport}`)).concat(['create-rail', 'create-rail-phone']);
 // web3.8: the sign-in in its new order (username and password, second factor, recovery key, done), and the desktop images of
 // the stage (1440×900), the resizable panes and the link line that replaced the status bar.
 export const SIGNIN_SHOTS = ['signin-0-entry', 'signin-1-login', 'signin-2-code', 'signin-3-recovery-key', 'signin-4-done'];
 export const WEB38_SHOTS = ['invite-landing-light', 'voice-stage-focused-desktop', 'voice-stage-grid-desktop', 'panes-resized-desktop', 'link-offline-desktop'];
+// web3.9: the Discord-style layout. The @ tile and the Home list (desktop and phone), a collapsed category, the built-in
+// AFK channel's call and its timeout setting, the dock close up, the two-line member rows, a message revealed by a tap on
+// a phone and a header icon's tooltip.
+export const WEB39_SHOTS = ['home-dms-desktop', 'home-dms-phone', 'categories-desktop', 'afk-call-desktop', 'afk-settings-desktop',
+  'dock-desktop', 'members-desktop', 'message-reveal-phone', 'header-tooltip-desktop'];
 // The host's in-process LiveKit: signalling and ICE/UDP (the plan's docs:shots ports).
 const SFU = { port: 7888, udpPort: 7890 };
 const PEOPLE = {
@@ -469,11 +475,11 @@ async function connected(page) {
   await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ timeout: WAIT });
 }
 
-/** Opens the voice channel `name` of the server `server`, presses `join voice` and waits for a connected call. */
+/** Clicks the voice channel `name` of the server `server` (one click joins it) and waits for a connected call. */
 async function joinVoice(page, server, name) {
   await railServer(page, server).click();
+  // web3.9: one click on a voice channel joins it on a computer; the stage has no join button to press first.
   await voiceRow(page, name).click();
-  await stage(page).getByRole('button', { name: t('voice.join'), exact: true }).click();
   await connected(page);
 }
 
@@ -579,6 +585,17 @@ async function main(argv) {
     if (newBox === null) throw new Error('the rail has no add tile on screen');
     await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(newBox.y + newBox.height + 12) } });
     written.push(railFile);
+    // web3.9: the same top of the channel list at 360 wide, from the phone's home tab (back out of the channel first).
+    await ada.setViewportSize(PHONE);
+    await ada.getByRole('button', { name: t('nav.back'), exact: true }).click();
+    await ada.getByRole('button', { name: t('create.channel.open'), exact: true }).waitFor({ timeout: WAIT });
+    await settle(ada);
+    const railPhoneFile = path.join(o.outDir, 'create-rail-phone.png');
+    await ada.screenshot({ path: railPhoneFile, clip: { x: 0, y: 0, width: PHONE.width, height: 240 } });
+    written.push(railPhoneFile);
+    await ada.getByRole('button', { name: 'general', exact: true }).first().click();
+    await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await ada.setViewportSize(DESKTOP);
 
     // "new channel" (the "+" in the channel list's header, for the owner): #loot, then the voice channel "harbour".
     const addChannel = async (kind, name, shotName) => {
@@ -602,6 +619,42 @@ async function main(argv) {
     await ada.getByRole('button', { name: t('voice.open', { name: VOICE }), exact: true }).waitFor({ timeout: WAIT });
     await ada.getByRole('button', { name: 'general', exact: true }).click();
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+
+    // web3.9: Server settings → overview holds the inactive timeout of the built-in AFK channel (there is no picker), then
+    // channels → new category: "Raids" holds #loot and "Boats" holds the voice channel harbour; Boats is collapsed for the shot.
+    await byText(ada, 'button', 'admin.open').click();
+    const prepDialog = byText(ada, 'dialog', 'admin.title');
+    const prepNav = prepDialog.getByRole('navigation', { name: t('admin.nav'), exact: true });
+    await prepNav.getByRole('button', { name: t('admin.nav.overview'), exact: true }).click();
+    await prepDialog.getByRole('combobox', { name: t('afk.timeout.label'), exact: true }).and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await settle(ada);
+    await shootAda('afk-settings-desktop');
+    await prepNav.getByRole('button', { name: t('admin.nav.channels'), exact: true }).click();
+    for (const category of ['Raids', 'Boats']) {
+      await prepDialog.getByRole('button', { name: t('admin.channels.newCategory'), exact: true }).click();
+      const categoryDialog = byText(ada, 'dialog', 'admin.category.title', { server: SERVER });
+      const categoryName = categoryDialog.getByRole('textbox', { name: t('admin.category.name'), exact: true });
+      await categoryName.fill(category);
+      await categoryName.press('Enter');
+      await categoryDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    }
+    for (const [channel, category, key] of [[LOOT, 'Raids', 'admin.channel.titleText'], [VOICE, 'Boats', 'admin.channel.titleVoice']]) {
+      await prepDialog.getByRole('button', { name: t('admin.channels.editLabel', { name: channel }), exact: true }).click();
+      const editDialog = byText(ada, 'dialog', key, { name: channel });
+      await editDialog.getByLabel(t('admin.channel.category'), { exact: true }).selectOption({ label: category });
+      await editDialog.getByRole('button', { name: t('admin.channel.save'), exact: true }).click();
+      await editDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    }
+    await ada.keyboard.press('Escape');
+    await prepDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    const adaChannels = ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true });
+    const boats = adaChannels.getByRole('button', { name: /^Boats/ });
+    await boats.click();
+    await voiceRow(ada, VOICE).waitFor({ state: 'hidden', timeout: WAIT });
+    await settle(ada);
+    await shootAda('categories-desktop');
+    await boats.click();
+    await voiceRow(ada, VOICE).waitFor({ timeout: WAIT });
 
     // Server settings → Invites → "Make link": the dialog makes the link and copies it; the link is read from its field,
     // never the clipboard.
@@ -915,6 +968,17 @@ async function main(argv) {
     await settle(mira);
     await shoot('shell-dm-badge');
 
+    // web3.9: the @ tile opens Home, the direct messages with Ada's unread reply; then back to #general.
+    await homeTile(mira).click();
+    await mira.getByRole('navigation', { name: t('shell.dms.label'), exact: true }).getByRole('button', { name: new RegExp(`^${PEOPLE.ada.display}`) }).click();
+    await mira.getByRole('textbox', { name: t('shell.dm.composer', { name: PEOPLE.ada.display }), exact: true }).waitFor({ timeout: WAIT });
+    await mira.getByRole('log', { name: t('shell.dm.log', { name: PEOPLE.ada.display }) }).getByText('rope is packed').waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('home-dms-desktop');
+    await railServer(mira, SERVER).click();
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
+
     // web3.7: the phone shell, at 390×844. Mira's page flips to the phone layout live: the channel she is reading is a
     // pushed view with a back, the lists are behind it, and the tab bar names three tabs. What she received since this
     // tab opened (the mention, the DM from Ada) is in the activity tab.
@@ -925,6 +989,15 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ state: 'visible', timeout: WAIT });
     await settle(mira, { keepFocus: false });
     await shoot('phone-channel');
+    // web3.9: on a phone a tap on a message reveals its actions; a second tap hides them.
+    const revealRow = row(mira, 'general', 'raid tonight at').first();
+    await revealRow.scrollIntoViewIfNeeded();
+    await revealRow.click({ position: { x: 150, y: 8 } });
+    await revealRow.and(mira.locator('[data-revealed="true"]')).waitFor({ timeout: WAIT });
+    await settle(mira, { keepFocus: true });
+    await shoot('message-reveal-phone');
+    await revealRow.click({ position: { x: 150, y: 8 } });
+    await mira.locator('[data-revealed="true"]').waitFor({ state: 'detached', timeout: WAIT });
     // web3.7.1 (opt in with --ui-out): the tab bar on a channel, hidden while typing, under Settings and under the members
     // sheet, in the Mesh, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
     if (o.uiOut !== undefined) {
@@ -972,6 +1045,13 @@ async function main(argv) {
     await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
     await settle(mira);
     await shoot('phone-home');
+    // web3.9: the @ tile on the Home tab, selected, with the direct messages beside the rail.
+    await homeTile(mira).click();
+    await mira.getByRole('navigation', { name: t('shell.dms.label'), exact: true }).waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('home-dms-phone');
+    await railServer(mira, SERVER).click();
+    await mira.getByRole('button', { name: 'general', exact: true }).waitFor({ timeout: WAIT });
     await phoneTab('nav.tab.activity').click();
     await mira.getByRole('heading', { name: t('activity.title'), exact: true }).waitFor({ timeout: WAIT });
     await mira.getByText(t('activity.dm'), { exact: false }).first().waitFor({ timeout: WAIT });
@@ -1074,6 +1154,16 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ timeout: WAIT });
     // Product walk I4: no scroll helper: at 360 the dock is pinned on screen by itself.
     await shootState(mira, 'voice-dock');
+    // web3.9: the dock and the user panel up close: "voice connected" (no meter), where she is, camera, share and leave.
+    {
+      const dockBox = await dock(mira).boundingBox();
+      const panelBox = await mira.locator('.d-user-panel').boundingBox();
+      if (dockBox === null || panelBox === null) throw new Error('the dock or the user panel has no box');
+      const top = Math.max(0, Math.floor(dockBox.y) - 10);
+      const dockFile = path.join(o.outDir, 'dock-desktop.png');
+      await mira.screenshot({ path: dockFile, clip: { x: 0, y: top, width: 330, height: Math.ceil(panelBox.y + panelBox.height) + 6 - top } });
+      written.push(dockFile);
+    }
     // web3.7: on a phone the dock is the call bar above the tab bar of the lists (the servers list, here).
     await mira.setViewportSize(PHONE_APP);
     await phoneBack.click();
@@ -1090,6 +1180,34 @@ async function main(argv) {
       await who.getByRole('button', { name: 'general', exact: true }).click();
       await composer(who, 'general').waitFor({ timeout: WAIT });
     }
+
+    // web3.9: the member list (two lines a row) and a header icon's tooltip, from #general.
+    // The people who just left harbour are gone from the list before the shots.
+    await mira.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByText('Björn', { exact: true }).waitFor({ state: 'hidden', timeout: WAIT });
+    const jumpToPresent = mira.getByRole('button', { name: t('layout.log.jump'), exact: true });
+    if (await jumpToPresent.isVisible()) await jumpToPresent.click();
+    await jumpToPresent.waitFor({ state: 'hidden', timeout: WAIT });
+    const membersButton = mira.locator('.d-channel-header').getByRole('button', { name: t('members.toggle'), exact: true });
+    const membersWereOpen = await membersButton.getAttribute('aria-pressed') === 'true';
+    if (!membersWereOpen) await membersButton.click();
+    await mira.locator('.d-member-list').waitFor({ timeout: WAIT });
+    await mira.locator('.d-member-list__row').nth(2).waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('members-desktop');
+    await membersButton.hover();
+    await mira.getByRole('tooltip').waitFor({ timeout: WAIT });
+    await shoot('header-tooltip-desktop');
+    await mira.mouse.move(-10, -10);
+    if (!membersWereOpen) await membersButton.click();
+
+    // web3.9: the built-in AFK channel. One click joins it; everyone in it is muted, so the stage says so.
+    await joinVoice(mira, SERVER, 'AFK');
+    await mira.getByText(t('afk.stage.muted', { channel: 'AFK' }), { exact: false }).first().waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('afk-call-desktop');
+    await leaveVoice(mira);
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
 
     // web3.8: the desktop has no status bar. The link line that replaced it, shot from #general with Mira out of the call
     // (the call would drop with the connection).
@@ -1173,7 +1291,6 @@ async function main(argv) {
     await peer.request('call_join', { actor: 'peer', channel: watch.voice_channel_id });
     await railServer(mira, 'Bridge Watch').click();
     await voiceRow(mira, 'watch-voice').click();
-    await stage(mira).getByRole('button', { name: t('voice.join'), exact: true }).click();
     await shootState(mira, 'voice-blocked');
 
     await byText(mira, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${SERVER}(, |$)`) }).click();
@@ -1192,8 +1309,8 @@ async function main(argv) {
     await stop(host.child);
     rmSync(scratch, { recursive: true, force: true });
   }
-  const notShot = [...SIGNIN_SHOTS, ...WEB38_SHOTS].filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
-  if (notShot.length > 0) throw new Error(`web3.8 images not shot: ${notShot.join(', ')}`);
+  const notShot = [...SIGNIN_SHOTS, ...WEB38_SHOTS, ...WEB39_SHOTS].filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
+  if (notShot.length > 0) throw new Error(`images not shot: ${notShot.join(', ')}`);
   for (const file of written) process.stdout.write(`shoot-docs: ${path.relative(REPO_ROOT, file)} (${statSync(file).size} bytes)\n`);
   for (const p of problems) process.stderr.write(`shoot-docs: page error ${p}\n`);
   return problems.length > 0 ? 1 : 0;

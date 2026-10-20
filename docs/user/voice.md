@@ -2,7 +2,7 @@
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
 camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-17, web-3.8).
+2026-10-2x, web-3.9).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -21,9 +21,9 @@ added "harbour". While people are in one, it shows how many are in it, and the p
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the page are shown by name too.
 
-Select a voice channel to open it. An empty one says "Nobody is in voice yet." Press **join voice**: the call panel
-above your user panel says "connecting", then "in {where}", and the screen announces "You joined {where}." Each person
-in the call has a tile with their name and their state.
+On a computer, one click on a voice channel joins it. The call panel above your user panel says "connecting", then
+"voice connected", and the screen announces "You joined {where}." Each person in the call has a tile with their name and
+their state. On a phone, tap the voice channel to see who is there, then press **join voice**.
 
 **leave**, in the call panel or on the stage's controls, leaves the call ("You left {where}."). If you were the only
 one left in the call, leaving ends it. If you join again right after leaving, the call panel can stay at "connecting"
@@ -46,7 +46,8 @@ Three states keep their words, because they are about trust and what you can hea
 | "not heard yet" | They are in the call, and nothing from their device has been checked yet. It is not shown for someone who is muted or deafened and sends no camera or screen: their device sends nothing to check, so you see "muted" (or "deafened") and the glyph |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
-The `web` and `bot` tags stay as words after the name.
+The `web` and `bot` tags stay as words after the name. Whoever is speaking has a green ring around their avatar, in the
+list and on their tile.
 
 **Speaking lights within a beat.** Your browser reads the level of the audio it plays (and, for yourself, of your own
 microphone) and lights the dot as soon as someone speaks, without waiting for the instance to say so. Your own dot
@@ -60,19 +61,24 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 
 ### The call panel
 
-At the bottom left, above your user panel, the call panel shows where you are ("in {where}", with "connecting",
-"reconnecting" or "paused in {where}" when that is so), the level of your microphone, "hearing N of M", and three
-buttons: **camera**, **share screen** and **leave**. It has no mute or deafen: those are in the user panel under it,
-which is always there ([the user panel](getting-started.md#the-user-panel)). It stays on screen while you read other
-channels, so you can turn your camera or a share on and off, or leave, from anywhere. The buttons are icons; point at
-one, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name again.
+At the bottom left, above your user panel, the call panel shows "voice connected" (or "connecting", "reconnecting" or "paused
+in {where}" when that is so), under it where you are ("{channel} · {server}"), and then three icon buttons: **camera**,
+**share screen** and **leave**. Press "voice connected" to open Settings → Diagnostics, which shows the connection. The
+panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
+those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
+stays on screen while you read other channels, so you can turn your camera or a share on and off, or leave, from
+anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
+again.
+
+![The call panel and the user panel up close: "voice connected", harbour · Midgard Crew, then camera, share screen and
+leave, and under it Mira's name with mute, deafen and the gear](screenshots/dock-desktop.png)
 
 ![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
-panel with its meter, camera, share screen and leave above her user panel](screenshots/voice-dock-desktop.png)
+panel above her user panel](screenshots/voice-dock-desktop.png)
 
 The stage has a toolbar of its own, pinned at the bottom centre of the stage: **mute**, **deafen**, **camera**,
 **share screen** and **leave**, with a thin line before **leave**. Its mute and deafen are the same ones as in the user
-panel, shown again where your hands are, and their tooltips show the shortcut.
+panel, shown again where your hands are, and their tooltips show the shortcut. Beside it, "hearing N of M" counts the audio streams you hear.
 
 ### The stage
 
@@ -102,7 +108,7 @@ control is at least 44 by 44 pixels. The call panel is replaced by [the call bar
 
 On a phone, while you are in a call, a call bar sits above the tab bar. It shows where the call is, and has three
 buttons, each at least 44 by 44 pixels: **open the call in {where}** (the wide one, which opens the call's screen),
-**mute** and **leave**. It stays on the servers, DMs, activity and you tabs and over a channel you are reading. It goes
+**mute** and **leave**. It stays on the home, activity and you tabs and over a channel you are reading. It goes
 away on the call's own screen, which has all the call's controls, and when you leave. The other buttons of the call panel
 (**deafen**, **camera** and, where the browser can, **share screen**) are on the call's screen. The call bar's dot shows
 connecting, reconnecting or paused as the call panel does. A phone has no user panel, and a phone browser that cannot
@@ -142,6 +148,8 @@ to come back.
 Control or ⌘ works on every system. There are no single-key shortcuts. Settings → keyboard lists both, next to the
 search shortcuts.
 
+When push to talk is on, the mute button in the user panel carries a small "PTT" tag.
+
 **Voice activity** is the default: the microphone sends while you speak. To use **push to talk** instead:
 
 1. Open **Settings → voice**, and under "input mode" choose "push to talk". The microphone closes at once.
@@ -153,7 +161,8 @@ search shortcuts.
 
 There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
 tab, never while you type in a text field. While push to talk is in force the call panel says "hold {key} to talk" (for
-example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice.
+example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice. The
+microphone test and its level meter are on the same page.
 
 ![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
 level](screenshots/voice-settings-desktop.png)
@@ -223,13 +232,20 @@ with each person (Settings → privacy) is still how you know who they are.
 
 ## AFK channels
 
-A server's owner, or anyone who manages the server, can choose a voice channel as the silent **AFK channel**, in server
-settings under overview ([Run your server](getting-started.md#run-your-server)), with a time of 1, 5, 15, 30 or 60
-minutes. A device in a voice channel that has had no keyboard, pointer, touch or microphone speech for that long is moved
-there by the server; quiet listening, or activity on another of your devices, does not count. The AFK channel shows
-"{n} in AFK" in the list, and the people in it are listed under it as in any voice channel. It is silent: "This channel
-is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return."
-**Move to AFK** moves you there by hand, and **Leave AFK**, or joining another voice channel, brings you back.
+Every server has a voice channel called "AFK". It is made with the server, and a server's owner or anyone who manages
+channels can rename it and move it into a category, but nobody can delete it.
+
+![Mira in the AFK channel of Midgard Crew: the stage says "Everyone is muted in AFK"](screenshots/afk-call-desktop.png)
+
+- **Anyone can join it**, like any voice channel. Everyone in it is muted: you can hear the others, but you cannot
+  speak, share your screen or turn on a camera, and nobody else can either.
+- **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
+  speech is moved to the AFK channel, and the screen announces "Moved to AFK for inactivity". If the join fails, the dock
+  shows that line with a **join** button. Quiet listening counts as idle, and activity on another of your devices does not
+  count. The owner or a manager sets the timeout (1, 5, 15, 30 minutes or 1 hour) in server settings → overview
+  ([Run your server](getting-started.md#run-your-server)).
+- **A phone is never moved.**
+- **To leave**, join another voice channel, or press **leave**.
 
 ## Sounds
 
@@ -317,7 +333,7 @@ let the call start its sound, for example when the browser or your system suspen
 setting in the browser held it back.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
-volume. The call panel also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
+volume. The stage's toolbar also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
 not people. {expected} is how many audio streams should reach you, and {attached} how many you hear (a shared
 screen's sound is its own). A person whose volume you set to 0 counts as not heard. When the two numbers differ for
 more than a moment, ask the missing person to leave and join again.
