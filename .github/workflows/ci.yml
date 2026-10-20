@@ -21,6 +21,8 @@ jobs:
       - run: npm run test:docs-check
       - run: npm run test:brief-check
       - run: npm run test:copy-check
+      - run: npm run test:css-check
+      - run: npm run check:css
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -771,6 +773,12 @@ jobs:
       # Postgres, is what timed the job out. The -timeout is explicit and inside timeout-minutes.
       - name: The store and ops tests against Postgres
         run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+      # web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api; -run keeps the rest of
+      # that package (SQLite only, in the go job) out of this one.
+      - name: The AFK and channel-parent tests against Postgres
+        run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 

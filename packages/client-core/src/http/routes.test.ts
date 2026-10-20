@@ -108,7 +108,7 @@ const CASES: Case[] = [
     sent: encode([CHANNEL]), reply: () => noContent(), expected: undefined,
   },
   {
-    name: 'AFK activity of an exempt report sends [id, true]', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL, true),
+    name: 'AFK activity of an exempt report sends [id, 1]', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL, true),
     method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/afk/activity`, bucket: 'write', idempotent: true, auth: true,
     sent: encode([CHANNEL, 1]), reply: () => noContent(), expected: undefined,
   },

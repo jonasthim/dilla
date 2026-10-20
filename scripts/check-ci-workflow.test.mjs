@@ -78,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: npm test
+      - run: npm run test:css-check
+      - run: npm run check:css
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -413,6 +415,9 @@ jobs:
       - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+      - run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
   go-release:
     runs-on: ubuntu-latest
@@ -678,6 +683,19 @@ test('a go job that leaves out more than internal/ds is reported', () => {
     fixture(GOOD.replace('grep -vx github.com/jonasthim/dilla/internal/ds', 'grep -v -e /internal/ds -e /internal/api')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+});
+
+// web3.9: the css checker's own test and the check itself, and the AFK / channel-parent tests on Postgres.
+test('a node job without the css checker steps is reported', () => {
+  for (const step of ['npm run test:css-check', 'npm run check:css']) {
+    const problems = checkWorkflow(fixture(GOOD.replace(`      - run: ${step}\n`, '')));
+    assert.ok(problems.some((p) => p.includes('"node"') && p.includes(step)), problems.join('\n'));
+  }
+});
+
+test('a go-postgres job that stopped running the api AFK tests is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/      - run: go test -race -shuffle=on -timeout 20m -run 'AFK[^\n]*\n        env:\n[^\n]*\n/, '')));
+  assert.ok(problems.some((p) => p.includes('"go-postgres"') && p.includes('./internal/api/...')), problems.join('\n'));
 });
 
 test('a workflow without the go-ds job is reported', () => {

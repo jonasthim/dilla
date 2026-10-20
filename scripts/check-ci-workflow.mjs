@@ -174,7 +174,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ['npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -299,6 +299,8 @@ const REQUIRED_STEPS = {
     // I7 (fix wave): the packages with a Postgres leg, internal/ops's backup, restore and heal tests
     // among them, with an explicit -timeout that fits the job's budget.
     'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
+    // web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api.
+    "go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...",
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
