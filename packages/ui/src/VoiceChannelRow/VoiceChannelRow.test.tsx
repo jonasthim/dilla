@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
-import { VoiceChannelRow, type VoiceChannelRowProps } from './VoiceChannelRow.tsx';
+import { groupPeople, VoiceChannelRow, type VoiceChannelRowProps } from './VoiceChannelRow.tsx';
 import { ChannelList } from '../ChannelList/ChannelList.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import meta from './VoiceChannelRow.stories.tsx';
@@ -191,5 +191,49 @@ describe('VoiceChannelRow', () => {
     const { container } = render(<div className="d-root"><VoiceChannelRow {...(meta.args as VoiceChannelRowProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
+  describe('one row per person (A7)', () => {
+    const device = (name: string, id: string, more: Partial<VoiceParticipantView> = {}) => person(name, { deviceId: id, ...more });
+    const rowsOf = () => within(screen.getByRole('list')).getAllByRole('listitem');
+
+    it('lists a person with two devices once, and counts people', () => {
+      render(<VoiceChannelRow {...base} participants={[device('ada', 'd1'), device('ada', 'd2'), person('bo')]} />);
+      expect(rowsOf()).toHaveLength(2);
+      expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
+    });
+
+    it('says speaking when any device speaks', () => {
+      render(<VoiceChannelRow {...base} participants={[device('ada', 'd1'), device('ada', 'd2', { speaking: true })]} />);
+      expect(rowsOf()).toHaveLength(1);
+      expect(rowsOf()[0]).toHaveAttribute('data-speaking', 'true');
+    });
+
+    it('takes the worst stream state across devices', () => {
+      const states = (a: VoiceParticipantView['state'], b: VoiceParticipantView['state']) =>
+        groupPeople([device('ada', 'd1', { state: a }), device('ada', 'd2', { state: b })])[0].state;
+      expect(states('ok', 'unverified')).toBe('unverified');
+      expect(states('connecting', 'unverified')).toBe('unverified');
+      expect(states('ok', 'connecting')).toBe('connecting');
+      expect(states('not-heard', 'connecting')).toBe('connecting');
+      expect(states('ok', 'not-heard')).toBe('not-heard');
+      expect(states('ok', 'ok')).toBe('ok');
+    });
+
+    it('is web or bot when any device is', () => {
+      const [p] = groupPeople([device('ada', 'd1'), device('ada', 'd2', { web: false, bot: true })]);
+      expect(p.web).toBe(true);
+      expect(p.bot).toBe(true);
+      expect(groupPeople([device('ada', 'd1', { web: false }), device('ada', 'd2', { web: true })])[0].web).toBe(true);
+    });
+
+    it('says muted only when every device is muted, and deafened likewise', () => {
+      const { rerender } = render(<VoiceChannelRow {...base} participants={[device('ada', 'd1', { muted: true, deafened: true }), device('ada', 'd2')]} />);
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'muted' })).toBeNull();
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'deafened' })).toBeNull();
+      rerender(<VoiceChannelRow {...base} participants={[device('ada', 'd1', { muted: true, deafened: true }), device('ada', 'd2', { muted: true })]} />);
+      expect(within(rowsOf()[0]).getByRole('img', { name: 'muted' })).toBeTruthy();
+      expect(within(rowsOf()[0]).queryByRole('img', { name: 'deafened' })).toBeNull();
+    });
   });
 });
