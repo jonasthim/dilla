@@ -69,29 +69,79 @@ func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 
 // landingPage is the invite landing page. It carries no script, no external
 // reference and no form, and one same-origin link into the web client: it is one
-// paragraph a human reads before following that link or pasting the code into a
+// card a human reads before following that link or pasting the code into a
 // client, and anything more is a phishing surface an instance hands out to
-// strangers by construction.
+// strangers by construction. The colours are the Mesh tokens as literals
+// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchMesh)
+// and the font is the system monospace, because default-src 'none' loads none.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Invitation to {{.Instance}}</title>
+<title>{{.Title}}</title>
+<meta name="description" content="{{.Description}}">
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:description" content="{{.Description}}">
+<meta property="og:type" content="website">
+<style>
+:root{color-scheme:dark;--bg:#070809;--surface:#0C0D0F;--fg:#E8ECE8;--fg-2:#A0A6A0;--accent:#7CFF8E;--accent-ink:#06150A;--hairline:#1F2226}
+@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#1B7334;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;background:var(--bg);color:var(--fg);font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;line-height:1.5}
+main{width:100%;max-width:32rem;border:1px solid var(--hairline);background:var(--bg);padding:1.5rem}
+h1{margin:0;font-size:1.25rem;line-height:1.3;overflow-wrap:anywhere}
+.on{margin:.25rem 0 0;color:var(--fg-2);overflow-wrap:anywhere}
+.label{margin:1.5rem 0 .25rem;color:var(--fg-2);font-size:.875rem}
+.code{display:block;padding:.75rem;background:var(--surface);border:1px solid var(--hairline);font-size:1.125rem;overflow-wrap:anywhere}
+.meta{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem}
+.open{display:flex;align-items:center;justify-content:center;min-height:2.75rem;margin-top:1.5rem;padding:0 1rem;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none}
+.open:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
+.note{margin:1rem 0 0;color:var(--fg-2);font-size:.875rem;overflow-wrap:anywhere}
+</style>
 </head><body>
-<h1>You have been invited to {{.Instance}}</h1>
-{{if .Community}}<p>Community: {{.Community}}</p>{{end}}
-<p>Invite code: <code>{{.Code}}</code></p>
-<p>This invitation is valid until {{.Expires}} and can be used {{.Remaining}} more time(s).</p>
-<p><a href="/welcome?invite={{.Code}}">Open dilla in this browser</a>, or paste the code above
-into a dilla client for <code>{{.Instance}}</code>. This page never asks for a password.</p>
+<main>
+{{if .Community}}<h1>You have been invited to {{.Community}}</h1>
+<p class="on">on {{.Instance}}</p>{{else}}<h1>You have been invited to {{.Instance}}</h1>{{end}}
+<p class="label">Invite code</p>
+<code class="code">{{.Code}}</code>
+<p class="meta"><time datetime="{{.ExpiresAt}}">{{.Expires}}</time> · {{.Uses}}</p>
+<a class="open" href="/welcome?invite={{.Code}}">Open dilla in this browser</a>
+<p class="note">Or paste the code into a dilla client for {{.Instance}}. This page never asks for a password.</p>
+</main>
 </body></html>
 `))
 
 type landingData struct {
-	Instance  string
-	Community string
-	Code      string
-	Expires   string
-	Remaining uint64
+	Instance    string
+	Community   string
+	Code        string
+	Title       string
+	Description string
+	ExpiresAt   string // the ISO instant, for <time datetime>
+	Expires     string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
+	Uses        string // "1 use left" or "2 uses left"
+}
+
+// landingExpiry words an expiry for a reader: under 48 hours the rounded-down
+// hours or minutes, otherwise the UTC date.
+func landingExpiry(expiresAt, now int64) string {
+	left := time.Duration(expiresAt-now) * time.Second
+	switch {
+	case left >= 48*time.Hour:
+		return "Expires on " + time.Unix(expiresAt, 0).UTC().Format("2 January 2006") + " (UTC)"
+	case left >= time.Hour:
+		return "Expires in " + landingCount(int(left/time.Hour), "hour", "hours")
+	case left >= time.Minute:
+		return "Expires in " + landingCount(int(left/time.Minute), "minute", "minutes")
+	default:
+		return "Expires in less than a minute"
+	}
+}
+
+func landingCount(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }
 
 // InviteLanding is GET /i/{code}. It NEVER mutates: a link pasted into a chat
@@ -161,12 +211,23 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 	d.generation(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	// The preview (title and description) names the community and the instance
+	// and nothing else: no code, expiry, uses or inviter (R15).
+	title, description := "Invitation to "+d.Domain, "Join "+d.Domain+", a dilla server. Open the link to accept."
+	if community != "" {
+		title = "Invitation to " + community + " on " + d.Domain
+		description = "Join " + community + " on " + d.Domain + ", a dilla server. Open the link to accept."
+	}
+	uses := landingCount(int(invite.MaxUses-invite.UsedCount), "use", "uses") + " left" //nolint:gosec // G115: a use count this server wrote, small and non-negative
 	if err := landingPage.Execute(w, landingData{
-		Instance:  d.Domain,
-		Community: community,
-		Code:      r.PathValue("code"),
-		Expires:   time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339),
-		Remaining: invite.MaxUses - invite.UsedCount,
+		Instance:    d.Domain,
+		Community:   community,
+		Code:        r.PathValue("code"),
+		Title:       title,
+		Description: description,
+		ExpiresAt:   time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339),
+		Expires:     landingExpiry(invite.ExpiresAt, now),
+		Uses:        uses,
 	}); err != nil {
 		d.logf(r, "api: render invite landing", "err", err)
 	}

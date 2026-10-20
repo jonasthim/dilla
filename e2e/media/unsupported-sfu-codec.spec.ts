@@ -20,7 +20,7 @@ test('the real SFU offers AV1 but the client negotiates and sends VP8', async ({
     await page.goto('http://127.0.0.1:5179/');
     await page.evaluate((o) => (globalThis as unknown as W).harness.dillaJoin(o), {
       livekitUrl: token.livekitUrl, token: token.token, iceServers: token.iceServers,
-      epoch: epochWire(key, key.epoch), caps: [32_000, token.caps[1], token.caps[2]],
+      epoch: epochWire(key, key.epoch), caps: [32_000, token.caps[1], token.caps[2]] as [number, number, number],
     });
     const codecs = await page.evaluate(() => (globalThis as unknown as W).harness.dillaOfferedPublishCodecs());
     console.log('TASK21_JOIN_RESPONSE_CODECS', JSON.stringify(codecs));

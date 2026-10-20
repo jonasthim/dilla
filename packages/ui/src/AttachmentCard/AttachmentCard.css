@@ -23,4 +23,4 @@
 .d-attachment-card__media .d-media-player { max-width: 100%; }
 /* The media card's save matches the player's buttons: 40 × 40 on a desktop, 44 × 44 on a phone (flow 06). */
 .d-attachment-card__media .d-attachment-card__media-save { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.875rem; }
-@media (max-width: 47.99rem) { .d-attachment-card__media .d-attachment-card__media-save { min-height: 2.75rem; min-width: 2.75rem; } }
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) { .d-attachment-card__media .d-attachment-card__media-save { min-height: 2.75rem; min-width: 2.75rem; } }

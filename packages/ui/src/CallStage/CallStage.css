@@ -25,9 +25,57 @@
 .d-call-stage__empty { align-self: center; margin-bottom: 0; font-size: var(--text-sm); color: var(--fg-2); }
 .d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: 0.75rem; margin-bottom: 0; padding: 0; list-style: none; min-width: 0; }
 .d-call-stage__tile { min-width: 0; }
+/* Stage mode (U4: the caller passes `onFocus`, so `data-tiles="stage"`; callers without it keep the rules above). The tiles
+   fill the area above the pinned toolbar. `--d-stage-cols` and `--d-tile-w` are written by the stage's ResizeObserver from
+   `stageColumns`; tiles are 16:9 and centred. Without them (no observer) it is one column. */
+.d-call-stage__tiles[data-tiles="stage"] {
+  flex: 1 1 auto; min-height: 0; container-type: inline-size;
+  grid-template-columns: repeat(var(--d-stage-cols, 1), var(--d-tile-w, 100%));
+  justify-content: center; align-content: safe center; overflow: auto;
+}
+.d-call-stage__tile[data-stage] { position: relative; width: 100%; aspect-ratio: 16 / 9; }
+/* Focus (R27): CSS only, nothing moves in the DOM. The focused tile spans row 1; the others flow into row 2 as a
+   filmstrip above the toolbar and scroll sideways. The columns are explicit (`--d-strip-n` is the strip's count) so that
+   the focused tile has a span; it is as wide as the visible area (`100cqw`) and sticks to its left edge. */
+.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
+  grid-template-columns: minmax(0, 1fr) repeat(var(--d-strip-n, 1), calc(7.5rem * 16 / 9)) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 7.5rem;
+  grid-auto-flow: column; justify-content: stretch; align-content: stretch; overflow-x: auto; overflow-y: hidden;
+}
+/* The strip tiles have fixed columns between two flexible gutters, so they sit together and are centred as a group. The
+   first gutter's column is held by a spacer, so the tiles start in column 2; with many tiles the gutters shrink to 0. */
+.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"]::before { content: ""; grid-row: 2; grid-column: 1; }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage] { grid-row: 2; width: auto; height: 100%; justify-self: center; }
+/* The strip is for picking a tile: its volume overlay would cover the 7.5rem tile, so it stays on the focused or grid tile. */
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: none; }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
+  grid-row: 1; grid-column: 1 / -1; justify-self: start; position: sticky; left: 0; width: 100cqw; max-width: 100%; aspect-ratio: auto;
+}
 .d-call-stage__controls { display: flex; justify-content: center; }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-call-stage { padding: 0.5rem; }
   .d-call-stage__notice .d-call-stage__notice-action { grid-column: 2; justify-self: start; min-height: 2.75rem; }
   .d-call-stage__summary { min-height: 2.75rem; min-width: 2.75rem; }
+  /* Phone (R9): no filmstrip. One column; the focused tile takes the full width and goes first, the others follow
+     below it in today's one-column flow. */
+  .d-call-stage__tiles[data-tiles="stage"], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; justify-content: stretch;
+    align-content: start; overflow-x: hidden; overflow-y: auto;
+  }
+  .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"]::before { display: none; }
+  /* web3.8 FX: a phone tile is as tall as what it holds (its 16:9 media or avatar, the caption, the volume under it). */
+  .d-call-stage__tile[data-stage], .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage],
+  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
+    grid-row: auto; grid-column: auto; position: relative; width: 100%; height: auto; aspect-ratio: auto; max-width: 100%;
+  }
+  /* web3.8 FX: up to two tiles fill the width one under the other; three or more go in two columns, a focused one first
+     and across both. */
+  .d-call-stage .d-call-stage__tiles[data-tiles="stage"][data-many], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"][data-many] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; grid-column: 1 / -1; }
+  /* An odd last tile spans both columns rather than sitting alone at half width. With a focused tile first (it spans both
+     and is counted in the DOM), the rest pair up from child 2, so the odd one out is an even last child. */
+  .d-call-stage .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even) { grid-column: 1 / -1; }
+  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
 }

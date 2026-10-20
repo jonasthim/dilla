@@ -126,6 +126,7 @@ pub fn abi_version() -> u32 {
     BROWSER_ABI_VERSION
 }
 
+#[cfg(feature = "vectors")]
 #[wasm_bindgen]
 pub fn vectors_check_json() -> String {
     let report = dilla_core::vectors::run_all();
@@ -145,6 +146,7 @@ pub fn vectors_check_json() -> String {
     json!({ "passed": report.passed, "failed": report.failed, "suites": suites }).to_string()
 }
 
+#[cfg(feature = "vectors")]
 #[wasm_bindgen]
 pub fn vectors_check_ok() -> bool {
     dilla_core::vectors::run_all().is_ok()
@@ -549,6 +551,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "vectors")]
     #[test]
     fn the_vector_report_is_green_and_serialises_as_json() {
         assert!(vectors_check_ok());

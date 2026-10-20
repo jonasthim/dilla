@@ -15,8 +15,9 @@ use dilla_core_wasm::{
     BROWSER_ABI_VERSION, MediaReceiver, MediaSender, StoreOpenConfig, abi_version, core_version,
     credential_identity_cbor, envelope_commitment, envelope_decode_json, envelope_encode,
     franking_tag, recovery_key_base32, safety_number, sas, sframe_derive, sframe_header,
-    vectors_check_json, vectors_check_ok,
 };
+#[cfg(feature = "vectors")]
+use dilla_core_wasm::{vectors_check_json, vectors_check_ok};
 use wasm_bindgen::{JsError, JsValue};
 use wasm_bindgen_test::*;
 
@@ -45,6 +46,7 @@ const VECTOR_ENVELOPE_COMMITMENT: &str =
 /// against a report produced by the same
 /// wasm build proves only internal consistency: a build that silently lost an entire suite would
 /// pass. Plan B task 4 holds the equivalent golden for the wasip1 leg.
+#[cfg(feature = "vectors")]
 const EXPECTED_SUITES: [&str; 7] = [
     "envelope",
     "franking",
@@ -55,6 +57,7 @@ const EXPECTED_SUITES: [&str; 7] = [
     "rejects",
 ];
 
+#[cfg(feature = "vectors")]
 #[wasm_bindgen_test]
 fn the_vector_report_is_green_on_wasm() {
     let report = dilla_core::vectors::run_all();
@@ -65,6 +68,7 @@ fn the_vector_report_is_green_on_wasm() {
 
 /// The point of the cross-target triangle is not "wasm is green" but "every field of every case
 /// holds under wasm too", so this asserts per case, naming the one that broke.
+#[cfg(feature = "vectors")]
 #[wasm_bindgen_test]
 fn every_case_of_every_suite_holds_on_wasm() {
     let report = dilla_core::vectors::run_all();

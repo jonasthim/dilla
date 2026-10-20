@@ -113,7 +113,11 @@ type TipOrigin = 'hover' | 'focus';
  * It is never a `title`. An inert control's tip adds why ("camera — paused"). Only the shortcut and the reason describe
  * a control (`aria-describedby`), so the name is not read twice.
  */
-export function VoiceToolbar({ label, controls, className }: { label: string; controls: readonly ToolbarControl[]; className?: string }): ReactNode {
+export function VoiceToolbar({ label, controls, className, keyshortcuts = true }: {
+  label: string; controls: readonly ToolbarControl[]; className?: string;
+  /** False: the controls carry no `aria-keyshortcuts` and no `-keys` description; a shortcut still shows in the tip (web3.8, R3). */
+  keyshortcuts?: boolean;
+}): ReactNode {
   const bar = useToolbarFocus(controls.length);
   const uid = useId();
   const tipRef = useRef<HTMLSpanElement>(null);
@@ -159,7 +163,7 @@ export function VoiceToolbar({ label, controls, className }: { label: string; co
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => { pressed.current = false; bar.onKeyDown(e); };
   const intoTip = (to: EventTarget | null): boolean => to instanceof Node && tipRef.current?.contains(to) === true;
   const describedBy = (c: ToolbarControl): string | undefined => {
-    const ids = [c.shortcut !== undefined ? `${uid}-${c.id}-keys` : null, c.why !== undefined ? `${uid}-${c.id}-why` : null];
+    const ids = [keyshortcuts && c.shortcut !== undefined ? `${uid}-${c.id}-keys` : null, c.why !== undefined ? `${uid}-${c.id}-why` : null];
     const list = ids.filter((id): id is string => id !== null);
     return list.length > 0 ? list.join(' ') : undefined;
   };
@@ -173,7 +177,7 @@ export function VoiceToolbar({ label, controls, className }: { label: string; co
           {c.apart === true ? <span className="d-voice-toolbar__divider" aria-hidden="true" /> : null}
           <Button variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
             data-tint={c.on === undefined ? undefined : (c.tint ?? 'danger')} pressed={c.on} mark={false} aria-label={c.label}
-            aria-keyshortcuts={c.keys} aria-describedby={describedBy(c)}
+            aria-keyshortcuts={keyshortcuts ? c.keys : undefined} aria-describedby={describedBy(c)}
             aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
             onFocus={e => {
               setDismissed(null);
@@ -200,9 +204,9 @@ export function VoiceToolbar({ label, controls, className }: { label: string; co
           </Button>
         </Fragment>
       ))}
-      {controls.filter(c => c.shortcut !== undefined).map(c => (
+      {keyshortcuts ? controls.filter(c => c.shortcut !== undefined).map(c => (
         <span key={c.id} id={`${uid}-${c.id}-keys`} hidden>{c.shortcut}</span>
-      ))}
+      )) : null}
       {controls.filter(c => c.why !== undefined).map(c => (
         <span key={c.id} id={`${uid}-${c.id}-why`} hidden>{c.why}</span>
       ))}
@@ -239,6 +243,11 @@ export interface CallControlsProps {
   labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string; why?: VoiceWhyLabels };
   /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
   shortcuts?: { mute: string; deafen: string };
+  /**
+   * Default true. False (web3.8, R3: the stage toolbar on desktop, where the user panel owns the shortcuts): mute and deafen
+   * carry no `aria-keyshortcuts` and no `-keys` description, so one element per shortcut announces it; the tooltip still shows it.
+   */
+  keyshortcuts?: boolean;
   onMute(): void; onDeafen(): void; onCamera(): void; onShare(): void; onLeave(): void;
 }
 
@@ -248,7 +257,7 @@ export interface CallControlsProps {
  * Mute and deafen carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
  */
 export function CallControls({
-  muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
+  muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, keyshortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? !canCamera, canCamera, canShare });
   const controls: ToolbarControl[] = [
@@ -258,6 +267,6 @@ export function CallControls({
     { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare },
     { id: 'leave', label: labels.leave, inert: busy, danger: true, ...VOICE_ICONS.leave, onAction: onLeave },
   ].filter(c => c.id !== 'share' || hideShare !== true);
-  return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" />;
+  return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" keyshortcuts={keyshortcuts} />;
 }
 

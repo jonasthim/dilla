@@ -11,7 +11,9 @@ import { COMMUNITY, DEVICE, INSTANCE_DOC, INSTANCE_ID, LOCK, PASSWORD, RECOVERY_
 afterEach(() => { vi.useRealTimers(); });
 
 const CEREMONY_HEX = 'ce'.repeat(16);
-const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD, recoveryKey: RECOVERY_KEY } as const;
+const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD } as const;
+// web3.8 (R6): the key comes last and registers.
+const KEY = { m: 'signInKey', recoveryKey: RECOVERY_KEY } as const;
 
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });
@@ -177,7 +179,8 @@ class Sock {
   constructor(readonly url: string, readonly protocols: string[]) { Sock.all.push(this); }
   addEventListener(type: string, fn: (event: unknown) => void): void { this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]); }
   removeEventListener(): void {}
-  send(): void {}
+  readonly sent: Uint8Array[] = [];
+  send(data: Uint8Array): void { this.sent.push(new Uint8Array(data)); }
   close(code?: number): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
@@ -189,7 +192,7 @@ class Sock {
   private emit(type: string, event: unknown): void { for (const fn of this.listeners.get(type) ?? []) fn(event); }
 }
 
-const HELLO = encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
+const HELLO = encodeFrame(Op.hello, 0, null, [[2], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
 const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 1, 1, 1, 32, []]);
 
 /** A world on the real Gateway, whose tickets go through the real HttpClient to `ticket` (the n-th request, 1-based). */
@@ -288,6 +291,57 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
   });
 });
 
+// web3.8 (R2): an instance whose hello offers only wire 1 is one this client cannot speak to. The real gateway closes
+// 4006 without an identify and the worker publishes reason 'version' (the reload banner), with no reconnect.
+describe('wire version 2 (web3.8 C2)', () => {
+  it('a hello offering only wire 1 leaves the connection offline with reason version and sends nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w, tickets } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]));
+    await until(() => w.connection()?.reason === 'version');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    expect(socket.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(Sock.all).toHaveLength(1);
+    expect(tickets.n).toBe(1);
+  });
+
+  // C2 review finding 1: a tab open across the upgrade meets the instance's own refusal, close 4006 after identify.
+  it('a server close 4006 publishes offline with reason version and mints no second ticket', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w, tickets } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(HELLO);
+    socket.serverClose(4006);
+    await until(() => w.connection()?.reason === 'version');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(Sock.all).toHaveLength(1);
+    expect(tickets.n).toBe(1);
+  });
+
+  it('control: a hello offering wire 2 gets an identify with 2 and goes online', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(HELLO);
+    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    socket.receive(READY);
+    await until(() => w.connection()?.status === 'online');
+    expect(w.connection()?.reason).toBeUndefined();
+  });
+});
+
 describe('passkey and backup-code sign-in (web3.6 C2)', () => {
   it('a login owing needs 2 goes to signin-passkey; a passkey that did not verify the user goes on to the code step', async () => {
     const w = world({ phase: 0 });
@@ -300,12 +354,16 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     w.call(4, { m: 'signInPasskeyBegin' });
     expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { ceremonyId: CEREMONY_HEX, options: '{"publicKey":{}}' } });
     w.enrol.passkey.mockImplementationOnce(() => Promise.resolve({ needs: 1 }));
-    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}', recoveryKey: RECOVERY_KEY });
+    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
     expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 1 } });
     expect(w.enrol.passkey).toHaveBeenCalledWith(new Uint8Array(16).fill(0xce), '{"id":"x"}');
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { factor: 'passkey' } });
-    w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(6, { m: 'signInTotp', code: '123456' });
     expect(await answered(w, 6)).toEqual({ t: 'ret', id: 6, ok: true, value: null });
+    expect(w.account()?.phase).toBe('signin-key');
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    w.call(7, KEY);
+    expect(await answered(w, 7)).toEqual({ t: 'ret', id: 7, ok: true, value: null });
     expect(w.account()?.phase).toBe('ready');
   });
 
@@ -323,9 +381,12 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     await toLoginStep(w);
     w.call(3, { m: 'signInPasskeyBegin' });
     await answered(w, 3);
-    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
     expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 0 } });
     expect(w.enrol.login).not.toHaveBeenCalled();
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual(['enrol.passkey', 'enrol.register', 'enrol.fetch', 'enrol.complete']);
     expect(w.account()?.phase).toBe('ready');
   });
@@ -334,7 +395,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
     w.enrol.passkey.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_PASSKEY_UNKNOWN')));
-    w.call(3, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r', recoveryKey: RECOVERY_KEY });
+    w.call(3, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r' });
     expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_PASSKEY_UNKNOWN', status: 401 } });
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_PASSKEY_UNKNOWN' } });
   });
@@ -376,10 +437,9 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
       { m: 'signInBackupCode', code: 'A'.repeat(25), recoveryKey: RECOVERY_KEY },
       { m: 'signInBackupCode', code: 'A'.repeat(25) + '1', recoveryKey: RECOVERY_KEY },
       { m: 'signInBackupCode', code: 'A'.repeat(26), recoveryKey: '' },
-      { m: 'signInPasskey', ceremonyId: 'CE'.repeat(16), response: 'r', recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '', recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_537), recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r', recoveryKey: ' ' },
+      { m: 'signInPasskey', ceremonyId: 'CE'.repeat(16), response: 'r' },
+      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '' },
+      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_537) },
       { m: 'factorSetupDone', invite: 7 },
     ];
     bad.forEach((command, i) => w.call(10 + i, command));
@@ -387,7 +447,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     expect(w.enrol.backupCode).not.toHaveBeenCalled();
     expect(w.enrol.passkey).not.toHaveBeenCalled();
     // Control: 64 KiB of response is accepted.
-    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536), recoveryKey: RECOVERY_KEY });
+    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536) });
     expect(await answered(w, 30)).toMatchObject({ ok: true });
   });
 
@@ -445,6 +505,9 @@ describe('C2 review: an owed account on a new browser, the double submit, the ho
     await toLoginStep(w);
     w.call(3, LOGIN);
     expect(await answered(w, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } });
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: null });
     expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signin' }, error: null, user: { id: toHex(USER) } });
     expect(w.gateway.starts).toBe(0);
     expect(w.account.ensureBackups).not.toHaveBeenCalled();

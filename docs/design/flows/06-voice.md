@@ -58,7 +58,7 @@ Amended 2026-10-13 (controller ruling at integration; narrows "no join button un
 
 ## 1280×800
 
-The `ACTIVE VOICE` heading (`voice.heading.active`, shown in caps by the token style) lists the live voice channels of the community above the channel list. Each voice row has sub-rows for the people in it. The dock sits above the user panel while this device is in voice. The stage fills the main pane. A ring banner sits at the top of the main pane, above the stage or the log.
+Removed in v0.1.0-web3.8: the `ACTIVE VOICE` heading (`voice.heading.active`, shown in caps by the token style, and the separate `voice` section heading with `voice.heading.channels`) listed the live voice channels and then the full list of voice channels. See flow 13 for one consolidated channel list instead.
 
 ```text
 ┌──┬──────────────────────┬───────────────────────────────────────────────────────────────────────────────┐
@@ -270,7 +270,7 @@ There is no sound for one's own join, leave, mute or deafen (R2), and no ringbac
 Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte (task 9 checks it).
 
 *Sidebar, rows and dock:*
-- `voice.heading.active='active voice'`, `voice.heading.channels='voice'`
+- `voice.heading.active='active voice'`, `voice.heading.channels='voice'` (unused since web3.8)
 - `voice.open='voice {name}'`, `voice.count='{n} in voice'`, `voice.join='join voice'`
 - `call.start='call'`, `call.join='join call'`
 - `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.connected='in {where}'`, `voice.dock.reconnecting='reconnecting'`

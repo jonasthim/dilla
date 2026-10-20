@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -34,6 +35,9 @@ import (
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
 
+// secureFiles is sqlite.SecureFiles; tests swap it to make the chmod fail.
+var secureFiles = sqlite.SecureFiles
+
 // metricsTokenEnv carries the bearer token /metrics is guarded with when
 // metrics.require_admin is set. It is an environment variable and not a
 // dilla.toml key because dilla.toml is configuration an operator diffs and
@@ -54,6 +58,12 @@ func openRepository(c *config.Config) (store.Repository, *sql.DB, error) {
 		write, err := sqlite.OpenWrite(c.DB.Path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open database: %w: %w", err, exit.Unavailable)
+		}
+		// Also repairs an install whose -wal and -shm were made before OpenWrite pre-created the
+		// file. A failure (EPERM on a file another user owns) is a warning, not a reason to refuse
+		// to start: SQLite would have opened that file all the same.
+		if err := secureFiles(c.DB.Path); err != nil {
+			slog.Warn("could not restrict the database files to 0600; fix their owner or mode", "path", c.DB.Path, "err", err)
 		}
 		read, err := sqlite.OpenRead(c.DB.Path)
 		if err != nil {

@@ -307,14 +307,14 @@ func postBody(class *uint64) []any {
 func classPtr(v uint64) *uint64 { return &v }
 
 // The composition root wires api.PostPolicy into the delivery service: a member without
-// send_messages is refused a post (class 0) and a legacy two-element upload alike (R28); with a
-// role that grants it, both are accepted.
+// send_messages is refused a post (class 0); with a role that grants it, the post is accepted. A
+// two-element body is 400 E_INVALID_REQUEST even then (web3.8 S1).
 func TestTheCompositionRootWiresThePostPolicy(t *testing.T) {
 	f := newPostFixture(t, "sqlite", clock.System(), api.PermViewChannel, 0)
 	for _, c := range []struct {
 		name string
 		body []any
-	}{{"class 0", postBody(classPtr(0))}, {"a legacy upload", postBody(nil)}} {
+	}{{"class 0", postBody(classPtr(0))}} {
 		if rec := f.upload(c.body); rec.Code != http.StatusForbidden || errorCode(rec) != "E_FORBIDDEN" {
 			t.Fatalf("%s without send_messages = %d %s, want 403 E_FORBIDDEN", c.name, rec.Code, rec.Body.String())
 		}
@@ -323,10 +323,13 @@ func TestTheCompositionRootWiresThePostPolicy(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		body []any
-	}{{"class 0", postBody(classPtr(0))}, {"a legacy upload", postBody(nil)}} {
+	}{{"class 0", postBody(classPtr(0))}} {
 		if rec := f.upload(c.body); rec.Code != http.StatusOK {
 			t.Fatalf("%s with send_messages = %d %s, want 200", c.name, rec.Code, rec.Body.String())
 		}
+	}
+	if rec := f.upload(postBody(nil)); rec.Code != http.StatusBadRequest || errorCode(rec) != "E_INVALID_REQUEST" {
+		t.Fatalf("a two-element body with send_messages = %d %s, want 400 E_INVALID_REQUEST", rec.Code, rec.Body.String())
 	}
 }
 
@@ -369,8 +372,8 @@ func TestConcurrentPostsInSlowModeAdmitOne(t *testing.T) {
 	}
 }
 
-// SB1 fix round 1: only an accepted post (class 0) sets the mark. A fold (class 1) and a legacy
-// upload are never slowed, and neither starts the wait for the post after them.
+// SB1 fix round 1: only an accepted post (class 0) sets the mark. A fold (class 1) is never
+// slowed, and does not start the wait for the post after it.
 func TestOnlyAPostSetsTheSlowModeMark(t *testing.T) {
 	clk := clock.NewFake(time.Unix(time.Now().Unix(), 0))
 	f := newPostFixture(t, "sqlite", clk, api.PermViewChannel|api.PermSendMessages, 3600)
@@ -380,7 +383,6 @@ func TestOnlyAPostSetsTheSlowModeMark(t *testing.T) {
 		want int
 	}{
 		{"a fold", postBody(classPtr(1)), http.StatusOK},
-		{"a legacy upload", postBody(nil), http.StatusOK},
 		{"the first post", postBody(classPtr(0)), http.StatusOK},
 		{"the second post", postBody(classPtr(0)), http.StatusTooManyRequests},
 	} {

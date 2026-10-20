@@ -15,7 +15,8 @@ export interface AccountState {
   phase: BootPhase;
   /** passwordSignup, totp and passkeys: auth_methods holds 0, 1 and 2. */
   instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean; totp: boolean; passkeys: boolean } | null;
-  user: { id: string; username: string } | null;
+  /** `display` is the account's display name (read with the presence choice); a person with no server has no member row to name them by. */
+  user: { id: string; username: string; display?: string } | null;
   deviceId: string | null;
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
   error: WorkerError | null;                    // the last signup, sign-in or boot error
@@ -36,7 +37,7 @@ export interface AccountState {
 /** Page-bound errors have a stable code and no detail. `store` is set only on E_STORE_NEWER: the app schema of the
  *  store in this browser and the highest this build supports (C4x, web3.6). */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null;
-  /** A stable key for a local refusal the page maps to copy ('announce.noHeldRole'); never the detail text. */
+  /** A stable key for a local refusal the page maps to copy (none since web3.8 R5 removed the last); never the detail text. */
   reason?: string;
   store?: { found: number; supported: number }; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;

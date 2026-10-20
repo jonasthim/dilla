@@ -117,7 +117,8 @@ describe('the toolbar (L-UI-41)', () => {
     expect(labels(rowOf(O1))).toEqual(['react', 'reply', 'reply in thread', 'edit', 'unpin', 'delete']);
     expect(within(rowOf(O2)).queryByRole('toolbar')).toBeNull();
     expect(within(rowOf(P2)).queryByRole('toolbar')).toBeNull();
-    expect(screen.getAllByRole('toolbar')).toHaveLength(2);
+    // The rows' toolbars only: the user panel at the bottom left (web3.8) is a toolbar of its own.
+    expect(screen.getAllByRole('toolbar', { name: en['shell.message.toolbar'] })).toHaveLength(2);
   });
   it('pins and unpins by the row’s pinned flag', async () => {
     const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'theirs'), ownRow(O1, '2', 'mine', { pinned: true })] });

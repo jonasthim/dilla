@@ -13,6 +13,15 @@ import { Button } from '../Button/Button.tsx';
 
 const noop = () => {};
 
+/** web3.8 (R4): the desktop shell has no status bar; a story or a test that wants the optional row passes this as `shell.statusBar`. */
+export const fixtureStatusBar = (
+  <StatusBar position="bottom" label="status">
+    <StatusChunk label="server">dilla.thim.dev</StatusChunk>
+    <StatusChunk label="connection" tone="ok" onClick={noop}>online</StatusChunk>
+    <StatusChunk label="gen">3</StatusChunk>
+  </StatusBar>
+);
+
 const rowLabel = (c: { name: string; unread: number; mentions: number; muted: boolean }) =>
   c.muted ? `${c.name}, muted, mentions ${c.mentions}` : `${c.name}, unread ${c.unread}, mentions ${c.mentions}`;
 const itemLabel = (i: { name: string; unread: number; mentions: number }) => `${i.name}, unread ${i.unread}, mentions ${i.mentions}`;
@@ -28,7 +37,7 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
       skipLabel="skip to messages"
       ring={ring}
       {...shell}
-      banner={banner ? <Banner tone="warn" action={{ label: 'retry now', onAction: noop }}>offline · reconnecting to dilla.thim.dev</Banner> : undefined}
+      banner={banner ? <Banner tone="warn" action={{ label: 'retry now', onAction: noop }}>offline · reconnecting to dilla.thim.dev</Banner> : shell?.banner}
       rail={<CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" onJoin={noop}
         settingsLabel="settings" onSettings={noop} itemLabel={itemLabel}
         items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />}
@@ -45,13 +54,6 @@ export function ComposedShell({ banner = false, ring, shell }: { banner?: boolea
       header={<ChannelHeader name="general" topic="evening plans, screenshots and the odd argument" />}
       composer={<Composer label="message #general" placeholder="message #general" maxLength={4000} value={draft} onChange={setDraft}
         onSend={() => setDraft('')} sendLabel="send" counterLabel={n => `${n} left`} />}
-      statusBar={
-        <StatusBar position="bottom" label="status">
-          <StatusChunk label="server">dilla.thim.dev</StatusChunk>
-          <StatusChunk label="connection" tone="ok" onClick={noop}>online</StatusChunk>
-          <StatusChunk label="gen">3</StatusChunk>
-        </StatusBar>
-      }
     >
       <MessageLog label="messages in #general" emptyLabel="No messages yet.">
         <MessageRow author="ada" time="21:02" body="anyone up for a round tonight?" state="ok" />

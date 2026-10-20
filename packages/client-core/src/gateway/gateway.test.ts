@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { decode, encode, type CborInput, type CborValue } from '../cbor';
+import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import { decodeFrame, encodeFrame, Op, type Frame } from './frames';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent } from './gateway';
@@ -31,7 +35,7 @@ const USER = new Uint8Array(16).fill(0x09);
 const GROUP = new Uint8Array(16).fill(0x07);
 
 function hello(over: { wire?: number[]; heartbeatMs?: number; maxFrameBytes?: number } = {}): Uint8Array {
-  return encodeFrame(Op.hello, 0, null, [over.wire ?? [1], [1], [1], over.heartbeatMs ?? 30000,
+  return encodeFrame(Op.hello, 0, null, [over.wire ?? [2], [1], [1], over.heartbeatMs ?? 30000,
     over.maxFrameBytes ?? 131584, INSTANCE, 1, 300, 300]);
 }
 
@@ -203,7 +207,7 @@ describe('Gateway connect', () => {
     s.open();
     expect(s.sent).toHaveLength(0);
     s.receive(hello());
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 1, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
@@ -217,13 +221,15 @@ describe('Gateway connect', () => {
     expect(statuses(h.events)).toEqual(['connecting:null', 'ready:null']);
   });
 
-  it('refuses a hello without version 1 and stays down', async () => {
+  // web3.8 (R2): the instance advertises wire 2 alone; a hello that offers only wire 1 is an instance this client cannot
+  // speak to, so it closes 4006 and stays down until the page is reloaded.
+  it('refuses a hello without wire version 2 and stays down', async () => {
     const h = harness();
     h.gw.start();
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [2] }));
+    s.receive(hello({ wire: [1] }));
     expect(s.closedWith?.code).toBe(4006);
     expect(s.sent).toHaveLength(0);
     expect(h.gw.status).toBe('idle');
@@ -233,6 +239,26 @@ describe('Gateway connect', () => {
     await flush();
     expect(FakeSocket.instances).toHaveLength(1);
     expect(h.minted()).toBe(1);
+  });
+
+  it('identifies with wire version 2 when the hello offers 1 and 2, and refuses one without e2ee or media version 1', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [1, 2] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    for (const bad of [[[2], [2], [1]], [[2], [1], [2]]]) {
+      const g = harness();
+      g.gw.start();
+      await flush();
+      const t = g.last();
+      t.open();
+      t.receive(encodeFrame(Op.hello, 0, null, [...bad, 30000, 131584, INSTANCE, 1, 300, 300]));
+      expect(t.closedWith?.code).toBe(4006);
+      expect(t.sent).toHaveLength(0);
+    }
   });
 
   it('gives up on a socket that sends no hello, and on one that sends no ready', async () => {
@@ -559,8 +585,75 @@ describe('Gateway reconnect', () => {
     h.gw.commitAck(GROUP, 3n);
     const ops = [...s1.sentFrames(), ...s2.sentFrames()].map((f) => f.op);
     expect(ops).toEqual([Op.identify, Op.heartbeat, Op.identify, Op.commitAck]);
-    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 1, 1, 1, 0]));
+    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0]));
     expect(s2.protocols).toEqual(['dilla.v1', 'dilla.ticket.t2']);
+  });
+});
+
+// C2 review finding 2: the identify this gateway sends is the corpus identify (protocol/vectors/frames.json), the token
+// aside (the corpus carries 'tok', the gateway '' because the ticket rides the subprotocol). A skew between the vector
+// and the client's wire version fails here.
+it('identifies with the frames.json identify vector, the token aside', async () => {
+  const corpus = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../protocol/vectors/frames.json', import.meta.url)), 'utf8')) as
+    { cases: { name: string; op: number; n: number; payload: string }[] };
+  const vector = corpus.cases.find((c) => c.name === 'identify');
+  expect(vector).toBeDefined();
+  const want = decode(fromHex(vector!.payload)) as CborValue[];
+  expect(want[0]).toBe('tok');
+  const h = harness();
+  h.gw.start();
+  await flush();
+  const s = h.last();
+  s.open();
+  s.receive(hello());
+  const sent = s.sentFrames()[0];
+  expect([sent.op, sent.n]).toEqual([vector!.op, BigInt(vector!.n)]);
+  expect(toHex(encode(['tok', ...sent.payload.slice(1)] as CborInput))).toBe(vector!.payload);
+  expect(sent.payload[0]).toBe('');
+});
+
+// C2 review finding 1: the instance refuses a wire it does not speak with an error frame and close 4006 (S1). A tab open
+// across an upgrade lands in the version state, as a hello without 2 does: idle 4006, no reconnect, no new ticket.
+describe('Gateway server version close', () => {
+  it('a server close 4006 after identify goes idle with 4006, arms no timer and opens no second socket', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello());
+    s.serverClose(4006);
+    expect(h.gw.status).toBe('idle');
+    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+    expect(h.clock.pending()).toEqual([]);
+    h.clock.advance(600_000);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.minted()).toBe(1);
+  });
+
+  it('a server close 4006 on a ready socket goes idle with 4006 and stays down', async () => {
+    const h = harness();
+    const s = await connected(h);
+    s.serverClose(4006);
+    expect(statuses(h.events)).toEqual(['connecting:null', 'ready:null', 'idle:4006']);
+    expect(h.clock.pending()).toEqual([]);
+    h.clock.advance(600_000);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.minted()).toBe(1);
+  });
+
+  it('control: an ordinary close still waits and reconnects', async () => {
+    const h = harness();
+    const s = await connected(h);
+    s.serverClose(1006);
+    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'waiting', closeCode: 1006 });
+    expect(h.clock.pending()).toHaveLength(1);
+    h.clock.advance(h.clock.pending()[0] ?? 0);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(h.minted()).toBe(2);
   });
 });
 

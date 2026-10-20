@@ -2,8 +2,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
-  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, LinkBanner, PhoneHeader,
-  SidebarTabs, StatusBar, StatusChunk, TabBar, UnsupportedVoice,
+  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, LinkBanner, PhoneHeader,
+  SidebarTabs, TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -11,10 +11,10 @@ import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
-import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
+import { phoneNow, readPaneWidths, rememberedTab, rememberTab, usePhoneLayout, writePaneWidths, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
-import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
+import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
@@ -23,11 +23,11 @@ import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
-  badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
-  nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
+  badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
+  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
-import { ActiveVoiceList, callPhase, DmCall, Dock, removedFromServer, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { callPhase, DmCall, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
@@ -37,11 +37,12 @@ import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
 import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
-import { PresencePicker } from './PresencePicker.tsx';
+import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
+import { browser } from '../browser.ts';
 
 export interface ShellUpdateDeps {
   currentEntry: string;
@@ -51,14 +52,17 @@ export interface ShellUpdateDeps {
 }
 
 /**
- * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
- * does nothing when there is none.
+ * Focuses the user panel's settings gear (web3.8, R24), where focus returns when Settings closes; does nothing when
+ * there is none (a phone has no user panel).
  */
-export function focusRailSettings(): void {
-  document.querySelector<HTMLButtonElement>(
-    'nav[aria-label="' + t('shell.rail.label') + '"] button[aria-label="' + t('shell.rail.settings') + '"]')?.focus();
+export function focusUserSettings(): void {
+  document.querySelector<HTMLButtonElement>('.d-user-panel button[aria-label="' + t('panel.settings') + '"]')?.focus();
 }
 
+/** The icon of the channel list's new-channel button. */
+const PLUS = 'plus';
+const SEARCH = 'search';
+const SETTINGS = 'settings';
 const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
 const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
@@ -135,11 +139,11 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
 
 /**
  * The signed-in shell: the server rail, the selected server's channels and the direct messages, the open
- * channel's or DM's timeline and composer, the banners and the status bar. The route is the selection (L-TS-13);
+ * channel's or DM's timeline and composer and the banners. The route is the selection (L-TS-13);
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
-export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Element {
+export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}): React.JSX.Element {
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -166,7 +170,6 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const dms = useSlice('dms');
   const badges = useSlice('badges');
   const settings = useSlice('settings');
-  const devices = useSlice('devices');
   const search = useSlice('search');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -217,14 +220,24 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string }>({ channelId: null, text: '' });
-  // Flow 07: start a server, add a channel, copy an invite link.
+  // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
-  const [inviteOpen, setInviteOpen] = useState(false);
+  // Web3.8 (R18): the pane widths the person chose, kept in this browser. The ui never re-clamps what is stored; it clamps
+  // what it shows, and only a drag or a key reports a new width.
+  const [paneWidths, setPaneWidths] = useState(readPaneWidths);
+  const paneRef = useRef(paneWidths);
+  const onPaneResize = useCallback((pane: 'sidebar' | 'aside', px: number | null) => {
+    const next = { ...paneRef.current };
+    if (px === null) delete next[pane];
+    else next[pane] = px;
+    paneRef.current = next;
+    setPaneWidths(next);
+    writePaneWidths(next);
+  }, []);
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
-  const [serverMenuOpen, setServerMenuOpen] = useState(false);
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
   // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
@@ -284,7 +297,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const removals = useSlice('removals');
   const [dismissedRemovals, setDismissedRemovals] = useState<ReadonlySet<number>>(() => new Set());
   const seenRemovals = useRef<ReadonlySet<number>>(new Set());
-  const createFlowOpen = createOpen || channelOpen || inviteOpen;
+  const createFlowOpen = createOpen || channelOpen;
   // The text channel a create just opened: its composer takes focus once it is on screen (after the dialog handed focus back).
   // `from` is the conversation open when the wish was made: the shell may still show it for a render or two.
   const pendingFocus = useRef<{ id: string; from: string | null } | null>(null);
@@ -360,7 +373,6 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     setAdminFor(open => (open !== null && gone.has(open) ? null : open));
     if (communityId !== null && gone.has(communityId)) {
       setChannelOpen(false);
-      setInviteOpen(false);
     }
   }, [removals, communityId]);
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
@@ -411,7 +423,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const recoverEnded = useCallback((id: string) => Date.now() < upgradeRejoinUntil.current
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
-    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded });
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone, announce });
   const afkSelf = selfAFKCommunity === communityId && communityId !== null;
   const leaveVoiceCall = call.leave;
   const currentCallChannel = call.channelId;
@@ -667,11 +679,6 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     marked.current = mark;
     client.call({ m: 'markRead', channelId: openId }).catch(report);
   }, [openId, timelineLoaded, visible, badge?.unread, badge?.mentions, lastKey, client, report]);
-
-  // (7) The account's device list, once per mount, for the status bar (Q12); a refusal leaves the chunk unknown.
-  useEffect(() => {
-    client.call({ m: 'refreshDevices' }).catch(() => undefined);
-  }, [client]);
 
   // The sidebar tab: DMs on a DM route, channels otherwise; it follows the route between the two, and a tab click
   // changes it without navigating. State adjusted during render, React's pattern for derived state.
@@ -955,6 +962,13 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
         flags: 0, own: p.deviceId === account?.deviceId, web: false, bot: false };
     }) } : voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
     held: afk === null || afk === undefined || afk.channelId === c.id || removedFromServer({ slice: callSlice }, c.id) }));
+  // A voice channel this client cannot join (a readable one, `kind` voice but not `isVoice`) has no join and nobody under it.
+  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[] }> = {};
+  for (const r of channelRows) if (r.kind === 'voice') voiceRooms[r.id] = { joined: false, held: true, participants: [] };
+  for (const r of voiceRows) {
+    voiceRooms[r.id] = { joined: r.joined, held: r.held,
+      participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
+  }
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
@@ -998,43 +1012,39 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     // owner holds ManageChannels; every member holds CreateInvite by default (@everyone), and a refusal is said in the dialog.
     const openAdmin = (tab: AdminTab) => { if (community !== null) openAdminFor(community.id, tab); };
     // Final fix B1: "edit channel" sits in the channel header (M2), not here.
-    const phoneServerMenu = !phone || !voiceHere ? undefined : (
-      <ActionMenu label={t('nav.server.menu')} icon="ellipsis-vertical" open={serverMenuOpen} onOpenChange={setServerMenuOpen}
-        items={[
-          { id: 'search', label: t('search.open') },
-          ...(canManageChannels ? [{ id: 'channel', label: t('create.channel.open') }] : []),
-          { id: 'invite', label: t('invite.open') },
-          { id: 'admin', label: t('admin.open') },
-          ...(!owner ? [{ id: 'leave', label: t('admin.leave.open'), danger: true }] : []),
-        ]}
-        onSelect={id => {
-          if (id === 'search') startSearch('all');
-          else if (id === 'channel') setChannelOpen(true);
-          else if (id === 'invite') setInviteOpen(true);
-          else openAdmin(id === 'leave' ? 'danger' : 'overview');
-        }} />
+    // Web3.8 (WS8): the gear sits beside the server's name (leave and delete live in server settings); the phone adds search.
+    const headerAction = !voiceHere ? undefined : (
+      <>
+        {phone ? (
+          <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={() => startSearch('all')}>
+            <Icon name={SEARCH} size={18} /></Button>
+        ) : null}
+        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
+          <Icon name={SETTINGS} size={18} /></Button>
+      </>
     );
-    const actions = voiceHere && !phone ? <>
-      {canManageChannels ? <Button className="dw-new-channel" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
-        {t('create.channel.button')}</Button> : null}
-      <Button onClick={() => setInviteOpen(true)}>{t('invite.open')}</Button>
-      <Button data-admin-open="" onClick={() => openAdmin('overview')}>{t('admin.open')}</Button>
-      {!owner ? <Button onClick={() => openAdmin('danger')}>{t('admin.leave.open')}</Button> : null}
-    </> : undefined;
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        actions={actions} actionsLabel={t('create.actions')} headerAction={phoneServerMenu}
+        headerAction={headerAction}
+        // Web3.8 (item 11): the new-channel "+" sits at the right of the list's own header, for a person who can manage
+        // channels, on the channels tab and the phone's servers list, never on the DMs tab.
+        listAction={voiceHere && canManageChannels ? (
+          <Button variant="ghost" className="dw-channel-add" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
+            <Icon name={PLUS} size={16} /></Button>
+        ) : undefined}
         // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
         titleKind={phone && onDms ? 'plain' : 'server'}
-        tabs={phone ? (voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : undefined) : <>
+        tabs={phone ? undefined : <>
           <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
             { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
             { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
           ]} />
-          {voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : null}
         </>}
-        channels={onDms ? dmRows : channelRows.filter(row => !voiceRows.some(v => v.id === row.id))}
+        channels={onDms ? dmRows : channelRows}
+        // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
+        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
+          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
@@ -1048,12 +1058,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
             setPickerOpen(true);
           }}>{t('shell.dms.new')}</Button>;
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
-        })()
-          : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
-            onJoin={id => { openVoice(id); voiceCtx.onJoinVoice?.(id); }} /> : undefined} />
-      {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
-        stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
-      {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
+        })() : undefined} />
     </div>);
   }
 
@@ -1291,14 +1296,13 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   // says it is offline the link is offline; the gateway status still governs everything else (reconnecting, a version refusal).
   const status = !browserOnline ? 'offline' : connection?.status ?? 'connecting';
   const linkReason = connection?.status === 'offline' ? connection.reason : undefined;
-  const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
   const ownTrust = account?.ownTrust ?? null;
   const removalNotices = (removals ?? []).filter(r => !dismissedRemovals.has(r.id));
-  const banner = offline || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  const banner = (offline && linkReason === 'version') || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -1308,8 +1312,12 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && (!phone || linkReason === 'version') ? (
-        <Banner tone="warn">{t(linkReason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
+      {offline && linkReason === 'version' ? (
+        <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => {
+          // The update effect checkpoints the draft, route and files, then reloads; with no update flow or storage it is a plain reload.
+          if (update === undefined || updateScope === null) browser.reload();
+          else setUpdateEntry(update.currentEntry);
+        } }}>{t('shell.banner.clientTooOld')}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
@@ -1352,14 +1360,18 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   });
   // The tab to open once an open sheet's entry has been popped (set while that pop is pending, so a second tap only retargets it).
   const pendingTab = useRef<{ to: PhoneTab; current: boolean } | null>(null);
+  // The listener goBack leaves for the pop (N5); a newer tap or the shell going away removes it.
+  const tabBackOff = useRef<() => void>(() => undefined);
+  useEffect(() => () => tabBackOff.current(), []);
   const openTab = (to: PhoneTab, current: boolean) => {
+    tabBackOff.current();
     // The current tab in its pushed view goes to its list (the iOS convention): back when the app pushed the view, else a replace after a
     // deep link. Another tab opens where it was left, replacing the entry.
     if (current) {
       // Back only when the view was pushed from this tab's own list; from anywhere else (Activity, another tab) back would land there.
       const from = pushedFrom();
       const fromList = from !== null && tabOf(from) === to && from.name !== 'dm' && from.name !== 'settings' && !(from.name === 'channel' && from.channelId !== null);
-      if (fromList) goBack(tabRoot(to), navigate);
+      if (fromList) tabBackOff.current = goBack(tabRoot(to), navigate, tabRoot(to));
       else navigate(tabRoot(to), true);
     } else navigate(tabTarget(to), true);
   };
@@ -1417,11 +1429,11 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       return;
     }
     const opened = openedId.current;
-    // The list's rows are in the order of their ids; the row is found by position, never by its text.
-    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.filter(c => !isVoice(c)).map(c => c.id);
+    // The list's rows (voice rows among them, web3.8) are in the order of their ids; the row is found by position, never by its text.
+    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.map(c => c.id);
     const at = opened === null ? -1 : rowIds.indexOf(opened);
     const row = openSettings.current !== null ? document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`)
-      : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list button')[at] ?? null;
+      : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list > li > :first-child')[at] ?? null;
     openedId.current = null;
     openSettings.current = null;
     const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-empty-state h2');
@@ -1435,7 +1447,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === call.recentlyEnded?.channelId && c.kind === 1)
     ? call.recentlyEnded : null;
   // These dialogs own form drafts in their own components. Apply the update after the person finishes the form.
-  const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen || inviteOpen
+  const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen
     || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
   const updateVoiceActive = useRef(false);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
@@ -1589,6 +1601,9 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
+  // Server settings is a page above the shell on a phone (the same slot as Settings), and after it on a desktop.
+  const adminPage = adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
+    onClose={() => setAdminFor(null)} announce={announce} /> : null;
   return (
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
@@ -1611,14 +1626,21 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
+        {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
+        page={phone ? <>{adminPage}{props.page}</> : undefined}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
           createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
-          settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
+        bottom={phone || self === null ? undefined : <>
+          <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
+            stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
+          <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
+            onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })} />
+        </>}
         ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}
         header={<>
           {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
@@ -1631,19 +1653,11 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
             labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null}
           {composer}
         </>}
-        statusBar={
-          <StatusBar position="bottom" label={t('shell.status.label')}>
-            <StatusChunk label={t('shell.status.node')}>{account?.instance?.name ?? t('shell.status.unknown')}</StatusChunk>
-            <StatusChunk label={t('shell.status.link')} tone={tone}>{t(`shell.status.${status}`)}</StatusChunk>
-            <StatusChunk label={t('shell.status.gen')}>{connection?.generation ?? t('shell.status.unknown')}</StatusChunk>
-            <StatusChunk label={t('shell.status.devices')}>{devicesChunk(devices)}</StatusChunk>
-          </StatusBar>
-        }
-        banner={phone ? <>
+        banner={<>
           {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
-        </> : banner}
+        </>}
         aside={sideNow?.view === 'thread' && channel !== null
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
@@ -1693,11 +1707,8 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
           setChannelOpen(false);
           if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
         }} />
-      <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)}
-        onMoreOptions={() => { if (community !== null) openAdminFor(community.id, 'invites'); }} />
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
-      {adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
-        onClose={() => setAdminFor(null)} announce={announce} /> : null}
+      {phone ? null : <>{adminPage}{props.page}</>}
     </>
   );
 }

@@ -213,6 +213,55 @@ describe('goBack', () => {
     back.mockRestore();
   });
 
+  describe('with an expected route (N5: the system forward button)', () => {
+    const expected: Route = { name: 'channel', communityId: C, channelId: null };
+    /** history.back() that lands on `path` and fires the popstate the browser would. */
+    const backTo = (path: string) => vi.spyOn(window.history, 'back').mockImplementation(() => {
+      window.history.replaceState(null, '', path);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    it('goes to the expected route when back landed somewhere else (a forward entry)', () => {
+      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+      const back = backTo('/dm');
+      const navigate = vi.fn();
+      goBack({ name: 'dms' }, navigate, expected);
+      expect(navigate).toHaveBeenCalledTimes(1);
+      expect(navigate).toHaveBeenCalledWith(expected, true);
+      back.mockRestore();
+    });
+
+    it('does nothing more when back landed on the expected route (control)', () => {
+      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+      const back = backTo(routePath(expected));
+      const navigate = vi.fn();
+      goBack({ name: 'dms' }, navigate, expected);
+      expect(navigate).not.toHaveBeenCalled();
+      back.mockRestore();
+    });
+
+    it('listens once: a later popstate is not corrected', () => {
+      window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+      const back = backTo(routePath(expected));
+      const navigate = vi.fn();
+      goBack({ name: 'dms' }, navigate, expected);
+      window.history.replaceState(null, '', '/dm');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      expect(navigate).not.toHaveBeenCalled();
+      back.mockRestore();
+    });
+
+    it('adds no listener on the deep-link path', () => {
+      window.history.replaceState(null, '', `/c/${C}/${CH}`);
+      const add = vi.spyOn(window, 'addEventListener');
+      const navigate = vi.fn();
+      goBack(expected, navigate, expected);
+      expect(add).not.toHaveBeenCalledWith('popstate', expect.anything(), expect.anything());
+      expect(navigate).toHaveBeenCalledWith(expected, true);
+      add.mockRestore();
+    });
+  });
+
   it('replaces with the fallback on a deep link', () => {
     window.history.replaceState(null, '', `/c/${C}/${CH}`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);

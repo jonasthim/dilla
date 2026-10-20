@@ -1,4 +1,4 @@
-import { createElement, Fragment, type FunctionComponent } from 'react';
+import { createElement, type FunctionComponent, type ReactNode } from 'react';
 import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -197,8 +197,9 @@ export interface FakeCallContext { n: number; closed: boolean; close(): Promise<
 
 function Root({ withSettings, update }: { withSettings: boolean; update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
   const [route] = useRoute();
-  return createElement(Fragment, null, createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps }>, { update }),
-    withSettings && route.name === 'settings' ? createElement(Settings) : null);
+  // As App does: Settings goes to the shell as its page, which a phone puts inside the shell and a desktop after it.
+  return createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps; page?: ReactNode }>,
+    { update, page: withSettings && route.name === 'settings' ? createElement(Settings) : null });
 }
 
 export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
@@ -284,8 +285,9 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
           return off;
         };
       }
-      // As the real session: it starts in the mode it was started with.
-      session.state = { ...session.state, mode: opts.mode };
+      // As the real session: it starts in the mode it was started with, and in the kept mute or deafen (`self`). It does not
+      // read `selfNow`, so the shell's attach reconcile is what a press during the start is tested against.
+      session.state = { ...session.state, mode: opts.mode, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened' };
       sessions.push(session);
       return session;
     }),

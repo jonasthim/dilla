@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encode } from '../cbor';
+import { Enrol } from '../account/enrol';
+import { FakeCore } from '../testing/fake-core';
+import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
 import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/crypto';
 import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
@@ -8,7 +11,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
-import { HELD_LIVE_MAX } from './controller';
+import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -66,6 +69,90 @@ describe('Controller', () => {
     w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
+  });
+  it('carries the account display name on the user, for a person who has joined no server yet', async () => {
+    const w = world();
+    w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Alice', kind: 0, flags: 0n, presenceChoice: 1 });
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.account()?.user?.display).toBe('Alice'));
+    expect(w.account()?.user?.username).toBe('web');
+  });
+  describe('the cached display name never crosses accounts (security fix)', () => {
+    type Cache = { knownDisplay(userId: string): { display?: string } };
+    const cache = (w: ReturnType<typeof world>) => w.controller as unknown as Cache;
+    const B = 'b'.repeat(32);
+    async function readyAs(display: string) {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display, kind: 0, flags: 0n, presenceChoice: 1 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.account()?.user?.display).toBe(display));
+      return w;
+    }
+    it('is returned only for the user it was read for', async () => {
+      const w = await readyAs('Alice');
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({ display: 'Alice' });
+      expect(cache(w).knownDisplay(B)).toEqual({});
+    });
+    it('is dropped by a sign-out wipe, so the next account never sees it, not even for the same id', async () => {
+      const w = await readyAs('Alice');
+      w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(w.account()?.user).toBeNull();
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+      expect(cache(w).knownDisplay(B)).toEqual({});
+    });
+    it('is dropped when the account state is cleared by a lost lock (dropStore)', async () => {
+      const w = await readyAs('Alice');
+      (w.controller as unknown as { dropStore(): void }).dropStore();
+      await vi.waitFor(() => expect(w.account()?.user).toBeNull());
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+    });
+    it('the setAccount clear: any state that sets user null, or revokes, drops the cache (m-d, kept as defence in depth)', async () => {
+      const set = (w: ReturnType<typeof world>, patch: object) => (w.controller as unknown as { setAccount(p: object): void }).setAccount(patch);
+      const a = await readyAs('Alice');
+      set(a, { user: null });
+      expect(cache(a).knownDisplay(toHex(USER))).toEqual({});
+      const b = await readyAs('Alice');
+      set(b, { phase: 'revoked' });
+      expect(cache(b).knownDisplay(toHex(USER))).toEqual({});
+      const c = await readyAs('Alice');
+      set(c, { phase: 'loading' });
+      expect(cache(c).knownDisplay(toHex(USER))).toEqual({ display: 'Alice' });
+    });
+    it('the status choice is reset with the account (wipe and dropStore), so the next account never sees the last one\'s status (m-a)', async () => {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
+      (w.controller as unknown as { dropStore(): void }).dropStore();
+      expect(w.account()?.presenceChoice).toBeUndefined();
+      const x = world();
+      x.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
+      await toReady(x);
+      x.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      x.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(x.account()?.presenceChoice).toBe('dnd'));
+      x.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(x.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(x.account()?.presenceChoice).toBeUndefined();
+    });
+    it('a read that names another user is not applied to the current one', async () => {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: new Uint8Array(16).fill(0xbb), username: 'other', display: 'Mallory', kind: 0, flags: 0n, presenceChoice: 1 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.routes.getAccountMe).toHaveBeenCalled());
+      await new Promise(r => setTimeout(r, 20));
+      expect(w.account()?.user?.display).toBeUndefined();
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+    });
   });
   it('keeps a successful choice save when the own frame refresh fails', async () => {
     const w = world();
@@ -558,6 +645,105 @@ it('keeps an own leaf the core refused against the own signed list on the accoun
   w.call(9804, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(9804)).toMatchObject({ ok: true }));
   expect(w.account()?.ownTrust).toBeNull();
+});
+
+// web3.8 C3 (walk #8): a device of the own user that joins changes the own list; the device count follows it without a
+// visit to Settings. One read per trust pass, however many own leaves changed in it.
+// C3 fix I1: the core never answers `changed` for the own user (a new own device keeps the same key, and a new key
+// throws E_UMK_CHANGED), so the trigger is an ingest whose version is newer than the own list's at the pass start (1).
+describe('the device count follows an own leaf the trust pass ingests', () => {
+  const THIRD = new Uint8Array(16).fill(0x0d);
+  async function ownWorld(): Promise<World> {
+    const w = world();
+    await toReady(w);
+    await settle();
+    w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
+      raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+    w.routes.listDevices.mockResolvedValue([
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+    ]);
+    return w;
+  }
+  const slicesAfter = (w: World, from: number): string[] =>
+    w.posted.slice(from).filter((m): m is SliceMessage => m.t === 'slice').map((m) => m.name);
+
+  it('an own leaf ingested at a newer list version reads the devices once more and republishes devices and diagnostics', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    const from = w.posted.length;
+    w.call(9820, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9820)).toMatchObject({ ok: true }));
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+    expect(slicesAfter(w, from)).toEqual(expect.arrayContaining(['devices', 'diagnostics']));
+    expect(w.last<DeviceSummary[]>('devices')?.map((d) => d.id)).toEqual([toHex(DEVICE), toHex(OTHER_DEVICE), toHex(THIRD)]);
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+  });
+
+  it('two own leaves at a newer version in one pass make one read', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([
+      { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+      { groupId: DM_GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+    ]);
+    w.core.deviceListIngest
+      .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 })
+      .mockReturnValueOnce({ version: 3n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9821, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9821)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+  });
+
+  it('control: an own leaf at the version already held, or a contact\'s newer list, reads no devices', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([
+      { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+      { groupId: GROUP, leafIndex: 4, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+    ]);
+    w.core.deviceListIngest
+      .mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 })
+      .mockReturnValueOnce({ version: 5n, changed: true, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9822, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9822)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
+
+  it('a core with no own list to read still runs the pass, ingests the leaf and reads no devices', async () => {
+    const w = await ownWorld();
+    Object.defineProperty(w.state, 'ownList', { get: () => { throw new CoreError('E_CORE_STATE', ''); } });
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9825, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9825)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+    expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 3, 256);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
+
+  // C3 fix m1: a failed device read neither fails the pass nor clears the count.
+  it('a device read that fails keeps the last count, and the trust pass still answers ok', async () => {
+    const w = await ownWorld();
+    w.call(9823, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.ret(9823)).toMatchObject({ ok: true }));
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+    w.routes.listDevices.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9824, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9824)).toMatchObject({ ok: true }));
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+    expect(w.last<DeviceSummary[]>('devices')).toHaveLength(3);
+  });
 });
 
 // The trust patch (89923a6) answers `changed` only for the ingest that starts a key change; a later ingest of the same
@@ -2078,9 +2264,9 @@ const appliedSeqs = (seqs: bigint[]): ApplyResult =>
 const phasesOf = (w: World): string[] =>
   w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === 'account').map((m) => (m.value as AccountState).phase);
 
-/** The login as the page sends it: the recovery key, entered first, travels with it (coordinator ruling on
- *  REGISTRATION-DEVICES-02's concern 3). */
-const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD, recoveryKey: RECOVERY_KEY } as const;
+/** The login as the page sends it. web3.8 (R6): the recovery key comes last, with signInKey (KEY). */
+const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD } as const;
+const KEY = { m: 'signInKey', recoveryKey: RECOVERY_KEY } as const;
 
 /** From needs-signup through signInBegin (id 2) to signin-login, nothing sent to the instance yet. */
 async function toLoginStep(w: World): Promise<void> {
@@ -2090,7 +2276,7 @@ async function toLoginStep(w: World): Promise<void> {
   await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
 }
 
-/** toLoginStep, then the login with the key (id 3), answered. */
+/** toLoginStep, then the login (id 3), answered. */
 async function toKeyStep(w: World): Promise<void> {
   await toLoginStep(w);
   w.call(3, LOGIN);
@@ -2118,27 +2304,29 @@ async function toKeyStep(w: World): Promise<void> {
 //   backup and signs nothing.
 
 describe('Controller sign-in (L-TS-23)', () => {
-  // REGISTRATION-DEVICES-02 and the coordinator's ruling on its concern 3: the key is entered first and its form
-  // checked before the login is sent; the login's assertion is then spent at once by the registration, the fetch,
-  // the enrolment and the list PUT, back to back.
-  it('signs in without a second factor: the key\'s form, then the login, register, fetch and enrol back to back, then ready', async () => {
+  // REGISTRATION-DEVICES-02 as web3.8 (R6) keeps it: the login holds its settled assertion, and the key step spends it
+  // after the key's form check, by the registration, the fetch, the enrolment and the list PUT, back to back.
+  it('signs in without a second factor: the login, then the key\'s form, register, fetch and enrol back to back, then ready', async () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null }, error: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([]);
     w.call(3, LOGIN);
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
+    expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: 'web' }, error: null });
+    w.call(4, KEY);
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
     expect(w.core.recoveryKeyCheck).toHaveBeenCalledWith(RECOVERY_KEY);
     expect(w.enrol.login).toHaveBeenCalledWith('web', PASSWORD);
     expect(w.enrol.register).toHaveBeenCalledWith(INSTANCE_ID);
     expect(w.enrol.fetch).toHaveBeenCalledWith(USER);
     expect(w.calls.filter((c) => c.startsWith('enrol.') || c === 'core.recoveryKeyCheck')).toEqual([
-      'core.recoveryKeyCheck', 'enrol.login', 'enrol.register', 'enrol.fetch', 'enrol.complete',
+      'enrol.login', 'core.recoveryKeyCheck', 'enrol.register', 'enrol.fetch', 'enrol.complete',
     ]);
     expect(w.enrol.complete).toHaveBeenCalledWith(RECOVERY_KEY, FETCHED, 'web');
     expect(w.account()).toMatchObject({ phase: 'ready', user: { id: toHex(USER), username: 'web' }, deviceId: toHex(DEVICE), signIn: null, error: null });
     const phases = phasesOf(w);
-    expect(phases).not.toContain('signin-key');
+    expect(phases.indexOf('enrolling')).toBeGreaterThan(phases.indexOf('signin-key'));
     expect(phases.indexOf('ready')).toBeGreaterThan(phases.indexOf('enrolling'));
   });
 
@@ -2149,15 +2337,15 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web' } });
     expect(w.enrol.register).not.toHaveBeenCalled();
-    w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInTotp', code: '12345' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
-    w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: '' });
-    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
-    w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
-    await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
+    w.call(5, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
     expect(w.enrol.totp).toHaveBeenCalledWith('123456');
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(6, KEY);
+    await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual(['enrol.login', 'enrol.totp', 'enrol.register', 'enrol.fetch', 'enrol.complete']);
     expect(w.account()?.phase).toBe('ready');
   });
@@ -2183,17 +2371,19 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a register refused at the device cap keeps the enrol record and returns to the login step with the 403', async () => {
     const w = world({ phase: 0 });
     w.enrol.register.mockImplementationOnce(() => { w.state.phase = 3; return Promise.reject(refusal(403, 'E_FORBIDDEN')); });
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_FORBIDDEN', detail: '', status: 403, retryAfterMs: null } });
     expect(w.enrol.fetch).not.toHaveBeenCalled();
     expect(w.enrol.reset).not.toHaveBeenCalled();
     expect(w.core.identity().phase).toBe(3);
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: { code: 'E_FORBIDDEN', status: 403 } });
-    // Once a device was removed elsewhere, the next login (with the key) registers the kept enrolment again.
+    // Once a device was removed elsewhere, the next login and key register the kept enrolment again.
     w.call(5, LOGIN);
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } }));
+    w.call(6, KEY);
+    await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
     expect(w.enrol.register).toHaveBeenCalledTimes(2);
     expect(w.account()?.phase).toBe('ready');
   });
@@ -2203,8 +2393,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a 429 from register crosses as E_RATE_LIMITED with its retry and keeps the enrol record', async () => {
     const w = world({ phase: 0 });
     w.enrol.register.mockImplementationOnce(() => { w.state.phase = 3; return Promise.reject(refusal(429, 'E_RATE_LIMITED', 1_000)); });
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_RATE_LIMITED', detail: '', status: 429, retryAfterMs: 1_000 };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -2219,13 +2409,13 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
     await toKeyStep(w);
     expect(w.account()?.phase).toBe('signin-totp');
-    w.call(4, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(w.enrol.register).not.toHaveBeenCalled();
-    w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(5, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.enrol.totp).toHaveBeenCalledTimes(1);
@@ -2236,7 +2426,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(new Error('E_NO_ASSERTION')));
     await toKeyStep(w);
-    w.call(4, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_NO_ASSERTION', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -2255,8 +2445,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a missing backup keeps the key step with the error, and the key reads the backups again without registering again', async () => {
     const w = world({ phase: 0 });
     w.enrol.fetch.mockImplementationOnce(() => Promise.reject(new Error('E_NO_BACKUP')));
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_NO_BACKUP', detail: '', status: 0, retryAfterMs: null } });
     expect(w.account()).toMatchObject({ phase: 'signin-key', error: { code: 'E_NO_BACKUP' } });
@@ -2271,8 +2461,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a wrong recovery key returns to the key step and keeps the enrolment', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => Promise.reject(new CoreError('E_RECOVERY_KEY', '')));
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
     expect(w.account()).toMatchObject({ phase: 'signin-key', error: { code: 'E_RECOVERY_KEY' } });
@@ -2284,23 +2474,24 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('the login is sent only once the key is held: a malformed key is refused before the login, which then mints its assertion seconds before the registration', async () => {
+  it('the password and the code come first; the key last, and a malformed key is refused before the registration spends the held assertion', async () => {
     const w = world({ phase: 0 });
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
-    await toLoginStep(w);
-    w.core.recoveryKeyCheck.mockImplementationOnce(() => { w.calls.push('core.recoveryKeyCheck'); throw new CoreError('E_RECOVERY_KEY', ''); });
-    w.call(3, { ...LOGIN, recoveryKey: 'Z'.repeat(52) });
-    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
-    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_RECOVERY_KEY' } });
-    expect(w.enrol.login).not.toHaveBeenCalled();
-    w.call(4, LOGIN);
-    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 1 } }));
+    await toKeyStep(w);
+    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
     expect(w.enrol.register).not.toHaveBeenCalled();
-    w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
-    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    w.core.recoveryKeyCheck.mockImplementationOnce(() => { w.calls.push('core.recoveryKeyCheck'); throw new CoreError('E_RECOVERY_KEY', ''); });
+    w.call(5, { m: 'signInKey', recoveryKey: 'Z'.repeat(52) });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.account()).toMatchObject({ phase: 'signin-key', error: { code: 'E_RECOVERY_KEY' } });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    w.call(6, KEY);
+    await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
     expect(w.calls.filter((c) => c.startsWith('enrol.') || c === 'core.recoveryKeyCheck')).toEqual([
-      'core.recoveryKeyCheck', 'core.recoveryKeyCheck', 'enrol.login', 'core.recoveryKeyCheck', 'enrol.totp',
+      'enrol.login', 'enrol.totp', 'core.recoveryKeyCheck', 'core.recoveryKeyCheck',
       'enrol.register', 'enrol.fetch', 'enrol.complete',
     ]);
   });
@@ -2308,8 +2499,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a row evicted before the enrolment was written: the fetch answers 401, the enrolment is dropped and step 1 says why', async () => {
     const w = world({ phase: 0 });
     w.enrol.fetch.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -2321,8 +2512,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a row evicted after the enrolment was written: the store is wiped to cleared with E_SIGNIN_EVICTED, never revoked', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => { w.state.phase = 2; return Promise.reject(new Error('E_SIGNIN_EVICTED')); });
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -2429,8 +2620,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a list race wipes the store and ends in cleared; nothing reopens it in this worker', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => { w.state.phase = 2; return Promise.reject(new Error('E_LIST_RACE')); });
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_LIST_RACE', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -2496,8 +2687,8 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('the password and the recovery key reach no slice, ret or error', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => Promise.reject(new CoreError('E_RECOVERY_KEY', '')));
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     w.call(5, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
@@ -2505,6 +2696,284 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(everything).not.toContain(PASSWORD);
     expect(everything).not.toContain(RECOVERY_KEY);
     expect(everything).not.toContain(RECOVERY_KEY.slice(0, 13));
+  });
+});
+
+// web3.8 C1 (R6): the password and the factor first, the recovery key last. The login and the factor never register;
+// the worker holds the settled assertion, and the registration runs only inside signInKey, after the key's form check,
+// back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02 kept).
+const BACKUP = 'A'.repeat(26);
+const EXPIRED = { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null };
+const enrolCalls = (w: World): string[] => w.calls.filter((c) => c.startsWith('enrol.') || c === 'core.recoveryKeyCheck');
+
+/** The instance's side of the 5-minute assertion (the fake server's TTL), over the real Enrol: an account whose first
+ *  browser published list v1, and this browser enrolling. */
+function instanceAccount(opts: { totp?: string; passkey?: boolean; codes?: string[] } = {}) {
+  const server = new FakeServer();
+  const first = new Uint8Array(16).fill(0xa1);
+  const userId = server.register('ada', first);
+  server.setPassword('ada', PASSWORD, opts.totp ?? null);
+  server.publishList(userId, [{ deviceId: first, revokedAt: null }], 1n);
+  if (opts.passkey === true) server.addPasskey('ada', 'Laptop');
+  if (opts.codes !== undefined) server.factorsOf('ada').codes = [...opts.codes];
+  const device = new Uint8Array(16).fill(0xb2);
+  const core = new FakeCore({ deviceId: device });
+  const { routes, session } = sessionFor(server, core);
+  const enrol = new Enrol({ core, routes, session, now: () => FAKE_NOW_S * 1000 });
+  return { server, enrol, device: toHex(device), userId };
+}
+async function statusOf(p: Promise<unknown>): Promise<number> {
+  try { await p; } catch (e) { if (e instanceof DillaHttpError) return e.status; throw e; }
+  return 0;
+}
+
+describe('Controller sign-in order (web3.8 C1, R6)', () => {
+  it('signInLogin never registers', async () => {
+    const w = world({ phase: 0 });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
+    expect(enrolCalls(w)).toEqual(['enrol.login']);
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: 'web', factor: null }, error: null });
+    expect(phasesOf(w)).not.toContain('enrolling');
+    expect(w.core.recoveryKeyCheck).not.toHaveBeenCalled();
+  });
+
+  it('signInTotp holds the assertion and never registers', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } }));
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(enrolCalls(w)).toEqual(['enrol.login', 'enrol.totp']);
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.enrol.reset).not.toHaveBeenCalled();
+    expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: 'web', factor: null }, error: null });
+    expect(phasesOf(w)).not.toContain('enrolling');
+  });
+
+  it('signInPasskey with needs 0 goes to signin-key', async () => {
+    const w = world({ phase: 0 });
+    await toLoginStep(w);
+    w.call(3, { m: 'signInPasskey', ceremonyId: 'ce'.repeat(16), response: '{"id":"x"}' });
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
+    expect(enrolCalls(w)).toEqual(['enrol.passkey']);
+    expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: null, factor: null }, error: null });
+  });
+
+  it('signInKey registers, fetches, enrols and publishes back to back', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.account()?.phase).toBe('signin-key');
+    const before = w.calls.length;
+    w.call(5, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(w.calls.slice(before).filter((c) => c.startsWith('enrol.') || c === 'core.recoveryKeyCheck')).toEqual([
+      'core.recoveryKeyCheck', 'enrol.register', 'enrol.fetch', 'enrol.complete',
+    ]);
+    expect(w.enrol.register).toHaveBeenCalledWith(INSTANCE_ID);
+    expect(w.enrol.complete).toHaveBeenCalledWith(RECOVERY_KEY, FETCHED, 'web');
+    expect(w.account()).toMatchObject({ phase: 'ready', user: { id: toHex(USER), username: 'web' }, signIn: null, error: null });
+    const phases = phasesOf(w);
+    expect(phases.slice(phases.indexOf('signin-key'))).toEqual(expect.arrayContaining(['signin-key', 'enrolling', 'ready']));
+  });
+
+  it('a backup code is sent only with the key', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 2 } }));
+    expect(w.account()?.phase).toBe('signin-passkey');
+    // Without the key the code is refused before anything is sent, and nothing is spent.
+    w.call(4, { m: 'signInBackupCode', code: BACKUP });
+    await vi.waitFor(() => expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.enrol.backupCode).not.toHaveBeenCalled();
+    w.call(5, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(enrolCalls(w)).toEqual(['enrol.login', 'core.recoveryKeyCheck', 'enrol.backupCode', 'enrol.register', 'enrol.fetch', 'enrol.complete']);
+    expect(w.account()?.phase).toBe('ready');
+  });
+
+  it('an expired assertion at the key step returns to signin-login and spends nothing', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
+    // The instance answers 401 to POST /v1/devices/{id}/sessions: the settled assertion ran out during key entry.
+    w.enrol.register.mockImplementationOnce(() => { w.calls.push('enrol.register'); w.state.phase = 3; return Promise.reject(refusal(401, 'E_UNAUTHENTICATED')); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    w.call(5, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: false, error: EXPIRED });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', factor: null }, error: EXPIRED });
+    expect(w.enrol.fetch).not.toHaveBeenCalled();
+    expect(w.enrol.complete).not.toHaveBeenCalled();
+    // The kept enrolment (its device id) registers on the next sign-in.
+    expect(w.enrol.reset).not.toHaveBeenCalled();
+    // The instance's side: an assertion past its 5 minutes registers no row; one inside them does (control).
+    const late = instanceAccount({ totp: '123456' });
+    await late.enrol.login('ada', PASSWORD);
+    await late.enrol.totp('123456');
+    late.server.nowS += 301;
+    expect(await statusOf(late.enrol.register(INSTANCE_ID))).toBe(401);
+    expect(late.server.count('POST', `/v1/devices/${late.device}/sessions`)).toBe(1);
+    expect(late.server.devices.has(late.device)).toBe(false);
+    const prompt = instanceAccount({ totp: '123456' });
+    await prompt.enrol.login('ada', PASSWORD);
+    await prompt.enrol.totp('123456');
+    prompt.server.nowS += 299;
+    expect((await prompt.enrol.register(INSTANCE_ID)).userId).toEqual(prompt.userId);
+  });
+
+  it('an expired assertion on the backup path spends nothing and says enrol.expired', async () => {
+    let clock = 1_700_000_000_000;
+    const w = world({ phase: 0, now: () => clock });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+    // The instance checks the assertion before the code (verifySecondFactor): an expired one is a 401 and no code is spent.
+    w.enrol.backupCode.mockImplementationOnce(() => { w.calls.push('enrol.backupCode'); return Promise.reject(refusal(401, 'E_UNAUTHENTICATED')); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    clock += 300_001;   // the key read off paper for more than the assertion's 5 minutes
+    w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: EXPIRED });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', factor: null }, error: EXPIRED });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    // The instance's side: past 5 minutes the code is not looked at and stays unspent; inside them it is spent (control).
+    const late = instanceAccount({ passkey: true, codes: [BACKUP] });
+    await late.enrol.login('ada', PASSWORD);
+    late.server.nowS += 301;
+    expect(await statusOf(late.enrol.backupCode(BACKUP))).toBe(401);
+    expect(late.server.backupCodesOf('ada')).toEqual([BACKUP]);
+    const prompt = instanceAccount({ passkey: true, codes: [BACKUP] });
+    await prompt.enrol.login('ada', PASSWORD);
+    prompt.server.nowS += 299;
+    await prompt.enrol.backupCode(BACKUP);
+    expect(prompt.server.backupCodesOf('ada')).toEqual([]);
+  });
+
+  it('a refused backup code inside the 5 minutes stays the refusal, not the expiry (control)', async () => {
+    let clock = 1_700_000_000_000;
+    const w = world({ phase: 0, now: () => clock });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+    w.enrol.backupCode.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    clock += 299_999;   // fix m1: one millisecond inside the 5 minutes pins the threshold at 300 000
+    w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_UNAUTHENTICATED', status: 401 } });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_UNAUTHENTICATED' } });
+  });
+
+  // Fix m2: a passkey that owes a code (needs 1) holds the assertion the backup code then spends; its age starts there.
+  it('a passkey owing a code, then a backup code: a 401 past 5 minutes is the expiry, inside them the refusal', async () => {
+    for (const [elapsed, want] of [[300_001, EXPIRED], [299_999, { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null }]] as const) {
+      let clock = 1_700_000_000_000;
+      const w = world({ phase: 0, now: () => clock });
+      w.enrol.passkey.mockImplementationOnce(() => { w.calls.push('enrol.passkey'); return Promise.resolve({ needs: 1 as const }); });
+      w.enrol.backupCode.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
+      await toLoginStep(w);
+      w.call(3, { m: 'signInPasskey', ceremonyId: 'ce'.repeat(16), response: '{"id":"x"}' });
+      await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } }));
+      expect(w.enrol.login).not.toHaveBeenCalled();
+      clock += elapsed;
+      w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+      expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
+      expect(w.account()).toMatchObject({ phase: 'signin-login', error: want });
+      expect(w.enrol.register).not.toHaveBeenCalled();
+    }
+  });
+
+  // Fix m3: the age is elapsed time (deps.monotonic); a wall clock stepped forward does not age the assertion.
+  it('a forward wall-clock jump does not turn a mistyped backup code into the expiry; monotonic time does', async () => {
+    for (const [wall, mono, want] of [[600_000, 1_000, 'E_UNAUTHENTICATED'], [0, 300_001, 'E_SIGNIN_EXPIRED']] as const) {
+      let clock = 1_700_000_000_000;
+      let elapsed = 5_000;
+      const w = world({ phase: 0, now: () => clock, monotonic: () => elapsed });
+      w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+      w.enrol.backupCode.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
+      await toLoginStep(w);
+      w.call(3, LOGIN);
+      await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+      clock += wall;
+      elapsed += mono;
+      w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+      expect(w.ret(4)).toMatchObject({ ok: false, error: { code: want } });
+      expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: want } });
+    }
+  });
+
+  // Fix m4: the key's form is checked before the code goes out, so a malformed key spends no backup code.
+  it('a malformed key on the backup path leaves the code unspent and the step in place', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.account()?.phase).toBe('signin-passkey');
+    w.core.recoveryKeyCheck.mockImplementationOnce(() => { throw new CoreError('E_RECOVERY_KEY', ''); });
+    w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: 'Z'.repeat(52) });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.enrol.backupCode).not.toHaveBeenCalled();
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.account()).toMatchObject({ phase: 'signin-passkey', signIn: { username: 'web' }, error: { code: 'E_RECOVERY_KEY' } });
+    // Control: the same code with the right key is spent once and signs in.
+    w.call(5, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(w.enrol.backupCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('a malformed key at signin-key stays there with E_RECOVERY_KEY and keeps the assertion', async () => {
+    const w = world({ phase: 0 });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    w.core.recoveryKeyCheck.mockImplementationOnce(() => { w.calls.push('core.recoveryKeyCheck'); throw new CoreError('E_RECOVERY_KEY', ''); });
+    w.call(4, { m: 'signInKey', recoveryKey: 'Z'.repeat(52) });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: 'web' }, error: { code: 'E_RECOVERY_KEY' } });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.enrol.reset).not.toHaveBeenCalled();
+    w.call(5, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(enrolCalls(w)).toEqual(['enrol.login', 'core.recoveryKeyCheck', 'core.recoveryKeyCheck', 'enrol.register', 'enrol.fetch', 'enrol.complete']);
+    expect(w.account()?.phase).toBe('ready');
+  });
+
+  it('a cancel at signin-key drops the held assertion', async () => {
+    const w = world({ phase: 0 });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(4, { m: 'signInCancel' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.account()).toMatchObject({ phase: 'needs-signup', signIn: null, error: null });
+    // Enrol.reset is what drops it: the registration then has no assertion to spend.
+    const a = instanceAccount();
+    await a.enrol.login('ada', PASSWORD);
+    a.enrol.reset();
+    await expect(a.enrol.register(INSTANCE_ID)).rejects.toThrow('E_NO_ASSERTION');
   });
 });
 
@@ -2715,6 +3184,204 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     w.core.trustGeneration.mockReturnValue(2n);
     w.sync.deps!.onTrustChanged();
     expect(w.notices()?.items.map((n) => n.body)).toEqual(['from a stranger 2']);
+  });
+
+  // web3.8 R8: the marker is the group head, but stops one below the oldest live-held row of that group that arrived
+  // less than HELD_READ_HOLD_MS ago, so a row released later is unread, as a live arrival would be.
+  const heldRow = (seq: number): TimelineRow => ({ ...strangerRow(seq), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' });
+
+  it('markRead stops one below a live-held row, and reaches the head once the row is released (R8)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8), heldRow(9)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n, 9n]));
+    elapsed.t += HELD_READ_HOLD_MS - 1;
+    w.call(950, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(950)).toEqual({ t: 'ret', id: 950, ok: true, value: null }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+
+    // The trust refresh releases both rows: the next markRead goes to the head.
+    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8), strangerRow(9)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+    w.call(951, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(951)).toEqual({ t: 'ret', id: 951, ok: true, value: null }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+  });
+
+  it(`a row held ${String(HELD_READ_HOLD_MS)} ms or longer no longer holds the marker (R8)`, async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    // A second row held later, still young, holds the marker on its own once the first has aged out.
+    elapsed.t += 30_000;
+    w.state.rows = [strangerRow(6), heldRow(7), heldRow(8)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    elapsed.t += HELD_READ_HOLD_MS - 30_000;
+    w.call(952, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(952)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 7n, NOW_S);
+    elapsed.t += 30_000;
+    w.call(953, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(953)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+  });
+
+  it('a row held in another group does not hold this group\'s marker (R8)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    await toReady(w);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }, { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL, nextSeq: 10n }];
+    w.state.rows = [heldRow(3)];
+    w.sync.deps!.onGroupChanged(DM_GROUP, appliedSeqs([3n]));
+    w.state.rows = [strangerRow(9)];
+    w.call(954, { m: 'markRead', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(954)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+    // Control: the DM's own marker is held.
+    w.call(955, { m: 'markRead', channelId: toHex(DM_CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(955)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(DM_GROUP, 2n, NOW_S);
+  });
+
+  // C3 fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so the
+  // worker re-applies a held-back markRead itself on one timer per group, at the moment its oldest young held row
+  // reaches HELD_READ_HOLD_MS. It never reads past the head it was asked. Fix round 2 (C1): a release drops the held-back
+  // read and its timer instead; the released row is unread, and the page marks it (the release raises the count).
+  it('a readable row above a long-held row loses its badge at age-out, with no new message and no reopen (R8, I2)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 9n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 1, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      w.call(960, { m: 'markRead', channelId: ch });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(w.ret(960)).toEqual({ t: 'ret', id: 960, ok: true, value: null });
+      expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+      // A second markRead while still held keeps one timer for the group.
+      w.call(961, { m: 'markRead', channelId: ch });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1);
+      const marks = w.core.markRead.mock.calls.length;
+      w.core.markRead.mockImplementation(() => { w.state.activity = [act(GROUP, 0, 0)]; });
+      elapsed.t += HELD_READ_HOLD_MS - 1;
+      await vi.advanceTimersByTimeAsync(HELD_READ_HOLD_MS - 1);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+      elapsed.t += 1;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
+      expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 8n, NOW_S);
+      expect(w.badges()).toEqual({ [ch]: { unread: 0, mentions: 0 } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A ready world with row 7 held live and row 8 readable (head 8), and the page's markRead held back at 6. */
+  async function heldBack(elapsed: { t: number }): Promise<World> {
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 9n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 1, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    w.call(962, { m: 'markRead', channelId: toHex(CHANNEL) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.ret(962)).toMatchObject({ ok: true });
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+    return w;
+  }
+  const heldReadCount = (w: World): number => (w.controller as unknown as { heldReads: Map<string, unknown> }).heldReads.size;
+  const release = (w: World): void => {
+    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 2, 0)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+  };
+
+  it('a release marks nothing: the released row stays unread, and no held-back read or timer is left (R8, C1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(vi.getTimerCount()).toBe(1);
+      const marks = w.core.markRead.mock.calls.length;
+      release(w);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 2, mentions: 0 } });
+      expect(heldReadCount(w)).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a row released before its age-out leaves nothing for the timer to do (R8, C1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const elapsed = { t: 5_000 };
+      const w = await heldBack(elapsed);
+      elapsed.t += 30_000;
+      await vi.advanceTimersByTimeAsync(30_000);
+      release(w);
+      const marks = w.core.markRead.mock.calls.length;
+      elapsed.t += HELD_READ_HOLD_MS;
+      await vi.advanceTimersByTimeAsync(HELD_READ_HOLD_MS);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 2, mentions: 0 } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgetting the account (a sign-out wipe) drops the held-back reads (C3 m5)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(heldReadCount(w)).toBe(1);
+      w.call(963, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(963)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('cleared');
+      expect(heldReadCount(w)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a revocation drops the held-back reads (C3 m6)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(heldReadCount(w)).toBe(1);
+      vi.mocked(w.parts.refreshOwnDeviceList!).mockResolvedValueOnce({ version: 1n, listed: false });
+      w.call(964, { m: 'refreshDevices' });
+      await vi.waitFor(() => expect(w.ret(964)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('revoked');
+      expect(heldReadCount(w)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {
@@ -3286,9 +3953,9 @@ describe('Controller pre-flight rulings (task 14)', () => {
   it('(c) an enrolment refused for an older served list reads the backups again and completes', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementationOnce(() => { w.calls.push('enrol.complete'); return Promise.reject(OLDER_LIST()); });
-    await toLoginStep(w);
-    w.call(4, LOGIN);
-    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 0 } }));
+    await toKeyStep(w);
+    w.call(4, KEY);
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([
       'enrol.login', 'enrol.register', 'enrol.fetch', 'enrol.complete', 'enrol.fetch', 'enrol.complete',
     ]);
@@ -3298,8 +3965,8 @@ describe('Controller pre-flight rulings (task 14)', () => {
   it('(c) a second older-list refusal at enrolment is the list race: the store is wiped to cleared', async () => {
     const w = world({ phase: 0 });
     w.enrol.complete.mockImplementation(() => Promise.reject(OLDER_LIST()));
-    await toLoginStep(w);
-    w.call(4, LOGIN);
+    await toKeyStep(w);
+    w.call(4, KEY);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_LIST_RACE', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
@@ -3312,8 +3979,8 @@ describe('Controller pre-flight rulings (task 14)', () => {
     for (const detail of ['the backup state is missing', 'the backup state could not be read']) {
       const w = world({ phase: 0 });
       w.enrol.complete.mockImplementationOnce(() => Promise.reject(new CoreError('E_CORE_INPUT', detail)));
-      await toLoginStep(w);
-      w.call(4, LOGIN);
+      await toKeyStep(w);
+      w.call(4, KEY);
       await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
       const want = { code: 'E_NO_BACKUP', detail: '', status: 0, retryAfterMs: null };
       expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });

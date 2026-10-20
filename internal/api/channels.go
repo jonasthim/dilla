@@ -336,7 +336,8 @@ func decodeCreateChannel(w http.ResponseWriter, r *http.Request) (createChannelR
 // member with manage_channels community-wide, and, when overwrites is non-nil, holds manage_roles
 // community-wide, the channel is not a category, and every entry follows putOverwrite's rules
 // against the caller's community-wide bits. A kind-1 entry targeting the caller themself, allowing
-// only bits they hold and denying none, is exempt from the rank rule. Finally the caller must still
+// view_channel, send_messages or both (bits they must hold) and denying none, is exempt from the
+// rank rule; it exists only here, never on a later PUT. Finally the caller must still
 // view the channel with the overwrites applied. The handler runs it before the transaction, for
 // the refusal's precedence, and again inside it under the community row lock, so a demotion that
 // commits in between cannot let a create through on authority the caller no longer holds.
@@ -451,10 +452,13 @@ func createOverwriteRow(ctx context.Context, repo store.Repository, cid, uid id.
 	if err := checkBits(have, allow, deny); err != nil {
 		return store.OverwriteRow{}, err
 	}
-	// The one exception to the rank rule: the creator's own entry allowing exactly view_channel
-	// and denying nothing, which only keeps the channel visible to them. Any other bit on oneself
-	// (manage_messages, pin, mute…) would outlive a demotion, so it takes the rank rule: 403.
-	self := kind == overwriteUser && o.Target == uid && allow == PermViewChannel && deny == 0
+	// The one exception to the rank rule, at create only: the creator's own entry allowing
+	// view_channel, send_messages or both, and denying nothing. It keeps a private channel visible
+	// to them and lets them post in an announcement channel they made (R5); checkBits above has
+	// already required that they hold every bit. Any other bit on oneself (manage_messages, pin,
+	// mute…), or any deny, takes the rank rule: 403. putOverwrite has no such exception.
+	self := kind == overwriteUser && o.Target == uid && deny == 0 && allow != 0 &&
+		allow&^(PermViewChannel|PermSendMessages) == 0
 	if !self && uid != owner && targetPos >= top {
 		return store.OverwriteRow{}, server.Errorf(server.CodeForbidden,
 			"an overwrite may target only a role or member below your highest role")

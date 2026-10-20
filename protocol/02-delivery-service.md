@@ -256,8 +256,8 @@ does.
 
 | op | label | dir | payload |
 |---|---|---|---|
-| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit |
-| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` |
+| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[2]`: an instance offers wire version 2 alone, the one in which every upload names its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
+| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`) |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` — `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
 | 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]` — the token rotates on every `resumed`, so the frame that announces a resume also issues the credential for the next one; a client that keeps the token from `ready` after resuming is refused |
@@ -337,7 +337,11 @@ returns `E_RATE_LIMITED`. A malicious member's invalid typing is dropped for tha
 does not disconnect an honest recipient. `voice_self` requires membership in the live call and
 its channel's current audience; otherwise it returns `E_NOT_FOUND` without revealing existence.
 Its flag bit 0 is self-mute and bit 1 is self-deaf; the server maps them to bits 1 and 2 of
-server-sourced `voice_state`, combined with the room state.
+server-sourced `voice_state`, combined with the room state. Membership in the live call means
+the instance's SFU lists the device in the call's room, which can be later than the client's own
+join; a `voice_self` sent before then is refused and not kept. A client therefore keeps its last
+`voice_self` per call and sends it again while its own `voice_state` for that call lacks those
+self bits, at most 3 times per join, and sends one made while offline once after it reconnects.
 
 `voice_state` is produced by the instance alone, from what its SFU reports about a call's room
 (`09` § Voice), and goes to every device of every user who may view the call's channel — for a DM
@@ -458,10 +462,11 @@ An application message upload names its **upload class**, the third element of
 read the envelope, so the class is what lets it enforce a channel's posting rules on end-to-end
 encrypted messages without throttling the folds. It stores the class with the message and relays
 it as the 9th element of a `GET /v1/groups/{id}/messages` row and the 7th of `message.ct`, `null`
-for a legacy upload. A class other than the uint 0 or 1 (a null third element included), or a body
-of any length but 2 or 3, is `400 E_INVALID_REQUEST`. A client reads a row of eight elements and a
-`message.ct` of six, from an instance before this version, as carrying a null class; a class other
-than 0, 1 or null is a shape error (`E_FRAME_SHAPE` for the frame).
+for a row a two-element legacy upload stored before wire version 2. A class other than the uint 0
+or 1 (a null third element included), or a body of any length but 3, is `400 E_INVALID_REQUEST`:
+the two-element body is refused, and so is every other length. A client reads a row of eight
+elements and a `message.ct` of six, from an instance before the class, as carrying a null class; a
+class other than 0, 1 or null is a shape error (`E_FRAME_SHAPE` for the frame).
 
 The host's two rules apply to text groups of community channels only; direct messages, group DMs
 and call groups are unchecked. They are decided under the group's lock, after the current-leaf
@@ -482,10 +487,6 @@ into the text group of a community channel that has been deleted is `403 E_FORBI
 upload into a closed group of any kind (a deleted channel's, or one a mode change or a restore
 replaced) is `404 E_NOT_FOUND`, as for a group that does not exist, before the freeze and the
 current-leaf check.
-
-A two-element body is a legacy upload: in this version it is stored with a null class, checked for
-`send_messages` whatever it carries (the host cannot tell its type), and never slowed; it sets no
-slow-mode mark. The next version refuses it with `400`.
 
 Receivers drop a row whose class disagrees with its decrypted type (`04` § Semantics).
 

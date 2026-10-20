@@ -5,7 +5,6 @@ export const announce = {
   'announce.roles': 'Roles that can post',
   'announce.readOnly': 'Only some people can post in #{name}.',
   'announce.noRoles': 'No roles yet. Make one in Server settings, under roles.',
-  'announce.noHeldRole': 'Tick a role of yours that is below your highest role, so that you can post here too.',
   'announce.roleTooHigh': 'Pick a role below your highest role.',
   'announce.needsRoles': 'Announcement channels need the manage roles permission.',
 } as const;

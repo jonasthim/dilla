@@ -743,7 +743,9 @@ func TestAPrivateCreateFollowsTheOverwriteRules(t *testing.T) {
 		{"a self deny", 0, []any{ow(1, f.mod, 0, api.PermSendMessages)}, http.StatusForbidden, ""},
 		// I-1: the mod holds manage_messages and send, so only the narrowed exemption refuses these.
 		{"a self entry beyond view", 0, []any{deny, ow(1, f.mod, api.PermViewChannel|api.PermManageMessages, 0)}, http.StatusForbidden, ""},
-		{"a self entry other than view", 0, []any{ow(1, f.mod, api.PermSendMessages, 0)}, http.StatusForbidden, ""},
+		// web3.8 R5 admits a self send entry (TestCreatorMayAllowThemselfSend); a held bit beyond view
+		// and send still takes the rank rule.
+		{"a self entry beyond view and send", 0, []any{ow(1, f.mod, api.PermSendMessages|api.PermManageMessages, 0)}, http.StatusForbidden, ""},
 		{"kick_members", 0, []any{ow(0, f.everyone, api.PermKickMembers, 0)}, http.StatusBadRequest, ""},
 		{"a bit the mod lacks", 0, []any{ow(0, f.everyone, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
 		{"a self allow of a bit the mod lacks", 0, []any{ow(1, f.mod, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
@@ -777,6 +779,202 @@ func TestAPrivateCreateFollowsTheOverwriteRules(t *testing.T) {
 	}
 	if _, _, status := newChannel(t, f.e, f.cid, f.bTok, 0, 0, 0, "plain"); status != http.StatusCreated {
 		t.Fatalf("the same manager's plain create = %d, want 201", status)
+	}
+}
+
+// rankedCreator adds a member holding one new role at position 5, the moderator's rank, with
+// bits, and returns the member and their token. The role is their only role, so it is their top.
+func rankedCreator(t *testing.T, f privateFixture, name string, bits api.Bits) (id.ID, string) {
+	t.Helper()
+	uid, tok := joinAs(t, f.e, f.cid, name)
+	role := createRole(t, f.e, f.cid, f.ownerTok, name, 5, bits)
+	grant(t, f.e, f.cid, f.ownerTok, uid, role, http.StatusNoContent)
+	return uid, tok
+}
+
+// hasOverwrite reports whether channel ch stores exactly the user entry target allow/deny.
+func hasOverwrite(t *testing.T, e *env, ch, target id.ID, allow, deny api.Bits) bool {
+	t.Helper()
+	for _, o := range mustOverwrites(t, e, ch) {
+		if o.TargetKind == 1 && o.TargetID == target {
+			return o.Allow == uint64(allow) && o.Deny == uint64(deny)
+		}
+	}
+	return false
+}
+
+// web3.8 S2 (R5): a moderator whose only role is their top role, holding manage channels, manage
+// roles and send, makes an announcement channel and gives themself send in the same create. The
+// control differs in one bit (pin_messages, which they lack) and is refused.
+func TestCreatorMayAllowThemselfSend(t *testing.T) {
+	f := privateEnv(t)
+	everyoneNoSend := ow(0, f.everyone, 0, api.PermSendMessages)
+	status, body := createWith(f.e, f.cid, f.mTok, "news", 0,
+		[]any{everyoneNoSend, ow(1, f.mod, api.PermSendMessages, 0)})
+	if status != http.StatusCreated {
+		t.Fatalf("announcement create with a self send entry = %d (%x), want 201", status, body)
+	}
+	ch := createdID(t, body)
+	if !hasOverwrite(t, f.e, ch, f.mod, api.PermSendMessages, 0) {
+		t.Fatalf("the self send entry was not stored: %+v", mustOverwrites(t, f.e, ch))
+	}
+	// view and send together, on a private announcement channel.
+	status, body = createWith(f.e, f.cid, f.mTok, "private news", 0,
+		[]any{ow(0, f.everyone, 0, api.PermViewChannel|api.PermSendMessages),
+			ow(1, f.mod, api.PermViewChannel|api.PermSendMessages, 0)})
+	if status != http.StatusCreated {
+		t.Fatalf("create with a self view|send entry = %d (%x), want 201", status, body)
+	}
+	// Control: one more bit, and it is refused.
+	status, body = createWith(f.e, f.cid, f.mTok, "refused", 0,
+		[]any{everyoneNoSend, ow(1, f.mod, api.PermSendMessages|api.PermPinMessages, 0)})
+	if status != http.StatusForbidden {
+		t.Fatalf("self send|pin_messages = %d (%x), want 403", status, body)
+	}
+}
+
+// web3.8 S2 (R5): a creator who holds pin_messages still may not give it to themself. The rank
+// rule refuses every self entry beyond view and send, or with any deny, though checkBits passes.
+func TestCreatorSelfPinIsStillRanked(t *testing.T) {
+	f := privateEnv(t)
+	pinner, tok := rankedCreator(t, f, "pinner",
+		api.PermViewChannel|api.PermSendMessages|api.PermPinMessages|api.PermManageChannels|api.PermManageRoles)
+	everyoneNoSend := ow(0, f.everyone, 0, api.PermSendMessages)
+	// Control: the same creator, self send only.
+	if status, body := createWith(f.e, f.cid, tok, "news", 0,
+		[]any{everyoneNoSend, ow(1, pinner, api.PermSendMessages, 0)}); status != http.StatusCreated {
+		t.Fatalf("self send by a pin holder = %d (%x), want 201", status, body)
+	}
+	cases := []struct {
+		name        string
+		allow, deny api.Bits
+	}{
+		{"self pin", api.PermPinMessages, 0},
+		{"self send|pin", api.PermSendMessages | api.PermPinMessages, 0},
+		{"self view|send|pin", api.PermViewChannel | api.PermSendMessages | api.PermPinMessages, 0},
+		{"self send, deny pin", api.PermSendMessages, api.PermPinMessages},
+		{"self empty", 0, 0},
+	}
+	for _, c := range cases {
+		status, body := createWith(f.e, f.cid, tok, "refused", 0,
+			[]any{everyoneNoSend, ow(1, pinner, c.allow, c.deny)})
+		if status != http.StatusForbidden {
+			t.Fatalf("%s = %d (%x), want 403", c.name, status, body)
+		}
+	}
+}
+
+// web3.8 S2 (R5): a self deny is not exempt. Control: the self allow of view is.
+func TestCreatorSelfDenyIsStillRanked(t *testing.T) {
+	f := privateEnv(t)
+	cases := []struct {
+		name        string
+		allow, deny api.Bits
+	}{
+		{"self deny view", 0, api.PermViewChannel},
+		{"self deny send", 0, api.PermSendMessages},
+		{"self allow send, deny view", api.PermSendMessages, api.PermViewChannel},
+	}
+	for _, c := range cases {
+		status, body := createWith(f.e, f.cid, f.mTok, "refused", 0, []any{ow(1, f.mod, c.allow, c.deny)})
+		if status != http.StatusForbidden {
+			t.Fatalf("%s = %d (%x), want 403", c.name, status, body)
+		}
+	}
+	if status, body := createWith(f.e, f.cid, f.mTok, "ok", 0, []any{ow(1, f.mod, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		t.Fatalf("control self allow view = %d (%x), want 201", status, body)
+	}
+}
+
+// web3.8 S2 (R5): the exemption is the creator's own user entry only. Send for another member at
+// the creator's rank, or for the creator's own role, is still refused; each control is a target
+// below the creator's rank and succeeds.
+func TestCreatorSelfSendReachesNoOtherTarget(t *testing.T) {
+	f := privateEnv(t)
+	peer, _ := joinAs(t, f.e, f.cid, "peer")
+	grant(t, f.e, f.cid, f.ownerTok, peer, f.modRole, http.StatusNoContent)
+	everyoneNoSend := ow(0, f.everyone, 0, api.PermSendMessages)
+	refused := []struct {
+		name  string
+		entry []any
+		want  int
+	}{
+		{"another member at the creator's rank", ow(1, peer, api.PermSendMessages, 0), http.StatusForbidden},
+		{"the owner", ow(1, f.owner, api.PermSendMessages, 0), http.StatusForbidden},
+		{"the creator's own role", ow(0, f.modRole, api.PermSendMessages, 0), http.StatusForbidden},
+		// The creator's user id given as a role target is no role.
+		{"the creator's id as a role", ow(0, f.mod, api.PermSendMessages, 0), http.StatusNotFound},
+	}
+	for _, c := range refused {
+		status, body := createWith(f.e, f.cid, f.mTok, "refused", 0, []any{everyoneNoSend, c.entry})
+		if status != c.want {
+			t.Fatalf("%s = %d (%x), want %d", c.name, status, body, c.want)
+		}
+	}
+	// Controls: B (no role) and @everyone are below the creator.
+	for name, entry := range map[string][]any{
+		"B":         ow(1, f.b, api.PermSendMessages, 0),
+		"@everyone": ow(0, f.everyone, api.PermSendMessages, 0),
+	} {
+		if status, body := createWith(f.e, f.cid, f.mTok, "ok", 0, []any{entry}); status != http.StatusCreated {
+			t.Fatalf("send for %s = %d (%x), want 201", name, status, body)
+		}
+	}
+}
+
+// web3.8 S2 (R5): the exemption is at create only. After the create, a PUT of the creator's own
+// send entry takes putOverwrite's rank rule (unchanged): 403, and a PATCH carries no overwrites.
+// Control: the same PUT for B, below the creator, is 204. Guard, green at start: putOverwrite
+// never had the exemption, and S2 does not touch it.
+func TestPutOverwriteSelfSendIsStillRanked(t *testing.T) {
+	f := privateEnv(t)
+	// A plain channel, so the mod holds send in it and only the rank rule can refuse the PUT.
+	ch, _, status := newChannel(t, f.e, f.cid, f.mTok, 0, 0, 0, "news")
+	if status != http.StatusCreated {
+		t.Fatalf("create = %d", status)
+	}
+	path := func(target id.ID) string {
+		return "/v1/channels/" + ch.String() + "/overwrites/1/" + target.String()
+	}
+	if status, body := f.e.Do(http.MethodPut, path(f.mod), f.mTok, []any{uint64(api.PermSendMessages), uint64(0)}); status != http.StatusForbidden {
+		t.Fatalf("PUT self send after the create = %d (%x), want 403", status, body)
+	}
+	if status, body := f.e.Do(http.MethodPut, path(f.mod), f.mTok, []any{uint64(api.PermViewChannel), uint64(0)}); status != http.StatusForbidden {
+		t.Fatalf("PUT self view after the create = %d (%x), want 403", status, body)
+	}
+	// A PATCH with an overwrites element appended is not a PATCH body.
+	if status, body := f.e.Do(http.MethodPatch, "/v1/channels/"+ch.String(), f.mTok,
+		[]any{nil, nil, nil, nil, nil, nil, nil, []any{ow(1, f.mod, api.PermSendMessages, 0)}}); status != http.StatusBadRequest {
+		t.Fatalf("PATCH carrying a self send entry = %d (%x), want 400", status, body)
+	}
+	if hasOverwrite(t, f.e, ch, f.mod, api.PermSendMessages, 0) {
+		t.Fatal("a refused request stored a self send entry")
+	}
+	if status, body := f.e.Do(http.MethodPut, path(f.b), f.mTok, []any{uint64(api.PermSendMessages), uint64(0)}); status != http.StatusNoContent {
+		t.Fatalf("control PUT send for B = %d (%x), want 204", status, body)
+	}
+}
+
+// web3.8 S2 (R5): the exemption lifts the rank rule only. checkBits still refuses a self send
+// entry to a creator who does not hold send; the control is their self view entry.
+func TestCreatorWithoutSendCannotAllowIt(t *testing.T) {
+	f := privateEnv(t)
+	quiet, tok := rankedCreator(t, f, "quiet", api.PermViewChannel|api.PermManageChannels|api.PermManageRoles)
+	// @everyone grants send by default; take it away so the creator truly lacks it.
+	if status, body := f.e.Do(http.MethodPatch, "/v1/roles/"+f.everyone.String(), f.ownerTok,
+		[]any{nil, nil, nil, uint64(api.PermViewChannel), nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatalf("PATCH @everyone = %d (%x)", status, body)
+	}
+	// The self entry alone: no other entry carries send, so only checkBits on the self entry can
+	// refuse it.
+	if status, body := createWith(f.e, f.cid, tok, "refused", 0,
+		[]any{ow(1, quiet, api.PermSendMessages, 0)}); status != http.StatusForbidden {
+		t.Fatalf("self send without holding send = %d (%x), want 403", status, body)
+	}
+	// Control: the same entry allowing view, a bit they hold.
+	if status, body := createWith(f.e, f.cid, tok, "ok", 0,
+		[]any{ow(1, quiet, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		t.Fatalf("control self view = %d (%x), want 201", status, body)
 	}
 }
 
@@ -843,6 +1041,62 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
 	if status, body := createWith(e, cid, modTok, "sen", 0,
 		[]any{ow(0, roles[0].ID, 0, api.PermViewChannel), ow(1, mod, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		t.Fatalf("the same create undisturbed = %d (%x), want 201", status, body)
+	}
+}
+
+// web3.8 S2 (R5): the exemption's checkBits is taken again inside the transaction. A creator whose
+// role loses only send_messages between the create's checks and its transaction cannot allow
+// themself send: 403, and nothing is written. The control is the same create undisturbed.
+func TestCreatorSelfSendRecheckedUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(hooked, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	// @everyone grants send by default; the mod's role is then their only source of it.
+	if status, body := e.Do(http.MethodPatch, "/v1/roles/"+roles[0].ID.String(), ownerTok,
+		[]any{nil, nil, nil, uint64(api.PermViewChannel), nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatalf("PATCH @everyone = %d (%x)", status, body)
+	}
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5,
+		api.PermViewChannel|api.PermSendMessages|api.PermManageChannels|api.PermManageRoles)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	setSend := func(on bool) {
+		r, err := e.Repo.GetRole(t.Context(), modRole)
+		if err != nil {
+			t.Errorf("GetRole: %v", err)
+			return
+		}
+		if on {
+			r.Allow |= uint64(api.PermSendMessages)
+		} else {
+			r.Allow &^= uint64(api.PermSendMessages)
+		}
+		if err := e.Repo.PutRole(t.Context(), r); err != nil {
+			t.Errorf("PutRole: %v", err)
+		}
+	}
+	hooked.arm(func() { setSend(false) })
+	self := []any{ow(1, mod, api.PermSendMessages, 0)}
+	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusForbidden {
+		t.Fatalf("self send after losing send before the transaction = %d (%x), want 403", status, body)
+	}
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+		t.Fatalf("a refused create wrote %+v", chans)
+	}
+	// Control: send restored and nothing in between, so the 403 above could only come from the
+	// check inside the transaction.
+	setSend(true)
+	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusCreated {
 		t.Fatalf("the same create undisturbed = %d (%x), want 201", status, body)
 	}
 }

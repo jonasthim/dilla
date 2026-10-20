@@ -14,7 +14,7 @@ Slow mode on a per-channel basis limits how fast people can post, configurable b
 | 6. Bypass: no countdown | A person with bypass_slowmode sees no countdown or queue for their own posts, and the notice does not show. | none: a person with bypass_slowmode sees no countdown |
 | 7. New channel, announcement kind | In create channel, a kind selector offers text and announcement. Announcement is selected: it sets the kind and shows roles checkboxes for who can post. | `announce.kind`, `announce.hint`, `announce.roles` |
 | 8. Announcement channel, reader | A person without post permission views the channel and sees a read-only note. | `announce.readOnly` |
-| 8b. New channel, announcement refused | A creator who is not the owner or an administrator ticks no role of theirs below their highest role. The server is not asked: the name field shows the refusal. | `announce.noHeldRole` |
+| 8b. New channel, announcement, no held role (removed in web3.8) | Removed: the held-role refusal, where a creator who is not the owner or administrator had to tick a role below their highest role. The creator now always posts with `send_messages` (R5). | — |
 | 8d. New channel, announcement refused by the server | The creator ticked a role at or above their highest role and the server refuses with 403. The name field says which role to pick, not that channels cannot be added. | `announce.roleTooHigh` |
 | 8e. New channel, no manage roles | A creator with manage channels but not manage roles is not offered the announcement kind; one line in the dialog says why. | `announce.needsRoles` |
 | 8c. New channel, announcement, no roles | The server has no role besides @everyone: the roles list says so; the channel can still be created (only the owner and administrators post). | `announce.noRoles` |
@@ -72,7 +72,6 @@ Polite, through `useAnnouncer`: `slow.queued` when a send is queued behind slow 
 - `announce.roles='Roles that can post'`
 - `announce.readOnly='Only some people can post in #{name}.'`
 - `announce.noRoles='No roles yet. Make one in Server settings, under roles.'`
-- `announce.noHeldRole='Tick a role of yours that is below your highest role, so that you can post here too.'`
 - `announce.roleTooHigh='Pick a role below your highest role.'`
 - `announce.needsRoles='Announcement channels need the manage roles permission.'`
 - `thread.open='reply in thread'`

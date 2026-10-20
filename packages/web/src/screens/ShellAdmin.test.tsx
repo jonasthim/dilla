@@ -145,32 +145,43 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
-  it('shows server settings for every member and leave only for non-owners', () => {
+  it('the sidebar header holds one action, the gear named "server settings", beside the name; no leave button', () => {
     setup();
-    expect(screen.getByRole('button', { name: 'server settings' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'leave server' })).toBeInTheDocument();
-  });
-
-  it('owners have no leave button', () => {
-    setup(ME.id);
+    const nav = screen.getByRole('navigation', { name: 'channels' });
+    const gear = within(nav).getByRole('button', { name: 'server settings' });
+    expect(gear.closest('.d-channel-list__head')).toContainElement(screen.getByRole('heading', { level: 1, name: 'Midgard' }));
+    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(gear.textContent).toBe('');
+    expect(screen.queryByRole('group', { name: 'server actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();
+    expect(document.querySelector('.d-channel-list__head')!.querySelectorAll('button')).toHaveLength(1);
   });
 
-  it('opens server settings on the danger tab from leave', async () => {
+  it('a member reaches leave through server settings; the owner finds delete there', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'leave server' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'leave server' }));
     expect(within(dialog).getByRole('heading', { level: 2, name: 'leave server' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'leave server', current: 'page' })).toBeInTheDocument();
   });
 
-  it('more options on the invite link opens server settings on the invites tab', async () => {
+  it('closing server settings returns focus to the gear', async () => {
     const { fake, user } = setup();
-    fake.handler = command => Promise.resolve(command.m === 'createInvite' ? { url: 'https://dilla.test/i/7KQ2', code: '7KQ2', expires: 1_900_000_000 } : null);
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'invite link' }));
-    await user.click(await screen.findByRole('button', { name: 'more options' }));
+    const gear = screen.getByRole('button', { name: 'server settings' });
+    await user.click(gear);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(gear).toHaveFocus();
+  });
+
+  it('server settings opens on the invites tab for a member who holds only create invite (R20)', async () => {
+    const { fake, user } = setup();
+    act(() => { fake.publish(`permissions:${A}`, access()); });
+    expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
     expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
   });
@@ -228,10 +239,11 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByText('You are no longer in Midgard.')).toBeNull();
   });
 
-  it('a removal closes the invite and channel flows of that server even before the list changes', async () => {
+  it('a removal closes the invites settings of that server even before the list changes', async () => {
     const { fake, user } = setup();
-    await user.click(screen.getByRole('button', { name: 'invite link' }));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    act(() => { fake.publish(`permissions:${A}`, access()); });
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    expect(await screen.findByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 7, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('You are no longer in Midgard.')).toBeInTheDocument();

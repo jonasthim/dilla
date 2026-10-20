@@ -37,9 +37,11 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       await expect(word('muted')).toHaveCount(0);
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toBeVisible({ timeout: WAIT });
-      // WB a11y I4: the toggle keeps its label; aria-pressed says it is on.
-      await expect(alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
-        .getByRole('button', { name: copy('voice.mute'), exact: true })).toHaveAttribute('aria-pressed', 'true');
+      // WB a11y I4: the toggle keeps its label; aria-pressed says it is on. Since web3.8 the user panel at the bottom left
+      // holds the mute and deafen toggles (the call panel above it has none), and it carries the shortcuts.
+      const panelMute = alice.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true });
+      await expect(panelMute).toHaveAttribute('aria-pressed', 'true');
+      await expect(panelMute).toHaveAttribute('aria-keyshortcuts', /Shift\+M/);
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toHaveCount(0, { timeout: WAIT });
     });

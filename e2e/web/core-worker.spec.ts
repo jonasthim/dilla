@@ -242,15 +242,17 @@ test('a second browser joins the account by password and recovery key, badges an
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null } });
-      // The key travels with the login (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): a well-formed key
-      // of another account registers, then the root refuses it, and the registered enrolment waits at signin-key.
+      // web3.8 (R6): the password and the code first, the key last. Neither registers; signInKey does, after the key's
+      // form check. A well-formed key of another account registers, then the root refuses it, and the registered
+      // enrolment waits at signin-key.
       const wrong = [...recoveryKey];
       const first = wrong[0]!;
       wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
-      // web3.6: the password is followed by the code, and the root refuses the key once the code is in.
-      await ok(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') });
+      await ok(b, { m: 'signInLogin', username, password });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username } });
-      expect(await call(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
+      await ok(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor) });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username } });
+      expect(await call(b, { m: 'signInKey', recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username } });
       await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });
       const ready = (await slice<AccountState>(b, 'account'))!;
@@ -375,8 +377,9 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       await openHarness(b);
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
-      await ok(b, { m: 'signInLogin', username, password, recoveryKey });
-      await ok(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey });
+      await ok(b, { m: 'signInLogin', username, password });
+      await ok(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor) });
+      await ok(b, { m: 'signInKey', recoveryKey });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'ready', user: { id: userId } });
       await ok(b, { m: 'selectCommunity', communityId: s.community_id });
       await ok(b, { m: 'openChannel', channelId: ch });

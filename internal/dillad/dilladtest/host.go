@@ -112,6 +112,11 @@ type HostOptions struct {
 	// is exactly [origin], and its host is added to http.trusted_origins so the gateway's upgrade
 	// accepts it too. "" keeps the instance domain's own relying party.
 	WebAuthnOrigin string
+	// WireVersions is the wire version list the hello offers and GET /v1/instance advertises
+	// (dillad.Options.WireVersions, web3.8 S1); nil keeps dillad's {dillad.WireVersion}.
+	// dilla-testhost sets it from -wire, so a browser test can meet an instance its client is too
+	// old for.
+	WireVersions []uint64
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -206,6 +211,10 @@ type Host struct {
 	hook        *http.Server
 	hookHandler http.Handler
 	current     atomic.Pointer[dillad.Server]
+	// withhold is the set of webhook event names (a map[string]struct{}, replaced whole) the receiver
+	// drops instead of delivering: POST /debug/sfu/withhold, on the control listener only.
+	withhold   atomic.Value
+	withholdMu sync.Mutex
 
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
@@ -375,6 +384,8 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		Log:         obs.NewLogger(h.cfg.Log, out),
 		ScrapeToken: h.o.ScrapeToken,
 		LiveKitURL:  h.o.LiveKitURL,
+		// nil keeps dillad's own default, {dillad.WireVersion}.
+		WireVersions: h.o.WireVersions,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
@@ -422,6 +433,9 @@ func (h *Host) startSFU(ctx context.Context) error {
 	h.sfu = s
 	h.webhookURL = cfg.WebhookURL
 	h.hookHandler = sfu.NewWebhookHandler(cfg.APIKey, secret, func(ctx context.Context, ev *livekit.WebhookEvent) {
+		if h.withheld(ev.GetEvent()) {
+			return
+		}
 		if srv := h.current.Load(); srv != nil {
 			srv.CallEvents().Handle(ctx, ev)
 		}

@@ -8,7 +8,7 @@
 // lying sender), which the host cannot see and the receiver's core drops.
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  CLASS, TEST_TIMEOUT, WAIT, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
   railItem, railNav, channelRow, composerBox, messageRow, logRegion, reactionChip, rowAction, sendText, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -88,14 +88,8 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
   expect(serverId).toMatch(/^[0-9a-f]{32}$/);
   await expectComposerReady(page, 'general');
 
-  await button(page, 'invite.open').click();
-  const inviteDialog = dialogOf(page, 'invite.title', { server: SERVER });
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  await expect(linkField).toBeVisible({ timeout: WAIT });
-  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  const link = await linkField.inputValue();
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const link = await makeInviteLink(page, SERVER);
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
@@ -155,7 +149,7 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     await expect(messageRow(page2, 'general', 'ada two')).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     // 6. Ada starts the announcement channel "news" with no role ticked; Björn reads it, cannot post, and can react.
-    await button(page, 'create.channel.open').click();
+    await newChannelButton(page).click();
     const create = dialogOf(page, 'create.channel.title', { server: SERVER });
     await create.getByRole('radiogroup', { name: copy('create.channel.kind'), exact: true })
       .getByRole('radio', { name: copy('announce.kind'), exact: true }).click();

@@ -75,7 +75,6 @@ export const ROLES_VALIDATORS: Record<RolesMethod, ((c: Record<string, unknown>)
  *  administrator, her own entry take two of the instance's overwrites per create. */
 const PRIVATE_ROLES_MAX = OVERWRITES_PER_CREATE_MAX - 2;
 const ANNOUNCE_ROLES_REASON = `an announcement channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
-const ANNOUNCE_HELD_ROLE_REASON = 'tick a role you hold, or you could not post in this channel';
 const PRIVATE_ROLES_REASON = `a private channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
 
 /** The `private` field of createChannel: `{ roleIds }` of 32-hex ids, at most one fewer than the instance's cap (the
@@ -297,27 +296,19 @@ export class RolesController {
   }
 
   /** The overwrites of an announcement create: @everyone denied sending, each chosen role allowed to send (deduplicated,
-   *  @everyone skipped). A creator who is neither owner nor administrator must tick a role she holds, else the create is
-   *  refused here with no request: she would lose the right to post in the channel she made. */
+   *  @everyone skipped), and the creator herself allowed to send when she holds neither ownership nor administrator
+   *  (web3.8 R5): she would otherwise lose the right to post in the channel she made. */
   async announcementOverwrites(communityId: string, roleIds: readonly string[]): Promise<NewOverwrite[]> {
-    const { everyoneId, owner, rows, top } = await this.access(communityId);
+    const { everyoneId, owner } = await this.access(communityId);
     const out: NewOverwrite[] = [{ kind: 0, targetId: fromHex(everyoneId), allow: 0, deny: PERM.sendMessages }];
     for (const roleId of new Set(roleIds)) {
       if (roleId !== everyoneId) out.push({ kind: 0, targetId: fromHex(roleId), allow: PERM.sendMessages, deny: 0 });
     }
-    // The instance accepts no self entry here, and refuses a role entry at or above the creator's own rank, so the creator
-    // keeps her right to post through a ticked role she holds below her top; the owner and an administrator need none.
-    // With her own roles not yet loaded nothing is refused here: the instance answers.
-    const members = this.deps.get(`members:${communityId}`);
-    if (!owner && !this.administrator(communityId) && members !== undefined) {
-      const me = this.deps.me();
-      const mine = me === null ? undefined : toHex(me.userId);
-      const held = new Set(members.find((m) => m.userId === mine)?.roleIds ?? []);
-      const rank = new Map(rows.map((r) => [toHex(r.id), r.position]));
-      if (![...new Set(roleIds)].some((r) => r !== everyoneId && held.has(r) && (rank.get(r) ?? top) < top)) {
-        throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_HELD_ROLE_REASON, 'announce.noHeldRole');
-      }
-    }
+    // At create only, the instance exempts this one entry from the rank rule: the creator's own user entry allowing
+    // send_messages, deny 0 (protocol/09). It still requires that she holds the bit. It needs no member list, so a create
+    // before the list loads is the same create.
+    const me = this.deps.me();
+    if (me !== null && !owner && !this.administrator(communityId)) out.push({ kind: 1, targetId: me.userId, allow: PERM.sendMessages, deny: 0 });
     if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_ROLES_REASON);
     return out;
   }

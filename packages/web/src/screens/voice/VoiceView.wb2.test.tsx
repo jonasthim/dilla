@@ -6,7 +6,7 @@ import { BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShel
 import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); Reflect.deleteProperty(document, 'fullscreenEnabled'); });
 
 const main = () => within(screen.getByRole('main'));
 const dockStatus = () => document.querySelector('.d-voice-dock [role="status"]');
@@ -79,18 +79,19 @@ async function inHarbour(o: Parameters<typeof renderVoiceShell>[0] = {}) {
 const tileOf = (name: string) => main().getAllByRole('listitem').find(li => within(li).queryByText(name, { exact: true }) !== null)!;
 
 describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)', () => {
-  it('I2: a person with camera and screen on shows the screen as the tile and the camera as an inset', async () => {
+  it('I2: a person with camera and screen on gives a tile for each, with no inset (web3.8 R27)', async () => {
     const app = await inHarbour();
     const screenStream = new MediaStream();
     const cam = new MediaStream();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream }] }));
-    const tile = await waitFor(() => { const t = tileOf('bob'); expect(t.querySelectorAll('video')).toHaveLength(2); return t; });
-    const [big, inset] = [...tile.querySelectorAll('video')];
-    expect(big.srcObject).toBe(screenStream);
-    expect(inset.srcObject).toBe(cam);
+    const video = (id: string) => document.querySelector<HTMLVideoElement>(`li[data-tile-id="${BOB_DEV}:${id}"] video`);
+    await waitFor(() => { expect(video('screen')).not.toBeNull(); expect(video('person')).not.toBeNull(); });
+    expect(video('screen')!.srcObject).toBe(screenStream);
+    expect(video('person')!.srcObject).toBe(cam);
+    expect(tileOf('bob').querySelectorAll('video')).toHaveLength(1);
   });
 
-  it('I3: your own tile shows your camera mirrored, and your screen', async () => {
+  it('I3: your own camera tile is mirrored, and your screen has a tile of its own, not mirrored', async () => {
     const app = await inHarbour();
     const cam = new MediaStream();
     act(() => app.session.update({ camera: true, localCamera: cam }));
@@ -99,11 +100,26 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
     const screenStream = new MediaStream();
     act(() => app.session.update({ sharing: true, localScreen: screenStream }));
-    await waitFor(() => expect(own.querySelectorAll('video')).toHaveLength(2));
-    const [big, inset] = [...own.querySelectorAll('video')];
-    expect(big.srcObject).toBe(screenStream);
-    expect(big).not.toHaveAttribute('data-mirror');
-    expect(inset).toHaveAttribute('data-mirror', 'true');
+    const screenTile = await waitFor(() => {
+      const t = document.querySelector('.d-call-tile[data-own="true"][data-source="screen"]')!;
+      expect(t.querySelector('video')).not.toBeNull();
+      return t;
+    });
+    expect(screenTile.querySelector('video')!.srcObject).toBe(screenStream);
+    expect(screenTile.querySelector('video')).not.toHaveAttribute('data-mirror');
+    expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
+  });
+
+  it('web3.8 WS7: the DM call box stays a compact grid: no stage mode, and a share takes no focus (it would collapse to 2 px)', async () => {
+    Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
+    const app = await calling({ ringing: [], declined: [], notRung: [] });
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: new MediaStream() }] }));
+    await waitFor(() => expect(document.querySelector(`li[data-tile-id="${BOB_DEV}:screen"]`)).not.toBeNull());
+    expect(document.querySelector('[data-tiles="stage"]')).toBeNull();
+    expect(document.querySelector('[data-focused-stage]')).toBeNull();
+    expect(document.querySelector('.d-call-tile__focus')).toBeNull();
+    expect(document.querySelector('.d-call-tile__fullscreen')).toBeNull(); // positioned for stage tiles only
+    expect(document.querySelector('li[data-focused="true"]')).toBeNull();
   });
 
   it('M4: your own tile says speaking when the SFU hears you, whatever the meter level', async () => {
@@ -132,9 +148,9 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
   it('M3: the sidebar row of a person says speaking while the call hears them', async () => {
     const app = await inHarbour();
     const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
-    expect(sidebar().queryByText(t('voice.state.speaking'))).toBeNull();
+    expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
-    await waitFor(() => expect(sidebar().getAllByText(t('voice.state.speaking')).length).toBeGreaterThan(0));
+    await waitFor(() => expect(sidebar().getAllByRole('img', { name: t('voice.state.speaking') }).length).toBeGreaterThan(0));
   });
 });
 
@@ -245,9 +261,9 @@ describe('removed from the server while in voice (product walk I8)', () => {
     expect(await main().findByText(t('voice.removedNotMember'))).toBeInTheDocument();
     expect(main().queryByText(t('voice.removed'))).toBeNull();
     expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
-    const row = [...document.querySelectorAll('.dw-voice-section__item')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
+    const row = [...document.querySelectorAll('.d-channel-list__voice')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
     expect(row).toBeDefined();
-    expect(row!.querySelector('.dw-voice-section__join')).toBeNull();
+    expect(row!.querySelector('.d-channel-list__join')).toBeNull();
     // A removal from the call alone (the channel still visible) keeps the join.
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
     expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();

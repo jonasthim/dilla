@@ -5,6 +5,9 @@
 /* A control at the right of the name (the phone's server menu): the row carries the hairline, not the heading. */
 .d-channel-list__head { display: flex; align-items: center; padding-right: 0.25rem; border-bottom: 1px solid var(--hairline); }
 .d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; border-bottom: 0; }
+/* The head's icon buttons: 32px on desktop, 44px on a phone. */
+.d-channel-list__head-btn { flex: none; min-width: 2rem; min-height: 2rem; padding: 0; justify-content: center; }
+[data-layout="phone"] .d-channel-list__head-btn { min-width: 2.75rem; min-height: 2.75rem; }
 /* The server's actions sit under its name, above the tabs; the hairline moves below them. */
 .d-channel-list__title:has(+ .d-channel-list__actions) { border-bottom: 0; padding-bottom: 0.375rem; }
 /* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they
@@ -15,3 +18,27 @@
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
 .d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .d-channel-list__footer { flex-shrink: 0; padding: 0.5rem var(--row-pad-x) 0.75rem; border-top: 1px solid var(--hairline); }
+/* web3.8: the list's own header row holds one right-aligned action (the "+" for a new channel), above the rows. */
+.d-channel-list__list-head { display: flex; justify-content: flex-end; align-items: center; flex: none; padding: 0.25rem 0.5rem 0; }
+/* A voice row with its join button: the button sits in the row's own cell, at its end, shown while the row is hovered or
+   focused (always on a device without hover). It reserves no column, so a hidden join never shortens the row, its
+   highlight or its name; the people span the full width below. */
+.d-channel-list__voice { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.d-channel-list__voice > .d-voice-row { grid-column: 1; grid-row: 1; min-width: 0; }
+.d-channel-list__voice > .d-voice-row__people { grid-column: 1 / -1; }
+.d-channel-list__join { grid-column: 1; grid-row: 1; justify-self: end; align-self: center; margin-right: 0.25rem; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
+.d-channel-list__voice:hover > .d-channel-list__join, .d-channel-list__voice:focus-within > .d-channel-list__join { opacity: 1; }
+/* The join and the member count share the row's end and never overlap (G1). With a pointer, the join replaces the count while
+   it shows (hover or focus inside the item), and nothing is reserved. Without hover, and in the phone layout, the join is
+   always shown: the row reserves its width with right padding, so the count sits just before it. */
+@media (hover: hover) {
+  .d-channel-list__voice:hover > .d-voice-row .d-voice-row__count,
+  .d-channel-list__voice:focus-within > .d-voice-row .d-voice-row__count { visibility: hidden; }
+}
+@media (hover: none) {
+  .d-channel-list__join { opacity: 1; }
+  .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
+}
+[data-layout="phone"] .d-channel-list__join { opacity: 1; }
+[data-layout="phone"] .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
+@media (prefers-reduced-motion: reduce) { .d-channel-list__join { transition: none; } }

@@ -255,6 +255,19 @@ export async function advanceClock(seconds: number): Promise<void> {
   expect(res.status, await res.text()).toBe(204);
 }
 
+/**
+ * Holds back (`on`) or restores the `participant_left` webhook on its way from LiveKit to the instance
+ * (POST /debug/sfu/withhold). A departure withheld while it is on is lost for good: turn it off before the
+ * departure that must be seen.
+ */
+export async function withholdLeft(on: boolean): Promise<void> {
+  const control = process.env.DILLA_TESTKIT_CONTROL;
+  const res = await fetch(`${control}/debug/sfu/withhold`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event: 'participant_left', on }),
+  });
+  expect(res.status, await res.text()).toBe(204);
+}
+
 /** Settings → Voice; resolves with the dialog. */
 export async function openVoiceSettings(page: Page): Promise<Locator> {
   return openSettings(page, 'voice' as SettingsSection);
@@ -321,10 +334,16 @@ export async function connected(page: Page): Promise<void> {
   await expect(dock(page).locator('.d-voice-dock')).toHaveAttribute('data-phase', 'connected', { timeout: WAIT });
 }
 
-/** Another person's tile on this page's stage, by the name it shows. */
+/** Another person's tile (their camera or avatar, never their screen) on this page's stage, by the name it shows. */
 export function tile(page: Page, name: string): Locator {
-  return stage(page).locator('.d-call-tile:not([data-own])').filter({
+  return stage(page).locator('.d-call-tile:not([data-own]):not([data-source="screen"])').filter({
     has: page.locator('.d-call-tile__name', { hasText: new RegExp(`^${escapeRegExp(name)}$`) }),
+  });
+}
+/** Another person's screen tile on this page's stage: the tile named `stage.screen` filled with their name (web3.8 R27). */
+export function screenTile(page: Page, name: string): Locator {
+  return stage(page).locator('.d-call-tile[data-source="screen"]:not([data-own])').filter({
+    has: page.locator('.d-call-tile__name', { hasText: new RegExp(`^${escapeRegExp(copy('stage.screen', { name }))}$`) }),
   });
 }
 /** `tileState`: the `data-voice-state` of that tile ('connecting', 'not-heard', 'ok' or 'unverified'). */

@@ -175,11 +175,11 @@ func coldDial(t *testing.T, ts *httptest.Server, token string) (*websocket.Conn,
 	return c, ready
 }
 
-// coldUpload is POST /v1/groups/{id}/message with [epoch, private_message] and returns seq.
+// coldUpload is POST /v1/groups/{id}/message with [epoch, private_message, class 0] and returns seq.
 func coldUpload(t *testing.T, h http.Handler, groupID id.ID, token string) uint64 {
 	t.Helper()
 	rec := call(t, h, http.MethodPost, "/v1/groups/"+groupID.String()+"/message", token,
-		[]any{uint64(1), coldMessage(1)})
+		[]any{uint64(1), coldMessage(1), uint64(0)})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v1/groups/%s/message = %d: %s", groupID, rec.Code, rec.Body.String())
 	}

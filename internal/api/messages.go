@@ -103,48 +103,44 @@ func (h *Messages) upload(w http.ResponseWriter, r *http.Request) {
 
 // decodeUpload reads endpoint 7's body, [epoch, private_message(bstr), class(uint 0|1)] (web3.7
 // SB1, protocol/02 § Upload class), as decodeCreateChannel reads its own: the raw array first,
-// then the first two elements re-encoded and decoded into uploadRequest, so every rule of the
-// two-element body holds unchanged. A two-element body is a legacy upload, accepted in web3.7
-// only: its class is nil (R28). Any other length, or a class that is not the uint 0 or 1, is 400.
-func (h *Messages) decodeUpload(w http.ResponseWriter, r *http.Request) (uploadRequest, *uint8, error) {
+// then the first two elements re-encoded and decoded into uploadRequest. Any length but 3 is 400,
+// the two-element legacy upload web3.7 accepted included (web3.8 S1), and so is a class that is
+// not the uint 0 or 1.
+func (h *Messages) decodeUpload(w http.ResponseWriter, r *http.Request) (uploadRequest, uint8, error) {
 	var body uploadRequest
 	var raw []cbor.RawMessage
 	// The 4096-byte allowance over the ciphertext cap is the CBOR framing around it: the array
 	// header, the epoch, the byte-string header and the class.
 	if err := server.DecodeBody(w, r, h.maxCiphertext()+4096, &raw); err != nil {
-		return body, nil, err
+		return body, 0, err
 	}
 	shape := func(err error) error {
 		return server.Errorf(server.CodeInvalidRequest, "body is not deterministic CBOR: %v", err)
 	}
-	if len(raw) != 2 && len(raw) != 3 {
-		return body, nil, server.Errorf(server.CodeInvalidRequest,
+	if len(raw) != 3 {
+		return body, 0, server.Errorf(server.CodeInvalidRequest,
 			"body must be [epoch, private_message, class], got %d elements", len(raw))
 	}
 	b, err := cborx.Marshal(raw[:2])
 	if err != nil {
-		return body, nil, err
+		return body, 0, err
 	}
 	if err := cborx.Unmarshal(b, &body); err != nil {
-		return body, nil, shape(err)
-	}
-	if len(raw) == 2 {
-		return body, nil, nil
+		return body, 0, shape(err)
 	}
 	// A null decodes into a uint64 without error, so it is refused by its bytes first: the wire
-	// is uint 0 or 1, and a legacy upload is the two-element body (SB1 fix round 1).
+	// is uint 0 or 1 (SB1 fix round 1).
 	if bytes.Equal(raw[2], []byte{0xf6}) {
-		return body, nil, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
+		return body, 0, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
 	}
 	var c uint64
 	if err := cborx.Unmarshal(raw[2], &c); err != nil {
-		return body, nil, shape(err)
+		return body, 0, shape(err)
 	}
 	if c > 1 {
-		return body, nil, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
+		return body, 0, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
 	}
-	class := uint8(c)
-	return body, &class, nil
+	return body, uint8(c), nil
 }
 
 type messageItem struct {
@@ -157,7 +153,8 @@ type messageItem struct {
 	FrankingTag    []byte
 	RecvTS         uint64
 	Deleted        uint8
-	// Class is the upload class (web3.7 SB1): 0 or 1, null for a legacy upload.
+	// Class is the upload class (web3.7 SB1): 0 or 1, null for a row a web3.7 legacy upload
+	// stored (web3.8 refuses that upload, but its rows stay until retention removes them).
 	Class *uint64
 }
 

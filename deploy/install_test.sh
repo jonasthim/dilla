@@ -97,18 +97,25 @@ case "$verb" in
 init)
 	for a in "$@"; do
 		case "$a" in
+		--config=*) cfg="${a#*=}" ;;
 		--data-dir=*) dir="${a#*=}" ;;
 		--domain=*) domain="${a#*=}" ;;
 		--public-ip=*) ip="${a#*=}" ;;
 		esac
 	done
-	[ -e "$dir/dilla.toml" ] && { echo "init: $dir/dilla.toml already exists" >&2; exit 73; }
+	# Like the real one: the config goes to --config, an existing one is refused, and every file
+	# is created under umask 077 (the real dillad sets it itself).
+	[ -n "$cfg" ] || { echo "init: --config is required" >&2; exit 2; }
+	[ -e "$cfg" ] && { echo "init: $cfg already exists; pass --overwrite-config to replace it" >&2; exit 73; }
+	umask 077
 	mkdir -p "$dir"
 	chmod 0700 "$dir"
+	: >"$dir/dilla.db"
+	mkdir "$dir/blobs"
 	printf 'secret-turn-0123456789abcdef0123456789abcdef' >"$dir/turn.secret"
 	printf 'secret-livekit-0123456789abcdef0123456789ab' >"$dir/livekit.secret"
 	chmod 0600 "$dir/turn.secret" "$dir/livekit.secret"
-	cat >"$dir/dilla.toml" <<EOF
+	cat >"$cfg" <<EOF
 # dilla.toml — dillad instance configuration.
 
 [instance]
@@ -150,14 +157,14 @@ init)
   node_ip = '$ip'
   api_secret_file = '$dir/livekit.secret'
 EOF
-	chmod 0600 "$dir/dilla.toml"
+	chmod 0600 "$cfg"
 	if [ -n "${FAKE_INIT_BAD:-}" ]; then
 		# A layout install.sh does not know: no livekit.udp_port.
-		grep -v 'udp_port' "$dir/dilla.toml" >"$dir/dilla.toml.x"
-		cat "$dir/dilla.toml.x" >"$dir/dilla.toml"
-		rm -f "$dir/dilla.toml.x"
+		grep -v 'udp_port' "$cfg" >"$cfg.x"
+		cat "$cfg.x" >"$cfg"
+		rm -f "$cfg.x"
 	fi
-	echo "dillad init: wrote $dir/dilla.toml"
+	echo "dillad init: wrote $cfg"
 	echo "bootstrap invite (valid 24 hours, one use): https://$domain/i/SECRETINVITECODE"
 	echo "this link is printed once and is not stored anywhere; the database holds only its SHA-256"
 	;;
@@ -394,6 +401,13 @@ check_common_install() { # NAME
 	[ "$(mode_of "$ROOT/var/lib/dillad")" = 700 ] || problems="$problems|/var/lib/dillad mode $(mode_of "$ROOT/var/lib/dillad"), want 700"
 	[ "$(mode_of "$ROOT/usr/local/bin/dillad")" = 755 ] || problems="$problems|dillad mode $(mode_of "$ROOT/usr/local/bin/dillad"), want 755"
 	[ ! -e "$ROOT/var/lib/dillad/dilla.toml" ] || problems="$problems|init's dilla.toml was left in the data directory"
+	# Every file under the data directory is owner-only whatever the umask (R17), each offender named.
+	for offender in $(find "$ROOT/var/lib/dillad" -type f ! -perm 0600 2>/dev/null); do
+		problems="$problems|$offender mode $(mode_of "$offender"), want 600"
+	done
+	for offender in $(find "$ROOT/var/lib/dillad" -type d ! -perm 0700 2>/dev/null); do
+		problems="$problems|$offender mode $(mode_of "$offender"), want 700"
+	done
 	calls="$(cat "$LOG")"
 	has "$calls" "useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad" || problems="$problems|no dillad system user was created"
 	has "$calls" "chown root:dillad $ROOT/etc/dilla/dilla.toml" || problems="$problems|dilla.toml is not root:dillad"

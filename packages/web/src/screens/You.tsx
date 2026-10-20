@@ -1,8 +1,10 @@
+import { useEffect } from 'react';
 import { Avatar, Icon, StateDot, type IconName } from '@dilla/ui';
+import { useCore } from '../core/context.tsx';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import type { SettingsSection } from '../router.ts';
 import { t } from '../strings/index.ts';
-import { devicesChunk, mergeMembers } from './shell-model.ts';
+import { devicesChunk, mergeMembers, selfName } from './shell-model.ts';
 import { NAV } from './Settings.tsx';
 import { SignOutAction } from './settings/SignOut.tsx';
 import { PresencePicker } from './PresencePicker.tsx';
@@ -13,18 +15,22 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
 };
 
 /**
- * The phone's You tab (flow 12): who this is, the four facts the desktop status bar holds (this device's node, link,
+ * The phone's You tab (flow 12): who this is, the four facts the desktop holds in Settings → Diagnostics (this device's node, link,
  * generation and devices), one row per Settings section in Settings' own order, and sign out.
  */
 export function You(props: { onOpenSettings(section: SettingsSection): void }): React.JSX.Element {
+  const client = useCore();
   const account = useSlice('account');
   const connection = useSlice('connection');
   const devices = useSlice('devices');
   const communities = useSlice('communities');
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const self = account?.user ?? null;
-  const display = self === null ? undefined : mergeMembers(memberLists).find(m => m.userId === self.id)?.display;
-  const name = display === undefined || display === '' ? self?.username ?? t('shell.status.unknown') : display;
+  const name = selfName(self, mergeMembers(memberLists));
+  // The device list, once per mount, for the devices fact; a refusal leaves the fact unknown.
+  useEffect(() => {
+    client.call({ m: 'refreshDevices' }).catch(() => undefined);
+  }, [client]);
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'pending' : 'danger';
   return (

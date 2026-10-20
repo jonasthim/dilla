@@ -48,16 +48,22 @@ describe('the phone shell: the servers list', () => {
     expect(document.querySelector('.dw-voice-dock')).toBeNull();
   });
 
-  it('holds the server actions in one menu, and the new-channel action only for a person who may', async () => {
+  it('has the gear and the search icon beside the server name, no menu; the list header has the "+" only for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    const names = () => screen.getAllByRole('menuitem').map(i => i.textContent);
-    expect(names()).toEqual([t('search.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
-    await user.keyboard('{Escape}');
-    manage(client);
-    await user.click(screen.getByRole('button', { name: t('nav.server.menu') }));
-    expect(names()).toEqual([t('search.open'), t('create.channel.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const search = screen.getByRole('button', { name: t('search.open') });
+    const head = gear.closest('.d-channel-list__head') as HTMLElement;
+    expect(within(head).getAllByRole('button')).toEqual([search, gear]);
+    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(search.querySelector('svg[data-icon="search"]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: t('nav.server.menu') })).toBeNull();
+    expect(screen.queryByRole('button', { name: t('admin.leave.open') })).toBeNull();
     expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
+    manage(client);
+    expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
+    await user.click(gear);
+    const dialog = await screen.findByRole('dialog', { name: t('admin.title') });
+    expect(within(dialog).getByRole('button', { name: t('admin.nav.leave') })).toBeInTheDocument();
   });
 
   it('labels the rail’s join and new buttons with visible captions (walk 24)', async () => {
@@ -69,7 +75,7 @@ describe('the phone shell: the servers list', () => {
 
   it('has no axe violations', async () => {
     const { view } = phone({ path: `/c/${A}` });
-    await screen.findByRole('button', { name: t('nav.server.menu') });
+    await screen.findByRole('button', { name: t('admin.open') });
     await expectNoAxeViolations(view.container);
   });
 });
@@ -77,8 +83,7 @@ describe('the phone shell: the servers list', () => {
 describe('the phone shell: search (walk 1)', () => {
   it('opens the full-screen search from the servers list menu', async () => {
     const { user } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('search.open') }));
+    await user.click(await screen.findByRole('button', { name: t('search.open') }));
     const dialog = screen.getByRole('dialog', { name: t('search.placeholder') });
     expect(dialog.className).toContain('dw-search');
     expect(screen.getByRole('combobox', { name: t('search.placeholder') })).toHaveFocus();
@@ -270,8 +275,7 @@ describe('the phone shell: tabs', () => {
 
   it('a tab tap closes server settings too', async () => {
     const { user } = phone({ path: `/c/${A}` });
-    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
-    await user.click(screen.getByRole('menuitem', { name: t('admin.open') }));
+    await user.click(await screen.findByRole('button', { name: t('admin.open') }));
     expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
     await user.click(tab('DMs'));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('admin.title') })).toBeNull());
@@ -309,6 +313,69 @@ describe('the phone shell: tabs', () => {
     await user.click(tab('servers'));
     expect(back).not.toHaveBeenCalled();
     expect(here()).toBe(`/c/${A}`);
+  });
+
+  describe('the system forward button (N5, R-c)', () => {
+    /** history.back() that lands on the DMs list, as it does when the person went forward onto this view. */
+    const backToDms = () => {
+      let pop: () => void = () => undefined;
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
+        pop = () => {
+          window.history.replaceState(null, '', '/dm');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        };
+      });
+      return { back, pop: () => pop() };
+    };
+
+    it('lands the current tab on its own list when back would land on another view', async () => {
+      const { user } = phone({ path: '/dm' });
+      await screen.findByRole('navigation', { name: t('shell.dms.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      const { back, pop } = backToDms();
+      await user.click(tab('servers'));
+      expect(back).toHaveBeenCalledTimes(1);
+      act(() => pop());
+      await waitFor(() => expect(here()).toBe(`/c/${A}`));
+    });
+
+    it('control: back that lands on the tab list is left alone', async () => {
+      const { user } = phone({ path: `/c/${A}` });
+      await screen.findByRole('navigation', { name: t('shell.channels.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
+        window.history.replaceState(null, '', `/c/${A}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      });
+      const replace = vi.spyOn(window.history, 'replaceState');
+      await user.click(tab('servers'));
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(replace).toHaveBeenCalledTimes(1); // the mock's own
+      expect(here()).toBe(`/c/${A}`);
+    });
+
+    it('a second tap before the pop removes the first tap’s popstate listener, and the shell going away removes the last', async () => {
+      const { user, view } = phone({ path: '/dm' });
+      await screen.findByRole('navigation', { name: t('shell.dms.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      backToDms();
+      const added = vi.spyOn(window, 'addEventListener');
+      const removed = vi.spyOn(window, 'removeEventListener');
+      const popstate = (spy: typeof added) => spy.mock.calls.filter(c => c[0] === 'popstate').length;
+      await user.click(tab('servers'));
+      const afterFirst = { added: popstate(added), removed: popstate(removed) };
+      expect(afterFirst.added).toBeGreaterThan(0);
+      await user.click(tab('servers'));
+      // The second tap adds its own listener and first removes the one the first tap left.
+      expect(popstate(added)).toBeGreaterThan(afterFirst.added);
+      expect(popstate(removed)).toBeGreaterThan(afterFirst.removed);
+      const beforeUnmount = popstate(removed);
+      view.unmount();
+      expect(popstate(removed)).toBeGreaterThan(beforeUnmount);
+    });
   });
 
   it('a DM opened from the servers list: the DMs tab lands on /dm', async () => {
@@ -458,6 +525,30 @@ describe('the phone shell: settings', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
   });
 
+  it('puts Settings inside the shell, in tab order: its title, then its controls, then the tab bar', async () => {
+    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+    const { user } = phone({ path: '/settings/devices', withSettings: true });
+    const header = await waitFor(() => { const h = document.querySelector<HTMLElement>('.d-phone-header'); expect(h).not.toBeNull(); return h!; });
+    const dialog = screen.getByRole('dialog', { name: t('settings.title') });
+    expect(dialog.closest('.d-app-shell__page')).not.toBeNull();
+    const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const title = within(header).getByRole('heading', { level: 2 });
+    const back = within(header).getByRole('button', { name: t('nav.back') });
+    expect(follows(title, back) || follows(back, title)).toBe(true);
+    expect(follows(dialog, tabs()!)).toBe(true);
+    // Walk the real Tab order from the top: every stop in the page comes before the first stop in the tab bar.
+    const where: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      await user.tab();
+      const el = document.activeElement;
+      where.push(el !== null && dialog.contains(el) ? 'page' : el !== null && tabs()!.contains(el) ? 'tabs' : 'other');
+    }
+    expect(where).toContain('page');
+    expect(where).toContain('tabs');
+    expect(where.indexOf('tabs')).toBeGreaterThan(where.lastIndexOf('page', where.indexOf('tabs')));
+    expect(where.slice(0, where.indexOf('tabs')).every(w => w !== 'other')).toBe(true);
+  });
+
   it('makes the shell behind a phone Settings inert, except the tab bar', async () => {
     window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
     phone({ path: '/settings/devices', withSettings: true });
@@ -503,7 +594,21 @@ describe('the desktop keeps its shell', () => {
     renderVoiceShell({ path: `/c/${A}/${TEXT}` });
     await screen.findByRole('log');
     expect(document.querySelector('[data-layout="phone"]')).toBeNull();
-    expect(document.querySelector('.d-link-banner')).toBeNull();
-    expect(screen.getByRole('region', { name: t('shell.status.label') })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: t('shell.status.label') })).toBeNull();
+    expect(document.querySelector('.d-link-banner')).toHaveAttribute('role', 'status');
+    expect(document.querySelector('.d-link-banner')).toBeEmptyDOMElement();
+  });
+});
+
+describe('the phone shell: one channel list (web3.8 item 12)', () => {
+  it('lists the voice channels in the one list on the servers tab, with no active voice', async () => {
+    phone({ path: `/c/${A}` });
+    const nav = await screen.findByRole('navigation', { name: t('shell.channels.label') });
+    expect(within(nav).getByRole('button', { name: 'voice general' })).toBeInTheDocument();
+    expect(within(nav).getByRole('button', { name: /^lobby/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'active voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'voice' })).toBeNull();
+    expect(document.querySelector('.d-active-voice, .dw-voice-section')).toBeNull();
+    expect(nav.querySelectorAll('ul[role="list"]:not(.d-voice-row__people)').length).toBe(1);
   });
 });

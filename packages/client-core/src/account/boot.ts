@@ -18,6 +18,18 @@ export const WRONG_KEY_TEXT = 'file is not a database';
 export const storeDirectory = (instanceHex: string): string => `dilla/${instanceHex}`;
 export type BootOutcome = { kind: 'unsupported'; reason: string } | { kind: 'store-lost' } | { kind: 'opened'; core: CorePort; instance: Instance };
 
+/** A browser that refuses the storage root: WebKit private windows reject getDirectory() with UnknownError, Firefox's with
+ *  SecurityError (docs/spikes/2026-09-browser.md). Matched by DOMException name, never by message text. */
+export function isStorageRefusal(err: unknown): boolean {
+  return err instanceof DOMException && (err.name === 'UnknownError' || err.name === 'SecurityError');
+}
+
+/** storeExists over a root that is asked for only when the store is looked up, after boot()'s probe has run. A worker that
+ *  awaited the root first let a private window's rejection escape before the probe could report it (E_INTERNAL). */
+export function lazyStoreExists(getRoot: () => Promise<FileSystemDirectoryHandle>): BootDeps['storeExists'] {
+  return async (directory) => opfsDirectoryExists(await getRoot(), directory);
+}
+
 export async function boot(deps: BootDeps): Promise<BootOutcome> {
   let probe: unknown;
   try { probe = JSON.parse(await deps.probePersistence()) as unknown; } catch { return { kind: 'unsupported', reason: 'probe' }; }
@@ -29,7 +41,8 @@ export async function boot(deps: BootDeps): Promise<BootOutcome> {
   try { kek = await deps.kek.load(hex); }
   catch (err) { if (err instanceof Error && err.message === 'E_KEK_UNWRAP') return { kind: 'store-lost' }; throw err; }
   if (kek === null) {
-    if (await deps.storeExists(dir)) return { kind: 'store-lost' };
+    try { if (await deps.storeExists(dir)) return { kind: 'store-lost' }; }
+    catch (err) { if (isStorageRefusal(err)) return { kind: 'unsupported', reason: 'storage' }; throw err; }
     kek = await deps.kek.create(hex);
   }
   let opened: OpenedStore;

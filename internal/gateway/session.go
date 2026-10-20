@@ -342,7 +342,10 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	}
 }
 
-// advertised is the instance's version sets, defaulting to {1} for all three.
+// advertised is the instance's version sets, defaulting to {1} for all three. The {1} wire default
+// serves this package's unit tests only: the real list comes from dillad.New, the one composition
+// root, which passes dillad.Options.WireVersions ({dillad.WireVersion}, 2, since web3.8 S1). A
+// root that left it nil would offer wire 1 while the delivery service refuses its uploads.
 func (g *Gateway) advertised() (wire, e2ee, media []uint64) {
 	pick := func(v []uint64) []uint64 {
 		if len(v) == 0 {

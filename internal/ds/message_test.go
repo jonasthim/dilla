@@ -22,7 +22,7 @@ func TestAnUploadWithTheWrongCommitmentLengthIsRefused(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	for _, n := range []int{0, 31, 33} {
-		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, n), nil)
+		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, n), 0)
 		var dsErr *ds.Error
 		if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMITMENT_INVALID" {
 			t.Fatalf("%d-byte authenticated_data: got %v, want E_COMMITMENT_INVALID", n, err)
@@ -31,7 +31,7 @@ func TestAnUploadWithTheWrongCommitmentLengthIsRefused(t *testing.T) {
 			t.Errorf("status = %d, want 422", dsErr.Status)
 		}
 	}
-	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, 32), nil); err != nil {
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageWithAAD(t, g, 32), 0); err != nil {
 		t.Fatalf("32 bytes must be accepted: %v", err)
 	}
 }
@@ -51,7 +51,7 @@ func TestOnlyAnApplicationMessageMayBeUploaded(t *testing.T) {
 	// 2 is proposal, 3 is commit. Both are well formed in every other respect: the group's own
 	// epoch, a 32-byte commitment, an ordinary ciphertext.
 	for _, ct := range []byte{2, 3} {
-		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, ct), nil)
+		_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, ct), 0)
 		var dsErr *ds.Error
 		if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
 			t.Fatalf("content_type %d: got %v, want E_COMMIT_INVALID", ct, err)
@@ -68,7 +68,7 @@ func TestOnlyAnApplicationMessageMayBeUploaded(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("a refused handshake left %d rows in mls_app_messages", len(rows))
 	}
-	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, 1), nil); err != nil {
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfContentType(t, g, 1), 0); err != nil {
 		t.Fatalf("content_type 1 must be accepted: %v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestAnUploadFromADeviceWhoseLeafIsGoneIsRefused(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	h.removeLeafOfDevice(t, g, g.device)
-	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_LEAF_NOT_CURRENT" {
 		t.Fatalf("got %v, want E_LEAF_NOT_CURRENT", err)
@@ -88,10 +88,10 @@ func TestAnUploadFromADeviceWhoseLeafIsGoneIsRefused(t *testing.T) {
 func TestTheCiphertextCapIsExactlyOneHundredAndThirtyOneThousandAndSeventyTwoBytes(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
-	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131072), nil); err != nil {
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131072), 0); err != nil {
 		t.Fatalf("131072 bytes must be accepted: %v", err)
 	}
-	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131073), nil)
+	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131073), 0)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_TOO_LARGE" {
 		t.Fatalf("131073 bytes: got %v, want E_TOO_LARGE", err)
@@ -107,7 +107,7 @@ func TestMessageCTReachesTheUploaderAndTheResponseCarriesSeq(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	h.online(g.device)
-	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestMessageCTReachesTheUploaderAndTheResponseCarriesSeq(t *testing.T) {
 func TestAnUploadRecordsTheFrankingKeyItWasTaggedUnder(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
-	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestDeleteIsMemberOnlyThenUploaderOnlyAndKeepsTheTombstoneFields(t *testing
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestARemovedDeviceCannotDeleteItsOwnMessage(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -263,14 +263,14 @@ func TestACatchUpBelowTheMessageRetentionFloorIsPruned(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	// Thirty-one days pass between the two uploads, so exactly one of them is older than
 	// MessageRetention when the sweep runs.
 	h.clk.Advance(31 * 24 * time.Hour)
-	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestAGroupWhoseEarlySeqsAreNotMessagesIsServed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("NextSeq: %v", err)
 	}
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestACursorNeverPassesTheHighWaterAndNeverRewinds(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestACursorAdvancesOnlyOnAnExplicitAcknowledgement(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	h.online(g.device)
-	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	out, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -440,19 +440,14 @@ type recordingPostPolicy struct {
 type postPolicyCall struct {
 	group store.GroupRow
 	user  id.ID
-	class *uint8
+	class uint8
 	now   int64
 }
 
-func (p *recordingPostPolicy) Check(_ context.Context, g store.GroupRow, userID id.ID, class *uint8, now int64) error {
+func (p *recordingPostPolicy) Check(_ context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var c *uint8
-	if class != nil {
-		v := *class
-		c = &v
-	}
-	p.calls = append(p.calls, postPolicyCall{group: g, user: userID, class: c, now: now})
+	p.calls = append(p.calls, postPolicyCall{group: g, user: userID, class: class, now: now})
 	return p.err
 }
 
@@ -464,22 +459,21 @@ func (p *recordingPostPolicy) take() []postPolicyCall {
 	return out
 }
 
-// web3.7 SB1 (R8 amended, R28): Upload asks the post policy about every upload, a legacy one (nil
-// class) included, with the group row, the session's user and the class, and a refusal is the
-// answer unchanged: nothing is stored, nothing is delivered.
+// web3.7 SB1 (R8 amended): Upload asks the post policy about every upload, class 0 and class 1,
+// with the group row, the session's user and the class, and a refusal is the answer unchanged:
+// nothing is stored, nothing is delivered. (web3.8 S1: every upload names its class.)
 func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	zero := uint8(0)
 
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), &zero)
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload(class 0): %v", err)
 	}
 	calls := h.postPolicy.take()
 	if len(calls) != 1 || calls[0].group.GroupID != g.id || calls[0].user != g.session.UserID ||
-		calls[0].class == nil || *calls[0].class != 0 || calls[0].now != h.clk.Now().Unix() {
+		calls[0].class != 0 || calls[0].now != h.clk.Now().Unix() {
 		t.Fatalf("a class-0 upload asked %+v, want one call with the group, the user, class 0 and now", calls)
 	}
 	row, err := h.repo.GetAppMessage(ctx, g.id, out.Seq)
@@ -487,15 +481,15 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 		t.Fatalf("the stored row's class = %v, %v; want 0", row.Class, err)
 	}
 
-	legacy, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	fold, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 1)
 	if err != nil {
-		t.Fatalf("Upload(legacy): %v", err)
+		t.Fatalf("Upload(class 1): %v", err)
 	}
-	if calls := h.postPolicy.take(); len(calls) != 1 || calls[0].class != nil || calls[0].user != g.session.UserID {
-		t.Fatalf("a legacy upload asked %+v, want one call with a nil class", calls)
+	if calls := h.postPolicy.take(); len(calls) != 1 || calls[0].class != 1 || calls[0].user != g.session.UserID {
+		t.Fatalf("a class-1 upload asked %+v, want one call with class 1", calls)
 	}
-	if row, err := h.repo.GetAppMessage(ctx, g.id, legacy.Seq); err != nil || row.Class != nil {
-		t.Fatalf("the legacy row's class = %v, %v; want nil", row.Class, err)
+	if row, err := h.repo.GetAppMessage(ctx, g.id, fold.Seq); err != nil || row.Class == nil || *row.Class != 1 {
+		t.Fatalf("the class-1 row's class = %v, %v; want 1", row.Class, err)
 	}
 
 	before, err := h.repo.GetGroup(ctx, g.id)
@@ -505,7 +499,7 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 	h.online(g.device)
 	refusal := server.Errorf(server.CodeForbidden, "missing permission")
 	h.postPolicy.err = refusal
-	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), &zero); err != refusal { //nolint:errorlint // identity, not errors.Is: the policy's error comes back unchanged, not wrapped
+	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0); err != refusal { //nolint:errorlint // identity, not errors.Is: the policy's error comes back unchanged, not wrapped
 		t.Fatalf("Upload under a refusing policy = %v, want the policy's error unchanged", err)
 	}
 	if calls := h.postPolicy.take(); len(calls) != 1 {
@@ -524,7 +518,7 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 	// Nothing was delivered: the next message.ct the device sees is the one accepted after the
 	// policy relents, at the next seq.
 	h.postPolicy.err = nil
-	next, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), &zero)
+	next, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	if err != nil {
 		t.Fatalf("Upload after the refusal: %v", err)
 	}
@@ -539,6 +533,36 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 	}
 }
 
+// S1 fix round 1 (m4): Upload range-checks the class itself, not only the route: 2 and 255 are
+// 400 E_INVALID_REQUEST before the policy is asked or anything is stored. The control is class 1
+// into the same group, which is accepted.
+func TestUploadRefusesAClassOutsideZeroAndOne(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	before, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	for _, class := range []uint8{2, 255} {
+		_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), class)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" || dsErr.Status != 400 {
+			t.Fatalf("an upload of class %d = %v, want 400 E_INVALID_REQUEST", class, err)
+		}
+	}
+	if calls := h.postPolicy.take(); len(calls) != 0 {
+		t.Fatalf("an out-of-range class reached the post policy %d times", len(calls))
+	}
+	if after, err := h.repo.GetGroup(ctx, g.id); err != nil || after.Seq != before.Seq {
+		t.Fatalf("a refused class moved the group's seq from %d to %d (%v)", before.Seq, after.Seq, err)
+	}
+	// Control: class 1.
+	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 1); err != nil {
+		t.Fatalf("control: class 1: %v", err)
+	}
+}
+
 // SB1 fix round 1 (review): a closed group takes no upload, whatever its class. ds.Close closes a
 // deleted channel's group and one a restore replaced; before the fix an upload into it was still
 // sequenced and fanned out. 404 E_NOT_FOUND, as for a group that does not exist, and the policy is
@@ -547,8 +571,7 @@ func TestAnUploadIntoAClosedGroupIsRefused(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	zero := uint8(0)
-	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), &zero); err != nil {
+	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0); err != nil {
 		t.Fatalf("control: an upload into the open group: %v", err)
 	}
 	if err := h.ds.Close(ctx, g.id); err != nil {
@@ -559,7 +582,7 @@ func TestAnUploadIntoAClosedGroupIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGroup: %v", err)
 	}
-	for _, class := range []*uint8{&zero, nil} {
+	for _, class := range []uint8{0, 1} {
 		_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), class)
 		var dsErr *ds.Error
 		if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" || dsErr.Status != 404 {

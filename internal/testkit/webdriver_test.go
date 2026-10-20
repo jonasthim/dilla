@@ -449,7 +449,8 @@ func dialGatewayAs(t *testing.T, h *testkit.Harness, name string, user, device i
 	if op, _ := g.read(dialCtx, t); op != 0 {
 		t.Fatalf("%s's first gateway frame is op %d, want hello", name, op)
 	}
-	g.write(dialCtx, t, []any{uint64(1), uint64(1), nil, []any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+	// Wire version 2, the one the instance offers (web3.8 S1, dillad.WireVersion).
+	g.write(dialCtx, t, []any{uint64(1), uint64(1), nil, []any{"", uint64(2), uint64(1), uint64(1), uint64(0)}})
 	for {
 		op, _ := g.read(dialCtx, t)
 		if op == 3 {

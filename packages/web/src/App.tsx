@@ -11,7 +11,7 @@ import { Boot } from './screens/Boot.tsx';
 import { ForcedFactor } from './screens/factor/ForcedFactor.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
 import { Settings } from './screens/Settings.tsx';
-import { focusRailSettings, Shell } from './screens/Shell.tsx';
+import { focusUserSettings, Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
@@ -215,12 +215,12 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       if (n.threadRoot !== null && n.communityId !== null) requestThread(n.channelId, n.threadRoot);
     },
   }), [client, navigate]);
-  // When Settings closes (Escape, its close button, the browser's back), focus returns to the rail's settings button
+  // When Settings closes (Escape, its close button, the browser's back), focus returns to the user panel's gear
   // after the commit, so after the dialog's own close (pre-flight row 1.22: not when a notification click left it).
   const wasSettings = useRef(false);
   useEffect(() => {
     const isSettings = route.name === 'settings';
-    if (wasSettings.current && !isSettings && !leftByNotice.current) focusRailSettings();
+    if (wasSettings.current && !isSettings && !leftByNotice.current) focusUserSettings();
     if (!isSettings) leftByNotice.current = false;
     wasSettings.current = isSettings;
   }, [route.name]);
@@ -272,7 +272,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-      case 'shell': return <><Shell update={props.update} />{route.name === 'settings' ? <Settings /> : null}</>;
+      case 'shell': return <Shell update={props.update} page={route.name === 'settings' ? <Settings /> : null} />;
     }
   }
 }

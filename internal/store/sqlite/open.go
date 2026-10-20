@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -76,6 +77,9 @@ var WantReadPragmas = map[string]string{
 // wait into SQLITE_BUSY. _txlock=immediate takes the write lock at BEGIN rather
 // than at the first write, which is what makes busy_timeout actually apply.
 func OpenWrite(path string) (*sql.DB, error) {
+	if err := precreate(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+url.PathEscape(path)+writeDSNSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open write %s: %w", path, err)
@@ -88,6 +92,39 @@ func OpenWrite(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("sqlite: ping write %s: %w", path, err)
 	}
 	return db, nil
+}
+
+// chmodFile is os.Chmod; a test swaps it to make the chmod fail.
+var chmodFile = os.Chmod
+
+// precreate makes the database file at 0600 before SQLite sees it. SQLite's unix VFS creates the
+// -wal and -shm files with the database file's own mode, so this one file decides all three,
+// whatever the caller's umask (R17). An existing file is only chmodded, never truncated.
+func precreate(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: the operator's own db.path
+	if err != nil {
+		return fmt.Errorf("sqlite: create %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("sqlite: create %s: %w", path, err)
+	}
+	// Best effort: a file another user owns (a root-owned dilla.db reached through the group) refuses the chmod
+	// with EPERM, and SQLite opens it all the same. serve reports it as a warning through SecureFiles; init, which
+	// owns the file it just made, treats SecureFiles's error as fatal.
+	_ = chmodFile(path, 0o600)
+	return nil
+}
+
+// SecureFiles chmods the database, its -wal and its -shm to 0600 and ignores a file that does not
+// exist. serve calls it after its write open, which also repairs an install made before OpenWrite
+// pre-created the file; init calls it after the migrations.
+func SecureFiles(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("sqlite: chmod %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // OpenRead opens the read pool: WAL readers do not block the writer, so the pool

@@ -78,8 +78,9 @@ pub enum DsError {
     /// The Display carries the rule, because "which rule refused it" is the whole diagnosis.
     #[error("E_COMMIT_INVALID: {reason}")]
     CommitInvalid { reason: String },
-    /// A refusal from a remote instance whose code the stub never raises itself (`E_FORBIDDEN`,
-    /// `E_UNAUTHENTICATED`, `E_INVALID_REQUEST`, …). `code` is interned from protocol/02's one
+    /// A refusal from a remote instance whose code the stub has no variant of (`E_FORBIDDEN`,
+    /// `E_UNAUTHENTICATED`, `E_INVALID_REQUEST`, …); the stub raises it itself only for an upload
+    /// without a class (`E_INVALID_REQUEST`, web3.8 S1). `code` is interned from protocol/02's one
     /// vocabulary, so `code()` stays `&'static str`; an answer carrying a code outside that
     /// vocabulary is a `Protocol` error, not one of these.
     #[error("{code} ({status}): {detail}")]
@@ -786,11 +787,10 @@ impl DsStub {
         Ok(seq)
     }
 
-    /// The contract's `post_message`. The real DS reads the franking commitment `C` out of
-    /// `private_message.authenticated_data`; this stub does not open application framing at all
-    /// (deviation A1-11), so it has no commitment and refuses the upload with
-    /// `CommitmentInvalid` — the same refusal the real DS makes when the commitment is missing.
-    /// Test clients call `post_message_from`, which is handed `C` explicitly.
+    /// The contract's `post_message`. It names no upload class, so the stub refuses it as the
+    /// instance refuses a two-element body since web3.8 S1: `400 E_INVALID_REQUEST`. (It has no
+    /// commitment either: the stub does not open application framing, deviation A1-11.) Test
+    /// clients call `post_message_from`, which is handed `C` and the class explicitly.
     pub fn post_message(
         &mut self,
         group_id: &[u8],
@@ -807,7 +807,9 @@ impl DsStub {
         )
     }
 
-    /// The form the test client uses: it knows its own device and the commitment it computed.
+    /// The form the test client uses: it knows its own device and the commitment it computed. A
+    /// missing class is refused first, as the instance refuses the two-element body at decode
+    /// (web3.8 S1, protocol/02 § Upload class).
     pub fn post_message_from(
         &mut self,
         group_id: &[u8],
@@ -817,6 +819,19 @@ impl DsStub {
         commitment: Option<[u8; 32]>,
         class: Option<u8>,
     ) -> Result<MessageAccepted, DsError> {
+        let class = class.ok_or_else(|| DsError::Remote {
+            status: 400,
+            code: "E_INVALID_REQUEST",
+            detail: "body must be [epoch, private_message, class], got 2 elements".into(),
+        })?;
+        // The class set is 0 and 1, refused as the instance refuses it (S1 fix round 1, m4).
+        if class > 1 {
+            return Err(DsError::Remote {
+                status: 400,
+                code: "E_INVALID_REQUEST",
+                detail: "class must be 0 or 1".into(),
+            });
+        }
         let commitment = commitment.ok_or(DsError::CommitmentInvalid)?;
         let k_frank = self.cfg.k_frank;
         let recv_ts = self.clock;
@@ -850,7 +865,7 @@ impl DsStub {
             franking_tag: tag,
             recv_ts,
             deleted: false,
-            class,
+            class: Some(class),
         };
         g.messages.push(item.clone());
         self.fanout(
@@ -1141,12 +1156,12 @@ impl DeliveryService for DsStub {
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
-        class: Option<u8>,
+        class: u8,
     ) -> Result<UploadResult, DsError> {
         let device = self.current_device()?;
         let commitment = commitment_of(&pm)?;
         let accepted =
-            DsStub::post_message_from(self, g, epoch, device, pm, Some(commitment), class)?;
+            DsStub::post_message_from(self, g, epoch, device, pm, Some(commitment), Some(class))?;
         Ok(UploadResult {
             seq: accepted.seq,
             franking_tag: accepted.franking_tag.to_vec(),

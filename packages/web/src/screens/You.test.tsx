@@ -49,7 +49,12 @@ describe('You', () => {
     expect(screen.getByText('@ada')).toBeInTheDocument();
   });
 
-  it('shows the four facts the status bar shows, from the same slices', () => {
+  it('asks for the device list once on mount', () => {
+    const { fake } = setup();
+    expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
+  });
+
+  it('shows the four facts Diagnostics shows, from the same slices', () => {
     setup();
     const region = screen.getByRole('region', { name: t('you.status') });
     const fact = (label: string) => within(region).getByText(label).closest('div') as HTMLElement;

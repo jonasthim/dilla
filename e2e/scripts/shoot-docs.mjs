@@ -16,7 +16,7 @@
 //      1280×800), lets the three talk in #general, and shoots mira's screens;
 //   3b. replies, reacts, edits, pins, mentions and shares images and files in #general between the three
 //      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
-//   4. signs mira in from a fourth browser (recovery key, then username and password, then done), then
+//   4. signs mira in from a fourth browser (username and password, then the second factor, then the recovery key, then done), then
 //      shoots Devices in both browsers, notifications, badges, a DM and a DM's badge;
 //   4b. (web-3) has ada call mira in their DM and shoots the ring; shoots Settings → Voice; has björn share an audio
 //      file and shoots its player; has ada, björn and mira join the voice channel "harbour" and shoots the stage and,
@@ -93,6 +93,10 @@ const VOICE = 'harbour';
 // web-3.1 (flow 07): ada's create-flow images, each at both viewports, and the rail on its own.
 export const CREATE_SHOTS = ['create-empty', 'create-server', 'create-channel', 'create-invite']
   .flatMap((state) => ['desktop', 'phone'].map((viewport) => `${state}-${viewport}`)).concat(['create-rail']);
+// web3.8: the sign-in in its new order (username and password, second factor, recovery key, done), and the desktop images of
+// the stage (1440×900), the resizable panes and the link line that replaced the status bar.
+export const SIGNIN_SHOTS = ['signin-0-entry', 'signin-1-login', 'signin-2-code', 'signin-3-recovery-key', 'signin-4-done'];
+export const WEB38_SHOTS = ['invite-landing-light', 'voice-stage-focused-desktop', 'voice-stage-grid-desktop', 'panes-resized-desktop', 'link-offline-desktop'];
 // The host's in-process LiveKit: signalling and ICE/UDP (the plan's docs:shots ports).
 const SFU = { port: 7888, udpPort: 7890 };
 const PEOPLE = {
@@ -253,13 +257,15 @@ async function kickFromServer(controlUrl, dataDir, name, actor, target) {
 // The browser side: the onboarding and shell, driven by the copy of packages/web/src/strings/en.ts.
 
 const byText = (page, role, key, vars) => page.getByRole(role, { name: t(key, vars), exact: true });
+/** The gear in the user panel at the bottom left (web3.8): the rail has no settings button. */
+const gear = (page) => page.locator('.d-user-panel').getByRole('button', { name: t('panel.settings'), exact: true });
 const composer = (page, channel) => page.getByRole('textbox', { name: t('shell.composer.label', { channel }), exact: true });
 const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.label', { channel }), exact: true })
   .locator('.d-message-row').filter({ hasText: text });
 
 /** Fonts loaded, animations ended, no hover and no focus ring left over from the pointer or a filled field. */
 async function settle(page, { keepFocus = false } = {}) {
-  // Park the pointer outside the page: a corner inside it would hover the phone's "you" tab or the status bar.
+  // Park the pointer outside the page: a corner inside it would hover the phone's "you" tab.
   await page.mouse.move(-10, -10);
   await page.evaluate(async (keep) => {
     if (!keep && document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -563,18 +569,19 @@ async function main(argv) {
     // #general opens with the focus in its composer; Ada's browser is the first in it and so creates its group.
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
     await ada.getByRole('button', { name: t('voice.open', { name: 'general' }), exact: true }).waitFor({ timeout: WAIT });
-    // The rail up close: the server's tile, then "join a server" and "new server", then settings, beside the server's
-    // name and its actions; cut off below the settings tile.
+    // The rail up close: the server's tile, then "join a server" and "new server", beside the server's name and its
+    // actions; cut off below the "new server" tile (the settings gear lives in the user panel since web3.8).
     await settle(ada);
     const railFile = path.join(o.outDir, 'create-rail.png');
-    const settingsBox = await byText(ada, 'button', 'shell.rail.settings').boundingBox();
-    if (settingsBox === null) throw new Error('the rail has no settings tile on screen');
-    await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(settingsBox.y + settingsBox.height + 12) } });
+    const newBox = await byText(ada, 'button', 'create.rail.newLabel').boundingBox();
+    if (newBox === null) throw new Error('the rail has no new server tile on screen');
+    await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(newBox.y + newBox.height + 12) } });
     written.push(railFile);
 
-    // "new channel" (the owner's server action): #loot, then the voice channel "harbour".
+    // "new channel" (the "+" in the channel list's header, for the owner): #loot, then the voice channel "harbour".
     const addChannel = async (kind, name, shotName) => {
-      await byText(ada, 'button', 'create.channel.open').click();
+      await ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true })
+        .getByRole('button', { name: t('create.channel.open'), exact: true }).click();
       const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
       const field = dialog.getByRole('textbox', { name: t('create.channel.name'), exact: true });
       await field.and(ada.locator(':focus')).waitFor({ timeout: WAIT });
@@ -594,8 +601,13 @@ async function main(argv) {
     await ada.getByRole('button', { name: 'general', exact: true }).click();
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
 
-    // "invite link": the dialog makes the link and copies it; the link is read from its field, never the clipboard.
-    await byText(ada, 'button', 'invite.open').click();
+    // Server settings → Invites → "Make link": the dialog makes the link and copies it; the link is read from its field,
+    // never the clipboard.
+    await byText(ada, 'button', 'admin.open').click();
+    const settingsDialog = byText(ada, 'dialog', 'admin.title');
+    await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
+      .getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();
+    await settingsDialog.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
     const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
     const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
     await linkField.waitFor({ timeout: WAIT });
@@ -607,6 +619,8 @@ async function main(argv) {
     await shootBoth('create-invite');
     await ada.keyboard.press('Escape');
     await inviteDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    await ada.keyboard.press('Escape');
+    await settingsDialog.waitFor({ state: 'hidden', timeout: WAIT });
     const missing = CREATE_SHOTS.filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
     if (missing.length > 0) throw new Error(`create-flow images not shot: ${missing.join(', ')}`);
 
@@ -622,6 +636,12 @@ async function main(argv) {
     await mira.goto(invitePath);
     await settle(mira);
     await shoot('invite-landing');
+    // web3.8: the styled invite page follows the browser's colour scheme; the light one is shot as well.
+    await mira.emulateMedia({ colorScheme: 'light' });
+    await settle(mira);
+    await shoot('invite-landing-light');
+    await mira.emulateMedia({ colorScheme: 'dark' });
+    await settle(mira);
     const miraKey = await onboard(mira, PEOPLE.mira, invite, shoot);
     await composer(mira, 'general').and(mira.locator(':enabled')).waitFor({ timeout: WAIT });
     // Let Ada's and Björn's tabs apply Mira's join before the first message (fewer stale-epoch retries).
@@ -635,6 +655,23 @@ async function main(argv) {
     await composer(mira, 'general').focus();
     await settle(mira, { keepFocus: true });
     await shoot('shell-conversation');
+    // web3.8: the channel list dragged 96 px wider by its border, then reset with a double-click. Done here, from the
+    // first desktop shell: a shell that went through the phone layout and back has measured itself again.
+    const splitter = mira.getByRole('separator', { name: t('pane.resize.sidebar'), exact: true });
+    const splitBox = await splitter.boundingBox();
+    if (splitBox === null) throw new Error('the channel list border has no box');
+    const splitX = splitBox.x + splitBox.width / 2;
+    const splitY = splitBox.y + splitBox.height / 2;
+    await mira.mouse.move(splitX, splitY);
+    await mira.mouse.down();
+    await mira.mouse.move(splitX + 48, splitY, { steps: 5 });
+    await mira.mouse.move(splitX + 96, splitY, { steps: 5 });
+    await mira.mouse.up();
+    await mira.waitForTimeout(300);
+    await settle(mira);
+    await shoot('panes-resized-desktop');
+    await splitter.dblclick();
+    await settle(mira);
 
     await mira.setViewportSize(PHONE);
     await settle(mira, { keepFocus: true });
@@ -766,8 +803,8 @@ async function main(argv) {
     await lightbox.waitFor({ state: 'hidden', timeout: WAIT });
     await composer(mira, 'general').fill('');
 
-    // Sign-in ceremony in a clean fourth browser, in the shipped order: recovery key, then username and
-    // password, then the code from the authenticator app, then done. The key is held only in this short-lived process.
+    // Sign-in ceremony in a clean fourth browser, in the shipped order (web3.8, R6): username and password, then the
+    // second factor, then the recovery key, then done. Nothing is registered until the key step.
     const second = await open('mira-second');
     const shootSecond = shotsOf(second);
     await second.goto('/welcome');
@@ -775,24 +812,23 @@ async function main(argv) {
     await settle(second);
     await shootSecond('signin-0-entry');
     await byText(second, 'button', 'onboarding.connect.signIn').click();
-    await byText(second, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
-    if (miraKey === null) throw new Error('mira recovery key was not captured');
-    await second.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(miraKey);
-    await settle(second);
-    await shootSecond('signin-1-recovery-key');
-    await byText(second, 'button', 'signin.login.submit').click();
     await second.getByRole('heading', { name: /^Sign in to / }).waitFor({ timeout: WAIT });
     await second.getByLabel(t('signin.login.username'), { exact: true }).fill(PEOPLE.mira.username);
     await second.getByLabel(t('signin.login.password'), { exact: true }).fill(MIRA_PASSWORD);
     await settle(second);
-    await shootSecond('signin-2-login');
+    await shootSecond('signin-1-login');
     await byText(second, 'button', 'signin.login.submit').click();
-    // web3.6: a new browser also takes the code from the authenticator app.
     await byText(second, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
     await second.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, authenticators.get(PEOPLE.mira.username)));
     await settle(second);
-    await shootSecond('signin-3-code');
+    await shootSecond('signin-2-code');
     await byText(second, 'button', 'signin.login.submit').click();
+    await byText(second, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
+    if (miraKey === null) throw new Error('mira recovery key was not captured');
+    await second.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(miraKey);
+    await settle(second);
+    await shootSecond('signin-3-recovery-key');
+    await byText(second, 'button', 'signin.key.submit').click();
     await byText(second, 'heading', 'signin.done.title').waitFor({ timeout: WAIT });
     await settle(second);
     await shootSecond('signin-4-done');
@@ -800,13 +836,13 @@ async function main(argv) {
     await byText(second, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
 
     // Mira's original browser shows both signed-in devices and the notification opt-in.
-    await byText(mira, 'button', 'shell.rail.settings').click();
+    await gear(mira).click();
     await byText(mira, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await mira.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-devices');
     // The sign-out dialog of the second browser, opened and closed again without sending anything.
-    await byText(second, 'button', 'shell.rail.settings').click();
+    await gear(second).click();
     await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await byText(second, 'button', 'devices.signOut').click();
@@ -950,9 +986,15 @@ async function main(argv) {
 
     // Each data-doc-state shot (L-DOC-23, L-DOC-24) at both viewports once its state is visible; `before` brings the
     // state into view after the viewport changes (a phone stacks the channel list above the conversation).
-    const shootState = async (page, state, owned = null, before = null) => {
+    const shootState = async (page, state, owned = null, before = null, reopen = null) => {
       for (const shot of DOC_SHOTS.filter((s) => s.state === `[data-doc-state="${state}"]`)) {
         await page.setViewportSize(DOC_VIEWPORTS[shot.viewport]);
+        // Flipping to the phone layout re-mounts the shell, which drops a screen's transient state (an open comparison): let the
+        // flip settle, and open the state again when it was lost.
+        if (reopen !== null) {
+          await page.waitForTimeout(1500);
+          if (!(await page.locator(shot.state).first().isVisible())) await reopen();
+        }
         await page.waitForSelector(shot.state, { state: 'visible', timeout: WAIT });
         if (before !== null) await before();
         await settle(page, { keepFocus: true });
@@ -963,7 +1005,7 @@ async function main(argv) {
       if (owned === null) await page.setViewportSize(DESKTOP);
     };
     const openSettings = async (section) => {
-      await byText(mira, 'button', 'shell.rail.settings').click();
+      await gear(mira).click();
       await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(`settings.nav.${section}`), exact: true }).click();
     };
     const closeSettings = () => byText(mira, 'button', 'settings.close').click();
@@ -1006,6 +1048,28 @@ async function main(argv) {
     await joinVoice(mira, SERVER, VOICE);
     await stage(mira).locator('.d-call-tile:not([data-own])[data-voice-state="ok"]').nth(1).waitFor({ timeout: WAIT });
     await shootState(mira, 'voice-stage');
+    // web3.8 (item 14): Ada shares her screen. Mira's stage brings it to the front on its own (R26), which is the focused
+    // shot; a click on that tile again returns the grid, with the camera or avatar tile and the screen as separate tiles.
+    // Both at 1440×900, the size the stage was designed at.
+    const adaShare = pages.ada.getByRole('toolbar', { name: t('voice.controls.voice'), exact: true })
+      .getByRole('button', { name: t('voice.shareOn'), exact: true });
+    await adaShare.click();
+    const adaScreen = stage(mira).locator('.d-call-tile[data-source="screen"]:not([data-own])');
+    await adaScreen.waitFor({ timeout: WAIT });
+    await adaScreen.locator('video').waitFor({ timeout: WAIT });
+    await mira.waitForFunction(() => [...document.querySelectorAll('.d-call-tile[data-source="screen"] video')].some((v) => v.videoWidth > 0), null, { timeout: WAIT });
+    // The channel list shows Ada's screen glyph once the instance has told the others about the share.
+    await mira.getByRole('img', { name: t('voice.state.screen'), exact: true }).first().waitFor({ timeout: 20_000 }).catch(() => undefined);
+    await mira.setViewportSize({ width: 1440, height: 900 });
+    await settle(mira);
+    await shoot('voice-stage-focused-desktop');
+    await adaScreen.locator('.d-call-tile__focus').click();
+    await settle(mira);
+    await shoot('voice-stage-grid-desktop');
+    await mira.setViewportSize(DESKTOP);
+    await adaShare.click();
+    await adaScreen.waitFor({ state: 'detached', timeout: WAIT });
+    await settle(mira);
     // Mira reads #general and stays in voice: the dock above her user panel keeps the controls.
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
@@ -1027,6 +1091,19 @@ async function main(argv) {
       await who.getByRole('button', { name: 'general', exact: true }).click();
       await composer(who, 'general').waitFor({ timeout: WAIT });
     }
+
+    // web3.8: the desktop has no status bar. The link line that replaced it, shot from #general with Mira out of the call
+    // (the call would drop with the connection).
+    try {
+      await mira.context().setOffline(true);
+      await mira.getByText(t('nav.link.offline'), { exact: true }).waitFor({ timeout: WAIT });
+      await settle(mira);
+      await shoot('link-offline-desktop');
+    } finally {
+      await mira.context().setOffline(false);
+    }
+    await mira.getByText(t('nav.link.offline'), { exact: true }).waitFor({ state: 'hidden', timeout: WAIT });
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
 
     // web-2c (L-DOC-23): Privacy, a contact's changed identity, search, diagnostics and the tab hand-over, each shot
     // at both viewports once its data-doc-state is visible. The contact whose key changes is the native peer, in a
@@ -1053,9 +1130,12 @@ async function main(argv) {
     await openSettings('privacy');
     await shootState(mira, 'trust-privacy');
     // The comparison itself: the contact, the state, the exact public key and the 12 blocks of five digits.
-    await mira.getByRole('button', { name: t('privacy.compare', { name: watch.display }), exact: true }).click();
-    await mira.locator('[data-safety-group]').nth(11).waitFor({ timeout: WAIT });
-    await shootState(mira, 'trust-compare');
+    const openComparison = async () => {
+      await mira.getByRole('button', { name: t('privacy.compare', { name: watch.display }), exact: true }).click();
+      await mira.locator('[data-safety-group]').nth(11).waitFor({ timeout: WAIT });
+    };
+    await openComparison();
+    await shootState(mira, 'trust-compare', null, null, openComparison);
     await mira.keyboard.press('Escape');
     await byText(mira, 'dialog', 'privacy.title').waitFor({ state: 'hidden', timeout: WAIT });
     await closeSettings();
@@ -1063,7 +1143,8 @@ async function main(argv) {
     await composer(mira, 'watch').focus();
     await mira.keyboard.press('ControlOrMeta+K');
     await mira.getByRole('combobox', { name: t('search.placeholder'), exact: true }).fill('bridge');
-    await mira.getByRole('option').first().waitFor({ timeout: WAIT });
+    // The search hits are div[role="option"]: the status select under the channel list has native options too.
+    await mira.locator('div[role="option"]').first().waitFor({ timeout: WAIT });
     await shootState(mira, 'search-results');
     await mira.keyboard.press('Escape');
 
@@ -1112,6 +1193,8 @@ async function main(argv) {
     await stop(host.child);
     rmSync(scratch, { recursive: true, force: true });
   }
+  const notShot = [...SIGNIN_SHOTS, ...WEB38_SHOTS].filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
+  if (notShot.length > 0) throw new Error(`web3.8 images not shot: ${notShot.join(', ')}`);
   for (const file of written) process.stdout.write(`shoot-docs: ${path.relative(REPO_ROOT, file)} (${statSync(file).size} bytes)\n`);
   for (const p of problems) process.stderr.write(`shoot-docs: page error ${p}\n`);
   return problems.length > 0 ? 1 : 0;

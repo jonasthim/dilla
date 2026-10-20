@@ -50,7 +50,7 @@ var (
 func initDoctorInstance(t *testing.T) (cfgPath, dir string) {
 	t.Helper()
 	dir = t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	// t.TempDir is 0755; the systemd unit gives the real directory 0700 (StateDirectoryMode).

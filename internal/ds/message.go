@@ -30,11 +30,16 @@ type UploadResult struct {
 // Upload is invariant 8. The order is fixed: size, then a closed group, then the freeze, then the
 // current-leaf check, then the post policy, then the commitment, then the tag.
 //
-// class is the upload class (web3.7 SB1, protocol/02 § Upload class): 0 a post, 1 anything else,
-// nil a legacy two-element upload. It is stored on the row and relayed as message.ct's 7th
-// element; the post policy, when one is set, decides every upload by it, a nil class included
-// (R28).
-func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64, pm []byte, class *uint8) (UploadResult, error) {
+// class is the upload class (web3.7 SB1, protocol/02 § Upload class): 0 a post, 1 anything else.
+// Every upload names one (web3.8 S1: the two-element legacy body is refused at the route). It is
+// stored on the row and relayed as message.ct's 7th element; the post policy, when one is set,
+// decides every upload by it.
+func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64, pm []byte, class uint8) (UploadResult, error) {
+	// The class set is 0 and 1 (protocol/02 § Upload class). The route refuses anything else at
+	// decode; this keeps the service from relying on it (S1 fix round 1, m4), with the route's text.
+	if class > 1 {
+		return UploadResult{}, errInvalid("class must be 0 or 1")
+	}
 	if len(pm) > d.opts.Policy.MaxCiphertextBytes {
 		return UploadResult{}, errTooLarge(len(pm), d.opts.Policy.MaxCiphertextBytes)
 	}
@@ -120,14 +125,14 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			// The key the tag was made under (Plan 2 task 17, P2-D21): a report selects it by
 			// this id, so a message stays verifiable after the franking key rotates.
 			FrankingKeyID: d.opts.Keys.FrankingKeyID,
-			Class:         class,
+			Class:         &class,
 		}); err != nil {
 			return err
 		}
 		// Slow mode's durable mark (SB1 fix round 1): an accepted post into a community text group
 		// raises the user's mark in the channel, in this transaction. Retention prunes the row
 		// above; it never touches the mark, so a pruned post still holds the wait.
-		if class != nil && *class == 0 && row.Kind == groupKindText && row.CommunityID != nil {
+		if class == 0 && row.Kind == groupKindText && row.CommunityID != nil {
 			if err := tx.PutSlowmodeMark(ctx, row.TargetID, s.UserID, int64(recvTS)); err != nil { //nolint:gosec // G115: a unix second, far below 2^63
 				return err
 			}
@@ -140,7 +145,7 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 
 	// R30: the uploader's own devices receive it too, so every device sees a dense seq stream.
-	payload, err := gateway.MessageCTPayload(out.Seq, out.Epoch, s.DeviceID, pm, out.FrankingTag, out.RecvTS, class)
+	payload, err := gateway.MessageCTPayload(out.Seq, out.Epoch, s.DeviceID, pm, out.FrankingTag, out.RecvTS, &class)
 	if err == nil {
 		d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
 			Op: gateway.OpMessageCT, GroupID: &groupID, Payload: payload, Replay: true,

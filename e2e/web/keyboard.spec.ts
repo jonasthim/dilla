@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { nextCode } from './support/totp';
 import {
   CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
-  heading, instanceInvite, logRegion, messageRow, nextButton, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
+  closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -118,11 +118,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
     page.getByRole('link', { name: copy(COPY.skipLink), exact: true }),   // 0 skip link
     rail,                                                                   // 1 community rail
     channelsNav(page),                                                      // 2 channel list
-    page.locator(CLASS.channelHeader),                                      // 3 channel header
-    logRegion(page, channel),                                               // 4 message log
-    page.locator(CLASS.composer),                                           // 5 composer
-    page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true }), // 6 status bar
+    page.locator('.d-user-panel'),                                          // 3 user panel (web3.8, item 13)
+    page.locator(CLASS.channelHeader),                                      // 4 channel header
+    logRegion(page, channel),                                               // 5 message log
+    page.locator(CLASS.composer),                                           // 6 composer
   ];
+  // web3.8 (R4): the desktop has no status bar, so the lap ends at the composer.
+  await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
   const regionOfFocus = async (): Promise<number> => {
     for (let i = 0; i < regions.length; i++) {
       const inside = await regions[i].evaluateAll((els) =>
@@ -137,11 +139,24 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 14 Tabs: the channel header now carries a search button (walk 1), one stop more than before.
-  for (let i = 0; i < 14; i++) {
+  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
+  // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
+  const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
+  let splitterAt = -1;
+  for (let i = 0; i < 16; i++) {
     await press('Tab');
+    if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());
   }
+  // seen[0] is the skip link, so the Tab that landed on the splitter is seen[splitterAt + 1].
+  expect(splitterAt, 'the sidebar splitter is a tab stop').toBeGreaterThan(0);
+  expect(seen[splitterAt + 1], 'the splitter sits outside every region').toBe(-1);
+  expect(seen.slice(0, splitterAt + 1), 'the splitter comes after the channel list').toContain(2);
+  expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s name block (the status menu)').toBe(3);
+  expect(seen[splitterAt + 3], 'the toolbar is the panel\'s second stop').toBe(3);
+  expect(seen[splitterAt + 4], 'the gear is the panel\'s third stop').toBe(3);
+  expect(seen[splitterAt + 5], 'the stop after the panel is in the channel header').toBe(4);
   const start = seen.indexOf(0);
   expect(start, `the skip link is a tab stop (regions seen: ${seen.join(' ')})`).toBeGreaterThanOrEqual(0);
   const lap: number[] = [];
@@ -156,10 +171,22 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   expect(lap, `focus order ${lap.join(' > ')}`).toEqual([...lap].sort((a, b) => a - b));
   expect(new Set(lap).size, `each region entered once: ${lap.join(' > ')}`).toBe(lap.length);
-  for (const required of [0, 1, 2, 4, 5]) expect(lap).toContain(required);
-  // Flow 07 (v0.1.0-web3.1, Keyboard): each server action is its own stop before the tabs. This person joined the
-  // peer's server, so they are a member, not its owner: "invite link", "server settings" and "leave server" are their
-  // three actions (an owner has "+ channel", "invite link" and "server settings").
-  expect(stops.get(2), 'the sidebar is five tab stops: the member\'s "invite link", "server settings" and "leave server", the tabs and the rows').toBe(5);
+  for (const required of [0, 1, 2, 3, 5, 6]) expect(lap).toContain(required);
+  // Web3.8 (WS8): the server's one action is the settings gear beside its name, a stop before the tabs ("leave server" lives
+  // in settings, "invite link" under settings → Invites, and the "+" is the owner's). The splitter sits outside the channel
+  // list, so it is not counted here.
+  expect(stops.get(2), 'the sidebar is three tab stops: the "server settings" gear, the tabs and the rows').toBe(3);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
+  expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
+
+  // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
+  const settings = await openSettings(page, 'diagnostics');
+  const facts = settings.locator('dl');
+  for (const [key, value] of [['diagnostics.connection', /^online$/], ['diagnostics.generation', /^\S+$/],
+    ['diagnostics.instance', new RegExp(`^${escapeRegExp(instanceName)}$`)], ['diagnostics.devices', /^[0-9]+$/]] as const) {
+    const term = facts.locator('dt', { hasText: new RegExp(`^${escapeRegExp(copy(key))}$`) });
+    await expect(term).toBeVisible({ timeout: WAIT });
+    await expect(term.locator('xpath=following-sibling::dd[1]')).toHaveText(value, { timeout: WAIT });
+  }
+  await closeSettings(page);
 });

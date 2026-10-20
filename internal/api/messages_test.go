@@ -277,12 +277,12 @@ func (h *groupsAPI) memberDevice(t *testing.T) id.ID {
 	return members[0].DeviceID
 }
 
-// uploadBody is endpoint 7's [epoch, private_message] for a well-formed message at the group's own
+// uploadBody is endpoint 7's [epoch, private_message, class 0] for a well-formed post at the group's own
 // epoch.
 func (h *groupsAPI) uploadBody(t *testing.T, ctLen int) []byte {
 	t.Helper()
 	epoch := h.groupEpoch(t)
-	return mustCBOR(t, []any{epoch, apiPrivateMessage(t, epoch, ctLen)})
+	return mustCBOR(t, []any{epoch, apiPrivateMessage(t, epoch, ctLen), uint64(0)})
 }
 
 func (h *groupsAPI) mustUpload(t *testing.T, token string, ctLen int) uploaded {
@@ -290,7 +290,7 @@ func (h *groupsAPI) mustUpload(t *testing.T, token string, ctLen int) uploaded {
 	epoch := h.groupEpoch(t)
 	pm := apiPrivateMessage(t, epoch, ctLen)
 	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/message", token,
-		mustCBOR(t, []any{epoch, pm}))
+		mustCBOR(t, []any{epoch, pm, uint64(0)}))
 	if res.Code != http.StatusOK {
 		t.Fatalf("upload: status = %d, want 200: %s", res.Code, res.Body.String())
 	}
@@ -363,19 +363,14 @@ func appendVL(t *testing.T, dst, v []byte) []byte {
 // was asked about, and one answer for all of them.
 type fakePostPolicy struct {
 	mu      sync.Mutex
-	classes []*uint8
+	classes []uint8
 	err     error
 }
 
-func (p *fakePostPolicy) Check(_ context.Context, _ store.GroupRow, _ id.ID, class *uint8, _ int64) error {
+func (p *fakePostPolicy) Check(_ context.Context, _ store.GroupRow, _ id.ID, class uint8, _ int64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var c *uint8
-	if class != nil {
-		v := *class
-		c = &v
-	}
-	p.classes = append(p.classes, c)
+	p.classes = append(p.classes, class)
 	return p.err
 }
 
@@ -385,7 +380,7 @@ func (p *fakePostPolicy) answer(err error) {
 	p.err = err
 }
 
-func (p *fakePostPolicy) take() []*uint8 {
+func (p *fakePostPolicy) take() []uint8 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := p.classes
@@ -526,7 +521,7 @@ func TestAnUploadCarriesItsClassToTheRowAndTheFrame(t *testing.T) {
 			t.Fatalf("class %d: status = %d, want 200: %s", class, res.Code, res.Body.String())
 		}
 		seq := uploadSeq(t, res)
-		if got := policy.take(); len(got) != 1 || got[0] == nil || uint64(*got[0]) != class {
+		if got := policy.take(); len(got) != 1 || uint64(got[0]) != class {
 			t.Fatalf("class %d: the policy was asked about %v", class, got)
 		}
 		row := h.catchUpRow(t, member, seq)
@@ -540,39 +535,65 @@ func TestAnUploadCarriesItsClassToTheRowAndTheFrame(t *testing.T) {
 	}
 }
 
-// R28: a two-element body is a legacy upload, stored with a null class and asked about with a nil
-// one, so the policy still decides send_messages for it.
-func TestALegacyUploadIsCheckedForSendOnly(t *testing.T) {
+// web3.8 S1: a two-element body (the legacy upload web3.7 accepted, R28 there) is refused with
+// 400 E_INVALID_REQUEST before the policy is asked, and nothing is stored. The control is the same
+// body plus class 0 from the same member, which is accepted.
+func TestALegacyUploadIsRefused(t *testing.T) {
 	h, policy := newClassAPI(t)
 	member := h.memberToken(t)
-	next := h.listen(t, member)
 	epoch := h.groupEpoch(t)
-	res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64)})
-	if res.Code != http.StatusOK {
-		t.Fatalf("a legacy upload: status = %d, want 200: %s", res.Code, res.Body.String())
+	pm := apiPrivateMessage(t, epoch, 64)
+	before, err := h.deps.Repo.GetGroup(context.Background(), h.groupID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
 	}
-	seq := uploadSeq(t, res)
-	if got := policy.take(); len(got) != 1 || got[0] != nil {
-		t.Fatalf("a legacy upload asked the policy about %v, want one nil class", got)
+	res := h.post(t, member, []any{epoch, pm})
+	if res.Code != http.StatusBadRequest || errorCode(t, res) != "E_INVALID_REQUEST" {
+		t.Fatalf("a two-element upload: %d %s, want 400 E_INVALID_REQUEST", res.Code, res.Body.String())
 	}
-	if row := h.catchUpRow(t, member, seq); len(row) != 9 || !bytes.Equal(row[8], []byte{0xf6}) {
-		t.Fatalf("the legacy row has %d elements, the 9th %x; want 9, null", len(row), row[len(row)-1])
+	var out []any
+	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil || len(out) < 2 ||
+		out[1] != "body must be [epoch, private_message, class], got 2 elements" {
+		t.Fatalf("the error body %v (%v), want the three-element detail", out, err)
 	}
-	if frame := next(); len(frame) != 7 || !bytes.Equal(frame[6], []byte{0xf6}) {
-		t.Fatalf("the legacy message.ct has %d elements, the 7th %x; want 7, null", len(frame), frame[len(frame)-1])
+	if got := policy.take(); len(got) != 0 {
+		t.Fatalf("a refused two-element upload reached the policy %d times", len(got))
 	}
+	if row, err := h.deps.Repo.GetGroup(context.Background(), h.groupID); err != nil || row.Seq != before.Seq {
+		t.Fatalf("after the refusal the group's seq is %d (%v), want %d: nothing stored", row.Seq, err, before.Seq)
+	}
+	// Control: the same body plus class 0.
+	if res := h.post(t, member, []any{epoch, pm, uint64(0)}); res.Code != http.StatusOK {
+		t.Fatalf("control: the same body plus class 0: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+}
 
-	policy.answer(server.Errorf(server.CodeForbidden, "missing permission"))
-	res = h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64)})
-	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_FORBIDDEN" {
-		t.Fatalf("a legacy upload the policy refuses: %d %s, want 403 E_FORBIDDEN", res.Code, res.Body.String())
+// S1 fix round 1 (I1): a row a web3.7 legacy upload stored has a NULL class, and the catch-up
+// still serves it as null (0xf6), never as 0: a receiver drops a row whose class disagrees with
+// its decrypted type, so an old edit served as class 0 would be lost. The control is a class-0
+// row in the same response, served as 0x00.
+func TestALegacyRowStillReadsBackNull(t *testing.T) {
+	h, _ := newClassAPI(t)
+	member := h.memberToken(t)
+	epoch := h.groupEpoch(t)
+	res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(0)})
+	if res.Code != http.StatusOK {
+		t.Fatalf("the class-0 upload: status = %d, want 200: %s", res.Code, res.Body.String())
 	}
-	if got := policy.take(); len(got) != 1 || got[0] != nil {
-		t.Fatalf("the refused legacy upload asked the policy about %v, want one nil class", got)
+	posted := uploadSeq(t, res)
+	legacy := posted + 1
+	if err := h.deps.Repo.PutAppMessage(context.Background(), store.AppMessageRow{
+		GroupID: h.groupID, Seq: legacy, Epoch: epoch, UploaderDevice: id.New(), Blob: []byte("ct"),
+		FrankingTag: make([]byte, 32), Size: 2, Created: 1, Class: nil,
+	}); err != nil {
+		t.Fatalf("seed the legacy row: %v", err)
 	}
-	row, err := h.deps.Repo.GetGroup(context.Background(), h.groupID)
-	if err != nil || row.Seq != seq {
-		t.Fatalf("after the refusal the group's seq is %d (%v), want %d: nothing stored", row.Seq, err, seq)
+	if row := h.catchUpRow(t, member, legacy); len(row) != 9 || !bytes.Equal(row[8], []byte{0xf6}) {
+		t.Fatalf("the legacy row has %d elements, the 9th %x; want 9, null (f6)", len(row), row[len(row)-1])
+	}
+	// Control: the class-0 row in the same catch-up.
+	if row := h.catchUpRow(t, member, posted); len(row) != 9 || !bytes.Equal(row[8], []byte{0x00}) {
+		t.Fatalf("the class-0 row has %d elements, the 9th %x; want 9, 00", len(row), row[len(row)-1])
 	}
 }
 

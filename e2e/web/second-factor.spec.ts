@@ -6,8 +6,9 @@
 // accessible name, with the copy keys of flow 10 (strings/{factor,factorSignin,factorSettings}.ts) through copy().
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, finishSignIn,
-  keyText, newAccount, nextButton, railNav, readRecoveryKey, signInToLoginStep, submitButton, test, type Account,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, finishWithKey,
+  keyField, keySubmit, keyText, newAccount, nextButton, readRecoveryKey, signInToKeyStep, submitButton, test, type Account,
+  settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -61,9 +62,9 @@ function secret(account: Account): string {
   return account.totpSecret;
 }
 
-/** Settings → Sign-in: the rail's settings button, then the section from the settings navigation. */
+/** Settings → Sign-in: the user panel's gear, then the section from the settings navigation. */
 async function openSignIn(page: Page): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  await settingsGear(page).click();
   const dialog = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })
@@ -73,9 +74,12 @@ async function openSignIn(page: Page): Promise<Locator> {
   return dialog;
 }
 
-/** A second browser's way to the login step: its own profile, the recovery key, then the login step. */
+/** A second browser's way to the code step: its own profile, the entry, then the username and the password. */
 async function toLogin(page: Page, account: Account): Promise<void> {
-  await signInToLoginStep(page, instance, keyText(account));
+  await page.goto('/welcome');
+  await expectHeading(page, COPY.connectTitle, { instance });
+  await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+  await expectHeading(page, SIGNIN.loginTitle, { instance });
   await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
   await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
   await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
@@ -151,20 +155,22 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
     }
   };
 
-  // 3. A second browser: the key, the login, the code, the shell.
+  // 3. A second browser: the login, the code, the key, the shell.
   await another(async (p) => {
-    await p.goto('/welcome');
-    await signInToLoginStep(p, instance, keyText(ada));
-    await finishSignIn(p, ada, instance);
+    await signInToKeyStep(p, ada, instance);
+    await finishWithKey(p, ada, instance, keyText(ada));
   });
 
-  // 4. A third: the key, the login, a backup code instead; the done step counts nine left.
+  // 4. A third: the login, a backup code instead, then the key; the done step counts nine left.
   await another(async (p) => {
     await toLogin(p, ada);
     await button(p, 'factorSignin.useBackup').click();
     await expectHeading(p, 'factorSignin.backup.title');
     await p.getByLabel(copy('factorSignin.backup.label'), { exact: true }).fill(ada.backupCodes[0] ?? '');
     await p.getByRole('button', { name: copy('signin.login.submit'), exact: true }).click();
+    await expectHeading(p, SIGNIN.keyTitle);
+    await keyField(p).fill(keyText(ada));
+    await keySubmit(p).click();
     await expectHeading(p, SIGNIN.doneTitle);
     await expect(p.getByText(copy('factorSignin.left.other', { count: 9 }), { exact: true })).toBeVisible({ timeout: WAIT });
     await p.getByRole('button', { name: copy(SIGNIN.doneNext), exact: true }).click();

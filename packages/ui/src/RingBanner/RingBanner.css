@@ -9,7 +9,7 @@
   .d-ring-banner__ring[data-ring="incoming"] .d-ring-banner__glyph { animation: d-ring-pulse var(--duration-pulse) ease-in-out infinite; }
 }
 @keyframes d-ring-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-ring-banner__actions { flex: 1 1 100%; justify-content: space-between; }
   .d-ring-banner__actions .d-btn { min-height: 2.75rem; min-width: 2.75rem; flex: 1 1 0; }
 }

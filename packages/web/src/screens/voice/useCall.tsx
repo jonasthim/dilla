@@ -31,6 +31,42 @@ export interface VoiceDeps {
   createCallContext?(): AudioContext | null;
 }
 
+type SelfValue = 'muted' | 'deafened' | null;
+const HELD_KEY = 'dilla.voiceSelfHeld';
+const RANK: Record<string, number> = { muted: 1, deafened: 2 };
+/** The more private of two own states: deafened over muted over none. */
+const morePrivate = (a: SelfValue, b: SelfValue): SelfValue => ((RANK[b ?? ''] ?? 0) > (RANK[a ?? ''] ?? 0) ? b : a);
+/**
+ * Final review m3: an in-call mute or deafen whose `voice.self` write the store refused is kept in this tab's
+ * sessionStorage as well as in memory, so a reload (the update banner, a version reload) resumes the call in the state it
+ * was in. It is read only toward privacy (`morePrivate`) and dropped as soon as a write is answered; a blocked storage
+ * keeps nothing, and then the stored setting alone speaks, as before.
+ */
+function readCarried(client: CoreClient): SelfValue {
+  const id = client.get('account')?.user?.id;
+  if (id === undefined) return null;
+  // eslint-disable-next-line no-restricted-globals -- the own mute is a per-tab privacy preference, not a key, token or secret
+  try { const v = sessionStorage.getItem(`${HELD_KEY}.${id}`); return v === 'muted' || v === 'deafened' ? v : null; } catch { return null; }
+}
+/**
+ * Keyed by the signed-in user's id: another account in the same tab never reads this one's held state (it reads none, so
+ * it starts from its own stored setting; no account known means nothing is carried or read, as before this fix).
+ */
+function carry(client: CoreClient, value: SelfValue): void {
+  const id = client.get('account')?.user?.id;
+  if (id === undefined) return;
+  // eslint-disable-next-line no-restricted-globals -- see readCarried
+  try { if (value === null) sessionStorage.removeItem(`${HELD_KEY}.${id}`); else sessionStorage.setItem(`${HELD_KEY}.${id}`, value); } catch { /* blocked storage: nothing carried */ }
+}
+
+/** Sign-out and wipe end in phase `cleared` (a revoked device in `revoked`): nothing of any account's held mute stays in the tab. */
+function dropAllCarried(): void {
+  try {
+    // eslint-disable-next-line no-restricted-globals -- see readCarried
+    for (const key of Object.keys(sessionStorage)) if (key.startsWith(HELD_KEY)) sessionStorage.removeItem(key);
+  } catch { /* blocked storage: nothing was carried */ }
+}
+
 let audio: AudioContext | null = null;
 /** One AudioContext for the sounds, made on first use; null where the browser has none. */
 function soundContext(): AudioContext | null {
@@ -122,6 +158,15 @@ export interface CallView {
   closeUnsupported: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
+  /**
+   * The user panel's mute and deafen (web3.8, R25). In a call they are `toggleMute`/`toggleDeafen`; outside one they write the
+   * device-local `voice.self` setting, which the next join starts in.
+   */
+  selfMute: () => void;
+  selfDeafen: () => void;
+  /** The own state the user panel shows: the session's in a call, else the `voice.self` setting (deafened counts as muted). */
+  selfMuted: boolean;
+  selfDeafened: boolean;
   toggleCamera: () => void;
   toggleShare: () => void;
   setVolume: (userId: string, volume: number) => void;
@@ -141,6 +186,10 @@ export interface UseCallOptions {
   stageShown(channelId: string): boolean;
   /** A community voice room closed during a known app upgrade may be opened again. */
   recoverEnded?(channelId: string): boolean;
+  /** The desktop shell shows the user panel, so Control/⌘+Shift+M and D also work outside a call (web3.8, pre-flight C-10). */
+  selfShortcuts?: boolean;
+  /** The shell's own polite announcer: outside a call there is no dock status region to say a mute or deafen. */
+  announce?(text: string): void;
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -194,6 +243,39 @@ export function useCall(o: UseCallOptions): CallView {
   const opener = useRef<HTMLElement | null>(null);
   const live = useRef(o);
   live.current = o;
+  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
+   *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
+   *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
+   *  claimed it. web3.8 MUTE: an in-call toggle whose write is refused is `held` instead: the session was in that state, so
+   *  a rejoin (after a disconnect) starts in it and the panel shows it, until a later write is answered. */
+  const written = useRef<{ seq: number; value: string | null; held?: true } | null>(null);
+  const writeSeq = useRef(0);
+  // A reload passes through `loading` with no user and must keep the held state, so only the end of an account clears it.
+  useEffect(() => client.subscribe('account', () => {
+    const phase = client.get('account')?.phase;
+    if (phase === 'cleared' || phase === 'revoked') dropAllCarried();
+  }), [client]);
+  /** web3.8 MUTE: the own mute or deafen as it stands now: the last press not yet answered (or held), else the stored setting.
+   *  The join starts in it, the session reads it again before it publishes and at connected, and the attach reconcile
+   *  reads it last; all three apply it only toward privacy. */
+  const selfNow = useCallback((): 'muted' | 'deafened' | null => {
+    const value = written.current !== null ? written.current.value : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
+    const stored: SelfValue = value === 'deafened' ? 'deafened' : value === 'muted' ? 'muted' : null;
+    return written.current !== null ? stored : morePrivate(stored, readCarried(client));
+  }, [client]);
+  /** web3.8 MUTE: push, not only pull. A starting session registers here (watchSelf) and is told of each press at once,
+   *  after `written` holds it, so selfNow already answers the new value. */
+  const selfWatchers = useRef(new Set<() => void>());
+  const watchSelf = useCallback((apply: () => void) => {
+    const entry = (): void => { apply(); };
+    selfWatchers.current.add(entry);
+    return () => { selfWatchers.current.delete(entry); };
+  }, []);
+  const pushSelf = useCallback(() => {
+    for (const apply of [...selfWatchers.current]) {
+      try { apply(); } catch { /* a session that throws keeps the pulls and the attach reconcile */ }
+    }
+  }, []);
 
   // WB a11y I3: the same text again (a second "You joined harbour.") is said again: the region is emptied first and the
   // text set a moment later, since setting identical text changes nothing a screen reader hears.
@@ -347,7 +429,11 @@ export function useCall(o: UseCallOptions): CallView {
           volumes: mod.volumesFromSettings(settings),
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
-          self: settings[SETTINGS.voiceSelf] === 'deafened' ? 'deafened' : settings[SETTINGS.voiceSelf] === 'muted' ? 'muted' : null,
+          self: selfNow(),
+          // web3.8 MUTE: a press while the start runs is pushed at once (watchSelf), and read again before the publish,
+          // after it and at connected.
+          selfNow,
+          watchSelf,
           ...(ctx !== null ? { audioContext: ctx } : {}),
         };
         handed = true;
@@ -391,7 +477,7 @@ export function useCall(o: UseCallOptions): CallView {
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach]);
+  }, [deps, client, attach, detach, selfNow, watchSelf]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
@@ -438,8 +524,16 @@ export function useCall(o: UseCallOptions): CallView {
   /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
   const keepSelf = useCallback((s: PageCall) => {
     const value = s.state.deafened ? 'deafened' : s.state.muted ? 'muted' : null;
-    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).catch(() => undefined);
-  }, [client]);
+    // web3.8 MUTE: kept in memory as well (the same ref as writeSelf), and still kept when the write is refused, so a
+    // rejoin after a disconnect starts in the state the session was in.
+    const mine: { seq: number; value: string | null; held?: true } = { seq: ++writeSeq.current, value };
+    written.current = mine;
+    pushSelf();
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(
+      () => { if (written.current === mine) { written.current = null; carry(client, null); } },
+      () => { if (written.current === mine) { mine.held = true; carry(client, value); } },
+    );
+  }, [client, pushSelf]);
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
     if (s === null) return;
@@ -456,6 +550,28 @@ export function useCall(o: UseCallOptions): CallView {
     keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
+  const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
+    const current = written.current !== null ? written.current.value ?? undefined : morePrivate(((client.get('settings') ?? {})[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried(client)) ?? undefined;
+    const value = pick(current);
+    const mine = { seq: ++writeSeq.current, value };
+    written.current = mine;
+    pushSelf();
+    const done = () => { if (written.current === mine) written.current = null; };
+    const answered = () => { if (written.current === mine) carry(client, null); done(); };
+    const key = value === 'deafened' ? 'voice.announce.deafened' : current === 'deafened' && value === 'muted' ? 'voice.announce.undeafened'
+      : value === 'muted' ? 'voice.announce.muted' : 'voice.announce.unmuted';
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(() => { answered(); live.current.announce?.(t(key)); }, done);
+  }, [client, pushSelf]);
+  const selfMute = useCallback(() => {
+    if (sessionRef.current !== null) { toggleMute(); return; }
+    // null -> muted -> null; from deafened, unmuting also undeafens (setMuted(false) in the session).
+    writeSelf(current => (current === 'muted' || current === 'deafened' ? null : 'muted'));
+  }, [toggleMute, writeSelf]);
+  const selfDeafen = useCallback(() => {
+    if (sessionRef.current !== null) { toggleDeafen(); return; }
+    // null or muted -> deafened; from deafened back to muted, never to an open microphone.
+    writeSelf(current => (current === 'deafened' ? 'muted' : 'deafened'));
+  }, [toggleDeafen, writeSelf]);
   const shareRefused = useCallback((e: unknown) => {
     const id = channelRef.current;
     const code = errorOf(e).code;
@@ -635,22 +751,39 @@ export function useCall(o: UseCallOptions): CallView {
     return () => clearTimeout(timer);
   }, [endText, channelId]);
 
-  // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice (decision 1); no single-key shortcut, and none during an IME
+  // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice, and on the desktop shell outside a call too (decision 1; the user panel advertises them); no single-key shortcut, and none during an IME
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
+  // Fail closed: a mute or deafen pressed while the join was starting is in `voice.self` but not in the session it started
+  // with (it read the setting before). When the session attaches, the more private of the two wins; never the other way.
+  // A deafen is applied as a mute first, then the deafen, so an undeafen keeps the microphone muted (R25: deafened goes back
+  // to muted, never to an open microphone). The session's own setMuted and setDeafened tell the others (voiceSelf).
   useEffect(() => {
     if (session === null) return;
+    const kept = selfNow();
+    if (kept === null) return;
+    if (!session.state.muted) session.setMuted(true);
+    if (kept === 'deafened' && !session.state.deafened) session.setDeafened(true);
+  }, [session, selfNow]);
+  const selfShortcuts = o.selfShortcuts === true;
+  useEffect(() => {
+    if (session === null && !selfShortcuts) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
       // WB a11y m1: the letter the key types (AZERTY's M is code Semicolon; Dvorak's physical M types another letter), as
       // Control/⌘+K matches e.key; the physical key only when the key types no letter at all.
       const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code === 'KeyM' ? KEY_M : e.code === 'KeyD' ? KEY_D : '';
-      if (letter === KEY_M) { e.preventDefault(); toggleMute(); }
-      else if (letter === KEY_D) { e.preventDefault(); toggleDeafen(); }
+      if (letter === KEY_M) { e.preventDefault(); selfMute(); }
+      else if (letter === KEY_D) { e.preventDefault(); selfDeafen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [session, toggleMute, toggleDeafen]);
+  }, [session, selfShortcuts, selfMute, selfDeafen]);
+  // web3.8 MUTE: an in-call toggle whose write was refused is what the next join starts in, so the panel shows it.
+  const kept = written.current?.held === true ? (written.current.value ?? undefined)
+    : morePrivate((o.settings[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried(client)) ?? undefined;
+  const selfMuted = state !== null && session !== null ? state.muted : kept === 'muted' || kept === 'deafened';
+  const selfDeafened = state !== null && session !== null ? state.deafened : kept === 'deafened';
 
   // The input mode follows Settings → Voice during a call (review I2): the session switches first (push to talk closes the
   // microphone at once), the dock says which mode is in force, and the key binds only to the mode the session applied.
@@ -713,6 +846,6 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

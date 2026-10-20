@@ -182,6 +182,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
 		// One upload meter for the attachment routes and PUT /v1/backups (security review F3).
 		UploadMeter: api.NewUploadMeter(o.Clock, o.Config.Blobs),
+		// The instance document's wire_versions, the gateway's hello list below (web3.8 S1).
+		WireVersions: o.WireVersions,
 	}
 	// GET /v1/instance publishes the external-sender public key, derived from the seed the
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
@@ -261,6 +263,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				presence.Changed(context.Background(), user)
 			}
 		},
+		// The hello offers wire 2 alone (web3.8 S1); GET /v1/instance advertises the same list.
+		WireVersions: o.WireVersions,
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
 		OnFactorOwed:      func(device id.ID) { cutFromCalls(context.Background(), device) },

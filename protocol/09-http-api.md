@@ -108,9 +108,9 @@ and write (`POST`, `DELETE`) buckets.
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:
 
-- `PATCH /v1/accounts/me` answers `501` with `E_INTERNAL` at wire 1. The body is still validated, so
-  a client learns immediately that its display name is refused, but there is nowhere to put the
-  result: the repository contract declares no profile update and `users` has no status column. The
+- `PATCH /v1/accounts/me` answers `501` with `E_INTERNAL` at wires 1 and 2. The body is still
+  validated, so a client learns immediately that its display name is refused, but there is nowhere
+  to put the result: the repository contract declares no profile update and `users` has no status column. The
   `204` lands when the store gains the method, and a client must not expect it before then.
 - `DELETE /v1/accounts/me` tombstones the account keeping its `username`, disables it, and deletes
   every session of every device with their sockets closed. It does **not** yet purge the credential
@@ -297,7 +297,7 @@ full contract.
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
-| backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
+| backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wires 1 and 2); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
 | voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}`, `GET /v1/channels/{id}/call` → `[group_id, call_id, participants]`, `GET /v1/communities/{id}/calls` → `[[channel_id, call_id, participants]]`, `POST /v1/calls/{call_id}/decline` `[expires_ts]` → `204` |
 | admin | `GET /v1/admin/diagnostics`, `GET /v1/admin/audit`, `POST /v1/admin/users/{id}/disable` |
@@ -418,10 +418,15 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   - a category never takes overwrites at creation (`400`);
   - the creator must still see the channel with the overwrites applied (`400` otherwise). The one
     exception to the rank rule makes this possible for a non-owner: a kind `1` entry naming the
-    creator themself, allowing only `view_channel` and denying none, is allowed; any other entry
-    on oneself takes the rank rule (`403`). Such an entry is an ordinary member overwrite
-    afterwards: it keeps the channel visible to its holder after a demotion, and goes with the
-    membership like every member overwrite (§ Roles).
+    creator themself, allowing `view_channel`, `send_messages` or both and denying none, is
+    allowed, provided the creator holds every bit it allows (`403` otherwise). Any other entry on
+    oneself, one that allows another bit or denies any, takes the rank rule (`403`). The exception
+    exists only at creation: a later overwrite `PUT` on oneself takes the rank rule as always.
+    Such an entry is an ordinary member overwrite afterwards. After a demotion it keeps only the
+    bits it allows (seeing the channel, posting in it) for its holder, and only while they still
+    hold `view_channel` community-wide (without it they hold no bit at all, § Permissions), until
+    someone who outranks them removes it; and it goes with the membership like every member
+    overwrite (§ Roles).
 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.
@@ -430,11 +435,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   a text channel whose overwrites deny `send_messages` to `@everyone` and allow it to each role
   chosen to post, and labels any text channel whose `@everyone` overwrite denies `send_messages`
   as one. The instance enforces it like any other overwrite (§ Readable channels, and `02` § Upload
-  class for an end-to-end encrypted one). Because an entry on oneself may only allow
-  `view_channel` and a role entry takes the rank rule, a creator who is neither the owner nor an
-  administrator keeps the right to post only through a chosen role they hold below their own
-  highest role. Once the member list is loaded, the client refuses the create without one; before
-  that it sends the create and the instance decides.
+  class for an end-to-end encrypted one). A creator who is neither the owner nor an administrator
+  keeps the right to post through a kind `1` entry on themself allowing `send_messages`, sent in
+  the create (the exception above), since the `@everyone` deny would otherwise take it and an
+  entry for their own role takes the rank rule.
 
 - A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
   with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
@@ -657,8 +661,8 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   deleted message still counts, so deleting and reposting does not reset the wait. Slow mode and
   `send_messages` apply to end-to-end encrypted posts too, through the upload class (`02` § Upload
   class): an end-to-end encrypted upload of class 1 (an edit, delete, reaction or pin) is neither
-  checked for `send_messages` nor slowed; a legacy two-element upload is checked for
-  `send_messages` whatever it carries, until web3.8.
+  checked for `send_messages` nor slowed; a two-element upload that names no class is refused
+  (`400 E_INVALID_REQUEST`) from wire version 2.
 - **Franking.** A readable envelope carries its `k_f` in the clear, so the instance computes `04`'s
   commitment `C` itself, unchanged. The tag `T` is `04`'s with two substitutions, because a
   readable channel has no MLS group: `channel_id` in place of `group_id`, and `0` for the epoch. The
@@ -777,7 +781,7 @@ object under `SHA-256(object)` in its blob store and cannot open it.
 | `PUT /v1/backups/{kind}/{chunk_seq}` | E | `[object(bstr)]` | `201 [blob_id(bstr 32), size(uint)]` when the user had no object of this kind, `200` with the same body when it was replaced or already held these bytes |
 | `GET /v1/backups` | E or P | — | `[[kind(uint), chunk_seq(uint), size(uint), created(uint)]]`, kind `0` first; `[]` when none |
 | `GET /v1/backups/{kind}/{chunk_seq}` | E or P | — | `[object(bstr), created(uint)]`; `404 E_NOT_FOUND` when none is stored |
-| `DELETE /v1/backups/{kind}/{chunk_seq}` | E | — | `501 E_INTERNAL`: not served at wire 1 |
+| `DELETE /v1/backups/{kind}/{chunk_seq}` | E | — | `501 E_INTERNAL`: not served at wires 1 and 2 |
 
 - **Shape.** `object` is a stored object of `06`, `[1, nonce(bstr 12), ciphertext(bstr)]` in
   deterministic CBOR with at least 16 bytes of ciphertext; anything else is `400 E_INVALID_REQUEST`.
@@ -1445,6 +1449,9 @@ The discovery document is an eleven-element array, in this order:
   external_sender_pub      ; bstr 32
 ]
 ```
+
+`wire_versions` is the list the gateway's `hello` offers, from the same value: `[2]` in this
+version (`02` § Gateway frames, op 0). `e2ee_versions` and `media_versions` are `[1]`.
 
 `external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
 instance's current external-sender signing key (`03-identity.md` § Instance keys): the entry of

@@ -1,8 +1,8 @@
 import { useId } from 'react';
-import { voiceStateWords, type VoiceParticipantView, type VoiceStateLabels } from '../CallTile/CallTile.tsx';
+import { voiceStateWords, VoiceStates, type VoiceParticipantView, type VoiceStateLabels } from '../CallTile/CallTile.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import './VoiceChannelRow.css';
-import { StateDot } from '../StateDot/StateDot.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface VoiceChannelRowProps {
   name: string;
@@ -23,8 +23,9 @@ export interface VoiceChannelRowProps {
 
 /**
  * A voice channel in the sidebar: one button (the only tab stop; inside a roving list its tab index is the list's)
- * named `voice {name}` and described by `{n} in voice`, then one text sub-row per person in it with their state
- * words, each a glyph plus a word; a bot also shows the bot tag and `can hear` (the brief's trust facts), so anyone
+ * named `voice {name}` and described by `{n} in voice` (its marker is the volume-2 icon), then one sub-row per person
+ * in it: the name, then their states in one non-wrapping line as named glyphs (muted, deafened, camera, screen,
+ * speaking), then the stream-state words (`connecting`, `not heard yet`, `unverified stream`); a bot also shows the bot tag and `can hear` (the brief's trust facts), so anyone
  * deciding whether to join sees it. Nobody in it: no count and no sub-rows. The row and its sub-rows are siblings, so the button stays the
  * first element of a list item (the roving lists find it there).
  */
@@ -36,7 +37,7 @@ export function VoiceChannelRow({ name, current, joined, participants, readable,
       <button type="button" className="d-voice-row" aria-label={labels.open.replaceAll('{name}', name)}
         aria-describedby={n > 0 ? countId : undefined} aria-current={current ? 'page' : undefined}
         data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} onClick={() => onOpen()}>
-        <span className="d-voice-row__glyph" aria-hidden="true"><StateDot tone={n > 0 || joined ? 'ok' : 'off'} /></span>
+        <span className="d-voice-row__glyph" aria-hidden="true"><Icon name="volume-2" size={16} /></span>
         <span className="d-voice-row__name">{name}</span>
         {readable === true ? <Tag kind="readable" /> : null}
         {n > 0 ? (
@@ -57,11 +58,7 @@ export function VoiceChannelRow({ name, current, joined, participants, readable,
                   {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
                 </>
               ) : null}
-              {voiceStateWords(p, labels.state).map(w => (
-                <span key={w.key} className="d-voice-row__state" data-state={w.key}>
-                  {' '}<span className="d-voice-row__glyph-state" aria-hidden="true">{w.glyph}</span>{w.text}
-                </span>
-              ))}
+              <VoiceStates words={voiceStateWords(p, labels.state)} prefix="d-voice-row" />
             </li>
           ))}
         </ul>

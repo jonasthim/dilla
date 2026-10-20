@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ReactNode } from 'react';
-import { AppShell } from './AppShell.tsx';
+import { useState, type ReactNode } from 'react';
+import { AppShell, type AppShellProps } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { ChannelList } from '../ChannelList/ChannelList.tsx';
 import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
@@ -53,7 +53,7 @@ const rowLabel = (c: { name: string; unread: number; mentions: number; muted: bo
 const itemLabel = (i: { name: string; unread: number; mentions: number }) =>
   i.unread === 0 && i.mentions === 0 ? i.name : t('shell.rail.itemLabel', { name: i.name, unread: i.unread, mentions: i.mentions });
 
-function Screen(p: { active?: string | null; servers?: { id: string; name: string }[]; main: ReactNode; reason?: string | null;
+function Screen(p: { resize?: Pick<AppShellProps, 'paneWidths' | 'onPaneResize' | 'resizeLabels'>; active?: string | null; servers?: { id: string; name: string }[]; main: ReactNode; reason?: string | null;
   banner?: ReactNode; status?: 'online' | 'connecting' | 'offline'; after?: ReactNode; tab?: 'channels' | 'dms'; badges?: boolean; dm?: boolean }) {
   const servers = p.servers ?? SERVERS;
   const active = p.active === undefined ? 'general' : p.active;
@@ -97,6 +97,7 @@ function Screen(p: { active?: string | null; servers?: { id: string; name: strin
           </StatusBar>
         }
         banner={p.banner}
+        {...p.resize}
       >
         {p.main}
       </AppShell>
@@ -160,3 +161,17 @@ export const DmPicker: Story = {
       </ul>
     </Dialog>} />,
 };
+
+// web3.8 (U2): the two borders can be dragged or keyed. The story holds the widths the app would keep. The copy is story text:
+// the shipped `pane.` strings come with the web wiring.
+function ResizableScreen() {
+  const [widths, setWidths] = useState<{ sidebar?: number; aside?: number }>({ sidebar: 288 });
+  return (
+    <Screen main={conversation} resize={{
+      paneWidths: widths,
+      onPaneResize: (pane, px) => setWidths(w => ({ ...w, [pane]: px ?? undefined })),
+      resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' },
+    }} />
+  );
+}
+export const Resizable: Story = { render: () => <ResizableScreen /> };

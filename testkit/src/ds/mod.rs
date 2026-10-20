@@ -56,14 +56,14 @@ pub trait DeliveryService {
     ) -> Result<CommitResult, DsError>;
     fn post_proposal(&mut self, g: &GroupId, epoch: u64, proposal: Vec<u8>)
     -> Result<u64, DsError>;
-    /// Row 7. `class` is the upload class (web3.7 SB1, protocol/02 § Upload class): `Some(0)` a
-    /// post, `Some(1)` anything else, `None` a legacy two-element upload.
+    /// Row 7. `class` is the upload class (web3.7 SB1, protocol/02 § Upload class): `0` a post,
+    /// `1` anything else. Every upload names one (web3.8 S1: the two-element body is refused).
     fn post_message_from(
         &mut self,
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
-        class: Option<u8>,
+        class: u8,
     ) -> Result<UploadResult, DsError>;
     fn messages(&mut self, g: &GroupId, from: u64) -> Result<Vec<MessageItem>, DsError>;
     fn welcomes(&mut self) -> Result<Vec<WelcomeItem>, DsError>;
@@ -282,9 +282,78 @@ mod tests {
         assert!(matches!(ds.ack_welcome(7), Err(DsError::NotFound)));
         // An upload that is not a PrivateMessage carries no commitment.
         assert!(matches!(
-            DeliveryService::post_message_from(&mut ds, &group, 0, vec![1, 2, 3], Some(0)),
+            DeliveryService::post_message_from(&mut ds, &group, 0, vec![1, 2, 3], 0),
             Err(DsError::CommitmentInvalid)
         ));
+    }
+
+    /// web3.8 S1: as on the instance, an upload without a class (the two-element body web3.7
+    /// accepted) is `400 E_INVALID_REQUEST`, before anything else is looked at. The control is the
+    /// same upload with class 0, which passes that check and meets the next one (no such group).
+    #[test]
+    fn the_stub_refuses_an_upload_without_a_class() {
+        let mut ds = DsStub::new(InstanceConfig {
+            instance_id: dilla_core::ids::InstanceId::from_bytes([0x11; 16]),
+            signing_key: [0x77; 32],
+            policy_version: 1,
+            k_frank: [0x09; 32],
+        });
+        let group = [0x44u8; 16];
+        let device = DeviceId::from_bytes([0xd1; 16]);
+        let Err(refused) =
+            ds.post_message_from(&group, 0, device, vec![1, 2, 3], Some([0x0c; 32]), None)
+        else {
+            panic!("an upload without a class was accepted");
+        };
+        assert!(
+            matches!(
+                &refused,
+                DsError::Remote { status: 400, code: "E_INVALID_REQUEST", detail }
+                    if detail == "body must be [epoch, private_message, class], got 2 elements"
+            ),
+            "{refused:?}"
+        );
+        // The contract's own post_message names no class either.
+        assert!(matches!(
+            ds.post_message(&group, 0, vec![1, 2, 3]),
+            Err(DsError::Remote {
+                status: 400,
+                code: "E_INVALID_REQUEST",
+                ..
+            })
+        ));
+        // S1 fix round 1 (m4): a class outside 0 and 1 is refused the same way, as DS.Upload does.
+        for class in [2u8, 255] {
+            assert!(
+                matches!(
+                    &ds.post_message_from(
+                        &group,
+                        0,
+                        device,
+                        vec![1, 2, 3],
+                        Some([0x0c; 32]),
+                        Some(class)
+                    ),
+                    Err(DsError::Remote { status: 400, code: "E_INVALID_REQUEST", detail })
+                        if detail == "class must be 0 or 1"
+                ),
+                "class {class}"
+            );
+        }
+        // Control: class 0 and class 1 pass the check and meet the next one (no such group).
+        for class in [0u8, 1] {
+            assert!(matches!(
+                ds.post_message_from(
+                    &group,
+                    0,
+                    device,
+                    vec![1, 2, 3],
+                    Some([0x0c; 32]),
+                    Some(class)
+                ),
+                Err(DsError::NotFound)
+            ));
+        }
     }
 
     /// No WebSocket TLS stack may enter the workspace: those crates pull licences the allow-list

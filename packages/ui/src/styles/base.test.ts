@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 const css = readFileSync(fileURLToPath(new URL('./base.css', import.meta.url)), 'utf8');
 
 // The no-zoom rules (Jonas, 2026-10-16; R10, R11): a field below 16px makes iOS zoom the page on focus.
-const NO_ZOOM = `@media (max-width: 47.99rem) {
+const NO_ZOOM = `@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
 }`;
 
@@ -28,13 +28,17 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: var\(--d-tabbar-h, 0px\); \}/);
   });
   it('starts the non-modal settings page below the ring, and pads the thread sheet composer once', () => {
-    expect(css).toMatch(/\[data-modeless\] \{[^}]*inset: calc\(var\(--d-vvtop, 0px\) \+ var\(--d-ring-h, 0px\)\) 0 auto 0;[^}]*- var\(--d-ring-h, 0px\)\)/);
+    expect(css).toMatch(/\[data-modeless\] \{[^}]*inset: calc\(var\(--d-vvtop, 0px\) \+ var\(--d-ring-h, 0px\) \+ var\(--d-banner-h, 0px\)\) 0 auto 0;[^}]*- var\(--d-ring-h, 0px\) - var\(--d-banner-h, 0px\)\)/);
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-app-shell__banner \{ position: relative; z-index: 21; \}/);
     expect(css).toMatch(/\.d-thread-pane\[data-phone\] \.d-composer \{ padding-bottom: 0\.5rem; \}/);
   });
   it('pads the phone grid, the ring and the aside by the landscape side insets', () => {
     expect(css).toMatch(/\[data-layout="phone"\] \.d-app-shell__grid \{[^}]*padding-left: env\(safe-area-inset-left\); padding-right: env\(safe-area-inset-right\)/);
     expect(css).toMatch(/__ring \{[^}]*padding-left: env\(safe-area-inset-left\)/);
     expect(css).toMatch(/__aside \{[^}]*padding-left: env\(safe-area-inset-left\)/);
+  });
+  it('a desktop aside grid has the panel area and no status row until a status bar is given', () => {
+    expect(css).toMatch(/__grid--aside \{[^}]*grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; \}/);
   });
   it('hides the list pane main with the hidden attribute winning over its flex display', () => {
     const shellCss = readFileSync(fileURLToPath(new URL('../AppShell/AppShell.css', import.meta.url)), 'utf8');

@@ -142,7 +142,7 @@ const REQUIRED_STEPS = {
   'rust-wasm-node': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',
     'bash scripts/install-ci-tool.sh wasm-pack',
-    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
+    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked --features vectors',
     // Ruling 40/task 26: lint wasm-only modules and typecheck the browser wrapper.
     'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings',
     '- run: rustup show active-toolchain',
@@ -228,6 +228,7 @@ const REQUIRED_STEPS = {
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
     'npm run typecheck -w @dilla/client-core',
     'npm run typecheck -w @dilla/web',
+    'npm run typecheck:e2e',
     'npm run build -w @dilla/web',
     'npm run -w @dilla/web test:dist',
     'npm run build:harness -w @dilla/client-core',

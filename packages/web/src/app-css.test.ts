@@ -11,9 +11,17 @@ const phone = /@container d-shell \(max-width: 47\.99rem\) \{([\s\S]*?)\n\}/.exe
 const rule = (block: string, selector: string) => new RegExp(`(^|\\n)\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(block)?.[2] ?? '';
 
 describe('the phone layout of voice (360 px)', () => {
-  it('I4: the dock is pinned to the bottom of the sidebar column, so it stays on screen while a text channel is read', () => {
+  it('web3.8 FX m1: no rule for a dock inside the sidebar is left (WS6 moved the dock to the shell\'s bottom area)', () => {
     expect(phone).not.toBe('');
-    expect(rule(phone, '.d-app-shell:not([data-layout="phone"]) .dw-sidebar > .dw-voice-dock')).toMatch(/position:\s*sticky;\s*bottom:\s*0/);
+    expect(css).not.toMatch(/\.dw-sidebar[^{,]*\.d[w]?-voice-dock/);
+    expect(css).not.toMatch(/:not\(\[data-layout="phone"\]\) \.dw-sidebar/);
+  });
+
+  it('web3.8 FX: the compact phone grid is the DM call\'s only; the voice stage keeps its own phone tiles', () => {
+    expect(rule(phone, '.dw-voice-stage .d-call-stage__tiles:not([data-tiles="stage"])')).toMatch(/grid-template-columns/);
+    expect(rule(phone, '.dw-voice-stage .d-call-tile:not([data-stage])')).toMatch(/padding: 0\.5rem/);
+    expect(css).not.toMatch(/\.dw-voice-stage \.d-call-stage__tiles \{/);
+    expect(css).not.toMatch(/\.dw-voice-stage \.d-call-tile \{/);
   });
 
   it('I5: no stage toolbar floats over the tiles: the controls are in normal flow', () => {
@@ -23,11 +31,31 @@ describe('the phone layout of voice (360 px)', () => {
   });
 });
 
-describe('the voice section rows (WB a11y m4 ruling)', () => {
-  it('paints the hover and current highlight on the item across both columns, not on the row button', () => {
-    expect(rule(css, '.dw-voice-section__item::before')).toMatch(/grid-column:\s*1 \/ -1/);
-    expect(css).toMatch(/\.dw-voice-section__item:has\(> \.d-voice-row\[aria-current="page"\]\)::before \{[^}]*inset 3px 0 0 var\(--accent\)/);
-    expect(css).toMatch(/\.dw-voice-section__item > \.d-voice-row\[aria-current="page"\] \{ background: transparent; box-shadow: none; \}/);
+describe('the desktop stage toolbar is pinned (web3.8, VOICE-W)', () => {
+  const stage = '.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage)';
+  it('fills the stage and sticks the toolbar to its bottom', () => {
+    // web3.8 WS7: the stage is as tall as its pane (not a minimum), so the tiles fill what the toolbar leaves.
+    expect(rule(css, `${stage} .d-call-stage`)).toMatch(/height:\s*100%;\s*min-height:\s*0;\s*box-sizing:\s*border-box/);
+    expect(rule(css, `${stage}`)).toMatch(/overflow:\s*hidden/);
+    expect(rule(css, `${stage} .d-call-stage__tiles[data-tiles="stage"]`)).toMatch(/flex:\s*1 1 auto;\s*min-height:\s*0/);
+    expect(rule(css, '.dw-voice-stage')).toMatch(/height:\s*100%/);
+    expect(rule(css, `${stage} .d-call-stage__controls`)).toMatch(/position:\s*sticky;\s*bottom:\s*0;\s*margin-top:\s*auto;\s*padding-block:\s*0\.5rem;\s*background:\s*var\(--bg\)/);
+  });
+});
+
+describe('a focused tile control clears the pinned toolbar (WCAG 2.4.11)', () => {
+  it('the stage scrolls a focused control above the toolbar', () => {
+    expect(rule(css, '.dw-voice-stage')).toMatch(/scroll-padding-bottom:\s*4\.5rem/);
+  });
+});
+
+describe('the one channel list (web3.8 item 12)', () => {
+  it('has no voice-section rules left, and the join and the "+" are 44 px targets on a phone', () => {
+    expect(css).not.toContain('dw-voice-section');
+    expect(css).not.toContain('dw-new-channel');
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join, \[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.d-channel-list__join, \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(rule(css, '[data-layout="phone"] .dw-channel-add')).toMatch(/min-width:\s*2\.75rem;\s*min-height:\s*2\.75rem/);
   });
 });
 

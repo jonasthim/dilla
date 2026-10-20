@@ -245,6 +245,9 @@ export async function harness(opts: HarnessOptions = {}) {
       fake.emit({ type: 'status', status: 'waiting', closeCode: null });
       fake.emit({ type: 'status', status: 'ready', closeCode: null });
     },
+    /** The socket goes down (and stays down until online()). */
+    offline: (): void => { fake.emit({ type: 'status', status: 'waiting', closeCode: null }); },
+    online: (): void => { fake.emit({ type: 'status', status: 'ready', closeCode: null }); },
     callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
     posted: (): Posted[] => [...posted],
     pushes: (t: FromWorker['t']): Posted[] => posted.filter((p) => p.message.t === t),
@@ -972,6 +975,146 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     w.gateway.push(voiceFrame(ME, VOICE, 0));
     w.gateway.push(voiceFrame(ME, VOICE, 1));
     expect(w.voiceSelfSent).toHaveLength(3);
+  });
+
+  // web3.8 VM: the instance refuses a voice_self that reaches it before the SFU lists the device, and the join transition
+  // may already have passed by then. While the own voice_state for that call lacks the self bits the last voice_self asked
+  // for, the worker sends it again: a few times per call, only while online.
+  it('a refused early voice_self is sent again when the own voice_state arrives without its bits', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+    // Another call's own voice_state, and a peer's in this call, never send it.
+    w.gateway.push(voiceFrame(ME, DM, 1));
+    w.gateway.push(voiceFrame(PEER, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(2);
+  });
+
+  it('no voice_self is sent again once the own voice_state carries its bits', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 3 });
+    // voice_state flags: bit 0 in_call, bit 1 self_mute, bit 2 self_deaf.
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2 | 4));
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2 | 4));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 3 }]);
+    // Bits that differ (only muted, not deafened) are sent again.
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 3 }, { callId: w.voice, flags: 3 }]);
+  });
+
+  it('a server that never takes the voice_self gets it at most three more times per call, and never while offline', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    for (let i = 0; i < 10; i++) w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(1 + 3);
+    // A new join of the call starts a new count.
+    w.gateway.push(voiceFrame(ME, VOICE, 0));
+    for (let i = 0; i < 10; i++) w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(1 + 3 + 3);
+    // Offline nothing is sent, and nothing is spent.
+    const v = await joined();
+    v.gateway.push(voiceFrame(ME, VOICE, 1));
+    await v.call({ m: 'voiceSelf', callId: v.voice, flags: 1 });
+    v.offline();
+    for (let i = 0; i < 5; i++) v.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(v.voiceSelfSent).toHaveLength(1);
+    v.online();
+    for (let i = 0; i < 10; i++) v.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(v.voiceSelfSent).toHaveLength(1 + 3);
+  });
+
+  // web3.8 MUTE: the worker never infers a voice_self from voice.self. The page's start reads the setting (and again before
+  // it publishes, and at connected); its attach reconcile sends the voice_self, and the re-send above delivers it. Page and
+  // worker therefore never disagree for a call.
+  it('a mute pressed while the join is starting sends nothing by itself: the page’s voice_self is what is sent and re-sent', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const held = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await held.reached;
+    await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
+    held.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
+    expect(w.ret(id)).toMatchObject({ ok: true });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([]);
+    // The page's reconcile says muted; the instance has not taken it yet, so the next own voice_state brings it again.
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+  });
+
+  it('a mute then an unmute around the in_call frame: nothing the page did not say reaches the others', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const held = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await held.reached;
+    await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
+    held.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    await w.call({ m: 'setSetting', key: 'voice.self', value: null });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([]);
+  });
+
+  it('a setting that did not change during the join sends nothing of its own', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
+    await w.call(JOIN(w));
+    await settled(w);
+    // The page started muted and says so itself; the worker adds nothing for a setting.
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
+    expect(w.voiceSelfSent).toEqual([]);
+  });
+
+  it('a voice_self made while offline is kept, and sent again when the own voice_state after the reconnect lacks it', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    expect(w.voiceSelfSent).toEqual([]);
+    w.online();
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
+    expect(w.voiceSelfSent).toHaveLength(2);
+  });
+
+  it('a voice_self made while offline is sent by the reconnect itself, once, from its own budget', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    // The normal re-send budget is spent by a server that never takes an earlier voice_self.
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    for (let i = 0; i < 5; i++) w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(1 + 3);
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 3 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    w.online();
+    // No own voice_state arrives after the reconnect: the reconnect sends it anyway.
+    expect(w.voiceSelfSent).toHaveLength(5);
+    expect(w.voiceSelfSent[4]).toEqual({ callId: w.voice, flags: 3 });
+    // Once: another reconnect sends nothing more.
+    w.offline();
+    w.online();
+    expect(w.voiceSelfSent).toHaveLength(5);
+  });
+
+  it('a voice_self made while offline for a call that ended meanwhile is not sent on the reconnect', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    await w.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
+    for (let i = 0; i < 40; i++) await settle();
+    w.online();
+    expect(w.voiceSelfSent).toEqual([]);
   });
 });
 

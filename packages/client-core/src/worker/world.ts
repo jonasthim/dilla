@@ -211,6 +211,8 @@ export const NOW_S = 1_700_000_000n;
 // refused ticket reaches the controller's HttpDeps.onRefusal as it does in the worker.
 export function world(opts: {
   phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number;
+  /** web3.8 C1 fix m3: the monotonic clock (deps.monotonic), apart from the wall clock `now`. */
+  monotonic?: () => number;
   owed?: boolean; realGateway?: boolean; WebSocket?: typeof WebSocket; httpTicket?: boolean;
   /** S2 review M5: getInstance through the real Routes and HttpClient over `fetch` (the bearer it sends is observable). */
   httpInstance?: boolean;
@@ -497,6 +499,7 @@ export function world(opts: {
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.monotonic ? { monotonic: opts.monotonic } : {}),
     ...(opts.WebSocket ? { WebSocket: opts.WebSocket } : {}),
     parts,
   });

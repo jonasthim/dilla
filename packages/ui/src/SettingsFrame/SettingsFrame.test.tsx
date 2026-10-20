@@ -84,6 +84,27 @@ describe('SettingsFrame', () => {
     expect(p.onClose).toHaveBeenCalledTimes(1);
   });
 
+  // web3.8 (N6): an Escape that ends an input-method composition belongs to the composition, and a bare <dialog> child
+  // (not a ui Dialog) owns its own Escape too.
+  it('an Escape that ends a composition does not close the frame, on a control inside it or at the document', () => {
+    const p = props({ children: <input aria-label="name" /> });
+    render(<SettingsFrame {...p} />);
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'name' }), { key: 'Escape', isComposing: true });
+    expect(p.onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'name' }), { key: 'Escape' });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('with focus in a bare <dialog open> child, a document Escape does not close the frame', () => {
+    const p = props({ children: <dialog open aria-label="bare"><button type="button">inside</button></dialog> });
+    render(<PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider>);
+    act(() => { screen.getByRole('button', { name: 'inside' }).focus(); });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(p.onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'inside' }), { key: 'Escape' });
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
   it('closes the native dialog when open flips to false, so the browser returns focus', () => {
     const close = vi.spyOn(HTMLDialogElement.prototype, 'close');
     const p = props();

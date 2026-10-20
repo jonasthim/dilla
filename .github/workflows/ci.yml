@@ -134,7 +134,7 @@ jobs:
           have=$(wasm-bindgen --version | awk '{print $2}')
           test "$want" = "$have" || { echo "wasm-bindgen-cli $have != crate $want"; exit 1; }
       - run: cargo test -p dilla-core --target wasm32-unknown-unknown --locked --features vectors
-      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked --features vectors
       # Ruling 40: native clippy never compiles the wasm-only modules (store.rs, probe.rs, facade.rs).
       - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
@@ -392,6 +392,7 @@ jobs:
       - run: npm run typecheck -w @dilla/core-wasm
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
       - run: npm run build -w @dilla/web
       - run: npm run test:noise-release
       # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.

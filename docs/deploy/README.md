@@ -292,9 +292,11 @@ sudo chown -R 65532:65532 ./data
 cp /path/to/deploy/compose.yaml .
 
 # One-shot init: creates the database, the instance keys, the TURN and LiveKit secrets and
-# data/dilla.toml, then prints the bootstrap invite link. It is printed once and stored nowhere.
+# the config file named by --config, then prints the bootstrap invite link. It is printed once and
+# stored nowhere. Without --config, init writes /etc/dilla/dilla.toml, which the image does not have.
 docker run --rm -v "$PWD/data:/var/lib/dilla" ghcr.io/jonasthim/dilla/dillad:latest \
-  init --data-dir=/var/lib/dilla --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
+  init --config=/var/lib/dilla/dilla.toml --data-dir=/var/lib/dilla \
+  --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
 
 # compose.yaml mounts ./dilla.toml; init wrote it into the data directory, owned 65532.
 sudo mv ./data/dilla.toml ./dilla.toml
@@ -382,13 +384,13 @@ sudo install -m 0644 deploy/dilla.service /etc/systemd/system/dilla.service
 sudo install -m 0644 deploy/dilla-media.service /etc/systemd/system/dilla-media.service
 sudo useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad
 
-sudo /usr/local/bin/dillad init --data-dir=/var/lib/dillad \
-  --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
-# init wrote /var/lib/dillad/dilla.toml; the unit reads /etc/dilla/dilla.toml.
 sudo install -d -m 0755 /etc/dilla
-sudo install -m 0640 -o root -g dillad /var/lib/dillad/dilla.toml /etc/dilla/dilla.toml
+sudo /usr/local/bin/dillad init --config=/etc/dilla/dilla.toml --data-dir=/var/lib/dillad \
+  --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
+# init wrote /etc/dilla/dilla.toml, which the unit reads (0600, owned by root until the next lines).
+sudo chown root:dillad /etc/dilla/dilla.toml
+sudo chmod 0640 /etc/dilla/dilla.toml
 sudo sed -i "s/mode = 'in_process'/mode = 'sidecar'/" /etc/dilla/dilla.toml
-sudo rm /var/lib/dillad/dilla.toml
 sudo chown -R dillad:dillad /var/lib/dillad
 
 sudo systemctl daemon-reload
@@ -397,6 +399,12 @@ sudo systemctl enable --now dilla
 sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml
 journalctl -o cat -u dilla | jq .
 ```
+
+`init` writes the config to the path in `--config` (default `/etc/dilla/dilla.toml`) and nowhere else. It refuses an
+existing config file unless you pass `--overwrite-config`, which replaces the file and never an instance: it always
+refuses a data directory that holds `dilla.db` (or a `dilla.toml` left by an older init). Every file `dillad` creates in
+the data directory is readable by its owner only (0600) and the directory is 0700, whatever the caller's umask; `serve`
+also tightens the modes of an existing install at its next start.
 
 Two directives are absent on purpose, and each has a comment in the unit:
 
@@ -444,7 +452,7 @@ What it does, in order:
    `sha256sum -c` before anything is installed. Any of these stops it: a mismatch, an empty
    `SHA256SUMS`, or one without a line for either asset.
 3. It installs the binary, the core beside it and the unit, and creates the `dillad` user.
-4. It runs `dillad init` and edits the `dilla.toml` it wrote for the mode. In both modes it sets
+4. It runs `dillad init --config=/etc/dilla/dilla.toml` and edits that file for the mode. In both modes it sets
    `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
    - `--behind-proxy` sets:
      - `tls.mode = "behind_proxy"` and `tls.agreed = false`;
@@ -457,7 +465,7 @@ What it does, in order:
      `--node-ip`, `livekit.node_ip`. `--no-media-ip` installs without either, but then calls cannot
      reach the SFU from outside the host until you set `livekit.node_ip`.
    - `--public`: init's `acme_tls_alpn`, as in the manual steps above.
-5. It moves the file to `/etc/dilla/dilla.toml` (0640 root:dillad) and sets `/var/lib/dillad` to
+5. It sets `/etc/dilla/dilla.toml` to 0640 root:dillad and `/var/lib/dillad` to
    0700. Then it checks the file with dillad's own config check (`dillad doctor`'s `config` leg)
    and refuses to start a file dillad would refuse.
 6. It runs `systemctl enable --now dilla` and then `dillad doctor`, whose report goes to stderr.
@@ -768,6 +776,38 @@ writes a `user.factors_reset` audit row, all in one transaction. A bot account a
   closes no socket itself; the serving process notices the owed account on its next liveness tick and closes the
   connection. The heartbeat interval is `gateway.heartbeat_interval` (30 s by default).
 
+### Changing the instance domain
+
+Moving an instance to a new address is a configuration change with consequences for people. Read them before you start.
+
+- **Passkeys.** A passkey is bound to `auth.webauthn.rp_id`, so after the change no existing passkey works. Every
+  account then signs in with its password plus an authenticator code or a backup code, and can register a new passkey in
+  Settings → Sign-in. An account whose only factor was a passkey needs a backup code, or an operator
+  `dillad admin user reset-factors` ([above](#a-person-has-lost-their-factor-dillad-admin-user-reset-factors)). At the
+  next start `dillad serve` marks such accounts as owing a factor.
+- **Browsers.** The browser store is per origin, so every browser starts fresh at the new address. Signing in there
+  needs the password, the second factor and the recovery key. Messages from before the move are not shown in a browser
+  that joins after it.
+- **Invites.** Links on the old domain stop working; make new ones.
+- **A disposable instance** can be wiped and initialised again instead.
+
+**The keys to change in `/etc/dilla/dilla.toml`.** `dillad init` writes the values it derives from the domain out
+explicitly (`internal/config/defaults.go`), so changing `[instance] domain` alone changes none of them. Edit each:
+
+- `[instance] domain`.
+- `[auth.webauthn]`: `rp_id`, `rp_origins` (`https://<new domain>`, plus any `[http] trusted_origins` entry that names the
+  old origin) and `rp_display_name`.
+- `[auth.totp] issuer`. This is cosmetic: existing authenticator entries keep the old label, and their codes still work.
+- `[auth.oidc] redirect_url`, if OIDC is used.
+- `[turn] realm` and `[livekit] stun_servers` (`<new domain>:3478`), which init derives from the domain too.
+- DNS for the new name. In the `acme_*` modes the certificate follows the new name.
+
+**The check.** Restart, then run `dillad doctor --config=/etc/dilla/dilla.toml`. The `webauthn` leg reads
+`rp_id <new domain>, N origins` with status OK. A WARN or FAIL there names the key to fix.
+
+This cannot be undone for passkeys. Moving back to the old domain does not bring back the passkeys registered on the
+new one, and putting the old `rp_id` back brings back only the ones registered under it.
+
 ### Client data version per release
 
 The web client keeps its data in the browser, in a store with a schema number. A client refuses a store whose number
@@ -781,6 +821,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.5 | 4 | 16 | Three additive tables in the browser store |
 | web-3.6 | 4 | 17 | A client now refuses a store newer than it knows; migration `00017_second_factor` |
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
+| web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
@@ -821,6 +862,21 @@ reload their tabs.
 
 To go back to web-3.6 run the rollback by hand above with `--to=17`. Going down from 18 to 17 drops the `class` column and
 the `slowmode_marks` table and keeps every message. The browser side is one-way, as in the table above.
+
+### Upgrading to web-3.8: wire version 2
+
+web-3.8 adds no migration and no browser-store change. The instance now offers **wire version 2 only**, and the browser
+client identifies with it: a client from web-3.7.x or earlier is refused with `E_VERSION` (close 4006), and an upload in the
+old two-element form is refused with `400 E_INVALID_REQUEST`. `/v1/instance` lists `wire_versions [2]`.
+
+What people see: a tab left open from before the upgrade shows "needs a newer client" with a **Reload**, which keeps the
+draft. Nothing is lost silently, but ask people to reload their tabs, and tell them that any tab loaded from web-3.7 or
+earlier cannot work until it does.
+
+When you check that the served client files all load, skip one name: `dilla_core_wasm_bg.js`, which appears inside the
+client chunk, is the name of the wasm module's import (`WebAssembly.Module.imports` lists only
+`./dilla_core_wasm_bg.js`), not a file. Nothing fetches it, and it is not on the server, so a 404 check for it is a false
+alarm.
 
 ## Capacity
 

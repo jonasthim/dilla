@@ -5,7 +5,7 @@
 // copy keys of flow 08 (strings/{admin,members,moderation}.ts) through copy().
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  TEST_TIMEOUT, WAIT, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
+  TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
   signUp, test, channelRow, expectComposerReady,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -105,14 +105,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
   await expectComposerReady(page, 'general');
 
   // 2. Ada makes an invite; Björn signs up through it in a browser of his own.
-  await button(page, 'invite.open').click();
-  const inviteDialog = dialogOf(page, 'invite.title', { server: SERVER });
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  await expect(linkField).toBeVisible({ timeout: WAIT });
-  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  const link = await linkField.inputValue();
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const link = await makeInviteLink(page, SERVER);
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
@@ -225,6 +219,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');
     await expect(nav).toHaveText([copy('admin.nav.invites'), copy('admin.nav.leave')]);
+    // WS8: the sidebar has no leave button; leave is a section of server settings.
+    await expect(page2.locator('.d-channel-list').getByRole('button', { name: copy('admin.leave.open'), exact: true })).toHaveCount(0);
     await navItem(mine, 'admin.nav.leave').click();
     await expect(button(mine.locator('.dw-settings-section'), 'admin.leave.open')).toBeVisible();
 

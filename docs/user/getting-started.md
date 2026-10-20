@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-16 ("web-3.7"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-17 ("web-3.8"): starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -45,12 +45,13 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    also has a voice channel called general. You are its owner.
 
 The server rail now has two dashed tiles under your servers. **join** (an arrow into a bracket) is "join a server",
-for an invite someone sent you. **new** (a plus) is "new server". Under the server's name sit its actions:
-**+ channel** ("new channel", only for the owner) and **invite link**.
+for an invite someone sent you. **new** (a plus) is "new server". Beside the server's name sits a gear, **server settings**,
+and the owner has a **+** ("new channel") at the top of the channel list. Invite links are made in server settings,
+under **invites** ([Invite people](#invite-people)).
 
-![The rail and the top of the sidebar: the tile MC for Midgard Crew, the tile join with an arrow into a bracket,
-the tile new with a plus, the settings tile, and beside them Midgard Crew with the buttons + channel and invite
-link](screenshots/create-rail.png)
+![The rail and the top of the sidebar: the tile MC for Midgard Crew, the tile join with an arrow into a bracket and
+the tile new with a plus, and beside them Midgard Crew with the gear for server settings, and the + of the channel
+list](screenshots/create-rail.png)
 
 At phone width the empty app and the dialog look like this:
 
@@ -72,23 +73,22 @@ If the server is not created, the name field says why:
 
 ## Invite people
 
-Anyone in a server can make an invite link to it. Press **invite link** under the server's name. The dialog "Invite
-people to {server}" says "Making an invite link…", then shows the link and copies it for you:
+Anyone whose roles allow it can make an invite link to a server; by default that is every member. Press **server
+settings** under the server's name. It opens on the first section you may use, so a member who may only invite lands
+on **invites**. Choose "Expires after" and "Max uses" (7 days and 10 uses to start with) and press **Make link**. The
+dialog "Invite people to {server}" says "Making an invite link…", then shows the link and copies it for you:
 
-![The dialog "Invite people to Midgard Crew": the invite link in a field, the button copy link, "It can be used 10
-times and expires in 7 days. Anyone who has it can join Midgard Crew." and "Invite link copied."](screenshots/create-invite-desktop.png)
+![The dialog "Invite people to Midgard Crew" over server settings, under invites: the invite link in a field, the
+button copy link, "Expires after: 7 days. Max uses: 10 uses." and "Invite link copied."](screenshots/create-invite-desktop.png)
 
-- "It can be used 10 times and expires in 7 days. Anyone who has it can join {server}." Send it only to the people
-  you want in the server.
+- The dialog repeats what you chose ("Expires after: 7 days. Max uses: 10 uses.") and that "The server keeps only a
+  fingerprint of each link, so a link cannot be shown again. Make a new one to share." Send the link only to the
+  people you want in the server.
 - "Invite link copied." means it is on your clipboard. If the browser did not let the page copy it, the dialog says
   "This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself."
-  Selecting the field selects the whole link. When the instance takes more than about a second to answer, the
-  dialog shows the link without copying it, because the browser no longer counts your press: press **copy link**.
+  Selecting the field selects the whole link.
 - Each person who joins with the link uses it once, whether they sign up through it or already have an account. So
-  one link brings in up to ten people.
-- Opening the dialog again, or for another server and then back, shows the same link for that server while more than
-  a day of it is left; the days in "expires in {days} days" count what is left. After a reload, or with a day or
-  less left, the dialog makes a new link.
+  a link of 10 uses brings in up to ten people. Every press of **Make link** makes a new link.
 - "You cannot invite people to this server." or "Could not make an invite link ({code})." means no link was made;
   **Try again** asks again.
 
@@ -104,17 +104,22 @@ browser joined are not shown." Everything sent after that reaches them.
 
 ## Add a channel
 
-Only the server's owner can add channels for now. Press **+ channel** ("new channel") under the server's name.
+The owner, and anyone whose roles let them manage channels, sees a **+** ("new channel") at the top of the channel
+list. It is there on the **channels** tab of a wide window and in the phone's servers list, never on **direct
+messages**, and a person who may not manage channels has no **+**. Press it.
 
-![The dialog "New channel in Midgard Crew": Kind with text selected and voice, Channel name loot, "Shown as #loot.
-Up to 100 characters (fewer for some letters)." and the buttons Close and Create](screenshots/create-channel-desktop.png)
+![The dialog "New channel in Midgard Crew", opened from the + in the channel list: Kind with text selected, then voice
+and announcement, Channel name loot, "Shown as #loot. Up to 100 characters (fewer for some letters)." and the buttons
+Close and Create](screenshots/create-channel-desktop.png)
 
-1. Under "Kind", choose **text** or **voice**. The arrow keys move between them.
+1. Under "Kind", choose **text**, **voice** or **announcement** ([Announcement channels](#announcement-channels)). The
+   arrow keys move between them. **private channel** keeps the channel to the owner, administrators and the roles you
+   tick ([Private channels](#private-channels)).
 2. Type a name under "Channel name". The line under the field shows how it will look: "Shown as #{name}. Up to 100
    characters (fewer for some letters)." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
    "Fika på Fredag" becomes `#fika-på-fredag`. A voice channel keeps the name as you typed it.
 3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field and says
-   "nothing here yet."; a new voice channel is listed under "voice".
+   "nothing here yet."; a new voice channel is listed among the others, in the server's order.
 
 The dialog does not add a second channel of the same kind and name. If the name is taken, it says "There
 is already a text channel called #{name}. Try another." (or "There is already a voice channel called {name}. Try
@@ -135,17 +140,26 @@ whose roles allow it; the owner can do everything here.
 
 ### Server settings
 
-Press **server settings** under the server's name. The dialog "Server settings" has a list of sections
+Press the gear (**server settings**) beside the server's name. The dialog "Server settings" has a list of sections
 ("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
-**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The last section differs: a
-non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
-list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
+**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The dialog opens on the
+first section you may see. The last section differs: a
+non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Leaving a server
+lives here, not in the sidebar. Tab stops once on the list and once on the section; Escape closes the dialog and focus
+goes back to the gear.
 
 **Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
 a name.", "That name is too long. A server name is up to 255 characters (fewer for some letters).", "That name was refused. Try another.", "You
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
-time. Check the name and save again.", look at the name that is there now and save again.
+time. Check the name and save again.
+
+Under the name, **Overview** also holds "AFK channel": choose an existing voice channel as the "AFK destination" and
+a "Move after" time (1, 5, 15, 30 or 60 minutes), then **Save AFK settings** ("AFK settings saved."). "Idle people in
+voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel."
+The server moves a device that has had no keyboard, pointer, touch or microphone speech for that long; quiet listening
+counts as idle. The AFK channel shows "{n} in AFK" and has **Move to AFK** and **Leave AFK** for doing it by hand
+([Voice, calls and media files](voice.md#afk-channels)).", look at the name that is there now and save again.
 
 **Channels** lists the channels under their categories ("no category" holds the rest). Each row has **edit**, **move
 up**, **move down** and **delete**; the screen announces "{name} moved." after a move.
@@ -164,7 +178,7 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
 a number), then **Make link**. "An invite lasts at most 30 days and admits at most 1000 people." The new link shows
 as in [Invite people](#invite-people). The list under it has one row per live link: "by {name}, {used} of {max}
 uses, expires {date}", with **revoke**. "Invite link revoked." means people can no longer join with it. An empty list
-says "No live invite links."
+says "No live invite links." **Invites** is open to everyone whose roles allow them to invite, not only to the owner.
 
 Invite links cannot be shown again. "The server keeps only a fingerprint of each link, so a link cannot be shown
 again. Make a new one to share." Copy a link when you make it; if it is lost, revoke it and make another.
@@ -202,7 +216,7 @@ kicking." (and the same for banning), or "{name} is no longer in {server}."
 
 ### Leave, hand over and delete
 
-Anyone but the owner can leave: **leave server** asks "Leave {server}?", "You leave every channel and call of
+Anyone but the owner can leave: open the gear beside the server's name, then **leave server** in the list of sections. It asks "Leave {server}?", "You leave every channel and call of
 {server}. To come back you need an invite." and says "You left {server}." The owner sees "You own {server}, so you
 cannot leave it. Hand it to another member or delete it."
 
@@ -477,11 +491,11 @@ codes is the instance's setting (10 unless the operator changed it).
 
 ### Signing in on a new browser
 
-[Section 6](#6-use-your-account-in-a-second-browser) is the whole sign-in. In short, after the recovery key and your
-username and password, step 3 asks for the factor you set up:
+[Section 6](#6-use-your-account-in-a-second-browser) is the whole sign-in. In short, after your username and password,
+step 2 asks for the factor you set up, and the recovery key comes last, as step 3:
 
 - an authenticator app: the six-digit code;
-- a passkey: the browser asks for it on **Use passkey**. Under the password field of step 2 there is also
+- a passkey: the browser asks for it on **Use passkey**. Under the password field of step 1 there is also
   **Sign in with a passkey**, which takes a passkey instead of the password. If the passkey did not check that it is
   you, the instance also asks for your code;
 - a backup code: **Use a backup code instead**, instead of the code or the passkey. It works once, and the last
@@ -516,7 +530,7 @@ There are three ways back, in this order of ease:
 
 1. **A browser that is still set up.** Open Settings → Sign-in there, add a new authenticator app or passkey, then
    remove the old one.
-2. **A backup code.** On the new browser, step 3 of the sign-in has **Use a backup code instead**. Then add a new
+2. **A backup code.** On the new browser, step 2 of the sign-in has **Use a backup code instead**. Then add a new
    factor in Settings → Sign-in and make new backup codes.
 3. **The operator.** Ask whoever runs {instance} to reset your second factor. They check that it is you before they
    do (by a means other than dilla), and the reset removes your authenticator app, passkeys and backup codes.
@@ -536,15 +550,19 @@ after the upgrade to see what the account holds, and make new backup codes if yo
 ## 1. Open the invite
 
 An invite is a code or a link. A link to an instance looks like `https://chat.example.org/i/<code>`.
-Opening it shows a plain page from the instance:
+Opening it shows a page from the instance, in the light or dark scheme your browser asks for:
 
-![The invite page: "You have been invited to dilla.test", the server Midgard Crew, the code and the
-link "Open dilla in this browser"](screenshots/invite-landing.png)
+![The invite page in the dark scheme: "You have been invited to Midgard Crew on dilla.test", the invite code, when it
+expires and how many uses are left, and the button "Open dilla in this browser"](screenshots/invite-landing.png)
 
-It names the instance, the server the invite is for (the page calls it a community), the code, how long
-the invite is valid and how many more times it can be used. It never asks for a password. Opening the page
-does not use the invite. **Open dilla in this browser** starts the sign-up with the code filled in. You can
-also go to the instance's address and paste the code or the whole link in the first step.
+![The same page in the light scheme](screenshots/invite-landing-light.png)
+
+It names the server the invite is for (the page calls it a community) and the instance, and shows the code, when the
+invite expires and how many more times it can be used ("Expires on {date} (UTC) · {n} uses left"). The page has no
+form and no script; it never asks for a password ("This page never asks for a password."). Opening the page does not
+use the invite. **Open dilla in this browser** starts the sign-up with the code filled in. "Or paste the code into a
+dilla client for {instance}." You can also go to the instance's address and paste the code or the whole link in the
+first step.
 
 ## 2. Sign up: six steps
 
@@ -571,7 +589,7 @@ invite is expired, used up or unknown. Ask for a new one." An instance that take
 - **Display name (optional)**: "Up to 64 characters. Your username is shown when this is empty." This is
   the name shown on your messages.
 - **Password**: only when the instance offers passwords. "At least 8 characters." Keep it: a second browser
-  asks for this password, your recovery key and the code of your second factor.
+  asks for this password, the code of your second factor and, last, your recovery key.
 
 Going forward from this step makes your keys. That can take a moment ("Making your keys").
 
@@ -597,7 +615,7 @@ Tick "I have written down or printed my recovery key" to continue ("Tick the box
   browser."
 - "Clearing this site’s data removes the key and the messages kept here, and this browser stops being your
   device."
-- "To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it."
+- "To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it."
 - "A private window forgets all of this when it closes."
 
 **Create account** creates the account on the instance ("Creating your account on {instance}…").
@@ -670,28 +688,74 @@ From left to right:
 
 - **The server rail.** One tile per server you are in, with its initials, then two dashed tiles. **join** (an
   arrow into a bracket) is "join a server": paste a server invite ("A server invite, as a code or a link.") and
-  press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). The last tile is
-  "settings"; a number on a server tile counts its unread channels.
-- **The channel list.** The server's name, its actions (**invite link** for everyone, **+ channel** for the
-  owner, and **server settings**; see [Invite people](#invite-people), [Add a channel](#add-a-channel) and [Run your
-  server](#run-your-server)) and its channels. Text channels
-  open here. Voice channels are
-  listed under "voice" and open the voice channel ([Voice, calls and media files](voice.md)); while you are in
-  a call, its dock sits above your user panel. Channels the server can read ("Readable by this server") are
-  listed, and selecting one shows "This channel does not open here yet". The "channels" and "direct messages" tabs switch the list; an unread channel has
-  a badge, and mentions have their own count. Opening a channel marks it read.
+  press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). A number on a server tile
+  counts its unread channels. The rail has no settings button: settings are behind the gear in [the user
+  panel](#the-user-panel).
+- **The channel list.** The server's name with a gear beside it, **server settings** (leave server is a section in
+  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), the "channels" and "direct
+  messages" tabs and the channels, with a **+** at the top for people who may manage channels ([Add a
+  channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
+  list](#one-channel-list)) and open the voice channel ([Voice, calls and media files](voice.md)). Channels the
+  server can read ("Readable by this server") are listed, and selecting one shows "This channel does not open here
+  yet". An unread channel has a badge, and mentions have their own count. Opening a channel marks it read.
 - **The conversation.** The channel's name and topic at the top, the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag when it
   was sent from a browser, and the time. A message is at most 4000 bytes; in the last 400 the field shows
   how many are left. While a message is on its way it shows "sending…"; one that could not be sent shows "not sent" with
   **retry** and **discard**.
-- **The status bar.** `node` is the instance, `link` is the connection (online, connecting or offline) and
-  `gen` is the instance's generation number. When the connection drops, a banner says "Connection lost.
-  Reconnecting…". A phone has no status bar; see [On your phone](#on-your-phone).
+- **The side panel.** The member list, a thread or the pins, in a column on the right while the window is wide.
+- **There is no status bar.** The instance, the connection and the generation number are in [Settings →
+  Diagnostics](#diagnostics). When the connection drops, a line at the top of the app says "Offline. Reconnecting…",
+  or "Connecting to {node}…" while it comes back, and goes away when the link is back.
+
+![The app while the connection is down: a line at the top says "Offline. Reconnecting…" above the whole
+app](screenshots/link-offline-desktop.png)
 
 At phone width the app is arranged differently, with a tab bar at the bottom ([On your phone](#on-your-phone)):
 
 ![The same conversation at 360 pixels wide](screenshots/shell-phone.png)
+
+### Desktop layout
+
+![The app with the channel list dragged wider: the border between the channel list and the conversation, and the
+conversation narrower](screenshots/panes-resized-desktop.png)
+
+Drag the borders between the channel list, the conversation and the side panel to give a pane more room. The same
+works with the keyboard: Tab to a border (it is named "resize the channel list" or "resize the side panel"), then
+press Arrow Left or Arrow Right (1 rem a press, 4 rem with Shift), Home or End for the smallest or largest width, or
+Enter to reset it. A double-click on a border resets it too. The conversation never gets narrower than 24 rem. The
+side panel has a border only while it is a column, which is when the window is at least 64 rem wide; narrower than
+that it opens over the conversation. The widths are kept in this browser only, not in your account.
+
+### One channel list
+
+![The channel list with a live voice channel: harbour with three people nested under it, and the call panel and the
+user panel at the bottom left](screenshots/voice-dock-desktop.png)
+
+Text and voice channels are in one list, in the order the server gives them (and its categories). A voice channel has
+a speaker icon. While people are in it, it shows how many, and the people in the call are listed under it, each with
+small icons for what they are doing (muted, deafened, camera, screen share and speaking; point at an icon for its
+name). There is no separate "voice" section and no "active voice" list. Pressing a voice channel opens it; the join
+button is on its screen ([Voice, calls and media files](voice.md)).
+
+### The user panel
+
+The bottom left of the app is yours, across the rail and the channel list:
+
+- your name and username;
+- **mute** and **deafen**. Outside a call they decide how your next call starts: press **mute** and you join muted,
+  press **deafen** and you join deafened. In a call they act on the live microphone and on what you hear
+  ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
+  press them, in a call or out of one;
+- **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
+- **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose Online, Idle, Do Not Disturb or Invisible; there is no status select in the sidebar. It follows your account to your other devices. Online
+  becomes Idle after ten minutes without activity on any of your connected devices (a status you chose yourself
+  stays). Do Not Disturb stops desktop notifications and the ring sound on every device; messages, badges and the
+  in-app banner for a call still show. Invisible hides your status from other members, though not that you are typing
+  or in a call. The member list groups people by role and shows who is online; offline and invisible people sit
+  together at the bottom, and the headings of roles shown apart carry the role's colour.
+
+While you are in a call, [the call panel](voice.md#the-call-panel) sits above the user panel.
 
 ### Keyboard
 
@@ -701,11 +765,11 @@ At phone width the app is arranged differently, with a tab bar at the bottom ([O
 | Shift+Enter | Starts a new line in the message |
 | Alt+Arrow Up, Alt+Arrow Down | Opens the previous or next channel, from anywhere in the app |
 | Escape | In the message list: back to the message field. In a dialog: closes it |
-| Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the channel header, the messages, the message field, the status bar |
-| Arrow keys | Move within the server rail (your servers, then join, then new server, then settings) and the channel list, which are one Tab stop each |
+| Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the border between the channel list and the conversation, the user panel (with the call panel above it, in a call), the channel header, the messages, the message field |
+| Arrow keys | Move within the server rail (your servers, then join, then new server) and the channel list, which are one Tab stop each. On a border between panes they resize it ([Desktop layout](#desktop-layout)) |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
 | Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
-| Control/⌘+Shift+M, Control/⌘+Shift+D | In a call: mute or unmute, deafen or undeafen ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
+| Control/⌘+Shift+M, Control/⌘+Shift+D | Mute or unmute, deafen or undeafen: in a call, or before one to set how the next call starts ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
 
 The sidebar tabs are one more Tab stop. Arrow Left and Arrow Right switch between "channels" and "direct messages".
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
@@ -723,24 +787,27 @@ a channel's history starts when this browser joined it.
 
 ## On your phone
 
-On a screen as narrow as a phone's (under about 770 pixels wide) the app shows one thing at a time, with four tabs
-at the bottom. It works in the phone's browser; there is no separate app.
+On a screen as narrow as a phone's (under about 770 pixels wide), and on a phone held sideways, the app shows one thing
+at a time, with four tabs at the bottom. It works in the phone's browser; there is no separate app.
 
-![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, the voice channels below, and the four tabs at the bottom](screenshots/phone-servers.png)
+![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, with the voice channels in the same list and a join voice button on each, and the four tabs at the bottom](screenshots/phone-servers.png)
 
 ### The four tabs
 
 The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A number on a tab counts what is new there
 ("{name}, {count} new" for a screen reader).
 
-- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **server
-  menu** (the three dots) has the server's actions (invite link, new channel, server settings).
+- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **search**
+  (a magnifier) and the gear for **server settings** sit beside the server's name; there is no menu. A member leaves
+  a server from the gear, under **leave server**. The **+** for a new channel is at
+  the top of the channel list, for people who may manage channels, and invite links are made in server settings,
+  under invites.
 - **DMs** lists your direct messages.
 - **activity** lists the mentions and direct messages that came in, and "unread elsewhere" for channels with
   something new. It lists what arrived since you opened dilla in this tab, and says so: "Since this tab opened."
   Nothing new says "Nothing new. Mentions and direct messages show up here."
-- **you** holds this device's facts, the connection and the number of devices (what the status bar of a wide screen
-  shows), **settings** and **sign out and remove this browser**.
+- **you** holds this device's facts, the connection and the number of devices (what Settings → Diagnostics shows on
+  a wide screen), your status, **settings** and **sign out and remove this browser**.
 
 ![The activity tab: a direct message from Ada, the unread #loot under "unread elsewhere" and "Since this tab opened."](screenshots/phone-activity.png)
 
@@ -766,6 +833,16 @@ call is, and three buttons: the wide one **open the call in {where}**, **mute** 
 pixels tall and wide. See [Voice, calls and media files](voice.md#on-a-phone).
 
 ![The call bar above the tab bar: the call in harbour, mute and leave](screenshots/phone-callbar.png)
+
+### Sideways, Safari and sharing
+
+- **A phone held sideways** gets the phone layout too: one thing at a time, the four tabs, and the same 44-pixel
+  controls. Tablets and short desktop windows keep the desktop layout.
+- **A Safari private window** cannot keep dilla's data, so the app says so instead of failing: "This window cannot keep
+  dilla’s data". "dilla needs storage that lasts. Private windows and some privacy settings turn it off. Open this
+  address in a normal window." No account is made there.
+- **Share screen** has no button on a phone whose browser cannot share a screen (iPhones and Android phones cannot).
+  Share from a desktop browser.
 
 ### Typing, zooming and the home screen
 
@@ -799,16 +876,17 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 | "This channel did not open" | **try again**; the code in brackets says what failed |
 | "This server did not load ({code})." | **try again** in the channel list |
 | "That did not work ({code}). Try again, or reload the page." | Dismiss it and try again, or reload |
-| "This server needs a newer client. Reload the page." | Reload, which loads the instance's current client |
+| "This server needs a newer client. Reload the page." | A tab left open from before the instance was upgraded shows this with a **reload** button. It keeps your draft: the page saves what you were typing and where you were, reloads, and puts them back. Tabs from before web-3.8 need it once |
 | "dilla could not start" | **Reload** |
 | "Too many attempts from this network." | Wait as long as it says, then try again |
 
 ## 6. Use your account in a second browser
 
 You need three things: your username, your password and the recovery key you wrote down at sign-up. The
-sign-in has four steps, in this order: the recovery key, then your username and password, then your second factor
-(a code, a passkey or a backup code), then done. Nothing is sent to the instance until the
-second step, and the key is never written to the browser's storage.
+sign-in has four steps, in this order: your username and password, then your second factor (a code, a passkey or a
+backup code), then your recovery key, then done. The recovery key comes last on purpose: the password and the code say
+who you are, and the key is what adds this browser to your account, so nothing is added until you give it. The key is
+never written to the browser's storage.
 
 ![Onboarding step 1 on a new browser, with the button "Use an existing account" under the invite
 field](screenshots/signin-0-entry.png)
@@ -817,57 +895,63 @@ On the new browser, open the instance's address and choose **Use an existing acc
 field. The instance offers it only when it takes password logins. An instance that takes no new accounts
 still shows the button.
 
-### Step 1 of 4: Your recovery key
+### Step 1 of 4: Sign in to {instance}
 
-![Step 1: "Your recovery key", the key typed in groups and "52 of 52 characters"](screenshots/signin-1-recovery-key.png)
-
-"Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not
-matter." The line under the field counts what you typed ("{n} of 52 characters"); **Continue** works once
-it reads 52 ("A recovery key has 52 characters."). This step sends nothing: the page holds the key until
-step 2. A key that cannot be a recovery key is refused when you continue from step 2, before your password
-is sent, and a key of another account once the instance has answered; either way this step shows again with
-what you typed and "This is not the recovery key of this account. Check every character." (after the
-instance has answered, its button reads **Add this browser** and you do not sign in again). **Create a new
-account instead** goes back to the sign-up.
-
-If you type a backup code here, the step recognises it: "That looks like a backup code. Backup codes go in step 3, in
-place of the app code. This step needs the 52-character recovery key you saved when you created the account."
-A backup code is not the recovery key ([Backup codes are not the recovery key](#backup-codes-are-not-the-recovery-key)).
-
-### Step 2 of 4: Sign in to {instance}
-
-![Step 2: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-2-login.png)
+![Step 1: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-1-login.png)
 
 "Use the username and password of your account on {instance}." **Continue** checks them ("Checking…"). A
-wrong pair says "That username and password did not work." and empties the password field. **Cancel** goes
-back to the sign-up.
+wrong pair says "That username and password did not work." and empties the password field. **Create a new account
+instead** goes back to the sign-up.
 
 Under the password, **Sign in with a passkey** (shown when this browser and the instance can use passkeys) signs in
-with a passkey instead of the password; it goes to step 3 or straight to step 4 as below.
+with a passkey instead of the password; it goes to step 3, the recovery key, or to step 2 when the passkey did not
+check that it is you.
 
-An account that has no second factor (one from before web-3.6, or one reset by the operator) goes from step 2 to
-"Add a second factor" as step 3, in place of the screen below; see [Second factor](#second-factor). There is no skip.
+An account that has no second factor (one from before web-3.6, or one reset by the operator) goes from step 1 to
+the recovery key, as step 2, and then to "Add a second factor" as step 3; see [Second factor](#second-factor). There is
+no skip.
 
-### Step 3 of 4: Your second factor
+### Step 2 of 4: Your second factor
 
-![Step 3: "Your second factor" with the six-digit code typed in](screenshots/signin-3-code.png)
+![Step 2: "Your second factor" with the six-digit code typed in](screenshots/signin-2-code.png)
 
 For an authenticator app: "Enter the six-digit code from your authenticator app." A wrong code sends you back to
-step 2 with "That code did not work. Sign in again with a fresh code.", because the instance has used up that login;
-type the password again and then a new code. A right code adds the browser and goes on to step 4.
+step 1 with "That code did not work. Sign in again with a fresh code.", because the instance has used up that login;
+type the password again and then a new code. A right code goes on to the recovery key.
 
-For an account whose factor is a passkey, step 3 is "Use your passkey": "This account signs in with a passkey. Your
+For an account whose factor is a passkey, step 2 is "Use your passkey": "This account signs in with a passkey. Your
 browser asks for it when you continue." The button is **Use passkey**. If the passkey did not check that it is you,
 the screen asks for your code as well: "This passkey did not check that it is you, so {instance} also asks for your
 code." A passkey the instance does not know says "{instance} does not know this passkey. It may belong to another
 account or another server."
 
 **Use a backup code instead** replaces either with one of your backup codes: "Type one of the backup codes you saved
-when you added your second factor. Each code works once." A backup code does not replace the recovery key from step 1.
-A code that did not work says "That backup code did not work. Sign in again and try another one." and takes you back
-to step 2. Under the code form: "Lost your phone? Use a backup code, or ask the operator of {instance} to reset your
-second factor." After a backup code, step 4 says "You have {count} backup codes left. Make new ones in Settings, under
-sign-in."
+when you added your second factor. Each code works once." The page keeps the code until the last step and does not
+use it up before: it is checked, and spent, when you give the recovery key. A backup code does not replace the
+recovery key. A code that did not work says "That backup code did not work. Sign in again and try another one." and
+takes you back to step 1. Under the code form: "Lost your phone? Use a backup code, or ask the operator of {instance}
+to reset your second factor." After a backup code, step 4 says "You have {count} backup codes left. Make new ones in
+Settings, under sign-in."
+
+### Step 3 of 4: Your recovery key
+
+![Step 3: "Your recovery key", the key typed in groups and "52 of 52 characters"](screenshots/signin-3-recovery-key.png)
+
+"Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not
+matter. Backup codes are not your recovery key: they stand in for the app code." The line under the field counts
+what you typed ("{n} of 52 characters"); **Add this browser** works once it reads 52 ("A recovery key has 52
+characters."). A key that cannot be a recovery key is refused before anything is added to your account, and a key of
+another account once the instance has answered; either way this step shows again with what you typed and "This is
+not the recovery key of this account. Check every character." Adding the browser says "Adding this browser to your
+account…". **Cancel** goes back to the sign-up.
+
+If you type a backup code here, the step recognises it: "That looks like a backup code, not the recovery key. This
+step needs the 52-character recovery key you saved when you created the account." A backup code is not the recovery
+key ([Backup codes are not the recovery key](#backup-codes-are-not-the-recovery-key)).
+
+You have five minutes from the second factor to give the key. If reading it off paper takes longer, the sign-in runs
+out: "Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again." You land on step 1, and
+nothing was used up, not even a backup code.
 
 ### Step 4 of 4: You’re in
 
@@ -881,7 +965,8 @@ sign-in."
 | The page shows | What it means and what to do |
 |---|---|
 | "This is not the recovery key of this account. Check every character." | The key is wrong (a typo, or another account's key). Correct it and continue |
-| "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this browser's place before it was added. If that was not you, someone else has your password. The web client cannot change a password yet, so tell whoever runs the instance; meanwhile your other browsers keep working, and a device that signed in with the password alone cannot read anything. You land on step 2 or on the first page; sign in again once it is sorted out |
+| "Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again." | The five minutes after the second factor ran out while you read the key. Sign in again from step 1; nothing was used up |
+| "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this browser's place before it was added. If that was not you, someone else has your password. The web client cannot change a password yet, so tell whoever runs the instance; meanwhile your other browsers keep working, and a device that signed in with the password alone cannot read anything. You land on step 1 or on the first page; sign in again once it is sorted out |
 | "The account’s devices changed while you were signing in. Sign in again." | Another of your browsers changed the account's devices meanwhile. This browser's data was cleared; start again from **Use an existing account** |
 | "This account already has as many devices as {instance} allows. Remove one in Settings on another device first." | Remove a device in Settings → Devices on a browser you still have, then continue |
 | "Too many sign-in attempts. Try again in {seconds} s." | Wait that long, then continue |
@@ -1177,8 +1262,9 @@ There are no single-key shortcuts.
 
 ![Settings → Diagnostics](screenshots/settings-diagnostics-desktop.png)
 
-**Settings → diagnostics** shows the connection, the instance's generation, the instance's name and the number of
-your devices, then the codes of the last 20 errors with the time each happened ("No errors recorded" when there are
+**Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
+instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
+at the top of the app tells you when the link drops. Under them come the codes of the last 20 errors with the time each happened ("No errors recorded" when there are
 none). **Copy codes** copies those codes, one per line, and nothing else: no message, key or name, so you can paste
 them into a report.
 
@@ -1211,22 +1297,21 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (2026-10-16)
+## 11. Known limits (2026-10-17)
 
 - No native phone or desktop app (on a phone, the web client has [its own layout](#on-your-phone)). A second browser needs the recovery key and the password, and the second factor
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
   content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
-- The web client has no profile screens. The "invite link" button always makes a
-  link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
-  server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or ban gives no way to
-  tell the person why.
+- The web client has no profile screens. Invite links are made under server settings → invites, with the expiry and
+  uses you choose ([Run your server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or
+  ban gives no way to tell the person why.
 - Roles and private channels: the host refuses posts from people without **send messages** and enforces slow mode, but
   pins and mentioning everyone are checked only by members' apps, and the role view is not verified by the group
   ([Who checks the rules](#who-checks-the-rules)). People who gain a channel see only messages sent after they join
   it. Five permissions have no effect yet ([Permissions that do nothing yet](#permissions-that-do-nothing-yet)).
-- A page that was loaded before the upgrade to web-3.7 skips slow mode (the host still checks who may post) until it is
-  reloaded. Reload your tabs after the upgrade; web-3.8 closes this.
+- Tabs open from before web-3.8 must reload: they show "This server needs a newer client. Reload the page." with a
+  **reload** button that keeps your draft ([Other messages](#other-messages)).
 - Threads show their first 200 replies, a thread cannot start on a reply, and there is no unread count for a thread on
   its own.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
@@ -1236,7 +1321,7 @@ and when the other tab closes it takes over by itself.
   plays only the listed audio and video types. Received link previews are not shown.
 - Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
   permissions have no effect yet. Only the author can delete a message.
-- No presence. Notifications require an open tab and browser permission.
+- Your status is shared only inside the servers you are in. Notifications require an open tab and browser permission.
 - Search opens only from the keyboard (Control/⌘+K, Control+/); a phone or tablet without a keyboard cannot open it yet.
   Search finds only text this browser holds, never files.
 - Messages from before this browser joined a channel are not shown.
@@ -1262,26 +1347,28 @@ client, with no account, server or channel in it. Ada signs up with the host's b
 client alone, starts the server "Midgard Crew", adds #loot and the voice channel "harbour" and makes an invite link;
 those screens are shot at 1280×800 and at 360×740. Björn and mira sign up through that link in two more Chromium
 profiles, and the three
-reply, react, edit, pin, mention and share images and files in #general; the script signs mira into a fourth browser (recovery
-key, then username and password), and photographs the flows. For section 10 a native test peer (the `dilla-testkit`
+reply, react, edit, pin, mention and share images and files in #general; the script signs mira into a fourth browser (username and password, then
+her code, then the recovery key), and photographs the flows. For section 10 a native test peer (the `dilla-testkit`
 binary) makes the server "Bridge Watch", which mira joins, and later changes its identity key; Privacy, the comparison,
 the changed contact in the conversation, search, diagnostics and a second tab are shot at 1280×800 and at 360×740.
 The test peer has no display name of its own (the testkit driver cannot set one), so it shows as its username
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
-identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the dock on the desktop only: a phone has the call bar instead). The images of [On your phone](#on-your-phone) are shot at 390×844, a
+identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
 common phone size, from the same session: the servers tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. Every person sets up an authenticator app at sign-up, with codes computed for the test host's clock, and
-mira's second browser takes her code at step 3 of the sign-in; the passkey screens, the forced "Add a second factor"
+mira's second browser takes her code at step 2 of the sign-in; the passkey screens, the forced "Add a second factor"
 screen and the dialogs of Settings → Sign-in need a passkey or a reset account and are quoted, not shown. The two
 warnings of sections 6 and 7 that need a second sign-in at the same moment or foreign recovery data are quoted, not shown. For "What a
 removed person sees" the script removes mira on ada's authority through the instance's own route (the test host's
 `/debug/kick`), not through the member list. To re-shoot them (not part of CI):
 
 ```sh
+cargo build -p dilla-testkit --release --locked
 npm run build -w @dilla/web
+npm run build:harness -w @dilla/client-core
 GO=/path/to/go npm run docs:shots -w @dilla/e2e
 ```
 

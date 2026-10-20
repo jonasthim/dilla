@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -470,5 +471,129 @@ func TestTheRoomSweepLeavesDebugRoomsAlone(t *testing.T) {
 			t.Fatalf("no room sweep deleted the orphan room within %s (rooms %v)", wait, rooms)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// listedParticipants is how many participants the instance lists for the call of channel.
+func listedParticipants(t *testing.T, h *Host, device id.ID, channel string) int {
+	t.Helper()
+	path := "/v1/channels/" + channel + "/call"
+	status, raw, err := h.AsDevice(t.Context(), device, http.MethodGet, path, nil)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("GET %s = %d, %v", path, status, err)
+	}
+	var call []any
+	if err := cborx.Unmarshal(raw, &call); err != nil || len(call) != 3 {
+		t.Fatalf("decode %s: %v (%x)", path, err, raw)
+	}
+	parts, _ := call[2].([]any)
+	return len(parts)
+}
+
+func postWithhold(t *testing.T, url string, body string) int {
+	t.Helper()
+	res, err := http.Post(url+"/debug/sfu/withhold", "application/json", strings.NewReader(body)) //nolint:noctx // test against httptest
+	if err != nil {
+		t.Fatalf("POST /debug/sfu/withhold: %v", err)
+	}
+	_ = res.Body.Close()
+	return res.StatusCode
+}
+
+func eventually(t *testing.T, what string, within time.Duration, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never happened within %s", what, within)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// POST /debug/sfu/withhold holds back one webhook event on its way to the instance: a participant_left
+// never reaches CallEvents().Handle while a participant_joined still does, and on:false restores it.
+// A host without an SFU answers 404.
+func TestWithholdDropsParticipantLeftOnly(t *testing.T) {
+	h := sfuHost(t, true)
+	control := httptest.NewServer(ControlHandler(h))
+	t.Cleanup(control.Close)
+	public := httptest.NewServer(h.Handler())
+	t.Cleanup(public.Close)
+
+	if got := postWithhold(t, public.URL, `{"event":"participant_left","on":true}`); got != http.StatusNotFound {
+		t.Fatalf("the public listener answers /debug/sfu/withhold with %d, want 404", got)
+	}
+	if got := postWithhold(t, control.URL, `{"event":"participant_left","on":true}`); got != http.StatusNoContent {
+		t.Fatalf("withhold participant_left = %d, want 204", got)
+	}
+
+	out, device, group := openCallOn(t, h)
+	token, _ := out[3].(string)
+	g, err := h.Server().Repo().GetGroup(t.Context(), group)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	channel := g.TargetID.String()
+	join := func() *lksdk.Room {
+		room, err := lksdk.ConnectToRoomWithToken(h.SFU().URL(), token, &lksdk.RoomCallback{}, lksdk.WithAutoSubscribe(false))
+		if err != nil {
+			t.Fatalf("connect to the call's room: %v", err)
+		}
+		return room
+	}
+
+	// participant_joined still arrives while participant_left is held back.
+	room := join()
+	eventually(t, "the participant_joined reaching the instance", 30*time.Second, func() bool {
+		return listedParticipants(t, h, device, channel) == 1
+	})
+	room.Disconnect()
+	time.Sleep(4 * time.Second)
+	if n := listedParticipants(t, h, device, channel); n != 1 {
+		t.Fatalf("a withheld participant_left still removed the participant: %d listed, want 1", n)
+	}
+
+	// on:false restores it: the next departure is delivered.
+	if got := postWithhold(t, control.URL, `{"event":"participant_left","on":false}`); got != http.StatusNoContent {
+		t.Fatalf("restore participant_left = %d, want 204", got)
+	}
+	room = join()
+	t.Cleanup(room.Disconnect)
+	room.Disconnect()
+	eventually(t, "the restored participant_left reaching the instance", 30*time.Second, func() bool {
+		return listedParticipants(t, h, device, channel) == 0
+	})
+
+	bare := httptest.NewServer(ControlHandler(sfuHost(t, false)))
+	t.Cleanup(bare.Close)
+	if got := postWithhold(t, bare.URL, `{"event":"participant_left","on":true}`); got != http.StatusNotFound {
+		t.Fatalf("withhold without an SFU = %d, want 404", got)
+	}
+}
+
+// The withhold hook lives in the test host's package, so it is reachable only where that package is
+// linked: no production binary (dillad) may depend on dilladtest.
+func TestTheWithholdHookIsNotLinkedIntoProductionDillad(t *testing.T) {
+	out, err := exec.CommandContext(t.Context(), "go", "list", "-deps", "github.com/jonasthim/dilla/cmd/dillad").Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./cmd/dillad: %v", err)
+	}
+	for _, pkg := range strings.Fields(string(out)) {
+		if strings.HasSuffix(pkg, "/internal/dillad/dilladtest") {
+			t.Fatalf("cmd/dillad links %s, which carries the test-only /debug/sfu/withhold hook", pkg)
+		}
+	}
+}
+
+// Only participant_left can be held back: any other event name is refused with 400.
+func TestWithholdRefusesEveryOtherEvent(t *testing.T) {
+	control := httptest.NewServer(ControlHandler(sfuHost(t, true)))
+	t.Cleanup(control.Close)
+	for _, event := range []string{"participant_joined", "room_finished", "bogus", ""} {
+		body := `{"event":"` + event + `","on":true}`
+		if got := postWithhold(t, control.URL, body); got != http.StatusBadRequest {
+			t.Errorf("withhold %q = %d, want 400", event, got)
+		}
 	}
 }

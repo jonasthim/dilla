@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
+import type { ChannelSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
@@ -9,6 +9,7 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
 import { joinErrorState } from '../router.ts';
+import { browser } from '../browser.ts';
 import { Shell } from './Shell.tsx';
 import type { ShellUpdateDeps } from './Shell.tsx';
 
@@ -236,19 +237,22 @@ it('opens search from a visible control in the channel header (walk 1)', async (
   await user.type(input, 'lamp');
   await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
 });
-// Walk 7: the browser's own offline event shows the banner at once; the gateway status stays online.
-it('shows the offline banner when the browser goes offline, and removes it when it returns', async () => {
+// Walk 7: the browser's own offline event shows the link banner at once; the gateway status stays online.
+it('shows the link banner when the browser goes offline, and empties it when it returns', async () => {
   const { fake } = setup(`/c/${A}/${GEN}`);
   await screen.findByRole('heading', { level: 2, name: 'general' });
   expect(fake.get('connection')?.status).toBe('online');
-  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+  const line = () => document.querySelector('.d-link-banner');
+  expect(line()).toBeEmptyDOMElement();
   const online = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
-  act(() => { window.dispatchEvent(new Event('offline')); });
-  expect(screen.getByText(en['shell.banner.offline'])).toBeInTheDocument();
-  online.mockReturnValue(true);
-  act(() => { window.dispatchEvent(new Event('online')); });
-  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
-  online.mockRestore();
+  try {
+    act(() => { window.dispatchEvent(new Event('offline')); });
+    expect(line()).toHaveTextContent(en['nav.link.offline']);
+    expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+    online.mockReturnValue(true);
+    act(() => { window.dispatchEvent(new Event('online')); });
+    expect(line()).toBeEmptyDOMElement();
+  } finally { online.mockRestore(); }
 });
 it('persists a chosen search scope through the worker setting', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
@@ -656,9 +660,9 @@ describe('selection', () => {
     const at = (s: string) => text.indexOf(s);
     expect(at('general')).toBeLessThan(at('random'));
     expect(at('random')).toBeLessThan(at('lobby'));
-    // web-3: a voice channel sits under the voice heading after the text rows (flow 06).
-    expect(at('lobby')).toBeLessThan(at('lounge'));
-    expect(within(list).getByRole('heading', { name: 'voice' })).toBeInTheDocument();
+    // web3.8 (item 12): a voice channel stands in its position among the text rows, under no heading.
+    expect(at('lounge')).toBeLessThan(at('general'));
+    expect(within(list).queryByRole('heading', { name: 'voice' })).toBeNull();
     expect(within(list).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('switches channels and servers, closing what it leaves', async () => {
@@ -1223,25 +1227,25 @@ describe('the own account’s identity', () => {
 });
 
 describe('connection', () => {
-  it('shows the offline banner and the status bar facts', () => {
+  it('shows the link banner in the banner slot, with no status bar', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
-    const bar = screen.getByRole('region', { name: 'connection' });
-    expect(bar).toHaveTextContent('dilla.test');
-    expect(bar).toHaveTextContent('online');
-    expect(bar).toHaveTextContent('7');
+    const line = () => document.querySelector('.d-link-banner');
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+    expect(line()).toHaveAttribute('role', 'status');
+    expect(line()).toBeEmptyDOMElement();
     expect(screen.queryByRole('alert')).toBeNull();
     act(() => fake.set('connection', { status: 'connecting', generation: null }));
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(bar).toHaveTextContent('connecting');
-    expect(bar).toHaveTextContent('–');
+    expect(line()).toHaveTextContent('Connecting to dilla.test…');
     act(() => fake.set('connection', { status: 'offline', generation: '7' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('Connection lost. Reconnecting…');
-    expect(bar).toHaveTextContent('offline');
-    act(() => fake.set('connection', { status: 'online', generation: '8' }));
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(line()).toHaveTextContent('Offline. Reconnecting…');
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+    act(() => fake.set('connection', { status: 'online', generation: '8' }));
+    expect(line()).toBeEmptyDOMElement();
   });
 
-  it('shows the newer-client banner, not the offline one, while the server refuses the client version', () => {
+  it('shows the newer-client banner, not the link banner, while the server refuses the client version', () => {
     const OFFLINE = 'Connection lost. Reconnecting…';
     const TOO_OLD = 'This server needs a newer client. Reload the page.';
     const { fake } = setup(`/c/${A}/${GEN}`);
@@ -1249,11 +1253,53 @@ describe('connection', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(screen.getByRole('alert')).toHaveTextContent(TOO_OLD);
     expect(screen.queryByText(OFFLINE)).toBeNull();
-    expect(screen.getByRole('region', { name: 'connection' })).toHaveTextContent('offline');
+    expect(document.querySelector('.d-link-banner')).toBeNull();
     act(() => fake.set('connection', { status: 'offline', generation: '7' }));
-    expect(screen.getAllByRole('alert')).toHaveLength(1);
-    expect(screen.getByRole('alert')).toHaveTextContent(OFFLINE);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.querySelector('.d-link-banner')).toHaveTextContent('Offline. Reconnecting…');
     expect(screen.queryByText(TOO_OLD)).toBeNull();
+  });
+
+  it('offers a reload button on the newer-client banner, and only there', async () => {
+    const reload = vi.spyOn(browser, 'reload').mockImplementation(() => undefined);
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    expect(screen.queryByRole('button', { name: en['reload.action'] })).toBeNull();
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(within(screen.getByRole('alert')).getByRole('button', { name: en['reload.action'] }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    act(() => fake.set('connection', { status: 'offline', generation: '7' }));
+    expect(screen.queryByRole('button', { name: en['reload.action'] })).toBeNull();
+    reload.mockRestore();
+  });
+});
+
+describe('the newer-client reload keeps unsent work', () => {
+  function wired() {
+    const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockResolvedValue();
+    const reload = vi.fn();
+    const update: ShellUpdateDeps = { currentEntry: '/assets/old.js', watch: () => () => undefined,
+      store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+    const ctx = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+    ctx.fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
+    return { ...ctx, save, reload };
+  }
+
+  it('checkpoints the typed draft, then reloads', async () => {
+    const { fake, user, save, reload } = wired();
+    await user.type(composer(), 'keep me');
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(screen.getByRole('button', { name: en['reload.action'] }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
+  });
+
+  it('control: with no draft it is a plain reload of an empty checkpoint', async () => {
+    const { fake, user, save, reload } = wired();
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(screen.getByRole('button', { name: en['reload.action'] }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(JSON.stringify(save.mock.calls[0]?.[1])).not.toContain('keep me');
   });
 });
 
@@ -1293,26 +1339,25 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
-    // Flow 07: the server's actions stand under its name, before the tabs (a member who does not own it: the invite only).
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'invite link' }));
-    // Flow 08: server settings, and leave for a member who does not own the server.
+    // Web3.8 (WS8): one gear beside the server's name, before the tabs; leave and delete live in server settings.
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'server settings' }));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'leave server' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
-    // web-3: the voice rows are their own roving stop under the voice heading.
+    // Web3.8 (item 12): the voice rows are in the one roving list; its one stop is the active row, so no second stop follows.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^general/ }));
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'voice lounge' }));
-    // Its join is the next stop (task-9 ruling: keyboard reachable).
+    // web3.8: the sidebar splitter is its own stop between the channel list and the header.
+    expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
+    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
     await user.tab();
-    expect(document.activeElement).toHaveAccessibleName('join voice');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: Online$/ }));
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Your status' }));
+    expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'user settings' }));
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
@@ -1345,6 +1390,68 @@ describe('keyboard', () => {
 const DM = '9a'.repeat(16);
 const DMS: DmSummary[] = [{ id: DM, kind: 3, members: [ME.id, PEER], name: 'bob', group: 'active' }];
 const withDms = (fake: FakeClient) => fake.set('dms', DMS);
+
+describe('sidebar actions and pane widths (web3.8)', () => {
+  const OWNED = [{ id: A, name: 'Midgard', owner: ME.id }];
+  const clean = () => {
+    // eslint-disable-next-line no-restricted-properties -- the test clears the one key the shell writes
+    window.localStorage.clear();
+  };
+  beforeEach(clean);
+  afterEach(clean);
+
+  it('the owner sees "+" in the list header and no invite or "+ channel" button in the server header', () => {
+    setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const header = document.querySelector('.d-channel-list__head') as HTMLElement;
+    expect(within(header).queryByRole('button', { name: en['invite.open'] })).toBeNull();
+    expect(within(header).queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+    const plus = within(screen.getByRole('tabpanel', { name: 'channels' })).getByRole('button', { name: en['create.channel.open'] });
+    expect(plus).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: en['invite.open'] })).toBeNull();
+  });
+
+  it('a member without manage channels sees no "+"; the DMs tab has none either', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    expect(screen.queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    expect(screen.queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+  });
+
+  it('"server settings" for a member with only create invite opens Invites (R20)', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
+      banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    const dialog = await screen.findByRole('dialog', { name: /settings/i });
+    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+  });
+
+  it('ArrowRight on the sidebar separator writes dilla.paneWidths, and a remount reads it back', async () => {
+    const { user, view } = setup(`/c/${A}/${GEN}`);
+    const sep = screen.getByRole('separator', { name: en['pane.resize.sidebar'] });
+    const before = Number(sep.getAttribute('aria-valuenow'));
+    // Nothing is stored until a drag or a key reports a width: not on mount, not before the first key.
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(window.localStorage.getItem('dilla.paneWidths')).toBeNull();
+    act(() => sep.focus());
+    await user.keyboard('{ArrowRight}');
+    const after = Number(sep.getAttribute('aria-valuenow'));
+    expect(after).toBeGreaterThan(before);
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(JSON.parse(window.localStorage.getItem('dilla.paneWidths') ?? 'null')).toEqual({ sidebar: after });
+    view.unmount();
+    setup(`/c/${A}/${GEN}`);
+    expect(screen.getByRole('separator', { name: en['pane.resize.sidebar'] })).toHaveAttribute('aria-valuenow', String(after));
+  });
+
+  it('a remount with no change writes nothing', () => {
+    const { view } = setup(`/c/${A}/${GEN}`);
+    view.unmount();
+    setup(`/c/${A}/${GEN}`);
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(window.localStorage.getItem('dilla.paneWidths')).toBeNull();
+  });
+});
 
 describe('direct messages', () => {
   it('is one list: the server name, then the tabs, then the active tab’s rows', async () => {
@@ -1576,19 +1683,14 @@ describe('reading', () => {
 });
 
 describe('devices and settings', () => {
-  const dev = (id: string, revokedAt: number | null): DeviceSummary =>
-    ({ id, tier: 1, signerTier: 1, lastSeen: NOW, revokedAt, listed: true, own: id === 'cc'.repeat(16) });
-  it('asks for the device list once and shows how many devices the account has', () => {
+  it('no longer asks for the device list on mount: Diagnostics and You do', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
-    expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
-    const chunk = () => within(screen.getByRole('region', { name: 'connection' })).getByText('devices').closest('.d-chunk');
-    expect(chunk()).toHaveTextContent('–');
-    act(() => fake.set('devices', [dev('cc'.repeat(16), null), dev('d1'.repeat(16), null), dev('e2'.repeat(16), NOW)]));
-    expect(chunk()).toHaveTextContent('2');
+    expect(fake.callsOf('refreshDevices')).toEqual([]);
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
   });
-  it('opens settings from the rail, remembering the channel', async () => {
+  it('opens settings from the user panel’s gear, remembering the channel', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'settings' }));
+    await user.click(screen.getByRole('button', { name: 'user settings' }));
     expect(path()).toBe('/settings/devices');
     expect(window.history.state).toEqual({ settingsFrom: `/c/${A}/${GEN}` });
   });

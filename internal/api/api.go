@@ -50,6 +50,11 @@ type Deps struct {
 	// the history itself is never served.
 	ExternalSenderPub []byte
 
+	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
+	// (web3.8 S1). The composition root passes the one list it hands the gateway, so the two
+	// cannot disagree; nil serves [1], the gateway package's own default.
+	WireVersions []uint64
+
 	// CloseGateway closes a device's gateway connections inside the same
 	// transaction that revokes it. Nil until part 1b's gateway exists; the
 	// composition root wires it to Sessions.OnRevoke.

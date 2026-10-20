@@ -29,6 +29,9 @@ use super::{
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
 const SUBPROTOCOL: &str = "dilla.v1";
+/// The wire version this client identifies with (web3.8 S1, `internal/dillad.WireVersion`): every
+/// upload names its class, and the instance offers 2 alone.
+const WIRE_VERSION: u64 = 2;
 /// How long a pump waits on an empty socket before it returns. Short, because `drain` is called
 /// once per scenario step and the harness runs every step against loopback.
 const PUMP_WAIT: Duration = Duration::from_millis(50);
@@ -2061,17 +2064,27 @@ impl HttpDs {
             }
         };
         // protocol/07 "Negotiation": the client takes the highest version it shares with the
-        // instance. This client speaks version 1 of all three.
-        for (name, offered) in [("wire", &wire), ("e2ee", &e2ee), ("media", &media)] {
-            if !offered.contains(&1) {
+        // instance. This client speaks wire version 2 (web3.8 S1: every upload names its class)
+        // and version 1 of e2ee and media.
+        for (name, offered, speaks) in [
+            ("wire", &wire, WIRE_VERSION),
+            ("e2ee", &e2ee, 1),
+            ("media", &media, 1),
+        ] {
+            if !offered.contains(&speaks) {
                 return Err(DsError::Protocol(format!(
-                    "the instance offers {name} versions {offered:?}; this client speaks 1"
+                    "the instance offers {name} versions {offered:?}; this client speaks {speaks}"
                 )));
             }
         }
         let identify = encode(|e| {
             e.array(4).uint(1).uint(1).null();
-            e.array(5).text(&self.token).uint(1).uint(1).uint(1).uint(0);
+            e.array(5)
+                .text(&self.token)
+                .uint(WIRE_VERSION)
+                .uint(1)
+                .uint(1)
+                .uint(0);
         });
         socket
             .send(Message::Binary(identify.into()))
@@ -2663,23 +2676,18 @@ impl DeliveryService for HttpDs {
         })
     }
 
-    /// Row 7: `[epoch, private_message, class]` -> `[seq, franking_tag, recv_ts]`, or the legacy
-    /// `[epoch, private_message]` for `None` (web3.7 SB1). The instance reads the commitment out of
-    /// the message's own `authenticated_data`.
+    /// Row 7: `[epoch, private_message, class]` -> `[seq, franking_tag, recv_ts]` (web3.7 SB1; the
+    /// two-element body is refused since web3.8 S1). The instance reads the commitment out of the
+    /// message's own `authenticated_data`.
     fn post_message_from(
         &mut self,
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
-        class: Option<u8>,
+        class: u8,
     ) -> Result<UploadResult, DsError> {
-        let body = encode(|e| match class {
-            Some(c) => {
-                e.array(3).uint(epoch).bytes(&pm).uint(u64::from(c));
-            }
-            None => {
-                e.array(2).uint(epoch).bytes(&pm);
-            }
+        let body = encode(|e| {
+            e.array(3).uint(epoch).bytes(&pm).uint(u64::from(class));
         });
         self.post_decoded(&Self::group_path(g, "/message"), &body, |d| {
             d.array(3)?;
@@ -3913,11 +3921,12 @@ mod tests {
                     std::thread::spawn(move || while ws.read().is_ok() {});
                     continue;
                 }
+                // The instance offers wire version 2 alone (web3.8 S1).
                 let hello = encode(|e| {
                     e.array(4).uint(0).uint(0).null();
                     e.array(9)
                         .array(1)
-                        .uint(1)
+                        .uint(WIRE_VERSION)
                         .array(1)
                         .uint(1)
                         .array(1)

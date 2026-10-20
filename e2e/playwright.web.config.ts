@@ -9,6 +9,7 @@ const dillaHost: HostConfig = { port: 8463, control: 8464, webRoot: 'packages/we
 
 export default defineConfig({
   testDir: resolve(here, 'web'),
+  // A project's own testIgnore replaces this one, so a project that ignores more repeats these names.
   testIgnore: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   metadata: { dillaHost },
@@ -22,7 +23,9 @@ export default defineConfig({
   use: { baseURL: 'http://127.0.0.1:8463', trace: 'retain-on-failure' },
   projects: [
     { name: 'chromium-web', use: { ...devices['Desktop Chrome'], channel: 'chromium' } },
-    { name: 'firefox-web', use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    // channel-list.spec starts an SFU and grants the `microphone` permission to a fake-microphone context; both are
+    // Chromium-only (Firefox rejects "Unknown permission: microphone"), so Firefox does not load it.
+    { name: 'firefox-web', testIgnore: /(^|\/)(support|core-worker|spike-joinall|channel-list)\.spec\.ts$/, use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

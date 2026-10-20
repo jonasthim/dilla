@@ -17,6 +17,14 @@ const dock: VoiceDockProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('VoiceDock', () => {
+  it('draws the divider before leave only when mute or deafen stand before it', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-toolbar__divider')).not.toBeNull();
+    rerender(<VoiceDock {...dock} onMute={undefined} onDeafen={undefined} onCamera={() => {}} onShare={() => {}}
+      labels={{ ...dock.labels, camera: 'camera', share: 'share screen' }} />);
+    expect(container.querySelector('.d-voice-toolbar__divider')).toBeNull();
+  });
+
   it('VoiceDock is one toolbar with roving focus and a status region', async () => {
     render(<VoiceDock {...dock} announcement="Microphone muted." />);
     const bar = screen.getByRole('toolbar', { name: 'voice controls' });
@@ -106,6 +114,16 @@ describe('VoiceDock', () => {
     render(<VoiceDock {...dock} />);
     const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
     expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['mute', 'deafen', 'leave']);
+  });
+
+  // web3.8 (R3): the user panel owns mute and deafen; a dock given no handler for them draws neither.
+  it('without onMute and onDeafen there is no mute and no deafen, and camera, share and leave stay', () => {
+    const { onMute: _m, onDeafen: _d, ...bare } = five;
+    render(<VoiceDock {...bare} />);
+    const bar = screen.getByRole('toolbar', { name: 'voice controls' });
+    expect(within(bar).queryByRole('button', { name: 'mute' })).toBeNull();
+    expect(within(bar).queryByRole('button', { name: 'deafen' })).toBeNull();
+    expect(within(bar).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(['camera', 'share screen', 'leave']);
   });
 
   it('camera and share are pressed toggles whose glyph follows the state', () => {

@@ -10,3 +10,8 @@
 .d-channel-header__topic { margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* web-2b (L-UI-54): the caller's actions (the pins button), pushed to the end of the header. */
 .d-channel-header__actions { margin-left: auto; display: flex; gap: 0.5rem; flex-shrink: 0; }
+/* FX-misc (final review m6, round 2 I2): the splitter lets main reach 24rem, which does not fit the actions beside the name.
+   The shell marks `data-main-narrow` while main is under 28rem; only then the header wraps and its actions take a row of
+   their own. At every other width the header stays one row and a long topic or name is cut with its ellipsis. */
+[data-main-narrow] .d-channel-header { flex-wrap: wrap; height: auto; min-height: var(--channel-header-h); padding-block: 0.5rem; row-gap: 0.5rem; }
+[data-main-narrow] .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }

@@ -14,6 +14,9 @@ import {
 import { reportProcessorStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
+import {
+  analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
+} from './speaking.ts';
 import { callStatsReport, connectionOf, mediaTotals, STATS_EVERY_MS, type MediaTotals } from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
@@ -121,6 +124,9 @@ export interface PageCallDeps {
    *  (webAudioMix), used only when PageCallOptions.audioContext is absent; a new AudioContext by default (null where the
    *  browser has none). The session closes the context on every leave. */
   audioContext?: () => AudioContext | null;
+  /** web3.8 V1: a level reader on one audio track in the call's context (an AnalyserNode, never connected to the
+   *  destination); analyserMeter by default. Null means no local level: the SFU's speaker flag is the fallback. */
+  createLevelMeter?(ctx: AudioContext, track: MediaStreamTrack): LevelMeter | null;
 }
 
 function defaultAudioContext(): AudioContext | null {
@@ -157,6 +163,15 @@ export interface PageCallOptions {
   /** Product walk M5: this browser's own mute or deafen kept from its last call; the call starts in it, so a reload never
    *  reopens a microphone the person had muted. */
   self?: 'muted' | 'deafened' | null;
+  /** web3.8 MUTE: the own mute or deafen as it stands now (the page's last press, else the stored setting). `self` is read
+   *  before the microphone prompt; a press after it is read here right before the microphone is published (so it goes out
+   *  already closed) and again when the call connects. Only ever toward privacy: a value less private than the session's
+   *  changes nothing. A getter that throws counts as no answer. */
+  selfNow?: () => 'muted' | 'deafened' | null;
+  /** web3.8 MUTE: push, not only pull. The session registers `apply` while it starts and the page calls it after each
+   *  press (once `selfNow` answers the new value); the returned function unregisters it, which the session does at
+   *  connected or when the start fails. */
+  watchSelf?: (apply: () => void) => () => void;
   /** Fix round 2 (Minor 1): the call’s AudioContext, made by the shell synchronously inside the person’s press (useCall’s
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
@@ -269,10 +284,16 @@ interface RemoteView {
   isSpeaking: boolean;
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
-  trackPublications?: Map<string, { track?: unknown }>;
+  trackPublications?: Map<string, { track?: unknown; source?: unknown }>;
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
-interface RemoteAudio { kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown }
+interface RemoteAudio {
+  kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown;
+  /** The decrypted track the element plays (livekit’s); web3.8 V1 reads its level when the element has no stream. */
+  mediaStreamTrack?: MediaStreamTrack;
+  /** livekit's Track.Source, when the publication does not say it. */
+  source?: unknown;
+}
 interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
@@ -299,8 +320,29 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   // device is set on it: with webAudioMix the elements stay muted and everything plays through the context’s destination.
   const ctx = opts.audioContext !== undefined ? opts.audioContext : (deps.audioContext ?? defaultAudioContext)();
   let ctxClosed = false;
+  // web3.8 V1: every level meter registers its close here, so every way out that closes the context closes them first.
+  const meterClosers = new Set<() => void>();
+  /** Makes a meter on `track` in the call's context, or null (no context, a refusal, a closed context): the SFU's flag
+   *  is then the fallback. Never throws. The returned meter's close is idempotent and unregisters itself. */
+  const makeMeter = (track: MediaStreamTrack | null | undefined): LevelMeter | null => {
+    if (ctx === null || ctxClosed || track == null) return null;
+    let made: LevelMeter | null;
+    try { made = (deps.createLevelMeter ?? analyserMeter)(ctx, track); } catch { return null; }
+    if (made === null) return null;
+    const inner = made;
+    let closed = false;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      meterClosers.delete(close);
+      try { inner.close(); } catch { /* the node is gone with the context */ }
+    };
+    meterClosers.add(close);
+    return { read: () => inner.read(), close };
+  };
   const closeCtx = (): void => {
     if (ctx === null || ctxClosed) return;
+    for (const close of [...meterClosers]) close();
     ctxClosed = true;
     try { void Promise.resolve(ctx.close()).catch(() => undefined); } catch { /* already closed */ }
   };
@@ -463,6 +505,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const joined = session;
   const { room, manager } = joined;
   const release = (): Promise<void> => joined.release();
+  /** web3.8 MUTE: stops listening for the page's presses (opts.watchSelf); at connected, or when the start fails. */
+  let unwatch: () => void = () => undefined;
   try {
     relay.attach(manager);
     const events = room as unknown as Events;
@@ -492,6 +536,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
     let mutedBeforeDeafen = opts.self === 'deafened';
+    /** web3.8 MUTE: a mute or deafen pressed while the start runs (selfNow) joins the session's state before it is in use,
+     *  never the other way. A deafen is applied as a mute first and then a deafen, so an undeafen keeps the microphone muted
+     *  (R25: deafened goes back to muted, never to an open microphone). True when it changed anything. */
+    const catchUp = (): boolean => {
+      let now: 'muted' | 'deafened' | null = null;
+      try { now = opts.selfNow?.() ?? null; } catch { now = null; }
+      if (now === 'deafened' && !state.deafened) {
+        mutedBeforeDeafen = true;
+        state = { ...state, muted: true, deafened: true, speaking: false };
+        return true;
+      }
+      if (now === 'muted' && !state.muted) {
+        state = { ...state, muted: true, speaking: false };
+        return true;
+      }
+      return false;
+    };
     let verified = new Set<string>();
     const timers = new Set<unknown>();
     const later = (fn: () => void, ms: number): unknown => {
@@ -504,6 +565,30 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- tiles and remote audio
     const streamOf = (p: RemoteView, source: Source): MediaStream | null => p.getTrackPublication(source)?.track?.mediaStream ?? null;
+    // web3.8 V1: speaking from local levels. A meter's reading is trusted only while the context runs (a suspended one
+    // reads silence); otherwise, and for every track without a meter, the SFU's flag is the fallback.
+    const levelsLive = (): boolean => ctx !== null && ctx.state === 'running';
+    let micSending: boolean | null = null;
+    /** True unless push to talk is in force and the key is up. RNNoise's ptt worklet keeps the track "sending" with the
+     *  key up, so speaking is gated on the key itself as well as on micSending. */
+    let keyOpen = opts.mode !== 'ptt';
+    const ownGate = (): boolean => micSending === true && keyOpen;
+    /** Arms the sampler once a meter exists (set at connect); it idles with none. */
+    let armSample: () => void = () => undefined;
+    let ownMeter: LevelMeter | null = null;
+    const ownDetector = new SpeakingDetector();
+    let ownOn = false;
+    let ownRms = 0;
+    /** The remote person's speaking from their attached tracks' meters, or null when none has a live meter and a gain. */
+    const remoteLocal = (identity: string): boolean | null => {
+      if (!levelsLive() || gainFor(identity) <= 0) return null;
+      let any: boolean | null = null;
+      for (const entry of playing.values()) {
+        if (entry.identity !== identity || entry.meter === null) continue;
+        any = (any ?? false) || entry.on;
+      }
+      return any;
+    };
     const tiles = (): PageCallTile[] => {
       const out: PageCallTile[] = [];
       const inRoom = new Set<string>();
@@ -512,7 +597,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const r = roster.get(p.identity);
         const tileState: TileState = r === undefined ? 'unverified' : verified.has(p.identity) ? 'ok' : 'not-heard';
         const show = tileState === 'ok' && !state.paused;
-        out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking: p.isSpeaking === true,
+        const speaking = !state.paused && (remoteLocal(p.identity) ?? p.isSpeaking === true);
+        out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking,
           video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null });
       }
       for (const [deviceId, r] of roster) {
@@ -521,9 +607,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       return out;
     };
-    const level = (): number => (state.muted || state.paused ? 0 : Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12))));
-    const ownSpeaking = (): boolean => local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
-    const refresh = (): void => { if (!ended) set({ tiles: tiles(), level: level(), speaking: ownSpeaking() }); };
+    // The own mic counts only while it is sending (micSending === true: not muted, deafened, paused, or push to talk up).
+    const ownLocal = (): boolean => ownMeter !== null && levelsLive();
+    const level = (): number => {
+      if (state.muted || state.paused) return 0;
+      if (ownLocal()) return ownGate() ? Math.max(0, Math.min(12, Math.round(ownRms * 48))) : 0;
+      return Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12)));
+    };
+    const ownSpeaking = (): boolean => {
+      if (ownLocal()) return ownGate() && ownOn;
+      return ownGate() && local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
+    };
+    let lastSetAt = Number.NEGATIVE_INFINITY;
+    const refresh = (): void => {
+      if (ended) return;
+      lastSetAt = deps.now();
+      set({ tiles: tiles(), level: level(), speaking: ownSpeaking() });
+    };
     const gainFor = (identity: string): number =>
       gainOf(roster.get(identity)?.userId ?? '', volumes, { deafened: state.deafened, paused: state.paused });
     /** The gains of every remote person; first, the held-back tracks whose gain rose above 0 are attached (fix round 1,
@@ -547,22 +647,26 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // `pending` until its gain rises (applyGains). Decryption and the tile’s verification are the receiver’s media
     // worker’s, so an unattached track still turns its tile ok.
     const audioHost = deps.audioHost ?? defaultAudioHost;
-    const playing = new Map<RemoteAudio, { el: HTMLMediaElement; identity: string }>();
-    const pending = new Map<RemoteAudio, string>();
+    const playing = new Map<RemoteAudio, {
+      el: HTMLMediaElement; identity: string; meter: LevelMeter | null; detector: SpeakingDetector; on: boolean;
+    }>();
+    /** A held-back track's identity, and whether it is a microphone (web3.8 FX I1: only a microphone gets a meter). */
+    const pending = new Map<RemoteAudio, { identity: string; mic: boolean }>();
     /** Takes a subscribed remote audio track in: it is attached by the next applyGains once its gain is above 0. A no-op
-     *  for a track already attached, for video, and after the end. */
-    const queueAudio = (track: unknown, identity: string): void => {
+     *  for a track already attached, for video, and after the end. `pub` is its publication, which names its source. */
+    const queueAudio = (track: unknown, identity: string, pub?: unknown): void => {
       const t = track as RemoteAudio | null | undefined;
       if (ended || t == null || t.kind !== 'audio' || playing.has(t)) return;
-      pending.set(t, identity);
+      const source = (pub as { source?: unknown } | null | undefined)?.source ?? t.source;
+      pending.set(t, { identity, mic: source === SOURCE.microphone });
     };
     /** Fix round 2 (Minor 2): a device not in the roster yet has no known gain (its user, and so its volume, is unknown):
      *  it waits, and the roster change that names it (afterRoster → applyGains) attaches it. Nit 1: a track leaves
      *  `pending` only once it is attached; no host yet, or an attach that throws, keeps it for the next applyGains. */
     const attachPending = (): void => {
-      for (const [t, identity] of [...pending]) {
+      for (const [t, { identity, mic }] of [...pending]) {
         if (!roster.has(identity) || gainFor(identity) <= 0) continue;
-        if (attachAudio(t, identity)) pending.delete(t);
+        if (attachAudio(t, identity, mic)) pending.delete(t);
       }
       countAudio();
     };
@@ -573,7 +677,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const expected = attached + pending.size;
       if (state.audio.attached !== attached || state.audio.expected !== expected) set({ audio: { attached, expected } });
     };
-    const attachAudio = (t: RemoteAudio, identity: string): boolean => {
+    const attachAudio = (t: RemoteAudio, identity: string, mic: boolean): boolean => {
       if (playing.has(t)) return true;
       if (ended) return false;
       const host = audioHost();
@@ -584,7 +688,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       el.tabIndex = -1;
       el.setAttribute('aria-hidden', 'true');
       host.appendChild(el);
-      playing.set(t, { el, identity });
+      // web3.8 V1: the level is read from the element's own (decrypted, played) track; Chromium routes WebRTC audio to
+      // WebAudio only through the element livekit attached. A failure to make a meter is the fallback, never an error.
+      // web3.8 FX I1: only a microphone is metered. Screen-share audio is played but never counts as speaking, as the SFU's
+      // flag (livekit-server sums only TrackSource_MICROPHONE) never counted it.
+      let tap: MediaStreamTrack | undefined;
+      if (mic) {
+        try { tap = (el.srcObject as MediaStream | null)?.getAudioTracks()[0] ?? t.mediaStreamTrack; } catch { tap = t.mediaStreamTrack; }
+      }
+      playing.set(t, { el, identity, meter: mic ? makeMeter(tap) : null, detector: new SpeakingDetector(), on: false });
+      armSample();
       return true;
     };
     const detachAudio = (track: unknown): void => {
@@ -593,6 +706,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const entry = playing.get(t);
       if (entry !== undefined) {
         playing.delete(t);
+        entry.meter?.close();
         try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
         entry.el.remove();
       }
@@ -600,13 +714,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     /** Every attached or held-back track, or those of one participant. */
     const detachAudioOf = (identity?: string): void => {
-      for (const [t, id] of [...pending]) if (identity === undefined || id === identity) pending.delete(t);
+      for (const [t, held] of [...pending]) if (identity === undefined || held.identity === identity) pending.delete(t);
       for (const [t, entry] of [...playing]) if (identity === undefined || entry.identity === identity) detachAudio(t);
       countAudio();
     };
     /** Review Focus 1: tracks subscribed before the listeners existed (while joinCall or the publish was in flight). */
     const sweepAudio = (): void => {
-      for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) queueAudio(pub.track, p.identity);
+      for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) queueAudio(pub.track, p.identity, pub);
     };
     /** Fix round 1 (M2): call audio is held back while the session’s context is not running. Fix round 2 (Minor 3): the
      *  context alone decides when there is one (the room’s canPlaybackAudio lags it); the room’s flag only without one. */
@@ -622,22 +736,28 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
     const reportStatus = (status: ProcessorStatus): void => { if (!ended && !aborted) reportProcessorStatus(statusOwner, status); };
+    /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
+     *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
+    let restartWaiting: { reason: ProcessorStatus['reason'] } | null = null;
     const browserStatus = async (reason: ProcessorStatus['reason'] = null): Promise<void> => {
       if (!micTrack) return;
       let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
       const track = micPub?.track;
-      if (track?.restartTrack && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on')) {
+      const wanted = track?.restartTrack !== undefined && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on');
+      restartWaiting = wanted && !sendNow() ? { reason } : null;
+      if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
           await track.restartTrack({ ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 });
           if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { micTrack.stop(); return; }
           applyMic();
+          // web3.8 FX I3: LiveKit stopped the old capture, so the own meter moves to the new one (own speaking, AFK).
+          restartOwnMeter();
           browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
       reportStatus({requested: noisePreference(state.noise), effective: state.noise === 'off' ? 'off' : 'browser', browserNoise, reason, vad: 'unavailable'});
     };
-    let micSending: boolean | null = null;
     /** Sets an RNNoise processor on the microphone in the mode in force; a failure goes on without it. */
     const startNoise = async (): Promise<void> => {
       const track = micPub?.track;
@@ -652,7 +772,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
           await track.restartTrack({...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
+          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+          applyMic();
         }
         // Settings and held keys may change while LiveKit initializes the processor.
         if (made.setMode) { made.setMode(mode); processorMode = mode; }
@@ -663,21 +786,79 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await browserStatus('initialization-failed');
       }
     };
+    /** Whether the microphone may send now: not muted, deafened, paused or ended, and push to talk's key down. */
+    const sendNow = (): boolean => !ended && !state.muted && !state.deafened && !state.paused && (mode !== 'ptt' || gate.update(0, deps.now()));
+    /** web3.8 MUTE: LiveKit enables a track it is handed, and again after a capture restart (its LocalTrack sets
+     *  `enabled = !isMuted`, and isMuted stays false until the session's mute() lands, which is asynchronous). The microphone
+     *  track the session holds therefore refuses to be enabled while the session must not send: a call started muted (or in
+     *  push to talk with the key up) sends no frame during its publish. Idempotent; a track that cannot be guarded is still
+     *  closed by applyMic. */
+    const guardMic = (t: MediaStreamTrack | null): void => {
+      if (t === null || Object.prototype.hasOwnProperty.call(t, 'enabled')) return;
+      let proto = Object.getPrototypeOf(t) as object | null;
+      let native: { get?: (this: void) => unknown; set?: (this: void, v: boolean) => void } | undefined;
+      while (proto !== null && native === undefined) {
+        native = Object.getOwnPropertyDescriptor(proto, 'enabled');
+        proto = Object.getPrototypeOf(proto) as object | null;
+      }
+      const read = native?.get;
+      const write = native?.set;
+      let plain = (t as { enabled?: boolean }).enabled !== false;
+      try {
+        Object.defineProperty(t, 'enabled', {
+          configurable: true,
+          get: () => (read !== undefined ? Boolean(Reflect.apply(read, t, [])) : plain),
+          set: (v: boolean) => {
+            const on = Boolean(v) && sendNow();
+            if (write !== undefined) Reflect.apply(write, t, [on]); else plain = on;
+          },
+        });
+      } catch { /* not guardable: applyMic still closes it */ }
+    };
     const applyMic = (): void => {
+      guardMic(micTrack);
       const track = micPub?.track;
-      if (!track) return;
-      // Close the track and processor together, including fallback and initialization transitions.
-      const pttOpen = mode !== 'ptt' || gate.update(0, deps.now());
-      const send = !ended && !state.muted && !state.deafened && !state.paused && pttOpen;
-      processor?.setCaptureAllowed?.(send);
+      // Close the track and processor together, including fallback and initialization transitions. The capture track is
+      // written even before the publish returned (web3.8 MUTE: a press during the publish closes it at once).
+      const send = sendNow();
       if (micTrack) micTrack.enabled = send;
+      if (!track) return;
+      processor?.setCaptureAllowed?.(send);
+      // R2: a capture restart that waited while the microphone could not send runs now that it can.
+      if (send && restartWaiting !== null && processor === null) {
+        const waited = restartWaiting;
+        restartWaiting = null;
+        void browserStatus(waited.reason).catch(() => undefined);
+      }
       if (send === micSending) return;
       micSending = send;
       void Promise.resolve(send ? track.unmute() : track.mute()).catch(() => undefined);
     };
+    /** web3.8 V1: the own meter reads the track livekit publishes (the processed one, when a processor is set); it is made
+     *  again whenever that track changes. No microphone, or a refusal, leaves the SFU's flag as the fallback. */
+    const restartOwnMeter = (): void => {
+      ownMeter?.close();
+      ownMeter = null;
+      ownDetector.reset();
+      ownOn = false;
+      ownRms = 0;
+      if (!ended) ownMeter = makeMeter((micPub?.track as { mediaStreamTrack?: MediaStreamTrack } | undefined)?.mediaStreamTrack);
+      armSample();
+    };
+    // web3.8 MUTE: the page pushes each press while the start runs (watchSelf), so a mute or deafen is in force at the press:
+    // the capture track closes at once (guarded, so LiveKit cannot reopen it), and LiveKit's own mute follows once the
+    // track is published; before that the state is recorded and the publish starts disabled. Only toward privacy.
+    try {
+      unwatch = opts.watchSelf?.(() => { if (!ended && !aborted && catchUp()) applyMic(); }) ?? unwatch;
+    } catch { /* no push: the pulls before the publish, after it and at connected remain */ }
     if ('track' in mic) {
       micTrack = mic.track;
-      // Product walk M5: a start muted sends no frame before the mute lands (LiveKit's unmute enables it again).
+      // web3.8 MUTE: a mute or deafen pressed since the start read `self` (the microphone prompt, the connect) is in force
+      // before the publish.
+      catchUp();
+      // Product walk M5: a start muted sends no frame before the mute lands. web3.8 MUTE: LiveKit enables the track it is
+      // handed while it publishes, so the track is guarded first (see guardMic).
+      guardMic(mic.track);
       if (state.muted || mode === 'ptt') mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
@@ -686,9 +867,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         micTrack = null;
         state = { ...state, mic: 'failed', error: 'E_MIC_PUBLISH' };
       }
+      // web3.8 MUTE: a press during the publish is read again, and the published track takes the state at once, LiveKit's
+      // mute included (a later restartTrack enables the new capture track only when LiveKit's track is unmuted).
+      catchUp();
+      applyMic();
+      if (micPub !== null) restartOwnMeter();
       checkAborted();
       if (opts.noise !== 'off') {
         await startNoise();
+        restartOwnMeter();
         checkAborted();
       } else { await browserStatus(); }
     } else {
@@ -901,9 +1088,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       set({ error: endCodeOf(reason) });
       void leave('lost');
     };
-    const onSubscribed = (track: unknown, _pub: unknown, participant: unknown): void => {
+    const onSubscribed = (track: unknown, pub: unknown, participant: unknown): void => {
       if (ended) return;
-      queueAudio(track, (participant as RemoteView | undefined)?.identity ?? '');
+      queueAudio(track, (participant as RemoteView | undefined)?.identity ?? '', pub);
       onPeople(); // applyGains attaches it (unless its gain is 0), then the new gain node takes the person’s volume
     };
     const onUnsubscribed = (track: unknown): void => { detachAudio(track); if (!ended) onPeople(); };
@@ -977,16 +1164,65 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       return leaving;
     };
 
+    // ---- web3.8 V1: the sampler. One timer reads every meter each SPEAK_TICK_MS and feeds its detector. A speaking flip
+    // (own or remote) reaches the state at once; a level change only every LEVEL_PUBLISH_MS. Nothing here leaves the page.
+    let sampler: unknown = null;
+    let sampling = false;
+    const hasMeter = (): boolean => ownMeter !== null || [...playing.values()].some((e) => e.meter !== null);
+    const sample = (): void => {
+      sampler = null;
+      if (ended) return;
+      const now = deps.now();
+      let flipped = false;
+      if (ownMeter !== null && levelsLive()) {
+        if (ownGate()) {
+          ownRms = ownMeter.read();
+          const on = ownDetector.update(ownRms, now);
+          if (on !== ownOn) flipped = true;
+          ownOn = on;
+        } else {
+          if (ownOn) flipped = true;
+          ownRms = 0;
+          ownDetector.reset();
+          ownOn = false;
+        }
+      }
+      if (levelsLive()) {
+        for (const entry of playing.values()) {
+          if (entry.meter === null) continue;
+          const on = gainFor(entry.identity) > 0 && !state.paused ? entry.detector.update(entry.meter.read(), now) : false;
+          if (on !== entry.on) flipped = true;
+          entry.on = on;
+          if (!on && (gainFor(entry.identity) <= 0 || state.paused)) entry.detector.reset();
+        }
+      }
+      if (flipped || (level() !== state.level && now - lastSetAt >= LEVEL_PUBLISH_MS)) refresh();
+      armSample();
+    };
+    // The tick idles while no meter exists (a listen-only call on the SFU's flags) and is armed again by the next meter.
+    armSample = () => {
+      if (!sampling || sampler !== null || ended || !hasMeter()) return;
+      sampler = later(sample, SPEAK_TICK_MS);
+    };
+
     // ---- connected (WB client m2: only while the room is still up)
     checkAborted();
     if ((room as unknown as { state?: string }).state === 'disconnected') throw new PageCallError('E_DISCONNECTED');
     opts.signal?.removeEventListener('abort', onAbort);
+    // web3.8 MUTE: a mute or deafen pressed while the microphone was set up (the noise processor, the room) is in force
+    // before the call counts as connected; the page's attach applies anything later.
+    if (catchUp()) applyMic();
+    // From here the session is the page's: its own setMuted and setDeafened (and the attach reconcile) take the presses.
+    unwatch();
+    unwatch = () => undefined;
     sweepAudio();
     applyGains();
     state = { ...state, phase: 'connected', tiles: tiles(), audioBlocked: playbackBlocked() };
     // Product walk M5: a call started muted or deafened says so to the others at once.
     if (state.muted || state.deafened) sendSelf();
     later(poll, TILE_POLL_MS);
+    sampling = true;
+    armSample();
     later(statsTick, STATS_EVERY_MS);
     scheduleIce(firstIce);
 
@@ -1001,7 +1237,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
-        patch.speaking = local.isSpeaking === true && !on && !state.paused;
+        // With a local meter the own mic starts silent after an unmute (the detector needs its 50 ms again); without one
+        // the SFU's flag is the fallback.
+        patch.speaking = ownLocal() ? false : local.isSpeaking === true && !on && !state.paused;
+        if (on) { ownDetector.reset(); ownOn = false; ownRms = 0; }
         set(patch);
         applyMic();
         applyGains();
@@ -1011,7 +1250,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || on === state.deafened) return;
         if (on) {
           mutedBeforeDeafen = state.muted;
-          set({ deafened: true, muted: true });
+          ownDetector.reset(); ownOn = false; ownRms = 0;
+          set({ deafened: true, muted: true, speaking: false });
         } else {
           set({ deafened: false, muted: mutedBeforeDeafen });
         }
@@ -1058,7 +1298,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || mode !== 'ptt') return;
         gate.setPtt(down);
         if (processorMode === 'ptt') processor?.setPttActive(down);
+        keyOpen = down;
         applyMic();
+        if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
       },
       setMode(next) {
         if (ended || next === mode) return;
@@ -1068,8 +1310,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
         if (processor?.setMode) { processor.setMode(next); processorMode = next; }
         else if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
+        keyOpen = next !== 'ptt';
         set({ mode: next });
         applyMic();
+        if (!keyOpen) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); }
       },
       // Fix round 3 (m2): one switch at a time (the camera and screen lane), so a quick on-then-off never leaves a
       // processor set after the setting says off.
@@ -1086,6 +1330,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
         if (next !== 'off') await startNoise();
         else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); }
+        restartOwnMeter(); // the processor or a restarted capture swaps the published track
         applyMic();
       }),
       // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation
@@ -1108,6 +1353,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       leave,
     };
   } catch (err) {
+    unwatch();
     // Anything that fails after joinCall resolved tears the call down: no install, media released, then callLeave.
     throw await abandon(err, true);
   }

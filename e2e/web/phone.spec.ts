@@ -6,22 +6,28 @@
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
-  messageRow, type Account,
+  messageRow, signIn, type Account,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
+import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const HOST: HostConfig = { port: 8505, control: 8506, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
+/** A phone on its side (web3.8 R9): wide, but 390 px tall with a coarse pointer, so it still gets the phone layout. */
+const LANDSCAPE = { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 
 let host: StartedHost | null = null;
 let instance = '';
 let listPath = '';
 let channelPath = '';
+// web3.8 (R6): the key step comes after the login and the code, so the sign-in test signs in as the account the first
+// test signed up (the suite is serial).
+let signedUp: Account | null = null;
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}`, ...PHONE });
@@ -45,12 +51,12 @@ function started(): StartedHost {
 /** A phone context of its own, with touch and mobile emulation. It is persistent (launchPersistentContext on its own profile
  *  dir), as a real phone's browser is: WebKit's ephemeral contexts behave like Safari private browsing, where the app cannot start. */
 type PhoneFixtures = Pick<PlaywrightWorkerArgs, 'playwright'> & Pick<PlaywrightWorkerOptions, 'browserName' | 'launchOptions' | 'headless' | 'channel'>;
-async function phoneContext(f: PhoneFixtures, dir: string): Promise<BrowserContext> {
+async function phoneContext(f: PhoneFixtures, dir: string, device: typeof PHONE | typeof LANDSCAPE = PHONE): Promise<BrowserContext> {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const { launchOptions, headless, channel } = f;
   return f.playwright[f.browserName].launchPersistentContext(dir, {
-    ...launchOptions, headless, channel, ...PHONE, baseURL: `http://127.0.0.1:${String(HOST.port)}`,
+    ...launchOptions, headless, channel, ...device, baseURL: `http://127.0.0.1:${String(HOST.port)}`,
   });
 }
 const phoneDir = (project: string, workerIndex: number, n: number) => `${PROFILE_ROOT}/${project}-${workerIndex}-phone${String(n)}`;
@@ -77,7 +83,21 @@ async function expectUnzoomedOnFocus(page: Page, field: Locator, state: string):
   await expect(field).toBeFocused();
   expect(await scale(page), `visualViewport.scale after focusing ${state}`).toBe(1);
 }
-const noFocusMoved = (page: Page) => page.evaluate(() => document.activeElement === document.body || document.activeElement === null);
+/**
+ * Simulates the soft keyboard: Playwright's emulation never shrinks the visual viewport, and the shell treats the keyboard as
+ * up only when `visualViewport.height` is more than 100 px below `innerHeight`. Up shadows `height` with a getter 300 px short
+ * of the window and fires the viewport's resize, as a keyboard does; down deletes the shadow, which restores the real height.
+ */
+async function softKeyboard(page: Page, up: boolean): Promise<void> {
+  await page.evaluate((on) => {
+    const vv = window.visualViewport;
+    if (vv === null) throw new Error('no visualViewport to simulate a keyboard on');
+    if (on) Object.defineProperty(vv, 'height', { configurable: true, get: () => window.innerHeight - 300 });
+    else Reflect.deleteProperty(vv, 'height');
+    vv.dispatchEvent(new Event('resize'));
+  }, up);
+}
+const noFocusMoved =(page: Page) => page.evaluate(() => document.activeElement === document.body || document.activeElement === null);
 const tabBar = (page: Page) => page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
 const tab = (page: Page, key: string) => tabBar(page).getByRole('link', { name: copy(key), exact: true });
 const back = (page: Page) => page.getByRole('button', { name: copy('nav.back'), exact: true });
@@ -142,6 +162,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectHeading(page, COPY.doneTitle);
       await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
       await expectShell(page);
+      signedUp = ada;
     });
 
     // 2. A server from the servers tab; the tab bar names four places and the status bar is gone.
@@ -178,7 +199,9 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
-      // Typing: the tab bar steps aside, and the composer ends inside the viewport with nothing between it and the keyboard.
+      // Typing: the tab bar steps aside only when the soft keyboard is up (the visual viewport 100 px+ below the window), and
+      // Playwright's emulation never shrinks it, so the keyboard is simulated until the composer is left.
+      await softKeyboard(page, true);
       await expect(tabBar(page)).toBeHidden();
       await expect(page.locator('.d-app-shell')).toHaveAttribute('data-typing', 'true');
       const typing = await composer.boundingBox();
@@ -188,6 +211,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       // Tapping the message log blurs the composer: the tab bar comes back and the scale is still 1.
       await page.getByRole('log').tap();
       await expect(composer).not.toBeFocused();
+      await softKeyboard(page, false);
       await expect(tabBar(page)).toBeVisible();
       expect(await scale(page), 'visualViewport.scale after leaving the composer').toBe(1);
       await expectAccessible(page, 'the channel view');
@@ -273,21 +297,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
-      const menu = page.getByRole('button', { name: copy('nav.server.menu'), exact: true });
-      await expectTapTargets(menu, 'the server menu trigger');
-      // The owner's menu: new channel, invite, server settings (and "leave" only for a member).
-      await menu.click();
-      await expect(page.getByRole('menuitem')).toHaveText([copy('search.open'), copy('create.channel.open'), copy('invite.open'), copy('admin.open')]);
-      await expectTapTargets(page.getByRole('menuitem'), 'the server menu items');
-      await page.keyboard.press('Escape');
+      // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
+      // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
+      const search = page.getByRole('button', { name: copy('search.open'), exact: true });
+      const gear = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
-      await expect(menu).toBeFocused();
+      await expectTapTargets(search, 'the search icon');
+      await expectTapTargets(gear, 'the settings gear');
+      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
     });
 
-    // Walk 1: a phone has no Control+K, so search opens from the servers list menu, full screen; a hit opens its channel.
-    await test.step('search from the servers list menu opens full screen and a hit opens its message', async () => {
-      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('search.open'), exact: true }).tap();
+    // Walk 1: a phone has no Control+K, so search opens from the servers list header, full screen; a hit opens its channel.
+    await test.step('search from the servers list header opens full screen and a hit opens its message', async () => {
+      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
       const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
       await expect(palette).toBeVisible({ timeout: WAIT });
       const box = await palette.boundingBox();
@@ -368,8 +391,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     // Server settings is a page under the tabs too, and Escape closes it.
     await test.step('server settings keeps the tab bar and closes on Escape', async () => {
       await tab(page, 'nav.tab.servers').tap();
-      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
-      await page.getByRole('menuitem', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
       await expect(tabBar(page)).toBeVisible();
@@ -388,6 +410,27 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await context.setOffline(false);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeHidden({ timeout: WAIT });
       // WebKit can report an offline fetch after this step ends. Clear the known browser wording after closing the context.
+    });
+
+    // web3.8: Settings is in the shell's page slot, so the link banner stays the hit target above it (it was covered when
+    // Settings rendered after the shell).
+    await test.step('the link banner is the hit target over phone Settings', async () => {
+      await tab(page, 'nav.tab.you').tap();
+      await page.locator('[data-settings-section="privacy"]').tap();
+      await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
+      await context.setOffline(true);
+      const text = page.getByText(copy('nav.link.offline'), { exact: true });
+      await expect(text).toBeVisible({ timeout: WAIT });
+      const box = (await text.boundingBox())!;
+      const hit = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return { inBanner: el?.closest('.d-link-banner') != null, inSettings: el?.closest('.d-settings-frame') != null };
+      }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
+      await context.setOffline(false);
+      await expect(text).toBeHidden({ timeout: WAIT });
+      await tab(page, 'nav.tab.servers').tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });
 
     // A deep link or a first load moves no focus.
@@ -436,20 +479,28 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
   const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir);
   await guard.attach(context);
   const page = await context.newPage();
-  const key = Array.from({ length: 13 }, () => 'ABCD').join(' ');
+  if (signedUp === null) throw new Error('the phone shell test did not sign up an account');
+  const account = signedUp;
   try {
+    // web3.8 (R6, R7): the login first, then the code, then the key.
     await page.goto('/welcome');
     await expectHeading(page, COPY.connectTitle, { instance });
     await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
-    await expectHeading(page, SIGNIN.keyTitle);
-    await expectFieldSizes(page, 'sign-in key');
-    await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
-    await keyField(page).fill(key);
-    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
     await expectHeading(page, SIGNIN.loginTitle, { instance });
     await expectFieldSizes(page, 'sign-in login');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.username), { exact: true }), 'the username');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.password), { exact: true }), 'the password');
+    await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
+    await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    await expectHeading(page, 'signin.totp.title');
+    await expectFieldSizes(page, 'sign-in code');
+    await expectUnzoomedOnFocus(page, page.getByLabel(copy('signin.totp.code'), { exact: true }), 'the code');
+    await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    await expectHeading(page, SIGNIN.keyTitle);
+    await expectFieldSizes(page, 'sign-in key');
+    await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
     // web3.7.2: no shell here, so the page lock is off and a short window (the keyboard up) still scrolls the form.
     await page.setViewportSize({ width: 390, height: 300 });
     const scrolled = await page.evaluate(() => {
@@ -459,6 +510,78 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
     });
     expect(scrolled, 'the sign-in page scrolls with a short window').toEqual({ tall: true, y: expect.any(Number) });
     expect(scrolled.y).toBeGreaterThan(0);
+  } finally {
+    await guard.collectWorkers();
+    await context.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// web3.8 (R9, R10, pre-flight C-7): a phone on its side is 844 x 390. The width alone would give it the desktop layout; the
+// coarse pointer under 32rem tall gives it the phone one, the container rules' data-layout twins apply, and the page lock is
+// the attribute the phone shell sets.
+test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
+  started();
+  const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 3);
+  const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir, LANDSCAPE);
+  await guard.attach(context);
+  const page = await context.newPage();
+  if (signedUp === null) throw new Error('the phone shell test did not sign up an account');
+  const account = signedUp;
+  try {
+    await signIn(page, account, instance);
+    await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
+    await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+    expect(await page.evaluate(() => document.documentElement.hasAttribute('data-phone-shell')), 'the phone shell locks the page by an attribute').toBe(true);
+    expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('hidden');
+
+    await test.step('a message action is a 44 px target', async () => {
+      await channelRow(page, 'general').tap();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      // A new browser does not see earlier messages: send one, reply in its thread, and the chip appears under it.
+      await expectComposerReady(page, 'general');
+      await sendText(page, 'general', 'hej');
+      const row = messageRow(page, 'general', 'hej');
+      await row.focus();
+      await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
+      const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
+      await expect(reply).toBeVisible({ timeout: WAIT });
+      await reply.fill('svar');
+      await reply.press('Enter');
+      await expect(page.getByRole('complementary', { name: copy('thread.title') }).getByText('svar')).toBeVisible({ timeout: WAIT });
+      await page.goBack();
+      await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
+      const chip = row.getByRole('button', { name: copy('thread.summary.one'), exact: true });
+      await expect(chip).toBeVisible({ timeout: WAIT });
+      await expectTapTargets(chip, 'the thread chip of a message at 844 x 390');
+    });
+
+    // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts
+    // the elements the twinned rules select (the DM call pane, the channel list's join, a call-strip button) in the shell and
+    // reads what the data-layout twins do to them (the same technique as the call bar probe in test 1).
+    await test.step('the DM call pane fills the layout, and the channel-list join and call-strip buttons are 44 px', async () => {
+      const probe = await page.evaluate(() => {
+        const content = document.querySelector('.d-app-shell__content')!;
+        const call = document.createElement('div');
+        call.className = 'dw-dm-call';
+        call.innerHTML = '<button type="button" class="d-btn d-channel-list__join" data-size="sm"></button>';
+        const strip = document.createElement('div');
+        strip.className = 'dw-call-strip';
+        strip.innerHTML = '<button type="button" class="d-btn" data-size="sm"></button>';
+        content.append(call, strip);
+        const out = {
+          maxHeight: getComputedStyle(call).maxHeight,
+          join: call.querySelector('button')!.getBoundingClientRect().height,
+          strip: strip.querySelector('button')!.getBoundingClientRect().height,
+        };
+        call.remove();
+        strip.remove();
+        return out;
+      });
+      expect(probe.maxHeight, 'the phone DM call fills the pane (the desktop one is capped at 40%)').toBe('none');
+      expect(probe.join, 'the join button is a 44 px target').toBeGreaterThanOrEqual(44);
+      expect(probe.strip, 'a call-strip button is a 44 px target').toBeGreaterThanOrEqual(44);
+    });
   } finally {
     await guard.collectWorkers();
     await context.close();

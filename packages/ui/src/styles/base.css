@@ -48,6 +48,14 @@
   .d-app-shell .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
 }
+/* web3.8 (R9): the same rules for a landscape phone, whose shell is 844px wide while data-layout="phone" is set. A container
+   query cannot see the viewport, so each rule has this twin with identical declarations (phone-query.test.ts pins the pair). */
+.d-app-shell[data-layout="phone"] .d-channel-header { flex-wrap: wrap; height: auto; min-height: var(--channel-header-h); padding-block: 0.5rem; row-gap: 0.5rem; }
+.d-app-shell[data-layout="phone"] .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
+.d-app-shell[data-layout="phone"] .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+.d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+/* web3.8: the banner sits above a covering page (Settings, z-index 20), and the page starts below it (--d-banner-h). */
+.d-app-shell[data-layout="phone"] .d-app-shell__banner { position: relative; z-index: 21; }
 /* web3.7: the phone shell (flow 12) shows one pane at a time. --d-shell-h is the story's and the host's fixed height;
    --d-vvh and --d-vvtop are the visual viewport's height and offset, set by the web app while a soft keyboard is up, so the
    composer stays in view and the shell sits on the screen when iOS pans the viewport. */
@@ -95,14 +103,15 @@
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-link-banner { padding-top: 0.375rem; }
 /* No zoom on a phone (Jonas, 2026-10-16): a tap never zooms, and no field is under 16px, which is what makes iOS zoom on focus. */
 .d-root { touch-action: manipulation; }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
 }
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
-  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--sidebar-w) minmax(0, 1fr) var(--sidebar-w); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "status status status status"; }
-  .d-app-shell .d-app-shell__aside { position: static; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--sidebar-w)); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; }
+  .d-app-shell .d-app-shell__grid--aside:has(> .d-app-shell__status) { grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside" "status status status status"; }
+  .d-app-shell .d-app-shell__aside { position: relative; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
 .d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }
@@ -115,8 +124,8 @@
   .d-settings-frame.d-settings-frame { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
 }
 /* web3.7.1: on a phone the frame is a non-modal page that ends above the tab bar (--d-tabbar-h, set on <html> by the shell), below the ring. */
-@media (max-width: 47.99rem) {
-  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: calc(var(--d-vvtop, 0px) + var(--d-ring-h, 0px)) 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px) - var(--d-ring-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: calc(var(--d-vvtop, 0px) + var(--d-ring-h, 0px) + var(--d-banner-h, 0px)) 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px) - var(--d-ring-h, 0px) - var(--d-banner-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
 }
 @container d-settings (max-width: 44.99rem) {
   /* A11Y-DESIGN-01: stacked, the whole panel scrolls as one column (at 320 × 256, 400 % zoom, a fixed navigation left

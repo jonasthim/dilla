@@ -34,6 +34,11 @@
  *   icons/file.svg  499039795d7412d67664ff79d2eb6b7412e746b24c18c8fd8aba383c24ddada0
  *   icons/play.svg  d7c34786135922a92b6896f6c2384ceeb0346afbf6041dc79982011411409833
  *   icons/eye.svg  5bf90197dd7629cad64a2e48d1186a71559deb6121207d10e3dc5b19ebaffdcf
+ *   icons/settings.svg  0ae27fd0f81999229e3127ac96c5b32edfea448e291d509e76212b917551d66b
+ *   icons/plus.svg  7f6af73bf1ff6c4bca3f18351c8d1bdec6749c0c2530c4de5da85d520c21df17
+ *   icons/maximize.svg  1f790856b0de805ab62e871609f1990b89d227d472022e57a11fde015aad4826
+ *   icons/minimize.svg  7daa304bc3dccac1f100304e66a41139662cc6c0ba3eba67480d97466a9ce02b
+ *   icons/search.svg  283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -53,7 +58,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -212,6 +217,30 @@ export const ICONS = {
   'eye': [
     ['path', { d: 'M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0' }],
     ['circle', { cx: '12', cy: '12', r: '3' }],
+  ],
+  'settings': [
+    ['path', { d: 'M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915' }],
+    ['circle', { cx: '12', cy: '12', r: '3' }],
+  ],
+  'plus': [
+    ['path', { d: 'M5 12h14' }],
+    ['path', { d: 'M12 5v14' }],
+  ],
+  'maximize': [
+    ['path', { d: 'M8 3H5a2 2 0 0 0-2 2v3' }],
+    ['path', { d: 'M21 8V5a2 2 0 0 0-2-2h-3' }],
+    ['path', { d: 'M3 16v3a2 2 0 0 0 2 2h3' }],
+    ['path', { d: 'M16 21h3a2 2 0 0 0 2-2v-3' }],
+  ],
+  'minimize': [
+    ['path', { d: 'M8 3v3a2 2 0 0 1-2 2H3' }],
+    ['path', { d: 'M21 8h-3a2 2 0 0 1-2-2V3' }],
+    ['path', { d: 'M3 16h3a2 2 0 0 1 2 2v3' }],
+    ['path', { d: 'M16 21v-3a2 2 0 0 1 2-2h3' }],
+  ],
+  'search': [
+    ['path', { d: 'm21 21-4.34-4.34' }],
+    ['circle', { cx: '11', cy: '11', r: '8' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

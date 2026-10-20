@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DOC_SHOTS, DOC_VIEWPORTS, PHONE_APP, PHONE_SHOTS, shootNamedState } from './shoot-docs.mjs';
+import { DOC_SHOTS, DOC_VIEWPORTS, PHONE_APP, PHONE_SHOTS, SIGNIN_SHOTS, WEB38_SHOTS, shootNamedState } from './shoot-docs.mjs';
 
 test('new guide images have unique state names and the required real viewport sizes', () => {
   assert.deepEqual(DOC_VIEWPORTS, { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } });
@@ -38,7 +38,7 @@ test('every screenshot the voice guide names is one the shooter makes', () => {
   const guide = readFileSync(new URL('../../docs/user/voice.md', import.meta.url), 'utf8');
   const named = [...guide.matchAll(/screenshots\/([a-z0-9-]+)\.png/g)].map((m) => m[1]);
   assert.ok(named.length > 0, 'docs/user/voice.md names no screenshot');
-  const shot = new Set([...DOC_SHOTS.map((s) => s.name), ...PHONE_SHOTS]);
+  const shot = new Set([...DOC_SHOTS.map((s) => s.name), ...PHONE_SHOTS, ...WEB38_SHOTS]);
   for (const name of named) assert.ok(shot.has(name), `docs/user/voice.md names ${name}.png, which the shooter does not make`);
 });
 
@@ -48,4 +48,12 @@ test('the phone set is shot at 390 by 844 and every image of "On your phone" is 
   const guide = readFileSync(new URL('../../docs/user/getting-started.md', import.meta.url), 'utf8');
   const named = [...guide.matchAll(/screenshots\/(phone-[a-z0-9-]+)\.png/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(named)].sort(), [...PHONE_SHOTS].sort());
+});
+
+test('the sign-in is shot in its new order and every web3.8 image the guides name is one the shooter makes', () => {
+  assert.deepEqual(SIGNIN_SHOTS, ['signin-0-entry', 'signin-1-login', 'signin-2-code', 'signin-3-recovery-key', 'signin-4-done']);
+  const guide = readFileSync(new URL('../../docs/user/getting-started.md', import.meta.url), 'utf8');
+  const signin = [...guide.matchAll(/screenshots\/(signin-[a-z0-9-]+)\.png/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(signin)].sort(), [...SIGNIN_SHOTS].sort());
+  for (const name of WEB38_SHOTS) assert.ok(guide.includes(`screenshots/${name}.png`) || readFileSync(new URL('../../docs/user/voice.md', import.meta.url), 'utf8').includes(`screenshots/${name}.png`), `${name}.png is in no guide`);
 });

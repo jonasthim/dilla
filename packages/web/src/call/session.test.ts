@@ -57,8 +57,11 @@ function fakeLocalTrack(kind: string): FakeTrack {
 function fakeRemoteTrack(kind: 'audio' | 'video', sid: string) {
   const t = {
     kind, sid, attached: [] as HTMLMediaElement[], made: [] as HTMLMediaElement[],
+    /** The MediaStreamTrack livekit puts on the element it attaches (web3.8 V1: the level meter reads it). */
+    mst: { kind, id: sid } as unknown as MediaStreamTrack,
     attach: vi.fn((el?: HTMLMediaElement) => {
       const out = el ?? document.createElement(kind);
+      if (kind === 'audio') out.srcObject = { getAudioTracks: () => [t.mst] } as unknown as MediaStream;
       t.attached.push(out);
       t.made.push(out);
       return out;
@@ -437,6 +440,26 @@ describe('the page call session (L-WEB-50)', () => {
     await f.advance(1_000);
     expect(call.state.tiles.find((t) => t.deviceId === BOB_DEV)!.video).toBe(cam);
     expect(call.state.tiles.find((t) => t.deviceId === DEV_D)!.video).toBeNull();
+  });
+
+  it('I2 review M5: a roster device not heard yet gets no camera or screen stream until it is verified', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const cam = { id: 'cam' };
+    const scr = { id: 'scr' };
+    bob.trackPublications.set('v', { source: 'camera', track: { mediaStream: cam } });
+    bob.trackPublications.set('s', { source: 'screen_share', track: { mediaStream: scr } });
+    await f.advance(1_000);
+    const bobTile = () => call.state.tiles.find((t) => t.deviceId === BOB_DEV)!;
+    expect(bobTile().state).toBe('not-heard');
+    expect(bobTile().video).toBeNull();
+    expect(bobTile().screen).toBeNull();
+    f.verified.add(BOB_DEV);
+    await f.advance(1_000);
+    expect(bobTile().state).toBe('ok');
+    expect(bobTile().video).toBe(cam);
+    expect(bobTile().screen).toBe(scr);
   });
 
   it('setPaused (RV-3) stops sending and playing, installs no key, and restores on resume', async () => {
@@ -1033,15 +1056,389 @@ describe('the product walk fixes', () => {
     expect(call.state.localScreen).toBeNull();
   });
 
-  it('M4: the own speaking follows the SFU, never while muted', async () => {
-    const f = fakes();
-    const call = await start(f);
-    expect(call.state.speaking).toBe(false);
-    (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
-    f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
-    expect(call.state.speaking).toBe(true);
-    call.setMuted(true);
-    expect(call.state.speaking).toBe(false);
+  describe('web3.8 V1: speaking follows the audio itself', () => {
+    /** Fake levels: a meter per track, its RMS set by the test; every meter's close() is counted. */
+    const meters = () => {
+      const levels = new Map<unknown, number>();
+      const made: Array<{ track: unknown; close: ReturnType<typeof vi.fn> }> = [];
+      const create = vi.fn((_ctx: AudioContext, track: MediaStreamTrack) => {
+        const close = vi.fn();
+        made.push({ track, close });
+        return { read: () => levels.get(track) ?? 0, close };
+      });
+      return { levels, made, create };
+    };
+    const withMeters = (f: ReturnType<typeof fakes>) => {
+      const m = meters();
+      f.deps.createLevelMeter = m.create;
+      return m;
+    };
+    const ownTrack = (f: ReturnType<typeof fakes>) => f.localTracks[0].mediaStreamTrack;
+    const tileOf = (call: PageCall, id: string) => call.state.tiles.find((t) => t.deviceId === id)!;
+    const heard = (f: ReturnType<typeof fakes>, id = BOB_DEV) => {
+      const p = f.addRemote(id);
+      f.verified.add(id);
+      const { track, pub } = f.subscribeTrack(p, 'microphone');
+      return { p, track, pub };
+    };
+
+    it('M4: the own speaking comes on after 50 ms of level and goes off 300 ms after it ends', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      expect(call.state.speaking).toBe(false);
+      m.levels.set(ownTrack(f), 0.05);
+      // The first sample that hears the level starts the run: 25 ms of it is not speaking, 50 ms is.
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(true);
+      m.levels.set(ownTrack(f), 0);
+      await f.advance(25);
+      await f.advance(275);
+      expect(call.state.speaking).toBe(true);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('M4: the SFU flag no longer decides the own speaking while a meter reads', async () => {
+      const f = fakes();
+      withMeters(f);
+      const call = await start(f);
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('the own speaking is false whatever the level while muted, deafened, paused or push to talk is up', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setMuted(true);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(200);
+      expect(call.state.speaking).toBe(false);
+      expect(call.state.level).toBe(0);
+      call.setMuted(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setDeafened(true);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      call.setDeafened(false);
+      call.setMuted(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      await call.setPaused(true);
+      expect(call.state.speaking).toBe(false); // at once, before the next sample
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      await call.setPaused(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setMode('ptt');
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      call.pushToTalk(true);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.pushToTalk(false);
+      await f.advance(50);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('a remote tile with an attached track follows its meter and ignores the SFU flag', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      await f.advance(100);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(75);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      p.isSpeaking = false;
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      m.levels.set(track.mst, 0);
+      await f.advance(325);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
+    it('web3.8 FX I1: screen-share audio never counts as speaking; only the microphone does, as the SFU fallback', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      // Bob is muted (no microphone track) and shares a screen with loud audio.
+      const p = f.addRemote(BOB_DEV);
+      f.verified.add(BOB_DEV);
+      const screenAudio = f.subscribeTrack(p, 'screen_share_audio').track;
+      f.subscribeTrack(p, 'screen_share');
+      m.levels.set(screenAudio.mst, 0.3);
+      await f.advance(200);
+      expect(screenAudio.attach).toHaveBeenCalled(); // it is still played
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      // He unmutes: his microphone's meter decides, the screen audio still does not.
+      const mic = f.subscribeTrack(p, 'microphone').track;
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      m.levels.set(mic.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      m.levels.set(mic.mst, 0);
+      await f.advance(400);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
+    it('a track that is not attached (deafened) falls back to the SFU flag; paused gives false for every tile', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f, { self: 'deafened' });
+      const { p, track } = heard(f);
+      expect(track.attach).not.toHaveBeenCalled();
+      expect(m.made.filter((x) => x.track === track.mst)).toHaveLength(0);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      await call.setPaused(true);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      await call.setPaused(false);
+      p.isSpeaking = false;
+      f.room.emit('activeSpeakersChanged', []);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
+    it('a track attached before the volume went to 0 falls back to the SFU flag from then on', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      call.setVolume(BOB, 0);
+      await f.advance(25);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+    });
+
+    it('with no AudioContext both fall back to the SFU flags', async () => {
+      const f = fakes();
+      f.deps.audioContext = () => null;
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p } = heard(f);
+      expect(m.create).not.toHaveBeenCalled();
+      p.isSpeaking = true;
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p, f.room.localParticipant]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(call.state.speaking).toBe(true);
+      call.setMuted(true);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('I1: with push to talk and the key up the own speaking is false whatever the level, also with a ptt processor', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+      const call = await start(f, { mode: 'ptt', noise: 'on' });
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(false);
+      expect(call.state.level).toBe(0);
+      call.pushToTalk(true);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(true);
+      call.pushToTalk(false);
+      expect(call.state.speaking).toBe(false); // at once, no 300 ms hold after the release
+      await f.advance(150);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('I2: a suspended AudioContext falls back to the SFU flag', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      m.levels.set(track.mst, 0.1);
+      m.levels.set(ownTrack(f), 0.1);
+      f.contexts[0].to('suspended');
+      await f.advance(150);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      expect(call.state.speaking).toBe(false);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+    });
+
+    it('m2: deafening silences the own speaking at once', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(true);
+      call.setDeafened(true);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('m3: the own fallback (no context) is also false while push to talk is up', async () => {
+      const f = fakes();
+      f.deps.audioContext = () => null;
+      const call = await start(f, { mode: 'ptt' });
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      expect(call.state.speaking).toBe(false);
+      call.pushToTalk(true);
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      expect(call.state.speaking).toBe(true);
+    });
+
+    it('m6: a remote meter that appears mid-call arms the sampler, and the last detach idles it', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      f.deps.createLevelMeter = (ctx, track) => ((track as unknown) === ownTrack(f) ? null : m.create(ctx, track));
+      const call = await start(f);
+      const idle = f.timers.size;
+      const { p, track, pub } = heard(f);
+      expect(f.timers.size).toBe(idle + 1);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(p.isSpeaking).toBe(false);
+      f.unsubscribeTrack(p, pub);
+      await f.advance(25);
+      expect(f.timers.size).toBe(idle);
+    });
+
+    it('m4: the sampler idles when no meter exists, and runs once one does', async () => {
+      const f = fakes();
+      f.deps.createLevelMeter = () => null;
+      await start(f);
+      const idle = f.timers.size;
+      const g = fakes();
+      withMeters(g);
+      await start(g);
+      expect(g.timers.size).toBe(idle + 1);
+    });
+
+    it('a meter that cannot be made means the fallback, never an error', async () => {
+      const f = fakes();
+      f.deps.createLevelMeter = () => null;
+      const call = await start(f);
+      const { p } = heard(f);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(call.state.error).toBeNull();
+      const g = fakes();
+      g.deps.createLevelMeter = () => { throw new Error('no analyser'); };
+      const other = await start(g);
+      expect(other.state.error).toBeNull();
+      expect(other.state.phase).toBe('connected');
+    });
+
+    it('the level (0..12) comes from the own meter', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(100);
+      expect(call.state.level).toBe(5);
+      m.levels.set(ownTrack(f), 0.9);
+      await f.advance(100);
+      expect(call.state.level).toBe(12);
+    });
+
+    it('a speaking flip is published at once, a level change at most every 100 ms', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const seen: Array<[boolean, number]> = [];
+      call.subscribe(() => { seen.push([call.state.speaking, call.state.level]); });
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(75);
+      expect(seen.some(([s]) => s)).toBe(true);
+      seen.length = 0;
+      // The level wanders every tick; the state changes at most once per 100 ms.
+      for (let i = 0; i < 8; i++) {
+        m.levels.set(ownTrack(f), 0.1 + (i % 2 === 0 ? 0.02 : 0.04));
+        await f.advance(25);
+      }
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.length).toBeLessThanOrEqual(2);
+    });
+
+    it('every meter is closed on detach and on leave("user"), and no timer is left after ended', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const bob = heard(f);
+      const carol = heard(f, CAROL_DEV);
+      const closed = (t: unknown) => m.made.find((x) => x.track === t)!.close;
+      expect(closed(ownTrack(f))).not.toHaveBeenCalled();
+      f.unsubscribeTrack(bob.p, bob.pub);
+      expect(closed(bob.track.mst)).toHaveBeenCalledTimes(1);
+      expect(closed(carol.track.mst)).not.toHaveBeenCalled();
+      await call.leave('user');
+      expect(closed(ownTrack(f))).toHaveBeenCalledTimes(1);
+      expect(closed(carol.track.mst)).toHaveBeenCalledTimes(1);
+      expect(f.timers.size).toBe(0);
+    });
+
+    it('every meter is closed when the room ends', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const bob = heard(f);
+      f.room.emit('disconnected', 1);
+      await f.advance(10);
+      expect(call.state.phase).toBe('ended');
+      expect(m.made.some((x) => x.track === bob.track.mst)).toBe(true);
+      for (const x of m.made) expect(x.close).toHaveBeenCalledTimes(1);
+      expect(f.timers.size).toBe(0);
+    });
+
+    it('the own meter is closed when a start fails after the publish', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      (f.room as unknown as { state: string }).state = 'disconnected';
+      await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts)).rejects.toMatchObject({ code: 'E_DISCONNECTED' });
+      expect(m.made.length).toBeGreaterThan(0);
+      for (const x of m.made) expect(x.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('the own meter is replaced when the noise processor swaps the track', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f, { noise: 'on' });
+      const first = m.made.length;
+      const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+      mic.stopProcessor = vi.fn(async () => undefined);
+      await call.setNoise('off');
+      expect(m.made.length).toBe(first + 1);
+      expect(m.made[first - 1].close).toHaveBeenCalledTimes(1);
+    });
+
+    it('no level reaches the bridge', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      await start(f);
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(200);
+      expect(JSON.stringify(f.calls)).not.toMatch(/rms|level|speaking/i);
+    });
   });
 
   it('Off reopens a capture with browser suppression disabled when live constraints are immutable',async()=>{
@@ -1054,7 +1451,12 @@ describe('the product walk fixes', () => {
     const fresh={enabled:true,stop:vi.fn(),getSettings:()=>({noiseSuppression:false}),getConstraints:()=>({}),applyConstraints:async()=>{}} as unknown as MediaStreamTrack;
     mic.restartTrack=vi.fn(async()=>{mic.mediaStreamTrack=fresh;});
     await call.setNoise('off');
+    // web3.8 MUTE (R2): push to talk with the key up must not send, so the reopen waits for the key.
+    expect(mic.restartTrack).not.toHaveBeenCalled();
+    call.pushToTalk(true);
+    await flush();
     expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({noiseSuppression:false,echoCancellation:true,autoGainControl:true}));
+    call.pushToTalk(false);
     expect(fresh.enabled).toBe(false);
   });
 
@@ -1126,6 +1528,421 @@ describe('product walk M5: the own mute and deafen kept across a reload', () => 
     // Undeafening keeps the microphone muted (fix round 3, m1: the kept mute is never lost to a reload).
     call.setDeafened(false);
     expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+});
+
+describe('web3.8 MUTE: a mute pressed while the start runs is in force from the first published frame', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const deferred = <T,>() => {
+    let resolve: (v: T) => void = () => undefined;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const micStream = () => {
+    const track = { kind: 'audio', stop: () => undefined } as { kind: string; stop: () => void; enabled?: boolean };
+    return { track, stream: { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] } as unknown as MediaStream };
+  };
+  /** Records what the microphone looked like at the moment it was handed to the publish (`enabled`) and when the noise
+   *  processor was set on the published track (`mutedAtNoise`); `publish` and `noise` hold those steps when given. */
+  const watch = (f: ReturnType<typeof fakes>, hold: { publish?: Promise<void>; noise?: Promise<void> } = {}) => {
+    const seen: { enabled: boolean | undefined; mutedAtNoise: boolean | undefined; publishing: boolean } = {
+      enabled: undefined, mutedAtNoise: undefined, publishing: false,
+    };
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      seen.publishing = true;
+      seen.enabled = (track as unknown as { enabled?: boolean }).enabled !== false;
+      await hold.publish;
+      const pub = await real(track, o);
+      const t = pub.track;
+      t.setProcessor = vi.fn(async () => { seen.mutedAtNoise = t.muted; await hold.noise; });
+      return pub;
+    });
+    return seen;
+  };
+
+  it('a mute pressed during the microphone prompt: the track is published disabled, and the others are told', async () => {
+    const prompt = deferred<MediaStream>();
+    const f = fakes({ getUserMedia: () => prompt.promise });
+    const seen = watch(f);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: null, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    prompt.resolve(micStream().stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('a mute pressed while the room connects: the track is published disabled', async () => {
+    const f = fakes();
+    const seen = watch(f);
+    const connect = deferred<void>();
+    const join = f.deps.joinCall;
+    f.deps.joinCall = async (o: JoinCallOptions) => { await connect.promise; return join(o); };
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    connect.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(f.localTracks[0].muted).toBe(true);
+  });
+
+  /** The page's side of watchSelf: `press` sets what selfNow answers and pushes it to the starting session at once. */
+  const pressing = () => {
+    const page = { kept: null as 'muted' | 'deafened' | null, apply: null as (() => void) | null, registered: 0, unregistered: 0 };
+    const o: Partial<PageCallOptions> = {
+      selfNow: () => page.kept,
+      watchSelf: (apply) => { page.apply = apply; page.registered += 1; return () => { page.apply = null; page.unregistered += 1; }; },
+    };
+    const press = (v: 'muted' | 'deafened') => { page.kept = v; page.apply?.(); };
+    return { page, o, press };
+  };
+
+  it('a mute pressed during the publish closes the microphone at the press, and LiveKit cannot open it again', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const mic = micStream();
+    f.deps.media.getUserMedia = vi.fn(async () => mic.stream);
+    const publish = deferred<void>();
+    const seen = watch(f, { publish: publish.promise });
+    const { page, o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
+    await flush();
+    // The track went to the publish open: the person had not pressed anything yet.
+    expect(seen).toMatchObject({ publishing: true, enabled: true });
+    expect(page.registered).toBe(1);
+    press('muted');
+    // At the press, with the publish still pending: closed now, not at the next step of the start.
+    expect(mic.track.enabled).toBe(false);
+    // As LiveKit's LocalTrack does while it publishes: it enables the track it was handed.
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(false);
+    publish.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.mutedAtNoise).toBe(true);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('without watchSelf, a mute pressed during the publish is read when the publish returns, before the noise processor loads', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const publish = deferred<void>();
+    const seen = watch(f, { publish: publish.promise });
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    await flush();
+    expect(seen).toMatchObject({ publishing: true, enabled: true });
+    kept = 'muted';
+    publish.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.mutedAtNoise).toBe(true);
+    expect(call.state).toMatchObject({ muted: true });
+  });
+
+  it('a mute pressed while the noise processor loads closes the microphone at the press, LiveKit mute included', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const mic = micStream();
+    f.deps.media.getUserMedia = vi.fn(async () => mic.stream);
+    const noise = deferred<void>();
+    const seen = watch(f, { noise: noise.promise });
+    const { page, o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
+    await flush();
+    expect(seen.mutedAtNoise).toBe(false);
+    expect(f.localTracks[0].muted).toBe(false);
+    press('muted');
+    // Still loading the processor: the published track is LiveKit-muted and the capture disabled already.
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(mic.track.enabled).toBe(false);
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+    // Connected: the start no longer listens; the page's attach reconcile and the session's own toggles take over.
+    expect(page.unregistered).toBe(1);
+    expect(page.apply).toBeNull();
+  });
+
+  it('a deafen pressed while the noise processor loads closes the microphone at the press, and an undeafen keeps it muted', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const noise = deferred<void>();
+    watch(f, { noise: noise.promise });
+    const { o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
+    await flush();
+    press('deafened');
+    expect(f.localTracks[0].muted).toBe(true);
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+
+  it('a press after a failed start, and an unmute pushed during the start, change nothing', async () => {
+    const f = fakes({ joinCallError: new Error('E_SFU') });
+    const { page, o, press } = pressing();
+    await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o })).rejects.toBeTruthy();
+    expect(page.unregistered).toBe(page.registered);
+    press('muted');
+    const g = fakes();
+    const noise = deferred<void>();
+    g.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    watch(g, { noise: noise.promise });
+    const p2 = pressing();
+    const started = startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', self: 'muted', ...p2.o });
+    await flush();
+    p2.page.kept = null;
+    p2.page.apply?.();
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(g.localTracks[0].muted).toBe(true);
+  });
+
+  it('a deafen pressed during the join, then an undeafen, leaves the microphone muted', async () => {
+    const prompt = deferred<MediaStream>();
+    const f = fakes({ getUserMedia: () => prompt.promise });
+    const seen = watch(f);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'deafened';
+    prompt.resolve(micStream().stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+    expect(f.localTracks[0].muted).toBe(true);
+  });
+
+  it('without watchSelf, a deafen while the noise processor loads is read at connected, and an undeafen leaves the microphone muted', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const noise = deferred<void>();
+    watch(f, { noise: noise.promise });
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    await flush();
+    kept = 'deafened';
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    const bob = f.addRemote(BOB_DEV);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(bob.gains.microphone).toBe(0);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+
+  it('only toward privacy: a setting less private than the start never opens it', async () => {
+    const f = fakes();
+    const seen = watch(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened', selfNow: () => null });
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(seen.enabled).toBe(false);
+    expect(f.localTracks[0].muted).toBe(true);
+    const g = fakes();
+    const muted = await startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened', selfNow: () => 'muted' });
+    open.push(muted);
+    expect(muted.state).toMatchObject({ muted: true, deafened: true });
+    expect(g.localTracks[0].muted).toBe(true);
+  });
+
+  it('the capture track the noise start reopens is the one the mute closes', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn(), status: { effective: 'browser', browserNoise: 'off' } } as unknown as ReturnType<NonNullable<PageCallDeps['createNoiseProcessor']>>);
+    const fresh = { kind: 'audio', enabled: true, stop: vi.fn(), getSettings: () => ({ noiseSuppression: true }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined } as unknown as MediaStreamTrack;
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const raw = track as unknown as Record<string, unknown>;
+      raw.getSettings = () => ({ noiseSuppression: false, deviceId: 'chosen' }); raw.getConstraints = () => ({}); raw.applyConstraints = async () => undefined;
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+      t.mediaStreamTrack = track;
+      t.restartTrack = async () => { t.mediaStreamTrack = fresh; };
+      return pub;
+    });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', self: 'muted' });
+    open.push(call);
+    expect(fresh.enabled).toBe(false);
+  });
+
+  /** As LiveKit's LocalTrack: the track it is handed is enabled (`enabled = !isMuted`, isMuted false) while it publishes. */
+  const liveKitEnables = (f: ReturnType<typeof fakes>) => {
+    const seen: { during?: boolean } = {};
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      await Promise.resolve();
+      (track as unknown as { enabled: boolean }).enabled = true;
+      seen.during = (track as unknown as { enabled: boolean }).enabled;
+      return real(track, o);
+    });
+    return seen;
+  };
+
+  it('LiveKit enabling the track during the publish never opens a muted microphone', async () => {
+    const f = fakes();
+    const seen = liveKitEnables(f);
+    const prompt = deferred<MediaStream>();
+    f.deps.media.getUserMedia = vi.fn(() => prompt.promise);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    const mic = micStream();
+    prompt.resolve(mic.stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.during).toBe(false);
+    expect(mic.track.enabled).toBe(false);
+    // An unmute opens it again (the guard follows the session, it never holds a microphone the person opened).
+    call.setMuted(false);
+    expect(mic.track.enabled).toBe(true);
+    (mic.track as { enabled: boolean }).enabled = false;
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(true);
+    call.setMuted(true);
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(false);
+  });
+
+  it('LiveKit enabling the track during the publish never opens push to talk with the key up, and an open call stays open', async () => {
+    const f = fakes();
+    const seen = liveKitEnables(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, mode: 'ptt' });
+    open.push(call);
+    expect(seen.during).toBe(false);
+    const g = fakes();
+    const open2 = liveKitEnables(g);
+    const vad = await startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(vad);
+    expect(open2.during).toBe(true);
+    expect((g.room.localParticipant.publishTrack.mock.calls[0][0] as unknown as { enabled?: boolean }).enabled).toBe(true);
+  });
+
+  /** A published microphone whose capture cannot switch noise suppression live (the settings keep saying `on`), so the
+   *  browser path reopens it with restartTrack; the reopened track is `fresh`, a MediaStreamTrack-like object whose
+   *  `enabled` lives on its prototype, as a real track's does. */
+  const reopening = (f: ReturnType<typeof fakes>) => {
+    const fresh = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined,
+    });
+    const restarts = { n: 0 };
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const raw = track as unknown as Record<string, unknown>;
+      raw.getSettings = () => ({ noiseSuppression: true, deviceId: 'chosen' }); raw.getConstraints = () => ({}); raw.applyConstraints = async () => undefined;
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+      t.mediaStreamTrack = track;
+      // As LiveKit: the sender gets the new capture, which starts enabled.
+      t.restartTrack = async () => { restarts.n += 1; t.mediaStreamTrack = fresh; };
+      return pub;
+    });
+    return { fresh, restarts };
+  };
+
+  it('R2: a capture restart waits while the microphone must not send, and runs when it opens', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    await flush();
+    // Muted: no new (enabled) capture goes onto the sender.
+    expect(restarts.n).toBe(0);
+    call.setMuted(false);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(fresh.enabled).toBe(true);
+  });
+
+  it('R2: a reopened capture is guarded too: muted afterwards, LiveKit cannot enable it', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(1);
+    call.setMuted(true);
+    expect(fresh.enabled).toBe(false);
+    fresh.enabled = true;
+    expect(fresh.enabled).toBe(false);
+  });
+
+  /** web3.8 FX I3: fake meters, their level set per track by the test; `last()` is the track the newest meter reads. */
+  const ownMeters = (f: ReturnType<typeof fakes>) => {
+    const levels = new Map<unknown, number>();
+    const made: Array<{ track: unknown; closed: boolean }> = [];
+    f.deps.createLevelMeter = (_ctx, track) => {
+      const entry = { track: track as unknown, closed: false };
+      made.push(entry);
+      return { read: () => (entry.closed ? 0 : levels.get(track) ?? 0), close: () => { entry.closed = true; } };
+    };
+    return { levels, made, last: () => made.filter((m) => !m.closed).at(-1)?.track };
+  };
+
+  it('FX I3: after the browser-path capture restart at the start, the own meter reads the new capture', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const m = ownMeters(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(m.last()).toBe(fresh);
+    m.levels.set(fresh, 0.2);
+    await f.advance(150);
+    expect(call.state.speaking).toBe(true);
+    expect(call.state.level).toBeGreaterThan(0);
+  });
+
+  it('FX I3: after the deferred restart on unmute, the own meter reads the new capture', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const m = ownMeters(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(0);
+    call.setMuted(false);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(m.last()).toBe(fresh);
+    m.levels.set(fresh, 0.2);
+    await f.advance(150);
+    expect(call.state.speaking).toBe(true);
+  });
+
+  it('a getter that throws changes nothing and fails no start', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'muted', selfNow: () => { throw new Error('gone'); } });
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
   });
 });
 

@@ -107,8 +107,12 @@ class Refusal extends Error {
 
 const ACCOUNT_CODES = new Set([
   'E_KEK_EXISTS', 'E_KEK_UNWRAP', 'E_SESSION_SCOPE', 'E_NO_BACKUP', 'E_LIST_RACE', 'E_DEVICE_UNLISTED', 'E_NO_ASSERTION',
-  'E_SIGNIN_EVICTED',
+  'E_SIGNIN_EVICTED', 'E_SIGNIN_EXPIRED',
 ]);
+
+/** dillad's AssertionTTL is 5 minutes; a 401 to a backup code this long after the assertion was minted is its expiry
+ *  (the minting is earlier on the instance's clock than the answer here, by the round trip). */
+const ASSERTION_EXPIRED_MS = 300_000;
 
 const ALLOWED_CODES = new Set(`E_ATTACHMENT_COUNT E_ATTACHMENT_FAILED E_ATTACHMENT_INPUT E_ATTACHMENT_MISSING E_ATTACHMENT_TOO_LARGE
 E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR_DEPTH E_CBOR_NONCANONICAL
@@ -120,7 +124,7 @@ E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQ
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
-E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
@@ -141,8 +145,9 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
   return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
     ...(e instanceof Refusal && e.reason !== undefined && REFUSAL_REASONS.has(e.reason) ? { reason: e.reason } : {}) };
 }
-/** The stable reasons a local refusal may carry to the page. */
-const REFUSAL_REASONS = new Set(['announce.noHeldRole']);
+/** The stable reasons a local refusal may carry to the page. None since web3.8 R5 removed 'announce.noHeldRole' (an
+ *  announcement's creator gets her own send entry, so no create is refused for the roles she holds). */
+const REFUSAL_REASONS: ReadonlySet<string> = new Set<string>();
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
   const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
@@ -471,6 +476,11 @@ export const MEMBER_REREAD_MIN_MS = 5_000;
 /** WB client m5: resign waits at most this long for the call's leave before it releases the store. */
 export const RESIGN_LEAVE_MS = 2_000;
 export const VOICE_LOOKUPS_MAX = 256;
+/** web3.8 VM: how often per join of a call the own voice_self is sent again while the instance's voice_state lacks it. */
+export const VOICE_SELF_RESENDS = 3;
+/** web3.8 MUTE: how often a voice_self made while offline is sent by the reconnect itself (its own budget, apart from
+ *  VOICE_SELF_RESENDS). */
+export const VOICE_SELF_RECONNECT_SENDS = 1;
 const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
 /** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
@@ -575,8 +585,8 @@ function invalid(command: Record<string, unknown>): string | null {
     }
   }
   if (m === 'factorSetupDone' && command.invite !== null && typeof command.invite !== 'string') return 'invite is not a string or null';
-  if ((m === 'signInKey' || m === 'signInLogin' || m === 'signInTotp' || m === 'signInPasskey' || m === 'signInBackupCode'
-    || m === 'signOutRevoke') && blank(command.recoveryKey)) {
+  // web3.8 (pre-flight C-3): only the key's commands carry a key; signInLogin, signInTotp and signInPasskey take none.
+  if ((m === 'signInKey' || m === 'signInBackupCode' || m === 'signOutRevoke') && blank(command.recoveryKey)) {
     return 'the recovery key is empty';
   }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
@@ -632,7 +642,12 @@ export const REMOVALS_MAX = 8;
  *  the worker remembers for their notice. */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
 export const HELD_LIVE_MAX = 64;
+/** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
+ *  marker, so no badge sticks. */
+export const HELD_READ_HOLD_MS = 60_000;
 const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REASONS.has(row.reason);
+/** A live row the core holds for its sender's trust, and when it was held (elapsed ms, R8). */
+type HeldLive = { groupId: Id; seq: bigint; heldAt: number };
 
 export class Controller {
   private readonly parts: ControllerParts;
@@ -665,6 +680,9 @@ export class Controller {
   private enrol: Enrol | null = null;
   private fetched: EnrolFetched | null = null;
   private signInRunning = false;
+  /** When the held sign-in assertion was minted, on the monotonic clock (elapsed()), to tell its expiry from a refused
+   *  backup code; a wall-clock step must not age it (C1 fix m3). */
+  private assertionAt: number | null = null;
   /** web3.6: the community a signup that stopped at factor-setup was to join (null: none), joined by factorSetupDone. */
   private pendingJoin: { communityId: Id | null; invite: string } | null = null;
   /** A signup this worker completed has sent no KeyPackages yet (a V route, refused while owed): enterReady sends them
@@ -693,7 +711,10 @@ export class Controller {
    *  gateway ready) were caught up, not delivered live; they badge but raise no notice. null before ready. */
   private noticeFloor: bigint | null = null;
   /** CI1: live rows the core held for their sender's trust, oldest first, at most HELD_LIVE_MAX (noticeReleased). */
-  private heldLive: { groupId: Id; seq: bigint }[] = [];
+  private heldLive: HeldLive[] = [];
+  /** R8 fix I2: a markRead a young held row stopped short, by group (hex): the target the page asked for, re-applied on
+   *  a release and by the group's one timer at the held row's age-out. */
+  private readonly heldReads = new Map<string, { groupId: Id; target: bigint; timer: number }>();
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
   /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
@@ -779,6 +800,10 @@ export class Controller {
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
+  /** web3.8 VM: the re-sends of the own voice_self left in this join of the call (VOICE_SELF_RESENDS). */
+  private selfResends: { callId: string; left: number } | null = null;
+  /** web3.8 MUTE: a voice_self the page made while offline, still owed to the instance: the reconnect sends it. */
+  private selfOffline: { callId: string; left: number } | null = null;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -821,6 +846,8 @@ export class Controller {
       serial: (g, job) => (this.sync === null ? job() : this.sync.runOnGroup(g, job)),
       callEnded: (call) => {
         if (this.lastVoiceSelf?.callId === call) this.lastVoiceSelf = null;
+        if (this.selfResends?.callId === call) this.selfResends = null;
+        if (this.selfOffline?.callId === call) this.selfOffline = null;
         this.ownInCall.delete(call);
       },
       onCommitted: (g, result) => { this.onGroupChanged(g, result); },
@@ -996,12 +1023,12 @@ export class Controller {
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
-      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password, command.recoveryKey));
-      case 'signInTotp': return this.step(() => this.signInTotp(command.code, command.recoveryKey));
+      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password));
+      case 'signInTotp': return this.step(() => this.signInTotp(command.code));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
       case 'signInCancel': return this.signInCancel();
       case 'signInPasskeyBegin': return this.signInPasskeyBegin();
-      case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response, command.recoveryKey));
+      case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response));
       case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
       case 'factorSetupDone': {
         if (this.factorSetupRunning) return Promise.reject(new Refusal('E_NOT_READY', 'factorSetupDone is running'));
@@ -1091,8 +1118,16 @@ export class Controller {
   // ---- slices ----
 
   private setAccount(patch: Partial<AccountState>): void {
+    // The cached display name belongs to one signed-in user: any state that clears or revokes the user drops it.
+    if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
+    // The status choice belongs to the signed-in account too: with the user gone, the next account starts from the default
+    // until its own read lands, and a read still in flight for the old one is not applied.
+    if (patch.user === null && patch.presenceChoice === undefined) {
+      delete this.accountState.presenceChoice;
+      ++this.presenceChoiceReadSeq;
+    }
     this.phase = this.accountState.phase;
     this.slices.set('account', this.accountState);
   }
@@ -1376,7 +1411,7 @@ export class Controller {
     if (this.revoked()) return;
     this.noticeFloor = this.serverNowS();
     this.setAccount({
-      phase: 'ready', user: { id: toHex(userId), username }, deviceId: toHex(deviceId),
+      phase: 'ready', user: { id: toHex(userId), username, ...this.knownDisplay(toHex(userId)) }, deviceId: toHex(deviceId),
       recoveryKey: null, error: null, signIn: null, factorSetup: null,
     });
     this.publishDms();
@@ -1457,6 +1492,7 @@ export class Controller {
     if (this.wiping || this.storeCleared) return;
     if (this.revoked()) return;
     this.clearReauthTimer();
+    this.clearHeldReads();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -1486,6 +1522,7 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
+      if (status === 'online') this.safely(() => { this.sendOfflineSelf(); });
       if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
         this.clearPresence(community.id);
         this.clearAFK(community.id);
@@ -1791,6 +1828,11 @@ export class Controller {
     return work().finally(() => { this.signInRunning = false; });
   }
 
+  /** Elapsed time in ms (deps.monotonic, performance.now in the worker; the wall clock when a host gives none). */
+  private elapsed(): number {
+    return (this.deps.monotonic ?? this.deps.now)();
+  }
+
   private signInBegin(): Promise<null> {
     if (this.storeCleared) return Promise.reject(new Refusal('E_NOT_READY', 'the store was cleared: reload'));
     this.fetched = null;
@@ -1808,15 +1850,12 @@ export class Controller {
     }
   }
 
-  /** The password is passed to Enrol.login and held in no field (L-TS-21). The page held the recovery key from the
-   *  first step and sends it here: its form is checked before the login is sent (a mistyped key costs no login), and
-   *  with no second factor owed the enrolment runs at once, so the assertion is spent seconds after it was minted
-   *  (REGISTRATION-DEVICES-02, coordinator ruling on its concern 3). With a second factor the worker keeps no key:
-   *  the page sends it again with the code. */
-  private async signInLogin(rawUsername: string, password: string, recoveryKey: string): Promise<{ needs: 0 | 1 | 2 }> {
+  /** The password is passed to Enrol.login and held in no field (L-TS-21). web3.8 (R6): the login never registers.
+   *  With no second factor owed, Enrol holds the settled assertion and the key step follows; signInKey registers it
+   *  after the key's form check, back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). */
+  private async signInLogin(rawUsername: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();
-    this.checkKey(recoveryKey, 'signin-login');
     let needs: 0 | 1 | 2;
     try {
       ({ needs } = await enrol.login(username, password));
@@ -1824,6 +1863,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-login', error: errorOf(e) });
       throw e;
     }
+    this.assertionAt = this.elapsed();
     // web3.6: needs 1 asks for the app's code, needs 2 (passkeys and no app) for a passkey; either takes a backup code.
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp'), error: null });
@@ -1833,8 +1873,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-passkey', signIn: signInOf(username, 'passkey'), error: null });
       return { needs };
     }
-    this.setAccount({ signIn: signInOf(username, null), error: null });
-    await this.enrolWithKey(recoveryKey);
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(username, null), error: null });
     return { needs };
   }
 
@@ -1851,11 +1890,11 @@ export class Controller {
 
   /** web3.6: a passkey that verified the person signs in on its own (needs 0); one that did not (needs 1) goes on to the
    *  code step with `factor 'passkey'` for its copy. The passkey names the account, so the typed username is not kept. A
-   *  refused passkey stays at its step with the error, and an assertion held from a login stays usable. */
-  private async signInPasskey(ceremonyId: string, response: string, recoveryKey: string): Promise<{ needs: 0 | 1 }> {
+   *  refused passkey stays at its step with the error, and an assertion held from a login stays usable. web3.8 (R6):
+   *  needs 0 holds the settled assertion for the key step and never registers. */
+  private async signInPasskey(ceremonyId: string, response: string): Promise<{ needs: 0 | 1 }> {
     const enrol = this.requireEnrol();
     const back = this.phase;
-    this.checkKey(recoveryKey, back);
     let needs: 0 | 1;
     try {
       ({ needs } = await enrol.passkey(fromHex(ceremonyId), response));
@@ -1863,24 +1902,29 @@ export class Controller {
       this.setAccount({ phase: back, error: errorOf(e) });
       throw e;
     }
+    this.assertionAt = this.elapsed();
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(null, 'passkey'), error: null });
       return { needs };
     }
-    this.setAccount({ signIn: signInOf(null, null), error: null });
-    await this.enrolWithKey(recoveryKey);
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(null, null), error: null });
     return { needs };
   }
 
   /** web3.6: a backup code in place of the app's code or a passkey. A refused code spends the assertion: the person logs
-   *  in again, the username kept (as signInTotp). */
+   *  in again, the username kept (as signInTotp). web3.8 (R6): the page holds the code and sends it only with the key,
+   *  so it is never spent early. dillad checks the assertion before the code, so a 401 once the held assertion is past
+   *  its 5 minutes spent no code: it is the expiry (E_SIGNIN_EXPIRED, pre-flight C-16). A 401 inside them is the
+   *  refused code, which dillad answers the same way. */
   private async signInBackupCode(code: string, recoveryKey: string): Promise<null> {
     const enrol = this.requireEnrol();
     const username = this.accountState.signIn?.username ?? null;
     this.checkKey(recoveryKey, this.phase);
+    const heldAt = this.assertionAt;
     try {
       await enrol.backupCode(backupCode(code));
     } catch (e) {
+      if (isStatus(e, 401) && heldAt !== null && this.elapsed() - heldAt >= ASSERTION_EXPIRED_MS) throw this.expired();
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
@@ -1888,29 +1932,31 @@ export class Controller {
     return null;
   }
 
-  /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. */
-  private async signInTotp(code: string, recoveryKey: string): Promise<null> {
+  /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. web3.8 (R6):
+   *  an accepted code holds the fresh settled assertion for the key step and never registers. */
+  private async signInTotp(code: string): Promise<null> {
     const enrol = this.requireEnrol();
     const username = this.accountState.signIn?.username ?? null;
-    this.checkKey(recoveryKey, 'signin-totp');
     try {
       await enrol.totp(code);
     } catch (e) {
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
-    await this.enrolWithKey(recoveryKey);
+    this.assertionAt = this.elapsed();
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(username, null), error: null });
     return null;
   }
 
   /** Requirement 7 as REGISTRATION-DEVICES-02 amends it: the registration runs inside signInKey, after the key's
    *  form passed. A refused registration keeps the phase-3 enrol record (its device id is reused) and returns to
-   *  the login step. */
+   *  the login step. web3.8 (pre-flight C-15): its 401 is the held assertion that ran out during key entry. */
   private async register(): Promise<Id> {
     const enrol = this.requireEnrol();
     try {
       return (await enrol.register(this.requireInstance().instanceId)).userId;
     } catch (e) {
+      if (isStatus(e, 401)) throw this.expired();
       const username = this.accountState.signIn?.username ?? null;
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
@@ -1940,6 +1986,15 @@ export class Controller {
     this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null),
       error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null } });
     return new Error('E_SIGNIN_EVICTED');
+  }
+
+  /** web3.8 (R6, pre-flight C-15/C-16): the held assertion ran out before it was spent, and nothing was spent with it.
+   *  Back to step 1 with the reason; a kept enrol record (its device id) is reused by the next registration. */
+  private expired(): Error {
+    const username = this.accountState.signIn?.username ?? null;
+    this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null),
+      error: { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null } });
+    return new Error('E_SIGNIN_EXPIRED');
   }
 
   /** Requirement 8 as REGISTRATION-DEVICES-02 amends it, for an enrolment already registered (a wrong key, a reload
@@ -2541,7 +2596,7 @@ export class Controller {
   private holdLive(groupId: Id, seq: bigint): void {
     const hex = toHex(groupId);
     if (this.heldLive.some((h) => h.seq === seq && toHex(h.groupId) === hex)) return;
-    this.heldLive.push({ groupId, seq });
+    this.heldLive.push({ groupId, seq, heldAt: this.elapsed() });
     if (this.heldLive.length > HELD_LIVE_MAX) this.heldLive.splice(0, this.heldLive.length - HELD_LIVE_MAX);
   }
 
@@ -2552,11 +2607,11 @@ export class Controller {
     const me = this.me;
     const floor = this.noticeFloor;
     if (this.heldLive.length === 0) return;
-    if (core === null || me === null || floor === null) { this.heldLive = []; return; }
+    if (core === null || me === null || floor === null) { this.heldLive = []; this.clearHeldReads(); return; }
     const channelOf = this.channelMap(core.groups());
     const ownUser = toHex(me.userId);
     const drafts: NoticeDraft[] = [];
-    const kept: { groupId: Id; seq: bigint }[] = [];
+    const kept: HeldLive[] = [];
     for (const held of this.heldLive) {
       const channelId = channelOf.get(toHex(held.groupId));
       if (channelId === undefined) continue;
@@ -2569,6 +2624,14 @@ export class Controller {
       const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
       const senderName = this.nameOf(toHex(found.row.senderUser as Id));
       drafts.push(noticeOf({ row: found.row, channelId, communityId, dm, mention: found.row.mention, senderName, threadRoot: found.threadRoot }));
+    }
+    // Fix round 2 (C1): a group that lost a held row drops its held-back read and timer, and re-applies nothing. The
+    // released row is unread, as a live arrival would be (R8); the release raises the count, so the page marks an open,
+    // visible channel itself.
+    const keptRows = new Set(kept.map((h) => `${toHex(h.groupId)}:${h.seq.toString()}`));
+    for (const held of this.heldLive) {
+      if (keptRows.has(`${toHex(held.groupId)}:${held.seq.toString()}`)) continue;
+      this.dropHeldRead(toHex(held.groupId));
     }
     this.heldLive = kept;
     if (drafts.length === 0) return;
@@ -2628,8 +2691,7 @@ export class Controller {
     // web3.7: there is no read state per thread, so reading the channel marks its thread replies read too; they are not in
     // the main timeline, so the marker goes to the group's head (the core clamps it there as well).
     const head = row.nextSeq - 1n;
-    core.markRead(g, head > newest ? head : newest, this.nowS());
-    this.publishBadges();
+    this.applyRead(core, g, head > newest ? head : newest);
     return Promise.resolve(null);
   }
 
@@ -2673,6 +2735,13 @@ export class Controller {
     this.slices.set(`presence:${communityId}`, null);
   }
 
+  /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
+  private selfDisplay: { userId: string; display: string } | null = null;
+  /** The cached display name, only for the user it was read for; another account never inherits it. */
+  private knownDisplay(userId: string): { display?: string } {
+    return this.selfDisplay !== null && this.selfDisplay.userId === userId ? { display: this.selfDisplay.display } : {};
+  }
+
   private async refreshPresenceChoice(): Promise<void> {
     const seq = ++this.presenceChoiceReadSeq;
     const write = this.presenceChoiceWriteSeq;
@@ -2681,7 +2750,11 @@ export class Controller {
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
       const choice = Controller.PRESENCE_CHOICES[(me.presenceChoice ?? 1) - 1] ?? 'online';
       this.presenceChoiceAppliedRead = seq;
-      this.setAccount({ presenceChoice: choice });
+      // Only the current user's own read counts: a read for another account (a switch while it was in flight) is not applied.
+      const user = this.accountState.user;
+      const mine = user !== null && toHex(me.userId) === user.id;
+      if (mine) this.selfDisplay = { userId: user.id, display: me.display };
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...user, display: me.display } } : {}) });
     } catch { /* the next ready retries */ }
   }
 
@@ -2737,6 +2810,64 @@ export class Controller {
       else this.slices.set(`presence:${community.id}`, { ...current, [user]: status });
     }
     if (this.accountState.user?.id === user) void this.barrier.track(this.refreshPresenceChoice());
+  }
+
+  /** web3.8 R8: marks `target` read, but stops one below the oldest row of this group held live less than
+   *  HELD_READ_HOLD_MS ago, so a row released later is unread, as a live arrival would be. A row held longer no longer
+   *  holds it. Fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so
+   *  a held-back read is remembered (one entry and at most one timer per group) and applied again, never past `target`,
+   *  when the oldest young held row it stopped at reaches HELD_READ_HOLD_MS while still held. A release drops it
+   *  instead (fix round 2, C1: noticeReleased), so the released row stays unread. */
+  private applyRead(core: CorePort, g: Id, target: bigint): void {
+    const hex = toHex(g);
+    const now = this.elapsed();
+    let marker = target;
+    let wait: number | null = null;
+    for (const held of this.heldLive) {
+      if (toHex(held.groupId) !== hex || held.seq > target) continue;
+      const age = now - held.heldAt;
+      if (age >= HELD_READ_HOLD_MS) continue;
+      if (held.seq - 1n < marker) marker = held.seq - 1n;
+      if (wait === null || HELD_READ_HOLD_MS - age < wait) wait = HELD_READ_HOLD_MS - age;
+    }
+    const before = this.heldReads.get(hex);
+    if (before !== undefined) { this.deps.clearTimeout(before.timer); this.heldReads.delete(hex); }
+    core.markRead(g, marker, this.nowS());
+    if (marker < target && wait !== null) {
+      const timer = this.deps.setTimeout(() => { this.reapplyRead(hex); }, wait);
+      this.heldReads.set(hex, { groupId: g, target, timer });
+    }
+    this.publishBadges();
+  }
+
+  /** Fix I2: the age-out timer applies a remembered held-back read again, only while a row of that group at or below its
+   *  target is still held live; a group gone or left, or one with no such row, drops it. */
+  private reapplyRead(hex: string): void {
+    const read = this.heldReads.get(hex);
+    if (read === undefined) return;
+    this.heldReads.delete(hex);
+    const core = this.core;
+    if (core === null) return;
+    if (!this.heldLive.some((h) => toHex(h.groupId) === hex && h.seq <= read.target)) return;
+    try {
+      const row = core.groupRow(read.groupId);
+      if (row === null || row.state === 4) return;
+      this.applyRead(core, read.groupId, read.target);
+    } catch { /* the page's next markRead marks it */ }
+  }
+
+  /** Fix round 2 (C1): drops one group's held-back read and its timer. */
+  private dropHeldRead(hex: string): void {
+    const read = this.heldReads.get(hex);
+    if (read === undefined) return;
+    this.deps.clearTimeout(read.timer);
+    this.heldReads.delete(hex);
+  }
+
+  /** Fix I2: drops every remembered held-back read and its timer (a reset, a sign-out, a revocation). */
+  private clearHeldReads(): void {
+    for (const read of this.heldReads.values()) this.deps.clearTimeout(read.timer);
+    this.heldReads.clear();
   }
 
   // ---- settings (requirement 27) ----
@@ -2988,6 +3119,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
     this.communityReloads.clear();
@@ -2998,7 +3130,7 @@ export class Controller {
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
-    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.ticketTime = null;
+    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     // CB2 fix round 1: the next account in this tab must not see this one's wait.
@@ -3041,7 +3173,7 @@ export class Controller {
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();
-    this.lastVoiceSelf = null; this.ownInCall.clear();
+    this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
   }
 
@@ -3464,6 +3596,13 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
+    // web3.8 C3: an own leaf whose ingest lands a newer own list (a device of this account joined) refreshes the device
+    // count below, once per pass. Fix I1: the core never answers `changed` for the own user (a new own device keeps the
+    // key; a new key throws E_UMK_CHANGED), so the version is compared with the own list's at the pass start. A core with
+    // no own list to read (refreshDevices would read it too) triggers nothing, and never fails the pass.
+    let ownVersion: bigint | null = null;
+    try { ownVersion = core.ownDeviceList().version; } catch { /* no re-read this pass */ }
+    let ownChanged = false;
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
     for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
@@ -3495,7 +3634,7 @@ export class Controller {
         const signed = historyByUser.get(user);
         if (signed === null || signed === undefined) continue;
         const { head, history } = signed;
-        let verdict: { changed: boolean; quarantined: number };
+        let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
         try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
         catch (e) {
@@ -3508,6 +3647,7 @@ export class Controller {
         }
         // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
         if (verdict.changed) keyChanged = true;
+        if (own && ownVersion !== null && verdict.version > ownVersion) ownChanged = true;
         this.unlistedUsers.delete(user);
         if (own) this.ownRefusedLeaves.delete(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
         unknownUsers.delete(user);
@@ -3518,6 +3658,10 @@ export class Controller {
     if (keyChanged) this.noteChangedLeaves(core.pendingLeaves());
     this.pendingUsers = new Set([...this.historyFailedUsers, ...unknownUsers]);
     this.publishTrust();
+    // The devices and diagnostics slices follow (refreshDevices); a failed read keeps the last count until the next one.
+    if (ownChanged && this.phase === 'ready') {
+      try { await this.refreshDevices(); } catch { /* the next read refreshes it */ }
+    }
     return null;
   }
 
@@ -3692,25 +3836,54 @@ export class Controller {
   }
 
   private voiceSelf(callId: string, flags: number): Promise<null> {
-    if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
-    this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
+    // web3.8 MUTE: kept before the online check, so a mute made while offline is sent again once the own voice_state
+    // after the reconnect lacks it (the re-send rule below), and the others never keep "unmuted" for a muted session.
     this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
+    if (this.connectionState.status !== 'online') {
+      // Owed to the instance: the reconnect sends it itself, whether or not an own voice_state follows.
+      this.selfOffline = { callId, left: VOICE_SELF_RECONNECT_SENDS };
+      throw new Refusal('E_NOT_READY', '');
+    }
+    this.selfOffline = null;
+    this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
     return Promise.resolve(null);
   }
 
+  /** web3.8 MUTE: the reconnect sends a voice_self made while offline (the last one, for a call that has not ended), at most
+   *  VOICE_SELF_RECONNECT_SENDS times; the own voice_state re-send rule below keeps its own budget. */
+  private sendOfflineSelf(): void {
+    const owed = this.selfOffline;
+    const last = this.lastVoiceSelf;
+    if (owed === null || last === null || last.callId !== owed.callId || owed.left <= 0) { this.selfOffline = null; return; }
+    owed.left -= 1;
+    if (owed.left <= 0) this.selfOffline = null;
+    this.gateway?.sendVoiceSelf(fromHex(last.callId), last.flags);
+  }
+
   /** Task 3 review (controller ruling): the instance keeps a device's own mute and deafen flags only once the device is in
-   *  the call's room, so one sent before the join webhook is lost. When this device's own voice_state shows it joining a
-   *  call (in_call set, after not being in it), the last voice_self for that call is sent once more: once per join. */
+   *  the call's room, so one sent before the join webhook is lost. web3.8 VM: the SFU may list the device only after the
+   *  join transition, so a voice_self is refused then too. While this device's own voice_state for the call lacks the self
+   *  bits of the last voice_self for that call, it is sent again: online only, at most VOICE_SELF_RESENDS times per join.
+   *  web3.8 MUTE: only what the page said is sent. The worker never infers a voice_self from voice.self: the page applies a
+   *  press made while the join started (its start reads it live, and its attach reconcile sends the voice_self), so page
+   *  and worker never disagree for a call. */
   private ownVoiceState(frame: Frame): void {
     let f;
     try { f = voiceStateOf(frame); } catch { return; }
     if (this.me === null || toHex(f.deviceId) !== toHex(this.me.deviceId)) return;
     const call = toHex(f.callId);
     if ((f.flags & 1) === 0) { this.ownInCall.delete(call); return; }
-    if (this.ownInCall.has(call)) return;
-    this.ownInCall.add(call);
+    if (!this.ownInCall.has(call)) {
+      this.ownInCall.add(call);
+      this.selfResends = { callId: call, left: VOICE_SELF_RESENDS };
+    }
     const last = this.lastVoiceSelf;
-    if (last !== null && last.callId === call && this.connectionState.status === 'online') this.gateway?.sendVoiceSelf(f.callId, last.flags);
+    if (last === null || last.callId !== call || this.connectionState.status !== 'online') return;
+    if (((f.flags >> 1) & 3) === last.flags) return;
+    const budget = this.selfResends;
+    if (budget === null || budget.callId !== call || budget.left <= 0) return;
+    budget.left -= 1;
+    this.gateway?.sendVoiceSelf(f.callId, last.flags);
   }
 
   private typingOff(): void {

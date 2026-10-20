@@ -72,4 +72,4 @@ The link banner (`nav.link.offline`, `nav.link.connecting`) is `role="status"`. 
 - `you.title='you'`
 - `you.status='this device'`
 - `you.settings='settings'`
-- `signIn.key.isBackupCode='That looks like a backup code. Backup codes go in step 3, in place of the app code. This step needs the 52-character recovery key you saved when you created the account.'`
+- `signIn.key.isBackupCode='That looks like a backup code, not the recovery key. This step needs the 52-character recovery key you saved when you created the account.'`

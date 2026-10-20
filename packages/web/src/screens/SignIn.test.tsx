@@ -38,18 +38,26 @@ const button = (name: string) => screen.getByRole('button', { name });
 const field = (name: string) => screen.getByRole('textbox', { name });
 const password = () => screen.getByLabelText('Password');
 
-/** The worker of L-TS-23 as the page sees it: the login (carrying the key) → ready, or → the second factor → ready. */
+
+const BACKUP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const KEY_BODY = 'Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.';
+const EXPIRED = 'Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again.';
+const EXPIRED_ERROR = { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null };
+const readyMe = { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null } as const;
+
+/** The worker of web3.8 (R6) as the page sees it: the login (and the code) hold the assertion and end at signin-key;
+ *  only signInKey, or signInBackupCode with the key, adds this browser. */
 const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
   switch (c.m) {
     case 'signInLogin':
       if (opts.totp) move(fake, { phase: 'signin-totp', signIn: { username: c.username, factor: 'totp' } });
-      else move(fake, { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+      else move(fake, { phase: 'signin-key', signIn: { username: c.username, factor: null } });
       return Promise.resolve({ needs: opts.totp === true ? 1 : 0 });
     case 'signInTotp':
-      move(fake, { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+      move(fake, { phase: 'signin-key', signIn: { username: 'ada', factor: null } });
       return Promise.resolve(null);
-    case 'signInKey':
-      move(fake, { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    case 'signInKey': case 'signInBackupCode':
+      move(fake, readyMe);
       return Promise.resolve(null);
     case 'signInCancel':
       move(fake, { phase: 'needs-signup', signIn: null });
@@ -58,15 +66,8 @@ const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
       return Promise.resolve(null);
   }
 };
-/** Step 1: the key, held by the page until the login sends it. */
-async function holdKey(user: UserEvent, text = GROUPED): Promise<void> {
-  await user.click(field('Recovery key'));
-  await user.paste(text);
-  await user.click(button('Continue'));
-}
-/** Step 1 then step 2: the key, then the username and password. */
+/** Step 1: the username and the password. */
 async function login(user: UserEvent): Promise<void> {
-  await holdKey(user);
   await user.type(field('Username'), ' Ada ');
   await user.type(password(), 'correct horse');
   await user.click(button('Continue'));
@@ -77,32 +78,33 @@ async function pasteKey(user: UserEvent, text = GROUPED): Promise<void> {
 }
 
 describe('the ceremony', () => {
-  // The coordinator's ruling on REGISTRATION-DEVICES-02's concern 3: the key first, held by the page; nothing reaches
-  // the worker until the login, which carries the key, so the login's assertion is spent within seconds.
-  it('goes from the recovery key to the login and done without a second factor, sending nothing before the login', async () => {
+  // web3.8 (R6, R7): the login first, then the second factor, then the recovery key. Nothing registers before the key:
+  // the worker holds the assertion, and the key's command is the only one that carries the key.
+  it('starts at the login, then asks for the key as step 2 when no factor step was shown, then done', async () => {
     const { fake, user, onFinish, view } = setup('signin-login', worker());
-    expect(h1()).toHaveTextContent('Your recovery key');
-    expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
-    expect(screen.getByText('Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not matter.')).toBeInTheDocument();
-    expect(button('Continue')).toHaveAttribute('type', 'submit');
-    expect(button('Create a new account instead')).toHaveAttribute('type', 'button');
-    await expectNoAxeViolations(view.container);
-    await pasteKey(user);
-    expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('52 of 52 characters'));
-    await user.click(button('Continue'));
-    expect(fake.calls).toEqual([]);
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
     expect(screen.getByText('Use the username and password of your account on dilla.test.')).toBeInTheDocument();
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(screen.queryByRole('textbox', { name: 'Recovery key' })).toBeNull();
+    expect(button('Continue')).toHaveAttribute('type', 'submit');
+    expect(button('Create a new account instead')).toHaveAttribute('type', 'button');
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     await expectNoAxeViolations(view.container);
-    await user.type(field('Username'), ' Ada ');
-    await user.type(password(), 'correct horse');
-    await user.click(button('Continue'));
-    expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse', recoveryKey: GROUPED }]);
+    await login(user);
+    expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(document.activeElement).toBe(h1());
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
+    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(button('Add this browser')).toHaveAttribute('type', 'submit');
+    await expectNoAxeViolations(view.container);
     expect(fake.callsOf('signInKey')).toEqual([]);
+    await pasteKey(user);
+    expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('52 of 52 characters'));
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Step 4 of 4')).toBeInTheDocument();
@@ -114,23 +116,52 @@ describe('the ceremony', () => {
     expect(onFinish).toHaveBeenCalledTimes(1);
   });
 
-  it('counts the second-factor step when the account has one', async () => {
+  it('counts the second-factor step when the account has one: the code is step 2, the key step 3', async () => {
     const { fake, user, view } = setup('signin-login', worker({ totp: true }));
     await login(user);
     expect(h1()).toHaveTextContent('Your second factor');
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText('Enter the six-digit code from your authenticator app.')).toBeInTheDocument();
     expect(button('Cancel')).toHaveAttribute('type', 'button');
     await expectNoAxeViolations(view.container);
     await user.type(field('Code'), '123456{Enter}');
-    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456', recoveryKey: GROUPED }]);
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(document.activeElement).toBe(h1());
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
+    await expectNoAxeViolations(view.container);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(screen.getByText('Step 4 of 4')).toBeInTheDocument();
   });
 
+  it('holds a backup code in the page and sends it only with the key', async () => {
+    const { fake, user, view } = setup('signin-login', worker({ totp: true }));
+    await login(user);
+    fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 9, hasPassword: true });
+    await user.click(button(en['factorSignin.useBackup']));
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    await user.type(field('Backup code'), 'abcde fghij-klmno pqrst uvwxy z{Enter}');
+    expect(fake.callsOf('signInBackupCode')).toEqual([]);
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(document.activeElement).toBe(h1());
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
+    await expectNoAxeViolations(view.container);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
+    expect(fake.callsOf('signInKey')).toEqual([]);
+    expect(fake.calls.map(c => c.m)).toEqual(['signInLogin', 'signInBackupCode']);
+    expect(h1()).toHaveTextContent('You’re in');
+    expect(screen.getByText('You have 9 backup codes left. Make new ones in Settings, under sign-in.')).toBeInTheDocument();
+  });
+
   it('an empty submit shows the required text and sends nothing', async () => {
     const { fake, user } = setup('signin-login', worker());
-    await holdKey(user);
     await user.click(button('Continue'));
     expect(field('Username')).toHaveAccessibleDescription('Fill in this field.');
     expect(password()).toHaveAccessibleDescription('Fill in this field.');
@@ -153,21 +184,21 @@ describe('the ceremony', () => {
     await user.paste('123 456');
     expect(field('Code')).toHaveValue('123 456');
     await user.keyboard('{Enter}');
-    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456', recoveryKey: GROUPED }]);
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
   });
 
-  it('a key refused by its form at the login returns to step 1 with the text kept and the field in error', async () => {
+  it('a key refused by its form after the login stays on the key step with the text kept and the field in error', async () => {
     const { fake, user } = setup('signin-login', (c, f) => {
-      if (c.m !== 'signInLogin') return Promise.resolve(null);
-      move(f, { phase: 'signin-login', error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+      if (c.m !== 'signInKey') return worker()(c, f);
+      move(f, { phase: 'signin-key', error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
       return Promise.reject(refusal({ code: 'E_RECOVERY_KEY' }));
     });
     const typo = GROUPED.replace('P4ZA', 'P4ZU');
-    await holdKey(user, typo);
-    await user.type(field('Username'), 'ada');
-    await user.type(password(), 'correct horse');
-    await user.click(button('Continue'));
-    expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse', recoveryKey: typo }]);
+    await login(user);
+    await pasteKey(user, typo);
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: typo }]);
     expect(h1()).toHaveTextContent('Your recovery key');
     expect(field('Recovery key')).toHaveValue(typo);
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('This is not the recovery key of this account. Check every character.'));
@@ -196,9 +227,9 @@ describe('the ceremony', () => {
     await login(user);
     expect(button('Checking…')).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(button('Checking…'));
-    expect(button('Cancel')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Create a new account instead')).toHaveAttribute('aria-disabled', 'true');
     await user.click(button('Checking…'));
-    await user.click(button('Cancel'));
+    await user.click(button('Create a new account instead'));
     expect(calls).toBe(1);
   });
 
@@ -249,14 +280,17 @@ describe('the ceremony', () => {
     expect(fake.callsOf('signInCancel')).toEqual([]);
   });
 
-  it('keeps its place after a reload', () => {
+  it('keeps its place after a reload into a registered enrolment, as step 2', () => {
     setup('signin-key');
     expect(h1()).toHaveTextContent('Your recovery key');
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(field('Recovery key')).toHaveValue('');
+    expect(button('Cancel')).toHaveAttribute('type', 'button');
   });
 
   it('shows the working state when it mounts in enrolling', () => {
     const { fake } = setup('enrolling');
+    expect(h1()).toHaveTextContent('Your recovery key');
     expect(screen.getByRole('status')).toHaveTextContent('Adding this browser to your account…');
     expect(fake.calls).toEqual([]);
   });
@@ -266,10 +300,14 @@ describe('the ceremony', () => {
     await first.user.click(button('Create a new account instead'));
     expect(first.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     first.view.unmount();
-    const second = setup('signin-key', worker());
+    const second = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
     await second.user.click(button('Cancel'));
     expect(second.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
-    expect(second.fake.callsOf('signInKey')).toEqual([]);
+    second.view.unmount();
+    const third = setup('signin-key', worker());
+    await third.user.click(button('Cancel'));
+    expect(third.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
+    expect(third.fake.callsOf('signInKey')).toEqual([]);
   });
 
   it('shows the loading splash without an instance', () => {
@@ -283,11 +321,9 @@ describe('refusals', () => {
   // ceremony (the login route, the second-factor route, the registration meter) is E_RATE_LIMITED and shows the one
   // short-wait string signin.error.tooMany as flow 03 froze it (task 15).
   const LOGIN: [string, Parameters<typeof refusal>[0], string][] = [
-    ['the device cap', { code: 'E_FORBIDDEN', status: 403 }, 'This account already has as many devices as dilla.test allows. Remove one in Settings on another device first.'],
-    ['the registration meter', { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 1_000 }, 'Too many sign-in attempts. Try again in 1 s.'],
-    ['a withdrawn code', { code: 'E_ENROL_RATE', status: 429, retryAfterMs: 1_740_001 }, 'Signing in did not work (E_ENROL_RATE). Try again.'],
     ['the login rate', { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 4_200 }, 'Too many sign-in attempts. Try again in 5 s.'],
     ['the login rate without a wait', { code: 'E_RATE_LIMITED', status: 429 }, 'Too many attempts from this network. Wait a few minutes, then try again.'],
+    ['a withdrawn code', { code: 'E_ENROL_RATE', status: 429, retryAfterMs: 1_740_001 }, 'Signing in did not work (E_ENROL_RATE). Try again.'],
     ['a dropped connection', { code: 'E_NETWORK' }, 'The connection dropped. Check it and try again.'],
     ['a server failure', { code: 'E_INTERNAL', status: 503 }, 'The connection dropped. Check it and try again.'],
     ['anything else', { code: 'E_SESSION_SCOPE' }, 'Signing in did not work (E_SESSION_SCOPE). Try again.'],
@@ -318,20 +354,16 @@ describe('refusals', () => {
   ];
   it.each(TOTP)('%s returns to the login step with the username kept and asks to sign in again', async (_, init) => {
     const { fake, user } = setup('signin-login', (c, f) => {
-      if (c.m === 'signInLogin') {
-        move(f, { phase: 'signin-totp', signIn: { username: 'ada', factor: 'totp' } });
-        return Promise.resolve({ needs: 1 });
-      }
-      if (c.m !== 'signInTotp') return Promise.resolve(null);
+      if (c.m !== 'signInTotp') return worker({ totp: true })(c, f);
       move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: 'totp' } });
       return Promise.reject(refusal(init));
     });
     await login(user);
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
-    await user.type(field('Code'), '000000{Enter}');
-    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '000000', recoveryKey: GROUPED }]);
-    expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    await user.type(field('Code'), '000000{Enter}');
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '000000' }]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('That code did not work. Sign in again with a fresh code.');
     expect(screen.queryByRole('textbox', { name: 'Code' })).toBeNull();
     expect(field('Username')).toHaveValue(' Ada ');
@@ -339,25 +371,126 @@ describe('refusals', () => {
     expect(document.activeElement).toBe(password());
   });
 
-  // REGISTRATION-DEVICES-02: the registration runs inside the login that carries the key; its refusals return the
-  // phase to signin-login and show on the login step, the key still held.
+  // REGISTRATION-DEVICES-02 (R6): the registration runs inside signInKey; its refusals return the phase to signin-login
+  // and show on the login step.
   const AFTER_KEY: [string, Parameters<typeof refusal>[0], string][] = [
     ['the device cap', { code: 'E_FORBIDDEN', status: 403 }, 'This account already has as many devices as dilla.test allows. Remove one in Settings on another device first.'],
     ['the registration meter', { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 600 }, 'Too many sign-in attempts. Try again in 1 s.'],
     ['a replaced row', { code: 'E_SIGNIN_EVICTED' }, 'Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.'],
   ];
-  it.each(AFTER_KEY)('a registration refused after the login shows %s on the login step', async (_, init, text) => {
+  it.each(AFTER_KEY)('a registration refused after the key shows %s on the login step', async (_, init, text) => {
     const { user, view } = setup('signin-login', (c, f) => {
-      if (c.m !== 'signInLogin') return Promise.resolve(null);
+      if (c.m !== 'signInKey') return worker()(c, f);
       move(f, { phase: 'enrolling' });
       move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
       return Promise.reject(refusal(init));
     });
     await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(text);
     expect(field('Username')).toHaveValue(' Ada ');
     await expectNoAxeViolations(view.container);
+  });
+
+  // R6 (pre-flight C-15): the assertion lives five minutes; a key read off paper for longer costs a new login.
+  it('an assertion that ran out during the key says enrol.expired on the login step, the password emptied and focused', async () => {
+    const { fake, user, view } = setup('signin-login', (c, f) => {
+      if (c.m !== 'signInKey') return worker({ totp: true })(c, f);
+      move(f, { phase: 'enrolling' });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+      return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+    });
+    await login(user);
+    await user.type(field('Code'), '123456{Enter}');
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
+    expect(screen.getByRole('alert').closest('.d-banner')).toHaveAttribute('data-tone', 'warn');
+    expect(screen.queryByText(/E_SIGNIN_EXPIRED/)).toBeNull();
+    expect(field('Username')).toHaveValue(' Ada ');
+    expect(password()).toHaveValue('');
+    expect(document.activeElement).toBe(password());
+    await expectNoAxeViolations(view.container);
+  });
+
+  // Pre-flight C-16: on the backup-code path the expiry is a 401 from enrol.backupCode, which the worker reports as
+  // E_SIGNIN_EXPIRED too; the page shows the banner, not a raw error, and no code was spent.
+  it('the same expiry on the backup-code path shows the banner, not a raw error', async () => {
+    const { fake, user } = setup('signin-login', (c, f) => {
+      if (c.m !== 'signInBackupCode') return worker({ totp: true })(c, f);
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+      return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+    });
+    await login(user);
+    await user.click(button(en['factorSignin.useBackup']));
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
+    expect(screen.queryByText(/E_SIGNIN_EXPIRED/)).toBeNull();
+    expect(screen.queryByText(en['factorSignin.backup.failed'])).toBeNull();
+    expect(password()).toHaveValue('');
+    expect(document.activeElement).toBe(password());
+    // Signing in again starts at the code: the held code went with the refusal.
+    await user.type(password(), 'correct horse');
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent('Your second factor');
+    expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'ada', password: 'correct horse' });
+  });
+
+  // Fix round 1 (review Important 1): the key typed for one person never reaches the next person's key step on this tab.
+  it('a second person on the same tab meets an empty key field after the first one\'s sign-in ran out', async () => {
+    let first = true;
+    const { fake, user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInKey' && first) {
+        first = false;
+        move(f, { phase: 'enrolling' });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+        return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+      }
+      return worker()(c, f);
+    });
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
+    await user.clear(field('Username'));
+    await user.type(field('Username'), 'bob');
+    await user.type(password(), 'battery staple');
+    await user.click(button('Continue'));
+    expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'bob', password: 'battery staple' });
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(field('Recovery key')).toHaveValue('');
+    expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('0 of 52 characters'));
+  });
+
+  it('back at the login, the key field starts empty even for the same username', async () => {
+    let first = true;
+    const { user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInKey' && first) {
+        first = false;
+        move(f, { phase: 'enrolling' });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+        return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+      }
+      return worker()(c, f);
+    });
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(field('Username')).toHaveValue(' Ada ');
+    await user.type(password(), 'correct horse');
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(field('Recovery key')).toHaveValue('');
   });
 
   it('an account with nothing to recover, found by the key step, offers only Cancel', async () => {
@@ -446,6 +579,7 @@ describe('refusals', () => {
   });
 });
 
+
 describe('the key step recognises a backup code (R44)', () => {
   const BACKUP = 'abcd-efgh-ijkl-mnop-qrst-uvwxyz';
   const OUTSIDE = '0189-0189-0189-0189-0189-018901';
@@ -458,6 +592,13 @@ describe('the key step recognises a backup code (R44)', () => {
 
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
+
+  it('names a backup code in the words of web3.8', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(600);
+    expect(note()).toHaveTextContent('That looks like a backup code, not the recovery key. This step needs the 52-character recovery key you saved when you created the account.');
+  });
 
   it('shows the note after 600 ms of rest, describes the field with it and keeps the submit disabled', async () => {
     setup('signin-key');

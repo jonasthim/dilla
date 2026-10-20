@@ -126,7 +126,7 @@ jobs:
       - run: rustup show active-toolchain
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
-      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
@@ -223,6 +223,7 @@ jobs:
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
       - run: npm run build -w @dilla/web
       - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
@@ -1058,6 +1059,7 @@ for (const [job, needle] of [
   ['web-build', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
   ['web-build', 'npm run typecheck -w @dilla/client-core'],
   ['web-build', 'npm run typecheck -w @dilla/web'],
+  ['web-build', 'npm run typecheck:e2e'],
   ['web-build', 'npm run build -w @dilla/web'],
   ['web-build', 'npm run build:harness -w @dilla/client-core'],
   ['web-build', 'go test -tags webdist ./internal/web/...'],

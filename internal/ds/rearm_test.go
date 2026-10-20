@@ -103,7 +103,7 @@ func TestAVoidedTextRemoveIsReArmedInItsEpoch(t *testing.T) {
 		r.IssuedAt != h.clk.Now().Unix() || r.TTL != uint64((24*time.Hour).Seconds()) {
 		t.Fatalf("re-armed row %+v: want live, ref %x, action %s, issued now with the 24 h TTL", r, voided.Ref, action)
 	}
-	_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
+	_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 0)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_REQUIRED" {
 		t.Fatalf("a send after the re-arm: got %v, want 425 E_COMMIT_REQUIRED", err)

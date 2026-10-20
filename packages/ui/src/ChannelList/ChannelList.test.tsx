@@ -224,3 +224,84 @@ describe('ChannelList', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+// web3.8 (U3, items 12 and 15): one list with the voice channels nested in place.
+describe('ChannelList, one list with voice rooms in place', () => {
+  const state = { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot' };
+  const person = (name: string, more: Record<string, unknown> = {}) => ({
+    deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok' as const, speaking: false, muted: false, deafened: false, video: false, screen: false, web: true, bot: false, ...more,
+  });
+  const mixed: ChannelListProps['channels'] = [
+    { id: 'g', name: 'general', kind: 'text', readable: false, unread: 2 },
+    { id: 'v1', name: 'harbour', kind: 'voice', readable: false, unread: 3, mentions: 1 },
+    { id: 'n', name: 'news', kind: 'announcement', readable: false },
+    { id: 'v2', name: 'workshop', kind: 'voice', readable: false },
+    { id: 'l', name: 'lfg', kind: 'text', readable: false },
+  ];
+  const voice = (over: Partial<NonNullable<ChannelListProps['voice']>> = {}): NonNullable<ChannelListProps['voice']> => ({
+    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', state },
+    rooms: { v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })] } },
+    onJoin: vi.fn(), ...over,
+  });
+
+  it('keeps the input order in one list, voice rows interleaved with text and announcement rows', () => {
+    const { container } = render(<ChannelList {...props({ channels: mixed, voice: voice(), activeId: 'g' })} />);
+    expect(container.querySelectorAll('ul[role="list"].d-channel-list__list')).toHaveLength(1);
+    const items = [...container.querySelectorAll('.d-channel-list__list > li')];
+    const rows = items.map(li => li.querySelector(':scope > button')!);
+    expect(rows.map(r => r.getAttribute('aria-label') ?? r.textContent)).toEqual([expect.stringContaining('general'), 'voice harbour',
+      expect.stringContaining('news'), 'voice workshop', expect.stringContaining('lfg')]);
+    expect(rows.map(r => r.classList.contains('d-voice-row'))).toEqual([false, true, false, true, false]);
+  });
+
+  it('the voice row has the volume-2 icon and no badge, even with unread: 3 (guard, green at start: the voice branch never passed one)', () => {
+    render(<ChannelList {...props({ channels: mixed, voice: voice(), rowLabel })} />);
+    const row = screen.getByRole('button', { name: 'voice harbour' });
+    expect(row.querySelector('svg')).toHaveAttribute('data-icon', 'volume-2');
+    expect(row.querySelector('.d-chrow__badge, .d-chrow__count, .d-chrow__mention')).toBeNull();
+    expect(row.querySelector('.d-voice-row__name')?.textContent).toBe('harbour');
+  });
+
+  it('nests the participants under their own row', () => {
+    const { container } = render(<ChannelList {...props({ channels: mixed, voice: voice() })} />);
+    const li = screen.getByRole('button', { name: 'voice harbour' }).closest('li')!;
+    expect([...li.querySelectorAll('.d-voice-row__person-name')].map(n => n.textContent)).toEqual(['ada', 'bo']);
+    expect(container.querySelectorAll('.d-voice-row__person')).toHaveLength(2);
+  });
+
+  it('while a voice row is not joined, it has a join voice button whose tab index follows the stop', async () => {
+    const onJoin = vi.fn();
+    render(<ChannelList {...props({ channels: mixed, voice: voice({ onJoin }), activeId: 'v1' })} />);
+    const joins = screen.getAllByRole('button', { name: 'join voice' });
+    expect(joins).toHaveLength(2);
+    const harbour = screen.getByRole('button', { name: 'voice harbour' });
+    expect(harbour.tabIndex).toBe(0);
+    expect(joins.map(j => j.tabIndex)).toEqual([0, -1]);
+    expect(joins[0]).toHaveAccessibleDescription('harbour');
+    await userEvent.keyboard('{Tab}{ArrowDown}{ArrowDown}');
+    expect(screen.getByRole('button', { name: 'voice workshop' })).toHaveFocus();
+    expect(screen.getAllByRole('button', { name: 'join voice' }).map(j => j.tabIndex)).toEqual([-1, 0]);
+    await userEvent.click(screen.getAllByRole('button', { name: 'join voice' })[1]);
+    expect(onJoin).toHaveBeenCalledWith('v2');
+  });
+
+  it('a joined or held room has no join button, and without onJoin there is none at all', () => {
+    const { rerender } = render(<ChannelList {...props({ channels: mixed, voice: voice({ rooms: { v1: { joined: true, participants: [] }, v2: { joined: false, held: true, participants: [] } } }) })} />);
+    expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
+    rerender(<ChannelList {...props({ channels: mixed, voice: voice({ onJoin: undefined }) })} />);
+    expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  it('listAction is right-aligned in the header row, inside the tab panel, outside the list and the roving group', () => {
+    render(<ChannelList {...props({ channels: mixed, voice: voice(), tabs, listAction: <button type="button">new channel</button> })} />);
+    const action = screen.getByRole('button', { name: 'new channel' });
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toContainElement(action);
+    expect(action.closest('[role="list"]')).toBeNull();
+    expect(action.closest('.d-channel-list__list-head')).not.toBeNull();
+    const list = panel.querySelector('.d-channel-list__list')!;
+    expect(action.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('button').filter(b => b.closest('.d-channel-list__list') && b.tabIndex === 0)).toHaveLength(1);
+    expect(action.tabIndex).toBe(0);
+  });
+});

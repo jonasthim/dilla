@@ -140,11 +140,25 @@ function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; f
 /**
  * Back on a phone's pushed view: `history.back()` when this entry was pushed by the app (`phoneBack`), else (a deep
  * link, a reload into the view) the tab's list route, replacing the entry, so back never leaves the app.
+ *
+ * With `expect` (N5), the entry back lands on may not be the one the caller means: after the system forward button the
+ * entry below is a forward one. A one-shot popstate listener checks where back landed and, when that is not `expect`,
+ * replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the pop calls it).
  */
-export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void): void {
+export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void, expect?: Route): () => void {
   const state: unknown = history.state;
-  if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) history.back();
-  else go(fallback, true);
+  if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) {
+    let off = () => undefined as void;
+    if (expect !== undefined) {
+      const onPop = () => { if (snapshot() !== routePath(expect)) go(expect, true); };
+      window.addEventListener('popstate', onPop, { once: true });
+      off = () => window.removeEventListener('popstate', onPop);
+    }
+    history.back();
+    return off;
+  }
+  go(fallback, true);
+  return () => undefined;
 }
 
 /** Where the current history entry's phone view was pushed from, or null (a deep link, a reload, no push by the app). */

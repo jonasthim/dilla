@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, BOB_DEV, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -259,7 +259,7 @@ describe('voice in the shell', () => {
     expect(opts).toMatchObject({ mode: 'ptt', noise: 'off', input: '', output: '' });
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
     expect(screen.getByText('in general')).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
@@ -281,14 +281,15 @@ describe('voice in the shell', () => {
     expect(await screen.findByText(t('voice.micDenied'))).toBeInTheDocument();
   });
 
-  it('lists who is in voice under the rows, with the active voice heading and the voice heading', async () => {
+  it('lists who is in voice under their voice row in the one list, with no voice headings', async () => {
     renderVoiceShell({ voice: { [GENV]: { callId: GENV, participants: [
       { userId: BOB, deviceId: '29'.repeat(16), name: 'bob', flags: 1 | 2, own: false, web: true, bot: false },
     ] } } });
-    expect(await screen.findByRole('heading', { name: 'active voice' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'voice' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'voice general' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'active voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'voice' })).toBeNull();
     expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('muted').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('img', { name: 'muted' }).length).toBeGreaterThan(0);
   });
 });
 
@@ -564,7 +565,7 @@ describe('review round 1', () => {
     screen.getByRole('button', { name: 'voice general' }).focus();
     await app.user.tab();
     expect(document.activeElement).toHaveAccessibleName('join voice');
-    expect(document.activeElement?.closest('.dw-voice-section__item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
+    expect(document.activeElement?.closest('.d-channel-list__voice')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
   });
 
   // Product walk M4: the SFU's own speaking (the session's state.speaking), no longer the meter level.
@@ -731,6 +732,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
 // test reads one, steps across (offStage, onStage), and reads the other. The call stays up across the step.
 describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', () => {
   const dock = () => within(screen.getByRole('toolbar', { name: 'voice controls' }));
+  const userPanel = () => within(screen.getByRole('toolbar', { name: t('panel.region') }));
   const stage = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
   // jsdom has no getDisplayMedia; the stage and the dock both read it, so give them one.
   const withCapture = () => {
@@ -738,12 +740,12 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   };
   afterEach(() => { Reflect.deleteProperty(navigator, 'mediaDevices'); });
 
-  it('the dock holds mute, deafen, camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
+  it('the dock holds camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
     withCapture();
     const app = await inVoice();
     await offStage();
     expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label')))
-      .toEqual([t('voice.mute'), t('voice.deafen'), t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
+      .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
     await app.user.click(dock().getByRole('button', { name: t('voice.cameraOn') }));
     await waitFor(() => expect(app.session.state.camera).toBe(true));
     expect(dock().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true');
@@ -780,10 +782,11 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     }
     expect(app.session.state.camera).toBe(false);
     expect(app.session.state.sharing).toBe(false);
-    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
+    for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('while joining, the dock’s camera and share are aria-disabled; mute, deafen and leave stay live', async () => {
+  it('while joining, the dock’s camera and share are aria-disabled; the user panel’s mute and deafen and the dock’s leave stay live', async () => {
     withCapture();
     const app = renderVoiceShell();
     const release = app.holdStart();
@@ -791,7 +794,8 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
+    for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     release();
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
@@ -799,12 +803,17 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('the dock’s and the stage’s mute and deafen are described by their shortcut, as this platform writes it', async () => {
+  it('only the user panel’s mute and deafen carry aria-keyshortcuts and are described by their shortcut; the stage’s tip shows it and they carry none', async () => {
     await inVoice();
-    expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+    expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
     await offStage();
-    expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
-    expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(dock().queryByRole('button', { name: t('voice.mute') })).toBeNull();
+    expect([...document.querySelectorAll('[aria-keyshortcuts]')].filter(e => e.getAttribute('aria-keyshortcuts')!.includes('Shift+M')))
+      .toHaveLength(1);
   });
 
   // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
@@ -869,16 +878,31 @@ describe('voiceShortcutText', () => {
 });
 
 describe('web3.7: one set of call controls', () => {
-  it('the dock has no toolbar while the stage is shown, and the toolbar as before off the stage', async () => {
-    const app = await inVoice();
-    const dockToolbar = () => document.querySelector('.dw-voice-dock .d-voice-dock__controls');
-    expect(document.querySelector('.dw-voice-dock')).not.toBeNull();
-    expect(dockToolbar()).toBeNull();
-    window.history.pushState(null, '', `/c/${A}/${TEXT}`);
-    window.dispatchEvent(new PopStateEvent('popstate'));
+  it('the dock keeps its toolbar while the stage is shown', async () => {
+    await inVoice();
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__controls')).not.toBeNull();
+    expect(main().getByRole('toolbar', { name: 'voice channel controls' })).toBeInTheDocument();
+    go(`/c/${A}/${TEXT}`);
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
-    expect(dockToolbar()).not.toBeNull();
-    void app;
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__controls')).not.toBeNull();
+  });
+
+  it('repeats no element id while both toolbars are on screen', async () => {
+    await inVoice();
+    const ids = [...document.querySelectorAll('[id]')].map(e => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+  });
+
+  it('join focuses the stage’s first control, and ArrowRight in the dock toolbar leaves the stage’s focus alone', async () => {
+    const app = await inVoice();
+    const first = () => main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')!;
+    await waitFor(() => expect(first()).toHaveFocus());
+    const dockFirst = screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('button')!;
+    dockFirst.focus();
+    await app.user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('toolbar', { name: 'voice controls' }).contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(dockFirst);
+    expect(main().getByRole('toolbar', { name: 'voice channel controls' }).contains(document.activeElement)).toBe(false);
   });
 });
 
@@ -899,10 +923,202 @@ describe('screen share without getDisplayMedia', () => {
     expect(stage.getByRole('button', { name: t('voice.cameraOn') })).toBeInTheDocument();
   });
 
+  it('on a phone the stage’s mute and deafen carry aria-keyshortcuts', async () => {
+    asPhone(true);
+    await inVoice();
+    const bar = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
+    expect(bar().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(bar().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
+  });
+
   it('on desktop the share button stays, aria-disabled', async () => {
     asPhone(false);
     await inVoice();
     const share = within(main().getByRole('toolbar', { name: 'voice channel controls' })).getByRole('button', { name: t('voice.shareOn') });
     expect(share).toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+// web3.8 WS7: one tile per source (camera, screen, avatar), and R26's one auto-focus rule.
+describe('the stage has one tile per source (web3.8 WS7)', () => {
+  if (typeof globalThis.MediaStream === 'undefined') {
+    (globalThis as { MediaStream?: unknown }).MediaStream = class MediaStream {};
+  }
+  const room = (flags: number) => ({ [GENV]: { callId: GENV, participants: [
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags, own: false, web: false, bot: false },
+    { userId: 'carl', deviceId: 'c1', name: 'carl', flags: 0, own: false, web: false, bot: false },
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+  ] } });
+  const FLAG_MUTE = 1 << 1;
+  const FLAG_SCREEN = 1 << 4;
+  const ids = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile')].map(e => e.dataset.tileId);
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const focusedIds = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile[data-focused="true"]')].map(e => e.dataset.tileId);
+  const tile = (deviceId: string, userId: string, video: MediaStream | null, screen: MediaStream | null) =>
+    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen });
+
+  it('a participant with a camera and a screen gives two tiles, "bob" and "bob’s screen", with no inset', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), new MediaStream())] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    expect(ids()).toContain(`${BOB_DEV}:person`);
+    expect(within(li(`${BOB_DEV}:person`)).getByRole('button', { name: 'bob' })).toBeInTheDocument();
+    expect(within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) })).toBeInTheDocument();
+    expect(document.querySelector('.d-call-tile__inset')).toBeNull();
+  });
+
+  it('a participant who shares only a screen keeps an avatar tile with the volume and the muted glyph', async () => {
+    const app = await inVoice({ voice: room(FLAG_MUTE | FLAG_SCREEN) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    const person = li(`${BOB_DEV}:person`);
+    expect(person).toHaveAttribute('data-source', 'avatar');
+    expect(within(person).getByRole('img', { name: 'muted' })).toBeInTheDocument();
+    expect(within(person).getByRole('slider')).toBeInTheDocument();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: 'muted' })).toBeNull();
+  });
+
+  it('an audio-only participant gives one avatar tile', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    expect(ids().filter(i => i?.startsWith(BOB_DEV))).toEqual([`${BOB_DEV}:person`]);
+  });
+
+  it('the people of a call this device has not joined are avatar tiles', async () => {
+    renderVoiceShell({ voice: room(0) });
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    expect(ids()).toContain('c1:person');
+  });
+
+  it('the own camera tile is mirrored and the own screen tile is not', async () => {
+    const app = await inVoice({ voice: room(0) });
+    const cam = new MediaStream();
+    const scr = new MediaStream();
+    act(() => app.session.update({ camera: true, localCamera: cam, sharing: true, localScreen: scr }));
+    await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+    expect(li(`${OWN_DEV}:person`).querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    expect(li(`${OWN_DEV}:person`).querySelector('video')!.srcObject).toBe(cam);
+    expect(li(`${OWN_DEV}:screen`).querySelector('video')).not.toHaveAttribute('data-mirror');
+    expect(li(`${OWN_DEV}:screen`).querySelector('video')!.srcObject).toBe(scr);
+  });
+
+  it('the person tile keeps its id when the camera goes on and off, so a focused person stays focused', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    await app.user.click(within(li(`${BOB_DEV}:person`)).getByRole('button', { name: 'bob' }));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), null)] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).toHaveAttribute('data-source', 'camera'));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).toHaveAttribute('data-source', 'avatar'));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+  });
+
+  it('the own tile and its screen are named by the display name, as the user panel shows it', async () => {
+    const app = await inVoice({ voice: room(0) });
+    app.client.publish(`members:${A}`, MEMBERS.map(m => m.userId === ME.id ? { ...m, display: 'Ada L' } : m));
+    act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
+    await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+    expect(within(li(`${OWN_DEV}:person`)).getByRole('button', { name: 'Ada L' })).toBeInTheDocument();
+    expect(within(li(`${OWN_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'Ada L' }) })).toBeInTheDocument();
+  });
+
+  describe('R26: auto-focus', () => {
+    it('another person’s new screen takes the focus, and the own share does not', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
+      await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+
+    it('after Escape the same share does not take the focus again, and a second share does not steal it', async () => {
+      const app = await inVoice({ voice: room(0) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(ids()).toContain('c1:screen'));
+      expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]);
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), bobScreen), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+      expect(focusedIds()).toEqual([]);
+    });
+
+    it('a pause and a resume, which withhold every remote stream, do not focus an unfocused share again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] })); // paused: the room still says bob shares
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] })); // resumed
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+    });
+
+    it('a share that really ended (the room flag is gone) and restarted may focus again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      app.client.publish('voice', room(0));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      app.client.publish('voice', room(FLAG_SCREEN));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+
+    it('when the focused share ends, another person’s new share takes the focus', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual(['c1:screen']));
+    });
+
+    it('leaving and joining again starts with a clean set: the same share focuses again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      await app.user.click(main().getByRole('button', { name: 'leave' }));
+      await main().findByRole('button', { name: 'join voice' });
+      await app.user.click(main().getByRole('button', { name: 'join voice' }));
+      await waitFor(() => expect(app.sessions).toHaveLength(2));
+      app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+      await main().findByRole('toolbar', { name: 'voice channel controls' });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+
+    it('the focused tile leaving returns the stage to the grid, and a new share focuses again', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+      expect(document.querySelector('[data-focused-stage]')).toBeNull();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
   });
 });

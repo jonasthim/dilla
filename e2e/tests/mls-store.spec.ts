@@ -8,7 +8,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 const RUNS_ON = ['chromium', 'firefox-persistent'];
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 
-type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume' | 'torn' | 'check';
 type MlsReply = { ok: true; value: string } | { ok: false; error: string };
 interface GroupState {
   epoch: number;

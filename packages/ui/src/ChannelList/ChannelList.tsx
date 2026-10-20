@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useId, useLayoutEffect, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { Button } from '../Button/Button.tsx';
 import { ChannelRow } from '../ChannelRow/ChannelRow.tsx';
 import { VoiceChannelRow, type VoiceChannelRowProps } from '../VoiceChannelRow/VoiceChannelRow.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
@@ -26,11 +27,42 @@ export interface ChannelListProps {
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
-  /** With it, every voice channel is a VoiceChannelRow: its people (by channel id; absent is nobody) under the row. */
+  /** Rendered right-aligned in the list's own header row (a "+" for a new channel): inside the tab panel, above the rows
+   *  and outside their roving group (web3.8, item 11). */
+  listAction?: ReactNode;
+  /**
+   * With it, every voice channel is a VoiceChannelRow in its place among the others: its people (by channel id; absent
+   * is nobody) under the row. `labels.join` (required) is `voice.join`; with `onJoin` a row that is neither `joined` nor `held`
+   * shows a join button while it is hovered or focused, which follows the row's tab index.
+   */
   voice?: {
-    labels: VoiceChannelRowProps['labels'];
-    rooms: Readonly<Record<string, { joined: boolean; participants: readonly VoiceParticipantView[] }>>;
+    labels: VoiceChannelRowProps['labels'] & { join: string };
+    rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] }>>;
+    onJoin?(id: string): void;
   };
+}
+
+/** One voice row of the list with its join button, which has its own place in the row's line (it never covers the row's
+ *  count or focus ring) and is described by the channel's name, so a list of buttons tells them apart. */
+function VoiceItem({ id, name, current, readable, room, voice, onOpen }: {
+  id: string; name: string; current: boolean; readable: boolean; room: { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] } | undefined;
+  voice: NonNullable<ChannelListProps['voice']>; onOpen(): void;
+}) {
+  const nameId = useId();
+  const joined = room?.joined ?? false;
+  return (
+    <li className="d-channel-list__voice" data-joined={joined ? 'true' : undefined}>
+      <VoiceChannelRow name={name} current={current} joined={joined} participants={room?.participants ?? []}
+        readable={readable} labels={voice.labels} onOpen={onOpen} />
+      {voice.onJoin === undefined || joined || room?.held === true ? null : (
+        <>
+          <span id={nameId} hidden>{name}</span>
+          <Button variant="ghost" size="sm" className="d-channel-list__join" tabIndex={-1} aria-describedby={nameId}
+            onClick={() => voice.onJoin?.(id)}>{voice.labels.join}</Button>
+        </>
+      )}
+    </li>
+  );
 }
 
 /**
@@ -44,13 +76,25 @@ export interface ChannelListProps {
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, listAction, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
+  // A voice row's join button holds the row's tab index: the stop row's join is a tab stop, no other is.
+  const syncJoins = () => {
+    for (const li of Array.from(roving.ref.current?.children ?? [])) {
+      const row = li.firstElementChild;
+      const join = li.querySelector<HTMLButtonElement>(':scope > .d-channel-list__join');
+      if (row instanceof HTMLButtonElement && join !== null) join.tabIndex = row.tabIndex;
+    }
+  };
+  // Declared after the roving hook, so its placement has run when this does.
+  useLayoutEffect(syncJoins);
+  const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => { roving.onKeyDown(e); syncJoins(); };
+  const onFocus = (e: FocusEvent<HTMLUListElement>) => { roving.onFocus(e); syncJoins(); };
   const body = content !== undefined ? content : channels.length === 0 ? (
     <p className="d-channel-list__empty">{emptyLabel}</p>
   ) : (
-    <ul role="list" className="d-channel-list__list" ref={roving.ref} onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
+    <ul role="list" className="d-channel-list__list" ref={roving.ref} onKeyDown={onKeyDown} onFocus={onFocus}>
       {channels.map(c => {
         const unread = c.unread ?? 0;
         const mentions = c.mentions ?? 0;
@@ -59,11 +103,8 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         if (c.kind === 'voice' && voice !== undefined) {
           const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
           return (
-            <li key={c.id}>
-              <VoiceChannelRow name={c.name} current={c.id === activeId} joined={room?.joined ?? false} participants={room?.participants ?? []}
-                readable={c.readable}
-                labels={voice.labels} onOpen={() => onSelect(c.id)} />
-            </li>
+            <VoiceItem key={c.id} id={c.id} name={c.name} current={c.id === activeId} readable={c.readable} room={room}
+              voice={voice} onOpen={() => onSelect(c.id)} />
           );
         }
         return (
@@ -75,6 +116,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
       })}
     </ul>
   );
+  const head = listAction !== undefined ? <div className="d-channel-list__list-head">{listAction}</div> : null;
   const foot = footer !== undefined ? <div className="d-channel-list__footer">{footer}</div> : null;
   return (
     <nav className="d-channel-list" aria-label={label}>
@@ -85,10 +127,10 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
       {tabs !== undefined ? (
         <>
           {tabs}
-          <div className="d-channel-list__panel" role="tabpanel" aria-label={label}>{body}{foot}</div>
+          <div className="d-channel-list__panel" role="tabpanel" aria-label={label}>{head}{body}{foot}</div>
         </>
       ) : (
-        <>{body}{foot}</>
+        <>{head}{body}{foot}</>
       )}
     </nav>
   );

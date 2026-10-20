@@ -1,13 +1,16 @@
 // E-reload (web3.7, R31): a reload in a call leaves exactly one tile for the reloaded person, and a reload that is never
 // followed by a rejoin leaves no ghost either. The second half suppresses the pagehide leave (an init script that stops
 // the event before the app's own listener sees it). Locally the SFU still drops the reloaded participant within about
-// 300 ms, so the peer-visible checks (bob's roster and tiles) pin the outcome, not the cause. The request check pins that
-// the boot sweep runs (it is red with the sweep stubbed); sweep.test.ts covers the sweep's self-Remove.
+// 300 ms, so without help the peer-visible checks (bob's roster and tiles) could not tell the sweep from the SFU. The
+// second half therefore holds back the SFU's `participant_left` webhook (S3's test-host hook, `withholdLeft`): the
+// instance never hears of the departure, and only alice's boot sweep (her self-Remove, one read and one proposal) can take
+// her old device out of bob's roster. That roster check is red with the sweep's Remove stubbed (web3.8 E1, recorded in
+// E1-report.md). The request check still pins that the sweep reads the call; sweep.test.ts covers the self-Remove.
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, callSlice, expectShellReady, heard, joinVoice, onboard, self, tile,
+  VoicePeer, WAIT, callSlice, expectShellReady, heard, joinVoice, onboard, self, tile, withholdLeft,
 } from './support/voice';
 
 watchContexts(test);
@@ -71,8 +74,10 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
       await expect.poll(async () => (await callSlice(bob.page))?.roster.filter((r) => r.deviceId === a.device).length, { timeout: WAIT }).toBe(1);
     });
 
-    await test.step('alice reloads again with the pagehide leave suppressed and does not rejoin: the boot sweep removes her old device', async () => {
+    await test.step('alice reloads again with the pagehide leave suppressed, the SFU\'s departure withheld and no rejoin: the boot sweep alone removes her old device', async () => {
       expect(await pagehideIsSuppressed(alice.page), 'the page that is about to reload suppresses its pagehide leave').toBe(true);
+      // A withheld departure is dropped for good, not queued: the instance keeps alice's device until her own sweep removes it.
+      await withholdLeft(true);
       // Pins that the boot sweep runs: alice's worker reads the call of the channel it was in, with no join pressed.
       const reads: string[] = [];
       alice.context.on('request', (r) => { if (r.method() === 'GET' && new URL(r.url()).pathname === `/v1/channels/${s.voice_channel_id}/call`) reads.push(r.url()); });
@@ -83,6 +88,7 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
       await expect(tile(bob.page, 'alice')).toHaveCount(0, { timeout: SWEEP_BOUND });
     });
   } finally {
+    await withholdLeft(false);
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
     await peer.close();

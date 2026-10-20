@@ -173,12 +173,12 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
     await waitFor(() => expect(lasting()).toHaveTextContent('You left general.'));
   });
 
-  it('I4: the stage and dock toggles keep their labels; aria-pressed says muted', async () => {
+  it('I4: the stage and user panel toggles keep their labels; aria-pressed says muted', async () => {
     const app = await inVoice();
     await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
     expect(main().getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     await toLobby();
-    expect(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByRole('button', { name: 'unmute' })).toBeNull();
   });
 });

@@ -17,9 +17,12 @@ crate-type = ["cdylib", "rlib"]      # wasm-pack requires cdylib on the crate it
 
 [features]
 test-hooks = ["dilla-core/test-hooks"]
+# The vector runner (and the six minified vector JSON files it embeds) is conformance, not product:
+# the browser build leaves it out. CI runs the tests with `--features vectors`.
+vectors = ["dilla-core/vectors"]
 
 [dependencies]
-dilla-core = { path = "../dilla-core", features = ["vectors"] }
+dilla-core = { path = "../dilla-core" }
 wasm-bindgen         = "0.2.128"
 wasm-bindgen-futures = "0.4.54"
 js-sys               = "0.3.81"

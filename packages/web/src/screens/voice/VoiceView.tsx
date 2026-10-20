@@ -1,15 +1,15 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
-// its stage, the sidebar's voice section and the dock. Everything here is presentational over useCall's CallView and the
+// its stage, the voice rows' nested people in the channel list (ChannelList renders them) and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  ActiveVoice, AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceChannelRow, VoiceDock,
+  AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
-import { micNoticeKey, participantView, userName, voiceStateLabels } from '../shell-model.ts';
+import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
@@ -42,44 +42,69 @@ function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
 
-/** The tiles of the call this device is in: the session's tiles (others) and the own one first. */
+/** The id of a tile in the stage (R27): one keyed list, `${deviceId}:${source}`. */
+const tileId = (deviceId: string, kind: 'person' | 'screen') => `${deviceId}:${kind}`;
+
+type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror'>;
+
+/**
+ * One device's tiles (R27, pre-flight C-9): a person tile (its `source` is `camera` with a verified stream, else `avatar`, but its id is `:person` either way, so
+ * turning a camera on or off keeps a focus on it) that keeps the
+ * volume, the state glyphs and, for the own camera, the mirror, plus a `screen` tile while it shares (no volume, never
+ * mirrored). A screen-only sharer therefore keeps an avatar tile.
+ */
+function deviceTiles(base: TileBase, o: {
+  camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
+}): CallTileProps[] {
+  const { view } = base;
+  const fullscreenLabel = t('stage.fullscreen');
+  const camera = o.camera !== null && view.state !== 'unverified';
+  const out: CallTileProps[] = [{
+    ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, 'person'),
+    title: o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
+  }];
+  if (o.screen !== null || o.sharing) {
+    out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
+      fullscreenLabel, mirror: false });
+  }
+  return out;
+}
+
+/** The tiles of the call this device is in: the own device first, then the others', each device's tiles together. */
 function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const { call } = v;
   const state = call.state;
   const room = v.voice?.[channelId];
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
-  const camera = state?.localCamera ?? null;
-  const screen = state?.localScreen ?? null;
-  const own = v.self === null ? [] : [{
+  const ownName = selfName(v.self, v.members);
+  const own = v.self === null ? [] : deviceTiles({
     view: {
-      deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: userName(v.self.id, v.members, v.trust), state: 'ok' as const,
+      deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
       speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
-    own: true, volume: 100, media: screen ?? camera, inset: screen !== null ? camera : null,
-    mirror: camera === null ? null : screen !== null ? 'inset' as const : 'media' as const,
-    labels: tileLabels(v.self.username), onVolume: () => undefined,
-  }];
-  const others = (state?.tiles ?? []).map(tile => {
+    own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
+  }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
+    name: ownName });
+  const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
     const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
-    // Product walk I2: the screen is the tile and the camera its inset when both are on.
-    return { view, own: false, volume: volumeOf(v.settings, tile.userId), media: tile.screen ?? tile.video,
-      inset: tile.screen !== null ? tile.video : null, labels: tileLabels(name),
-      onVolume: (n: number) => call.setVolume(tile.userId, n) };
+    return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
+      onVolume: (n: number) => call.setVolume(tile.userId, n) },
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
   });
   return [...own, ...others];
 }
 
-/** The people of a live call this device is not in, as tiles without media. */
+/** The people of a live call this device is not in, as avatar tiles without media. */
 function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   return (v.voice?.[channelId]?.participants ?? []).map(p => ({
     view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
-    onVolume: (n: number) => v.call.setVolume(p.userId, n),
+    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
   }));
 }
 
@@ -215,17 +240,53 @@ function canCapture(): boolean {
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
   const canShare = canCapture();
-  const hideShare = usePhoneLayout() && !canShare;
+  const phone = usePhoneLayout();
+  const hideShare = phone && !canShare;
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
+      canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
+}
+
+/** The screen tiles of other people that are really being shared: the room says so, or their stream is on the stage. */
+function liveScreenIds(v: VoiceContext, channelId: string, tiles: readonly CallTileProps[]): string[] {
+  const ids = new Set(tiles.filter(t => t.source === 'screen' && !t.own).map(t => t.id ?? t.view.deviceId));
+  for (const p of v.voice?.[channelId]?.participants ?? []) if (!p.own && participantView(p).screen) ids.add(tileId(p.deviceId, 'screen'));
+  return [...ids];
+}
+
+/**
+ * R26: the one rule that focuses a tile by itself. A new screen tile of another person takes focus while no tile is
+ * focused; an id the stage already offered in this call is never offered again until leave (a tile the person unfocused
+ * stays unfocused, also across a pause that withholds every remote stream); the own screen never does. An id is forgotten
+ * early only when its person's room flag says the share really ended, so a restarted share may focus again. Focus is
+ * dropped when the focused tile goes away. The DM call box has no focus (`dm`): it stays the compact grid.
+ */
+function useAutoFocus(tiles: readonly CallTileProps[], live: readonly string[], joined: boolean, dm: boolean, focusedId: string | null,
+  setFocusedId: (id: string | null) => void) {
+  const offered = useRef(new Set<string>());
+  const idsKey = tiles.map(t => t.id ?? t.view.deviceId).join('\n');
+  const screensKey = tiles.filter(t => t.source === 'screen' && !t.own).map(t => t.id ?? t.view.deviceId).join('\n');
+  const liveKey = live.join('\n');
+  useEffect(() => {
+    if (dm) return;
+    if (!joined) { offered.current.clear(); setFocusedId(null); return; }
+    const liveNow = liveKey === '' ? [] : liveKey.split('\n');
+    for (const id of [...offered.current]) if (!liveNow.includes(id)) offered.current.delete(id);
+    const now = screensKey === '' ? [] : screensKey.split('\n');
+    const fresh = now.filter(id => !offered.current.has(id));
+    for (const id of fresh) offered.current.add(id);
+    // The focused tile going away drops the focus first, so a share that arrives in the same update can take it.
+    const kept = focusedId !== null && idsKey.split('\n').includes(focusedId) ? focusedId : null;
+    if (kept === null && fresh.length > 0) setFocusedId(fresh[0]);
+    else if (kept !== focusedId) setFocusedId(null);
+  }, [dm, joined, idsKey, screensKey, liveKey, focusedId, setFocusedId]);
 }
 
 const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
@@ -249,10 +310,16 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
+  const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
+  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
+  // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={joined ? callTiles(v, channelId) : roomTiles(v, channelId)} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <Controls v={v} paused={paused} dm={dm} />
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
@@ -339,22 +406,6 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
 }
 
 
-/** One stop for the rows: the stop row and its join button are tab stops, every other row and join is not. */
-function place(rows: readonly HTMLButtonElement[], stop: number): void {
-  rows.forEach((row, i) => {
-    row.tabIndex = i === stop ? 0 : -1;
-    const join = row.parentElement?.querySelector<HTMLButtonElement>('.dw-voice-section__join');
-    if (join) join.tabIndex = row.tabIndex;
-  });
-}
-
-/** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). `speaking`:
- *  the devices the call this device is in hears speaking (product walk M3); empty for any other row. */
-interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined;
-  speaking: ReadonlySet<string>;
-  /** No join for this row (product walk I8: the channel is gone for this device). */
-  held: boolean }
-
 /** Product walk M3: the devices of this device's call that are speaking now, its own included. */
 export function speakingDevices(state: CallView['state'], ownDevice: string | null): ReadonlySet<string> {
   const out = new Set<string>();
@@ -363,94 +414,8 @@ export function speakingDevices(state: CallView['state'], ownDevice: string | nu
   return out;
 }
 
-/**
- * The sidebar's voice channels under the `voice.heading.channels` heading: one roving tab stop over the rows, the people
- * of each live voice under its row, and a `join voice` button that shows while the row is hovered or focused. The stop
- * row's join is the next tab stop after it (task-9 ruling: keyboard reachable); arrows move both together.
- */
-export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRowItem[]; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
-  const list = useRef<HTMLUListElement>(null);
-  const items = () => Array.from(list.current?.querySelectorAll<HTMLButtonElement>(':scope > li > .d-voice-row') ?? []);
-  // Roving focus over the rows (one tab stop, arrows move it), as the channel list's: native listeners on the list.
-  useLayoutEffect(() => {
-    const ul = list.current;
-    if (ul === null) return;
-    const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      const all = items();
-      const target: EventTarget | null = e.target;
-      const from = target instanceof HTMLButtonElement ? all.indexOf(target) : -1;
-      if (from < 0) return;
-      const to = e.key === 'ArrowDown' ? Math.min(from + 1, all.length - 1) : e.key === 'ArrowUp' ? Math.max(from - 1, 0)
-        : e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : null;
-      if (to === null) return;
-      e.preventDefault();
-      place(all, to);
-      all[to].focus();
-    };
-    const onFocus = (e: FocusEvent) => {
-      const target: EventTarget | null = e.target;
-      const all = items();
-      const i = target instanceof HTMLButtonElement ? all.indexOf(target) : -1;
-      if (i >= 0) place(all, i);
-    };
-    ul.addEventListener('keydown', onKeyDown);
-    ul.addEventListener('focusin', onFocus);
-    return () => { ul.removeEventListener('keydown', onKeyDown); ul.removeEventListener('focusin', onFocus); };
-  }, [rows.length]);
-  useLayoutEffect(() => {
-    const all = items();
-    if (all.length === 0) return;
-    const stop = all.findIndex(b => b.tabIndex === 0);
-    const current = all.findIndex(b => b.getAttribute('aria-current') === 'page');
-    const keep = stop >= 0 && all.filter(b => b.tabIndex === 0).length === 1 ? stop : current >= 0 ? current : 0;
-    place(all, keep);
-  });
-  if (rows.length === 0) return null;
-  const labels = rowLabels();
-  return (
-    <section className="dw-voice-section" aria-labelledby="dw-voice-heading">
-      <h2 id="dw-voice-heading" className="dw-voice-section__heading d-label">{t('voice.heading.channels')}</h2>
-      {/* role="list": Safari drops a list's semantics under list-style: none. */}
-      {/* eslint-disable-next-line jsx-a11y/no-redundant-roles */}
-      <ul role="list" ref={list} className="dw-voice-section__list">
-        {rows.map(r => <VoiceSectionItem key={r.id} r={r} labels={labels} onOpen={onOpen} onJoin={onJoin} />)}
-      </ul>
-    </section>
-  );
-}
-
-/** One row of the voice section with its join button, which has its own place in the row's line (WB a11y m4: it never
- *  covers the row's count or focus ring) and is described by the channel's name, so a list of buttons tells them apart. */
-function VoiceSectionItem({ r, labels, onOpen, onJoin }: { r: VoiceRowItem; labels: ReturnType<typeof rowLabels>; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
-  const nameId = useId();
-  return (
-    <li className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
-      <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
-        participants={(r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId)))} labels={labels} onOpen={() => onOpen(r.id)} />
-      {r.joined || r.held ? null : (
-        <>
-          <span id={nameId} hidden>{r.name}</span>
-          <button type="button" className="d-btn dw-voice-section__join" data-variant="ghost" data-size="sm" tabIndex={-1}
-            aria-describedby={nameId} onClick={() => onJoin(r.id)}><span className="d-btn__label">{t('voice.join')}</span></button>
-        </>
-      )}
-    </li>
-  );
-}
-
-function rowLabels() {
+export function rowLabels() {
   return { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: voiceStateLabels() };
-}
-
-/** `active voice`: the community's live voice channels above the channel rows. */
-export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[]; onOpen: (id: string) => void }): ReactNode {
-  const live = rows.filter(r => (r.room?.participants.length ?? 0) > 0);
-  return (
-    <ActiveVoice channels={live.map(r => ({ id: r.id, name: r.name, current: r.current, joined: r.joined,
-      participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) }))}
-      labels={{ heading: t('voice.heading.active'), ...rowLabels() }} onOpen={onOpen} />
-  );
 }
 
 /** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as for a
@@ -490,14 +455,13 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The dock above the user panel while this device is in voice (flow 06): where, the input meter, then mute, deafen,
- * camera, share screen and leave (the stage's controls, under the stage's rules: camera and share are aria-disabled
+ * The call panel above the user panel while this device is in voice (flow 06): where, the input meter, then
+ * camera, share screen and leave (no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
  */
 export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
   const { call } = v;
-  const noShare = usePhoneLayout() && !canCapture();
   const bannerRef = useRef<HTMLDivElement>(null);
   const id = call.channelId;
   const paused = id !== null && v.slice?.channelId === id && v.slice.phase === 'paused';
@@ -529,9 +493,9 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           <Button aria-describedby="dw-voice-dock-audio" onClick={call.startAudio}>{t('voice.audioStart')}</Button>
         </div>
       ) : null}
-      <VoiceDock phase={phase} controls={!stageShown} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
+      <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
+        canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
@@ -541,7 +505,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
           <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
         </>}
-        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onCamera={call.toggleCamera} onShare={noShare ? undefined : call.toggleShare}
+        onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );
