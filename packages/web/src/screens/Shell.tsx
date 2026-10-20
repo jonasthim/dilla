@@ -1325,7 +1325,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The tabs (flow 12): a tab opens where it was last left, else at its root; the counts are what the sidebar's badges sum to.
   const serverRoot: Route = (routeCommunity ?? fallbackCommunity) !== null
     ? { name: 'channel', communityId: (routeCommunity ?? fallbackCommunity) as string, channelId: null } : { name: 'root' };
-  const tabRoot = (to: PhoneTab): Route => to === 'home' ? serverRoot : { name: to };
+  // Home's root is the DM list while the `@` tile is selected (a DM is part of it), else the server's channel list.
+  const tabRoot = (to: PhoneTab): Route => to === 'home' ? (homeSelected ? { name: 'dms' } : serverRoot) : { name: to };
   const tabTarget = (to: PhoneTab): Route => {
     const kept = rememberedTab(to);
     if (kept !== null) {
@@ -1482,7 +1483,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
-                const view = validViewPlace(saved.view);
+        const view = validViewPlace(saved.view);
         if (view !== null) setPendingView(view);
         if (saved.search?.open === true && typeof saved.search.query === 'string' && saved.search.query.length <= 2_000
           && (saved.search.scope === 'all' || saved.search.scope === 'community' || saved.search.scope === 'channel')) {

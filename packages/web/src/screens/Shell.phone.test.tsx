@@ -395,6 +395,24 @@ describe('the phone shell: tabs', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('a deep-linked DM: the current Home tab lands on the DM list, never on a server', async () => {
+    const { user } = phone({ path: `/dm/${DM}` });
+    await screen.findByRole('textbox');
+    await user.click(tab('home'));
+    expect(here()).toBe('/dm');
+    expect(await screen.findByRole('button', { name: 'bob' })).toBeInTheDocument();
+  });
+
+  it('a DM opened from the @ list: the current Home tab goes back to /dm', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(homeTile());
+    await user.click(await screen.findByRole('button', { name: 'bob' }));
+    expect(here()).toBe(`/dm/${DM}`);
+    await screen.findByRole('textbox');
+    await user.click(tab('home'));
+    await waitFor(() => expect(here()).toBe('/dm'));
+  });
+
   it('opens an unvisited tab at its root', async () => {
     const { user } = phone({ path: '/you' });
     await screen.findByRole('heading', { level: 1, name: t('you.title') });
