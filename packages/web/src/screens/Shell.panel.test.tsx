@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import { SETTINGS } from '@dilla/client-core';
 import type { Command } from '@dilla/client-core';
 import { PHONE_QUERY } from '../layout.ts';
@@ -468,6 +468,43 @@ describe('fail closed (security round 1)', () => {
     await waitFor(() => expect(app.sessions).toHaveLength(2), { timeout: 4_000 });
     expect(startOpts(app, 1).self).toBe('muted');
     expect(app.session.state.muted).toBe(true);
+  });
+
+  it('an in-call mute whose write is refused survives a reload: the resumed call starts muted (final review m3)', async () => {
+    const app = shell();
+    await joinVoice(app);
+    const inner = app.client.handler;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' ? Promise.reject(new Error('E_STORE_BUSY')) : inner(command));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(app.session.state.muted).toBe(true);
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(app.session.state.deafened).toBe(true);
+    expect(app.client.get('settings')?.[SETTINGS.voiceSelf]).toBeUndefined();
+    // The page reloads: nothing of the first page's memory is left, and the store never took the write.
+    cleanup();
+    const reloaded = shell();
+    await joinVoice(reloaded);
+    expect(startOpts(reloaded).self).toBe('deafened');
+    expect(reloaded.session.state.muted).toBe(true);
+    expect(reloaded.session.state.deafened).toBe(true);
+  });
+
+  it('a mute the store did take is not carried across a reload, and an answered write drops a carried one', async () => {
+    const app = shell();
+    await joinVoice(app);
+    const inner = app.client.handler;
+    let refuse = true;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' && refuse ? Promise.reject(new Error('E_STORE_BUSY')) : inner(command));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    refuse = false;
+    // The unmute is answered: whatever was carried is dropped, the stored setting is the truth again.
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    await waitFor(() => expect(app.client.get('settings')?.[SETTINGS.voiceSelf]).toBeUndefined());
+    cleanup();
+    const reloaded = shell();
+    await joinVoice(reloaded);
+    expect(startOpts(reloaded).self).toBe(null);
+    expect(reloaded.session.state.muted).toBe(false);
   });
 
   it('a refused setSetting leaves the panel showing what is stored, and the next press writes again', async () => {
