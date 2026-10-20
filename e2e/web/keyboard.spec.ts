@@ -140,8 +140,8 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
   // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
-  // list and the user panel (web3.8, item 10), and the panel is two stops (its mute and deafen toolbar, then the gear; the
-  // name block is none, R24) before the header; the lap ends at the composer (web3.8, R4: no status bar).
+  // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
+  // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
   for (let i = 0; i < 16; i++) {
@@ -153,9 +153,10 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(splitterAt, 'the sidebar splitter is a tab stop').toBeGreaterThan(0);
   expect(seen[splitterAt + 1], 'the splitter sits outside every region').toBe(-1);
   expect(seen.slice(0, splitterAt + 1), 'the splitter comes after the channel list').toContain(2);
-  expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s toolbar').toBe(3);
-  expect(seen[splitterAt + 3], 'the gear is the panel\'s second stop').toBe(3);
-  expect(seen[splitterAt + 4], 'the stop after the panel is in the channel header').toBe(4);
+  expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s name block (the status menu)').toBe(3);
+  expect(seen[splitterAt + 3], 'the toolbar is the panel\'s second stop').toBe(3);
+  expect(seen[splitterAt + 4], 'the gear is the panel\'s third stop').toBe(3);
+  expect(seen[splitterAt + 5], 'the stop after the panel is in the channel header').toBe(4);
   const start = seen.indexOf(0);
   expect(start, `the skip link is a tab stop (regions seen: ${seen.join(' ')})`).toBeGreaterThanOrEqual(0);
   const lap: number[] = [];
@@ -176,7 +177,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // settings → Invites, and the "+" is the owner's). The splitter sits outside the channel list, so it is not counted here.
   expect(stops.get(2), 'the sidebar is four tab stops: the member\'s "server settings" and "leave server", the tabs and the rows').toBe(4);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
-  expect(stops.get(3), 'the user panel is two tab stops: mute and deafen as one toolbar, and the gear').toBe(2);
+  expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
   const settings = await openSettings(page, 'diagnostics');

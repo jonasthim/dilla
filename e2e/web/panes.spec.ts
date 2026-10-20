@@ -135,6 +135,16 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await sidebarSplitter(page).focus();
   await page.keyboard.press('Enter');
 
-  // 7. Accessible.
+  // 7. The status menu behind the user panel's avatar and name opens upward over the sidebar, whole and on screen, and takes a choice.
+  const who = page.locator('.d-user-panel').getByRole('button', { name: copy('panel.status', { status: copy('presence.online') }), exact: true });
+  await who.click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem')).toHaveCount(4);
+  for (const item of await menu.getByRole('menuitem').all()) await expect(item).toBeInViewport({ ratio: 1 });
+  await menu.getByRole('menuitem', { name: copy('presence.idle'), exact: true }).click();
+  await expect(page.locator('.d-user-panel').getByRole('button', { name: copy('panel.status', { status: copy('presence.idle') }), exact: true })).toBeFocused({ timeout: WAIT });
+  await expect(page.locator('.d-user-panel .d-avatar__presence')).toHaveAttribute('data-presence', 'idle');
+
+  // 8. Accessible.
   await expectAccessible(page, 'the panes with their splitters');
 });

@@ -510,7 +510,7 @@ export function useCall(o: UseCallOptions): CallView {
     pushSelf();
     client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(
       () => { if (written.current === mine) { written.current = null; carry(null); } },
-      () => { if (written.current === mine) { mine.held = true; carry(value as SelfValue); } },
+      () => { if (written.current === mine) { mine.held = true; carry(value); } },
     );
   }, [client, pushSelf]);
   const toggleMute = useCallback(() => {

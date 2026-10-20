@@ -11,7 +11,7 @@
 .d-user-panel__who:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .d-user-panel__text { display: grid; min-width: 0; }
 .d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; }
-.d-user-panel__menu .d-action-menu__item[aria-current="true"]::after { content: " \2713"; }
+.d-user-panel__menu .d-action-menu__item[aria-current="true"] { font-weight: var(--weight-display); box-shadow: inset 2px 0 0 var(--accent); }
 .d-user-panel__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--fg); }
 .d-user-panel__username { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
 .d-user-panel__controls { flex: none; flex-wrap: nowrap; }
