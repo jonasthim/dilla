@@ -43,7 +43,7 @@ Three states keep their words, because they are about trust and what you can hea
 | The tile says | What it means |
 |---|---|
 | "connecting" | They are joining; nothing of theirs is played yet |
-| "not heard yet" | They are in the call, and nothing from their device has been checked yet |
+| "not heard yet" | They are in the call, and nothing from their device has been checked yet. It is not shown for someone who is muted or deafened and sends no camera or screen: their device sends nothing to check, so you see only the muted glyph |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
 The `web` and `bot` tags stay as words after the name.

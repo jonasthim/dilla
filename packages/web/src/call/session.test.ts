@@ -442,6 +442,26 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.tiles.find((t) => t.deviceId === DEV_D)!.video).toBeNull();
   });
 
+  it('I2 review M5: a roster device not heard yet gets no camera or screen stream until it is verified', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const cam = { id: 'cam' };
+    const scr = { id: 'scr' };
+    bob.trackPublications.set('v', { source: 'camera', track: { mediaStream: cam } });
+    bob.trackPublications.set('s', { source: 'screen_share', track: { mediaStream: scr } });
+    await f.advance(1_000);
+    const bobTile = () => call.state.tiles.find((t) => t.deviceId === BOB_DEV)!;
+    expect(bobTile().state).toBe('not-heard');
+    expect(bobTile().video).toBeNull();
+    expect(bobTile().screen).toBeNull();
+    f.verified.add(BOB_DEV);
+    await f.advance(1_000);
+    expect(bobTile().state).toBe('ok');
+    expect(bobTile().video).toBe(cam);
+    expect(bobTile().screen).toBe(scr);
+  });
+
   it('setPaused (RV-3) stops sending and playing, installs no key, and restores on resume', async () => {
     const f = fakes();
     const call = await start(f, { volumes: { [BOB]: 150 } });
