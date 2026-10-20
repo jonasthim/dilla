@@ -592,7 +592,9 @@ test('6. a phone in general is never moved, while its desktop twin idle beside i
   expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.
   await expect(phaseOf(ph.page)).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-  await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toHaveCount(2, { timeout: WAIT });
+  // A voice channel lists each person once, whatever their devices (67fcebb7): the phone's phase and the desktop's dock
+  // say both are in.
+  await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await expect(dock(b.page)).toContainText('general');
 
   await resetSaid(ph);
