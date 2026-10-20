@@ -222,32 +222,22 @@ test('from an empty instance: start a server, invite a friend through a link, re
     // the server already has for that kind is refused before any request (walk M2); a channel the owner just made says
     // only "nothing here yet." (walk M1); and a long name never widens the page (walk I2): at 1280 "pinned" stays on
     // screen, at 360 the page is no wider than the viewport.
-    const actionGroup = page.getByRole('group', { name: copy('create.actions'), exact: true });
-    const actionButtons = actionGroup.getByRole('button');
-    await expect(actionButtons).toHaveCount(1);
+    // WS8: the header holds only the server name and its settings gear (no text buttons, no actions group).
+    await expect(page.getByRole('group', { name: copy('create.actions'), exact: true })).toHaveCount(0);
+    const gear = button(page, 'admin.open');
+    await expect(gear).toBeVisible();
     await expect(newChannelButton(page)).toBeVisible();
-    for (const b of await actionButtons.all()) await expect(b).toBeVisible();
-    const fit = await actionGroup.evaluate(group => {
-      const box = group.getBoundingClientRect();
-      const sidebar = group.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
-      return {
-        group: { left: box.left, right: box.right, width: box.width },
-        sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width },
-        buttons: [...group.querySelectorAll('button')].map(b => {
-          const r = b.getBoundingClientRect();
-          return { name: b.getAttribute('aria-label') ?? b.textContent ?? '', left: r.left, right: r.right,
-            clipped: b.scrollWidth > b.clientWidth + 1 };
-        }),
-      };
+    const gearFit = await gear.evaluate(b => {
+      const r = b.getBoundingClientRect();
+      const sidebar = b.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
+      return { left: r.left, right: r.right, width: r.width, clipped: b.scrollWidth > b.clientWidth + 1,
+        sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width } };
     });
-    expect(fit.sidebar?.width ?? Infinity, `the sidebar is 240 px (${JSON.stringify(fit.sidebar)})`).toBeLessThanOrEqual(240);
-    expect(fit.group.left).toBeGreaterThanOrEqual((fit.sidebar?.left ?? 0) - 0.5);
-    expect(fit.group.right).toBeLessThanOrEqual((fit.sidebar?.right ?? 0) + 0.5);
-    for (const b of fit.buttons) {
-      expect(b.left, `${b.name} starts inside its row`).toBeGreaterThanOrEqual(fit.group.left - 0.5);
-      expect(b.right, `${b.name} ends inside its row`).toBeLessThanOrEqual(fit.group.right + 0.5);
-      expect(b.clipped, `${b.name} shows its whole label`).toBe(false);
-    }
+    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 240 px (${JSON.stringify(gearFit.sidebar)})`).toBeLessThanOrEqual(240);
+    expect(gearFit.left).toBeGreaterThanOrEqual((gearFit.sidebar?.left ?? 0) - 0.5);
+    expect(gearFit.right).toBeLessThanOrEqual((gearFit.sidebar?.right ?? 0) + 0.5);
+    expect(gearFit.width).toBeGreaterThanOrEqual(24);
+    expect(gearFit.clipped, 'the gear shows its whole icon').toBe(false);
     // The list's "+" fits inside the sidebar too, unclipped (it replaced the old header buttons).
     const plusFit = await newChannelButton(page).evaluate(b => {
       const r = b.getBoundingClientRect();
