@@ -16,7 +16,7 @@ machine their group can reach can host it.
 
 ## What works today
 
-As of web-3.9 (2026-10-2x).
+As of web-3.9 (RELEASE-DATE).
 
 | Part | State |
 |---|---|
@@ -39,7 +39,7 @@ As of web-3.9 (2026-10-2x).
 
 ## What is not there yet
 
-As of 2026-10-2x, in the web client:
+As of RELEASE-DATE, in the web client:
 
 - Server-checked permissions: who may send is checked only by members' apps in this version, and so are pins and
   @everyone. The role view is not verified by the group: a bad host could hide pins and @everyone or show members
