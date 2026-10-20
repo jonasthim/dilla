@@ -60,7 +60,7 @@ uploads its own, since the stored one is then behind that list or junk (a browse
 `K_backup` and cannot open it); a device revoking another with the recovery key re-seals and uploads
 the object too. Both are read by the user's own `enrolled` and `pending` sessions, so a device
 entering the recovery key fetches them before it holds a credential. Archive chunks and the
-manifest are not served at wire 1. The instance cannot open either object.
+manifest are not served at wires 1 and 2. The instance cannot open either object.
 
 **An interrupted publication.** A device that changes the device list writes the state object
 naming the new list before or after it publishes that list; when the list `PUT` is lost (a failed
