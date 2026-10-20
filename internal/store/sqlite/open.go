@@ -94,6 +94,9 @@ func OpenWrite(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// chmodFile is os.Chmod; a test swaps it to make the chmod fail.
+var chmodFile = os.Chmod
+
 // precreate makes the database file at 0600 before SQLite sees it. SQLite's unix VFS creates the
 // -wal and -shm files with the database file's own mode, so this one file decides all three,
 // whatever the caller's umask (R17). An existing file is only chmodded, never truncated.
@@ -105,9 +108,10 @@ func precreate(path string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("sqlite: create %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("sqlite: chmod %s: %w", path, err)
-	}
+	// Best effort: a file another user owns (a root-owned dilla.db reached through the group) refuses the chmod
+	// with EPERM, and SQLite opens it all the same. serve reports it as a warning through SecureFiles; init, which
+	// owns the file it just made, treats SecureFiles's error as fatal.
+	_ = chmodFile(path, 0o600)
 	return nil
 }
 

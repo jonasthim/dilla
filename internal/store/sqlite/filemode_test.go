@@ -37,6 +37,25 @@ func TestOpenWriteFilesAreOwnerOnly(t *testing.T) {
 	}
 }
 
+// A chmod that is refused (a root-owned dilla.db that dillad reaches through the group: EPERM) must not stop
+// OpenWrite: serve warns about it through SecureFiles and starts, as it already does for the -wal and -shm.
+// Not parallel: it swaps the package's chmod.
+func TestOpenWriteSurvivesARefusedChmod(t *testing.T) {
+	old := chmodFile
+	chmodFile = func(string, os.FileMode) error { return &os.PathError{Op: "chmod", Path: "dilla.db", Err: syscall.EPERM} }
+	t.Cleanup(func() { chmodFile = old })
+
+	path := filepath.Join(t.TempDir(), "dilla.db")
+	db, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite with a refused chmod: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE t (x INTEGER)`); err != nil {
+		t.Fatalf("the database must still work: %v", err)
+	}
+}
+
 func TestSecureFilesChmodsTheThreeAndIgnoresAMissingOne(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dilla.db")
 	for _, p := range []string{path, path + "-wal"} { // no -shm
