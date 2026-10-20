@@ -1250,3 +1250,34 @@ Points where the wave plan does not hold against the tree at 9f632564, each rule
 | P-20 | L1: "serve JetBrains Mono from the web bundle" | The invite CSP forbids fonts | `font-src 'self'`, opus review (R43) | The font never loads, or a CSP change slips through unreviewed |
 | P-21 | VOICE-AFK carries "the e2e pin" | The pin needs Shell's wiring (WEB-AFK) | The no-audio pin is E-AFK step 4 and 5 | VOICE-AFK's e2e cannot run in its lane |
 | P-22 | CI runs the backfill on Postgres | `go-postgres` runs only store and ops | CI adds the AFK tests of internal/api there | The backfill's Postgres leg runs only locally |
+
+## Addendum (2026-10-20): the AUDIT-2 fix wave
+
+Jonas approved the contact sheets on 2026-10-20 and chose to fix every open AUDIT-2 item before web3.9 ships. The source is `.superpowers/sdd/2026-10-20-dilla-web-3-9-tasks/ux-audit-2.md` (rows, measurements and the cause file:line). There are four tasks in parallel lanes with disjoint owners. Each one runs narrow gates, plus a measured check in `e2e/web/layout.spec.ts` (each task adds its own `test(...)` block, appended at the end of the file).
+
+### Task FA1: Phone targets and invites
+Owns: `packages/ui/src/{Button,Toggle,VoiceSettings,SettingsRow}/**`, onboarding and sign-in screens' CSS, and `packages/web/src/screens/settings/server/InvitesSection.tsx`.
+- **I1:** the invites section uses SettingsRow/ManageList grammar: label on the left, control in the 16rem column, icon actions in trailing slots.
+- **H4/N3:** on a phone (`[data-layout="phone"]`, plus onboarding and sign-in outside the shell), every primary control is at least 44px tall. That covers onboarding and sign-in buttons, Copy, the voice selects and the toggle switches. The `refresh` button reaches 44 on phone, because `SettingsRow.css:10` must not beat the phone rule. The composer field stays a text field at 16px or more.
+- **Measured:** every button, select and toggle on onboarding, sign-in, settings → voice and settings → devices is at least 44 at 390.
+
+### Task FA2: The DM and voice layout
+Owns: `packages/web/src/screens/Shell.tsx`, `packages/web/src/app.css`, and `packages/web/src/screens/voice/VoiceView.tsx`.
+- **N1:** the desktop DM call action moves into the DM header as an icon button, as on phone (`Shell.tsx:1193`), and the lone call band (`app.css:81`) goes.
+- **N2:** the DM list's "message someone" becomes a header icon action (`square-pen`, as on phone), not a stray text footer (`Shell.tsx:1058`).
+- **N4:** the AFK and voice preview get one grammar. The title, people and join sit in one column at the top, with no 760px gap.
+- **D4:** on phone the call stage fills the view and its controls pin above the tab bar (`app.css:68-72`).
+- **Measured:** the DM header holds the call button with no band below it; the preview's join sits within 120px of its text; the phone stage controls' bottom edge sits at most 8px above the tab bar.
+
+### Task FA3: One row per person
+Owns: the voice roster grouping in client-core and the voice row view model in web.
+- **A7:** a voice channel lists each person once, however many devices they have. The count counts people. Their state is the union across devices: speaking if any device speaks, muted only if every device is muted.
+- **Tests:** two devices of one user give one row and count 1. The test e2e or the unit level, whichever the roster lives in.
+
+### Task FA4: Polish
+Owns: `packages/ui/src/SearchPalette/**`, `packages/web/src/screens/You.tsx`, `packages/ui/src/SettingsFrame/**` (phone title), `packages/web/src/screens/settings/server/ChannelsSection.tsx`, `packages/web/src/screens/settings/Privacy*`, and `packages/ui/src/Icon/icons.ts` (new icons only).
+- **J1:** search result rows show `#channel`, the author and the time, plus a KeyHint footer (↑↓ to move, Enter to open, Esc to close).
+- **H6:** the You tab gets an icon per row, including sign out (`log-out`).
+- **H5:** the phone settings view no longer repeats the header title as an h2. The PhoneHeader is the heading.
+- **I6:** admin channel reorder uses `arrow-up`/`arrow-down` icon buttons in trailing slots, and long names truncate to one line.
+- **I7:** privacy "Compare with …" uses the ghost button style, with one accent action at most.
