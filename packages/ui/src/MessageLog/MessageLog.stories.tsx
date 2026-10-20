@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { MessageLog } from './MessageLog.tsx';
+import { MessageLog, DateDivider } from './MessageLog.tsx';
 import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
 import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
@@ -47,4 +47,19 @@ export const RovingRows: Story = {
     ],
   },
   decorators: [Story => <FocusActiveRow><Story /></FocusActiveRow>],
+};
+
+// web3.9 (R29): the caller groups a run (same author within 7 minutes, no divider between); the log and row only render it.
+const grouped = [
+  <DateDivider key="d1" label="Mon 19 Oct" />,
+  <MessageRow key="1" author="ada" time="21:02" body="anyone up for a round tonight?" state="ok" />,
+  <MessageRow key="2" author="ada" time="21:03" body="i have the map" state="ok" grouped />,
+  <MessageRow key="3" author="ada" time="21:05" body="and the lantern" state="ok" grouped />,
+  <DateDivider key="d2" label="Today" />,
+  <MessageRow key="4" author="björn" time="09:10" body="after nine, still on the boat" state="ok" tag="web" deviceTag="hover" />,
+  <MessageRow key="5" author="björn" time="09:11" body="bring the rope" state="ok" grouped />,
+];
+export const GroupedWithDivider: Story = { args: { children: grouped } };
+export const OlderMessagesBar: Story = {
+  args: { children: grouped, present: { atPresent: false, olderLabel: 'viewing older messages', jumpLabel: 'jump to present', onJumpToPresent: () => {} } },
 };

@@ -2,6 +2,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { MessageRow } from './MessageRow.tsx';
+import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const BODY = 'anyone up for a round tonight?';
@@ -291,5 +293,84 @@ describe('MessageRow mention colour dot', () => {
   it('has no serious axe violations with a dotted mention', async () => {
     const { container } = render(<div className="d-root"><MessageRow author="mira" time="21:03" state="ok" body={parts} /></div>);
     await expectNoAxeViolations(container);
+  });
+
+  describe('grouped (R29)', () => {
+    it('hides the author and time text visually, and shows the time in the gutter', () => {
+      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" grouped />);
+      expect(container.querySelector('.d-message-row__author')).toHaveClass('d-sr-only');
+      expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveClass('d-sr-only');
+      const gutter = container.querySelector('.d-message-row__gutter') as HTMLElement;
+      expect(gutter).toHaveTextContent('21:02');
+      expect(gutter).toHaveAttribute('aria-hidden', 'true');
+      expect(container.querySelector('.d-message-row__avatar')).toBeNull();
+      expect(container.querySelector('article')).toHaveAttribute('data-grouped', 'true');
+    });
+    it('keeps the row named by its author and time for a screen reader', () => {
+      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" grouped />);
+      expect(screen.getByRole('article', { name: /ada.*21:02/ })).toBeInTheDocument();
+    });
+    it('shows the author, time and avatar when not grouped, and no gutter', () => {
+      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" />);
+      expect(container.querySelector('.d-message-row__author')).not.toHaveClass('d-sr-only');
+      expect(container.querySelector('.d-message-row__gutter')).toBeNull();
+    });
+  });
+
+  describe('deviceTag (G2)', () => {
+    it('marks the web tag hover-only', () => {
+      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" deviceTag="hover" />);
+      expect(screen.getByText('web').closest('.d-message-row__tag')).toHaveAttribute('data-reveal', 'hover');
+      expect(container.querySelector('article')).not.toBeNull();
+    });
+    it('keeps the tag always shown by default', () => {
+      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" />);
+      expect(screen.getByText('web').closest('.d-message-row__tag')).toBeNull();
+    });
+  });
+
+  describe('tap to reveal on a phone (R30)', () => {
+    const toolbar = <MessageToolbar label="actions" tabbable={false} items={[{ id: 'reply', label: 'reply', onAction: () => {} }]} />;
+    const row = (over: Partial<React.ComponentProps<typeof MessageRow>> = {}) => (
+      <PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={over.onReveal} revealed={over.revealed} /></PhoneLayoutProvider>
+    );
+    it('renders no toolbar until revealed', () => {
+      const { rerender } = render(row());
+      expect(screen.queryByRole('toolbar')).toBeNull();
+      rerender(row({ revealed: true }));
+      expect(screen.getByRole('toolbar', { name: 'actions' })).toBeInTheDocument();
+    });
+    it('a click on the body asks to reveal, and a second click asks to hide', async () => {
+      const onReveal = vi.fn();
+      const { rerender } = render(row({ onReveal }));
+      await userEvent.setup().click(screen.getByText(BODY));
+      expect(onReveal).toHaveBeenLastCalledWith(true);
+      rerender(row({ onReveal, revealed: true }));
+      await userEvent.setup().click(screen.getByText(BODY));
+      expect(onReveal).toHaveBeenLastCalledWith(false);
+    });
+    it('Enter on the focused row reveals; Escape hides', () => {
+      const onReveal = vi.fn();
+      const { rerender } = render(row({ onReveal }));
+      const article = screen.getByRole('article');
+      fireEvent.keyDown(article, { key: 'Enter' });
+      expect(onReveal).toHaveBeenLastCalledWith(true);
+      rerender(row({ onReveal, revealed: true }));
+      fireEvent.keyDown(screen.getByRole('article'), { key: 'Escape' });
+      expect(onReveal).toHaveBeenLastCalledWith(false);
+    });
+    it('a click on a button inside the row does not toggle', async () => {
+      const onReveal = vi.fn();
+      render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '2 replies', onOpen: () => {} }} onReveal={onReveal} /></PhoneLayoutProvider>);
+      await userEvent.setup().click(screen.getByRole('button', { name: '2 replies' }));
+      expect(onReveal).not.toHaveBeenCalled();
+    });
+    it('off a phone the toolbar is always rendered and a click does not reveal', async () => {
+      const onReveal = vi.fn();
+      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={onReveal} />);
+      expect(screen.getByRole('toolbar')).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByText(BODY));
+      expect(onReveal).not.toHaveBeenCalled();
+    });
   });
 });

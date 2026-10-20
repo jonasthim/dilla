@@ -9,6 +9,17 @@ export interface MessageLogProps {
   emptyLabel: string;
   busy?: boolean;
   onKeyDown?(e: KeyboardEvent): void;
+  /** Set when the log can be away from the newest messages: `atPresent === false` shows the bar, and Ctrl+End jumps. */
+  present?: { atPresent: boolean; olderLabel: string; jumpLabel: string; onJumpToPresent(): void };
+}
+
+/** A day divider: a mono hairline row with the day. Pass it as a child of the log. */
+export function DateDivider({ label }: { label: string }) {
+  return (
+    <div className="d-date-divider" role="separator" aria-label={label}>
+      <span className="d-date-divider__label" aria-hidden="true">{label}</span>
+    </div>
+  );
 }
 
 /** How far from the end, in CSS px, the reader may be and still count as reading the end. */
@@ -24,7 +35,7 @@ export const PIN_SLACK_PX = 24;
  * log's one tab stop and the log itself leaves the tab order (tabIndex -1, still focusable by script); with no
  * such row the log stays a reachable scroll region. Keys reach the caller through `onKeyDown`.
  */
-export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown }: MessageLogProps) {
+export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown, present }: MessageLogProps) {
   // Scrolling must not re-render: all of the pinning state lives in refs.
   const logRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
@@ -66,12 +77,28 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     el.tabIndex = rowsRef.current?.querySelector('[tabindex="0"]') ? -1 : 0;
   });
 
+  const onLogKeyDown = (e: KeyboardEvent) => {
+    if (present && !present.atPresent && e.key === 'End' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      present.onJumpToPresent();
+      return;
+    }
+    onKeyDown?.(e);
+  };
+
   return (
     <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-relevant="additions" aria-label={label}
-      aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown}>
+      aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onLogKeyDown}>
       {earlier ? <Button className="d-message-log__earlier" variant="ghost" onClick={earlier.onLoad}>{earlier.label}</Button> : null}
       {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>
+      {present && !present.atPresent ? (
+        <div className="d-message-log__present">
+          <span>{present.olderLabel}</span>
+          <span aria-hidden="true">·</span>
+          <Button variant="ghost" onClick={present.onJumpToPresent}>{present.jumpLabel}</Button>
+        </div>
+      ) : null}
     </div>
   );
 }

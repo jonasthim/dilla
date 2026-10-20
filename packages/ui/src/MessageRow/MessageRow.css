@@ -59,3 +59,13 @@
 @container d-shell (max-width: 47.99rem) { .d-message-row__thread { min-height: 2.75rem; } }
 [data-layout="phone"] .d-message-row__thread { min-height: 2.75rem; }
 @media (prefers-reduced-motion: reduce) { .d-message-row__thread { transition: none; } }
+
+/* web3.9 (R29, G2): a grouped row shows its time in the avatar column on hover or focus; the head's author and time stay for a screen reader. */
+.d-message-row__gutter { align-self: start; justify-self: end; padding-top: 0.125rem; font-size: var(--text-xs); line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
+.d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
+.d-message-row[data-grouped="true"] { margin-top: 0; }
+/* The device tag on a web client shows only while the row is hovered or holds focus (it stays in the accessible name). */
+.d-message-row__tag[data-reveal="hover"] { display: inline-flex; opacity: 0; }
+.d-message-row:hover .d-message-row__tag[data-reveal="hover"], .d-message-row:focus-within .d-message-row__tag[data-reveal="hover"], .d-message-row[data-revealed="true"] .d-message-row__tag[data-reveal="hover"] { opacity: 1; }
+/* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
+[data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }

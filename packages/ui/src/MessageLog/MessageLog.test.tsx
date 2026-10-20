@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
-import { MessageLog } from './MessageLog.tsx';
+import { MessageLog, DateDivider } from './MessageLog.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 type Metrics = { scrollHeight: number; clientHeight: number };
@@ -177,5 +177,48 @@ describe('MessageLog', () => {
     expect(onKeyDown.mock.calls.map((c) => (c[0] as KeyboardEvent).key)).toEqual(['ArrowUp']);
     rerender(<MessageLog label="messages in #general" emptyLabel="No messages yet." onKeyDown={onKeyDown}>{[]}</MessageLog>);
     expect(log).toHaveAttribute('tabindex', '0');
+  });
+
+  it('shows a date divider as a separator named by its label', () => {
+    render(<MessageLog label="messages in #general" emptyLabel="none"><DateDivider label="Mon 19 Oct" /><p>a</p></MessageLog>);
+    expect(screen.getByRole('separator', { name: 'Mon 19 Oct' })).toHaveClass('d-date-divider');
+  });
+
+  describe('jump to present (R29)', () => {
+    const present = (atPresent: boolean, onJumpToPresent = vi.fn()) => ({ atPresent, olderLabel: 'viewing older messages', jumpLabel: 'jump to present', onJumpToPresent });
+    const withPresent = (p: ReturnType<typeof present> | undefined, onKeyDown?: (e: React.KeyboardEvent) => void) => (
+      <MessageLog label="messages in #general" emptyLabel="none" present={p} onKeyDown={onKeyDown}><p><button type="button">inside</button></p></MessageLog>
+    );
+    it('shows both labels away from the present, and the button jumps', async () => {
+      const p = present(false);
+      render(withPresent(p));
+      expect(screen.getByText('viewing older messages')).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'jump to present' }));
+      expect(p.onJumpToPresent).toHaveBeenCalledTimes(1);
+    });
+    it('Ctrl+End from anywhere inside the log jumps', () => {
+      const p = present(false);
+      render(withPresent(p));
+      fireEvent.keyDown(screen.getByRole('button', { name: 'inside' }), { key: 'End', ctrlKey: true });
+      expect(p.onJumpToPresent).toHaveBeenCalledTimes(1);
+    });
+    it('shows no bar and ignores Ctrl+End at the present, passing the key on', () => {
+      const p = present(true);
+      const onKeyDown = vi.fn();
+      render(withPresent(p, onKeyDown));
+      expect(screen.queryByText('viewing older messages')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'jump to present' })).toBeNull();
+      fireEvent.keyDown(screen.getByRole('button', { name: 'inside' }), { key: 'End', ctrlKey: true });
+      expect(p.onJumpToPresent).not.toHaveBeenCalled();
+      expect(onKeyDown).toHaveBeenCalledTimes(1);
+    });
+    it('has no bar without the prop', () => {
+      render(withPresent(undefined));
+      expect(screen.queryByText('viewing older messages')).toBeNull();
+    });
+    it('has no axe violations with a divider and the bar', async () => {
+      const { container } = render(<MessageLog label="messages" emptyLabel="none" present={present(false)}><DateDivider label="Mon 19 Oct" /><p>a</p></MessageLog>);
+      await expectNoAxeViolations(container);
+    });
   });
 });

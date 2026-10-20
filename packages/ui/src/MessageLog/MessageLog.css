@@ -2,3 +2,8 @@
 .d-message-log__earlier { align-self: center; margin-bottom: var(--group-gap); flex-shrink: 0; }
 .d-message-log__empty { margin: auto 0 0; padding: 2rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); text-align: center; }
 .d-message-log__rows { margin-top: auto; display: flex; flex-direction: column; }
+/* web3.9 (R29): a day divider is a mono hairline row with the day; the older-messages bar sticks to the log's end. */
+.d-date-divider { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem var(--row-pad-x); font-size: var(--text-xs); color: var(--fg-3); }
+.d-date-divider::before, .d-date-divider::after { content: ""; flex: 1; height: 0; border-top: 1px solid var(--hairline-2); }
+.d-date-divider__label { white-space: nowrap; }
+.d-message-log__present { position: sticky; bottom: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.25rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-2); background: var(--surface); border-top: 1px solid var(--edge); }

@@ -44,7 +44,7 @@ export { ChannelList } from './ChannelList/ChannelList.tsx';
 export type { ChannelListProps, ChannelListChannel } from './ChannelList/ChannelList.tsx';
 export { ChannelHeader } from './ChannelHeader/ChannelHeader.tsx';
 export type { ChannelHeaderProps } from './ChannelHeader/ChannelHeader.tsx';
-export { MessageLog } from './MessageLog/MessageLog.tsx';
+export { MessageLog, DateDivider } from './MessageLog/MessageLog.tsx';
 export type { MessageLogProps } from './MessageLog/MessageLog.tsx';
 export { MessageRow } from './MessageRow/MessageRow.tsx';
 export type { MessageRowProps } from './MessageRow/MessageRow.tsx';
