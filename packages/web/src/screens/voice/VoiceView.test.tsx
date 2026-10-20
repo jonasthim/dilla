@@ -35,30 +35,52 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
-  it('shows the silent AFK room and its occupants without offering a media join', async () => {
-    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
-      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
-    const region = await main().findByRole('region', { name: t('voice.afk.title') });
-    expect(region).toHaveTextContent('1 in AFK');
-    expect(within(region).queryByRole('button', { name: 'join voice' })).toBeNull();
-    expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
+  it('shows the AFK channel as an ordinary voice view with a join button and the muted stage line', async () => {
+    renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    const app = screen.getByRole('main');
+    expect(await within(app).findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: t('voice.afk.title') })).toBeNull();
+    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
   });
 
-  it('closes its media session when this device is moved to AFK', async () => {
+  it('in the AFK call every tile and row shows the muted glyph, the stage says so, and mic, camera and share are disabled', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    await main().findByRole('toolbar', { name: 'voice channel controls' });
+    expect(main().getByText(t('afk.stage.muted', { channel: 'music' }))).toBeInTheDocument();
+    for (const name of ['mute', 'camera', 'share screen']) {
+      expect(main().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+    }
+    expect(main().getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
+    for (const tile of document.querySelectorAll('.dw-voice-stage .d-call-tile')) {
+      expect(within(tile as HTMLElement).getByRole('img', { name: 'muted' })).toBeInTheDocument();
+    }
+    expect(document.querySelectorAll('.dw-voice-stage .d-call-tile').length).toBeGreaterThan(0);
+    // The sidebar row of the AFK channel lists its people muted too.
+    const people = [...document.querySelectorAll('.d-voice-row__person')];
+    expect(people.length).toBeGreaterThan(0);
+    for (const person of people) expect(person.querySelector('[data-state="muted"]')).not.toBeNull();
+  });
+
+  it('an ordinary voice call keeps its controls live and shows no muted-for-everyone line (control)', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
-      occupants: [{ userId: ME.id, deviceId: OWN_DEV }] });
-    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
-    expect(app.session.state.phase).toBe('ended');
+    expect(main().queryByText(t('afk.stage.muted', { channel: 'general' }))).toBeNull();
+    for (const name of ['mute', 'camera']) expect(main().getByRole('button', { name })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBeFalsy();
   });
 
   it('reports actual input while a voice call remains open on another page', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false,
-      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    expect(app.client.callsOf('afkActivity')[0]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV }); // desktop: not exempt
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
@@ -71,7 +93,7 @@ describe('voice in the shell', () => {
 
   it('reports a short microphone utterance before the next polling interval', async () => {
     const app = await inVoice();
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, occupants: [] });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
     expect(app.client.callsOf('afkActivity')).toHaveLength(1);
     const now = Date.now();
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
@@ -590,6 +612,80 @@ describe('review round 1', () => {
     await app.user.click(toggle);
     expect(box).toHaveAttribute('data-view', 'messages');
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  });
+});
+
+describe('web3.9 WEB-AFK: the AFK channel in the shell', () => {
+  const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, ...over });
+  it('the AFK row is a plain voice row: not held, with the voice glyph and a join; no move or leave command exists', async () => {
+    const app = renderVoiceShell({ voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, afkSlice());
+    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
+    expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
+    expect(within(row).getByRole('button', { name: /join/i })).toBeInTheDocument();
+    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
+    await app.user.click(within(row).getByRole('button', { name: /join/i }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+    expect(app.client.callsOf('afkLeave' as never)).toEqual([]);
+  });
+
+  it('a pending move joins the AFK channel once, and a republished read of it does not join again', async () => {
+    const app = renderVoiceShell();
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await new Promise(r => setTimeout(r, 200));
+    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+  });
+
+  it('a failed move shows afk.moved with a join button that joins the AFK channel', async () => {
+    const app = renderVoiceShell();
+    let fail = true;
+    const base = app.client.handler;
+    app.client.handler = command => command.m === 'callJoin' && command.channelId === MUSIC && fail
+      ? Promise.reject(Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN' })) : base(command);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
+    const line = await screen.findByText(t('afk.moved', { channel: 'music' }));
+    const banner = line.closest('.d-banner') as HTMLElement;
+    fail = false;
+    await app.user.click(within(banner).getByRole('button', { name: t('afk.moved.join') }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2);
+    await waitFor(() => expect(screen.queryByText(t('afk.moved', { channel: 'music' }), { selector: '.d-banner *' })).toBeNull());
+  });
+});
+
+describe('push to talk in the user panel (web3.9)', () => {
+  const panelMic = () => within(screen.getByRole('toolbar', { name: t('panel.region') })).getByRole('button', { name: 'mute' });
+  it('shows the PTT tag and the push to talk description in push-to-talk mode, the ring while heard', async () => {
+    const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'F13' } });
+    expect(screen.getByText(t('layout.ptt.tag'))).toHaveAttribute('aria-hidden', 'true');
+    expect(panelMic()).toHaveAccessibleDescription(new RegExp(t('settings.voice.ptt')));
+    const ring = () => document.querySelector('.d-user-panel__avatar');
+    expect(ring()).not.toHaveAttribute('data-speaking');
+    act(() => app.session.update({ speaking: true }));
+    expect(ring()).toHaveAttribute('data-speaking', 'true');
+  });
+  it('shows none of it in voice-activity mode (control)', async () => {
+    await inVoice();
+    expect(screen.queryByText(t('layout.ptt.tag'))).toBeNull();
+  });
+});
+
+describe('WEB-DOCK review: a DM call stage carries the hearing line', () => {
+  it('shows "hearing {attached} of {expected}" under a DM call\'s controls', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    expect(document.querySelector('.dw-dm-call [data-audio-expected]')).toBeNull();
+    act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
+    const line = await waitFor(() => { const l = document.querySelector('.dw-dm-call [data-audio-expected]'); expect(l).not.toBeNull(); return l!; });
+    expect(line).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
   });
 });
 

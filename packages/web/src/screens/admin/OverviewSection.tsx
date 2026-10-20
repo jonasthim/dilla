@@ -3,12 +3,12 @@ import { createPortal } from 'react-dom';
 import { Button, Select, SettingsFooter, SettingsRow, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
-import { t } from '../../strings/index.ts';
+import { t, type StringKey } from '../../strings/index.ts';
 import { SERVER_NAME_MAX_BYTES, nameProblem } from '../Create.tsx';
 import { FooterSlot, forbidden, refused, statusIs, useRun, type SectionProps } from './shared.ts';
 
 /** Overview: rename the server. The name is checked as the instance checks it; a 409 means someone changed it meanwhile. */
-export function OverviewSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
+export function OverviewSection({ communityId, serverName }: SectionProps): React.JSX.Element {
   const client = useCore();
   const base = useId();
   const fieldId = `${base}-name`;
@@ -20,29 +20,26 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   const action = useRun();
   const afk = useSlice(`afk:${communityId}`);
   const channels = useSlice(`channels:${communityId}`);
-  const [afkChannel, setAFKChannel] = useState('');
+  // web3.9: the AFK channel is built in, so the setting is only the inactive timeout. `afkBase` is the stored one.
   const [afkTimeout, setAFKTimeout] = useState(300);
-  const [afkDirty, setAFKDirty] = useState(false);
-  const [afkLoaded, setAFKLoaded] = useState(false);
+  const [afkBase, setAFKBase] = useState<number | null>(null);
   const [afkLoadError, setAFKLoadError] = useState(false);
-  const afkAction = useRun();
+  const afkEdited = useRef(false);
+  const failedStep = useRef<'name' | 'afk'>('name');
   useEffect(() => {
-    if (afkDirty) return;
     let cancelled = false;
-    setAFKLoaded(false);
     void client.call({ m: 'getAFKSettings', communityId }).then(value => {
       if (cancelled) return;
-      if (typeof value !== 'object' || value === null || !('channelId' in value) || !('timeoutSeconds' in value) ||
-        !(value.channelId === null || typeof value.channelId === 'string') || typeof value.timeoutSeconds !== 'number') {
+      if (typeof value !== 'object' || value === null || !('timeoutSeconds' in value) || typeof value.timeoutSeconds !== 'number') {
         throw new Error('invalid AFK settings');
       }
-      setAFKChannel(value.channelId ?? '');
-      setAFKTimeout(value.timeoutSeconds);
-      setAFKLoaded(true);
+      setAFKBase(value.timeoutSeconds);
+      if (!afkEdited.current) setAFKTimeout(value.timeoutSeconds);
       setAFKLoadError(false);
-    }).catch(() => { if (!cancelled) { setAFKLoadError(true); setAFKLoaded(false); } });
+    }).catch(() => { if (!cancelled) setAFKLoadError(true); });
     return () => { cancelled = true; };
-  }, [client, communityId, afk, afkDirty]);
+  }, [client, communityId, afk]);
+  const afkName = (channels ?? []).find(ch => ch.id === afk?.channelId)?.name ?? 'AFK';
   // A rename made elsewhere reaches the field only if nothing is being typed (the field still holds the name last shown).
   const shownName = useRef(serverName);
   useEffect(() => {
@@ -60,6 +57,7 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   const submit = () => {
     if (action.busy) return;
     setSaved(false);
+    const timeoutChanged = afkBase !== null && afkTimeout !== afkBase;
     const problem = nameProblem(name, SERVER_NAME_MAX_BYTES);
     if (problem !== null) {
       const key = problem === 'empty' ? 'admin.overview.error.empty' : problem === 'long' ? 'admin.overview.error.long' : 'admin.overview.error.refused';
@@ -67,12 +65,17 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
       return;
     }
     setLocal(null);
-    void action.run(() => client.call({ m: 'renameCommunity', communityId, name: name.trim() }), e =>
-      statusIs(e, 409) ? t('admin.overview.error.conflict')
+    // One save: the name, then the timeout, which is sent only when it changed.
+    void action.run(async () => {
+      failedStep.current = 'name';
+      await client.call({ m: 'renameCommunity', communityId, name: name.trim() });
+      if (timeoutChanged) { failedStep.current = 'afk'; await client.call({ m: 'setAFK', communityId, timeoutSeconds: afkTimeout }); }
+    }, e => failedStep.current === 'afk' ? t('admin.afk.error', { code: e.code })
+      : statusIs(e, 409) ? t('admin.overview.error.conflict')
         : forbidden(e) ? t('admin.overview.error.forbidden')
           : refused(e) ? t('admin.overview.error.refused')
             : t('admin.overview.error.other', { code: e.code }))
-      .then(ok => { if (ok) { setSaved(true); announce(t('admin.overview.saved')); } });
+      .then(ok => { if (ok) { afkEdited.current = false; setSaved(true); } });
   };
 
   return (
@@ -87,6 +90,12 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
               error={error ?? undefined} required autoComplete="off" spellCheck={false} />
           </div>
         </SettingsRow>
+        <SettingsRow id={`${base}-afk-row`} label={t('afk.timeout.label')} hint={t('afk.timeout.hint', { channel: afkName })}>
+          <Select label={t('afk.timeout.label')} value={String(afkTimeout)} disabled={afkBase === null || action.busy}
+            options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t(`afk.timeout.${n * 60}` as StringKey) }))}
+            onChange={value => { afkEdited.current = true; setAFKTimeout(Number(value)); setSaved(false); action.reset(); }} />
+          {afkLoadError ? <p role="alert">{t('admin.afk.loadError')}</p> : null}
+        </SettingsRow>
       </form>
       {footerEl === null ? null : createPortal(
         <SettingsFooter status={saved ? t('admin.overview.saved') : undefined}>
@@ -94,28 +103,6 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
             {action.busy ? t('admin.overview.saving') : t('admin.overview.save')}
           </Button>
         </SettingsFooter>, footerEl)}
-      <div className="dw-admin-form" aria-busy={!afkLoaded}>
-        <h3>{t('admin.afk.title')}</h3>
-        <p>{t('admin.afk.hint')}</p>
-        <Select label={t('admin.afk.channel')} value={afkChannel} disabled={!afkLoaded || afkAction.busy}
-          options={[{ value: '', label: t('admin.afk.disabled') }, ...(channels ?? []).filter(ch => ch.kind === 1)
-            .map(ch => ({ value: ch.id, label: ch.name })),
-          ...(afkChannel && !(channels ?? []).some(ch => ch.id === afkChannel) ?
-            [{ value: afkChannel, label: t('admin.afk.restricted') }] : [])]}
-          onChange={value => { setAFKChannel(value); setAFKDirty(true); afkAction.reset(); }} />
-        <Select label={t('admin.afk.timeout')} value={String(afkTimeout)} disabled={!afkLoaded || afkAction.busy}
-          options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t('admin.afk.minutes', { n }) }))}
-          onChange={value => { setAFKTimeout(Number(value)); setAFKDirty(true); afkAction.reset(); }} />
-        <div className="dw-settings-actions">
-          <Button variant="accent" disabled={!afkDirty || afkAction.busy || !afkLoaded}
-            onClick={() => { void afkAction.run(() => client.call({ m: 'setAFK', communityId, channelId: afkChannel || null,
-              timeoutSeconds: afkTimeout }), e => t('admin.afk.error', { code: e.code })).then(ok => {
-              if (ok) { setAFKDirty(false); announce(t('admin.afk.saved')); }
-            }); }}>{t('admin.afk.save')}</Button>
-          {afkAction.error ? <p role="alert">{afkAction.error}</p> : null}
-          {afkLoadError ? <p role="alert">{t('admin.afk.loadError')}</p> : null}
-        </div>
-      </div>
     </section>
   );
 }

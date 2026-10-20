@@ -34,6 +34,9 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
   const action = useRun();
   const access = useSlice(`permissions:${channel?.communityId ?? ''}`);
+  // R39: the server's AFK channel keeps its kind, settings and permissions; only its name and category change.
+  const afkId = useSlice(`afk:${channel?.communityId ?? ''}`)?.channelId ?? null;
+  const isAFK = channel !== null && channel.id === afkId;
   const kind = channel === null ? 'text' : channel.kind === 2 ? 'category' : channel.kind === 1 ? 'voice' : 'text';
   const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top',
     slowmode: String(channel?.slowmode ?? 0) };
@@ -81,7 +84,8 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
       onSubmit={submit} onClose={close}>
       {kind === 'text' ? <Select label={t('slow.label')} hint={t('slow.hint')} value={current.slowmode} options={SLOW_OPTIONS}
         onChange={v => edit({ slowmode: v })} /> : null}
-      {channel !== null && kind !== 'category' && access?.manageRoles === true
+      {isAFK ? <p className="dw-afk-note">{t('afk.channel.note')}</p> : null}
+      {channel !== null && kind !== 'category' && !isAFK && access?.manageRoles === true
         ? <ChannelPermissions channelId={channel.id} communityId={channel.communityId} announce={announce ?? NO_ANNOUNCE} /> : null}
     </ChannelSettings>
   );

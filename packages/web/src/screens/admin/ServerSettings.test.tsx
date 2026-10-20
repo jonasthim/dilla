@@ -102,18 +102,48 @@ describe('the overview section', () => {
     if (to !== '') await user.type(field(), to);
     await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
   };
-  it('loads unfiltered AFK settings for a manager who cannot view the destination', async () => {
+  it('has one timeout row with the five labels, no destination select and one save button', async () => {
+    const { fake } = setup({ ...NONE, manageCommunity: true });
+    fake.handler = command => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: 'fe'.repeat(16), timeoutSeconds: 900 } : null);
+    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, pending: false });
+    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
+    await waitFor(() => expect(timeout).toHaveValue('900'));
+    expect(within(timeout).getAllByRole('option').map(o => o.textContent))
+      .toEqual(['1 minute', '5 minutes', '15 minutes', '30 minutes', '1 hour']);
+    expect(screen.getAllByRole('combobox')).toHaveLength(1);
+    expect(screen.queryByRole('combobox', { name: en['admin.afk.channel'] })).toBeNull();
+    expect(screen.getAllByRole('button', { name: en['admin.overview.save'] })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: en['admin.afk.save'] })).toBeNull();
+    expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
+    expect((timeout.closest('.d-settings-row') as HTMLElement).querySelector('.d-settings-row__label')).toHaveTextContent(en['afk.timeout.label']);
+  });
+  it('saves the changed timeout with the name in one press, without a channel', async () => {
     const { fake, user } = setup({ ...NONE, manageCommunity: true });
-    const hidden = 'fe'.repeat(16);
-    fake.handler = command => Promise.resolve(command.m === 'getAFKSettings'
-      ? { channelId: hidden, timeoutSeconds: 900 } : null);
-    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, pending: false, occupants: [] });
-    const destination = screen.getByRole('combobox', { name: en['admin.afk.channel'] });
-    await waitFor(() => expect(destination).toHaveValue(hidden));
-    expect(screen.getByRole('option', { name: en['admin.afk.restricted'] })).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: en['admin.afk.timeout'] }), '1800');
-    await user.click(screen.getByRole('button', { name: en['admin.afk.save'] }));
-    expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, channelId: hidden, timeoutSeconds: 1800 }]);
+    fake.handler = command => Promise.resolve(command.m === 'getAFKSettings' ? { channelId: 'fe'.repeat(16), timeoutSeconds: 300 } : null);
+    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 300, pending: false });
+    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
+    await waitFor(() => expect(timeout).toHaveValue('300'));
+    await user.selectOptions(timeout, '900');
+    await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
+    await waitFor(() => expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, timeoutSeconds: 900 }]));
+    expect(fake.callsOf('setAFK')[0]).not.toHaveProperty('channelId');
+    expect(fake.callsOf('renameCommunity')).toHaveLength(1);
+  });
+  it('sends no setAFK when the timeout is unchanged (control)', async () => {
+    const { fake, user } = setup({ ...NONE, manageCommunity: true });
+    const timeout = screen.getByRole('combobox', { name: en['afk.timeout.label'] });
+    await waitFor(() => expect(timeout).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
+    await waitFor(() => expect(fake.callsOf('renameCommunity')).toHaveLength(1));
+    expect(fake.callsOf('setAFK')).toEqual([]);
+  });
+  it('says the hint with the AFK channel’s current name', async () => {
+    const { fake } = setup({ ...NONE, manageCommunity: true });
+    const afkId = 'c5'.repeat(16);
+    fake.publish(`channels:${SERVER}`, [{ id: afkId, communityId: SERVER, kind: 1, mode: 0, name: 'AFK', topic: '', parentId: null,
+      position: 1 << 30, slowmode: 0, announcement: false, group: 'unsupported' }]);
+    fake.publish(`afk:${SERVER}`, { channelId: afkId, timeoutSeconds: 300, pending: false });
+    expect(await screen.findByText(en['afk.timeout.hint'].replace('{channel}', 'AFK'))).toBeInTheDocument();
   });
   // R17, I5: the name is a settings row, and the save button lives in the frame's one footer, not in the body.
   it('draws the name as a settings row and saves from the frame footer', () => {
@@ -125,10 +155,11 @@ describe('the overview section', () => {
     expect(save.closest('.d-settings-frame__body')).toBeNull();
     expect(document.querySelectorAll('.d-settings-frame__footer')).toHaveLength(1);
   });
-  it('renames the server with the trimmed name and announces it', async () => {
+  it('renames the server with the trimmed name and says saved once', async () => {
     const { fake, user, announce } = setup(FULL);
     await rename(user, '  Midgard ');
-    await waitFor(() => expect(announce).toHaveBeenCalledWith(en['admin.overview.saved']));
+    await waitFor(() => expect(screen.getAllByText(en['admin.overview.saved'])).toHaveLength(1));
+    expect(announce).not.toHaveBeenCalledWith(en['admin.overview.saved']);
     expect(fake.callsOf('renameCommunity')).toEqual([{ m: 'renameCommunity', communityId: SERVER, name: 'Midgard' }]);
   });
   it('says a conflicting change (409) with the conflict copy', async () => {

@@ -13,4 +13,5 @@ export const layout = {
   'layout.add.title': 'add a server',
   'layout.add.join': 'join a server',
   'layout.add.create': 'new server',
+  'layout.ptt.tag': 'PTT',
 };

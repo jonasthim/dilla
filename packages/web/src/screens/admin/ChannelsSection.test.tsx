@@ -310,7 +310,7 @@ describe('the channel row actions', () => {
     fake.set('account', account());
     fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
     fake.set(`channels:${SERVER}`, CHANNELS);
-    fake.set(`afk:${SERVER}`, { channelId: GENERAL, timeoutSeconds: 300, occupants: [] });
+    fake.set(`afk:${SERVER}`, { channelId: GENERAL, timeoutSeconds: 300, pending: false });
     render(<div className="d-root"><CoreProvider client={fake}>
       <ChannelsSection communityId={SERVER} serverName="Midgard" announce={vi.fn()} />
     </CoreProvider></div>);

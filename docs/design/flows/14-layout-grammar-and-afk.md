@@ -75,6 +75,7 @@
 `layout.add.title='add a server'`
 `layout.add.join='join a server'`
 `layout.add.create='new server'`
+`layout.ptt.tag='PTT'`
 `home.tile='direct messages'`
 `home.tileLabel='direct messages, unread {unread}, mentions {mentions}'`
 `home.tab='home'`

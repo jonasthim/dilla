@@ -86,3 +86,10 @@ export const WideSidebar: Story = {
   decorators: [Story => <div style={{ width: 360 }}><Story /></div>],
   globals: { theme: 'mesh' },
 };
+
+/** Push to talk: the PTT tag on the mic, and the ring while the key is held, in every theme. */
+const PTT = { tag: 'PTT', description: 'push to talk', held: false };
+export const PushToTalk: Story = { args: { ptt: PTT }, globals: { theme: 'mesh' } };
+export const PushToTalkLight: Story = { args: { ptt: PTT }, globals: { theme: 'light' } };
+export const PushToTalkHighContrast: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'high-contrast' } };
+export const PushToTalkHeld: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'mesh' } };

@@ -232,8 +232,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getAFKSettings',
   'setAFK',
   'afkActivity',
-  'afkMove',
-  'afkLeave',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -343,8 +341,6 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
-  afkMove: ['communityId', 'channelId'],
-  afkLeave: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -409,8 +405,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getAFKSettings',
     'setAFK',
     'afkActivity',
-    'afkMove',
-    'afkLeave',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -1059,9 +1053,6 @@ export class Controller {
           timeoutSeconds: settings.timeoutSeconds }));
       case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
-      // web3.9 retired the manual move: the deprecated commands answer null and send nothing (WEB-AFK deletes them).
-      case 'afkMove':
-      case 'afkLeave': return Promise.resolve(null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -2741,7 +2732,7 @@ export class Controller {
       this.stopAFKRetry(communityId);
       // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq, occupants: [] });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;

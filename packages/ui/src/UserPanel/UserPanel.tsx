@@ -15,6 +15,11 @@ export interface UserPanelProps {
   shortcuts?: { mute: string; deafen: string };
   /** `region` is `panel.region` (the toolbar's name), `mute` and `deafen` are `voice.mute` and `voice.deafen`, `settings` is the gear's name. */
   labels: { region: string; mute: string; deafen: string; settings: string };
+  /**
+   * Push-to-talk mode (web3.9): a small `tag` ("PTT", aria-hidden) sits on the mic button, whose accessible description gains
+   * `description` ("push to talk"); the avatar wears the speaking ring while the key is `held`.
+   */
+  ptt?: { tag: string; description: string; held: boolean };
   onMute(): void;
   onDeafen(): void;
   onSettings(): void;
@@ -41,10 +46,11 @@ const DOT: Record<UserPanelProps['status']['current'], Presence> = { online: 'on
  * the toolbar of its toggles (one roving Tab stop). The avatar and name block is a menu button for the status
  * (Discord-style), with the current status as a dot on the avatar.
  */
-export function UserPanel({ name, username, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status }: UserPanelProps) {
+export function UserPanel({ name, username, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status, ptt }: UserPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const nameId = useId();
   const bar = useIconToolbar();
+  const pttId = useId();
   return (
     <div className="d-user-panel">
       <ActionMenu label={status.label} className="d-user-panel__menu" triggerClassName="d-user-panel__who" open={menuOpen} onOpenChange={setMenuOpen}
@@ -53,15 +59,27 @@ export function UserPanel({ name, username, muted, deafened, shortcuts, labels, 
         triggerContent={<>
           {/* WCAG 2.5.3: the button's name holds its visible text, then the status. */}
           <span id={nameId} className="d-sr-only">{`${name} @${username}, ${status.label}`}</span>
-          <Avatar name={name} size="md" presence={DOT[status.current]} />
+          <span className="d-user-panel__avatar" data-speaking={ptt?.held === true ? 'true' : undefined}>
+            <Avatar name={name} size="md" presence={DOT[status.current]} />
+          </span>
           <span className="d-user-panel__text">
             <span className="d-user-panel__name" title={name}>{name}</span>
             <span className="d-user-panel__username" title={`@${username}`}>@{username}</span>
           </span>
         </>} />
       <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-user-panel__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
-        <IconButton icon={muted ? VOICE_ICONS.mute.iconOn : VOICE_ICONS.mute.icon} label={labels.mute} pressed={muted}
-          keys={chord(shortcuts?.mute)} aria-keyshortcuts={VOICE_SHORTCUTS.mute} onClick={onMute} />
+        {(() => {
+          const mic = <IconButton icon={muted ? VOICE_ICONS.mute.iconOn : VOICE_ICONS.mute.icon} label={labels.mute} pressed={muted}
+            keys={chord(shortcuts?.mute)} aria-keyshortcuts={VOICE_SHORTCUTS.mute} onClick={onMute}
+            {...(ptt !== undefined ? { 'aria-describedby': pttId } : {})} />;
+          return ptt === undefined ? mic : (
+            <span className="d-user-panel__mic">
+              {mic}
+              <span id={pttId} className="d-sr-only">{ptt.description}</span>
+              <span className="d-user-panel__ptt" aria-hidden="true">{ptt.tag}</span>
+            </span>
+          );
+        })()}
         <IconButton icon={deafened ? VOICE_ICONS.deafen.iconOn : VOICE_ICONS.deafen.icon} label={labels.deafen} pressed={deafened}
           keys={chord(shortcuts?.deafen)} aria-keyshortcuts={VOICE_SHORTCUTS.deafen} onClick={onDeafen} />
       </div>

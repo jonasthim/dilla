@@ -170,4 +170,22 @@ describe('UserPanel', () => {
     const { container } = render(<div className="d-root"><UserPanel {...(meta.args as UserPanelProps)} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
+
+  it('push to talk: a hidden PTT tag on the mic, "push to talk" in its description, and the ring while held', () => {
+    const { rerender } = render(<UserPanel {...panel({ ptt: { tag: 'PTT', description: 'push to talk', held: false } })} />);
+    const mic = screen.getByRole('button', { name: 'mute' });
+    expect(mic).toHaveAccessibleDescription(/push to talk/);
+    const tag = screen.getByText('PTT');
+    expect(tag).toHaveAttribute('aria-hidden', 'true');
+    expect(mic).toHaveAccessibleName('mute');
+    expect(document.querySelector('.d-user-panel__avatar')).not.toHaveAttribute('data-speaking');
+    rerender(<UserPanel {...panel({ ptt: { tag: 'PTT', description: 'push to talk', held: true } })} />);
+    expect(document.querySelector('.d-user-panel__avatar')).toHaveAttribute('data-speaking', 'true');
+  });
+  it('without push to talk there is no tag, no description and no ring (control)', () => {
+    render(<UserPanel {...panel()} />);
+    expect(screen.queryByText('PTT')).toBeNull();
+    expect(screen.getByRole('button', { name: 'mute' })).not.toHaveAccessibleDescription(/push to talk/);
+    expect(document.querySelector('.d-user-panel__avatar')).not.toHaveAttribute('data-speaking');
+  });
 });

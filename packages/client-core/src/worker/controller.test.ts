@@ -30,16 +30,16 @@ describe('Controller', () => {
     const w = world();
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
-    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false }));
     w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
-    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true }));
     w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
     expect(w.last(key)).toBeNull();
     w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: false });
     w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
     w.gateway.emit({ type: 'ready', info: READY_INFO });
-    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false }));
   });
   it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
     const w = world();
@@ -59,7 +59,7 @@ describe('Controller', () => {
     expect(w.last(key)).toEqual(before);
     expect(nulls()).toBe(nullsBefore);
     land({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
-    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true, occupants: [] }));
+    await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true }));
   });
   it('every landed AFK read gets a higher seq, also when it says the same (R-AFK4)', async () => {
     const w = world();
@@ -114,7 +114,7 @@ describe('Controller', () => {
       expect(calls()).toBe(3);
       await vi.advanceTimersByTimeAsync(4_000);
       expect(calls()).toBe(4);
-      await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false, occupants: [] }));
+      await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false }));
       // Landed: no more reads.
       await vi.advanceTimersByTimeAsync(120_000);
       expect(calls()).toBe(4);
@@ -153,7 +153,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.routes.setAFKSettings).not.toHaveBeenCalled();
   });
-  it('afkActivity forwards exempt, and afkMove and afkLeave resolve null without a request', async () => {
+  it('afkActivity forwards exempt', async () => {
     const w = world();
     await toReady(w);
     w.call(996, { m: 'afkActivity', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL) });
@@ -162,12 +162,6 @@ describe('Controller', () => {
     w.call(997, { m: 'afkActivity', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL), exempt: true });
     await vi.waitFor(() => expect(w.ret(997)).toMatchObject({ ok: true }));
     expect(w.routes.sendAFKActivity).toHaveBeenLastCalledWith(COMMUNITY, CHANNEL, true);
-    const reads = w.routes.getAFK.mock.calls.length;
-    w.call(998, { m: 'afkMove', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL) });
-    w.call(999, { m: 'afkLeave', communityId: toHex(COMMUNITY) });
-    await vi.waitFor(() => expect(w.ret(999)).toEqual({ t: 'ret', id: 999, ok: true, value: null }));
-    expect(w.ret(998)).toEqual({ t: 'ret', id: 998, ok: true, value: null });
-    expect(w.routes.getAFK).toHaveBeenCalledTimes(reads);
   });
 
   it('loads a presence snapshot on ready, applies frames, and reloads after reconnect', async () => {

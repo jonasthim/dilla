@@ -220,6 +220,9 @@ export const MOVE_WINDOW_MS = 30_000;
 /** Fix round 1 (m-1): the shortest AFK timeout (R2: 60, 300, 900, 1800, 3600 s). A call younger than this is not the one
  *  the sweep cut, so a `pending` read during it is stale. */
 export const AFK_MIN_IDLE_MS = 60_000;
+/** web3.9 WEB-AFK: the longest a removal's notice is held while an AFK move may still be coming. The server's cut can land
+ *  before the `afk:` read that says pending. */
+export const REMOVED_HOLD_MS = 2_000;
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -279,6 +282,8 @@ export function useCall(o: UseCallOptions): CallView {
   const failedKey = useRef<string | null>(null);
   /** Fix round 1 (m-1): when the current call attached; a call younger than the shortest AFK timeout is not the one cut. */
   const attachedAt = useRef(0);
+  /** WEB-AFK: the timer of a removal notice held for a possible AFK move; a move's join, any join or an unmount drops it. */
+  const removedHold = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The community whose channel list holds `id`, or null while no loaded list does. */
   const communityOf = useCallback((id: string): string | null => {
     for (const c of client.get('communities') ?? []) {
@@ -336,6 +341,27 @@ export function useCall(o: UseCallOptions): CallView {
     if (w === null || Date.now() > w.until || id === w.afkId) return false;
     return communityOf(id) === w.communityId;
   }, [communityOf]);
+  /** WEB-AFK: whether the end of call `id` may be the sweep's cut: its community has an AFK channel other than `id`, or a
+   *  pending move already names that community. */
+  const maybeMoved = useCallback((id: string): boolean => {
+    const cid = communityOf(id);
+    if (cid === null || listenIds.current.has(id)) return false;
+    const pending = live.current.afk?.pending ?? null;
+    if (pending !== null && pending.communityId === cid) return true;
+    const afkId = client.get(`afk:${cid}`)?.channelId ?? null;
+    return afkId !== null && afkId !== id;
+  }, [client, communityOf]);
+  /** WEB-AFK: says a removal. While a move may be coming it waits (at most REMOVED_HOLD_MS) and then says it only if no
+   *  move started; a move's join drops it, so a removal followed by pending announces `afk.moved` alone. */
+  const sayRemoved = useCallback((id: string, say: () => void): void => {
+    if (removedHold.current !== null) { clearTimeout(removedHold.current); removedHold.current = null; }
+    if (afkCut(id)) return;
+    if (!maybeMoved(id)) { say(); return; }
+    removedHold.current = setTimeout(() => {
+      removedHold.current = null;
+      if (mounted.current && !afkCut(id)) say();
+    }, REMOVED_HOLD_MS);
+  }, [afkCut, maybeMoved]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -442,10 +468,12 @@ export function useCall(o: UseCallOptions): CallView {
         }
         detach();
         // web3.9 VOICE-AFK: the room's removal ahead of the AFK move is silent; the move follows.
-        const moving = next.state.error === 'E_REMOVED' && afkCut(id);
-        if (next.state.error !== 'E_DISCONNECTED' && !recoverEnded && !moving) {
-          setNotice({ channelId: id, key });
-          if (!live.current.stageShown(id)) setLasting(t(key));
+        if (next.state.error !== 'E_DISCONNECTED' && !recoverEnded) {
+          const say = (): void => {
+            setNotice({ channelId: id, key });
+            if (!live.current.stageShown(id)) setLasting(t(key));
+          };
+          if (next.state.error === 'E_REMOVED') sayRemoved(id, say); else say();
         }
       }
     });
@@ -453,12 +481,13 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryRef.current === id && recoveryCameraRef.current) {
       void next.setCamera(true).catch(() => undefined);
     }
-  }, [announce, detach, afkCut]);
+  }, [announce, detach, sayRemoved]);
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). `move`: this is
    *  the AFK move's join (web3.9 VOICE-AFK): it is said once, and a failure sets `afkFailed` and is never retried. */
   const join = useCallback((id: string, made?: AudioContext | null, move?: AfkMove) => {
     setAfkFailed(null);
+    if (removedHold.current !== null) { clearTimeout(removedHold.current); removedHold.current = null; }
     if (recoveryRef.current !== null && recoveryRef.current !== id) {
       recoveryRef.current = null;
       setRecoveryChannelId(null);
@@ -626,7 +655,7 @@ export function useCall(o: UseCallOptions): CallView {
 
   const leave = useCallback((after?: CallNotice) => {
     setAfkFailed(null);
-    failedKey.current = null;
+    // N-4: a leave is not the person's own join; only that (joinOnly) ends a failed move's hold.
     recoveryRef.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
@@ -832,17 +861,23 @@ export function useCall(o: UseCallOptions): CallView {
         return;
       }
       // web3.9 VOICE-AFK: the cut ahead of the AFK move says nothing; the move's join follows and says where.
-      const moving = phase === 'removed' && afkCut(id);
-      if (phase === 'blocked') setBlockedMidCall(id);
-      else if (!moving) { setNotice({ channelId: id, key: 'voice.removed' }); removedFrom.current = id; }
-      // Off the stage, nothing else would say why the call ended (review I6).
-      if (!moving && !live.current.stageShown(id)) setLasting(t(phase === 'blocked' ? 'voice.blocked' : 'voice.removed'));
+      if (phase === 'blocked') {
+        setBlockedMidCall(id);
+        if (!live.current.stageShown(id)) setLasting(t('voice.blocked'));
+      } else {
+        // Off the stage, nothing else would say why the call ended (review I6).
+        sayRemoved(id, () => {
+          setNotice({ channelId: id, key: 'voice.removed' });
+          removedFrom.current = id;
+          if (!live.current.stageShown(id)) setLasting(t('voice.removed'));
+        });
+      }
       setPauseFocusPending(false);
       teardown(s, phase);
     } else {
       teardown(s, 'removed');
     }
-  }, [slice, session, client, announce, safely, teardown, afkCut]);
+  }, [slice, session, client, announce, safely, teardown, sayRemoved]);
   // web3.9 VOICE-AFK (R33): this device's pending move joins that community's AFK channel. Fix round 3 (R-AFK4): once per
   // landed read that says pending (`communityId:seq`), so a second sweep's read is a second move even with no false or
   // null read in between; the same read never joins twice, and a failed join is never retried (the dock's line,
@@ -999,6 +1034,7 @@ export function useCall(o: UseCallOptions): CallView {
     return () => {
       recoveryRef.current = null;
       mounted.current = false;
+      if (removedHold.current !== null) clearTimeout(removedHold.current);
       const s = sessionRef.current;
       unsubscribe.current?.();
       startAbort.current?.abort();

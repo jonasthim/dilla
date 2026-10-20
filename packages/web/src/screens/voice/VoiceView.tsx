@@ -30,6 +30,8 @@ export interface VoiceContext {
   /** Opens Settings → Voice (product walk M7: the dock's push to talk with no key set leads there). */
   onVoiceSettings(): void;
   onJoinVoice?(channelId: string): void;
+  /** web3.9 WEB-AFK: the built-in AFK channels. Everyone in one is muted, and its stage says so. */
+  afkChannels?: ReadonlySet<string>;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -78,10 +80,12 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
   const ownName = selfName(v.self, v.members);
+  // WEB-AFK: in a listen-only call nobody speaks, so every state says muted.
+  const listen = state?.listenOnly === true || v.afkChannels?.has(channelId) === true;
   const own = v.self === null ? [] : deviceTiles({
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
-      speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
+      speaking: state?.speaking ?? false, muted: listen || (state?.muted ?? false), deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
     own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
@@ -90,9 +94,10 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
-    const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
+    const seen = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
+    const view = listen ? { ...seen, muted: true } : seen;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) },
     { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
@@ -103,7 +108,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
 /** The people of a live call this device is not in, as avatar tiles without media. */
 function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   return (v.voice?.[channelId]?.participants ?? []).map(p => ({
-    view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
+    view: v.afkChannels?.has(channelId) === true ? { ...participantView(p), muted: true } : participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
     onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
   }));
 }
@@ -256,11 +261,14 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   const canShare = canCapture();
   const phone = usePhoneLayout();
   const hideShare = phone && !canShare;
+  // WEB-AFK: a listen-only call (the AFK channel) has no mic, camera or share; each is aria-disabled with the stage's reason.
+  const listen = s?.listenOnly === true;
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
+      canCamera={!paused && !listen} canShare={!paused && !listen && canShare} hideShare={hideShare} busy={v.call.session === null}
+      paused={paused || listen} muteInert={listen} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
@@ -325,6 +333,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
+  const afk = v.afkChannels?.has(channelId) === true;
   const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
   // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
   const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
@@ -335,8 +344,8 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
       <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
-        outgoing={joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} />{!dm ? <StageLines v={v} /> : null}</>
+        outgoing={afk ? { text: t('afk.stage.muted', { channel: name ?? title }) } : joined ? outgoing : null}
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>

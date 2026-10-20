@@ -12,11 +12,13 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(28);
+    expect(pairs.length).toBe(29);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
     expect(table['afk.channel.note'].codePointAt(18)).toBe(0x2019);
     expect(table['afk.channel.note']).toBe('This is the server’s AFK channel. Everyone in it is muted.');
+    expect(pairs.find(([key]) => key === 'layout.ptt.tag')?.[1]).toBe('PTT');
+    expect(en['layout.ptt.tag']).toBe('PTT');
     expect(pairs.find(([key]) => key === 'afk.channel.note')?.[1]).toBe('This is the server’s AFK channel. Everyone in it is muted.');
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);

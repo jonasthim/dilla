@@ -16,6 +16,26 @@ const base: CallControlsProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallControls', () => {
+  it('muteInert makes mute aria-disabled with the same reason as camera, and presses do nothing', async () => {
+    const onMute = vi.fn();
+    render(<CallControls {...base} onMute={onMute} muteInert canCamera={false} canShare={false} paused
+      labels={{ ...labels, why: { paused: 'paused', joining: 'connecting', noShare: 'n/a' } }} />);
+    const mute = screen.getByRole('button', { name: 'mute' });
+    expect(mute).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(mute);
+    expect(onMute).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('mute is live without muteInert (control)', async () => {
+    const onMute = vi.fn();
+    render(<CallControls {...base} onMute={onMute} />);
+    const mute = screen.getByRole('button', { name: 'mute' });
+    expect(mute).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(mute);
+    expect(onMute).toHaveBeenCalledTimes(1);
+  });
+
   it('hideShare leaves the share control out, and the rest keep their order and roving focus', async () => {
     render(<CallControls {...base} hideShare />);
     const buttons = within(screen.getByRole('toolbar', { name: 'call controls' })).getAllByRole('button');

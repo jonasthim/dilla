@@ -239,7 +239,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, CHANNELS);
-  fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, pending: false, occupants: [] });
+  fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, pending: false });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);
   fake.set('settings', o.settings ?? {});
@@ -287,7 +287,9 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       }
       // As the real session: it starts in the mode it was started with, and in the kept mute or deafen (`self`). It does not
       // read `selfNow`, so the shell's attach reconcile is what a press during the start is tested against.
-      session.state = { ...session.state, mode: opts.mode, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened' };
+      const listen = opts.listenOnly === true;
+      session.state = { ...session.state, mode: opts.mode, muted: listen || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+        listenOnly: listen, mic: listen ? 'listen' : session.state.mic };
       sessions.push(session);
       return session;
     }),

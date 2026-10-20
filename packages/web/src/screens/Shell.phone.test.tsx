@@ -731,3 +731,21 @@ describe('the phone shell: one channel list (web3.8 item 12)', () => {
     expect(nav.querySelectorAll('ul[role="list"]:not(.d-voice-row__people)').length).toBe(1);
   });
 });
+
+describe('web3.9 WEB-AFK: a phone is exempt from the AFK move (R5)', () => {
+  it('the first activity report after a join carries exempt, the second does not', async () => {
+    const app = phone({ path: `/c/${A}/${GENV}` });
+    act(() => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false }));
+    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(1));
+    expect(app.client.callsOf('afkActivity')[0]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV, exempt: true });
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    act(() => { window.dispatchEvent(new Event('pointerdown')); });
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2));
+    expect(app.client.callsOf('afkActivity')[1]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV });
+    dateNow.mockRestore();
+  });
+});

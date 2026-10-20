@@ -22,3 +22,8 @@
 .d-user-panel__controls { display: flex; flex: none; align-items: center; gap: 0.125rem; }
 /* Muted and deafened read as the dock's pressed toggle (accent glyph, 2px bar), tinted danger because they silence you. */
 .d-user-panel .d-icon-button[aria-pressed="true"] { color: var(--danger); box-shadow: inset 0 -2px 0 0 var(--danger); }
+/* Push-to-talk (web3.9): the tag sits on the mic button's corner, never colour alone; the avatar rings while the key is held. */
+.d-user-panel__mic { position: relative; display: inline-flex; }
+.d-user-panel__ptt { position: absolute; right: -2px; bottom: -2px; padding: 0 0.1875rem; font-size: 0.5625rem; line-height: 1rem; letter-spacing: 0.04em; color: var(--fg-2); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-sm); pointer-events: none; }
+.d-user-panel__avatar { display: inline-flex; border-radius: var(--r-avatar); }
+.d-user-panel__avatar[data-speaking="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }

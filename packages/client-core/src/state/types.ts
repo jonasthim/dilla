@@ -205,8 +205,6 @@ export interface AFKState {
    *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
    *  leave it out. */
   seq?: number;
-  /** @deprecated always empty since web3.9; WEB-AFK deletes it with its last reader. */
-  occupants: readonly { userId: string; deviceId: string }[];
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `afk:${string}`

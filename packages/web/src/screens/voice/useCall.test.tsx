@@ -11,7 +11,7 @@ import type { PageCallOptions } from '../../call/session.ts';
 import { t } from '../../strings/index.ts';
 import { A, CHANNELS, FakeClient, FakeSession, GENV, callState } from '../../test/fake-client.ts';
 import {
-  AFK_MIN_IDLE_MS, AFK_STATUS_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule,
+  AFK_MIN_IDLE_MS, AFK_STATUS_WAIT_MS, REMOVED_HOLD_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule,
 } from './useCall.tsx';
 
 const AFK_CH = 'af'.repeat(16);
@@ -26,7 +26,7 @@ const moveB = () => move({ communityId: B, channelId: B_AFK, name: 'AFK', seq: 2
 const MOVED = t('afk.moved', { channel: 'AFK' });
 const voice = (id: string, communityId: string, name: string, position = 1): ChannelSummary => ({
   id, communityId, kind: 1, mode: 0, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'unsupported' });
-const afkOf = (channelId: string | null): AFKState => ({ channelId, timeoutSeconds: 300, pending: false, occupants: [] });
+const afkOf = (channelId: string | null): AFKState => ({ channelId, timeoutSeconds: 300, pending: false });
 
 /** As the real session: a listen-only call stays muted whatever is pressed (setMuted is a no-op). */
 class Session extends FakeSession {
@@ -36,6 +36,8 @@ class Session extends FakeSession {
   }
 }
 
+/** A removal's notice waits up to REMOVED_HOLD_MS for a possible AFK move. */
+const HELD = { timeout: REMOVED_HOLD_MS + 1_500 };
 const flush = async () => { await act(async () => { for (let i = 0; i < 10; i++) await new Promise<void>((r) => setTimeout(r, 0)); }); };
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -199,10 +201,29 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     }
     expect(h.started).toHaveLength(1);
     expect(h.v.afkFailed).toEqual({ channelId: AFK_CH, name: 'AFK' });
-    // The person's own leave ends the hold: the next read that says pending joins again.
+    // N-4: a leave is not the person's own join. The hold stays, the line goes, and a later read joins nothing.
     act(() => h.v.leave());
+    expect(h.v.afkFailed).toBeNull();
     h.setAfk({ channels: AFK_SET, pending: move({ seq: 30 }) });
-    await waitFor(() => expect(h.started).toHaveLength(2));
+    await flush();
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('fail, leave, then a new-seq pending starts nothing; the person’s own join ends the hold (N-4)', async () => {
+    let fail = true;
+    const h = harness({ fails: (id) => id === AFK_CH && fail });
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.v.afkFailed).not.toBeNull());
+    act(() => h.v.leave());
+    fail = false;
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 5 }) });
+    await flush();
+    expect(h.started).toHaveLength(1);
+    // Control: the person's own join clears the hold, so the next sweep's read moves them.
+    await h.joined(GENV);
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    h.setAfk({ channels: AFK_SET, pending: move({ seq: 6 }) });
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([AFK_CH, GENV, AFK_CH]));
   });
 
   it('the person’s own join also ends a failed move’s hold (fix round 1, I-3)', async () => {
@@ -383,7 +404,7 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     await h.joined(GENV);
     act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
     h.setAfk({ channels: AFK_SET, pending: null });
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
     expect(h.v.lasting).toBe(t('voice.removed'));
   });
 
@@ -395,7 +416,7 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     h.setAfk({ channels: AFK_SET, pending: moveB() });
     act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
     h.setAfk({ channels: AFK_SET, pending: moveB() });
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
   });
 
   it('the room’s own removal before a move is silent too', async () => {
@@ -410,6 +431,36 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     expect(h.v.lasting).toBe('');
   });
 
+  it('a removal followed by pending announces only afk.moved (WEB-AFK)', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    clock.skew = AFK_MIN_IDLE_MS + 1_000;
+    // The cut lands before the afk: read that says pending: nothing is shown or said yet.
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
+    h.setAfk({ channels: AFK_SET, pending: null });
+    await flush();
+    expect(h.v.notice).toBeNull();
+    expect(h.v.lasting).toBe('');
+    // The read lands: the move joins, and only it is said.
+    h.setAfk({ channels: AFK_SET, pending: move() });
+    await waitFor(() => expect(h.v.channelId).toBe(AFK_CH));
+    await act(async () => { await new Promise<void>((r) => setTimeout(r, REMOVED_HOLD_MS + 500)); });
+    expect(h.v.notice).toBeNull();
+    expect(h.v.lasting).toBe('');
+    expect(h.said).not.toContain(t('voice.removed'));
+    expect(h.said.filter((x) => x === MOVED)).toHaveLength(1);
+  });
+
+  it('a removal that no move follows is said once the hold ends (WEB-AFK control)', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
+    h.setAfk({ channels: AFK_SET, pending: null });
+    await flush();
+    expect(h.v.notice).toBeNull();
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+  });
+
   it('a stale pending after the move silences no later cut (fix round 1, m-1)', async () => {
     const h = harness();
     h.setAfk({ channels: AFK_SET, pending: move() });
@@ -421,7 +472,7 @@ describe('web3.9 VOICE-AFK: a pending move joins the AFK call, listen-only, once
     h.setAfk({ channels: AFK_SET, pending: move() });
     act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV })); });
     h.setAfk({ channels: AFK_SET, pending: move() });
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
     expect(h.v.lasting).toBe(t('voice.removed'));
     expect(h.started).toHaveLength(2);
   });
