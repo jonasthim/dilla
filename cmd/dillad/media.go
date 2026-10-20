@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -76,6 +77,9 @@ func mediaProbe(ctx context.Context, remote roomLister, stdout io.Writer, deadli
 // mediaRooms prints each live room (sorted) as "<room>\t<n> participants", then the participants'
 // identities (sorted) indented by two spaces; an empty SFU prints "no live rooms".
 func mediaRooms(ctx context.Context, remote roomLister, stdout io.Writer, deadline time.Duration) error {
+	// One deadline covers the readiness wait and every Participants call.
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
 	rooms, err := waitRemoteSFURooms(ctx, remote, deadline)
 	if err != nil {
 		return fmt.Errorf("media rooms: %w: %w", err, exit.Unavailable)
@@ -85,10 +89,9 @@ func mediaRooms(ctx context.Context, remote roomLister, stdout io.Writer, deadli
 		return err
 	}
 	sort.Strings(rooms)
+	var buf bytes.Buffer // printed only when every room listed
 	for _, room := range rooms {
-		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		parts, err := remote.Participants(pctx, room)
-		cancel()
+		parts, err := remote.Participants(ctx, room)
 		if err != nil {
 			return fmt.Errorf("media rooms: %w: %w", err, exit.Unavailable)
 		}
@@ -97,12 +100,13 @@ func mediaRooms(ctx context.Context, remote roomLister, stdout io.Writer, deadli
 			ids = append(ids, p.GetIdentity())
 		}
 		sort.Strings(ids)
-		fmt.Fprintf(stdout, "%s\t%d participants\n", room, len(ids))
+		fmt.Fprintf(&buf, "%s\t%d participants\n", room, len(ids))
 		for _, i := range ids {
-			fmt.Fprintf(stdout, "  %s\n", i)
+			fmt.Fprintf(&buf, "  %s\n", i)
 		}
 	}
-	return nil
+	_, err = stdout.Write(buf.Bytes())
+	return err
 }
 
 func waitRemoteSFU(ctx context.Context, remote roomLister, deadline time.Duration) error {

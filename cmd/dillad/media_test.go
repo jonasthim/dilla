@@ -97,6 +97,8 @@ func TestMediaRunsSeparatelyAndTheAPIControlsItsRooms(t *testing.T) {
 
 type fakeLister struct {
 	rooms        map[string][]string
+	failRoom     string
+	slow         time.Duration
 	roomsErr     error
 	participants error
 }
@@ -112,9 +114,19 @@ func (f fakeLister) Rooms(context.Context) ([]string, error) {
 	return out, nil
 }
 
-func (f fakeLister) Participants(_ context.Context, room string) ([]*livekit.ParticipantInfo, error) {
+func (f fakeLister) Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error) {
 	if f.participants != nil {
 		return nil, f.participants
+	}
+	if room == f.failRoom {
+		return nil, errors.New("boom")
+	}
+	if f.slow > 0 {
+		select {
+		case <-time.After(f.slow):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	var out []*livekit.ParticipantInfo
 	for _, id := range f.rooms[room] {
@@ -172,5 +184,29 @@ func TestMediaProbeNamesTheRoomCount(t *testing.T) {
 	}
 	if out.String() != "media probe: ok, 2 live rooms\n" {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestMediaRoomsStopsAtTheOverallDeadline(t *testing.T) {
+	remote := fakeLister{rooms: map[string][]string{"a": {"x"}, "b": {"y"}, "c": {"z"}}, slow: 400 * time.Millisecond}
+	start := time.Now()
+	err := mediaRooms(t.Context(), remote, &bytes.Buffer{}, 300*time.Millisecond)
+	if !errors.Is(err, exit.Unavailable) {
+		t.Fatalf("err = %v, want exit.Unavailable", err)
+	}
+	if took := time.Since(start); took > 700*time.Millisecond {
+		t.Fatalf("took %v, want the verb to stop near the 300ms deadline", took)
+	}
+}
+
+func TestMediaRoomsPrintsNothingWhenAListingFailsMidway(t *testing.T) {
+	var out bytes.Buffer
+	remote := fakeLister{rooms: map[string][]string{"a": {"x"}, "b": {"y"}}, failRoom: "b"}
+	err := mediaRooms(t.Context(), remote, &out, time.Second)
+	if !errors.Is(err, exit.Unavailable) {
+		t.Fatalf("err = %v, want exit.Unavailable", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want nothing", out.String())
 	}
 }
