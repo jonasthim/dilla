@@ -61,7 +61,9 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement={announcement}
-        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
+        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
+          ping: en['voice.dock.ping'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
+          quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave') }}
         onMute={noop} onDeafen={noop} onLeave={noop} />

@@ -15,7 +15,7 @@
 | `@` selected on desktop | the DM list in the sidebar |
 | a server with categories | 32px category headers, one collapsed (`aria-expanded="false"`) keeping its current and unread rows, the trailing "+" (`layout.category.add`) for managers |
 | a voice row | one click joins on desktop; the trailing join icon (`voice.join`); participants with 24px avatars, the speaking ring and the mute and deafen glyphs in the slot |
-| the dock | `layout.dock.connected` over `layout.dock.where`, then camera, share and leave; no meter |
+| the dock | the channel name (its tooltip `layout.dock.where`) over the link stats (flow 06, MP5), then camera, share and leave; no meter |
 | the header at 1440 | the icon cluster |
 | the header below 36rem | pins and threads folded into `layout.header.more` |
 | the members aside | hoisted roles, `layout.members.online`, `layout.members.offline` dimmed, two-line rows |
@@ -61,7 +61,6 @@
 `afk.stage.muted='Everyone is muted in {channel}'`
 `afk.moved='Moved to {channel} for inactivity'`
 `afk.moved.join='join'`
-`layout.dock.connected='voice connected'`
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`
 `layout.members.offline='offline'`

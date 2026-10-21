@@ -1154,7 +1154,7 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ timeout: WAIT });
     // Product walk I4: no scroll helper: at 360 the dock is pinned on screen by itself.
     await shootState(mira, 'voice-dock');
-    // web3.9: the dock and the user panel up close: "voice connected" (no meter), where she is, camera, share and leave.
+    // web3.9: the dock and the user panel up close: the channel name over the link stats (no meter), camera, share and leave.
     {
       const dockBox = await dock(mira).boundingBox();
       const panelBox = await mira.locator('.d-user-panel').boundingBox();

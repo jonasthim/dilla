@@ -123,6 +123,20 @@ describe('flow 06 (L-COPY-05)', () => {
     for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
       'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
   });
+  it('MP5: the dock names the channel and shows ping and rates; the flow lists the seven keys, and "voice connected" is gone', () => {
+    const table = en as Readonly<Record<string, string>>;
+    const expected = {
+      'voice.dock.ping': '{ms} ms', 'voice.dock.pingNone': '— ms', 'voice.dock.rate': '↑{up} ↓{down} kb/s',
+      'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+      'voice.dock.quality.good': 'good', 'voice.dock.quality.poor': 'poor', 'voice.dock.quality.bad': 'bad',
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      expect(table[key], key).toBe(value);
+      expect(pairs.find(([k]) => k === key)?.[1], `${key} in flow 06`).toBe(value);
+    }
+    expect(table['layout.dock.connected']).toBeUndefined();
+    expect(Object.values(table)).not.toContain('voice connected');
+  });
 });
 
 describe('flow 07 (v0.1.0-web3.1, the create flow)', () => {

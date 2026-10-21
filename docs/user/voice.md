@@ -21,8 +21,8 @@ added "harbour". While people are in one, it shows how many are in it, and the p
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the page are shown by name too.
 
-On a computer, one click on a voice channel joins it. The call panel above your user panel says "connecting", then
-"voice connected", and the screen announces "You joined {where}." Each person in the call has a tile with their name and
+On a computer, one click on a voice channel joins it. The call panel above your user panel shows the channel name over "connecting", then your ping,
+and the screen announces "You joined {where}." Each person in the call has a tile with their name and
 their state. On a phone, tap the voice channel to see who is there, then press **join voice**.
 
 **leave**, in the call panel or on the stage's controls, leaves the call ("You left {where}."). If you were the only
@@ -61,16 +61,16 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 
 ### The call panel
 
-At the bottom left, above your user panel, the call panel shows "voice connected" (or "connecting", "reconnecting" or "paused
-in {where}" when that is so), under it where you are ("{channel} · {server}"), and then three icon buttons: **camera**,
-**share screen** and **leave**. Press "voice connected" to open Settings → Diagnostics, which shows the connection. The
+At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
+in {where}" in place of the rates when that is so), and then three icon buttons: **camera**,
+**share screen** and **leave**. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
 those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
 stays on screen while you read other channels, so you can turn your camera or a share on and off, or leave, from
 anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
 again.
 
-![The call panel and the user panel up close: "voice connected", harbour · Midgard Crew, then camera, share screen and
+![The call panel and the user panel up close: the channel, its ping and rates, then camera, share screen and
 leave, and under it Mira's name with mute, deafen and the gear](screenshots/dock-desktop.png)
 
 ![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call

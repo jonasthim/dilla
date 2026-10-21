@@ -1,5 +1,4 @@
 export const layout = {
-  'layout.dock.connected': 'voice connected',
   'layout.dock.where': '{channel} · {server}',
   'layout.members.online': 'online',
   'layout.members.offline': 'offline',

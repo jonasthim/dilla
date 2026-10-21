@@ -12,7 +12,7 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(32);
+    expect(pairs.length).toBe(31);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
     expect(table['afk.channel.note'].codePointAt(18)).toBe(0x2019);
@@ -48,7 +48,6 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const LOWER: readonly string[] = [
     'afk.timeout.label',
     'afk.moved.join',
-    'layout.dock.connected',
     'layout.members.online',
     'layout.members.offline',
     'layout.log.jump',
@@ -70,7 +69,7 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   });
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(15);
+    expect(LOWER.length).toBe(14);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

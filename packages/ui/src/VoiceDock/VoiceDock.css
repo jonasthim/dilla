@@ -11,3 +11,8 @@ button.d-voice-dock__line1:hover .d-voice-dock__text { text-decoration: underlin
 .d-voice-dock[data-phase="paused"] .d-voice-dock__glyph { color: var(--warn); }
 .d-voice-dock__controls { display: flex; align-items: center; gap: 0.25rem; min-width: 0; justify-content: flex-end; }
 .d-voice-dock__leave:hover { color: var(--danger); }
+/* MP5: line 2 is the link stats. Tabular numerals keep it from jittering every 2 s; poor and bad also colour it (the
+   accessible text names the quality, so colour is never the only signal). It does not wrap. */
+.d-voice-dock__stats { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.d-voice-dock__stats[data-quality="poor"] { color: var(--warn); }
+.d-voice-dock__stats[data-quality="bad"] { color: var(--danger); }

@@ -8,8 +8,11 @@ import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface VoiceDockProps {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'paused';
-  /** The voice channel's or the DM's name; the second line when `labels.where` is not given, and filled into `{where}` of the status labels. */
+  /** The voice channel's or the DM's name: line 1 (MP5). Filled into `{where}` of `labels.paused`. */
   where: string;
+  /** MP5: the latest link read, line 2 while connected: ping, what this device sends and receives, and the quality that
+   *  colours it (`poor` warn, `bad` danger; the accessible text names it too). Absent before the first sample: "— ms". */
+  stats?: { rttMs: number; upKbps: number; downKbps: number; quality: 'good' | 'poor' | 'bad' };
   /** Not drawn since web3.9 (R26): the user panel owns mute and deafen. Kept so existing callers still type-check. */
   muted: boolean;
   /** Not drawn since web3.9 (R26): see `muted`. */
@@ -38,11 +41,15 @@ export interface VoiceDockProps {
     /** `voice.dock.region`: the control group's name. */
     region: string;
     connecting: string;
-    /** `voice.dock.connected` ("voice connected"); a `{where}` in it is still filled. */
-    connected: string;
-    /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 2. Without it, line 2 is `where`. */
+    /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 1's tooltip and accessible name. Without it, `where`. */
     where?: string;
     reconnecting: string;
+    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
+    ping: string; pingNone: string; rate: string;
+    /** `voice.dock.stats`: the stats' accessible text, with `{ms}`, `{quality}`, `{up}` and `{down}`; never announced. */
+    stats: string;
+    /** `voice.dock.quality.*`: the quality words that fill `{quality}`. */
+    quality: { good: string; poor: string; bad: string };
     /** `voice.dock.paused`; a `{where}` in it is still filled. */
     paused: string;
     /** Not drawn since web3.9 (R26). */
@@ -61,7 +68,7 @@ export interface VoiceDockProps {
   onMute?(): void;
   /** Ignored since web3.9 (R26). */
   onDeafen?(): void;
-  /** With it, line 1 ("voice connected") is a button: it opens Diagnostics (R26). */
+  /** With it, line 1 (the channel name) is a button: it opens Diagnostics (R26). */
   onStatus?(): void;
   /** Toggles the camera, as the stage's control does. Without it (or `labels.camera`) the dock shows no camera control. */
   onCamera?(): void;
@@ -76,31 +83,40 @@ const PHASE_GLYPH = {
 } as const;
 
 /**
- * The voice dock above the user panel while this device is in voice, as Discord's (R26): line 1 the status ("voice
- * connected", a button with `onStatus`), line 2 where ("{channel} · {server}"), then camera, share and leave as 32px icon
+ * The voice dock above the user panel while this device is in voice, as Discord's (R26, MP5): line 1 the state dot and the
+ * channel name (a button with `onStatus`; the server is its tooltip and accessible name), line 2 the link stats ("24 ms ·
+ * ↑48 ↓96 kb/s", "— ms" before the first sample, the phase words while not connected), then camera, share and leave as 32px icon
  * buttons in one row (one roving Tab stop, `role="toolbar"`). No meter, no card: a hairline top and the panel's 12px inset. Mute and deafen live in the user
  * panel. A camera or share that cannot act is aria-disabled and says why as its description. Its one `role="status"`
  * region announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
-  phase, where, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, listenReason,
+  phase, where, stats, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, listenReason,
   announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = listenReason !== undefined ? { camera: listenReason, share: listenReason }
     : voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
   const bar = useIconToolbar();
-  const text = {
-    connecting: labels.connecting,
-    connected: labels.connected.replaceAll('{where}', where),
-    reconnecting: labels.reconnecting,
-    paused: labels.paused.replaceAll('{where}', where),
-  }[phase];
+  const full = labels.where ?? where;
   const line1 = (
     <>
       <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
-      <span className="d-voice-dock__text">{text}</span>
+      <span className="d-voice-dock__text">{where}</span>
     </>
+  );
+  const fill = (template: string, values: Record<string, string | number>): string =>
+    template.replace(/\{(\w+)\}/g, (m, k: string) => (k in values ? String(values[k]) : m));
+  const phaseWords = { connecting: labels.connecting, reconnecting: labels.reconnecting, paused: fill(labels.paused, { where }) };
+  // Line 2: the stats while connected (visible text for sight, a spoken sentence that names the quality for a screen reader),
+  // else the phase words. The visible numbers are aria-hidden: the sentence carries them once.
+  const line2 = phase !== 'connected' ? phaseWords[phase] : stats === undefined ? (
+    <span className="d-voice-dock__stats" data-quality="none">{labels.pingNone}</span>
+  ) : (
+    <span className="d-voice-dock__stats" data-quality={stats.quality}>
+      <span aria-hidden="true">{fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps, down: stats.downKbps })}</span>
+      <span className="d-sr-only">{fill(labels.stats, { ms: stats.rttMs, quality: labels.quality[stats.quality], up: stats.upKbps, down: stats.downKbps })}</span>
+    </span>
   );
   const cameraInert = busy || !canCamera || listenReason !== undefined;
   const shareInert = busy || !canShare || listenReason !== undefined;
@@ -108,9 +124,9 @@ export function VoiceDock({
     <div className="d-voice-dock" data-phase={phase}>
       <div className="d-voice-dock__status">
         {onStatus !== undefined
-          ? <button type="button" className="d-voice-dock__line1" onClick={onStatus}>{line1}</button>
-          : <p className="d-voice-dock__line1">{line1}</p>}
-        <p className="d-voice-dock__where" title={labels.where ?? where}>{labels.where ?? where}</p>
+          ? <button type="button" className="d-voice-dock__line1" title={full} aria-label={full} onClick={onStatus}>{line1}</button>
+          : <p className="d-voice-dock__line1" title={full}>{line1}</p>}
+        <p className="d-voice-dock__where">{line2}</p>
       </div>
       {showControls ? (
         <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-voice-dock__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>

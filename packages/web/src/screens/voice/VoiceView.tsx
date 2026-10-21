@@ -8,6 +8,7 @@ import {
   Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
+import { linkQuality } from '../../call/stats.ts';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
@@ -483,8 +484,8 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26): "voice connected"
- * (a button to Diagnostics), "{channel} · {server}", then camera, share screen and leave (no meter and no line: the input level stays in
+ * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26, MP5): the channel name
+ * (a button to Diagnostics; the server is its tooltip), the link stats ({ping} · ↑{up} ↓{down} kb/s, from call.state.link), then camera, share screen and leave (no meter and no line: the input level stays in
  * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
@@ -508,6 +509,7 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
   const phase = callPhase(v);
   // Final review I-2: a listen-only call (the AFK channel) holds the dock's camera and share as the stage does, with its reason.
   const listen = call.state?.listenOnly === true;
+  const link = call.state?.link;
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
@@ -530,8 +532,11 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused && !listen}
         canShare={!paused && !listen && canCapture()} busy={call.session === null} paused={paused}
         {...(listen ? { listenReason: t('afk.stage.muted', { channel: where }) } : {})}
+        {...(link === undefined ? {} : { stats: { rttMs: link.rttMs, upKbps: link.upKbps, downKbps: link.downKbps, quality: linkQuality(link.rttMs, link.lossPct) } })}
         announcement={call.announcement}
-        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: t('layout.dock.connected'),
+        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
+          ping: en['voice.dock.ping'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
+          quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
           where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
