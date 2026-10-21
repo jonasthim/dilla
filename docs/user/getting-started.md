@@ -546,7 +546,7 @@ The factor guards signing in on a **new** browser, not message content.
 Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
 Browsers that are already set up, like this one, do not ask again." The rows are:
 
-- **Password**: whether the account has one.
+- **Password**: whether the account has one, with **change password** (or **set password** when it has none). "Password changed." or "Password set." confirms it.
 - **Authenticator app**: **add authenticator app**, or **remove** when it is set up.
 - **Passkeys**: one row per passkey with its name, when it was added and when it was last used, each with its own
   **remove**, then **add passkey**.
@@ -1055,7 +1055,7 @@ nothing was used up, not even a backup code.
 ## 7. Devices
 
 Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
-Removing a device needs your recovery key." Each row is a device, named by the first eight characters of its
+Removing a device needs your recovery key." Each row is a device, named by the name you gave it or, without one, by the first eight characters of its
 id, with the tag "browser" or "app" and when it was last seen. The row marked "this browser" is the one you
 are using. "not yet in the device list" marks a device that signed in with your password but was never
 added; "removed" marks one that was removed. **refresh** reads the list again.
@@ -1068,6 +1068,11 @@ remove this browser" and "forget this browser"](screenshots/settings-devices.png
   recovery key of this account." A device that is "not yet in the device list" is removed without the key:
   "This device signed in with your password but is not in the device list, so it cannot read anything.
   Removing it needs no recovery key."
+- **rename**: every device that is not removed has one. "Name this device" starts this browser on a suggestion such as
+  "Firefox on Linux" and another device on its current name; **Save** stores it, and saving an empty field clears the
+  name. A named device shows its name with the first eight characters of its id beside it, and the remove dialogs show
+  both. The name is stored readable by the server, which could change it, so check a device by its id before you
+  remove it. Your other devices see the new name after **refresh**.
 - **sign out and remove this browser**: "This browser is removed from your account and its data here is
   cleared. You can sign in again later with your password and recovery key. Enter the key to confirm."
   **Sign out** removes it and reloads to the first page.
@@ -1445,9 +1450,10 @@ and when the other tab closes it takes over by itself.
 
 - No native phone or desktop app (on a phone, the web client has [its own layout](#on-your-phone)). A second browser needs the recovery key and the password, and the second factor
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
-  content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. Devices have
-  no names, and the password cannot be changed from the web client.
-- The web client has a profile card for a member but no profile you can edit, and no card in direct messages (a mention there is plain text). A former member's mention opens a card only while one of their messages is held in this browser. Invite links are made under server settings → invites, with the expiry and
+  content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. A device name is stored readable by the server,
+  which could change it (see [Devices](#7-devices)).
+- A profile is a display name, a status message and a bio, with no picture, and the server reads all three
+  ([Profile](#profile)). In direct messages the profile card offers only message and compare safety numbers. A former member's mention opens a card only while one of their messages is held in this browser. Invite links are made under server settings → invites, with the expiry and
   uses you choose ([Run your server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or
   ban gives no way to tell the person why.
 - Roles and private channels: the host refuses posts from people without **send messages** and enforces slow mode, but
@@ -1469,7 +1475,7 @@ and when the other tab closes it takes over by itself.
 - Search finds only text this browser holds, never files.
 - Messages from before this browser joined a channel are not shown.
 - The first key seen for a person is trusted as first seen until you compare numbers, and an instance can hold back
-  a newer device list at that moment. Numbers are compared by reading them aloud only: no QR code, and no number for
+  a newer device list at that moment. Numbers are compared by reading them aloud (the QR code is shown for reading, nothing scans it), and there is no number for
   someone you share no conversation with. Privacy shows no date for a verification. Verifications belong to the
   browser that made them: your other browsers start again at "First seen here — not verified".
 - If your account's identity key changes on another device, a device still on the old key shows the "different
