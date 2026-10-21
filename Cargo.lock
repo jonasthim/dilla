@@ -641,6 +641,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dilla-bot-core"
+version = "0.1.0"
+dependencies = [
+ "dilla-core",
+ "libc",
+ "rusqlite",
+ "sha2 0.11.0",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "dilla-core"
 version = "0.1.0"
 dependencies = [
