@@ -48,6 +48,26 @@ describe('DeviceRow', () => {
     expect(screen.getByRole('button', { name: 'remove' })).toHaveAttribute('data-variant', 'danger');
   });
 
+  it('offers a second action beside the first, also described by the device name', async () => {
+    const user = userEvent.setup();
+    const onRename = vi.fn();
+    const onRemove = vi.fn();
+    render(list({ name: 'work laptop', tier: 'web', tierLabel: 'browser', action: { label: 'remove', onAction: onRemove },
+      extraAction: { label: 'rename', onAction: onRename } }));
+    const rename = screen.getByRole('button', { name: 'rename' });
+    expect(rename).toHaveAccessibleDescription('work laptop');
+    expect(rename).toHaveAttribute('data-variant', 'default');
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['rename', 'remove']);
+    await user.click(rename);
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRemove).not.toHaveBeenCalled();
+  });
+
+  it('offers the extra action alone, on a row with no remove (this browser)', () => {
+    render(list({ name: '3f9a2c1d', tier: 'web', tierLabel: 'browser', own: true, ownLabel: 'this browser', extraAction: { label: 'rename', onAction: () => {} } }));
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['rename']);
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(
       <div className="d-root">

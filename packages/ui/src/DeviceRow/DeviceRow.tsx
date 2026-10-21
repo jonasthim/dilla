@@ -11,14 +11,16 @@ export interface DeviceRowProps {
   state?: string;
   lastSeen?: string;
   action?: { label: string; onAction(): void; danger?: boolean };
+  /** A second, plain action drawn before `action` (rename, beside remove). */
+  extraAction?: { label: string; onAction(): void };
 }
 
 /**
  * One device of the account in Settings → Devices. The tier tag is where the browser's lower-trust
  * fact is shown, and nowhere in the chrome (F9). The action, when given, is described by the
- * device's name, so "remove" is heard with the device it removes. Every text arrives as a prop.
+ * device's name, so "remove" is heard with the device it removes; so is the extra one. Every text arrives as a prop.
  */
-export function DeviceRow({ name, tier, tierLabel, own, ownLabel, state, lastSeen, action }: DeviceRowProps) {
+export function DeviceRow({ name, tier, tierLabel, own, ownLabel, state, lastSeen, action, extraAction }: DeviceRowProps) {
   const nameId = useId();
   return (
     <li className="d-device-row" data-tier={tier} data-own={own ? 'true' : undefined}>
@@ -36,7 +38,12 @@ export function DeviceRow({ name, tier, tierLabel, own, ownLabel, state, lastSee
           </div>
         ) : null}
       </div>
-      {action ? <Button variant={action.danger ? 'danger' : 'default'} aria-describedby={nameId} onClick={action.onAction}>{action.label}</Button> : null}
+      {action || extraAction ? (
+        <div className="d-device-row__actions">
+          {extraAction ? <Button aria-describedby={nameId} onClick={extraAction.onAction}>{extraAction.label}</Button> : null}
+          {action ? <Button variant={action.danger ? 'danger' : 'default'} aria-describedby={nameId} onClick={action.onAction}>{action.label}</Button> : null}
+        </div>
+      ) : null}
     </li>
   );
 }

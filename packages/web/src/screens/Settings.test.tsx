@@ -249,8 +249,8 @@ describe('Settings', () => {
   it('leaves Settings open when Escape closes a dialog inside it, and while a removal runs', async () => {
     const PHONE = 'd1'.repeat(16);
     const devices: DeviceSummary[] = [
-      { id: 'cc'.repeat(16), tier: 1, signerTier: 1, lastSeen: 1, revokedAt: null, listed: true, own: true },
-      { id: PHONE, tier: 0, signerTier: 0, lastSeen: 1, revokedAt: null, listed: true, own: false },
+      { id: 'cc'.repeat(16), tier: 1, signerTier: 1, lastSeen: 1, revokedAt: null, listed: true, own: true, label: null },
+      { id: PHONE, tier: 0, signerTier: 0, lastSeen: 1, revokedAt: null, listed: true, own: false, label: null },
     ];
     const { fake, user } = setup('/settings/devices', `/c/${C}/${CH}`);
     fake.handler = c => (c.m === 'revokeDevice' ? new Promise(() => {}) : Promise.resolve(null));

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { Command, DeviceSummary } from '@dilla/client-core';
@@ -15,7 +15,7 @@ const FORGOTTEN = 'f3'.repeat(16);
 const OLD = 'e2'.repeat(16);
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
 const dev = (id: string, over: Partial<DeviceSummary> = {}): DeviceSummary =>
-  ({ id, tier: 1, signerTier: 1, lastSeen: NOW, revokedAt: null, listed: true, own: false, ...over });
+  ({ id, tier: 1, signerTier: 1, lastSeen: NOW, revokedAt: null, listed: true, own: false, label: null, ...over });
 const DEVICES: DeviceSummary[] = [
   dev(OLD, { lastSeen: NOW - 3 * 86_400, revokedAt: NOW - 3_600, listed: false }),
   dev(FORGOTTEN, { lastSeen: NOW - 120, listed: false }),
@@ -58,7 +58,8 @@ describe('the device list', () => {
     const own = rowOf(OWN);
     expect(within(own).getByText('this browser')).toBeInTheDocument();
     expect(within(own).getByText('browser')).toBeInTheDocument();
-    expect(within(own).queryByRole('button')).toBeNull();
+    // This browser cannot be removed here, but it can be named.
+    expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['rename']);
     expect(within(rowOf(PHONE)).getByText('app')).toBeInTheDocument();
     expect(within(rowOf(PHONE)).getByRole('button', { name: 'remove' })).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByText('not yet in the device list')).toBeInTheDocument();
@@ -190,6 +191,81 @@ describe('removing a device', () => {
     const heading = screen.getByRole('heading', { level: 2, name: 'Devices' });
     expect(document.activeElement).toBe(heading);
     expect(heading).toHaveAttribute('tabindex', '-1');
+  });
+});
+
+// EOD E7: a device carries the owner's own name (readable by the server, not part of the signed device list).
+describe('naming a device', () => {
+  const NAMED = 'a4'.repeat(16);
+  const list = () => [dev(OWN, { own: true }), dev(NAMED, { label: 'work laptop', lastSeen: NOW - 30 }), dev(PHONE, { tier: 0, signerTier: 0, lastSeen: NOW - 60 }),
+    dev(OLD, { lastSeen: NOW - 3 * 86_400, revokedAt: NOW - 3_600, listed: false })];
+  const rowNamed = (name: string) => {
+    const row = rows().find(r => within(r).queryByText(name) !== null);
+    if (row === undefined) throw new Error(`no row named ${name}`);
+    return row;
+  };
+  const field = () => screen.getByRole('textbox', { name: 'Device name' });
+
+  it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
+    setup(undefined, list());
+    expect(within(rowNamed('work laptop')).queryByText(NAMED.slice(0, 8))).toBeNull();
+    expect(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
+    expect(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
+    expect(within(rowNamed(OLD.slice(0, 8))).queryByRole('button', { name: 'rename' })).toBeNull();
+  });
+  it('opens on the current name, saves it trimmed with the device, and closes', async () => {
+    const { fake, user, view } = setup(undefined, list());
+    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
+    const dialog = screen.getByRole('dialog', { name: 'Name this device' });
+    expect(within(dialog).getByText('A name you will recognise. The server can read it, and it is not part of the signed device list.')).toBeInTheDocument();
+    expect(field()).toHaveValue('work laptop');
+    expect(field()).toHaveFocus();
+    expect(field()).toHaveAttribute('maxlength', '64');
+    await expectNoAxeViolations(view.container);
+    await user.clear(field());
+    await user.type(field(), '  old phone  ');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(fake.callsOf('renameDevice')).toEqual([{ m: 'renameDevice', deviceId: NAMED, label: 'old phone' }]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('clears the name when the field is emptied', async () => {
+    const { fake, user } = setup(undefined, list());
+    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
+    await user.clear(field());
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('renameDevice')).toEqual([{ m: 'renameDevice', deviceId: NAMED, label: null }]);
+  });
+  it('suggests the browser and system on this browser when it has no name, and on no other device', async () => {
+    const ua = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0';
+    const spy = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
+    try {
+      const { user } = setup(undefined, list());
+      await user.click(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'rename' }));
+      expect(field()).toHaveValue('Firefox on Linux');
+      await user.click(screen.getByRole('button', { name: 'Close' }));
+      await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+      expect(field()).toHaveValue('');
+    } finally { spy.mockRestore(); }
+  });
+  it('shows a refusal by its code and keeps the dialog and the text', async () => {
+    const { user } = setup(c => (c.m === 'renameDevice' ? Promise.reject(refusal({ code: 'E_NOT_FOUND' })) : Promise.resolve(null)), list());
+    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+    await user.type(field(), 'tablet');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const dialog = screen.getByRole('dialog', { name: 'Name this device' });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('That did not work (E_NOT_FOUND). Try again.');
+    expect(field()).toHaveValue('tablet');
+  });
+  it('sends one rename while in flight and cannot be closed meanwhile', async () => {
+    const { fake, user } = setup(c => (c.m === 'renameDevice' ? new Promise(() => {}) : Promise.resolve(null)), list());
+    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+    await user.type(field(), 'tablet');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('button', { name: 'Working…' })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(screen.getByRole('button', { name: 'Working…' }));
+    await user.keyboard('{Escape}');
+    expect(fake.callsOf('renameDevice')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Name this device' })).toBeInTheDocument();
   });
 });
 
