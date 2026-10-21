@@ -184,7 +184,13 @@ def _metadata(canonical: str, *, audio: bool = False) -> dict:
 def _descriptor(entry: object) -> dict[str, object]:
     if not isinstance(entry, dict):
         raise ProbeError("playlist contains an unavailable or incomplete video")
-    extractor = entry.get("extractor_key") or entry.get("ie_key")
+    entry_type = entry.get("_type")
+    if entry_type == "url":
+        extractor = entry.get("ie_key")
+    elif "_type" not in entry or entry_type == "video":
+        extractor = entry.get("extractor_key")
+    else:
+        raise ProbeError("entry is not a YouTube video")
     video_id = entry.get("id")
     title = entry.get("title")
     duration = entry.get("duration")

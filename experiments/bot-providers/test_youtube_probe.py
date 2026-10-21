@@ -129,6 +129,32 @@ class YouTubeMetadataTests(unittest.TestCase):
                 with self.assertRaises(youtube_probe.ProbeError):
                     youtube_probe.resolve("https://youtube.com/playlist?list=PL_123")
 
+    def test_descriptor_accepts_only_video_and_flat_youtube_entry_types(self):
+        flat = flat_video()
+        self.assertEqual(youtube_probe._descriptor(flat), {"id": "abcdefghijk", "title": "A title"})
+
+        full_video = video()
+        full_video["_type"] = "video"
+        self.assertEqual(youtube_probe._descriptor(full_video)["id"], "abcdefghijk")
+
+        for malformed_type in ("playlist", "multi_video", "url_transparent", [], 1):
+            with self.subTest(entry_type=malformed_type):
+                malformed = flat_video()
+                malformed["_type"] = malformed_type
+                with self.assertRaises(youtube_probe.ProbeError):
+                    youtube_probe._descriptor(malformed)
+
+    def test_exact_500_flat_entries_are_accepted(self):
+        entries = [
+            {"_type": "url", "ie_key": "Youtube", "id": f"{index:011d}", "title": "Track"}
+            for index in range(500)
+        ]
+        self.metadata_result({"_type": "playlist", "playlist_count": 500, "entries": entries})
+        result = youtube_probe.resolve("https://youtube.com/playlist?list=PL_123")
+        self.assertEqual(result["count"], 500)
+        self.assertEqual(result["tracks"][0]["id"], "00000000000")
+        self.assertEqual(result["tracks"][-1]["id"], "00000000499")
+
     def test_hostile_descriptor_and_raw_runner_error_are_sanitized(self):
         hostile = video()
         hostile["extractor_key"] = "Generic"
