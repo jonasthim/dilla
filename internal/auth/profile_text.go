@@ -15,7 +15,7 @@ const (
 	BioMaxRunes    = 500
 )
 
-// maxMarkRun is the most combining marks (General_Category Mn and Me) one base may carry. Real scripts stay below it
+// maxMarkRun is the most combining marks (Grapheme_Extend) one base may carry. Real scripts stay below it
 // (Vietnamese and Hebrew with points take 2 to 4); more is overlay ("zalgo") text that draws over the rows around it.
 const maxMarkRun = 8
 
@@ -40,7 +40,8 @@ var (
 //     Scotland, Wales);
 //   - U+2028, U+2029, U+2800 (braille blank) and U+FFF9-FFFB;
 //   - an unassigned code point (General_Category Cn, with the noncharacters), a private-use one (Co) or a surrogate;
-//   - more than maxMarkRun combining marks in a row.
+//   - more than maxMarkRun combining marks (Grapheme_Extend) after one base character, joiners and selectors between
+//     them not starting a new count.
 //
 // "" is allowed and means "none". A text of nothing visible (only whitespace and combining marks) is ErrTextBlank.
 // The errors are ErrTextLength, ErrTextChars and ErrTextBlank, so a caller can tell a person what to change. The
@@ -73,14 +74,20 @@ func NormalizeUserText(s string, maxRunes int, allowNewline bool) (string, error
 	return trimmed, nil
 }
 
-// markRunTooLong: more than maxMarkRun combining marks in a row.
+// markRunTooLong: more than maxMarkRun Grapheme_Extend code points after one base character. The count is per base:
+// a Default_Ignorable (a joiner, a selector) between them is transparent and never starts a new count; only a new base
+// does.
 func markRunTooLong(s string) bool {
 	run := 0
 	for _, r := range s {
-		if !inRanges(r, markRanges) {
+		switch {
+		case inRanges(r, graphemeExtendRanges):
+			if run++; run > maxMarkRun {
+				return true
+			}
+		case inRanges(r, defaultIgnorableRanges):
+		default:
 			run = 0
-		} else if run++; run > maxMarkRun {
-			return true
 		}
 	}
 	return false
@@ -105,16 +112,11 @@ func hasVisible(s string) bool {
 // textCharsOK is the character class of NormalizeUserText (and so of NormalizeDisplay).
 func textCharsOK(s string, allowNewline bool) bool {
 	runes := []rune(s)
-	marks := 0
+	if markRunTooLong(s) {
+		return false
+	}
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
-		if inRanges(r, markRanges) {
-			if marks++; marks > maxMarkRun {
-				return false
-			}
-		} else {
-			marks = 0
-		}
 		switch {
 		case r == '\n':
 			if !allowNewline {
@@ -131,7 +133,6 @@ func textCharsOK(s string, allowNewline bool) bool {
 			// is Default_Ignorable and refused below, so a run of tags cannot carry hidden text.
 			if n := tagSequenceAt(runes, i); n > 0 {
 				i += n - 1
-				marks = 0
 			}
 		case inRanges(r, defaultIgnorableRanges):
 			if !ignorableAllowed(runes, i) {

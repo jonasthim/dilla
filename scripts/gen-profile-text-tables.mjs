@@ -8,7 +8,7 @@
 //   node scripts/gen-profile-text-tables.mjs [--download] [--check] <dir>
 //
 //   <dir>       holds the input files (named as in INPUTS below)
-//   --download  fetch the inputs missing from <dir> from their versioned unicode.org URLs
+//   --download  fetch the inputs missing from <dir> from their versioned unicode.org URLs (each tried 3 times, with a wait)
 //   --check     write nothing: exit 1 when the checked-in files differ from what the inputs generate (CI runs this)
 //
 // Every input is verified against the sha256 kept below; a file that does not match stops the run.
@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetchWithRetry } from './fetch-retry.mjs';
 
 const VERSION = '17.0.0';
 const BASE = `https://www.unicode.org/Public/${VERSION}`;
@@ -46,9 +47,7 @@ for (const [name, [url, want]] of Object.entries(INPUTS)) {
   const path = join(dir, name);
   if (!existsSync(path)) {
     if (!download) throw new Error(`${name} is missing from ${dir} (use --download)`);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${url}: ${res.status}`);
-    writeFileSync(path, Buffer.from(await res.arrayBuffer()));
+    writeFileSync(path, await fetchWithRetry(url));
   }
   const buf = readFileSync(path);
   if (sha(buf) !== want) throw new Error(`${name}: sha256 ${sha(buf)} is not the pinned ${want}`);
@@ -81,6 +80,7 @@ const rangesOf = (text, ...values) => merge(rows(text).filter((r) => values.incl
 // Canonical_Combining_Class 9 (virama): "0 ; 9 # Mn ..." lines of DerivedCombiningClass.txt.
 const viramas = merge(rows(files['DerivedCombiningClass.txt']).filter((r) => r[2] === '9').map(([lo, hi]) => [lo, hi]));
 const defaultIgnorable = rangesOf(files['DerivedCoreProperties.txt'], 'Default_Ignorable_Code_Point');
+const graphemeExtend = rangesOf(files['DerivedCoreProperties.txt'], 'Grapheme_Extend');
 const whiteSpace = rangesOf(files['PropList.txt'], 'White_Space');
 const emojiData = files['emoji-data.txt'];
 const extPict = rangesOf(emojiData, 'Extended_Pictographic');
@@ -142,6 +142,9 @@ var viramaRanges = []runeRange{${goPairs(viramas)}}
 // defaultIgnorableRanges are the code points with Default_Ignorable_Code_Point=Yes.
 var defaultIgnorableRanges = []runeRange{${goPairs(defaultIgnorable)}}
 
+// graphemeExtendRanges are the code points with Grapheme_Extend=Yes: what follows a base inside its grapheme cluster.
+var graphemeExtendRanges = []runeRange{${goPairs(graphemeExtend)}}
+
 // whiteSpaceRanges are the code points with White_Space=Yes.
 var whiteSpaceRanges = []runeRange{${goPairs(whiteSpace)}}
 
@@ -181,6 +184,8 @@ export type RuneRange = readonly [number, number];
 export const VIRAMA: readonly RuneRange[] = ${tsPairs(viramas)};
 /** Default_Ignorable_Code_Point=Yes. */
 export const DEFAULT_IGNORABLE: readonly RuneRange[] = ${tsPairs(defaultIgnorable)};
+/** Grapheme_Extend=Yes: what follows a base inside its grapheme cluster. */
+export const GRAPHEME_EXTEND: readonly RuneRange[] = ${tsPairs(graphemeExtend)};
 /** White_Space=Yes. */
 export const WHITE_SPACE: readonly RuneRange[] = ${tsPairs(whiteSpace)};
 /** General_Category Mn and Me. */
@@ -225,7 +230,7 @@ if (check) {
   if (stale) process.exit(1);
   console.log(`profile-text tables are current (Unicode ${VERSION})`);
 } else {
-  console.log({ version: VERSION, viramas: viramas.length, defaultIgnorable: defaultIgnorable.length, whiteSpace: whiteSpace.length, marks: marks.length,
+  console.log({ version: VERSION, viramas: viramas.length, defaultIgnorable: defaultIgnorable.length, graphemeExtend: graphemeExtend.length, whiteSpace: whiteSpace.length, marks: marks.length,
     unusable: unusable.length, extPict: extPict.length, emojiPres: emojiPres.length, emoji: emoji.length, mongolian: mongolianLetters.length,
     tagSeqs: tagSeqs.length, joining: joining.length, rgi: zwjSeqs.length });
 }

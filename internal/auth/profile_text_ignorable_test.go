@@ -124,3 +124,29 @@ func TestMarksAndJoinersAloneAreBlank(t *testing.T) {
 	}
 	accepted(t, "a letter with a virama and a joiner", 0x915, 0x94d, 0x200d)
 }
+
+// A joiner (or any other Default_Ignorable) between marks does not start a new count: the cap is per base character.
+// The marks are U+0941 (Mn, combining class 0): NFC cannot reorder them, so the virama stays next to the joiner.
+func TestTheMarkCapSurvivesJoinersAndIgnorables(t *testing.T) {
+	seven := strings.Repeat(string(rune(0x941)), 7)
+	eight := strings.Repeat(string(rune(0x941)), 8)
+	// a base, 7 marks and a virama (8 marks), a ZWNJ after the virama, 8 more marks
+	if err := textErr(runes(0x915) + seven + runes(0x94d, 0x200c) + eight); !errors.Is(err, auth.ErrTextChars) {
+		t.Errorf("marks, virama, ZWNJ, marks: %v, want ErrTextChars", err)
+	}
+	if err := textErr(runes(0x915) + seven + runes(0x94d, 0x200d) + eight); !errors.Is(err, auth.ErrTextChars) {
+		t.Errorf("marks, virama, ZWJ, marks: %v, want ErrTextChars", err)
+	}
+	// an emoji selector between marks is transparent as well
+	eight301 := strings.Repeat(string(rune(0x301)), 8)
+	if err := textErr(runes(0x1f642, 0xfe0f) + eight301 + eight301); !errors.Is(err, auth.ErrTextChars) {
+		t.Errorf("emoji, selector, 16 marks: %v, want ErrTextChars", err)
+	}
+	// a new base does start a new count
+	if err := textErr(runes(0x915) + eight + "b" + eight + "c" + eight); err != nil {
+		t.Errorf("three bases with 8 marks: %v, want accepted", err)
+	}
+	// real text with joiners is not affected
+	accepted(t, "sinhala shri", 0xdc1, 0xdca, 0x200d, 0xdbb, 0xdd3)
+	accepted(t, "persian", 0x645, 0x6cc, 0x200c, 0x62e, 0x648, 0x627, 0x647, 0x645)
+}

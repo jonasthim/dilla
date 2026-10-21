@@ -4,7 +4,7 @@
 // (scripts/gen-profile-text-tables.mjs), the server's too, not from the browser, so the two agree whatever the
 // browser's Unicode version.
 import {
-  DEFAULT_IGNORABLE, EMOJI, EMOJI_PRESENTATION, EXT_PICT, JOINING, MARKS, MONGOLIAN_LETTERS, TAG_SEQUENCES, UNUSABLE, VIRAMA, WHITE_SPACE,
+  DEFAULT_IGNORABLE, EMOJI, GRAPHEME_EXTEND, EMOJI_PRESENTATION, EXT_PICT, JOINING, MARKS, MONGOLIAN_LETTERS, TAG_SEQUENCES, UNUSABLE, VIRAMA, WHITE_SPACE,
   type RuneRange,
 } from './profile-tables';
 
@@ -77,12 +77,13 @@ function tagSequenceAt(cps: readonly number[], i: number): number {
   }
   return 0;
 }
-/** More than MAX_MARK_RUN combining marks in a row. */
+/** More than MAX_MARK_RUN Grapheme_Extend code points after one base character; a Default_Ignorable (a joiner, a selector)
+ *  between them is transparent and never starts a new count, only a new base does. */
 function markRunTooLong(cps: readonly number[]): boolean {
   let run = 0;
   for (const cp of cps) {
-    if (!inRanges(cp, MARKS)) run = 0;
-    else if (++run > MAX_MARK_RUN) return true;
+    if (inRanges(cp, GRAPHEME_EXTEND)) { if (++run > MAX_MARK_RUN) return true; }
+    else if (!inRanges(cp, DEFAULT_IGNORABLE)) run = 0;
   }
   return false;
 }

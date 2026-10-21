@@ -85,3 +85,18 @@ describe('marks and joiners alone', () => {
     accepted(0x915, 0x94d, 0x200d);
   });
 });
+
+describe('the mark cap is per base character', () => {
+  // U+0941 is Mn with combining class 0: NFC cannot reorder it, so the virama stays next to the joiner.
+  const marks = (n: number, cp = 0x941) => str(...Array<number>(n).fill(cp));
+  it('is not reset by a joiner or an ignorable between marks', () => {
+    expect(problem(`${str(0x915)}${marks(7)}${str(0x94d, 0x200c)}${marks(8)}`)).toBe('chars');
+    expect(problem(`${str(0x915)}${marks(7)}${str(0x94d, 0x200d)}${marks(8)}`)).toBe('chars');
+    expect(problem(`${str(0x1f642, 0xfe0f)}${marks(8, 0x301)}${marks(8, 0x301)}`)).toBe('chars');
+  });
+  it('is reset by a new base, and leaves Sinhala and Persian alone', () => {
+    expect(problem(`${str(0x915)}${marks(8)}b${marks(8)}c${marks(8)}`)).toBeNull();
+    accepted(0xdc1, 0xdca, 0x200d, 0xdbb, 0xdd3);
+    accepted(0x645, 0x6cc, 0x200c, 0x62e, 0x648, 0x627, 0x647, 0x645);
+  });
+});

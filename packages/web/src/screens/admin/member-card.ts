@@ -36,6 +36,7 @@ export function dmCardData(userId: string, member: MemberSummary | undefined, ct
   const isYou = userId === ctx.selfId;
   return {
     userId, name: member === undefined ? ctx.fallbackName : memberName(member), username: member?.username ?? '',
+    status: member?.statusMsg ?? '', bio: member?.bio ?? '',
     isOwner: false, isYou, roles: [], actions: isYou ? [] : ['message', 'compare'],
   };
 }
