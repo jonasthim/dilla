@@ -50,7 +50,6 @@ func diagnostics(o Options, wasm *mlswasi.Runtime, blobs *blob.Store) func(conte
 		}
 		add(ops.UDPLeg(*o.Config))
 		add(ops.WebAuthnLeg(*o.Config))
-		add(ops.GiphyLeg(*o.Config))
 		add(ops.BlobConsistencyLeg(ctx, o.Repo, blobs))
 		return r
 	}

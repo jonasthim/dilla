@@ -1,5 +1,5 @@
-// Package config is dillad's dilla.toml: 17 top-level tables, 8 sub-tables and
-// about 157 keys, decoded in strict mode so a misspelling refuses to start
+// Package config is dillad's dilla.toml: 16 top-level tables, 8 sub-tables and
+// about 155 keys, decoded in strict mode so a misspelling refuses to start
 // rather than running with a default the operator did not choose.
 //
 // interfaces.md §6.4 says "14 top-level tables, 5 sub-tables, 128 keys", but its
@@ -84,7 +84,6 @@ type Config struct {
 	Log          Log          `toml:"log"`
 	Metrics      Metrics      `toml:"metrics"`
 	Doctor       Doctor       `toml:"doctor"`
-	Giphy        Giphy        `toml:"giphy"`
 
 	// turnExplicitlyEnabled records whether the operator wrote turn.enabled,
 	// set by Load from a second, non-strict decode (see write-up in defaults.go).
@@ -357,18 +356,6 @@ type Doctor struct {
 	TURNProbe    bool     `toml:"turn_probe"`
 	UDPProbe     bool     `toml:"udp_probe"`
 }
-
-// Giphy is the optional GIF picker (E8). Search and the media proxy run in dillad, so Giphy sees the
-// server and never a person; the picked GIF is downloaded by the proxy and sent as an ordinary
-// encrypted attachment. An empty api_key is off: the routes answer 404 and the web client shows no
-// GIF button. The key never leaves dillad.
-type Giphy struct {
-	APIKey string `toml:"api_key" comment:"A Giphy API key. Empty (the default) turns GIFs off. Never sent to a client."`
-	Rating string `toml:"rating" comment:"\"g\" | \"pg\" | \"pg-13\" | \"r\": the most mature rating search returns."`
-}
-
-// Enabled is whether GIF search is on.
-func (g Giphy) Enabled() bool { return g.APIKey != "" }
 
 // BehindProxy is the derived predicate. There is no behind_proxy key.
 func (c *Config) BehindProxy() bool { return c.TLS.Mode == TLSModeBehindProxy }

@@ -112,8 +112,8 @@ func TestTheInstanceDocumentAdvertisesWireTwo(t *testing.T) {
 	if err := cborx.Unmarshal(body, &doc); err != nil {
 		t.Fatalf("decode the instance document: %v", err)
 	}
-	if len(doc) != 12 {
-		t.Fatalf("the instance document has %d elements, want 12", len(doc))
+	if len(doc) != 11 {
+		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
 	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{2}) {
 		t.Fatalf("wire_versions = %v, want [2], the hello's list", got)

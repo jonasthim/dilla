@@ -327,12 +327,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	if err := cborx.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
 		t.Fatalf("decode instance: %v", err)
 	}
-	if len(doc) != 12 {
-		t.Fatalf("the instance document has %d elements, want 12", len(doc))
-	}
-	// gifs (E8): 0 until giphy.api_key is set.
-	if doc[11] != uint64(0) {
-		t.Fatalf("gifs = %v with no giphy.api_key, want false", doc[11])
+	if len(doc) != 11 {
+		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check. wire_versions is the hello's

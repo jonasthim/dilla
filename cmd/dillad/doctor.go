@@ -191,7 +191,6 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 	add(doctorTURNLeg(ctx, cfg))
 	add(ops.UDPLeg(*cfg))
 	add(ops.WebAuthnLeg(*cfg))
-	add(ops.GiphyLeg(*cfg))
 	add(doctorBlobsLeg(ctx, cfg, repo))
 
 	return finish()

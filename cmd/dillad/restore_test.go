@@ -643,7 +643,7 @@ func assertServedGeneration(t *testing.T, addr string, want uint64) {
 		t.Fatalf("X-Dilla-Generation = %q, want %d", got, want)
 	}
 	var doc []any
-	if err := cborx.Unmarshal(body, &doc); err != nil || len(doc) != 12 {
+	if err := cborx.Unmarshal(body, &doc); err != nil || len(doc) != 11 {
 		t.Fatalf("decode the discovery document: %d elements, %v", len(doc), err)
 	}
 	if got, ok := doc[4].(uint64); !ok || got != want {
