@@ -876,15 +876,35 @@ describe('late rejoin (Jonas 2026-10-21): a device gone longer than its serverâ€
   });
 
   it('fix round 2: stalls of a background tab (10 s gaps under 60 s apart, connected all along) never add up: a short drop rejoins', async () => {
+    // Flake fix (PR #67): fake timers, so each stall is exactly one 10 s jump of the clock with no tick in it, seen by the
+    // next tick, and the recovery's backoff runs on the same clock; nothing depends on how fast the machine is.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+    const until = async (done: () => boolean) => {
+      for (let i = 0; i < 100 && !done(); i++) await advance(50);
+      expect(done()).toBe(true);
+    };
     const h = harness();
     // A 1-minute timeout, so seven stalls added together (70 s) would pass it.
     h.setAfk(A, { timeoutSeconds: 60 });
-    const general = await h.joined(GENV);
-    for (let i = 0; i < 7; i++) { goneFor(10_000); await wait(1_100); }
-    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
-    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    act(() => h.v.join(GENV));
+    await until(() => h.sessions.length === 1 && h.v.session === h.sessions[0]);
+    await advance(1_000);
+    for (let i = 0; i < 7; i++) {
+      // A stall: the clock moves on with no timer run (a throttled page), then the next tick runs. The second stall is the
+      // longest (12 s, the others 10 s), so it is the gap kept, and at the drop its start is over 60 s back while its end
+      // is not old enough to have settled: its length must count, not its age. (The CI flake: timer jitter made an early
+      // stall the longest, and the absence was read from its start, about 66 s back, against the 60 s timeout.)
+      vi.setSystemTime(Date.now() + (i === 1 ? 12_000 : 10_000));
+      await advance(1_000);
+    }
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    // The first retry is 1 s after the loss; its fresh read and the join run on the same fake clock.
+    await until(() => h.started.length === 2);
+    expect(h.started[1].channelId).toBe(GENV);
     expect(h.v.notice).toBeNull();
-  }, 20_000);
+  });
 
   it('fix round 1 (I1): a suspend the connection stayed up through settles after 60 s: a later drop rejoins by itself', async () => {
     const h = harness();

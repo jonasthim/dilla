@@ -337,12 +337,18 @@ export function useCall(o: UseCallOptions): CallView {
     else if (phase === 'connected' && gap.reconnecting && alive.current !== null) alive.current.gap = null;
   }, []);
   /** When the device was last known to be here, as its connection is found lost: before a suspend the call has not come
-   *  through, else now (a drop while awake is counted from when it is noticed). */
+   *  through, else now (a drop while awake is counted from when it is noticed). A suspend the call went reconnecting
+   *  after counts all of its time since (the reconnect never came through). One still settling (connected all along
+   *  since the wake) counts only its own length: the awake, connected time after it is not an absence, and counting it
+   *  made the kept gap's age, not its length, decide (flake fix, PR #67: a 10 s stall kept from 70 s back read as 70 s). */
   const goneSince = useCallback((): Stamp => {
     tickAlive();
     const a = alive.current;
-    if (a?.gap != null) return a.gap.from;
-    return a?.last ?? stampNow();
+    const gap = a?.gap;
+    if (gap != null && gap.reconnecting) return gap.from;
+    const now = stampNow();
+    if (gap != null) { const len = gapLength(gap); return { perf: now.perf - len, wall: now.wall - len }; }
+    return now;
   }, [tickAlive]);
   /** Sets the absence a recovery of `id` is measured from: a lost connection's (`lost`), kept when the same recovery is
    *  armed again (the session's end and the worker's slice both arm it); none for an upgrade's recovery. */
