@@ -152,11 +152,34 @@ export function GifPicker({
       });
       return best;
     };
+    // Nothing below in this column: the nearest tile below in a column to the right, else the "more" button.
+    const aside = (): number | null => {
+      const here = list[i].getBoundingClientRect();
+      if (here.width === 0) return null;
+      let best: number | null = null;
+      let bestGap = Infinity;
+      list.forEach((el, j) => {
+        const r = el.getBoundingClientRect();
+        const gap = r.top - here.bottom;
+        if ((r.left + r.right) / 2 > here.right && gap >= -1 && gap < bestGap) { best = j; bestGap = gap; }
+      });
+      return best;
+    };
     let next: number;
     switch (e.key) {
       case 'ArrowRight': next = i + 1 < n ? i + 1 : i; break;
       case 'ArrowLeft': next = i - 1 >= 0 ? i - 1 : i; break;
-      case 'ArrowDown': next = nearest(1) ?? i; break;
+      case 'ArrowDown': {
+        const down = nearest(1) ?? aside();
+        if (down === null) {
+          const more = ref.current?.querySelector<HTMLButtonElement>('.d-gif-picker__more');
+          e.preventDefault();
+          if (more) more.focus();
+          return;
+        }
+        next = down;
+        break;
+      }
       case 'ArrowUp': {
         const up = nearest(-1);
         if (up === null) {

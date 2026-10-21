@@ -30,6 +30,11 @@ const see = (visible = true) => act(() => {
     w.cb([{ isIntersecting: visible, intersectionRatio: visible ? 0.6 : 0, target: w.target as Element } as IntersectionObserverEntry], {} as IntersectionObserver);
   }
 });
+/** Report one watcher (by its position among the cards) as visible or not. */
+const seeCard = (n: number, visible: boolean) => act(() => {
+  const w = watchers[n];
+  w.cb([{ isIntersecting: visible, intersectionRatio: visible ? 0.6 : 0, target: w.target as Element } as IntersectionObserverEntry], {} as IntersectionObserver);
+});
 const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
 function setup(attachment: AttachmentSummary, seq: string | null = nextSeq(), opened: 'ok' | 'fail' = 'ok') {
@@ -212,6 +217,66 @@ describe('GIF cards play for five minutes (flow 04)', () => {
     setup(image());
     await tick(0);
     expect(screen.queryByText('GIF')).toBeNull();
+  });
+
+  it('releases a GIF that scrolls out of view, plays it again on re-entry before the deadline, and never after it', async () => {
+    const urls: string[] = [];
+    const revoked: string[] = [];
+    let n = 0;
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, writable: true, value: (b: Blob) => { const u = `blob:${b.type}#${String(n++)}`; urls.push(u); return u; } });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: (u: string) => { revoked.push(u); } });
+    const fake = new FakeClient();
+    const three = [0, 1, 2].map(index => gif({ index, name: `g${String(index)}.gif` }));
+    fake.handler = c => (c.m === 'openAttachment'
+      ? Promise.resolve({ blob: blobOf(c.thumb ? 'image/webp' : 'image/gif'), name: 'x.gif', mime: 'image/gif' }) : Promise.resolve(null));
+    render(<CoreProvider client={fake}><AttachmentList channelId={GEN}
+      item={peerRow(P1, nextSeq(), 'look', { attachments: three })} tabbable onOpenImage={() => undefined} onError={() => undefined} /></CoreProvider>);
+    await tick(0);
+    expect(watchers).toHaveLength(3);
+    for (let k = 0; k < 3; k += 1) seeCard(k, true);
+    await tick(0);
+    expect(fulls(fake)).toHaveLength(3);
+    const playing = (name: string) => pic(name).getAttribute('src')?.startsWith('blob:image/gif') === true;
+    expect([0, 1, 2].map(k => playing(`g${String(k)}.gif`))).toEqual([true, true, true]);
+    const gifUrl = pic('g1.gif').getAttribute('src');
+    seeCard(1, false);
+    await tick(0);
+    expect(playing('g1.gif')).toBe(false);
+    expect(playing('g0.gif') && playing('g2.gif')).toBe(true);
+    expect(revoked).toContain(gifUrl);
+    await tick(60_000);
+    seeCard(1, true);
+    await tick(0);
+    expect(fulls(fake)).toHaveLength(4);
+    expect(playing('g1.gif')).toBe(true);
+    // The deadline is still the first sighting's: 60 s + 0 s in, so 4 minutes remain.
+    await tick(GIF_PLAY_MS - 60_000 - 1000);
+    expect(playing('g1.gif')).toBe(true);
+    await tick(1000);
+    expect(playing('g1.gif')).toBe(false);
+    seeCard(1, false);
+    seeCard(1, true);
+    await tick(0);
+    expect(fulls(fake)).toHaveLength(4);
+    for (const k of [0, 2]) expect(playing(`g${String(k)}.gif`)).toBe(false);
+  });
+
+  it('shows nothing when the full open resolves after the deadline', async () => {
+    const seq = nextSeq();
+    const fake = new FakeClient();
+    let release: (() => void) | undefined;
+    fake.handler = c => {
+      if (c.m !== 'openAttachment') return Promise.resolve(null);
+      if (c.thumb) return Promise.resolve({ blob: blobOf('image/webp'), name: 'dance.gif', mime: 'image/gif' });
+      return new Promise(resolve => { release = () => { resolve({ blob: blobOf('image/gif'), name: 'dance.gif', mime: 'image/gif' }); }; });
+    };
+    render(<CoreProvider client={fake}><AttachmentList channelId={GEN}
+      item={peerRow(P1, seq, 'look', { attachments: [gif()] })} tabbable onOpenImage={() => undefined} onError={() => undefined} /></CoreProvider>);
+    await tick(0);
+    see();
+    await tick(GIF_PLAY_MS + 1000);
+    await act(async () => { release?.(); await Promise.resolve(); });
+    expect(pic()).toHaveAttribute('src', 'blob:image/webp');
   });
 
   it('leaves other files alone', async () => {

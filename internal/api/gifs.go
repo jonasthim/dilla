@@ -733,9 +733,9 @@ func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
 		if !validGifID(d.ID) {
 			continue // never echo an id a client would put in a path
 		}
-		w, h := dims(d.Images.FixedWidth.Width, d.Images.FixedWidth.Height)
+		cw, ch := dims(d.Images.FixedWidth.Width, d.Images.FixedWidth.Height)
 		items = append(items, []any{
-			d.ID, cleanTitle(d.Title), w, h,
+			d.ID, cleanTitle(d.Title), cw, ch,
 			"/v1/communities/" + cid.String() + "/gifs/media/" + d.ID + "?r=preview",
 		})
 	}

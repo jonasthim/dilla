@@ -26,6 +26,6 @@ describe('the grouped row gutter', () => {
   });
   it('shares the body’s line box so the time is on the first line of content', () => {
     expect(gutter).toContain('line-height: calc(var(--text-base) * var(--line-height))');
-    expect(gutter).toContain('padding: 0.125rem 0.125rem 0 0');
+    expect(gutter).toContain('padding: 0.125rem 0.375rem 0 0');
   });
 });

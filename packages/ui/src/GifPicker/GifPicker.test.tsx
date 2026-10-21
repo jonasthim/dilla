@@ -165,5 +165,13 @@ describe('GifPicker', () => {
       await user.keyboard('{ArrowDown}');
       expect(cell(container, 'c3')).toHaveFocus();
     });
+    it('Down from a tile with nothing below goes to the more button', async () => {
+      const user = userEvent.setup();
+      const { container } = picker({ hasMore: true });
+      await user.click(screen.getByRole('searchbox', { name: 'search gifs' }));
+      await user.keyboard('{ArrowDown}{ArrowRight}{ArrowRight}{ArrowDown}');
+      expect(screen.getByRole('button', { name: 'more' })).toHaveFocus();
+      expect(cell(container, 'c3')).not.toHaveFocus();
+    });
   });
 });

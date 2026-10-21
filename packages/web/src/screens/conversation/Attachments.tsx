@@ -114,19 +114,28 @@ function Card(p: { channelId: string; seq: string | null; summary: AttachmentSum
     const key = `${p.channelId}:${seq}:${a.index}`;
     let cancelled = false;
     let timer: number | undefined;
+    let shown = false;
+    let turn = 0;
+    // Leaving the view drops the blob (useBlobUrl revokes it); coming back before the first-sighting deadline opens it again.
+    const leave = () => { shown = false; turn += 1; window.clearTimeout(timer); setFull(null); };
     const watcher = new IntersectionObserver(entries => {
-      if (!entries.some(e => e.isIntersecting && e.intersectionRatio >= 0.5)) return;
-      watcher.disconnect();
+      const last = entries[entries.length - 1] as IntersectionObserverEntry | undefined;
+      if (last === undefined) return;
+      if (!(last.isIntersecting && last.intersectionRatio >= 0.5)) { if (shown) leave(); return; }
+      if (shown) return;
       const now = Date.now();
       const first = gifSeen.get(key) ?? now;
       gifSeen.set(key, first);
-      const left = first + GIF_PLAY_MS - now;
-      if (left <= 0) return;
+      const deadline = first + GIF_PLAY_MS;
+      if (deadline - now <= 0) return;
+      shown = true;
+      const mine = ++turn;
       client.call({ m: 'openAttachment', channelId: p.channelId, seq, index: a.index, thumb: false })
         .then(v => {
-          if (cancelled || !isOpened(v)) return;
+          // A late answer (after the deadline, after leaving the view, or after unmount) never flashes the GIF.
+          if (cancelled || mine !== turn || !isOpened(v) || Date.now() >= deadline) return;
           setFull(v.blob);
-          timer = window.setTimeout(() => setFull(null), Math.max(0, first + GIF_PLAY_MS - Date.now()));
+          timer = window.setTimeout(() => setFull(null), deadline - Date.now());
         })
         .catch(() => undefined);
     }, { threshold: 0.5 });
