@@ -255,6 +255,64 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
     await waitFor(() => expect(g.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED }));
   });
 
+  it('M2: a second tab chooses AFK, so this tab’s call ends with afk.elsewhere, never removed', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    // The PUT from the other tab cuts this device; its op 55 (this user away, since now) lands within the hold.
+    h.cut();
+    await flush();
+    expect(h.v.notice).toBeNull();
+    h.awayMe(A);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' }));
+    expect(h.v.lasting).toBe(t('afk.elsewhere'));
+    await wait(REMOVED_HOLD_MS + 300);
+    expect(h.said).not.toContain(t('voice.removed'));
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('M2: the sweep’s own away mark can land before its pending read; a fresh read decides, and it says afk.moved', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    const base = h.client.handler;
+    let reads = 0;
+    h.client.handler = (c) => {
+      if (c.m !== 'afkRead') return base(c);
+      reads += 1;
+      // The read the page asks for lands what the server holds: the sweep's pending for this device.
+      return new Promise((resolve) => setTimeout(() => {
+        act(() => { h.client.set(`afk:${A}`, { ...afkOf(AFK_CH), pending: true, seq: 7, away: [{ userId: ME.id, since: nowSec() }] }); });
+        resolve(null);
+      }, 300));
+    };
+    h.cut();
+    h.awayMe(A);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED }));
+    expect(reads).toBeGreaterThan(0);
+    expect(h.said).not.toContain(t('afk.elsewhere'));
+    expect(h.v.lasting).toBe(MOVED);
+  });
+
+  it('M2: the away mark already there when the cut lands says afk.elsewhere at once; the sweep’s pending says afk.moved', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    h.awayMe(A);
+    act(() => general.update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' }));
+    // Control: with the sweep's pending for this device the cut is the sweep's.
+    const g = harness();
+    const call = await g.joined(GENV);
+    g.setAfk(A, { pending: true, seq: 4, away: [{ userId: ME.id, since: nowSec() }] });
+    act(() => call.update({ phase: 'ended', error: 'E_REMOVED' }));
+    expect(g.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED });
+    // Control: an away row the call started under is not newer, so a removal says removed.
+    const r = harness();
+    r.awayMe(A, nowSec() - 60);
+    await r.joined(GENV);
+    r.cut();
+    await waitFor(() => expect(r.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+  });
+
   it('pending in another community does not make a cut the sweep’s', async () => {
     const h = harness();
     await h.joined(GENV);
@@ -306,6 +364,8 @@ describe('AW5: a restore or a recovery never rejoins where the person is away (R
     await wait(1_500);
     expect(h.started).toHaveLength(1);
     expect(h.v.recoveryChannelId).toBeNull();
+    // M2: the away row is this user choosing AFK elsewhere while this device was cut off.
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' });
   });
 
   it('reload while away: the restore starts no call', async () => {

@@ -711,6 +711,16 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     expect(rosterOf()).toEqual([`ada:${t('afk.away')}`]);
   });
 
+  it('M2: a call cut because AFK was chosen on another device says so as a calm notice on its stage', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, afkSlice([]));
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }]));
+    const line = await main().findByText(t('afk.elsewhere'));
+    expect(line.closest('[data-kind]')).toHaveAttribute('data-kind', 'info');
+    expect(main().queryByText(t('voice.removed'))).toBeNull();
+  });
+
   it('the away line that replaces go AFK takes its focus (fix round 1, M6)', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
     app.client.publish(`afk:${A}`, afkSlice([]));

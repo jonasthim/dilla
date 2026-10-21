@@ -277,7 +277,10 @@ export function useCall(o: UseCallOptions): CallView {
   /** WEB-AFK: a removal notice held for the sweep's read: its timer and its watch of the `afk:` slice; any join, a later
    *  removal or an unmount drops it. */
   const removedHold = useRef<{ timer: ReturnType<typeof setTimeout>; off: () => void } | null>(null);
+  /** M2: a removal's decision in flight (its fresh read) is dropped by any later hold, join or removal. */
+  const removedSeq = useRef(0);
   const dropHold = useCallback((): void => {
+    removedSeq.current += 1;
     const hold = removedHold.current;
     if (hold === null) return;
     removedHold.current = null;
@@ -326,6 +329,17 @@ export function useCall(o: UseCallOptions): CallView {
   /** AW5: says a removal. The sweep's cut (R-AW6) says `afk.moved` instead, and nothing joins or recovers. While the read
    *  that says pending may still be coming the notice waits (at most REMOVED_HOLD_MS); a pending read that lands meanwhile
    *  says `afk.moved` alone. */
+  /** M2 (Jonas): whether the end of call `id` is a cut because this user chose AFK on another device: an away row of this
+   *  user in its community that the call did not start under (a different since, by the server's clock), with no sweep
+   *  move pending for this device (sweptName is asked first). */
+  const awayElsewhere = useCallback((id: string): boolean => {
+    const cid = communityOf(id);
+    if (cid === null) return false;
+    const since = awaySince(cid);
+    if (since === null) return false;
+    const mark = awayAtAttach.current;
+    return !(mark !== null && mark.channelId === id && mark.since === since);
+  }, [communityOf, awaySince]);
   const sayRemoved = useCallback((id: string, say: () => void): void => {
     dropHold();
     const moved = (name: string): void => {
@@ -333,22 +347,45 @@ export function useCall(o: UseCallOptions): CallView {
       setNotice({ channelId: id, key: 'afk.moved', text });
       if (!live.current.stageShown(id)) setLasting(text);
     };
+    // M2: AFK chosen on another device cut this call: said calmly, never as a removal.
+    const elsewhere = (): void => {
+      setNotice({ channelId: id, key: 'afk.elsewhere' });
+      if (!live.current.stageShown(id)) setLasting(t('afk.elsewhere'));
+    };
     const now = sweptName(id);
     if (now !== null) { moved(now); return; }
     const cid = communityOf(id);
     if (cid === null || !maybeMoved(id)) { say(); return; }
+    // An away mark of this user is the sweep's too (it marks before op 54's re-read lands pending): a fresh read decides
+    // between the sweep (pending for this device) and AFK chosen on another device (none), at most AFK_READ_WAIT_MS.
+    const decide = (): void => {
+      dropHold();
+      const mine = removedSeq.current;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      void Promise.race([
+        client.call({ m: 'afkRead', communityId: cid }).then(() => undefined, () => undefined),
+        new Promise<void>((r) => { timer = setTimeout(r, AFK_READ_WAIT_MS); }),
+      ]).then(() => {
+        clearTimeout(timer);
+        if (mine !== removedSeq.current || !mounted.current) return;
+        const name = sweptName(id);
+        if (name !== null) moved(name);
+        else if (awayElsewhere(id)) elsewhere();
+        else say();
+      });
+    };
+    if (awayElsewhere(id)) { decide(); return; }
     const off = client.subscribe(`afk:${cid}`, () => {
       const name = sweptName(id);
-      if (name === null) return;
-      dropHold();
-      if (mounted.current) moved(name);
+      if (name !== null) { dropHold(); if (mounted.current) moved(name); return; }
+      if (awayElsewhere(id)) decide();
     });
     const timer = setTimeout(() => {
       dropHold();
       if (mounted.current) say();
     }, REMOVED_HOLD_MS);
     removedHold.current = { timer, off };
-  }, [client, communityOf, sweptName, maybeMoved, dropHold]);
+  }, [client, communityOf, sweptName, awayElsewhere, maybeMoved, dropHold]);
   /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
    *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
    *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
@@ -738,10 +775,16 @@ export function useCall(o: UseCallOptions): CallView {
     setRecoverySharing(false);
     if (verdict === 'afk' || !mounted.current) return;
     const swept = verdict === 'away' ? sweptName(id) : null;
+    if (swept === null && verdict === 'away' && awayElsewhere(id)) {
+      // M2: this user chose AFK on another device while this one was cut off.
+      setNotice({ channelId: id, key: 'afk.elsewhere' });
+      if (!live.current.stageShown(id)) setLasting(t('afk.elsewhere'));
+      return;
+    }
     const text = swept !== null ? t('afk.moved', { channel: swept }) : t('voice.disconnected');
     setNotice(swept !== null ? { channelId: id, key: 'afk.moved', text } : { channelId: id, key: 'voice.disconnected' });
     if (!live.current.stageShown(id)) setLasting(text);
-  }, [sweptName]);
+  }, [sweptName, awayElsewhere]);
   const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
     // AW5 (R-AW7), fix round 1 (I1): a web3.9 call in the AFK channel, a call in a community the person is away in, or one
     // whose AFK state cannot be read is not restored.

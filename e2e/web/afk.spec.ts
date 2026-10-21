@@ -573,7 +573,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
 });
 
-test('6. a phone in general is never cut, and its desktop twin cut beside it is not listed away', async ({ playwright, browserName, headless, channel }, testInfo) => {
+test('6. a phone in general is never cut, its desktop twin cut beside it is not listed away, and the phone going AFK cuts the twin calmly', async ({ playwright, browserName, headless, channel }, testInfo) => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   if (bjornAccount === null) throw new Error('Björn has no account');
@@ -615,8 +615,24 @@ test('6. a phone in general is never cut, and its desktop twin cut beside it is 
   expect((await afkSnapshot(ph)).away, 'nobody is away').toBe(0);
   expect((await said(ph)).filter((s) => s.includes(copy('afk.moved', { channel: RENAMED }))), 'the phone is never told of a move').toEqual([]);
 
-  await button(stage(ph.page), 'voice.leave').click();
+  // M2 (Jonas): one device is active at a time. The desktop joins general again beside the phone; the phone then goes AFK
+  // from Idle's page: its own call is left first, and the instance cuts the desktop's, which says so calmly.
+  await voiceRow(b.page, 'general').click();
+  await connected(b.page);
+  await resetSaid(b);
+  cutting = true;
+  await ph.page.evaluate((path) => { window.history.pushState(null, '', path); window.dispatchEvent(new PopStateEvent('popstate')); },
+    `/c/${communityId}/${afkId}`);
+  await button(stage(ph.page), 'afk.go').click();
+  await expect(stage(b.page)).toContainText(copy('afk.elsewhere'), { timeout: WAIT });
+  await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0);
+  await expect(stage(b.page).locator('.d-call-stage__notice')).toHaveAttribute('data-kind', 'info');
+  for (const r of [copy('voice.removed'), copy('voice.removedNotMember')]) await expect(b.page.getByText(r)).toHaveCount(0);
+  await expect(stage(ph.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toHaveCount(0, { timeout: WAIT });
+  await sweepRan(b);
+  cutting = false;
   await closePerson(ph);
   phone = null;
 });

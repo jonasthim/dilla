@@ -13,4 +13,5 @@ export const afk = {
   'afk.youAway': 'You’re away. Join a voice channel, send a message or type to come back.',
   'afk.empty': 'Nobody is away.',
   'afk.failed': 'Could not go AFK. Try again.',
+  'afk.elsewhere': 'You went AFK on another device.',
 };

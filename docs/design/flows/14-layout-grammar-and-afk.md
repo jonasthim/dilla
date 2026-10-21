@@ -11,6 +11,7 @@
 | the AFK channel's page | the away roster as on its row (`afk.away`), or `afk.empty`; the `afk.go` button, which leaves the current call and then marks the person away |
 | the AFK page while away | no button; the line `afk.youAway` |
 | going AFK failed | the line `afk.failed`; the call left stays left |
+| AFK chosen on another device | the call here is cut and its stage (or the region that outlives the dock) says `afk.elsewhere`, a calm notice, never a removal |
 | a phone in voice | never moved |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
@@ -66,6 +67,7 @@
 `afk.youAway='You’re away. Join a voice channel, send a message or type to come back.'`
 `afk.empty='Nobody is away.'`
 `afk.failed='Could not go AFK. Try again.'`
+`afk.elsewhere='You went AFK on another device.'`
 `layout.dock.connected='voice connected'`
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`
