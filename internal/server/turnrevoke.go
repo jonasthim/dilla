@@ -803,6 +803,16 @@ func (r *RelayRevocations) CutOf(device string) (int64, bool) {
 	return at, ok
 }
 
+// RaiseFloor refuses every device's credentials issued at or before at (never ahead of the clock,
+// never lowering the floor), as the process start does. `dillad media` raises it to the moment it
+// binds turn.listen: a cut the API made while it served TURN itself, before the handoff, reached
+// only the API's own revocation state, so no credential older than this relay's listener passes.
+func (r *RelayRevocations) RaiseFloor(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.floor = max(r.floor, min(at.UnixMilli(), r.clk.Now().UnixMilli()))
+}
+
 // RelayRevocationsState is what GET /relay/state reports of the cut map.
 type RelayRevocationsState struct {
 	Cuts  int   `json:"cuts"`

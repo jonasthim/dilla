@@ -419,15 +419,20 @@ func TestTheDoctorNamesTheTURNOwner(t *testing.T) {
 		name         string
 		media, api   *bool // nil: that socket does not answer
 		mediaJSON    bool  // media.json lists turn
+		unacked      int   // api.sock's unacknowledged cuts
 		status       ops.Status
 		says, absent string
 	}{
-		{"dilla-media serves", ptr(true), ptr(false), true, ops.Green, "served by dilla-media", ""},
-		{"the API serves", ptr(false), ptr(true), false, ops.Green, "served by the API", ""},
-		{"both serve", ptr(true), ptr(true), true, ops.Red, "both dilla-media and the API", ""},
-		{"neither serves", ptr(false), ptr(false), false, ops.Red, "neither process", ""},
-		{"no sockets, media.json lists turn", nil, nil, true, ops.Green, "served by dilla-media", "did not answer; media.json says turn=false"},
-		{"no sockets, no turn in media.json", nil, nil, false, ops.Green, "served by the API", ""},
+		{"dilla-media serves", ptr(true), ptr(false), true, 0, ops.Green, "served by dilla-media", "not yet acknowledged"},
+		{"the API serves", ptr(false), ptr(true), false, 0, ops.Green, "served by the API", ""},
+		{"both serve", ptr(true), ptr(true), true, 0, ops.Red, "both dilla-media and the API", ""},
+		{"neither serves", ptr(false), ptr(false), false, 0, ops.Red, "neither process", ""},
+		// Review fix 2: dilla-media serving TURN without api.sock is red, not inferred.
+		{"dilla-media serves and api.sock does not answer", ptr(true), nil, true, 0, ops.Red, "does not answer on api.sock", ""},
+		{"no sockets, media.json lists turn", nil, nil, true, 0, ops.Red, "does not answer on api.sock", ""},
+		{"no sockets, no turn in media.json", nil, nil, false, 0, ops.Green, "served by the API", ""},
+		// Review fix 3: cuts dilla-media has not acknowledged are named, yellow.
+		{"unacknowledged cuts", ptr(true), ptr(false), true, 3, ops.Yellow, "3 cuts not yet acknowledged by dilla-media", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := cfgFor(t)
@@ -440,7 +445,7 @@ func TestTheDoctorNamesTheTURNOwner(t *testing.T) {
 				serveState(t, cfg.Instance.DataDir, server.MediaSocketName, server.RelayState{Owner: "media", Serving: *tc.media})
 			}
 			if tc.api != nil {
-				serveState(t, cfg.Instance.DataDir, server.APISocketName, server.RelayState{Owner: "api", Serving: *tc.api})
+				serveState(t, cfg.Instance.DataDir, server.APISocketName, server.RelayState{Owner: "api", Serving: *tc.api, Unacked: tc.unacked})
 			}
 			leg := doctorTURNLeg(t.Context(), cfg)
 			if leg.Status != tc.status || !strings.Contains(leg.Detail, tc.says) || (tc.absent != "" && strings.Contains(leg.Detail, tc.absent)) {
@@ -451,3 +456,113 @@ func TestTheDoctorNamesTheTURNOwner(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// Review fix 2: api.sock is required while dilla-media serves TURN — a bind failure ends serve
+// with exit 69, which systemd retries — and optional otherwise (logged, serve goes on).
+func TestAnAPISocketThatWillNotBindEndsServeWhenDillaMediaServesTURN(t *testing.T) {
+	cfg := sidecarTURNConfig(t)
+	open := shortSocketDir(t)
+	if err := os.Chmod(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Instance.DataDir = open // group and world may enter: api.sock is refused there
+	ln, err := listenAPISocket(t.Context(), cfg, turnPlan{media: true}, slog.New(slog.DiscardHandler))
+	if code, ok := exitCode(err); ln != nil || !ok || code != exit.Unavailable {
+		t.Fatalf("plan.media: ln %v, err %v, want exit 69", ln, err)
+	}
+	var logs bytes.Buffer
+	ln, err = listenAPISocket(t.Context(), cfg, turnPlan{listen: true}, slog.New(slog.NewTextHandler(&logs, nil)))
+	if ln != nil || err != nil || !strings.Contains(logs.String(), "api.sock is not served") {
+		t.Fatalf("plan.listen: ln %v, err %v, log %q; want nil, nil and an ERROR", ln, err, logs.String())
+	}
+	if err := os.Chmod(open, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err = listenAPISocket(t.Context(), cfg, turnPlan{media: true}, slog.New(slog.DiscardHandler))
+	if err != nil || ln == nil {
+		t.Fatalf("a 0700 state directory: %v", err)
+	}
+	_ = ln.Close()
+}
+
+// allocatePlain allocates a relay over plain TCP at addr with the given credential.
+func allocatePlain(t *testing.T, addr, realm, user, pass string) error {
+	t.Helper()
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		return err
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	tc, err := turn.NewClient(&turn.ClientConfig{TURNServerAddr: addr, Username: user, Password: pass, Realm: realm,
+		Conn: turn.NewSTUNConn(conn), RTO: 500 * time.Millisecond})
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	defer tc.Close()
+	if err := tc.Listen(); err != nil {
+		return err
+	}
+	relay, err := tc.Allocate()
+	if err != nil {
+		return err
+	}
+	return relay.Close()
+}
+
+// Review fix 1: cuts made while the API served TURN itself (plan.listen) never reach dilla-media,
+// which started before them and binds turn.listen only at the handoff. Its floor is raised to its
+// bind time, so a credential minted before a cut the API made then is refused at the media relay
+// after the handoff; a credential minted after the bind allocates.
+func TestACutMadeWhileTheAPIServedTURNHoldsAcrossTheHandoff(t *testing.T) {
+	cfg := sidecarTURNConfig(t)
+	cfg.Instance.DataDir = shortSocketDir(t)
+	cfg.LiveKit.NodeIP, cfg.LiveKit.UDPPort = "127.0.0.1", freeUDPPort(t)
+	secretFile := filepath.Join(t.TempDir(), "turn.secret")
+	if err := os.WriteFile(secretFile, []byte(strings.Repeat("t", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.TURN.SharedSecretFile, cfg.TURN.RelayIP, cfg.TURN.Realm = secretFile, "127.0.0.1", "chat.example"
+	secret, _ := ops.ReadSecret(secretFile)
+
+	// dilla-media starts while the API holds turn.listen.
+	held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", cfg.TURN.Listen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := newMediaTURN(t.Context(), cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("newMediaTURN: %v", err)
+	}
+	t.Cleanup(m.close)
+	if err := m.bind(t.Context()); err == nil {
+		t.Fatal("the media relay bound a port the API holds")
+	}
+
+	// The API, serving TURN itself, mints a credential for dev and then cuts dev; the cut lives
+	// only in the API's own revocation state.
+	api := server.NewRelayRevocations(2*time.Hour, clock.System()).WithCredentialTTL(time.Hour)
+	dev := id.New()
+	time.Sleep(2 * time.Millisecond)
+	issued, wait := api.Mint(dev, time.Now())
+	if wait > 0 {
+		t.Fatal("mint refused")
+	}
+	user, pass := server.TURNCredential(secret, dev, time.Hour, issued)
+	time.Sleep(2 * time.Millisecond)
+	api.Revoke(dev, time.Now())
+
+	// The handoff: the API lets go, dilla-media binds.
+	_ = held.Close()
+	if err := m.bind(t.Context()); err != nil {
+		t.Fatalf("bind after the API let go: %v", err)
+	}
+	if err := allocatePlain(t, cfg.TURN.Listen, cfg.TURN.Realm, user, pass); err == nil {
+		t.Fatal("a credential minted before a cut the API made while it served TURN allocated at dilla-media after the handoff")
+	}
+	time.Sleep(2 * time.Millisecond)
+	fresh, fpass := server.TURNCredential(secret, id.New(), time.Hour, time.Now())
+	if err := allocatePlain(t, cfg.TURN.Listen, cfg.TURN.Realm, fresh, fpass); err != nil {
+		t.Fatalf("a credential minted after the bind was refused: %v", err)
+	}
+}

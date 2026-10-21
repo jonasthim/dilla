@@ -295,8 +295,23 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	var relayStarted atomic.Pointer[server.TURN]
 	fd.started = &relayStarted
 	var callRelay api.RelayRevoker = relayRev
+	// api.sock (R-UP11): dilla-media's barred lookup and `dillad media --idle`'s recent mints. It is
+	// bound before anything else starts, so a required socket that will not bind ends serve at once.
+	var apiLn net.Listener
+	if cfg.LiveKit.Enabled && cfg.LiveKit.Mode == "sidecar" {
+		if apiLn, err = listenAPISocket(ctx, cfg, plan, log); err != nil {
+			return err
+		}
+	}
+	apiServed := false
+	defer func() {
+		if apiLn != nil && !apiServed {
+			_ = apiLn.Close()
+		}
+	}()
+	var fwd *server.RelayRevoker
 	if plan.media {
-		fwd := server.NewRelayRevoker(relayRev,
+		fwd = server.NewRelayRevoker(relayRev,
 			server.ControlClient(server.ControlSocketPath(cfg.Instance.DataDir, server.MediaSocketName)),
 			max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value()), clock.System(), log)
 		fwdCtx, stopFwd := context.WithCancel(context.Background())
@@ -335,9 +350,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 	webhookServed = true
 	defer stopWebhook()
-	// api.sock (R-UP11): dilla-media's barred lookup and `dillad media --idle`'s recent mints.
-	if cfg.LiveKit.Enabled && cfg.LiveKit.Mode == "sidecar" {
-		defer serveAPISocket(ctx, cfg, srv, relayRev, &relayStarted, log)()
+	if apiLn != nil {
+		apiServed = true
+		defer serveAPISocket(apiLn, cfg, srv, relayRev, fwd, &relayStarted, log)()
 	}
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

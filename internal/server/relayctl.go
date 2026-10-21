@@ -254,6 +254,8 @@ type RelayState struct {
 	Cuts        int    `json:"cuts"`
 	Floor       int64  `json:"floor"`
 	Started     int64  `json:"started"`
+	// Unacked is, on api.sock, how many forwarded cuts dilla-media has not acknowledged yet.
+	Unacked int `json:"unacked"`
 }
 
 // FetchRelayState asks a control socket's GET /relay/state.
@@ -353,7 +355,9 @@ type RelayRevoker struct {
 	sent    map[string]int64
 	unacked map[string]int64
 	up      bool
-	kick    chan struct{}
+	// downWarned is when an unreachable relay was last logged (down).
+	downWarned time.Time
+	kick       chan struct{}
 }
 
 // NewRelayRevoker wraps local, the API's own revocation state, and forwards every cut to the media
@@ -474,16 +478,34 @@ func (r *RelayRevoker) round(ctx context.Context, started *int64) bool {
 }
 
 // down marks the relay unreachable, so the next contact replays, and logs the transition once.
+// A relay that has never answered is logged too: on the first failure, then at most once per
+// downWarnEvery while it stays unreachable.
 func (r *RelayRevoker) down(err error) {
+	now := time.Now()
 	r.mu.Lock()
 	was := r.up
 	r.up = false
 	n := len(r.unacked)
+	quiet := !was && !r.downWarned.IsZero() && now.Sub(r.downWarned) < downWarnEvery
+	if !quiet {
+		r.downWarned = now
+	}
 	r.mu.Unlock()
-	if was {
+	if !quiet {
 		r.log.Warn("the media relay does not answer on media.sock; cut devices are refused (503) until it acknowledges their cuts",
 			"err", err, "unacknowledged", n)
 	}
+}
+
+// downWarnEvery bounds how often an unreachable media relay is logged.
+const downWarnEvery = time.Minute
+
+// UnackedCount is how many cuts the media relay has not acknowledged yet (api.sock's GET
+// /relay/state, the doctor's turn leg).
+func (r *RelayRevoker) UnackedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.unacked)
 }
 
 // replay merges every cut this process holds into the relay, in batches, and acknowledges each

@@ -21,7 +21,8 @@ import (
 // API used to bind, in public mode the opt-in turn.listen with `turns:` over the certificate serve's
 // certmagic keeps, read only.
 //
-// The relay keeps revocation state of its own. Its floor is this process's start: every credential
+// The relay keeps revocation state of its own. Its floor is this process's start, raised to the
+// moment it binds turn.listen (bind): every credential
 // minted before it is refused, so a cut set lost with a restart of this process can never be
 // bypassed (and the restart has ended the calls anyway). The API feeds its cuts over media.sock
 // (POST /relay/cut, and PUT /relay/cuts on every reconnect: a merge), and the relay asks the API
@@ -98,6 +99,11 @@ func (m *mediaTURN) bind(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The floor moves to the bind (it stays at least the process start): cuts the API made while it
+	// held turn.listen, before this handoff, live only in its own memory and are never replayed
+	// here, so every credential issued before this listener existed is refused. Rooms are empty
+	// at a handoff (R-UP4); a client that does relay gets a fresh credential from its next start.
+	m.rev.RaiseFloor(time.Now())
 	switch {
 	case m.cfg.TURN.ProxyProtocol:
 		ln = proxyProtocolListener(ln, m.cfg.Server.TrustedProxyCIDRs)

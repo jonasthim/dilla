@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/server"
 )
@@ -101,26 +103,38 @@ func planTURN(ctx context.Context, cfg *config.Config, log *slog.Logger) turnPla
 	return turnPlan{listen: true}
 }
 
-// serveAPISocket serves api.sock in the state directory (R-UP11): the composition root's routes
-// (dillad.Server.ControlHandler) and GET /relay/state, which says whether this process serves a
-// relay itself (the doctor's owner check). It returns the stop. A socket that cannot be bound is
-// logged at ERROR and serve goes on: dilla-media's barred lookups then fail, which its relay logs
-// and survives (the cut map stays authoritative), and `dillad media --idle` reads busy, so the
-// refresh timer never restarts the SFU on a guess.
-func serveAPISocket(ctx context.Context, cfg *config.Config, srv *dillad.Server, rev *server.RelayRevocations,
-	started *atomic.Pointer[server.TURN], log *slog.Logger) (stop func()) {
+// listenAPISocket binds api.sock in the state directory (R-UP11). When dilla-media serves TURN
+// (plan.media) the socket is required — its relay's barred lookup and `dillad media --idle` depend
+// on it — so a bind failure is an error that ends serve with exit 69, which systemd retries and the
+// operator sees. Otherwise the failure is logged at ERROR and serve goes on without it (nil, nil):
+// `dillad media --idle` then reads busy, so the refresh timer never restarts the SFU on a guess.
+func listenAPISocket(ctx context.Context, cfg *config.Config, plan turnPlan, log *slog.Logger) (net.Listener, error) {
 	path := server.ControlSocketPath(cfg.Instance.DataDir, server.APISocketName)
 	ln, err := server.ListenControl(ctx, path, log)
-	if err != nil {
-		log.Error("api.sock is not served: dilla-media's barred lookups fail and `dillad media --idle` reads busy until it is",
-			"err", err)
-		return func() {}
+	switch {
+	case err == nil:
+		return ln, nil
+	case plan.media:
+		return nil, fmt.Errorf("serve: dilla-media serves TURN and needs api.sock: %w: %w", err, exit.Unavailable)
 	}
+	log.Error("api.sock is not served: `dillad media --idle` reads busy until it is", "err", err)
+	return nil, nil
+}
+
+// serveAPISocket serves api.sock on ln: the composition root's routes
+// (dillad.Server.ControlHandler) and GET /relay/state, which says whether this process serves a
+// relay itself (the doctor's owner check) and how many cuts dilla-media has not acknowledged yet
+// (fwd, nil when the relay is this process's). It returns the stop.
+func serveAPISocket(ln net.Listener, cfg *config.Config, srv *dillad.Server, rev *server.RelayRevocations,
+	fwd *server.RelayRevoker, started *atomic.Pointer[server.TURN], log *slog.Logger) (stop func()) {
 	since := time.Now().UnixMilli()
 	mux := srv.ControlHandler()
 	mux.HandleFunc("GET /relay/state", func(w http.ResponseWriter, _ *http.Request) {
 		cut := rev.State()
 		st := server.RelayState{Owner: "api", Cuts: cut.Cuts, Floor: cut.Floor, Started: since}
+		if fwd != nil {
+			st.Unacked = fwd.UnackedCount()
+		}
 		if t := started.Load(); t != nil {
 			st.Serving, st.Allocations = true, t.AllocationCount()
 			st.Listen = cfg.TURN.Listen

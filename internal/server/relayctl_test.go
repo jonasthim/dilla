@@ -690,6 +690,34 @@ func TestTheControlSocketsFailClosed(t *testing.T) {
 	})
 }
 
+// Review fix 3: a media relay that has never answered is logged from the first failed contact,
+// then at most once a minute, not once per retry; UnackedCount counts the cuts it owes.
+func TestAMediaRelayThatNeverAnsweredIsLoggedOnce(t *testing.T) {
+	dir := stateDir(t)
+	logs := &logBuffer{}
+	local := server.NewRelayRevocations(2*time.Hour, clock.System())
+	rv := server.NewRelayRevoker(local, server.ControlClient(server.ControlSocketPath(dir, server.MediaSocketName)),
+		2*time.Hour, clock.System(), logs.logger())
+	rv.SetPacingForTest(10 * time.Millisecond)
+	rv.Revoke(id.New(), time.Now())
+	rv.Revoke(id.New(), time.Now())
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rv.Run(ctx)
+	}()
+	time.Sleep(300 * time.Millisecond) // dozens of failed rounds
+	cancel()
+	<-done
+	if n := strings.Count(logs.String(), "does not answer on media.sock"); n != 1 {
+		t.Fatalf("the unreachable relay was logged %d times, want once:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "unacknowledged=2") || rv.UnackedCount() != 2 {
+		t.Fatalf("unacknowledged = %d, log %q; want 2", rv.UnackedCount(), logs.String())
+	}
+}
+
 func okHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		server.WriteControlJSON(w, server.RelayState{Owner: "test"})
