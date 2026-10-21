@@ -62,6 +62,61 @@ type Blobs struct {
 	UnrefSince sql.NullInt64
 }
 
+type BotClaims struct {
+	InstallationID id.ID
+	RuntimeID      id.ID
+	ClaimID        id.ID
+	RequestID      id.ID
+	Expires        int64
+}
+
+type BotInstallations struct {
+	ID                   id.ID
+	CommunityID          id.ID
+	RuntimeID            *id.ID
+	UserID               *id.ID
+	DeviceID             *id.ID
+	RoleID               *id.ID
+	State                int64
+	Revision             int64
+	Capabilities         int64
+	ApprovedBy           id.ID
+	ApprovedAt           int64
+	CredentialVerifiedAt sql.NullInt64
+	Created              int64
+	Updated              int64
+	RemovedAt            sql.NullInt64
+}
+
+type BotOperations struct {
+	CommunityID    id.ID
+	RequestID      id.ID
+	InstallationID id.ID
+	ActorKind      int64
+	ActorID        id.ID
+	ActorDevice    *id.ID
+	Operation      int64
+	PayloadHash    []byte
+	ResultCbor     []byte
+	Created        int64
+}
+
+type BotRuntimes struct {
+	ID        id.ID
+	TokenHash []byte
+	Created   int64
+	Rotated   int64
+	RevokedAt sql.NullInt64
+}
+
+type BotSessionBindings struct {
+	TokenHash      []byte
+	InstallationID id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	Created        int64
+}
+
 type ChannelMembers struct {
 	ChannelID id.ID
 	UserID    id.ID

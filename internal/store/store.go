@@ -56,6 +56,11 @@ type Repository interface {
 	OpsBackups
 	// Plan 2 task 16 (P2-D22) — 00011_voice.sql
 	VoiceSessions
+	BotRuntimes
+	BotInstallations
+	BotClaims
+	BotOperations
+	BotSessionBindings
 }
 
 type Instance interface {
@@ -106,6 +111,8 @@ type Accounts interface {
 type Devices interface {
 	CreateDevice(ctx context.Context, d DeviceRow) error
 	GetDevice(ctx context.Context, deviceID id.ID) (DeviceRow, error)
+	// UpdateDeviceCredential replaces only the validated final enrollment credential.
+	UpdateDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte) error
 	ListDevicesByUser(ctx context.Context, userID id.ID) ([]DeviceRow, error)
 	TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error
 	RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error

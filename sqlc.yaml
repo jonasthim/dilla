@@ -40,6 +40,12 @@ sql:
           - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
           - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
           - { column: "*.rp_id",      go_type: { type: "string" } }
+          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.user_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.device_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.role_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_operations.actor_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.approved_by", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           # 2. nullable ids: a `column` override IGNORES nullability, so each is
           #    named explicitly with pointer: true, BEFORE the wildcards.
           - { column: "invites.community_id",
@@ -104,6 +110,12 @@ sql:
           - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
           - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
           - { column: "*.rp_id",      go_type: { type: "string" } }
+          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.user_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.device_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.role_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_operations.actor_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.approved_by", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
           # 1b. the SMALLINT enum columns. §4.2 spells every enum SMALLINT on
           #     Postgres, which sqlc types int16, while the same column is
           #     INTEGER (int64) on SQLite — so the two Querier interfaces would

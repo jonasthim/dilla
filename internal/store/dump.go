@@ -102,6 +102,8 @@ var DumpTables = []string{
 	// 016_message_class.sql, appended by dilla web3.7 SB1. Its parents are channels and users; a
 	// restore that dropped it would reset every end-to-end encrypted channel's slow mode.
 	"slowmode_marks",
+	// 020_bot_installations.sql: runtime before installation, then claim/receipt/session children.
+	"bot_runtimes", "bot_installations", "bot_claims", "bot_operations", "bot_session_bindings",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

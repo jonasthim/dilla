@@ -14,6 +14,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/postgres"
 	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
@@ -224,6 +225,40 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	srcDB, srcDSN := open()
 	src := postgres.New(srcDB)
+	owner := seedUser(ctx, t, src)
+	community := store.CommunityRow{ID: id.New(), Owner: owner.ID, Name: "bot backup", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: 1}
+	if err := src.CreateCommunity(ctx, community); err != nil {
+		t.Fatalf("CreateCommunity: %v", err)
+	}
+	runtimeRow := store.BotRuntimeRow{ID: id.New(), TokenHash: bytes.Repeat([]byte{0xa5}, 32), Created: 1, Rotated: 2}
+	if err := src.CreateBotRuntime(ctx, runtimeRow); err != nil {
+		t.Fatalf("CreateBotRuntime: %v", err)
+	}
+	device := store.DeviceRow{ID: id.New(), UserID: owner.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: 1, LastSeen: 1}
+	if err := src.CreateDevice(ctx, device); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	rid, uid, did := runtimeRow.ID, owner.ID, device.ID
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: community.ID, RuntimeID: &rid, UserID: &uid, DeviceID: &did, State: store.BotInstallationEnrolling, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: 1, Created: 1, Updated: 1}
+	if err := src.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatalf("CreateBotInstallation: %v", err)
+	}
+	claim := store.BotClaimRow{InstallationID: installation.ID, RuntimeID: runtimeRow.ID, ClaimID: id.New(), RequestID: id.New(), Expires: 100}
+	if err := src.PutBotClaim(ctx, claim); err != nil {
+		t.Fatalf("PutBotClaim: %v", err)
+	}
+	operation := store.BotOperationRow{CommunityID: community.ID, RequestID: id.New(), InstallationID: installation.ID, ActorKind: 1, ActorID: runtimeRow.ID, Operation: 5, PayloadHash: make([]byte, 32), ResultCBOR: []byte{0x80}, Created: 2}
+	if err := src.CreateBotOperation(ctx, operation); err != nil {
+		t.Fatalf("CreateBotOperation: %v", err)
+	}
+	tokenHash := bytes.Repeat([]byte{0x33}, 32)
+	if err := src.CreateSession(ctx, store.SessionRow{TokenHash: tokenHash, DeviceID: device.ID, UserID: owner.ID, Scope: 0, Tier: 0, Created: 1, Expires: 100, IdleExpires: 100}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	binding := store.BotSessionBindingRow{TokenHash: tokenHash, InstallationID: installation.ID, UserID: owner.ID, DeviceID: device.ID, Created: 2}
+	if err := src.CreateBotSessionBinding(ctx, binding); err != nil {
+		t.Fatalf("CreateBotSessionBinding: %v", err)
+	}
 	g := seedGroup(ctx, t, src, 1)
 	zero := uint8(0)
 	for seq, class := range map[uint64]*uint8{1: &zero, 2: nil} {
@@ -243,6 +278,21 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 		t.Fatalf("LoadPostgres: %v", err)
 	}
 	dst := postgres.New(dstDB)
+	if got, err := dst.GetBotRuntime(ctx, runtimeRow.ID); err != nil || !bytes.Equal(got.TokenHash, runtimeRow.TokenHash) {
+		t.Fatalf("restored bot runtime: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotInstallation(ctx, installation.ID); err != nil || got.UserID == nil || *got.UserID != owner.ID {
+		t.Fatalf("restored installation: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotClaim(ctx, installation.ID); err != nil || got.ClaimID != claim.ClaimID {
+		t.Fatalf("restored claim: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotOperation(ctx, community.ID, operation.RequestID); err != nil || !bytes.Equal(got.ResultCBOR, operation.ResultCBOR) {
+		t.Fatalf("restored operation receipt: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotSessionBinding(ctx, tokenHash); err != nil || got.InstallationID != installation.ID {
+		t.Fatalf("restored session binding: %+v %v", got, err)
+	}
 	post, err := dst.GetAppMessage(ctx, g.GroupID, 1)
 	if err != nil || post.Class == nil || *post.Class != 0 {
 		t.Fatalf("restored class-0 row: class %v, %v; want 0", post.Class, err)

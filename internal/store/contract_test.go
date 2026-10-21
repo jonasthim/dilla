@@ -44,7 +44,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
-			"RevokeDevice", "TouchDevice",
+			"RevokeDevice", "TouchDevice", "UpdateDeviceCredential",
 			// dilla-web-2a task 5 (L-SQL-21): the device-list history read (L-HTTP-56) and the
 			// per-user device cap and enrolment rate (L-HTTP-54, Q04).
 			"CountLiveDevicesByUser", "ListDeviceCreationsSince", "ListDeviceListsAfter",
@@ -322,6 +322,12 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
 		// Plan 2 task 16: VoiceSessions joins with 00011_voice.sql (P2-D22).
 		reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(),
+		// Task 4B: bot runtime registrations and durable installation storage.
+		reflect.TypeOf((*store.BotRuntimes)(nil)).Elem(),
+		reflect.TypeOf((*store.BotInstallations)(nil)).Elem(),
+		reflect.TypeOf((*store.BotClaims)(nil)).Elem(),
+		reflect.TypeOf((*store.BotOperations)(nil)).Elem(),
+		reflect.TypeOf((*store.BotSessionBindings)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -367,6 +373,11 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"ReadableSearchHit":    store.ReadableSearchHit{},
 		"ParsedQuery":          store.ParsedQuery{},
 		"Term":                 store.Term{},
+		"BotRuntimeRow":        store.BotRuntimeRow{},
+		"BotInstallationRow":   store.BotInstallationRow{},
+		"BotClaimRow":          store.BotClaimRow{},
+		"BotOperationRow":      store.BotOperationRow{},
+		"BotSessionBindingRow": store.BotSessionBindingRow{},
 	}
 	for name, v := range rows {
 		if k := reflect.TypeOf(v).Kind(); k != reflect.Struct {
