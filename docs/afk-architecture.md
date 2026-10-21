@@ -49,7 +49,8 @@ Away clears, and the server tells everyone who may see the roster, when:
 - the user is **admitted to a call on any device**, in any server or DM;
 - the user **sends a message** (a readable post, an upload into a text channel) or **types**
   (`typing_set` on) in that server;
-- the user's **last gateway connection closes**.
+- the user has had **no gateway connection for 30 continuous seconds** (every tab and device closed or
+  offline). A reload or a short network drop keeps the user away; a second open tab keeps them too.
 
 There is no "leave AFK" action and no route that clears the roster. Away and calls never overlap:
 if a user is away in any server, no device of that user is in any call.
@@ -66,8 +67,8 @@ sequenceDiagram
     Note over Page,GW: The sweep
     Page->>API: POST /afk/activity [source channel]
     API->>API: Record the server receipt time for this device
-    API->>SFU: Cut an idle device from its room
     API->>API: pending = 1 for this device
+    API->>SFU: Cut an idle device from its room
     API->>DB: Mark the user away (skipped if another device is in a call)
     API->>GW: afk_away [community, user, since]
     GW-->>Page: afk_away and community_changed
@@ -78,10 +79,10 @@ sequenceDiagram
     Note over Page,GW: Choosing AFK
     Page->>SFU: Leave its own call
     Page->>API: PUT /afk/away []
-    API->>SFU: Cut every device of the user, in every room
-    API->>API: pending = 2 for each cut device
     API->>DB: Mark the user away
     API->>GW: afk_away [community, user, since]
+    API->>API: pending = 2 for each device in a room, and each admitted in the last 2 min
+    API->>SFU: Cut every device of the user, in every room
     GW-->>Other: afk_away and community_changed
     Other->>Other: Say "You went AFK on another device."
 

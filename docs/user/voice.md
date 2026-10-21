@@ -260,7 +260,8 @@ camera and no media server, and nobody hears anything. The channel instead lists
 - **On another device.** If you choose AFK on one device, your other devices leave their calls and say "You went AFK
   on another device."
 - **To come back**, join a voice channel, send a message or start typing in that server. Closing every tab and device
-  also removes you from the list. There is no separate "leave AFK" button.
+  also removes you from the list, 30 seconds later; reloading the page or a short network drop keeps you away. There
+  is no separate "leave AFK" button.
 
 ## Sounds
 

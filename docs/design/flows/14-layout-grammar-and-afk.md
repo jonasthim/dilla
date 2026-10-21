@@ -13,7 +13,7 @@
 | going AFK failed | the line `afk.failed`; the call left stays left |
 | AFK chosen on another device | the call here is cut and its stage (or the region that outlives the dock) says `afk.elsewhere`, a calm notice, never a removal |
 | a phone in voice | never cut for inactivity |
-| coming back from away | joining any voice channel, sending a message or typing in that community, or closing the last connection; there is no leave-AFK action, and the person is dropped from the roster at once |
+| coming back from away | joining any voice channel, sending a message or typing in that community, or having no connection for 30 seconds (a reload or a short network drop keeps away); there is no leave-AFK action |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
 | the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) that opens one dialog (`layout.add.title`) with two choices (`layout.add.join`, `layout.add.create`) |
