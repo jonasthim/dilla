@@ -220,6 +220,19 @@ export const AFK_READ_WAIT_MS = 5_000;
 /** Fix round 2 (B-M2): the longest an upgrade restore keeps asking for its channel's AFK state: the shell's upgrade
  *  rejoin window. */
 export const RESTORE_WAIT_MS = 120_000;
+/** Late rejoin (Jonas 2026-10-21): a gap between two of the call's liveness ticks (one a second) longer than this is a
+ *  suspend (a closed lid, a sleep); the device has been gone since the tick before it. */
+export const SUSPEND_GAP_MS = 5_000;
+/** A lost connection noticed within this long after a suspend ended counts the suspend as part of the absence (the page
+ *  only notices the dead connection a while after it wakes). */
+export const SUSPEND_RECENT_MS = 60_000;
+
+/** One moment on both of the page's clocks. */
+interface Stamp { perf: number; wall: number }
+const stampNow = (): Stamp => ({ perf: performance.now(), wall: Date.now() });
+/** How long ago `s` was: the larger of the monotonic and the wall clock's answer, since performance.now stops during a
+ *  suspend in some browsers (it is not specified to count it) while the wall clock always moves on. */
+const elapsedSince = (s: Stamp): number => Math.max(performance.now() - s.perf, Date.now() - s.wall);
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -281,6 +294,33 @@ export function useCall(o: UseCallOptions): CallView {
   /** Fix round 3 (B2-M4, B2-n2): a restore's recovery ends as lost at this time (the upgrade's rejoin window); null for
    *  a recovery after a lost connection, which only the join's refusals, a pending reason or the person end. */
   const recoveryUntil = useRef<number | null>(null);
+  /** Late rejoin (Jonas 2026-10-21): since when the device has been gone, for a recovery after a lost connection (null for
+   *  a restore and an upgrade's recovery, which keep RESTORE_WAIT_MS). A recovery gone longer than its community's AFK
+   *  timeout joins nothing. */
+  const recoveryGoneFrom = useRef<Stamp | null>(null);
+  /** The attached call's liveness: its last tick (one a second) and the last suspend found between two ticks. */
+  const alive = useRef<{ last: Stamp; gap: { from: Stamp; to: Stamp } | null } | null>(null);
+  const tickAlive = useCallback((): void => {
+    const a = alive.current;
+    if (a === null) return;
+    if (elapsedSince(a.last) > SUSPEND_GAP_MS) a.gap = { from: a.last, to: stampNow() };
+    a.last = stampNow();
+  }, []);
+  /** When the device was last known to be here, as its connection is found lost: before a suspend that ended just now,
+   *  else now (a drop while awake is counted from when it is noticed). */
+  const goneSince = useCallback((): Stamp => {
+    tickAlive();
+    const a = alive.current;
+    if (a?.gap != null && elapsedSince(a.gap.to) <= SUSPEND_RECENT_MS) return a.gap.from;
+    return a?.last ?? stampNow();
+  }, [tickAlive]);
+  /** Sets the absence a recovery of `id` is measured from: a lost connection's (`lost`), kept when the same recovery is
+   *  armed again (the session's end and the worker's slice both arm it); none for an upgrade's recovery. */
+  const armGoneFrom = useCallback((id: string, lost: boolean): void => {
+    if (!lost) { recoveryGoneFrom.current = null; return; }
+    if (recoveryRef.current === id && recoveryGoneFrom.current !== null) return;
+    recoveryGoneFrom.current = goneSince();
+  }, [goneSince]);
   /** Fix round 1 (I3, N2): the person's choices in order (a join, a restore, AFK); an away mark overtaken is dropped. */
   const intent = useRef(0);
   /** Fix round 1 (I3): the away mark in flight, settled (never rejecting); a join waits for it. */
@@ -516,6 +556,7 @@ export function useCall(o: UseCallOptions): CallView {
           setRecentlyEnded({ channelId: id, camera: cameraBeforeLoss, sharing: sharingBeforeLoss, at: Date.now() });
         }
         if (next.state.error === 'E_DISCONNECTED' || recoverEnded) {
+          armGoneFrom(id, next.state.error === 'E_DISCONNECTED');
           recoveryRef.current = id;
           recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
           recoveryUntil.current = null;
@@ -539,7 +580,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryRef.current === id && recoveryCameraRef.current) {
       void next.setCamera(true).catch(() => undefined);
     }
-  }, [announce, detach, sayRemoved, client, communityOf, reasonCommunity, awaySince]);
+  }, [announce, detach, sayRemoved, client, communityOf, reasonCommunity, awaySince, armGoneFrom]);
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). AW5 (R-AW1): an
    *  AFK channel is never joined; the person's press on one is `goAway` (joinOnly), and nothing else asks for one. */
@@ -769,10 +810,14 @@ export function useCall(o: UseCallOptions): CallView {
    * - 'clear' joins; 'unknown' (the wait ran out, the read failed) skips this attempt (B-I1);
    * - 'afk' (the AFK channel), 'moved' and 'elsewhere' (the pending reason, 1 and 2), and 'away' (an away row since the
    *   call in its own community) join nothing;
-   * - 'gone' (B2-M1): no loaded list or DM holds `id`, or its community is no longer listed: the recovery is over.
+   * - 'gone' (B2-M1): no loaded list or DM holds `id`, or its community is no longer listed: the recovery is over;
+   * - 'leftAway' (late rejoin, Jonas 2026-10-21): a recovery after a lost connection (`goneFrom`) of a community call whose
+   *   device was gone longer than that community's AFK timeout (the fresh read's `timeoutSeconds`) joins nothing. A pending
+   *   reason wins over it. With no timeout (the community has no AFK channel, so its sweep is off) or no read, and for a
+   *   DM call, the recovery goes on as before.
    */
-  const afkFresh = useCallback(async (id: string, mark: { since: number | null } | null)
-    : Promise<'clear' | 'afk' | 'moved' | 'elsewhere' | 'away' | 'gone' | 'unknown'> => {
+  const afkFresh = useCallback(async (id: string, mark: { since: number | null } | null, goneFrom: Stamp | null = null)
+    : Promise<'clear' | 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone' | 'unknown'> => {
     const deadline = Date.now() + AFK_READ_WAIT_MS;
     const isDm = (): boolean => (client.get('dms') ?? []).some((d) => d.id === id);
     const listsLoaded = (): boolean => {
@@ -794,14 +839,21 @@ export function useCall(o: UseCallOptions): CallView {
     if (own !== null && isAfk(id)) return 'afk';
     const cut = cutReason(id);
     if (cut !== null) return cut.reason === 1 ? 'moved' : 'elsewhere';
+    if (own !== null && goneFrom !== null) {
+      const afk = client.get(`afk:${own}`);
+      const timeout = afk != null && afk.channelId !== null && afk.timeoutSeconds > 0 ? afk.timeoutSeconds * 1_000 : null;
+      if (timeout !== null && elapsedSince(goneFrom) > timeout) return 'leftAway';
+    }
     return awayAfter(id, mark) ? 'away' : 'clear';
   }, [client, communityOf, reasonCommunity, readAfk, isAfk, cutReason, awayAfter]);
   /** Fix round 1 (I1), round 3: a restore or a recovery that will not join: the recovery ends and its notice says why:
    *  the pending reason's line ('Moved to AFK', or the calm 'You went AFK on another device.'), else the lost call; the
-   *  AFK channel itself says nothing. */
-  const endRecovery = useCallback((id: string, verdict: 'afk' | 'moved' | 'elsewhere' | 'away' | 'gone') => {
+   *  AFK channel itself says nothing. A device gone longer than the AFK timeout says 'You left the call while away.'; the
+   *  stage's join button joins again as any join. */
+  const endRecovery = useCallback((id: string, verdict: 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone') => {
     recoveryRef.current = null;
     recoveryUntil.current = null;
+    recoveryGoneFrom.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
     setRecoveryCamera(false);
@@ -810,6 +862,11 @@ export function useCall(o: UseCallOptions): CallView {
     if (verdict === 'elsewhere') {
       setNotice({ channelId: id, key: 'afk.elsewhere' });
       if (!live.current.stageShown(id)) setLasting(t('afk.elsewhere'));
+      return;
+    }
+    if (verdict === 'leftAway') {
+      setNotice({ channelId: id, key: 'voice.leftWhileAway' });
+      if (!live.current.stageShown(id)) setLasting(t('voice.leftWhileAway'));
       return;
     }
     const cid = reasonCommunity(id);
@@ -832,6 +889,7 @@ export function useCall(o: UseCallOptions): CallView {
     intent.current += 1;
     recoveryRef.current = id;
     recoveryMark.current = null;
+    recoveryGoneFrom.current = null;
     recoveryUntil.current = Date.now() + RESTORE_WAIT_MS;
     recoveryCameraRef.current = camera;
     setRecoveryChannelId(id);
@@ -1030,6 +1088,7 @@ export function useCall(o: UseCallOptions): CallView {
         setRecentlyEnded({ channelId: id, camera: s.state.camera, sharing: s.state.sharing, at: Date.now() });
       }
       if (phase === 'removed' && (now?.error?.code === 'E_DISCONNECTED' || recoverEnded)) {
+        armGoneFrom(id, now?.error?.code === 'E_DISCONNECTED');
         recoveryRef.current = id;
         recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
         recoveryUntil.current = null;
@@ -1062,7 +1121,15 @@ export function useCall(o: UseCallOptions): CallView {
     } else {
       teardown(s, 'removed');
     }
-  }, [slice, session, client, announce, safely, teardown, sayRemoved]);
+  }, [slice, session, client, announce, safely, teardown, sayRemoved, armGoneFrom]);
+  // Late rejoin (Jonas 2026-10-21): while a call is attached the page ticks once a second, so a suspend (no ticks) shows as
+  // a gap; the last tick is kept after the call is lost, for goneSince.
+  useEffect(() => {
+    if (session === null) return;
+    alive.current = { last: stampNow(), gap: null };
+    const timer = setInterval(tickAlive, 1_000);
+    return () => { clearInterval(timer); };
+  }, [session, tickAlive]);
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
@@ -1089,7 +1156,8 @@ export function useCall(o: UseCallOptions): CallView {
         // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the
         // join's permanent refusals end a recovery, as before. Only the AFK channel or an away answer ends it here.
         // Fix round 3: a pending reason (moved, elsewhere) or a gone channel (B2-M1) ends it too.
-        const verdict = await afkFreshRef.current(recoveryChannelId, recoveryMark.current);
+        // Late rejoin (Jonas 2026-10-21): a device gone longer than its community's AFK timeout ends it too ('leftAway').
+        const verdict = await afkFreshRef.current(recoveryChannelId, recoveryMark.current, recoveryGoneFrom.current);
         if (cancelled || recoveryRef.current !== recoveryChannelId) return;
         if (verdict !== 'clear' && verdict !== 'unknown') { endRecoveryRef.current(recoveryChannelId, verdict); return; }
         if (verdict === 'clear' && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);

@@ -293,6 +293,11 @@ camera and no media server, and nobody hears anything. The channel instead lists
 - **A phone is never disconnected** for being idle.
 - **On another device.** If you choose AFK on one device, your other devices leave their calls and say "You went AFK
   on another device."
+- **Away longer than the timeout.** If your computer loses its connection during a call (the lid closed, the Wi-Fi
+  gone) and comes back after more than the server's inactive timeout, it does not rejoin the call by itself: the
+  channel says "You left the call while away." and **join voice** takes you back in. A shorter drop, such as a Wi-Fi
+  blip or a quick sleep, still rejoins by itself. On a server without an AFK channel, when the AFK settings cannot be
+  read, and in direct-message calls, a lost call keeps trying to rejoin as before.
 - **To come back**, join a voice channel, send a message or start typing in that server. Closing every tab and device
   also removes you from the list, 30 seconds later; reloading the page or a short network drop keeps you away. There
   is no separate "leave AFK" button.
@@ -371,6 +376,7 @@ checks every device again.
 | "You were removed from voice." | Your device was taken out of the call; join again if you can still open the channel |
 | "You were removed from this server, so you left its voice." | The server's owner removed you while you were in its voice; there is nothing to join there any more |
 | "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |
+| "You left the call while away." | Your device was gone (asleep, offline) for longer than the server's inactive timeout, so it did not rejoin by itself; press **join voice** to go back in |
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
 
