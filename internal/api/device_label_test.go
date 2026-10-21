@@ -102,13 +102,24 @@ func TestADeviceLabelIsValidated(t *testing.T) {
 	_, dev, token := seedAPISession(t, deps)
 	path := "/v1/devices/" + dev.ID.String()
 	for name, body := range map[string]any{
-		"empty":              []any{""},
-		"over 64 characters": []any{strings.Repeat("x", 65)},
-		"a control byte":     []any{"bad\x00name"},
-		"a newline":          []any{"two\nlines"},
-		"no element":         []any{},
-		"two elements":       []any{"a", "b"},
-		"a number":           []any{7},
+		"empty":                    []any{""},
+		"over 64 characters":       []any{strings.Repeat("x", 65)},
+		"a control byte":           []any{"bad\x00name"},
+		"a newline":                []any{"two\nlines"},
+		"no element":               []any{},
+		"two elements":             []any{"a", "b"},
+		"a number":                 []any{7},
+		"whitespace only":          []any{"   "},
+		"a right-to-left override": []any{"phone\u202eexe"},
+		"a bidi isolate":           []any{"a\u2066b"},
+		"a right-to-left mark":     []any{"a\u200fb"},
+		"a left-to-right mark":     []any{"a\u200eb"},
+		"a line separator":         []any{"a\u2028b"},
+		"an arabic letter mark":    []any{"a\u061cb"},
+		"a zero-width space":       []any{"a\u200bb"},
+		"a zero-width joiner":      []any{"a\u200db"},
+		"a byte order mark":        []any{"a\ufeffb"},
+		"a word joiner":            []any{"a\u2060b"},
 	} {
 		if rec := cborCall(t, h, http.MethodPatch, path, token, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: PATCH = %d, want 400", name, rec.Code)
@@ -121,6 +132,58 @@ func TestADeviceLabelIsValidated(t *testing.T) {
 	edge := strings.Repeat("é", 64)
 	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{edge}); rec.Code != http.StatusNoContent {
 		t.Fatalf("PATCH of 64 two-byte characters = %d, want 204", rec.Code)
+	}
+}
+
+// The stored form is the trimmed NFC one, the same normalisation display names get.
+func TestADeviceLabelIsStoredTrimmedAndNormalised(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, dev, token := seedAPISession(t, deps)
+	path := "/v1/devices/" + dev.ID.String()
+	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{"  caf\u0065\u0301  "}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != "caf\u00e9" {
+		t.Fatalf("label = %q, want the trimmed NFC %q", got, "caf\u00e9")
+	}
+}
+
+func TestARevokedDeviceCannotBeNamed(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, _, token := seedAPISession(t, deps)
+	sibling := seedDeviceFor(t, deps, user.ID)
+	path := "/v1/devices/" + sibling.String()
+	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{"old phone"}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH of a live sibling = %d, want 204", rec.Code)
+	}
+	if err := deps.Repo.RevokeDevice(t.Context(), sibling, deps.Clock.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	rec := cborCall(t, h, http.MethodPatch, path, token, []any{"new name"})
+	if rec.Code != http.StatusNotFound || refusalCode(t, rec) != "E_NOT_FOUND" {
+		t.Fatalf("PATCH of a revoked device = %d %q, want 404 E_NOT_FOUND", rec.Code, refusalCode(t, rec))
+	}
+	if got := listedLabels(t, h, token)[sibling]; got != "old phone" {
+		t.Fatalf("label of the revoked device = %v, want old phone kept", got)
+	}
+}
+
+// The route is mounted enrolled, not owedOK: a session that still owes a second factor names nothing.
+func TestASessionOwingASecondFactorCannotNameADevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, dev, token := seedAPISession(t, deps)
+	if err := deps.Repo.SetFactorOwed(t.Context(), user.ID, true); err != nil {
+		t.Fatalf("SetFactorOwed: %v", err)
+	}
+	rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+dev.ID.String(), token, []any{"x"})
+	if rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FACTOR_REQUIRED" {
+		t.Fatalf("PATCH as an owed session = %d %q, want 403 E_FACTOR_REQUIRED", rec.Code, refusalCode(t, rec))
+	}
+	if err := deps.Repo.SetFactorOwed(t.Context(), user.ID, false); err != nil {
+		t.Fatalf("SetFactorOwed: %v", err)
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
+		t.Fatalf("label after the refused PATCH = %v, want null", got)
 	}
 }
 

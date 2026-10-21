@@ -305,6 +305,23 @@ func TestSetDeviceLabelIsOwnerOnlyAndRoundTrips(t *testing.T) {
 			if got, _ := repo.GetDevice(ctx, did); got.Label != nil {
 				t.Fatalf("label after clearing = %v, want nil", got.Label)
 			}
+			// A removed device keeps the name it had and takes no new one.
+			if err := repo.SetDeviceLabel(ctx, owner, did, &label); err != nil {
+				t.Fatalf("naming again: %v", err)
+			}
+			if err := repo.RevokeDevice(ctx, did, 200); err != nil {
+				t.Fatalf("RevokeDevice: %v", err)
+			}
+			renamed := "renamed after removal"
+			if err := repo.SetDeviceLabel(ctx, owner, did, &renamed); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("SetDeviceLabel on a revoked device = %v, want ErrNotFound", err)
+			}
+			if err := repo.SetDeviceLabel(ctx, owner, did, nil); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("clearing a revoked device = %v, want ErrNotFound", err)
+			}
+			if got, _ := repo.GetDevice(ctx, did); got.Label == nil || *got.Label != label {
+				t.Fatalf("label of a revoked device = %v, want %q kept", got.Label, label)
+			}
 		})
 	}
 }

@@ -9,7 +9,7 @@ SELECT * FROM devices WHERE id = ?;
 SELECT * FROM devices WHERE user_id = ? ORDER BY created;
 
 -- name: SetDeviceLabel :execrows
-UPDATE devices SET label = sqlc.narg(label) WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
+UPDATE devices SET label = sqlc.narg(label) WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
 
 -- name: TouchDevice :exec
 UPDATE devices SET last_seen = ? WHERE id = ?;

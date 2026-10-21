@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -137,12 +136,26 @@ type patchDeviceRequest struct {
 	Label *string
 }
 
-// validDeviceLabel reports whether s is 1..64 characters of valid UTF-8 with no control character.
-func validDeviceLabel(s string) bool {
-	if !utf8.ValidString(s) || utf8.RuneCountInString(s) < 1 || utf8.RuneCountInString(s) > maxDeviceLabel {
-		return false
+// normalizeDeviceLabel is the stored form of a device name: trimmed, NFC, 1..64 characters, with
+// the display-name rule (auth.NormalizeDisplay: no control or bidi character) plus the invisible
+// characters a name could hide behind: zero-width characters, the Arabic letter mark and the line
+// and paragraph separators. A name that is empty once trimmed is refused; clearing is null.
+func normalizeDeviceLabel(s string) (string, error) {
+	out, err := auth.NormalizeDisplay(strings.TrimSpace(s))
+	if err != nil {
+		return "", err
 	}
-	return !strings.ContainsFunc(s, unicode.IsControl)
+	out = strings.TrimSpace(out)
+	if out == "" || !utf8.ValidString(out) {
+		return "", auth.ErrDisplayControl
+	}
+	for _, r := range out {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u061c', '\u2028', '\u2029':
+			return "", auth.ErrDisplayControl
+		}
+	}
+	return out, nil
 }
 
 // PatchDevice is PATCH /v1/devices/{device_id}: [label|null] → 204. It names (or, with null,
@@ -166,9 +179,13 @@ func (d Deps) PatchDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if body.Label != nil && !validDeviceLabel(*body.Label) {
-		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "label must be 1 to %d characters with no control characters, or null", maxDeviceLabel))
-		return
+	if body.Label != nil {
+		label, err := normalizeDeviceLabel(*body.Label)
+		if err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "label must be 1 to %d characters with no control, bidi or zero-width character, or null", maxDeviceLabel))
+			return
+		}
+		body.Label = &label
 	}
 	if err := d.Repo.SetDeviceLabel(r.Context(), sess.UserID, deviceID, body.Label); err != nil {
 		server.WriteError(w, d.storeError(r, err))

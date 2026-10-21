@@ -299,7 +299,7 @@ func (q *Queries) RevokeDevice(ctx context.Context, arg RevokeDeviceParams) erro
 }
 
 const setDeviceLabel = `-- name: SetDeviceLabel :execrows
-UPDATE devices SET label = ?1 WHERE id = ?2 AND user_id = ?3
+UPDATE devices SET label = ?1 WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL
 `
 
 type SetDeviceLabelParams struct {
