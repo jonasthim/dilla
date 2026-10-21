@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -326,6 +327,10 @@ func (h *Groups) tree(w http.ResponseWriter, r *http.Request) {
 // directions. A non-ds error is returned unchanged, and WriteError turns it into a 500 with an
 // empty detail.
 func dsError(err error) error {
+	var upgrade *capability.UpgradeRequired
+	if errors.As(err, &upgrade) {
+		return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+	}
 	var e *ds.Error
 	if !errors.As(err, &e) {
 		return err

@@ -118,6 +118,12 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 	if err := d.checkRegisteredLeaf(ctx, group, r.Session, state); err != nil {
 		return RegisterResult{}, err
 	}
+	// The wire gate uses the binding proved against the signed GroupInfo above and runs only after
+	// the target and registrar ACL have succeeded. Interactions require wire 3 even though their
+	// bindings intentionally carry no community id. This remains before the first persistent write.
+	if err := d.opts.BotCapability.RequireGroup(ctx, r.Session.WireVersion, binding.Kind, binding.CommunityID); err != nil {
+		return RegisterResult{}, err
+	}
 
 	row := store.GroupRow{
 		GroupID: r.GroupID,
@@ -510,6 +516,22 @@ type GroupInfo struct {
 // communities. protocol/02 requires a device session on every endpoint in the document and the
 // ACL on top.
 func (d *DS) requireMember(ctx context.Context, groupID id.ID, session Session) error {
+	if err := d.requireMemberOnly(ctx, groupID, session); err != nil {
+		return err
+	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	return d.requireGroupCapability(ctx, session, row)
+}
+
+// requireMemberOnly answers membership without revealing the group, and is kept separate from
+// the capability gate so reader-ACL fallback can establish authority before returning E_VERSION.
+func (d *DS) requireMemberOnly(ctx context.Context, groupID id.ID, session Session) error {
 	members, err := d.opts.Store.ListMembers(ctx, groupID)
 	if err != nil {
 		return err
@@ -520,6 +542,10 @@ func (d *DS) requireMember(ctx context.Context, groupID id.ID, session Session) 
 		}
 	}
 	return errNotFound("group")
+}
+
+func (d *DS) requireGroupCapability(ctx context.Context, session Session, row store.GroupRow) error {
+	return d.opts.BotCapability.RequireGroup(ctx, session.WireVersion, row.Kind, row.CommunityID)
 }
 
 // refuseQuarantined is invariant 9's flag, READ: a device three distinct reporters have
@@ -553,15 +579,26 @@ func (d *DS) requireReader(ctx context.Context, groupID id.ID, session Session) 
 	if err := d.refuseQuarantined(ctx, session.DeviceID); err != nil {
 		return err
 	}
-	err := d.requireMember(ctx, groupID, session)
-	if err == nil || session.Scope != auth.ScopeEnrolled {
+	err := d.requireMemberOnly(ctx, groupID, session)
+	if err == nil {
+		row, rowErr := d.opts.Store.GetGroup(ctx, groupID)
+		if rowErr != nil {
+			return rowErr
+		}
+		return d.requireGroupCapability(ctx, session, row)
+	}
+	if session.Scope != auth.ScopeEnrolled {
 		return err
 	}
 	ok, aclErr := d.opts.ACL.Eligible(ctx, groupID, session.UserID)
 	if aclErr != nil || !ok {
 		return err
 	}
-	return nil
+	row, rowErr := d.opts.Store.GetGroup(ctx, groupID)
+	if rowErr != nil {
+		return rowErr
+	}
+	return d.requireGroupCapability(ctx, session, row)
 }
 
 func (d *DS) Info(ctx context.Context, groupID id.ID, session Session) (GroupInfo, error) {

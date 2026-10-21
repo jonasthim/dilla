@@ -300,6 +300,11 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		return CommitResult{}, errCommitInvalid("tree_hash",
 			"the rebuilt tree does not match the GroupInfo's tree_hash")
 	}
+	// The authenticated GroupInfo signer and group/tree binding above establish authority before
+	// the compatibility refusal. The gate still runs before any heal state is persisted.
+	if err := d.requireGroupCapability(ctx, s, row); err != nil {
+		return CommitResult{}, err
+	}
 	// A reseeded tree is the member's upload, not the instance's own state: every leaf in it must
 	// be one an Add could have put there (finding G2b). The GroupInfo checks above only prove that
 	// the healer built the tree it claims.

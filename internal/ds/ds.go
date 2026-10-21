@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -191,14 +192,17 @@ func normalisePolicy(p Policy) Policy {
 type Session = auth.Session
 
 type Options struct {
-	Store   store.Repository
-	Wasm    *mlswasi.Runtime
-	Gateway *gateway.Gateway
-	Clock   clock.Clock
-	Log     *slog.Logger
-	Metrics *obs.Metrics
-	Keys    InstanceKeys
-	Policy  Policy
+	Store store.Repository
+	// BotCapability checks the current community bot-installation state for human group
+	// admissions. New defaults it to a repository-backed policy when omitted.
+	BotCapability *capability.Policy
+	Wasm          *mlswasi.Runtime
+	Gateway       *gateway.Gateway
+	Clock         clock.Clock
+	Log           *slog.Logger
+	Metrics       *obs.Metrics
+	Keys          InstanceKeys
+	Policy        Policy
 
 	// The three injected seams interfaces.md §6.2 names. Each has a Plan-1 default, and each
 	// default is the conservative one: the rule runs, against a source that cannot yet answer.
@@ -329,6 +333,9 @@ func New(o Options) (*DS, error) {
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
+	}
+	if o.BotCapability == nil {
+		o.BotCapability = capability.New(o.Store)
 	}
 	o.Policy = normalisePolicy(o.Policy)
 	if o.Channels == nil {

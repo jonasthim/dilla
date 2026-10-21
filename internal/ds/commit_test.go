@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -63,6 +64,53 @@ func TestACommitForAnAlreadyDecidedEpochIsAConflictCarryingTheWinner(t *testing.
 	}
 	if len(dsErr.Proposals) != 1 || !bytes.Equal(dsErr.Proposals[0], ref) {
 		t.Errorf("proposals = %x, want the one outstanding ref %x", dsErr.Proposals, ref)
+	}
+}
+
+func TestWireTwoCannotReceiveStaleEpochWinningCommitForInteractionGroup(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, session := h.mustRegister(t)
+	h.repo.markInteraction(reg.GroupID)
+
+	// The group is at epoch 6; retain the winning commit that a stale epoch 5 request
+	// would otherwise receive in its conflict response.
+	winner := fixtureFile(t, "commits/09.mls")
+	h.appendHandshake(t, reg.GroupID, 1, 6, 1, winner)
+
+	wireTwo := session
+	wireTwo.WireVersion = 2
+	err := h.ds.CheckCommit(ctx, wireTwo, reg.GroupID, 5)
+	var upgrade *capability.UpgradeRequired
+	if !errors.As(err, &upgrade) {
+		t.Fatalf("wire 2 CheckCommit error = %v, want typed upgrade refusal", err)
+	}
+	_, err = h.ds.Commit(ctx, wireTwo, reg.GroupID, ds.CommitRequest{
+		Epoch:     5,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	if !errors.As(err, &upgrade) {
+		t.Fatalf("wire 2 Commit error = %v, want typed upgrade refusal", err)
+	}
+	var wireTwoConflict *ds.Error
+	if errors.As(err, &wireTwoConflict) && (wireTwoConflict.Code == "E_COMMIT_CONFLICT" || len(wireTwoConflict.WinningCommit) != 0) {
+		t.Fatalf("wire 2 received stale-epoch recovery content: %+v", wireTwoConflict)
+	}
+
+	wireThree := session
+	wireThree.WireVersion = 3
+	_, err = h.ds.Commit(ctx, wireThree, reg.GroupID, ds.CommitRequest{
+		Epoch:     5,
+		Commit:    fixtureFile(t, "commits/09.mls"),
+		GroupInfo: dsFixture(t).groupInfo,
+	})
+	var conflict *ds.Error
+	if !errors.As(err, &conflict) || conflict.Code != "E_COMMIT_CONFLICT" {
+		t.Fatalf("wire 3 Commit error = %v, want E_COMMIT_CONFLICT", err)
+	}
+	if !bytes.Equal(conflict.WinningCommit, winner) {
+		t.Fatal("wire 3 conflict must retain the winning commit")
 	}
 }
 

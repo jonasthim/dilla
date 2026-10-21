@@ -4,7 +4,7 @@
 use crate::{TestClient, TestkitError};
 use dilla_core::envelope::{Envelope, EnvelopeType};
 use dilla_core::identity::{Kind, Tier};
-use dilla_core::ids::{InstanceId, MsgId, UserId};
+use dilla_core::ids::{CommunityId, InstanceId, MsgId, UserId};
 use dilla_core::mls::{
     CIPHERSUITE, DILLA_BINDING, DillaBinding, DillaGroup, GroupKind, MAX_ADDS_PER_COMMIT,
     PADDING_SIZE, build_key_package, external_senders, group_context_extensions, leaf_capabilities,
@@ -763,6 +763,41 @@ pub fn gen_registration_groups(
             commit_group_info_hex: None,
         });
     }
+    // A genuinely community-bound text group gives the Go registration path a signed GroupInfo
+    // and tree whose binding carries a non-null community id. Keep these ids fixed and distinct
+    // from the ordinary nil-community registration fixtures so tests can create the matching
+    // community/channel rows without regenerating or changing the existing artifacts.
+    let community_id = [0x6a; 16];
+    let community_target = [0x69; 16];
+    let community_binding = DillaBinding {
+        community_id: Some(CommunityId::from_bytes(community_id)),
+        target_id: community_target,
+        ..binding.clone()
+    };
+    let community_group_id = GroupId::from_slice(&community_target);
+    let community_group = DillaGroup::create(
+        creator.provider(),
+        creator.signer(),
+        creator.credential(),
+        community_group_id.clone(),
+        community_binding.clone(),
+        Some(external_senders(
+            SignaturePublicKey::from(instance.signer().public()),
+            &community_binding.instance_id,
+        )),
+    )?;
+    groups.push(RegistrationGroup {
+        name: "community-one-leaf".to_owned(),
+        group_id_hex: hex(community_group_id.as_slice()),
+        binding_hex: hex(&community_binding.encode()),
+        group_info_hex: hex(&serialize(
+            &community_group.export_group_info(creator.provider(), creator.signer())?,
+        )?),
+        ratchet_tree_hex: hex(&serialize(&community_group.export_ratchet_tree())?),
+        leaves: community_group.member_count(),
+        commit_hex: None,
+        commit_group_info_hex: None,
+    });
     // The creator's own leaf takes OpenMLS's default leaf lifetime (84 days: 28 * 3, openmls-0.9.0
     // key_packages/lifetime.rs), shorter than the 90 days `build_key_package` gives the nameless
     // leaf, and `from_external` validates every leaf's lifetime, so the shorter one is the

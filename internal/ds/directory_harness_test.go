@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -227,10 +228,25 @@ func (h *dsHarness) storeWelcomes(t *testing.T, groupID id.ID, epoch, commitSeq 
 // group's queued Welcome exists at all: `Register` is bound to the committed fixture's own group
 // id, so a test that needs TWO groups cannot get the second one from the fixture.
 func (h *dsHarness) putWelcomeRow(t *testing.T, device, groupID id.ID, epoch uint64, blob []byte) {
+	h.putWelcomeRowKind(t, device, groupID, epoch, blob, 0)
+}
+
+func (h *dsHarness) putWelcomeRowKind(t *testing.T, device, groupID id.ID, epoch uint64, blob []byte, kind uint8) {
 	t.Helper()
 	ctx := context.Background()
 	sum := sha256.Sum256(blob)
 	now := h.clk.Now().Unix()
+	if _, err := h.repo.GetGroup(ctx, groupID); errors.Is(err, store.ErrNotFound) {
+		if err := h.repo.CreateGroup(ctx, store.GroupRow{
+			GroupID: groupID, Binding: []byte{0x80}, Kind: kind, TargetID: groupID,
+			ExternalSenderKeyID: testInstanceKeys(t).ExternalSenderKeyID,
+			E2EEVersion:         1, MediaVersion: 1, PolicyVersion: 1, Created: now,
+		}); err != nil {
+			t.Fatalf("CreateGroup for Welcome fixture: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("GetGroup for Welcome fixture: %v", err)
+	}
 	if err := h.repo.PutWelcomePayload(ctx, store.WelcomePayloadRow{
 		BlobSHA256: sum[:], GroupID: groupID, Epoch: epoch, Blob: blob, Created: now,
 	}); err != nil {

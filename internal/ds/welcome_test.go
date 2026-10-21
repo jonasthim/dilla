@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -222,6 +223,48 @@ func TestWelcomesPagesPastExpiredRowsInsteadOfStrandingTheCursor(t *testing.T) {
 			t.Fatal("an expired Welcome was served")
 		}
 	}
+}
+
+func TestWireTwoFiltersInteractionWelcomesAndRefusesTheirAcknowledgement(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	joiner := h.device(t)
+	blocked, allowed := id.New(), id.New()
+	h.putWelcomeRowKind(t, joiner, blocked, 1, welcomeBlob(0xA1, 96), 3) // interaction groups always need wire 3
+	h.putWelcomeRowKind(t, joiner, allowed, 1, welcomeBlob(0xA2, 96), 2) // pairing remains wire-2 capable
+	session := h.sessionOf(t, joiner)
+	session.WireVersion = 2
+
+	rows, err := h.ds.Welcomes(ctx, session, 0, 16)
+	if err != nil {
+		t.Fatalf("Welcomes: %v", err)
+	}
+	if len(rows) != 1 || rows[0].GroupID != allowed {
+		t.Fatalf("wire 2 received welcome groups %v, want only pairing group %s", welcomeGroups(rows), allowed)
+	}
+
+	blockedID := h.welcomeIDOf(t, joiner, blocked)
+	var upgrade *capability.UpgradeRequired
+	if err := h.ds.AckWelcome(ctx, session, blockedID); !errors.As(err, &upgrade) {
+		t.Fatalf("AckWelcome for interaction group = %v, want E_VERSION", err)
+	}
+	stored, err := h.repo.ListWelcomes(ctx, joiner, 0, 16)
+	if err != nil {
+		t.Fatalf("ListWelcomes after refused ack: %v", err)
+	}
+	for _, row := range stored {
+		if row.GroupID == blocked && row.DeliveredAt != nil {
+			t.Fatal("refused acknowledgement marked the filtered Welcome delivered")
+		}
+	}
+}
+
+func welcomeGroups(rows []store.WelcomeFull) []id.ID {
+	groups := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		groups = append(groups, row.GroupID)
+	}
+	return groups
 }
 
 // The same stranding, on the other filter: a provisional session sees only its pairing group's

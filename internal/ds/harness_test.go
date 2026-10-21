@@ -364,7 +364,9 @@ type failingRepo struct {
 	// calls marks groups the store reports as call groups (kind 1). The committed fixture is a text
 	// group, and the call-group rules — the 30 s TTL, the re-drive, the call sweep, the evictor — are
 	// keyed on GroupRow.Kind; the override is the only way to reach them with real MLS state.
-	calls *sync.Map
+	calls        *sync.Map
+	interactions sync.Map
+	communities  sync.Map
 	// openGroupPages counts ListOpenGroups calls: the call sweeper's per-tick work must not grow with
 	// the number of open groups on the instance.
 	openGroupPages atomic.Int64
@@ -456,10 +458,24 @@ func (r *failingRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupR
 		return store.GroupRow{}, errInjected
 	}
 	row, err := r.Repository.GetGroup(ctx, groupID)
-	if err == nil && r.isCall(groupID) {
-		row.Kind = 1
+	if err == nil {
+		if community, scoped := r.communities.Load(groupID); scoped {
+			cid := community.(id.ID)
+			row.Kind = 0
+			row.CommunityID = &cid
+		} else if _, interaction := r.interactions.Load(groupID); interaction {
+			row.Kind = 3
+		} else if r.isCall(groupID) {
+			row.Kind = 1
+		}
 	}
 	return row, err
+}
+
+func (r *failingRepo) markInteraction(groupID id.ID) { r.interactions.Store(groupID, true) }
+
+func (r *failingRepo) bindCommunity(groupID, communityID id.ID) {
+	r.communities.Store(groupID, communityID)
 }
 
 func (r *failingRepo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {

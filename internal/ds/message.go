@@ -100,6 +100,9 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	if meta.Epoch != row.Epoch {
 		return UploadResult{}, errCommitInvalid("epoch", "the message's epoch is not the group's")
 	}
+	if err := d.requireGroupCapability(ctx, s, row); err != nil {
+		return UploadResult{}, err
+	}
 
 	recvTS := uint64(d.now()) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
 	var out UploadResult

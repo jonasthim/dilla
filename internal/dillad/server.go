@@ -24,6 +24,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	botidentity "github.com/jonasthim/dilla/internal/bot/identity"
 	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -317,16 +318,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps.Presence = presence
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
-		Store:    o.Repo,
-		Wasm:     wasm,
-		Gateway:  gw,
-		Clock:    o.Clock,
-		Log:      o.Log,
-		Metrics:  o.Metrics,
-		Keys:     keys,
-		Policy:   policy,
-		Channels: channels,
-		ACL:      acl,
+		Store:         o.Repo,
+		BotCapability: capability.New(o.Repo),
+		Wasm:          wasm,
+		Gateway:       gw,
+		Clock:         o.Clock,
+		Log:           o.Log,
+		Metrics:       o.Metrics,
+		Keys:          keys,
+		Policy:        policy,
+		Channels:      channels,
+		ACL:           acl,
 		// send_messages and slow mode on end-to-end encrypted posts, by the upload class (web3.7
 		// SB1, protocol/02 § Upload class).
 		PostPolicy: api.PostPolicy{Repo: o.Repo, Resolver: api.NewResolver(o.Repo)},

@@ -72,6 +72,13 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
 		return CommitResult{}, err
 	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if err := d.requireGroupCapability(ctx, s, row); err != nil {
+		return CommitResult{}, err
+	}
 	out, err := d.commitLocked(ctx, s, groupID, CommitRequest{
 		Epoch:     epoch,
 		Commit:    r.ExternalCommit,

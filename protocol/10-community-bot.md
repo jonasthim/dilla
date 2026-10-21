@@ -399,8 +399,10 @@ registration and synchronization, message history and readable-channel message
 operations (including reactions, pins, search and read state), channel attachment
 operations, and community call admission/control/synchronization. DM, pairing,
 account and instance operations with no community binding remain available.
-Publishing one's account KeyPackages is unscoped; a group-bound KeyPackage fetch
-or Welcome is checked against that group's community. Bot interaction groups
+Publishing one's account KeyPackages and fetching a device's public KeyPackage
+remain unscoped directory operations: those requests carry no group binding.
+The subsequent group registration, Add or resync admission and each Welcome are
+checked against the actual group's scope. Bot interaction groups
 retain their existing null-community binding but require wire 3 for registration,
 synchronization and delivery independently, as do bot application endpoints.
 

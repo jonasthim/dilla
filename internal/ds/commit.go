@@ -94,6 +94,12 @@ func (d *DS) commitPreflight(ctx context.Context, s Session, groupID id.ID, epoc
 		if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
 			return store.GroupRow{}, err
 		}
+		// A stale-epoch refusal carries the winning commit and outstanding proposal refs. Those
+		// recovery bytes are part of the scoped group capability, so authorize the negotiated wire
+		// version before reading or returning any conflict metadata.
+		if err := d.requireGroupCapability(ctx, s, row); err != nil {
+			return store.GroupRow{}, err
+		}
 	}
 
 	// (2) one commit per epoch (invariant 3). protocol/02 defines the conflict as "a later one
@@ -915,6 +921,9 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 				seq, err = d.memberProposalAgain(ctx, groupID, row.Epoch, leaf, s.DeviceID, blob, *existing)
 				return err
 			}
+		}
+		if err := d.requireGroupCapability(ctx, s, row); err != nil {
+			return err
 		}
 		ref, detail, err := d.queueMemberProposal(ctx, g, s, groupID, row.Epoch, blob)
 		if err != nil {
