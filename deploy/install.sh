@@ -728,7 +728,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 		die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
 	fi
 	doctor_and_report || exit 1
-	log "restarting the sidecar SFU on the new binary; this ends any call still connected"
+	log "restarting the sidecar SFU on the new binary; this disconnects everyone in a call, and not every client rejoins"
 	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
 	fi
