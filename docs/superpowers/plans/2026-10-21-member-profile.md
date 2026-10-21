@@ -92,5 +92,15 @@ Jonas, 2026-10-21: "when mentioning someone in the chat, it should be clickable 
 - Order: after MP2 (it needs MP2's card wiring in web).
 - Shot: a message with a mention and the card open, desktop 1440 and phone 390, mesh.
 
+### Task MP8 (sonnet): the sidebar splitter runs the full height (ui)
+Jonas, 2026-10-21, on a screenshot where the sidebar's resize line stops above the dock: "shouldnt the draggable border go all the way down?"
+- **The cause:** the splitter (`packages/ui/src/AppShell/Splitter.css:2`, `.d-splitter--sidebar`) is a child of `.d-app-shell__sidebar` (`AppShell.tsx:405`), which is only the grid area `sidebar`. The dock and the user panel sit in the grid area `panel` (`AppShell.css:2`, `"panel panel main"`) below it, so neither the hit area nor the hairline reaches them.
+- **The fix:** the sidebar splitter's hit area and its drawn line span grid rows `sidebar` and `panel` together, from below the banner to the bottom of the shell (above the status bar where there is one). The same column edge, the same 24 px hit area and the same accent line on hover, focus and drag. For example, render the splitter as its own grid child at `grid-column: 2; grid-row: 2 / 4; justify-self: end`, or give the panel the matching right border and extend the splitter. The one drawn hairline must be continuous: no second line, no gap at the panel's top edge.
+- **The aside splitter** stays as it is.
+- **Tests:** a story play in AppShell with a dock and a user panel. It checks that the splitter's bounding box goes from the sidebar's top to the panel's bottom (±1 px), and that `elementFromPoint` at the panel's right edge, 10 px above its bottom, hits the splitter. Show it red, then green. Dragging from the panel's edge resizes the sidebar (pointer events in the play).
+- **Forced colours and keyboard** behaviour unchanged (the existing tests stay green).
+- **Gates:** ui vitest AppShell; check:css; storybook build and test:storybook:ci for AppShell; e2e layout.spec on chromium-web (the splitter grammar).
+- **Shot:** desktop 1440 with a call and the user panel, mesh, the splitter hovered.
+
 ## Release
 Ships after v0.1.0-web3.9.1, with release notes (client only: no schema, store or wire change) and the Homelab deploy.
