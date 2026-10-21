@@ -466,7 +466,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
 | `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id |
-| `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation, claim_id, claim_expires]` |
+| `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation_id, claim_id, claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/ready` | B, joining; completed retry while ready | `[request_id, expected_revision]` | installation |
@@ -488,6 +488,10 @@ a new enrollment. A revoked runtime cannot retrieve results. Operator credential
 rotation replaces the token hash on the same runtime id, invalidates outstanding
 claims and keeps completed operation receipts; the old token immediately fails.
 Rotation therefore preserves recovery without issuing a second bot identity.
+
+The claim response names the installation id (bstr16), not an installation
+snapshot. Claiming does not change the installation state or revision. Runtime
+discovery supplies the current installation tuple after lifecycle changes.
 
 Runtime discovery filters to that runtime's assigned installations and unassigned
 pending installations before applying the page limit. Removed installations are
