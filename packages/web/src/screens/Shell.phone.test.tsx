@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -782,4 +782,61 @@ describe('web3.9 WEB-AFK: a phone is exempt from the AFK move (R5)', () => {
     await new Promise(r => setTimeout(r, 2_500));
     expect(app.client.callsOf('afkActivity')).toHaveLength(2);
   }, 10_000);
+});
+
+/** A desktop window whose one media fact is the pointer: coarse (a touch tablet) or fine (a mouse). */
+function pointer(coarse: boolean) {
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: coarse && query === '(pointer: coarse)', media: query,
+    addEventListener: () => undefined, removeEventListener: () => undefined,
+  })) as unknown as typeof window.matchMedia;
+}
+
+describe('search on a touch tablet, focus return and a server that did not load (E2 review)', () => {
+  it('a fine pointer keeps the desktop server head to the gear alone', async () => {
+    pointer(false);
+    renderVoiceShell({ path: `/c/${A}` });
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const head = gear.closest('.d-channel-list__head') as HTMLElement;
+    expect(within(head).getAllByRole('button')).toEqual([gear]);
+  });
+
+  it('a coarse pointer adds search beside the gear, and it opens search over every conversation', async () => {
+    pointer(true);
+    const { user, client } = renderVoiceShell({ path: `/c/${A}` });
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const head = gear.closest('.d-channel-list__head') as HTMLElement;
+    await user.click(within(head).getByRole('button', { name: t('search.open') }));
+    await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
+  });
+
+  it('closing the palette from a coarse-pointer server head focuses the button, though a click did not move focus', async () => {
+    pointer(true);
+    const { user } = renderVoiceShell({ path: `/c/${A}` });
+    const gear = await screen.findByRole('button', { name: t('admin.open') });
+    const search = within(gear.closest('.d-channel-list__head') as HTMLElement).getByRole('button', { name: t('search.open') });
+    fireEvent.click(search);
+    await screen.findByRole('dialog', { name: t('search.placeholder') });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(search).toHaveFocus());
+  });
+
+  it('closing the palette from the phone Home head focuses the search button, though a click did not move focus', async () => {
+    const { user } = phone({ path: '/dm' });
+    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
+    const search = within(head).getByRole('button', { name: t('search.open') });
+    fireEvent.click(search);
+    await screen.findByRole('dialog', { name: t('search.placeholder') });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(search).toHaveFocus());
+  });
+
+  it('a server whose channels did not load keeps search in the phone list head, and it searches every conversation', async () => {
+    const { user, client } = phone({ path: `/c/${A}`, refuseSelect: 'E_NETWORK' });
+    await screen.findByText(/did not load/);
+    await user.click(screen.getByRole('button', { name: t('search.open') }));
+    await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
+  });
 });

@@ -195,6 +195,8 @@ export interface VoiceHarnessOptions {
   withSettings?: boolean;
   /** The call module fails to load (a lost chunk). */
   loadFails?: boolean;
+  /** selectCommunity refuses with this code (a server whose channels did not load). */
+  refuseSelect?: string;
   /** The session starts with the browser holding call audio back (audioBlocked), or turns so in the tick it attaches. */
   audioBlocked?: 'at-start' | 'same-tick';
 }
@@ -240,12 +242,14 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1), unless a test holds it.
       if (!o.joinLeavesSlice) fake.set('call', callState({ phase: 'in', channelId: command.channelId, callId: command.channelId }));
     }
+    if (command.m === 'selectCommunity' && o.refuseSelect !== undefined) return Promise.reject(refusal({ code: o.refuseSelect }));
     return Promise.resolve(null);
   };
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
-  fake.set(`channels:${A}`, CHANNELS);
+  // A refused selectCommunity leaves the server's channels unloaded (the sidebar says so).
+  if (o.refuseSelect === undefined) fake.set(`channels:${A}`, CHANNELS);
   fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, pending: false });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);
