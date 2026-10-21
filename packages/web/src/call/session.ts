@@ -1308,7 +1308,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
     const readLink = async (): Promise<void> => {
       const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
-      // A subscriber connection LiveKit has not made (nothing subscribed yet, or single-peer-connection mode) receives nothing:
+      // No subscriber connection (LiveKit's default single-peer-connection mode never makes one) means nothing to read there:
       // an empty report, so down is 0. Only a getStats that rejects is "no read" (undefined), which the dock shows as a dash.
       const getSub = pcs?.subscriber?.getStats;
       const [pub, sub] = await Promise.all([
