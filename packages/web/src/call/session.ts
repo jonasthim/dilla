@@ -69,7 +69,7 @@ export interface PageCallState {
   shareAudio: ShareAudioKind | 'device' | null;
   /** FX2: where the share's sound comes from: 'browser' (the tab's or the system's, from getDisplayMedia), the id of an
    *  audio input the person picked ('device' above), or null (no sound, or not sharing). */
-  shareSource: 'browser' | string | null;
+  shareSource: string | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
   noise: NoisePreference | 'on';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
@@ -1194,9 +1194,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       try {
         usable();
         if (screen !== s) throw new PageCallError('E_UNAVAILABLE');
-        const swap = prior?.pub?.track?.replaceTrack;
-        if (prior !== null && prior.pub !== null && swap !== undefined) {
-          try { await swap.call(prior.pub.track, track, true); replaced = true; } catch {
+        const priorTrack = prior?.pub?.track;
+        if (prior !== null && prior.pub !== null && priorTrack?.replaceTrack !== undefined) {
+          try { await priorTrack.replaceTrack(track, true); replaced = true; } catch {
             // N-N2: a throw after the sender took the new capture still counts as replaced (as the mic hand-over reads it).
             replaced = prior.pub.track?.mediaStreamTrack === track;
           }

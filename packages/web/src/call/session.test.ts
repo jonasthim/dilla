@@ -3337,10 +3337,11 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
       const call = await sharing(f);
       expect(call.state.shareSource).toBeNull();
       const d = deviceTrack();
-      f.deps.media.getUserMedia = vi.fn(async () => d.stream);
+      const gum = vi.fn(async () => d.stream);
+      f.deps.media.getUserMedia = gum;
       f.room.localParticipant.publishTrack.mockClear();
       await call.setShareSource('monitor-1');
-      expect(f.deps.media.getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'monitor-1' },
+      expect(gum).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'monitor-1' },
         echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 } });
       expect(sources(f)).toEqual(['screen_share_audio']);
       expect(f.room.localParticipant.publishTrack.mock.calls[0][0]).toBe(d.track);
@@ -3410,9 +3411,10 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
       const f = fakes();
       const call = await sharing(f, 'browser', true);
       expect(call.state.shareSource).toBe('browser');
-      f.deps.media.getUserMedia = vi.fn(async () => deviceTrack().stream);
+      const gum = vi.fn(async () => deviceTrack().stream);
+      f.deps.media.getUserMedia = gum;
       await expect(call.setShareSource('one')).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
-      expect(f.deps.media.getUserMedia).not.toHaveBeenCalled();
+      expect(gum).not.toHaveBeenCalled();
       expect(call.state.shareAudio).toBe('tab');
     });
 
