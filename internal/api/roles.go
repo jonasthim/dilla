@@ -20,7 +20,8 @@ import (
 // moderatorBits are the permissions that make a role a moderation role for the
 // purposes of communities.require_mod_2fa.
 const moderatorBits = PermManageMessages | PermKickMembers | PermBanMembers |
-	PermManageChannels | PermManageRoles | PermManageCommunity | PermAdministrator
+	PermManageChannels | PermManageRoles | PermManageCommunity | PermAdministrator |
+	PermModerateMembers
 
 // Role field bounds (protocol/09 § Roles).
 const (

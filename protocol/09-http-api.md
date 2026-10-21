@@ -1435,6 +1435,12 @@ are stored in a signed 64-bit integer on Postgres. A stored bit outside this tab
 | 21 | `mute_members` | channel |
 | 22 | `move_members` | channel |
 | 23 | `manage_nicknames` | community |
+| 24 | `moderate_members` | community |
+
+`moderate_members` allows warning a member and applying or removing a text timeout. It is a
+community permission, so channel overwrites cannot grant or remove it. In a community that
+requires moderator second factors, a role grant carrying this bit requires the target to hold a
+confirmed TOTP secret or a passkey.
 
 A **community** bit is about the community, not one channel: a channel overwrite can neither grant
 nor remove it. `@everyone` is the role at position 0 and applies to every member; no other role may

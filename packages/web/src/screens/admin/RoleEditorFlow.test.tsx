@@ -119,6 +119,14 @@ describe('RoleEditorFlow edit refusals', () => {
 });
 
 describe('RoleEditorFlow edit', () => {
+  it('shows the localized moderate_members switch in the community-only members group', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: en['roles.new'] }));
+    const control = dialog().getByRole('switch', { name: en['perm.moderate'] });
+    expect(control).toBeInTheDocument();
+    expect(control).not.toHaveAttribute('aria-disabled', 'true');
+    expect(dialog().getByText(en['perm.group.members'])).toBeInTheDocument();
+  });
   it('sends a bit I do not hold unchanged in the mask, neither added nor stripped', async () => {
     const roles = [role(EVERY, '@everyone', 0, { allow: PERM.viewChannel | PERM.pinMessages }),
       role(MODS, 'mods', 1, { allow: PERM.banMembers | PERM.sendMessages })];

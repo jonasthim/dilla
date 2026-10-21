@@ -73,6 +73,47 @@ func TestOverwriteRoutesRoundTrip(t *testing.T) {
 	if ow, _ := e.Repo.ListOverwrites(t.Context(), ch); len(ow) != 0 {
 		t.Fatalf("overwrite survived the delete: %+v", ow)
 	}
+	for _, body := range [][2]uint64{{uint64(api.PermModerateMembers), 0}, {0, uint64(api.PermModerateMembers)}} {
+		if status, reply := e.Do(http.MethodPut, path, ownerTok, []any{body[0], body[1]}); status != http.StatusBadRequest {
+			t.Fatalf("PUT moderate_members overwrite %x/%x = %d (%x), want 400", body[0], body[1], status, reply)
+		}
+	}
+	if ow, _ := e.Repo.ListOverwrites(t.Context(), ch); len(ow) != 0 {
+		t.Fatalf("refused community-bit overwrites were stored: %+v", ow)
+	}
+}
+
+func TestModerateMembersRoleHTTPRoundTrip(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	const want = api.PermModerateMembers
+	roleID := createRole(t, e, cid, ownerTok, "moderator", 5, want)
+	type roleRow struct {
+		_           struct{} `cbor:",toarray"`
+		ID          id.ID
+		Name        string
+		Color       uint64
+		Position    uint64
+		Allow       uint64
+		Deny        uint64
+		Hoist       uint64
+		Mentionable uint64
+	}
+	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/roles", ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET roles = %d (%x)", status, body)
+	}
+	var rows []roleRow
+	mustUnmarshal(t, body, &rows)
+	for _, row := range rows {
+		if row.ID == roleID {
+			if row.Allow != uint64(want) {
+				t.Fatalf("role allow = %#x, want %#x", row.Allow, uint64(want))
+			}
+			return
+		}
+	}
+	t.Fatalf("GET roles omitted created role %s", roleID)
 }
 
 // The two escalation paths a position bound alone does not close: a staffer who
@@ -107,6 +148,56 @@ func TestAStafferCannotMintARoleCarryingBitsTheyDoNotHold(t *testing.T) {
 	if status, _ := e.Do(http.MethodPatch, "/v1/roles/"+low.String(), memberTok,
 		[]any{nil, nil, nil, uint64(api.PermAdministrator), nil, nil, nil}); status != http.StatusForbidden {
 		t.Fatalf("patching in an administrator bit = %d, want 403", status)
+	}
+}
+
+func TestManagerCannotGrantModerateMembersWithoutHoldingIt(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	staff := createRole(t, e, cid, ownerTok, "staff", 10, api.PermViewChannel|api.PermManageRoles)
+	moderator := createRole(t, e, cid, ownerTok, "moderator", 5, api.Bits(1<<24))
+	member, memberTok := e.NewUser("staffer")
+	joinCommunity(t, e, cid, memberTok)
+	grant(t, e, cid, ownerTok, member, staff, http.StatusNoContent)
+	target, targetTok := e.NewUser("target")
+	joinCommunity(t, e, cid, targetTok)
+
+	status, body := e.Do(http.MethodPut, "/v1/communities/"+cid.String()+"/members/"+target.String()+"/roles/"+moderator.String(), memberTok, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("granting moderate_members without holding it = %d, want 403 (%x)", status, body)
+	}
+	if code := e.ErrCode(body); code != "E_FORBIDDEN" {
+		t.Fatalf("code = %s, want E_FORBIDDEN", code)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, target); err != nil || slices.Contains(held, moderator) {
+		t.Fatalf("refused grant changed target roles: %v (%v)", held, err)
+	}
+}
+
+func TestModerateMembersRoleRequiresTargetSecondFactor(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	moderator := createRole(t, e, cid, ownerTok, "moderator", 5, api.Bits(1<<24))
+	actorRole := createRole(t, e, cid, ownerTok, "staff", 10, api.PermViewChannel|api.PermManageRoles|api.Bits(1<<24))
+	actor, actorTok := e.NewUser("staffer")
+	joinCommunity(t, e, cid, actorTok)
+	grant(t, e, cid, ownerTok, actor, actorRole, http.StatusNoContent)
+	target, targetTok := e.NewUser("target")
+	joinCommunity(t, e, cid, targetTok)
+	community, err := e.Repo.GetCommunity(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("GetCommunity: %v", err)
+	}
+	if err := e.Repo.UpdateCommunityMeta(t.Context(), cid, community.Name, community.MinAccountAgeSeconds, 1); err != nil {
+		t.Fatalf("enable require_mod_2fa: %v", err)
+	}
+
+	status, body := e.Do(http.MethodPut, "/v1/communities/"+cid.String()+"/members/"+target.String()+"/roles/"+moderator.String(), actorTok, nil)
+	if code := e.ErrCode(body); status != http.StatusForbidden || code != "E_TARGET_NO_FACTOR" {
+		t.Fatalf("granting moderate_members without target factor = %d %s, want 403 E_TARGET_NO_FACTOR", status, code)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, target); err != nil || slices.Contains(held, moderator) {
+		t.Fatalf("refused grant changed target roles: %v (%v)", held, err)
 	}
 }
 

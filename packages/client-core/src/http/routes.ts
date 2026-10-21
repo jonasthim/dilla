@@ -95,11 +95,11 @@ export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Arr
 
 // ---- wave 2a: roles and private channels (flow 09) ----
 /** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
- *  the 24 permission bits, and overwrites in one channel create. */
+ *  the 25 permission bits, and overwrites in one channel create. */
 export const OVERWRITES_MAX = 10_000;
 export const ROLE_NAME_MAX_BYTES = 100;
 export const ROLE_COLOR_MAX = 0xffffff;
-export const PERM_ALL = 0xffffff;
+export const PERM_ALL = 0x1ffffff;
 export const OVERWRITES_PER_CREATE_MAX = 100;
 export interface OverwriteRow { channelId: Uint8Array; kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
 export interface NewOverwrite { kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
@@ -239,7 +239,7 @@ function flag(v: CborValue): boolean {
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
   return n === 1;
 }
-/** A permission word as the instance stores it: only the 24 defined bits are kept (a 64-bit word may carry more). */
+/** A permission word as the instance stores it: only the 25 defined bits are kept (a 64-bit word may carry more). */
 function bits(v: CborValue): number {
   return Number(u64(v) & BigInt(PERM_ALL));
 }

@@ -59,8 +59,8 @@ func TestPermissionVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Cases) != 20 {
-		t.Fatalf("cases = %d, want 20", len(v.Cases))
+	if len(v.Cases) != 23 {
+		t.Fatalf("cases = %d, want 23", len(v.Cases))
 	}
 	consts := map[string]api.Bits{
 		"view_channel": api.PermViewChannel, "send_messages": api.PermSendMessages,
@@ -74,6 +74,7 @@ func TestPermissionVectors(t *testing.T) {
 		"mention_everyone": api.PermMentionEveryone, "bypass_slowmode": api.PermBypassSlowmode,
 		"administrator": api.PermAdministrator, "mute_members": api.PermMuteMembers,
 		"move_members": api.PermMoveMembers, "manage_nicknames": api.PermManageNicknames,
+		"moderate_members": api.PermModerateMembers,
 	}
 	if len(v.Bits) != len(consts) {
 		t.Fatalf("bits = %d entries, want %d", len(v.Bits), len(consts))

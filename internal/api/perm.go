@@ -44,6 +44,7 @@ const (
 	PermMuteMembers     Bits = 1 << 21
 	PermMoveMembers     Bits = 1 << 22
 	PermManageNicknames Bits = 1 << 23
+	PermModerateMembers Bits = 1 << 24
 
 	// PermAll is every defined bit. A stored value is masked with it on read, so
 	// a bit written by a newer binary is ignored rather than silently granted.
@@ -52,14 +53,15 @@ const (
 		PermVideo | PermScreenShare | PermCreateInvite | PermKickMembers | PermBanMembers |
 		PermManageChannels | PermManageRoles | PermManageCommunity | PermViewAuditLog |
 		PermMentionEveryone | PermBypassSlowmode | PermAdministrator | PermMuteMembers |
-		PermMoveMembers | PermManageNicknames
+		PermMoveMembers | PermManageNicknames | PermModerateMembers
 
 	// communityBits are the permissions a channel overwrite may not touch: they
 	// are about the community, not about one channel, so an overwrite that
 	// removed them would silently disarm moderation in the one channel a
 	// troll controls.
 	communityBits = PermKickMembers | PermBanMembers | PermManageCommunity |
-		PermManageRoles | PermViewAuditLog | PermAdministrator | PermManageNicknames
+		PermManageRoles | PermViewAuditLog | PermAdministrator | PermManageNicknames |
+		PermModerateMembers
 )
 
 // Has reports whether every bit of want is set in b.

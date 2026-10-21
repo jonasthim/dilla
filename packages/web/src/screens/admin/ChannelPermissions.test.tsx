@@ -6,6 +6,7 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
+import { en } from '../../strings/index.ts';
 import { ChannelPermissions } from './ChannelPermissions.tsx';
 
 const SERVER = 'a1'.repeat(16);
@@ -213,7 +214,7 @@ describe('the channel permissions section', () => {
     expect(disclosure('Players')).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('radiogroup', { name: 'view channels' })).toBeInTheDocument();
     expect(screen.getByRole('radiogroup', { name: 'send messages' })).toBeInTheDocument();
-    for (const hidden of ['kick members', 'ban members', 'manage roles', 'manage server', 'administrator', 'view audit log', 'manage nicknames']) {
+    for (const hidden of ['kick members', 'ban members', 'manage roles', 'manage server', 'administrator', 'view audit log', 'manage nicknames', en['perm.moderate']]) {
       expect(screen.queryByRole('radiogroup', { name: hidden })).toBeNull();
     }
   });
