@@ -82,6 +82,15 @@ export type Command =
   | { m: 'checkpointFiles'; channelId: string }                                          // ready → File[] selected in this channel
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
   | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
+  // E8: the GIF picker. The Giphy key is a per-server setting. The worker holds the session, so it searches, fetches and
+  // saves the key; a GIF crosses back as a Blob and the page sends it with attachFiles, so it is an ordinary attachment,
+  // sealed like any file, and no browser contacts Giphy. The key only ever goes up: no return, slice or error carries it.
+  | { m: 'gifStatus'; communityId: string }                                               // ready → { on, rating }
+  | { m: 'gifSetKey'; communityId: string; key: string }                                  // ready → null (a server manager)
+  | { m: 'gifClearKey'; communityId: string }                                             // ready → null (a server manager)
+  | { m: 'gifSetRating'; communityId: string; rating: 'g' | 'pg' | 'pg-13' | 'r' }        // ready → null (a server manager)
+  | { m: 'gifSearch'; communityId: string; q: string; offset: number }                    // ready → { items: [{ id, title, width, height }], next }
+  | { m: 'gifFetch'; communityId: string; gifId: string; variant: 'preview' | 'full' }     // ready → { blob } (image/gif)
   | { m: 'refreshTrust' } // ready: bounded signed-list refresh
   | { m: 'verifyContact'; userId: string; umk: string }
   // ready → string: the digits for exactly `umk` (64 lowercase hex), the key the dialog will hand to verifyContact

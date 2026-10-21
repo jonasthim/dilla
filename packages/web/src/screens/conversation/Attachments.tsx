@@ -31,17 +31,19 @@ export function saveBlob(blob: Blob, name: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), REVOKE_SAVED_AFTER_MS);
 }
 
-export async function attachFiles(client: Pick<CoreClient, 'call'>, channelId: string, files: readonly File[], dispatch: (a: ConversationAction) => void): Promise<void> {
-  if (files.length === 0) return;
+export async function attachFiles(client: Pick<CoreClient, 'call'>, channelId: string, files: readonly File[], dispatch: (a: ConversationAction) => void): Promise<boolean> {
+  if (files.length === 0) return true;
   try {
     await client.call({ m: 'attachFiles', channelId, files });
     dispatch({ type: 'trayError', text: null });
+    return true;
   } catch (err) {
     const code = errorOf(err).code;
     const text = code === 'E_ATTACHMENT_TOO_LARGE'
       ? t('shell.tray.tooLarge', { name: safeName(files.find(f => f.size > BROWSER_ATTACHMENT_CAP)?.name ?? files[0]?.name ?? '', t('shell.attachment.unnamed')) })
       : code === 'E_ATTACHMENT_COUNT' ? t('shell.tray.tooMany') : t('shell.banner.commandError', { code });
     dispatch({ type: 'trayError', text });
+    return false;
   }
 }
 

@@ -1249,6 +1249,28 @@ between the images of the same message, **Save** saves it, **Close** or Escape c
 browser downloads a file each time you open or save it and keeps no copy of opened files; the small previews come
 with the message. When a message with files is deleted, its files are deleted from the instance too.
 
+### GIFs
+
+When the server's managers have entered a Giphy key (server settings → overview, "GIFs (Giphy)"), a **gif** button
+(named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
+field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
+press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
+the picker and puts focus back on the **gif** button.
+
+Picking a GIF adds it to "files to send" like any file you attach, named `giphy-{id}.gif`, and puts focus in the message
+field; press Enter to send it, with or without text, or **remove** it. Nothing is sent until you do.
+
+Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
+
+For a server manager: in server settings → overview, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
+developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
+**replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
+
+Two things to know about privacy. Your searches go to {instance}, which asks Giphy for you using the server's key, so
+Giphy sees the instance and not you; the instance itself sees what you search for and which GIF you pick. The GIF is
+downloaded by the instance and sent to the conversation as an ordinary file, protected like any other, so the people who
+read it never contact giphy.com.
+
 ### Keys in the conversation
 
 | Key | What it does |
