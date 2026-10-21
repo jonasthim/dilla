@@ -3509,6 +3509,105 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
       ] });
     });
 
+    /** A call sharing with device `one` published, whose publication's replaceTrack is held until `release()`. */
+    const heldSwap = async (f: ReturnType<typeof fakes>) => {
+      const call = await sharing(f);
+      const a = deviceTrack();
+      const b = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn().mockResolvedValueOnce(a.stream).mockResolvedValueOnce(b.stream);
+      const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+        const pub = await real(track, o);
+        (pub.track as unknown as { replaceTrack: unknown }).replaceTrack = vi.fn(async (n: MediaStreamTrack) => {
+          await held;
+          (pub.track as unknown as { mediaStreamTrack: unknown }).mediaStreamTrack = n;
+        });
+        return pub;
+      });
+      await call.setShareSource('one');
+      const swap = call.setShareSource('two').catch(() => undefined);
+      await f.advance(0);
+      return { call, a, b, release, swap };
+    };
+
+    it('N-M2: a pause while the swap is pending leaves the new capture stopped once it lands', async () => {
+      const f = fakes();
+      const h = await heldSwap(f);
+      void h.call.setPaused(true);
+      h.release();
+      await h.swap;
+      expect(h.b.stop).toHaveBeenCalled();
+    });
+
+    it('N-M2: a leave while the swap is pending leaves no capture running', async () => {
+      const f = fakes();
+      const h = await heldSwap(f);
+      const left = h.call.leave('user');
+      h.release();
+      await h.swap;
+      await left;
+      expect(h.b.stop).toHaveBeenCalled();
+      expect(h.a.stop).toHaveBeenCalled();
+    });
+
+    it('N-N2: a replaceTrack that threw after the sender took the new track counts as replaced, never republished', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      const b = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn().mockResolvedValueOnce(a.stream).mockResolvedValueOnce(b.stream);
+      const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+      f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+        const pub = await real(track, o);
+        (pub.track as unknown as { replaceTrack: unknown }).replaceTrack = vi.fn(async (n: MediaStreamTrack) => {
+          (pub.track as unknown as { mediaStreamTrack: unknown }).mediaStreamTrack = n;
+          throw new Error('resumeUpstream');
+        });
+        return pub;
+      });
+      await call.setShareSource('one');
+      f.room.localParticipant.publishTrack.mockClear();
+      await call.setShareSource('two');
+      expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+      expect(a.stop).toHaveBeenCalled();
+      expect(call.state.shareSource).toBe('two');
+    });
+
+    it('N-M1: a real-id microphone hides only itself: a same-group "Broadcast Stream Mix" stays', async () => {
+      const dev = (deviceId: string, label: string, groupId: string) => ({ kind: 'audioinput', deviceId, label, groupId }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'chat-mic', groupId: 'goxlr' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('chat-mic', 'GoXLR Chat Mic', 'goxlr'), dev('stream-mix', 'GoXLR Broadcast Stream Mix', 'goxlr'), dev('usb', 'USB Mic', 'g2')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect((await call.shareSources()).sources.map((d) => d.id)).toEqual(['stream-mix', 'usb']);
+    });
+
+    it('N-M1: behind the default alias only the entry with the alias label goes; a same-group "Stereo Mix" stays', async () => {
+      const dev = (deviceId: string, label: string, groupId: string) => ({ kind: 'audioinput', deviceId, label, groupId }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'default', groupId: 'g1' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('default', 'Default - Realtek Microphone', 'g1'), dev('real', 'Realtek Microphone', 'g1'), dev('mix', 'Stereo Mix (Realtek)', 'g1')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect((await call.shareSources()).sources.map((d) => d.id)).toEqual(['mix']);
+    });
+
+    it('N-M1: when no entry carries the alias label, the same-group non-monitors go (the fallback)', async () => {
+      const dev = (deviceId: string, label: string, groupId: string) => ({ kind: 'audioinput', deviceId, label, groupId }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'default', groupId: 'g1' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('default', 'Default', 'g1'), dev('real', 'Built-in Microphone', 'g1'), dev('mon', 'Monitor of Built-in', 'g1')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect((await call.shareSources()).sources.map((d) => d.id)).toEqual(['mon']);
+    });
+
     it('M1: Chromium without microphone permission lists one unlabeled input with an empty id: the labels are missing', async () => {
       const f = fakes({ devices: [{ kind: 'audioinput', deviceId: '', label: '', groupId: '' } as MediaDeviceInfo] });
       const call = await start(f);

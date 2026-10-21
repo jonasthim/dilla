@@ -1196,7 +1196,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (screen !== s) throw new PageCallError('E_UNAVAILABLE');
         const swap = prior?.pub?.track?.replaceTrack;
         if (prior !== null && prior.pub !== null && swap !== undefined) {
-          try { await swap.call(prior.pub.track, track, true); replaced = true; pub = prior.pub; } catch { replaced = false; }
+          try { await swap.call(prior.pub.track, track, true); replaced = true; } catch {
+            // N-N2: a throw after the sender took the new capture still counts as replaced (as the mic hand-over reads it).
+            replaced = prior.pub.track?.mediaStreamTrack === track;
+          }
+          if (replaced) pub = prior.pub;
         }
         if (!replaced) pub = await local.publishTrack(track, screenAudioOptions(caps));
       } catch (err) {
@@ -1206,10 +1210,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       if (ended || state.paused || screen !== s) {
         if (replaced && prior !== null) {
-          // The publication carries the new capture now: the share's own stop (the pause or the end queues one) withdraws it.
+          // N-M2: the publication carries the new capture now, enabled by LiveKit; stopping it at once makes it send silence,
+          // and the share's own stop (the pause or the end queues one) still finds the publication by it and withdraws it.
           prior.track.removeEventListener('ended', prior.onEnded);
           prior.track.stop();
-          s.device = { track, pub, onEnded: () => undefined };
+          track.stop();
+          s.device = screen === s ? { track, pub, onEnded: () => undefined } : null;
         } else {
           await local.unpublishTrack(track).catch(() => undefined);
           track.stop();
@@ -1240,10 +1246,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const own = settings?.deviceId;
       // I1: with the default input the track says 'default' and its real entry has another id but the same group. A monitor
       // can share the card's group, so only the entries that are not monitors go with the microphone.
-      const group = settings?.groupId ?? raw.find((d) => d.deviceId === own)?.groupId;
       const isMonitor = (label: string): boolean => /monitor/i.test(label);
-      const inputs = raw.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && d.deviceId !== ''
-        && d.deviceId !== own && !(group !== undefined && group !== '' && d.groupId === group && !isMonitor(d.label)));
+      const isAlias = (id: string | undefined): boolean => id === 'default' || id === 'communications';
+      // N-M1: a real id hides only itself. Behind an alias the entry whose label is the alias's without its "Default - " /
+      // "Communications - " prefix goes; only when none matches, the non-monitor entries of the mic's group go.
+      const group = settings?.groupId ?? raw.find((d) => d.deviceId === own)?.groupId;
+      const aliasLabel = isAlias(own) ? (raw.find((d) => d.deviceId === own)?.label ?? '').replace(/^(Default|Communications) - /, '') : '';
+      const byLabel = aliasLabel === '' ? [] : raw.filter((d) => !isAlias(d.deviceId) && d.deviceId !== '' && d.label === aliasLabel);
+      const byGroup = (d: MediaDeviceInfo): boolean => isAlias(own) && byLabel.length === 0 && group !== undefined && group !== ''
+        && d.groupId === group && !isMonitor(d.label);
+      const inputs = raw.filter((d) => !isAlias(d.deviceId) && d.deviceId !== '' && d.deviceId !== own && !byLabel.includes(d) && !byGroup(d));
       // M1: Chromium without permission lists one input with an empty id and label; labels are judged before ids are filtered.
       return { labeled: raw.every((d) => d.label !== ''),
         sources: inputs.map((d) => ({ id: d.deviceId, label: d.label, monitor: isMonitor(d.label) && !/dilla-share/i.test(d.label) })) };

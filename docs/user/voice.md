@@ -213,17 +213,22 @@ Pick one and it is sent as the stream's sound, encrypted like the rest; everyone
 Choose **none** or stop sharing and it goes. A tab's or a screen's sound from the browser always wins, and then the list is not shown.
 If the list says "Allow the microphone to see sound sources.", the browser hides device names until the microphone is allowed.
 
-- **A monitor** ("Monitor of …" on PipeWire and PulseAudio) carries everything your computer plays, including this call, so
-  the others will hear themselves. dilla warns when you pick one. It is allowed, for example with headphones and a call you mute for yourself.
-- **One app only, and you still hear it:** give that app its own output, send a copy of it to your speakers, and pick the
-  output's monitor in **sound from**. The device is called `dilla-share`, and dilla does not warn about it.
-  1. Make the output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
-  2. Hear it yourself: `pactl load-module module-loopback source=dilla-share.monitor sink=@DEFAULT_SINK@ latency_msec=30`
-  3. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
-  4. Pick "Monitor of dilla-share" in **sound from**. The call itself keeps playing on your normal speakers and is not in the stream.
+- **A monitor** ("Monitor of …") carries everything your computer plays, including this call, so the others will hear
+  themselves. Firefox lists these devices directly, and dilla warns when you pick one. Chrome and Edge on Linux do not list
+  monitors at all; use the recipe below there.
+- **One app only, and you still hear it** (Chrome, Edge and Firefox): give that app its own output, send a copy of it to
+  your speakers, and turn the output's monitor into an ordinary input. Each `pactl load-module` prints a number: note it,
+  because it is how you undo the step.
+  1. The output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
+  2. A copy to your speakers, so you still hear the app: `pactl load-module module-loopback source=dilla-share.monitor`
+  3. An input made from the output's monitor: `pactl load-module module-remap-source master=dilla-share.monitor source_name=dilla-share-input source_properties=device.description=dilla-share-input`
+  4. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
+  5. Start the share, and in **sound from** pick "dilla-share-input". The call keeps playing on your normal speakers and is not in the stream.
 
-  On PipeWire, one command makes the output and the copy to your speakers: `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'` (leave it running; stop it with Ctrl+C).
-  To remove the pactl devices, run `pactl unload-module module-loopback` and `pactl unload-module module-null-sink`.
+  On PipeWire, `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'`
+  replaces steps 1 and 2 in one command (leave it running; Ctrl+C stops it); steps 3 to 5 stay the same.
+  To undo, run `pactl unload-module <number>` for each number you noted, last one first. Do not unload by module name: that
+  would also remove loopbacks and sinks you made for something else.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
