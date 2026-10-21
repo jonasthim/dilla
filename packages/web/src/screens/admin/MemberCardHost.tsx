@@ -108,14 +108,14 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   };
 
   const labels = {
-    ownerLabel: t('layout.profile.owner'), youLabel: t('layout.profile.you'), rolesLabel: t('layout.profile.roles'),
+    bioLabel: t('profile.card.about'), ownerLabel: t('layout.profile.owner'), youLabel: t('layout.profile.you'), rolesLabel: t('layout.profile.roles'),
     closeLabel: t('layout.profile.close'), presenceLabels: presenceLabels(),
   };
   const layout = phone ? 'sheet' : 'popover';
   return (
     <>
       {card !== null && data !== null ? (
-        <ProfileCard name={data.name} username={data.username} presence={presence?.[data.userId] ?? 'offline'} isOwner={data.isOwner} isYou={data.isYou}
+        <ProfileCard name={data.name} username={data.username} presence={presence?.[data.userId] ?? 'offline'} status={data.status} bio={data.bio} isOwner={data.isOwner} isYou={data.isYou}
           roles={data.roles} actions={data.actions.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' }))}
           onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} fallbackFocus={card.source === 'list' ? undefined : messageFallback(card)} {...labels} />
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (

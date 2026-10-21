@@ -4,6 +4,7 @@ import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
 import { Devices } from './settings/Devices.tsx';
+import { Profile } from './settings/Profile.tsx';
 import { SignInFactors } from './settings/SignInFactors.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { Notifications } from './settings/Notifications.tsx';
@@ -32,6 +33,7 @@ function compareState(record: TrustSummary): 'first-seen' | 'changed' | 'verifie
 }
 
 export const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
+  { id: 'profile', key: 'settings.nav.profile' },
   { id: 'devices', key: 'settings.nav.devices' },
   { id: 'signin', key: 'factorSettings.nav' },
   { id: 'notifications', key: 'settings.nav.notifications' },
@@ -99,7 +101,7 @@ export function Settings(): React.JSX.Element {
 
   const select = (id: string) => {
     switch (id) {
-      case 'devices': case 'signin': case 'notifications': case 'appearance': case 'voice': case 'privacy': case 'keyboard': case 'diagnostics':
+      case 'profile': case 'devices': case 'signin': case 'notifications': case 'appearance': case 'voice': case 'privacy': case 'keyboard': case 'diagnostics':
         if (id !== 'privacy') setComparison(null);
         navigate({ name: 'settings', section: id, from }, true);
         break;
@@ -120,7 +122,7 @@ export function Settings(): React.JSX.Element {
       {/* On a phone Settings is a pushed view of the You tab (R40): its own header and back in place of the section nav. */}
       {phone ? <PhoneHeader title={t(NAV.find(i => i.id === section)?.key ?? 'settings.nav.devices')} backLabel={t('nav.back')}
         onBack={() => goBack({ name: 'you' }, navigate)} /> : null}
-      {section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} live={announcement} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
+      {section === 'profile' ? <Profile /> : section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} live={announcement} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'voice' ? <Voice />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}

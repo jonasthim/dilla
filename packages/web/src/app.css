@@ -5,6 +5,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-settings-section { display: flex; flex-direction: column; gap: var(--group-gap); }
 .dw-settings-section h2, .dw-settings-section h3 { margin: 0; }
 .dw-settings-section p { margin: 0; color: var(--fg-2); }
+.dw-profile-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
+.dw-profile-form__actions { display: flex; align-items: center; gap: var(--group-gap); }
+.dw-profile-form__saved { min-height: 1lh; }
 .dw-device-list, .dw-notify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-notify-list > li + li { border-top: 1px solid var(--hairline); padding-top: var(--row-gap); }
 /* Buttons and controls side by side keep the group gap: --row-gap is 0 at compact density, where they would touch. */

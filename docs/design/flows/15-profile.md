@@ -1,0 +1,50 @@
+# Flow 15: profile, the display name, a status message and a bio (EOD E6)
+
+## States
+
+| State | UI |
+|---|---|
+| Settings → profile | the first section of the nav (`settings.nav.profile`); a `Profile` heading (`profile.title`), the line `profile.body`, then three fields: `profile.display.label`, `profile.status.label` (hint `profile.status.hint`) and `profile.bio.label` (a several-line field, hint `profile.bio.hint`), and `profile.save` |
+| nothing changed | `profile.save` is disabled |
+| something changed | `profile.save` is enabled; only the changed fields are sent, and an empty one clears the field |
+| the display name emptied | save shows `profile.error.display` under the field and sends nothing |
+| saving | `profile.save` is disabled until the answer |
+| saved | a polite status line `profile.saved`; the account, every member list and every open card show the new text |
+| the save refused or the network down | a danger banner `profile.error.save`; what was typed stays and save is enabled again |
+| changed on another device | the fields follow it while nothing here has been edited |
+| the profile card | the status message after the presence word; the bio under the head, a group named `profile.card.about`, with its line breaks and scrolling after eight rem |
+| a member with no status message or bio | the card shows neither |
+| the phone | Settings → profile is the first row of the You tab's settings list |
+
+The three texts are stored readable by the server, like the display name, and shown to everyone who shares a server with the account. They are not end-to-end encrypted, and the section says only that the server can read them (`profile.body`).
+
+## Keyboard map
+
+| Keys | Action |
+|---|---|
+| Tab | name, status message, bio, save |
+| Enter | in the display name or status message: save; in the bio: a line break |
+
+## Focus rules
+
+Opening the section focuses its heading (as every settings section). A refused save keeps focus where it was. Closing the card returns focus to the row, name or mention it came from (flow 14).
+
+## Announcements
+
+`profile.saved` is announced politely when the save lands; `profile.error.display` and `profile.error.save` are alerts.
+
+## Copy
+
+`settings.nav.profile='profile'`
+`profile.title='Profile'`
+`profile.body='Your display name, status message and bio are readable by the server and by everyone you share a server with.'`
+`profile.display.label='display name'`
+`profile.status.label='status message'`
+`profile.status.hint='One line, up to 190 characters.'`
+`profile.bio.label='bio'`
+`profile.bio.hint='Up to 500 characters. Shown on your profile card.'`
+`profile.save='save'`
+`profile.saved='Profile saved'`
+`profile.error.display='Enter a display name.'`
+`profile.error.save='Could not save your profile. Try again.'`
+`profile.card.about='about'`

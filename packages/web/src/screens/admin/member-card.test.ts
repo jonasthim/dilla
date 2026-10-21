@@ -11,4 +11,10 @@ describe('memberCardData', () => {
     const ctx = { selfId: 'x', ownerId: 'y', roles: [EVERYONE, MOD], access: undefined };
     expect(memberCardData(member, ctx).roles).toEqual([{ name: 'mods', color: 0x3498db }]);
   });
+
+  it('carries the status message and the bio, and leaves them empty when the member has none', () => {
+    const ctx = { selfId: 'x', ownerId: 'y', roles: [EVERYONE], access: undefined };
+    expect(memberCardData({ ...member, statusMsg: 'on a call', bio: 'one\ntwo' }, ctx)).toMatchObject({ status: 'on a call', bio: 'one\ntwo' });
+    expect(memberCardData(member, ctx)).toMatchObject({ status: '', bio: '' });
+  });
 });

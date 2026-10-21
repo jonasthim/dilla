@@ -899,6 +899,23 @@ Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treat
 Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
 channel's rules until it reloads.
 
+### Upgrading with profile text: migration 00022
+
+Migration `00022_profile` adds two columns to `users`, `status_msg` (at most 190 characters) and `bio` (at most 500), both
+empty for every existing account. The server stores them readable, like the display name: they are not end-to-end
+encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes them (it answered 501 before), and
+`GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
+the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
+
+Migration number 00021 is held by a branch that is not released yet (AFK disconnect). A database that runs 00022 before
+00021 reports schema version 22 with 21 absent, and goose then refuses to apply 00021 later ("detected 1 missing
+(out-of-order) migration lower than database version"); dillad does not allow out-of-order runs. So release the build
+that carries 00021 first, or both together, and never run the 00022 build on a database that must later take a 00021 build
+that lacks 00022.
+
+To go back run the rollback by hand above with `--to=20` (or `--to=21` once 00021 exists). Going down from 22 drops `status_msg` and `bio` and
+discards every status message and bio; the accounts are kept.
+
 ## Capacity
 
 Every figure in this section is a measured cell from `docs/spikes/2026-10-capacity.md` (SP-29), on the

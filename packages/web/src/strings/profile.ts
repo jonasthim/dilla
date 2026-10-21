@@ -1,0 +1,15 @@
+export const profile = {
+  'settings.nav.profile': 'profile',
+  'profile.title': 'Profile',
+  'profile.body': 'Your display name, status message and bio are readable by the server and by everyone you share a server with.',
+  'profile.display.label': 'display name',
+  'profile.status.label': 'status message',
+  'profile.status.hint': 'One line, up to 190 characters.',
+  'profile.bio.label': 'bio',
+  'profile.bio.hint': 'Up to 500 characters. Shown on your profile card.',
+  'profile.save': 'save',
+  'profile.saved': 'Profile saved',
+  'profile.error.display': 'Enter a display name.',
+  'profile.error.save': 'Could not save your profile. Try again.',
+  'profile.card.about': 'about',
+};
