@@ -15,6 +15,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -563,6 +564,183 @@ func TestRunRejectsMismatchedReadyIdentityGenerationAndVersions(t *testing.T) {
 	}
 }
 
+func TestHandshakeRejectsUnexpectedValidOpcodeWithoutRetryLoop(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume bool
+		op     Opcode
+	}{
+		{"identify heartbeat ack", false, OpHeartbeatAck},
+		{"identify delivery", false, OpMessagePlain},
+		{"identify resumed", false, OpResumed},
+		{"resume ready", true, OpReady},
+		{"resume delivery", true, OpMessagePlain},
+		{"resume heartbeat ack", true, OpHeartbeatAck},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance, device, user := testID(101), testID(102), testID(103)
+			var attempts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := int(attempts.Add(1))
+				ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"dilla.v1"}, CompressionMode: websocket.CompressionDisabled})
+				if err != nil {
+					return
+				}
+				defer ws.Close(websocket.StatusNormalClosure, "test")
+				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+				defer cancel()
+				if err = sendServerFrame(ctx, ws, OpHello, 0, nil, helloPayload(instance, 9)); err != nil {
+					return
+				}
+				_, raw, err := ws.Read(ctx)
+				if err != nil {
+					return
+				}
+				handshake, err := decodeClientTestFrame(raw)
+				if err != nil {
+					t.Errorf("decode handshake: %v", err)
+					return
+				}
+				if tc.resume && n == 1 {
+					if handshake.Op != OpIdentify {
+						t.Errorf("initial op=%d, want identify", handshake.Op)
+						return
+					}
+					_ = sendServerFrame(ctx, ws, OpReady, 1, nil, readyPayload(device, user, 9, bytes32(104)))
+					return
+				}
+				if tc.resume && handshake.Op != OpResume || !tc.resume && handshake.Op != OpIdentify {
+					t.Errorf("handshake op=%d in attempt %d", handshake.Op, n)
+					return
+				}
+				switch tc.op {
+				case OpHeartbeatAck:
+					_ = sendServerFrame(ctx, ws, OpHeartbeatAck, 0, nil, []any{uint64(1)})
+				case OpMessagePlain:
+					_ = sendServerFrame(ctx, ws, OpMessagePlain, 2, nil, []any{device, uint64(1), user, []byte{1}, bytes32(105), uint64(0), uint64(0)})
+				case OpResumed:
+					_ = sendServerFrame(ctx, ws, OpResumed, 2, nil, []any{uint64(1), uint64(1), bytes32(105)})
+				case OpReady:
+					_ = sendServerFrame(ctx, ws, OpReady, 1, nil, readyPayload(device, user, 9, bytes32(105)))
+				}
+			}))
+			defer server.Close()
+			instanceID, _ := id.Parse(instance.String())
+			httpClient, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instanceID, AllowLoopbackHTTP: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bot, err := New(Config{Client: httpClient, AllowLoopbackHTTP: true, ExpectedDeviceID: device, ExpectedUserID: user, HandshakeTimeout: 500 * time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err = bot.Run(ctx, func(context.Context) (string, error) { return "session", nil })
+			if err != ErrProtocol {
+				t.Fatalf("Run error=%v, want immediate protocol-state error", err)
+			}
+			wantAttempts := int32(1)
+			if tc.resume {
+				wantAttempts = 2
+			}
+			if got := attempts.Load(); got != wantAttempts {
+				t.Fatalf("handshake attempts=%d, want bounded %d", got, wantAttempts)
+			}
+		})
+	}
+}
+
+func TestRunDeliversDeletedPlainMessageThenContinues(t *testing.T) {
+	instance, device, user, channel := testID(111), testID(112), testID(113), testID(114)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"dilla.v1"}, CompressionMode: websocket.CompressionDisabled})
+		if err != nil {
+			return
+		}
+		defer ws.Close(websocket.StatusNormalClosure, "test")
+		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer cancel()
+		if err = sendServerFrame(ctx, ws, OpHello, 0, nil, helloPayload(instance, 10)); err != nil {
+			return
+		}
+		if _, _, err = ws.Read(ctx); err != nil {
+			return
+		}
+		if err = sendServerFrame(ctx, ws, OpReady, 1, nil, readyPayload(device, user, 10, bytes32(115))); err != nil {
+			return
+		}
+		deletedPayload, e := gateway.MessagePlainPayload(channel, 1, user, nil, bytes32(116), 0, 1)
+		if e != nil {
+			t.Errorf("production deleted-message payload: %v", e)
+			return
+		}
+		var deleted []any
+		if e = cborx.Unmarshal(deletedPayload, &deleted); e != nil {
+			t.Errorf("decode production deleted-message payload: %v", e)
+			return
+		}
+		if err = sendServerFrame(ctx, ws, OpMessagePlain, 2, nil, deleted); err != nil {
+			return
+		}
+		laterPayload, e := gateway.MessagePlainPayload(channel, 2, user, []byte{9}, bytes32(117), 0, 0)
+		if e != nil {
+			t.Errorf("production message payload: %v", e)
+			return
+		}
+		var later []any
+		if e = cborx.Unmarshal(laterPayload, &later); e != nil {
+			t.Errorf("decode production message payload: %v", e)
+			return
+		}
+		_ = sendServerFrame(ctx, ws, OpMessagePlain, 3, nil, later)
+		_, _, _ = ws.Read(ctx)
+	}))
+	defer server.Close()
+	instanceID, _ := id.Parse(instance.String())
+	httpClient, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instanceID, AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := New(Config{Client: httpClient, AllowLoopbackHTTP: true, ExpectedDeviceID: device, ExpectedUserID: user})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- bot.Run(ctx, func(context.Context) (string, error) { return "session", nil }) }()
+	for i, wantN := range []uint64{1, 2, 3} {
+		select {
+		case d := <-bot.Events():
+			if d.Frame.N != wantN {
+				t.Fatalf("delivery %d n=%d, want %d", i, d.Frame.N, wantN)
+			}
+			if i == 1 && (d.Frame.MessagePlain == nil || !d.Frame.MessagePlain.Deleted || len(d.Frame.MessagePlain.Envelope) != 0) {
+				t.Fatalf("deleted message was not decoded: %+v", d.Frame.MessagePlain)
+			}
+			if i == 2 && (d.Frame.MessagePlain == nil || d.Frame.MessagePlain.Deleted || len(d.Frame.MessagePlain.Envelope) != 1) {
+				t.Fatalf("later message was not delivered after deletion: %+v", d.Frame.MessagePlain)
+			}
+			if err := d.Ack(); err != nil {
+				t.Fatalf("ack n=%d: %v", d.Frame.N, err)
+			}
+		case err := <-done:
+			t.Fatalf("Run exited before delivery n=%d: %v", wantN, err)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for n=%d", wantN)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not cancel")
+	}
+}
+
 func TestRunFallsBackToIdentifyAfterExpiredResumeOrGenerationChange(t *testing.T) {
 	for _, scenario := range []string{"expired resume", "generation change"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -765,9 +943,9 @@ func TestTwoIdentityClientsKeepResumeTokensAndCursorsIsolated(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		clients[i] = running{bot: bot, ctx: ctx, cancel: cancel, done: done, identity: who}
-		go func(bot *Client, credential string, done chan<- error) {
-			done <- bot.Run(ctx, func(context.Context) (string, error) { return credential, nil })
-		}(bot, who.token, done)
+		go func(bot *Client, runCtx context.Context, credential string, done chan<- error) {
+			done <- bot.Run(runCtx, func(context.Context) (string, error) { return credential, nil })
+		}(bot, ctx, who.token, done)
 	}
 	for i := range clients {
 		c := &clients[i]

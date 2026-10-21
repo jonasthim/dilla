@@ -385,6 +385,10 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			}
 			return fresh, after, errors.New("gateway requested reconnect")
 		}
+		// During identify only ready (or a refusal/reconnect) is legal; during
+		// resume only resumed (or a refusal/reconnect) is legal. Never wait for a
+		// second frame after a well-formed frame in the wrong handshake state.
+		return fresh, 0, ErrProtocol
 	}
 	cx, cancel := context.WithCancel(parent)
 	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: time.Duration(h.HeartbeatMS) * time.Millisecond}

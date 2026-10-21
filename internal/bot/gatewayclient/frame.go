@@ -471,7 +471,7 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 		if x.Sender, err = idAt(payload[2]); err != nil {
 			return bad()
 		}
-		if x.Envelope, err = bytesAt(payload[3], 1, MaxGatewayFrameBytes); err != nil {
+		if x.Envelope, err = bytesAt(payload[3], 0, MaxGatewayFrameBytes); err != nil {
 			return bad()
 		}
 		if x.FrankingTag, err = bytesAt(payload[4], 32, 32); err != nil {
@@ -487,7 +487,7 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		x.Deleted = v == 1
-		if x.Deleted && len(x.Envelope) != 0 {
+		if x.Deleted && len(x.Envelope) != 0 || !x.Deleted && len(x.Envelope) == 0 {
 			return bad()
 		}
 		out.MessagePlain = x
