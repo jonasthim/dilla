@@ -11,7 +11,7 @@ import type { FactorsState, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
 
 export type FactorsRoutes = Pick<Routes, 'getFactors' | 'totpEnroll' | 'totpConfirm' | 'passkeyRegisterBegin' | 'passkeyRegisterFinish'
-  | 'stepUp' | 'stepUpPasskeyBegin' | 'stepUpPasskeyFinish' | 'removeFactor' | 'regenerateBackupCodes'>;
+  | 'stepUp' | 'stepUpPasskeyBegin' | 'stepUpPasskeyFinish' | 'removeFactor' | 'regenerateBackupCodes' | 'changePassword'>;
 
 export interface FactorsDeps {
   routes: FactorsRoutes;
@@ -21,7 +21,7 @@ export interface FactorsDeps {
 }
 
 type FactorCommand = Extract<Command, { m: 'refreshFactors' | 'factorTotpBegin' | 'factorTotpConfirm' | 'factorPasskeyBegin'
-  | 'factorPasskeyFinish' | 'stepUp' | 'stepUpPasskeyBegin' | 'stepUpPasskeyFinish' | 'removeFactor' | 'regenerateBackupCodes' }>;
+  | 'factorPasskeyFinish' | 'stepUp' | 'stepUpPasskeyBegin' | 'stepUpPasskeyFinish' | 'removeFactor' | 'regenerateBackupCodes' | 'changePassword' }>;
 export type FactorMethod = FactorCommand['m'];
 
 /** What the slice shows once the account is forgotten. */
@@ -86,6 +86,11 @@ export const FACTOR_VALIDATORS: Record<FactorMethod, ((c: Record<string, unknown
     return typeof c.credId === 'string' && CRED_ID.test(c.credId) ? null : 'credId is not 2 to 2046 lowercase hex';
   },
   regenerateBackupCodes: (c) => stepupProblem(c.stepup),
+  changePassword: (c) => {
+    if (typeof c.next !== 'string' || c.next === '') return 'the new password is empty';
+    if (c.old !== null && (typeof c.old !== 'string' || c.old === '')) return 'the old password is empty';
+    return optionalStepupProblem(c.stepup);
+  },
 };
 
 export class FactorsController {
@@ -155,6 +160,15 @@ export class FactorsController {
     const backupCodes = await this.guarded(() => this.deps.routes.regenerateBackupCodes(stepup));
     await this.reread();
     return { backupCodes };
+  }
+
+  /** The old password is the step-up where the account has one (a wrong one is 403 E_FORBIDDEN, a throttle 429: the dialog's to
+   *  show, no re-read); a first password on an account holding a factor takes a step-up token instead. Neither password is kept:
+   *  they pass through this call and the route, and the answer carries nothing. */
+  async changePassword(old: string | null, next: string, stepup: string | null): Promise<null> {
+    await this.guarded(() => this.deps.routes.changePassword(old, next, stepup));
+    await this.reread();
+    return null;
   }
 
   /** A refused step-up (403 E_STEP_UP), a missing row (404) or a conflict (409) means the page's picture of the account is

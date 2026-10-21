@@ -376,6 +376,18 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
+    // E2: the direct messages list (the @ tile's Home) has search too (a touch device has no Control+K); Escape closes the palette.
+    await test.step('search from the direct messages list opens the palette and Escape closes it', async () => {
+      await homeTile(page).tap();
+      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
+      const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
+      await expect(palette).toBeVisible({ timeout: WAIT });
+      await page.keyboard.press('Escape');
+      await expect(palette).toBeHidden({ timeout: WAIT });
+      await railItem(page, SERVER).tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
+
     // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.
     await test.step('the members sheet returns focus to the channel menu', async () => {
       await channelRow(page, 'general').tap();

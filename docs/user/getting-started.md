@@ -1170,6 +1170,24 @@ reduced motion, an outline instead of the animation). When the original is furth
 cannot read it: "the original message cannot be shown here". When it was deleted: "the original message was
 deleted".
 
+### Formatting a message
+
+A message can use a few markdown marks. They are shown when you read the message; the box where you write, and
+the editor, always show what you typed.
+
+- `**bold**`, `*italic*` or `_italic_`, and `~~struck through~~`.
+- `` `code` `` inside a line, and a block between two lines of three backticks.
+- `> ` at the start of a line makes a quote.
+- A web address that starts with `http://` or `https://`, or an email address written `mailto:name@example.com`, becomes
+  a link. It shows the address it opens (a name with letters outside a to z is shown in its `xn--` form, so a lookalike
+  cannot pass for the real site) and opens in a new tab. dilla never loads the page by itself. A `mailto:` link is the
+  bare address; anything after a `?` is not linked.
+- A backslash before a mark (`\*`) shows the mark as it is. A mark that is never closed is shown as typed.
+- Anything else stays as typed, including raw HTML and `[text](address)`. Other kinds of address, such as
+  `javascript:`, are never links.
+
+Mentions still work inside bold or a quote, and not inside code.
+
 ### Reactions
 
 **react**, or **add a reaction** under a message that already has reactions, opens "pick a reaction": 32 emoji in
@@ -1397,7 +1415,7 @@ and when the other tab closes it takes over by itself.
   its own.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
-- No link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
+- No link previews, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
   plays only the listed audio and video types. Received link previews are not shown.
 - Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
