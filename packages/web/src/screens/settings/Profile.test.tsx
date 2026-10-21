@@ -144,6 +144,27 @@ describe('Settings → Profile', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('an account with an empty display name can still save a status or a bio', async () => {
+    const fake = new FakeClient();
+    fake.set('account', account({ user: { ...ME, display: '' } }));
+    const u = userEvent.setup();
+    render(<div className="d-root"><CoreProvider client={fake}><Profile /></CoreProvider></div>);
+    // the username shows while the display name is empty, and nothing blocks the other fields
+    await u.type(bio(), 'hello');
+    await u.click(save());
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fake.calls).toEqual([{ m: 'updateProfile', bio: 'hello' }]);
+  });
+
+  it('checks exactly what it sends: a stored name that is not trimmed is not validated or sent with a status-only save', async () => {
+    const legacy = `  Ada${String.fromCodePoint(0x200b)}L  `;
+    const { fake, u } = setup({ display: legacy });
+    expect(screen.queryByRole('alert')).toBeNull();
+    await u.type(status(), 'x');
+    await u.click(save());
+    expect(fake.calls).toEqual([{ m: 'updateProfile', statusMsg: 'x' }]);
+  });
+
   it('keeps what was typed when the account changes under the form, and follows it for a field left alone', async () => {
     const { fake, u } = setup({ statusMsg: 'old' });
     await u.type(bio(), 'my draft');

@@ -21,7 +21,7 @@ const same = (a: Fields, b: Fields) => a.display === b.display && a.statusMsg ==
 export function Profile(): React.JSX.Element {
   const client = useCore();
   const user = useSlice('account')?.user ?? null;
-  const saved: Fields = { display: user?.display ?? user?.username ?? '', statusMsg: user?.statusMsg ?? '', bio: user?.bio ?? '' };
+  const saved: Fields = { display: user?.display || user?.username || '', statusMsg: user?.statusMsg ?? '', bio: user?.bio ?? '' };
   const [fields, setFields] = useState<Fields>(saved);
   // What the last successful save wrote: the baseline until the account slice says the same.
   const [sent, setSent] = useState<Fields | null>(null);
@@ -47,17 +47,29 @@ export function Profile(): React.JSX.Element {
   }, [saved.display, saved.statusMsg, saved.bio]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const edit = (patch: Partial<Fields>) => { setFields(current => ({ ...current, ...patch })); setDone(false); setFailed(null); setDisplayError(false); };
+  // A field is changed when its text differs from the stored one: only a changed field is checked and sent, so a stored
+  // value that fails today's rule (kept from before) or an empty display name never blocks the others.
   const next: Fields = { display: profileTextValue(fields.display), statusMsg: profileTextValue(fields.statusMsg), bio: profileTextValue(fields.bio, true) };
-  const changed = {
-    ...(next.display !== baseline.display ? { display: next.display } : {}),
-    ...(next.statusMsg !== baseline.statusMsg ? { statusMsg: next.statusMsg } : {}),
-    ...(next.bio !== baseline.bio ? { bio: next.bio } : {}),
+  const rule = {
+    display: profileTextProblem(fields.display, DISPLAY_MAX_CHARS),
+    statusMsg: profileTextProblem(fields.statusMsg, STATUS_MAX_CHARS),
+    bio: profileTextProblem(fields.bio, BIO_MAX_CHARS, true),
   };
-  // Only a field that was changed is checked: a stored value that fails today's rule (it was kept from before) never blocks the others.
+  // Typing spaces at the end of the stored text is not a change; any other difference, or text the rule refuses, is.
+  const edited = {
+    display: fields.display !== baseline.display && (next.display !== baseline.display || rule.display !== null),
+    statusMsg: fields.statusMsg !== baseline.statusMsg && (next.statusMsg !== baseline.statusMsg || rule.statusMsg !== null),
+    bio: fields.bio !== baseline.bio && (next.bio !== baseline.bio || rule.bio !== null),
+  };
+  const changed = {
+    ...(edited.display ? { display: next.display } : {}),
+    ...(edited.statusMsg ? { statusMsg: next.statusMsg } : {}),
+    ...(edited.bio ? { bio: next.bio } : {}),
+  };
   const problem = {
-    display: fields.display !== baseline.display ? profileTextProblem(fields.display, DISPLAY_MAX_CHARS) : null,
-    statusMsg: fields.statusMsg !== baseline.statusMsg ? profileTextProblem(fields.statusMsg, STATUS_MAX_CHARS) : null,
-    bio: fields.bio !== baseline.bio ? profileTextProblem(fields.bio, BIO_MAX_CHARS, true) : null,
+    display: edited.display ? rule.display : null,
+    statusMsg: edited.statusMsg ? rule.statusMsg : null,
+    bio: edited.bio ? rule.bio : null,
   };
   const invalid = problem.display !== null || problem.statusMsg !== null || problem.bio !== null;
   const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
@@ -66,10 +78,10 @@ export function Profile(): React.JSX.Element {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (pending || !dirty || invalid) return;
-    if (next.display === '') { setDisplayError(true); return; }
+    if (edited.display && next.display === '') { setDisplayError(true); return; }
     setPending(true);
     setFailed(null);
-    client.call({ m: 'updateProfile', ...changed }).then(() => { setSent(next); setDone(true); }).catch((e: unknown) => {
+    client.call({ m: 'updateProfile', ...changed }).then(() => { setSent({ ...baseline, ...Object.fromEntries(Object.entries(edited).filter(([, on]) => on).map(([k]) => [k, fields[k as keyof Fields]])) }); setDone(true); }).catch((e: unknown) => {
       const code = errorOf(e).code;
       setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
     }).finally(() => { setPending(false); });

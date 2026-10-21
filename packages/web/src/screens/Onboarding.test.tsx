@@ -129,6 +129,16 @@ describe('identity', () => {
     await user.click(button('Continue'));
     expect(fake.callsOf('signupBegin')).toEqual([{ m: 'signupBegin' }]);
   });
+  it('names a display name of combining marks only, before making keys', async () => {
+    const { user, fake } = setup();
+    await toIdentity(user);
+    await user.type(field('Username'), 'ada');
+    await user.click(field('Display name (optional)'));
+    await user.paste(String.fromCodePoint(0x301, 0x302));
+    await user.click(button('Continue'));
+    expect(field('Display name (optional)')).toHaveAccessibleDescription(expect.stringContaining('Write something, or leave it empty.'));
+    expect(fake.callsOf('signupBegin')).toHaveLength(0);
+  });
   it('Enter in the username field advances', async () => {
     const { user, fake } = setup();
     await toIdentity(user);
