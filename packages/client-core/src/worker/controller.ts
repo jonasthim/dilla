@@ -290,6 +290,15 @@ function profileOf(user: NonNullable<AccountState['user']>, me: { display: strin
   return next;
 }
 
+/** The saved profile fields as a member row carries them: '' for a cleared one. */
+function savedOf(saved: { display?: string; statusMsg?: string; bio?: string }): { display?: string; statusMsg?: string; bio?: string } {
+  return {
+    ...(saved.display === undefined ? {} : { display: saved.display }),
+    ...(saved.statusMsg === undefined ? {} : { statusMsg: saved.statusMsg }),
+    ...(saved.bio === undefined ? {} : { bio: saved.bio }),
+  };
+}
+
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -1130,7 +1139,7 @@ export class Controller {
 
   private setAccount(patch: Partial<AccountState>): void {
     // The cached display name belongs to one signed-in user: any state that clears or revokes the user drops it.
-    if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
+    if (patch.user === null || patch.phase === 'revoked') { this.selfDisplay = null; this.profileSaved = null; }
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     // The status choice belongs to the signed-in account too: with the user gone, the next account starts from the default
@@ -2321,8 +2330,13 @@ export class Controller {
   private async readMembers(communityId: string): Promise<MemberRow[] | null> {
     const seq = (this.memberSeq.get(communityId) ?? 0) + 1;
     this.memberSeq.set(communityId, seq);
+    const profileAt = this.profileSeq;
     const rows = await this.routes.listMembers(fromHex(communityId));
-    return this.memberSeq.get(communityId) === seq ? rows : null;
+    if (this.memberSeq.get(communityId) !== seq) return null;
+    // A profile saved while this read was in flight is newer than what the read saw (N6): the own row keeps the saved text.
+    const saved = this.profileSeq !== profileAt ? this.profileSaved : null;
+    if (saved === null) return rows;
+    return rows.map((m) => (toHex(m.userId) === saved.userId ? { ...m, ...savedOf(saved) } : m));
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[], push = true): void {
@@ -2788,6 +2802,10 @@ export class Controller {
     this.slices.set(`presence:${communityId}`, null);
   }
 
+  /** Bumped when a profile save lands; a read that began before it does not undo it (N6). */
+  private profileSeq = 0;
+  /** What the person saved this session (the trimmed text), per field, for the reads that were already in flight. */
+  private profileSaved: { userId: string; display?: string; statusMsg?: string; bio?: string } | null = null;
   /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
   private selfDisplay: { userId: string; display: string } | null = null;
   /** The cached display name, only for the user it was read for; another account never inherits it. */
@@ -2798,6 +2816,7 @@ export class Controller {
   private async refreshPresenceChoice(): Promise<void> {
     const seq = ++this.presenceChoiceReadSeq;
     const write = this.presenceChoiceWriteSeq;
+    const profileAt = this.profileSeq;
     try {
       const me = await this.routes.getAccountMe();
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
@@ -2806,8 +2825,11 @@ export class Controller {
       // Only the current user's own read counts: a read for another account (a switch while it was in flight) is not applied.
       const user = this.accountState.user;
       const mine = user !== null && toHex(me.userId) === user.id;
-      if (mine) this.selfDisplay = { userId: user.id, display: me.display };
-      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...profileOf(user, me) } } : {}) });
+      // A profile saved while this read was in flight is newer than what the read saw (N6): keep the saved text.
+      const saved = this.profileSeq !== profileAt && mine && this.profileSaved?.userId === user.id ? this.profileSaved : null;
+      const seen = saved === null ? me : { display: saved.display ?? me.display, statusMsg: saved.statusMsg ?? me.statusMsg, bio: saved.bio ?? me.bio };
+      if (mine) this.selfDisplay = { userId: user.id, display: seen.display };
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...profileOf(user, seen) } } : {}) });
     } catch { /* the next ready retries */ }
   }
 
@@ -2824,6 +2846,8 @@ export class Controller {
     await this.routes.patchMe(saved);
     const user = this.accountState.user;
     if (user === null) return null;
+    this.profileSaved = { ...(this.profileSaved?.userId === user.id ? this.profileSaved : {}), ...saved, userId: user.id };
+    this.profileSeq++;
     const apply = <T extends { display?: string; statusMsg?: string; bio?: string }>(row: T): T => {
       const next = { ...row, ...saved };
       if (next.statusMsg === '') delete next.statusMsg;
