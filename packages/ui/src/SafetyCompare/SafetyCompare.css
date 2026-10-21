@@ -16,3 +16,4 @@
 .d-safety-compare__summary::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.375rem; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-chevron-right) center / contain no-repeat; }
 .d-safety-compare__details[open] .d-safety-compare__summary::before { mask: var(--d-mask-chevron-down) center / contain no-repeat; }
 .d-safety-compare__details[open] .d-safety-compare__key { display: block; margin-top: .375rem; }
+.d-safety-compare__qr { display: flex; justify-content: flex-start; }

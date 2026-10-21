@@ -152,6 +152,9 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.verify | All 12 blocks match | dialog final button |
 | privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
 | privacy.keyDetails | public key | the closed disclosure the person's exact public key sits behind; the 12 blocks are the comparison (added 2026-10-14, product walk M11) |
+| privacy.showQr | show qr | dialog toggle that shows the safety number as a QR code (show only; nothing scans it) |
+| privacy.hideQr | hide qr | the same toggle while the QR is shown |
+| privacy.qrLabel | safety number as a qr code | the QR's text alternative; the 12 blocks stay the screen-reader path |
 | privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |

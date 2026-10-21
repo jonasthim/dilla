@@ -127,12 +127,12 @@ export function Settings(): React.JSX.Element {
             instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />}
       <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
         state={comparison === null ? 'first-seen' : compareState(comparison.record)}
-        approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
+        approvedUmk={comparison?.umk ?? null} qrUserId={comparison?.record.userId} groups={comparison?.number?.split(' ') ?? []}
         canVerify={comparison !== null && comparison.record.shared && comparison.record.unlisted !== true && comparison.number !== null
           && comparison.error !== 'privacy.keyMoved'}
         error={comparison?.error ? t(comparison.error) : null} docState="trust-compare"
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('dialog.close'), loading: t('privacy.loading'),
-          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), details: t('privacy.keyDetails'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
+          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), details: t('privacy.keyDetails'), showQr: t('privacy.showQr'), hideQr: t('privacy.hideQr'), qrLabel: t('privacy.qrLabel'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
           states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'),
             unlisted: t('privacy.unlisted') } }}
         onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}
