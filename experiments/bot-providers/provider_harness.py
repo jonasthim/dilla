@@ -61,22 +61,48 @@ class ToolResult:
     reason: str = ""
 
 
+def _group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _signal_group(pgid: int, signum: int) -> None:
+    try:
+        os.killpg(pgid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # The child is started in a new session, so this fallback is only for
+        # an unusual platform restriction. It still reaps the direct child.
+        pass
+
+
 def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
+    """Stop the entire invocation group, even when its original leader exited."""
+    pgid = process.pid
+    _signal_group(pgid, signal.SIGTERM)
+    grace_deadline = time.monotonic() + 0.2
+    while _group_exists(pgid) and time.monotonic() < grace_deadline:
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            process.terminate()
+            process.wait(timeout=min(0.025, max(0, grace_deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(0.01)
+    if _group_exists(pgid):
+        _signal_group(pgid, signal.SIGKILL)
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        process.kill()
         try:
             process.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                process.kill()
-            process.wait()
-    else:
-        process.wait()
+            pass
 
 
 def run_bounded(
@@ -111,9 +137,6 @@ def run_bounded(
             if remaining <= 0:
                 raise HarnessError("timeout", bytes(output))
             events = selector.select(min(remaining, 0.1))
-            if not events and process.poll() is not None:
-                # A process may exit before buffered pipe data is signalled.
-                events = [(key, selectors.EVENT_READ) for key in selector.get_map().values()]
             for key, _ in events:
                 chunk = os.read(key.fd, min(4096, output_limit + 1 - len(output)))
                 if not chunk:
@@ -128,14 +151,10 @@ def run_bounded(
         except subprocess.TimeoutExpired:
             raise HarnessError("timeout", bytes(output)) from None
         return ProcessResult(returncode, bytes(output))
-    except HarnessError:
-        _terminate_and_reap(process)
-        raise
     finally:
         selector.close()
         process.stdout.close()
-        if process.poll() is None:
-            _terminate_and_reap(process)
+        _terminate_and_reap(process)
 
 
 def _resolve_tool(name: str, configured: str | None = None) -> str | None:

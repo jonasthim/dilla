@@ -64,3 +64,35 @@ inputs; production capture-to-Opus path; and encrypted playback/decryption in
 the supported real browsers. Exact versions, intended-host commands, and
 observed outcomes must be recorded after those prerequisites are supplied.
 Spotify's published broadcast-policy restriction also remains unresolved.
+
+## Round 1 review fixes
+
+Added two real subprocess regressions before changing the runner. The red run
+failed both: when the direct parent exited but its child kept stdout open,
+`run_bounded` returned success after the child closed the pipe instead of timing
+out; when a child ignored SIGTERM, timeout cleanup returned while that
+descendant was still running.
+
+The runner now reads only when the selector reports pipe readiness, so an
+exited parent with an inherited open pipe cannot block past the command
+deadline. Timeout/error cleanup targets the fresh process group even after its
+leader exits, sends SIGTERM, gives the group a bounded 200 ms grace period, then
+sends SIGKILL if any group process remains. It reaps the direct child and also
+cleans the invocation group after normal completion. Added a local
+`__pycache__/` ignore so the documented Python commands do not leave bytecode
+artifacts in the worktree.
+
+Verification after the fix:
+
+- `python3 -m unittest -v` — 13 tests passed, including both regressions.
+- `python3 -m py_compile experiments/bot-providers/provider_harness.py experiments/bot-providers/test_provider_harness.py` — passed.
+- `git diff --check` — passed.
+- `python3 provider_harness.py opus-smoke` — passed; 51 packets, Opus 48 kHz
+  stereo, 20 ms frame cadence, 96 kbps CBR. Playback and SFrame decryption
+  remain unverified.
+- `python3 provider_harness.py doctor` — expected exit 1; Soloist and yt-dlp
+  remain missing, while ffmpeg/ffprobe 9.0.2, Node 24.15.0, and pactl
+  17.0-98-gb096 are available. Qualification remains unverified.
+
+Full Task 1 remains blocked on the same operator inputs and qualification
+matrix above.

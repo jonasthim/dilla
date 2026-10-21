@@ -1,6 +1,11 @@
 import io
 import json
+import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -9,6 +14,51 @@ import provider_harness as harness
 
 
 class ProcessTests(unittest.TestCase):
+    @staticmethod
+    def _active_process(pid):
+        status = Path(f"/proc/{pid}/stat")
+        if status.exists():
+            return status.read_text().split()[2] != "Z"
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    @classmethod
+    def _spawn_parent_and_descendant(cls, temporary, *, parent_waits, child_ignores_term):
+        pid_file = Path(temporary) / "descendant.pid"
+        ignore = "signal.signal(signal.SIGTERM, signal.SIG_IGN); " if child_ignores_term else ""
+        child = (
+            "import signal,sys,time; from pathlib import Path; "
+            f"{ignore}Path(sys.argv[1]).write_text(str(__import__('os').getpid())); time.sleep(1.5)"
+        )
+        parent_wait = "time.sleep(30)" if parent_waits else "pass"
+        parent = (
+            "import subprocess,sys,time; from pathlib import Path; "
+            f"subprocess.Popen([sys.executable, '-c', {child!r}, sys.argv[1]]); "
+            "p=Path(sys.argv[1]); "
+            "deadline=time.monotonic()+1; "
+            "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.005)'); "
+            f"{parent_wait}"
+        )
+        return pid_file, [sys.executable, "-c", parent, str(pid_file)]
+
+    @classmethod
+    def _read_pid(cls, pid_file):
+        deadline = time.monotonic() + 1
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return int(pid_file.read_text())
+
+    @classmethod
+    def _stop_test_descendant(cls, pid):
+        if cls._active_process(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def test_missing_executable_is_reported_without_raw_error(self):
         with self.assertRaises(harness.HarnessError) as caught:
             harness.run_bounded(["/definitely/missing/provider-tool"], timeout=1)
@@ -24,6 +74,42 @@ class ProcessTests(unittest.TestCase):
         with self.assertRaises(harness.HarnessError) as caught:
             harness.run_bounded(["python3", "-c", "import time; time.sleep(5)"], timeout=0.1)
         self.assertEqual(caught.exception.kind, "timeout")
+
+    def test_timeout_stays_bounded_when_exited_parent_child_holds_stdout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file, argv = self._spawn_parent_and_descendant(
+                temporary, parent_waits=False, child_ignores_term=False
+            )
+            started = time.monotonic()
+            try:
+                with self.assertRaises(harness.HarnessError) as caught:
+                    harness.run_bounded(argv, timeout=0.15)
+                elapsed = time.monotonic() - started
+                descendant_pid = self._read_pid(pid_file)
+                self.assertEqual(caught.exception.kind, "timeout")
+                self.assertLess(elapsed, 0.7)
+                self.assertFalse(self._active_process(descendant_pid))
+            finally:
+                if pid_file.exists():
+                    self._stop_test_descendant(int(pid_file.read_text()))
+
+    def test_timeout_kills_sigterm_ignoring_descendant_after_parent_exits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file, argv = self._spawn_parent_and_descendant(
+                temporary, parent_waits=True, child_ignores_term=True
+            )
+            try:
+                with self.assertRaises(harness.HarnessError) as caught:
+                    harness.run_bounded(argv, timeout=0.15)
+                descendant_pid = self._read_pid(pid_file)
+                deadline = time.monotonic() + 0.5
+                while self._active_process(descendant_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(caught.exception.kind, "timeout")
+                self.assertFalse(self._active_process(descendant_pid), "timed-out descendant is still running")
+            finally:
+                if pid_file.exists():
+                    self._stop_test_descendant(int(pid_file.read_text()))
 
     def test_output_limit_terminates_and_reaps_child(self):
         with self.assertRaises(harness.HarnessError) as caught:
