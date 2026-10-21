@@ -3253,4 +3253,17 @@ func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]st
 	return out, nil
 }
 
+// ListAllLiveVoiceSessions is every live call of the instance, oldest first.
+func (r *Repo) ListAllLiveVoiceSessions(ctx context.Context) ([]store.VoiceSessionRow, error) {
+	rows, err := r.r.ListAllLiveVoiceSessions(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.VoiceSessionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, voiceSessionRow(row))
+	}
+	return out, nil
+}
+
 var _ store.Repository = (*Repo)(nil)

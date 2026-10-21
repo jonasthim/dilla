@@ -168,6 +168,9 @@ type Querier interface {
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
 	ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error)
 	ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error)
+	// Every live call of the instance, oldest first: the call routes reconcile each one's room at boot
+	// (UP2, calls survive an upgrade).
+	ListAllLiveVoiceSessions(ctx context.Context) ([]VoiceSessions, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)

@@ -371,6 +371,9 @@ type VoiceSessions interface {
 	EndVoiceSession(ctx context.Context, callID id.ID, at int64) error
 	// ListLiveVoiceSessions is the channel's calls with ended NULL, oldest first.
 	ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]VoiceSessionRow, error)
+	// ListAllLiveVoiceSessions is every call with ended NULL, of any channel, oldest first: the call
+	// routes reconcile each one's room once at boot, before they serve.
+	ListAllLiveVoiceSessions(ctx context.Context) ([]VoiceSessionRow, error)
 }
 
 // ChannelMembers is the part of Structure whose table is

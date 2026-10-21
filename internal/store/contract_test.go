@@ -170,6 +170,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
 			"GetVoiceSession", "ListLiveVoiceSessions",
+			// UP2 (calls survive an upgrade): every live call, which the call routes reconcile at
+			// boot, reached through the embedded VoiceSessions.
+			"ListAllLiveVoiceSessions",
 			"GetCommunityAFK", "SetCommunityAFK",
 			// afk-disconnect AW1, reached through the embedded Communities: the stored away roster.
 			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
@@ -180,6 +183,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// VoiceSessions is the slice of Structure Plan 2 task 16's table supports.
 		{"VoiceSessions", reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(), []string{
 			"EndVoiceSession", "GetVoiceSession", "ListLiveVoiceSessions", "PutVoiceSession",
+			"ListAllLiveVoiceSessions",
 		}},
 		// ChannelMembers is the slice of Structure Plan 2 task 6's table supports.
 		{"ChannelMembers", reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(), []string{
