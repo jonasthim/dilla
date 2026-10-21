@@ -24,6 +24,8 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	botidentity "github.com/jonasthim/dilla/internal/bot/identity"
+	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
@@ -231,6 +233,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ownsBlobs = true
 	}
 	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
+	deps.BotIdentity = botidentity.NewVerifier(wasm)
+	deps.BotRuntime = botruntime.New(o.Repo, o.Clock.Now)
 	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
@@ -402,6 +406,19 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a device-list publish failed",
 				"user", userID, "err", err)
+		}
+	}
+	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, _ bool) {
+		if installation.DeviceID == nil {
+			return
+		}
+		deviceID := *installation.DeviceID
+		if deps.CloseGateway != nil {
+			deps.CloseGateway(deviceID)
+		}
+		cutFromCalls(ctx, deviceID)
+		if err := api.RemoveRevokedDevices(ctx, o.Repo, delivery, []id.ID{deviceID}); err != nil {
+			o.Log.ErrorContext(ctx, "prompting MLS removal for disabled bot device", "device", deviceID.String(), "err", err)
 		}
 	}
 

@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -126,6 +127,62 @@ func requireSecondFactor(ctx context.Context, repo store.Repository, userID id.I
 	// second factor, and the client tells the two apart by code.
 	return server.Errorf(server.CodeTargetNoFactor,
 		"this community requires a second factor before a moderator role is granted")
+}
+
+// requireManagedBotFactorException applies only to the exact managed role of a
+// ready installation whose final credential and signed device list passed the
+// lifecycle verifier. A Bot-kind account alone never bypasses the human factor
+// requirement.
+func requireManagedBotFactorException(ctx context.Context, repo store.Repository, communityID, target, roleID id.ID, roleBits Bits) (bool, error) {
+	binding, isBot, err := botaccess.ForUserCommunity(ctx, repo, target, communityID)
+	if err != nil {
+		if isBot && errors.Is(err, botaccess.ErrIneligible) {
+			return true, server.Errorf(server.CodeTargetNoFactor, "bot installation is not ready for moderator authority")
+		}
+		return false, err
+	}
+	if !isBot {
+		return false, nil
+	}
+	if binding.State != store.BotInstallationReady {
+		return true, server.Errorf(server.CodeTargetNoFactor, "bot installation is not ready for moderator authority")
+	}
+	installation, err := repo.GetActiveBotInstallationByCommunity(ctx, communityID)
+	if err != nil {
+		return true, err
+	}
+	if installation.RoleID == nil || *installation.RoleID != roleID || installation.UserID == nil || *installation.UserID != target ||
+		installation.CredentialVerifiedAt == nil || installation.RemovedAt != nil {
+		return true, server.Errorf(server.CodeTargetNoFactor, "managed bot identity is not verified for moderator authority")
+	}
+	var approved Bits
+	if installation.Capabilities&uint8(botCapWarnings) != 0 {
+		approved |= PermModerateMembers
+	}
+	if installation.Capabilities&uint8(botCapRemoval) != 0 {
+		approved |= PermManageMessages
+	}
+	if installation.Capabilities&uint8(botCapKick) != 0 {
+		approved |= PermKickMembers
+	}
+	if installation.Capabilities&uint8(botCapBan) != 0 {
+		approved |= PermBanMembers
+	}
+	if roleBits&moderatorBits&^approved != 0 {
+		return true, server.Errorf(server.CodeTargetNoFactor, "managed role exceeds approved bot capabilities")
+	}
+	return true, nil
+}
+
+func requireRoleTargetFactor(ctx context.Context, repo store.Repository, target, communityID, roleID id.ID, roleBits Bits, rpID string) error {
+	isBot, err := requireManagedBotFactorException(ctx, repo, communityID, target, roleID, roleBits)
+	if err != nil {
+		return err
+	}
+	if isBot {
+		return nil
+	}
+	return requireSecondFactor(ctx, repo, target, rpID)
 }
 
 // roleActor is who is acting on a community's roles, and with what: the
@@ -506,6 +563,15 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "patch role", err)
 		return
 	}
+	_, managed, err := getManagedInstallation(r.Context(), h.repo, current.CommunityID, current.ID)
+	if err != nil {
+		h.fail(w, r, "patch role", err)
+		return
+	}
+	if managed && (req.Allow != nil || req.Deny != nil || req.Position != nil) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot permissions and rank are controlled by installation approval"))
+		return
+	}
 	everyone := current.ID == a.snap.Everyone
 	if !a.outranks(current.Position) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden,
@@ -580,6 +646,13 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 		role, err := tx.GetRole(r.Context(), roleID)
 		if err != nil {
 			return notFound(err)
+		}
+		_, managed, err := getManagedInstallation(r.Context(), tx, current.CommunityID, role.ID)
+		if err != nil {
+			return err
+		}
+		if managed && (req.Allow != nil || req.Deny != nil || req.Position != nil) {
+			return server.Errorf(server.CodeForbidden, "managed bot permissions and rank are controlled by installation approval")
 		}
 		if !locked.outranks(role.Position) {
 			return server.Errorf(server.CodeForbidden, "a role at or above your highest role cannot be changed")
@@ -656,6 +729,13 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 	role, err := h.repo.GetRole(r.Context(), roleID)
 	if err != nil {
 		h.fail(w, r, "delete role", notFound(err))
+		return
+	}
+	if _, managed, err := getManagedInstallation(r.Context(), h.repo, role.CommunityID, role.ID); err != nil {
+		h.fail(w, r, "delete role", err)
+		return
+	} else if managed {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "a managed bot role is removed with its installation"))
 		return
 	}
 	a, err := h.manager(r, h.repo, s, role.CommunityID)
@@ -749,6 +829,9 @@ func (h *Roles) grantPath(r *http.Request, repo store.Repository, verb string) (
 	if err != nil || g.role.CommunityID != g.cid {
 		return grantTarget{}, server.Errorf(server.CodeNotFound, "no such role")
 	}
+	if err := managedRoleMayBeGranted(r.Context(), repo, g.cid, g.target, g.role.ID); err != nil {
+		return grantTarget{}, err
+	}
 	if g.role.ID == g.a.snap.Everyone || g.role.Position == 0 {
 		return grantTarget{}, server.Errorf(server.CodeInvalidRequest,
 			"@everyone is held by every member and is not %s", verb)
@@ -826,7 +909,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.a.com.RequireMod2FA == 1 && Bits(g.role.Allow)&moderatorBits != 0 {
-		if err := requireSecondFactor(r.Context(), h.repo, g.target, h.rpID); err != nil {
+		if err := requireRoleTargetFactor(r.Context(), h.repo, g.target, g.cid, g.role.ID, Bits(g.role.Allow), h.rpID); err != nil {
 			h.fail(w, r, "grant role", err)
 			return
 		}
@@ -844,7 +927,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if locked.a.com.RequireMod2FA == 1 && Bits(locked.role.Allow)&moderatorBits != 0 {
-			if err := requireSecondFactor(r.Context(), tx, g.target, h.rpID); err != nil {
+			if err := requireRoleTargetFactor(r.Context(), tx, g.target, g.cid, locked.role.ID, Bits(locked.role.Allow), h.rpID); err != nil {
 				return err
 			}
 		}

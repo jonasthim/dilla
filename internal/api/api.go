@@ -15,6 +15,8 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	botidentity "github.com/jonasthim/dilla/internal/bot/identity"
+	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -133,6 +135,14 @@ type Deps struct {
 	// session's device, so a thief exhausting its own budget or the user's upload meter cannot
 	// block the owner's device. Register builds it when it is nil.
 	StateMeter *UploadMeter
+
+	// BotIdentity verifies the public credential's native bot tuple in the real
+	// WASI runtime. Nil refuses bot enrollment and final credential publication.
+	BotIdentity *botidentity.Verifier
+	// BotRuntime authenticates operator credentials independently of human device sessions.
+	BotRuntime *botruntime.Manager
+	// BotRevoked runs after disable/removal commits to close online transport and prompt MLS removals.
+	BotRevoked func(context.Context, store.BotInstallationRow, bool)
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -180,6 +190,7 @@ func Register(m *server.Mux, d Deps) {
 	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
+	registerBotInstallations(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes
 	// are the only /v1 surface a caller reaches without a bearer token, so each

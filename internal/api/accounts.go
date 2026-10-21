@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/identity"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -111,6 +113,32 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := req.Device.validate(); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// Signup accepts only the independently signed human identity tuple. A
+	// length check alone lets a bot identity enter the human path and inherit
+	// human session/factor rules, so verification is mandatory and uses the same
+	// WASI guest as every other credential boundary.
+	if d.BotIdentity == nil {
+		err := server.Errorf(server.CodeInternal, "credential verifier is not wired")
+		d.logf(r, "api: human signup credential verifier", "err", err)
+		server.WriteError(w, err)
+		return
+	}
+	credential, err := d.BotIdentity.Verify(ctx, req.Device.Credential, req.Device.DSKPub)
+	if err != nil {
+		if errors.Is(err, identity.ErrUnavailable) {
+			server.WriteError(w, server.Errorf(server.CodeInternal, "credential verifier unavailable"))
+		} else {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential is invalid"))
+		}
+		return
+	}
+	if credential.Kind != kindHuman || credential.UserID != (id.ID{}) || credential.DeviceID != req.Device.DeviceID ||
+		credential.Tier != req.Device.Tier || credential.SignerTier != req.Device.SignerTier ||
+		!bytes.Equal(credential.UMKPub[:], req.UMKPub) || !bytes.Equal(credential.SSKPub[:], req.SSKPub) ||
+		!bytes.Equal(credential.SigUMKSSK[:], req.SigUMKSSK) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential does not match human signup identity"))
 		return
 	}
 

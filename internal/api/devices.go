@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/server"
@@ -248,6 +249,23 @@ func (d Deps) PutDeviceList(w http.ResponseWriter, r *http.Request) {
 		d.logf(r, "api: device list verification", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, ""))
 		return
+	}
+	botBinding, isBot, botErr := botaccess.ForUserDevice(r.Context(), d.Repo, userID, sess.DeviceID)
+	if botErr != nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot device is no longer eligible"))
+		return
+	}
+	if isBot {
+		device, err := d.Repo.GetDevice(r.Context(), sess.DeviceID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		if botBinding.InstallationID.IsZero() || userID != sess.UserID || len(entries) != 1 || entries[0].Revoked ||
+			!bytes.Equal(entries[0].DeviceID, sess.DeviceID[:]) || !bytes.Equal(entries[0].DSKPub, device.DSKPub) || entries[0].Tier != tierNative {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "bot device list must contain exactly its own native device"))
+			return
+		}
 	}
 	ctx := r.Context()
 	row := store.DeviceListRow{

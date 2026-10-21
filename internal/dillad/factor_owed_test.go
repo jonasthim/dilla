@@ -154,6 +154,10 @@ func classify(t *testing.T, r docRoute) sweepClass {
 	switch {
 	case strings.HasPrefix(auth, "—"):
 		return sweepSkip
+	case auth == "R":
+		return sweepSkip // runtime bearer auth is independent of a human session
+	case auth == "B":
+		return sweepRefused // bot-scoped routes still require an enrolled human session here
 	case auth == "E, F", auth == "E or P":
 		return sweepAllowed
 	case auth == "E", auth == "E or V", auth == "A":
@@ -170,7 +174,7 @@ func concrete(t *testing.T, r docRoute) string {
 	const hex32 = "0102030405060708090a0b0c0d0e0f10"
 	return pathParameter.ReplaceAllStringFunc(path, func(p string) string {
 		switch p {
-		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}":
+		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}":
 			return hex32
 		case "{blob_id}":
 			return hex32 + hex32

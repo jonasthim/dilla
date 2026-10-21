@@ -28,11 +28,7 @@ func satisfyFactor(t *testing.T, repo store.Repository, uid id.ID) {
 func TestASignUpOwesASecondFactorUntilItIsSatisfied(t *testing.T) {
 	h, deps := newTestAPI(t)
 	code := seedInvite(t, deps, 1)
-	body, _ := cborx.Marshal([]any{
-		code, "owing", "Owing",
-		make([]byte, 32), make([]byte, 32), make([]byte, 64), "correct horse battery staple",
-		[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-	})
+	body := validHumanSignupBody(t, code, "owing", "Owing", "correct horse battery staple")
 	res := post(t, h, "/v1/accounts", body)
 	if res.Code != http.StatusOK {
 		t.Fatalf("POST /v1/accounts = %d (%x)", res.Code, res.Body.Bytes())

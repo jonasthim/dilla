@@ -19,11 +19,7 @@ func TestCreateAccountRedeemsTheInviteAndReservesTheUsername(t *testing.T) {
 	h, deps := newTestAPI(t)
 	code := seedInvite(t, deps, 1)
 
-	body, _ := cborx.Marshal([]any{
-		code, "Jonas", "Jonas Thim",
-		make([]byte, 32), make([]byte, 32), make([]byte, 64), "correct horse battery staple",
-		[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-	})
+	body := validHumanSignupBody(t, code, "Jonas", "Jonas Thim", "correct horse battery staple")
 	res := post(t, h, "/v1/accounts", body)
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %x", res.Code, res.Body.Bytes())
@@ -50,6 +46,39 @@ func TestCreateAccountRedeemsTheInviteAndReservesTheUsername(t *testing.T) {
 	}
 }
 
+func TestCreateAccountRequiresAValidHumanCredentialBoundToTheRequest(t *testing.T) {
+	h, deps := newTestAPI(t)
+	code := seedInvite(t, deps, 3)
+	device := id.New()
+	validBot := makeTestCredential(t, device, 1)
+	botBody, err := cborx.Marshal([]any{code, "botidentity", "Bot", validBot.UMKPub, validBot.SSKPub,
+		validBot.SigUMKSSK, nil, []any{device, validBot.DSKPub, uint64(0), uint64(0), validBot.Credential}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := post(t, h, "/v1/accounts", botBody); rec.Code != http.StatusBadRequest {
+		t.Fatalf("valid bot credential signup = %d, want 400", rec.Code)
+	}
+
+	device = id.New()
+	validHuman := makeTestHumanCredential(t, device)
+	wrongKey := append([]byte(nil), validHuman.UMKPub...)
+	wrongKey[0] ^= 1
+	keyMismatchBody, err := cborx.Marshal([]any{code, "keymismatch", "Human", wrongKey, validHuman.SSKPub,
+		validHuman.SigUMKSSK, nil, []any{device, validHuman.DSKPub, uint64(0), uint64(0), validHuman.Credential}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := post(t, h, "/v1/accounts", keyMismatchBody); rec.Code != http.StatusBadRequest {
+		t.Fatalf("Human credential with mismatched UMK = %d, want 400", rec.Code)
+	}
+
+	validBody := validHumanSignupBody(t, code, "validhuman", "Human", nil)
+	if rec := post(t, h, "/v1/accounts", validBody); rec.Code != http.StatusOK {
+		t.Fatalf("valid Human credential signup = %d (%x), want 200", rec.Code, rec.Body.Bytes())
+	}
+}
+
 func TestSixtyFourConcurrentRedemptionsYieldOneAccount(t *testing.T) {
 	h, deps := newTestAPI(t)
 	code := seedInvite(t, deps, 1)
@@ -59,11 +88,7 @@ func TestSixtyFourConcurrentRedemptionsYieldOneAccount(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body, _ := cborx.Marshal([]any{
-				code, "user" + id.New().String()[:8], "User",
-				make([]byte, 32), make([]byte, 32), make([]byte, 64), nil,
-				[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-			})
+			body := validHumanSignupBody(t, code, "user"+id.New().String()[:8], "User", nil)
 			codes <- post(t, h, "/v1/accounts", body).Code
 		}(i)
 	}
@@ -92,11 +117,7 @@ func TestADeletedAccountKeepsItsUsernameReserved(t *testing.T) {
 		t.Fatalf("TombstoneUser: %v", err)
 	}
 	code := seedInvite(t, deps, 1)
-	body, _ := cborx.Marshal([]any{
-		code, "Jonas", "Someone Else",
-		make([]byte, 32), make([]byte, 32), make([]byte, 64), nil,
-		[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-	})
+	body := validHumanSignupBody(t, code, "Jonas", "Someone Else", nil)
 	if res := post(t, h, "/v1/accounts", body); res.Code != http.StatusConflict {
 		t.Fatalf("re-registering a tombstoned username gave %d, want 409", res.Code)
 	}
@@ -176,11 +197,7 @@ func TestABootstrapInviteMakesAnInstanceAdmin(t *testing.T) {
 		{"ordinary invite", plain, "Jonas", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, _ := cborx.Marshal([]any{
-				tc.code, tc.username, tc.username,
-				make([]byte, 32), make([]byte, 32), make([]byte, 64), nil,
-				[]any{id.New(), make([]byte, 32), uint64(0), uint64(0), []byte{1}},
-			})
+			body := validHumanSignupBody(t, tc.code, tc.username, tc.username, nil)
 			if res := post(t, h, "/v1/accounts", body); res.Code != http.StatusOK {
 				t.Fatalf("status = %d", res.Code)
 			}

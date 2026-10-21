@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -74,11 +75,13 @@ func (b Bits) Has(want Bits) bool { return b&want == want }
 // Snapshot by hand and an unsorted slice silently inverts the deny/allow
 // precedence the whole permission model rests on.
 type Snapshot struct {
-	Owner     id.ID
-	Everyone  id.ID           // the community's @everyone role; held by every member
-	Roles     []store.RoleRow // ordered by (position, id); @everyone sorts first
-	Held      map[id.ID]bool  // role ids this user was explicitly granted
-	Overwrite []store.OverwriteRow
+	Owner        id.ID
+	Bot          bool            // account kind is loaded from the repository; never inferred from a request header
+	BotModerator Bits            // only moderation bits explicitly approved on a live Ready installation
+	Everyone     id.ID           // the community's @everyone role; held by every member
+	Roles        []store.RoleRow // ordered by (position, id); @everyone sorts first
+	Held         map[id.ID]bool  // role ids this user was explicitly granted
+	Overwrite    []store.OverwriteRow
 	// AFK is set when the snapshot's channel is its community's built-in AFK channel (R35): every
 	// member may view and connect to it, whatever the roles say.
 	AFK bool
@@ -111,7 +114,7 @@ func (s Snapshot) holds(r store.RoleRow) bool {
 // short-circuit, then @everyone, then each held role in ascending position with
 // deny applied before allow.
 func (s Snapshot) Resolve(userID id.ID) Bits {
-	if userID == s.Owner {
+	if userID == s.Owner && !s.Bot {
 		return PermAll
 	}
 	if !slices.IsSortedFunc(s.Roles, byPositionThenID) {
@@ -122,8 +125,12 @@ func (s Snapshot) Resolve(userID id.ID) Bits {
 		if !s.holds(r) {
 			continue
 		}
-		bits &^= Bits(r.Deny) & PermAll
-		bits |= Bits(r.Allow) & PermAll
+		deny, allow := Bits(r.Deny)&PermAll, Bits(r.Allow)&PermAll
+		if s.Bot {
+			allow = clampBotAllow(allow, s.BotModerator)
+		}
+		bits &^= deny
+		bits |= allow
 	}
 	if bits.Has(PermAdministrator) {
 		return PermAll
@@ -165,16 +172,24 @@ func (s Snapshot) resolveChannel(userID id.ID) Bits {
 			if o.TargetKind != 0 || o.TargetID != r.ID {
 				continue
 			}
-			bits &^= Bits(o.Deny) & PermAll
-			bits |= Bits(o.Allow) & PermAll
+			deny, allow := Bits(o.Deny)&PermAll, Bits(o.Allow)&PermAll
+			if s.Bot {
+				allow = clampBotAllow(allow, s.BotModerator)
+			}
+			bits &^= deny
+			bits |= allow
 		}
 	}
 	for _, o := range s.Overwrite {
 		if o.TargetKind != 1 || o.TargetID != userID {
 			continue
 		}
-		bits &^= Bits(o.Deny) & PermAll
-		bits |= Bits(o.Allow) & PermAll
+		deny, allow := Bits(o.Deny)&PermAll, Bits(o.Allow)&PermAll
+		if s.Bot {
+			allow = clampBotAllow(allow, s.BotModerator)
+		}
+		bits &^= deny
+		bits |= allow
 	}
 	// Community-scoped bits are restored from the base: a channel overwrite can
 	// neither grant nor remove them. PermAdministrator is one of them, so an
@@ -224,7 +239,26 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s := Snapshot{Owner: com.Owner, Roles: roles, Held: make(map[id.ID]bool, len(held))}
+	user, err := repo.GetUser(ctx, userID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	s := Snapshot{Owner: com.Owner, Bot: user.Kind == 1, Roles: roles, Held: make(map[id.ID]bool, len(held))}
+	if s.Bot {
+		binding, _, bindingErr := botaccess.ForUserCommunity(ctx, repo, userID, communityID)
+		if bindingErr != nil && !errors.Is(bindingErr, botaccess.ErrIneligible) && !errors.Is(bindingErr, store.ErrNotFound) {
+			return Snapshot{}, bindingErr
+		}
+		if bindingErr == nil && binding.State == store.BotInstallationReady {
+			if installation, installErr := repo.GetActiveBotInstallationByCommunity(ctx, communityID); installErr == nil &&
+				installation.UserID != nil && *installation.UserID == userID && installation.RoleID != nil &&
+				*installation.RoleID != (id.ID{}) && installation.CredentialVerifiedAt != nil {
+				s.BotModerator = approvedBotModeratorBits(binding.Capabilities)
+			} else if installErr != nil && !errors.Is(installErr, store.ErrNotFound) {
+				return Snapshot{}, installErr
+			}
+		}
+	}
 	// @everyone is the role created with the community; it is the only role ever
 	// stored at position 0 (the role routes refuse position 0 on create and on
 	// patch), and the sort above puts it first.
@@ -245,6 +279,14 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 		s.AFK = afk.ChannelID != nil && *afk.ChannelID == *channelID
 	}
 	return s, nil
+}
+
+const botElevatedBits = botRestrictedBits | PermManageMessages | PermKickMembers | PermBanMembers |
+	PermManageChannels | PermViewAuditLog | PermCreateInvite | PermMentionEveryone |
+	PermBypassSlowmode | PermMuteMembers | PermMoveMembers | PermManageNicknames | PermModerateMembers
+
+func clampBotAllow(allow, approved Bits) Bits {
+	return allow &^ botRestrictedBits &^ (botElevatedBits &^ approved)
 }
 
 // afkPointerKey carries one community's AFK pointer through a request that resolves many of its

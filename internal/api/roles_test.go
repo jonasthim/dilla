@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -198,6 +199,107 @@ func TestModerateMembersRoleRequiresTargetSecondFactor(t *testing.T) {
 	}
 	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, target); err != nil || slices.Contains(held, moderator) {
 		t.Fatalf("refused grant changed target roles: %v (%v)", held, err)
+	}
+}
+
+func TestBotKindAloneDoesNotBypassModeratorSecondFactor(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	moderator := createRole(t, e, cid, ownerTok, "moderator", 5, api.PermModerateMembers)
+	actorRole := createRole(t, e, cid, ownerTok, "staff", 10,
+		api.PermViewChannel|api.PermManageRoles|api.PermModerateMembers)
+	actor, actorTok := e.NewUser("staffer")
+	joinCommunity(t, e, cid, actorTok)
+	grant(t, e, cid, ownerTok, actor, actorRole, http.StatusNoContent)
+
+	botID := id.New()
+	bot := store.UserRow{ID: botID, Username: "bot" + botID.String()[:8], Display: "Unmanaged bot",
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+		Created: e.Clk.Now().Unix(), Kind: 1, FactorOwed: true}
+	if err := e.Repo.CreateUser(t.Context(), bot); err != nil {
+		t.Fatalf("CreateUser unmanaged bot: %v", err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: botID, Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatalf("PutMember unmanaged bot: %v", err)
+	}
+	community, err := e.Repo.GetCommunity(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("GetCommunity: %v", err)
+	}
+	if err := e.Repo.UpdateCommunityMeta(t.Context(), cid, community.Name, community.MinAccountAgeSeconds, 1); err != nil {
+		t.Fatalf("enable require_mod_2fa: %v", err)
+	}
+
+	path := "/v1/communities/" + cid.String() + "/members/" + botID.String() + "/roles/" + moderator.String()
+	status, body := e.Do(http.MethodPut, path, actorTok, nil)
+	if code := e.ErrCode(body); status != http.StatusForbidden || code != "E_TARGET_NO_FACTOR" {
+		t.Fatalf("granting moderator role to Bot-kind user without a managed installation = %d %s, want 403 E_TARGET_NO_FACTOR", status, code)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, botID); err != nil || slices.Contains(held, moderator) {
+		t.Fatalf("refused bot-kind grant changed target roles: %v (%v)", held, err)
+	}
+}
+
+func TestManagedRoleRoutesBindAuthorityToExactBotInstallation(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	role := createRole(t, e, cid, ownerTok, "managed moderator", 5, api.PermModerateMembers)
+	community, err := e.Repo.GetCommunity(t.Context(), cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := e.Clk.Now().Unix()
+	botID, deviceID, runtimeID := id.New(), id.New(), id.New()
+	bot := store.UserRow{ID: botID, Username: "bot" + botID.String()[:8], Display: "Managed bot",
+		Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}
+	if err := e.Repo.CreateUser(t.Context(), bot); err != nil {
+		t.Fatalf("CreateUser bot: %v", err)
+	}
+	verified := now
+	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: make([]byte, 32),
+		CredentialBlob: []byte{1}, Tier: 0, SignerTier: 0, VerifiedAt: &verified, Created: now}); err != nil {
+		t.Fatalf("CreateDevice bot: %v", err)
+	}
+	if err := e.Repo.CreateBotRuntime(t.Context(), store.BotRuntimeRow{ID: runtimeID, TokenHash: make([]byte, 32), Created: now, Rotated: now}); err != nil {
+		t.Fatalf("CreateBotRuntime: %v", err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: botID, Joined: now}); err != nil {
+		t.Fatalf("PutMember bot: %v", err)
+	}
+	credentialVerified := now
+	installationID := id.New()
+	if err := e.Repo.CreateBotInstallation(t.Context(), store.BotInstallationRow{
+		ID: installationID, CommunityID: cid, RuntimeID: &runtimeID, UserID: &botID, DeviceID: &deviceID, RoleID: &role,
+		State: store.BotInstallationReady, Revision: 1, Capabilities: 1 << 4, ApprovedBy: community.Owner,
+		ApprovedAt: now, CredentialVerifiedAt: &credentialVerified, Created: now, Updated: now,
+	}); err != nil {
+		t.Fatalf("CreateBotInstallation: %v", err)
+	}
+
+	human, humanTok := e.NewUser("human-target")
+	joinCommunity(t, e, cid, humanTok)
+	if err := e.Repo.UpdateCommunityMeta(t.Context(), cid, community.Name, community.MinAccountAgeSeconds, 1); err != nil {
+		t.Fatalf("enable require_mod_2fa: %v", err)
+	}
+	grantPath := "/v1/communities/" + cid.String() + "/members/%s/roles/" + role.String()
+	if status, body := e.Do(http.MethodPut, fmt.Sprintf(grantPath, human.String()), ownerTok, nil); status != http.StatusForbidden {
+		t.Fatalf("grant managed role to human = %d, want 403 (%x)", status, body)
+	}
+	patchPath := "/v1/roles/" + role.String()
+	if status, body := e.Do(http.MethodPatch, patchPath, ownerTok,
+		[]any{nil, nil, nil, uint64(api.PermAdministrator), nil, nil, nil}); status != http.StatusForbidden {
+		t.Fatalf("patch managed role permissions = %d, want 403 (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodPatch, patchPath, ownerTok,
+		[]any{nil, nil, uint64(6), nil, nil, nil, nil}); status != http.StatusForbidden {
+		t.Fatalf("patch managed role rank = %d, want 403 (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, patchPath, ownerTok, nil); status != http.StatusForbidden {
+		t.Fatalf("delete managed role = %d, want 403 (%x)", status, body)
+	}
+	grant(t, e, cid, ownerTok, botID, role, http.StatusNoContent)
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, botID); err != nil || !slices.Contains(held, role) {
+		t.Fatalf("exact Ready bot role grant missing: roles=%v err=%v", held, err)
 	}
 }
 
