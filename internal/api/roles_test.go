@@ -256,7 +256,7 @@ func TestManagedRoleRoutesBindAuthorityToExactBotInstallation(t *testing.T) {
 		t.Fatalf("CreateUser bot: %v", err)
 	}
 	verified := now
-	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: make([]byte, 32),
+	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: uniqueAPITestDSK(t),
 		CredentialBlob: []byte{1}, Tier: 0, SignerTier: 0, VerifiedAt: &verified, Created: now}); err != nil {
 		t.Fatalf("CreateDevice bot: %v", err)
 	}

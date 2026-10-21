@@ -406,6 +406,7 @@ func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
 				t.Fatalf("CreateUser bot: %v", err)
 			}
 			device := newAPITestDevice(deviceID, botID, policyT0)
+			device.DSKPub = uniqueAPITestDSK(t)
 			device.Tier, device.SignerTier = 0, 0
 			if err := repo.CreateDevice(ctx, device); err != nil {
 				t.Fatalf("CreateDevice bot: %v", err)

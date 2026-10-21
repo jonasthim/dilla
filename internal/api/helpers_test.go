@@ -260,6 +260,17 @@ func seedInviteAdmin(t *testing.T, d api.Deps, maxUses uint64, grantsAdmin uint8
 	return code
 }
 
+// uniqueAPITestDSK keeps managed Bot fixtures independent of legacy all-zero
+// Human device keys. These authorization fixtures do not validate credentials.
+func uniqueAPITestDSK(t *testing.T) []byte {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return pub
+}
+
 // seedAPIDevice creates a user and one native device and returns both rows and
 // the device's Ed25519 signing key.
 func seedAPIDevice(t *testing.T, d api.Deps) (store.UserRow, store.DeviceRow, ed25519.PrivateKey) {

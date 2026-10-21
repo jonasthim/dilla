@@ -218,6 +218,7 @@ func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := newAPITestDevice(deviceID, botID, 1)
+	device.DSKPub = uniqueAPITestDSK(t)
 	device.Tier, device.SignerTier = 0, 0
 	if err := repo.CreateDevice(ctx, device); err != nil {
 		t.Fatal(err)
