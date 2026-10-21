@@ -1047,17 +1047,26 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       setPickerOpen(true);
     };
     // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
-    const headerAction = onDms ? <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} /> : !voiceHere ? undefined : (
+    // E2: a touch device (the phone layout) has no Control+K, so its list heads carry search, Home's too. The desktop heads keep
+    // their own actions (the gear alone on a server). The "+" and the gear stay a server's.
+    const headerAction = onDms ? (
       <>
-        {canManageChannels && categoryRows.length === 0 ? (
+        {phone ? <IconButton icon="search" label={t('search.open')} onClick={() => startSearch('all')} /> : null}
+        <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
+      </>
+    ) : !voiceHere && !phone ? undefined : (
+      <>
+        {voiceHere && canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
         ) : null}
         {phone ? (
           <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={() => startSearch('all')}>
             <Icon name={SEARCH} size={18} /></Button>
         ) : null}
-        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
-          <Icon name={SETTINGS} size={18} /></Button>
+        {voiceHere ? (
+          <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
+            <Icon name={SETTINGS} size={18} /></Button>
+        ) : null}
       </>
     );
     sidebar = (<div className="dw-sidebar">
@@ -1221,7 +1230,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) navigate(callTarget); } } : undefined;
   const dotProp = dot === undefined ? {} : { dot };
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
-  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot} /> : null) : channel !== null
+  // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
+  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
+    actions={<IconButton icon="search" label={t('search.open')} onClick={() => startSearch('all')} />} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (

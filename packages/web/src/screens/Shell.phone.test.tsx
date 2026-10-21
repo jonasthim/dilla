@@ -165,6 +165,14 @@ describe('the phone shell: pushed views', () => {
     expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open')]);
   });
 
+  it('the voice stage header has a search that opens search over every conversation', async () => {
+    const { user, client } = phone({ path: `/c/${A}/${GENV}` });
+    const header = (await screen.findByRole('heading', { level: 2, name: 'general' })).closest('.d-phone-header') as HTMLElement;
+    await user.click(within(header).getByRole('button', { name: t('search.open') }));
+    await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
+  });
+
   it('gives the voice stage a phone header with its name and a back, under the tab bar', async () => {
     phone({ path: `/c/${A}/${GENV}` });
     expect(await screen.findByRole('heading', { level: 2, name: 'general' })).toBeInTheDocument();
@@ -625,6 +633,14 @@ describe('the phone shell: one header on every tab root (H1, H2, H3)', () => {
     expect(screen.getAllByRole('button', { name: t('shell.dms.new') })).toHaveLength(1);
     await user.click(add);
     expect(await screen.findByRole('dialog', { name: t('shell.dms.newTitle') })).toBeInTheDocument();
+  });
+
+  it('Home on @ has a search in its head that opens search over every conversation', async () => {
+    const { user, client } = phone({ path: '/dm' });
+    const head = (await screen.findByRole('heading', { level: 1, name: t('shell.dms.label') })).closest('.d-channel-list__head') as HTMLElement;
+    await user.click(within(head).getByRole('button', { name: t('search.open') }));
+    await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
   });
 
   it('Activity and You each open with a phone header holding their title', async () => {
