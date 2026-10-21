@@ -516,6 +516,7 @@ export const en = {
   'voice.shareAudio.fromNone': 'none',
   'voice.shareAudio.pick': 'pick a sound source',
   'voice.shareAudio.monitorWarn': 'This device carries all your computer’s sound, including this call: others will hear themselves. Route only the app you want to a separate device (see help).',
+  'voice.shareAudio.pickFailed': 'Couldn’t open that sound source.',
   'voice.shareAudio.needsPermission': 'Allow the microphone to see sound sources.',
   'voice.shareAudio.none.unsupported': 'Your screen is shared without sound. This browser can’t share sound; Chrome or Edge can share a browser tab with its sound. You can also pick a sound source for the stream.',
   'voice.shareAudio.none.tabOnly': 'Your screen is shared without sound. Here only a browser tab can carry sound: share a tab and keep "Also share tab audio" ticked. You can also pick a sound source for the stream.',

@@ -1438,6 +1438,30 @@ describe('FX2: a "sound from" picker for a share', () => {
     expect(from()).toBeNull();
   });
 
+  it('M1: unlabeled inputs ask for the microphone in any browser, even when the list is otherwise empty', async () => {
+    const app = await inVoice();
+    app.session.sharePool = { labeled: false, sources: [] };
+    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
+    expect(await main().findByText(t('voice.shareAudio.needsPermission'))).toBeInTheDocument();
+  });
+
+  it('M2: with no source to pick, the notice offers no pick button', async () => {
+    const app = await inVoice();
+    app.session.sharePool = { labeled: true, sources: [] };
+    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
+    await main().findByText(/Your screen is shared without sound/);
+    expect(main().queryByRole('button', { name: t('voice.shareAudio.pick') })).toBeNull();
+    expect(from()).toBeNull();
+  });
+
+  it('M3: a pick that fails is said in the stage’s status region', async () => {
+    const app = await silentShare();
+    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
+    app.session.setShareSource.mockRejectedValueOnce(new Error('E_UNAVAILABLE'));
+    await app.user.selectOptions(select, 'app-1');
+    expect(await main().findByText(t('voice.shareAudio.pickFailed'))).toBeInTheDocument();
+  });
+
   it('the notice offers "pick a sound source", which moves focus to the select', async () => {
     const app = await silentShare();
     const pick = await main().findByRole('button', { name: t('voice.shareAudio.pick') });

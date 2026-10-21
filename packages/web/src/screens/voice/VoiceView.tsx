@@ -2,7 +2,6 @@
 // its stage, the voice rows' nested people in the channel list (ChannelList renders them) and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import type { ShareSource } from '../../call/session.ts';
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
@@ -159,7 +158,8 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
   }
   if (v.call.notice?.channelId === channelId) {
     // FX2: a silent share's notice offers the sound-source select (it takes the focus; the select shows with the notice).
-    const pick = v.call.notice.key.startsWith('voice.shareAudio.none')
+    const pool = v.call.sharePool;
+    const pick = v.call.notice.key.startsWith('voice.shareAudio.none') && pool !== null && pool.labeled && pool.sources.length > 0
       ? { label: t('voice.shareAudio.pick'), onAction: () => document.querySelector<HTMLElement>('[data-share-sound] select')?.focus() } : null;
     return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: pick, focusOnce: false };
   }
@@ -280,26 +280,20 @@ function StageLines({ v }: { v: VoiceContext }) {
  */
 function ShareSound({ v }: { v: VoiceContext }) {
   const s = v.call.state;
-  const session = v.call.session;
-  const eligible = s?.sharing === true && s.shareSource !== 'browser' && session !== null;
-  const [pool, setPool] = useState<{ sources: ShareSource[]; labeled: boolean } | null>(null);
-  useEffect(() => {
-    if (!eligible || session === null) { setPool(null); return; }
-    let live = true;
-    session.shareSources().then(p => { if (live) setPool(p); }, () => undefined);
-    return () => { live = false; };
-  }, [eligible, session]);
-  if (!eligible || session === null || pool === null || pool.sources.length === 0) return null;
+  const pool = v.call.sharePool;
+  if (pool === null || s?.sharing !== true) return null;
+  // M1: unlabeled inputs, in any browser, ask for the microphone before they can be told apart.
   if (!pool.labeled) {
     return <div className="dw-voice-stage__sound" data-share-sound><p className="dw-voice-stage__sound-note">{t('voice.shareAudio.needsPermission')}</p></div>;
   }
-  const value = s?.shareSource ?? '';
+  if (pool.sources.length === 0) return null;
+  const value = s.shareSource ?? '';
   const picked = pool.sources.find(d => d.id === value);
   return (
     <div className="dw-voice-stage__sound" data-share-sound>
       <Select label={t('voice.shareAudio.from')} value={value} {...(picked?.monitor === true ? { hint: t('voice.shareAudio.monitorWarn') } : {})}
         options={[{ value: '', label: t('voice.shareAudio.fromNone') }, ...pool.sources.map(d => ({ value: d.id, label: d.label }))]}
-        onChange={id => { session.setShareSource(id === '' ? null : id).catch(() => undefined); }} />
+        onChange={id => v.call.setShareSource(id === '' ? null : id)} />
     </div>
   );
 }

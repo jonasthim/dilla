@@ -3319,7 +3319,7 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
   describe('FX2: a "sound from" device as the share\'s sound', () => {
     const deviceTrack = () => {
       const stop = vi.fn();
-      const track = { kind: 'audio', stop, getSettings: () => ({}), addEventListener: () => undefined, removeEventListener: () => undefined } as unknown as MediaStreamTrack;
+      const track = { kind: 'audio', enabled: true, stop, getSettings: () => ({}), addEventListener: () => undefined, removeEventListener: () => undefined } as unknown as MediaStreamTrack;
       const stream = { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] } as unknown as MediaStream;
       return { track, stop, stream };
     };
@@ -3435,6 +3435,91 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
         { id: 'mon-1', label: 'Monitor of Built-in Audio Analog Stereo', monitor: true },
         { id: 'app-1', label: 'Browser sink', monitor: false },
       ] });
+    });
+
+    it('M4: switching devices replaces the track on the existing publication, never a second sound track', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      const b = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn().mockResolvedValueOnce(a.stream).mockResolvedValueOnce(b.stream);
+      const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+      const replaceTrack = vi.fn(async () => undefined);
+      f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+        const pub = await real(track, o);
+        (pub.track as unknown as { replaceTrack: unknown }).replaceTrack = replaceTrack;
+        return pub;
+      });
+      await call.setShareSource('one');
+      f.room.localParticipant.publishTrack.mockClear();
+      f.room.localParticipant.unpublishTrack.mockClear();
+      await call.setShareSource('two');
+      expect(replaceTrack).toHaveBeenCalledWith(b.track, true);
+      expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+      expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalled();
+      expect(a.stop).toHaveBeenCalled();
+      expect(call.state.shareSource).toBe('two');
+      await call.setSharing(false);
+      expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(b.track);
+      expect(b.stop).toHaveBeenCalled();
+    });
+
+    it('I2: a pause silences the published device track at once, while a pick waits on the browser', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn(async () => a.stream);
+      await call.setShareSource('one');
+      let release!: (s: MediaStream) => void;
+      f.deps.media.getUserMedia = vi.fn(() => new Promise<MediaStream>((r) => { release = r; }));
+      const pick = call.setShareSource('two').catch(() => undefined);
+      await f.advance(0);
+      void call.setPaused(true);
+      expect(a.track.enabled).toBe(false);
+      release(deviceTrack().stream);
+      await pick;
+    });
+
+    it('I1: the call microphone is left out when the call uses the default input (its real entry shares the alias’s group)', async () => {
+      const dev = (deviceId: string, label: string, groupId: string) => ({ kind: 'audioinput', deviceId, label, groupId }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'default', groupId: 'g1' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('default', 'Default - Built-in Microphone', 'g1'), dev('communications', 'Communications - Built-in Microphone', 'g1'),
+          dev('real-1', 'Built-in Microphone', 'g1'), dev('mon-1', 'Monitor of Built-in Audio', 'g1'), dev('usb-1', 'USB Mic', 'g2')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect((await call.shareSources()).sources.map((d) => d.id)).toEqual(['mon-1', 'usb-1']);
+    });
+
+    it('Firefox device shapes: the mic by its real id, monitors flagged, outputs ignored', async () => {
+      const dev = (kind: string, deviceId: string, label: string, groupId: string) => ({ kind, deviceId, label, groupId }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'jVrkpdHLALC5tU+5cm/3rUPh5c489GuVQ+7GzLImvpI=', groupId: 'eZoF6d9F=' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('audioinput', 'jVrkpdHLALC5tU+5cm/3rUPh5c489GuVQ+7GzLImvpI=', 'Built-in Audio Analog Stereo', 'eZoF6d9F='),
+          dev('audioinput', 'Qm9v+monitor/1=', 'Monitor of Built-in Audio Analog Stereo', 'Doj8bPZA='),
+          dev('audioinput', 'Qm9v+monitor/2=', 'Monitor of dilla-share', 'X+IaQfmE='),
+          dev('audiooutput', 'y4ZTovCCOc4/', 'Speakers', 'Doj8bPZA=')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect(await call.shareSources()).toEqual({ labeled: true, sources: [
+        { id: 'Qm9v+monitor/1=', label: 'Monitor of Built-in Audio Analog Stereo', monitor: true },
+        { id: 'Qm9v+monitor/2=', label: 'Monitor of dilla-share', monitor: false },
+      ] });
+    });
+
+    it('M1: Chromium without microphone permission lists one unlabeled input with an empty id: the labels are missing', async () => {
+      const f = fakes({ devices: [{ kind: 'audioinput', deviceId: '', label: '', groupId: '' } as MediaDeviceInfo] });
+      const call = await start(f);
+      expect(await call.shareSources()).toEqual({ labeled: false, sources: [] });
+    });
+
+    it('M5: the monitor of the docs’ dilla-share sink is not warned about, another monitor is', async () => {
+      const dev = (deviceId: string, label: string) => ({ kind: 'audioinput', deviceId, label }) as MediaDeviceInfo;
+      const f = fakes({ devices: [dev('m1', 'Monitor of dilla-share'), dev('m2', 'Monitor of Built-in Audio Analog Stereo')] });
+      const call = await start(f);
+      expect((await call.shareSources()).sources.map((d) => d.monitor)).toEqual([false, true]);
     });
 
     it('says the labels are missing when the browser hides them', async () => {

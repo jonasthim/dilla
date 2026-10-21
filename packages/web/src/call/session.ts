@@ -992,7 +992,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let camera: { track: MediaStreamTrack } | null = null;
     let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void;
       /** FX2: the audio input the person picked as the share's sound, while one is published. */
-      device: { track: MediaStreamTrack; onEnded: () => void } | null } | null = null;
+      device: { track: MediaStreamTrack; pub: LocalPub | null; onEnded: () => void } | null } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
       const p = local.permissions;
       if (!p || p.canPublish === false) return false;
@@ -1186,21 +1186,41 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       } catch (err) {
         throw pageCallError(err);
       }
+      // M4: a device switch hands the new capture to the existing publication (replaceTrack), so there is never a second
+      // sound track; without that (or when it refuses), the new one is published and the old one withdrawn after.
+      const prior = s.device;
+      let pub: LocalPub | null = null;
+      let replaced = false;
       try {
         usable();
         if (screen !== s) throw new PageCallError('E_UNAVAILABLE');
-        await local.publishTrack(track, screenAudioOptions(caps));
+        const swap = prior?.pub?.track?.replaceTrack;
+        if (prior !== null && prior.pub !== null && swap !== undefined) {
+          try { await swap.call(prior.pub.track, track, true); replaced = true; pub = prior.pub; } catch { replaced = false; }
+        }
+        if (!replaced) pub = await local.publishTrack(track, screenAudioOptions(caps));
       } catch (err) {
-        await local.unpublishTrack(track).catch(() => undefined);
+        if (!replaced) await local.unpublishTrack(track).catch(() => undefined);
         track.stop();
         throw pageCallError(err);
       }
       if (ended || state.paused || screen !== s) {
-        await local.unpublishTrack(track).catch(() => undefined);
-        track.stop();
+        if (replaced && prior !== null) {
+          // The publication carries the new capture now: the share's own stop (the pause or the end queues one) withdraws it.
+          prior.track.removeEventListener('ended', prior.onEnded);
+          prior.track.stop();
+          s.device = { track, pub, onEnded: () => undefined };
+        } else {
+          await local.unpublishTrack(track).catch(() => undefined);
+          track.stop();
+        }
         throw new PageCallError('E_UNAVAILABLE');
       }
-      await clearDevice(s);
+      if (replaced && prior !== null) {
+        s.device = null;
+        prior.track.removeEventListener('ended', prior.onEnded);
+        prior.track.stop();
+      } else await clearDevice(s);
       const onEnded = (): void => {
         if (ended || screen !== s || s.device?.track !== track) return;
         track.removeEventListener('ended', onEnded);
@@ -1209,17 +1229,24 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         void local.unpublishTrack(track).catch(() => undefined).then(() => { if (!ended) refresh(); });
       };
       track.addEventListener('ended', onEnded);
-      s.device = { track, onEnded };
+      s.device = { track, pub, onEnded };
       set({ shareAudio: 'device', shareSource: id });
     });
     const shareSources = async (): Promise<{ sources: ShareSource[]; labeled: boolean }> => {
       let all: MediaDeviceInfo[] = [];
       try { all = await deps.media.enumerateDevices(); } catch { all = []; }
-      const own = micTrack?.getSettings?.().deviceId;
-      const inputs = all.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications'
-        && d.deviceId !== '' && d.deviceId !== own);
-      return { labeled: inputs.every((d) => d.label !== ''),
-        sources: inputs.map((d) => ({ id: d.deviceId, label: d.label, monitor: /^Monitor of /i.test(d.label) || /monitor/i.test(d.label) })) };
+      const raw = all.filter((d) => d.kind === 'audioinput');
+      const settings = micTrack?.getSettings?.();
+      const own = settings?.deviceId;
+      // I1: with the default input the track says 'default' and its real entry has another id but the same group. A monitor
+      // can share the card's group, so only the entries that are not monitors go with the microphone.
+      const group = settings?.groupId ?? raw.find((d) => d.deviceId === own)?.groupId;
+      const isMonitor = (label: string): boolean => /monitor/i.test(label);
+      const inputs = raw.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && d.deviceId !== ''
+        && d.deviceId !== own && !(group !== undefined && group !== '' && d.groupId === group && !isMonitor(d.label)));
+      // M1: Chromium without permission lists one input with an empty id and label; labels are judged before ids are filtered.
+      return { labeled: raw.every((d) => d.label !== ''),
+        sources: inputs.map((d) => ({ id: d.deviceId, label: d.label, monitor: isMonitor(d.label) && !/dilla-share/i.test(d.label) })) };
     };
 
     // ---- self flags, sent only after callJoin (the PageCall exists only once it answered)
@@ -1473,7 +1500,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || on === state.paused) return;
         // WB client I2: a camera or screen goes quiet at once, before any queued camera or share operation (the lane may
         // be held by the screen picker or a permission prompt); the lane then unpublishes and stops them.
-        if (on) for (const track of [camera?.track, screen?.video, screen?.audio]) if (track) track.enabled = false;
+        if (on) for (const track of [camera?.track, screen?.video, screen?.audio, screen?.device?.track]) if (track) track.enabled = false;
         relay.setPaused(on);
         set({ paused: on });
         applyMic();

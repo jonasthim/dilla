@@ -222,7 +222,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
 
 /** The silent-share notice key this Chromium's own platform string calls for (the e2e's independent reading of #37 FX1). */
 async function noticeKeyOf(page: Page): Promise<'voice.shareAudio.none.tabOnly' | 'voice.shareAudio.none.tabOrSystem'> {
-  const platform = await page.evaluate(() => (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.userAgent);
+  const platform = await page.evaluate(() => (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.userAgent);
   return /Windows|CrOS|Chrom(e|ium) ?OS|Mac/i.test(platform) ? 'voice.shareAudio.none.tabOrSystem' : 'voice.shareAudio.none.tabOnly';
 }
 
@@ -297,7 +297,10 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
 // (--use-fake-device-for-media-stream) stand in for a PipeWire monitor: pick one in "sound from", and the other browser's
 // tile for the screen loses its no-sound mark while the sound goes out encrypted in the screen-audio slot.
 test('a share without sound takes its sound from a picked audio input', async ({ peerBrowser, browserName }) => {
-  test.skip(browserName !== 'chromium', 'the fake audio devices are Chromium switches');
+  // Firefox's fake devices (media.navigator.streams.fake) list ONE audio input, "Default Audio Device", which is the call's own
+  // microphone and so never offered: the picker has nothing to show there (measured). Firefox's label shapes are pinned by
+  // session.test.ts instead ("Firefox device shapes").
+  test.skip(browserName !== 'chromium', 'Firefox fake devices list one audio input, the call microphone: no source to pick');
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');

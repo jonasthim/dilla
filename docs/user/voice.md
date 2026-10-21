@@ -192,9 +192,9 @@ beside the person's own tile, so with the camera and a share both on, a person h
 - A browser tab in Chrome or Edge (all platforms).
 - A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
 - A browser tab on Linux (no screen or window audio).
-- No sound from Firefox or Safari.
+- No sound from Firefox or Safari by themselves; there you can pick an audio input as the stream's sound (see [Share sound from Firefox or Linux](#share-sound-from-firefox-or-linux)).
 
-A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+A game or app's own sound without a virtual device needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
 
 The notice to the person sharing depends on the browser:
 
@@ -215,10 +215,15 @@ If the list says "Allow the microphone to see sound sources.", the browser hides
 
 - **A monitor** ("Monitor of …" on PipeWire and PulseAudio) carries everything your computer plays, including this call, so
   the others will hear themselves. dilla warns when you pick one. It is allowed, for example with headphones and a call you mute for yourself.
-- **One app only:** make a separate output for that app and pick its monitor. With PipeWire, `pw-loopback` creates a
-  virtual device; with PulseAudio or PipeWire-Pulse, `pactl load-module module-null-sink sink_name=share` creates one
-  named "share", and its monitor is "Monitor of share". Move the app's output to that device in pavucontrol or qpwgraph,
-  then pick "Monitor of share" in **sound from**. The call itself keeps playing on your normal speakers.
+- **One app only, and you still hear it:** give that app its own output, send a copy of it to your speakers, and pick the
+  output's monitor in **sound from**. The device is called `dilla-share`, and dilla does not warn about it.
+  1. Make the output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
+  2. Hear it yourself: `pactl load-module module-loopback source=dilla-share.monitor sink=@DEFAULT_SINK@ latency_msec=30`
+  3. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
+  4. Pick "Monitor of dilla-share" in **sound from**. The call itself keeps playing on your normal speakers and is not in the stream.
+
+  On PipeWire, one command makes the output and the copy to your speakers: `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'` (leave it running; stop it with Ctrl+C).
+  To remove the pactl devices, run `pactl unload-module module-loopback` and `pactl unload-module module-null-sink`.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
