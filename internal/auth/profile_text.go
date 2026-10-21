@@ -4,7 +4,6 @@ import (
 	"errors"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -16,39 +15,49 @@ const (
 	BioMaxRunes    = 500
 )
 
+// maxMarkRun is the most combining marks (General_Category Mn and Me) one base may carry. Real scripts stay below it
+// (Vietnamese and Hebrew with points take 2 to 4); more is overlay ("zalgo") text that draws over the rows around it.
+const maxMarkRun = 8
+
 var (
 	// ErrTextLength: more characters than the field allows.
 	ErrTextLength = errors.New("auth: the text is too long")
-	// ErrTextChars: a control, bidi, invisible or line-separator character, or a line break where there is none.
+	// ErrTextChars: a control, invisible, unassigned or private-use character, a stack of marks, or a line break where there is none.
 	ErrTextChars = errors.New("auth: the text has characters that cannot be shown")
-	// ErrTextBlank: nothing visible: only whitespace, marks or variation selectors.
+	// ErrTextBlank: nothing visible: only whitespace and combining marks.
 	ErrTextBlank = errors.New("auth: the text is only whitespace")
 )
 
-// NormalizeUserText is the one rule for free text a person writes about themselves or a device (a
-// display name, a status message, a bio, E7's device label): NFC, at most maxRunes characters, trimmed,
-// and none of
+// NormalizeUserText is the one rule for free text a person writes about themselves (a display name, a status message,
+// a bio): valid UTF-8, NFC, at most maxRunes characters, trimmed (White_Space), and none of
 //
 //   - a control character (a tab included; a line break only when allowNewline, and then CRLF becomes LF);
-//   - a bidi control (U+200E, U+200F, U+202A-202E, U+2066-2069), U+061C, U+2028 or U+2029;
-//   - an invisible character: U+00AD, U+034F, U+115F, U+1160, U+180E, U+200B, U+2060-2064, U+206A-206F,
-//     U+2800, U+3164, U+FEFF, U+FFA0, U+FFF9-FFFB;
-//   - a tag character (U+E0020-E007F), except inside an RGI emoji tag sequence (the England, Scotland and
-//     Wales flags), so a run of tags cannot carry hidden text;
-//   - a variation selector (U+FE00-FE0F, U+E0100-E01EF), except one U+FE0E or U+FE0F directly after an
-//     Emoji code point;
-//   - a zero-width non-joiner (U+200C) or joiner (U+200D) outside its context: after a virama
-//     (Canonical_Combining_Class 9), a ZWNJ between joining letters (RFC 5892 Appendix A.1, which keeps
-//     Persian, Kurdish and other Arabic-script text working), or a ZWJ joining two emoji (Extended_Pictographic
-//     with an emoji presentation, so (c)(c) is refused but a family is kept).
+//   - a Default_Ignorable_Code_Point (zero-width and bidi controls, the soft hyphen, the Hangul fillers, variation
+//     selectors, tag characters, the invisible operators, and the unassigned ones among them), except U+200C and
+//     U+200D where RFC 5892 Appendix A.1 and A.2 allow them (after a virama; a ZWNJ between joining letters, which
+//     keeps Persian, Kurdish and Sinhala working; a ZWJ between two emoji), U+FE0E and U+FE0F directly after an Emoji
+//     code point, U+180B-180D and U+180F directly after a Mongolian letter, and the RGI tag sequences (England,
+//     Scotland, Wales);
+//   - U+2028, U+2029, U+2800 (braille blank) and U+FFF9-FFFB;
+//   - an unassigned code point (General_Category Cn, with the noncharacters), a private-use one (Co) or a surrogate;
+//   - more than maxMarkRun combining marks in a row.
 //
-// "" is allowed and means "none". A text of nothing visible (only whitespace, combining marks or variation
-// selectors) is ErrTextBlank. The errors are ErrTextLength, ErrTextChars and ErrTextBlank, so a caller can
-// tell a person what to change. The tables come from Unicode unicodeTablesVersion
-// (scripts/gen-profile-text-tables.mjs); packages/client-core/src/profile-text.ts is the client's mirror.
+// "" is allowed and means "none". A text of nothing visible (only whitespace and combining marks) is ErrTextBlank.
+// The errors are ErrTextLength, ErrTextChars and ErrTextBlank, so a caller can tell a person what to change. The
+// character properties come from the generated tables of Unicode unicodeTablesVersion
+// (scripts/gen-profile-text-tables.mjs), not from the runtime, so the client's mirror
+// (packages/client-core/src/profile-text.ts) agrees whatever the browser's Unicode version.
 func NormalizeUserText(s string, maxRunes int, allowNewline bool) (string, error) {
+	if !utf8.ValidString(s) {
+		return "", ErrTextChars
+	}
 	if allowNewline {
 		s = strings.ReplaceAll(s, "\r\n", "\n")
+	}
+	// The marks are counted before NFC as well: it composes the first one into the base (a + 9 x U+0301 is one letter
+	// and 8 marks), and the person still typed 9.
+	if markRunTooLong(s) {
+		return "", ErrTextChars
 	}
 	out := norm.NFC.String(s)
 	if utf8.RuneCountInString(out) > maxRunes {
@@ -57,17 +66,36 @@ func NormalizeUserText(s string, maxRunes int, allowNewline bool) (string, error
 	if !textCharsOK(out, allowNewline) {
 		return "", ErrTextChars
 	}
-	trimmed := strings.TrimSpace(out)
+	trimmed := trimWhiteSpace(out)
 	if out != "" && !hasVisible(trimmed) {
 		return "", ErrTextBlank
 	}
 	return trimmed, nil
 }
 
-// hasVisible: some character that is not whitespace, a combining mark or a variation selector.
+// markRunTooLong: more than maxMarkRun combining marks in a row.
+func markRunTooLong(s string) bool {
+	run := 0
+	for _, r := range s {
+		if !inRanges(r, markRanges) {
+			run = 0
+		} else if run++; run > maxMarkRun {
+			return true
+		}
+	}
+	return false
+}
+
+func isWhiteSpace(r rune) bool { return inRanges(r, whiteSpaceRanges) }
+
+// trimWhiteSpace removes White_Space from both ends.
+func trimWhiteSpace(s string) string { return strings.TrimFunc(s, isWhiteSpace) }
+
+// hasVisible: some character that is not whitespace, a combining mark or Default_Ignorable (a joiner or a variation
+// selector that textCharsOK allowed in context shows nothing by itself).
 func hasVisible(s string) bool {
 	for _, r := range s {
-		if !unicode.IsSpace(r) && !unicode.In(r, unicode.Mn, unicode.Me) && (r < 0xfe00 || r > 0xfe0f) {
+		if !isWhiteSpace(r) && !inRanges(r, markRanges) && !inRanges(r, defaultIgnorableRanges) {
 			return true
 		}
 	}
@@ -77,33 +105,36 @@ func hasVisible(s string) bool {
 // textCharsOK is the character class of NormalizeUserText (and so of NormalizeDisplay).
 func textCharsOK(s string, allowNewline bool) bool {
 	runes := []rune(s)
+	marks := 0
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
+		if inRanges(r, markRanges) {
+			if marks++; marks > maxMarkRun {
+				return false
+			}
+		} else {
+			marks = 0
+		}
 		switch {
 		case r == '\n':
 			if !allowNewline {
 				return false
 			}
-		case unicode.IsControl(r), refusedRune(r), r >= 0xe0020 && r <= 0xe007f:
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
+			return false // Cc
+		case inRanges(r, unusableRanges):
 			return false
+		case r == 0x2028 || r == 0x2029 || r == 0x2800 || (r >= 0xfff9 && r <= 0xfffb):
+			return false // visible-looking or line-breaking, but not Default_Ignorable
 		case r == 0x1f3f4:
 			// A flag tag sequence from the RGI list (England, Scotland, Wales) is kept whole. Any other tag character
-			// is refused above, so a run of tags cannot carry hidden text.
+			// is Default_Ignorable and refused below, so a run of tags cannot carry hidden text.
 			if n := tagSequenceAt(runes, i); n > 0 {
 				i += n - 1
+				marks = 0
 			}
-		case isVariationSelector(r):
-			// Only U+FE0E or U+FE0F, one per base, right after an Emoji code point; a stacked selector has no
-			// emoji before it, so it is refused. Every other selector (U+FE00-FE0D, U+E0100-E01EF) is refused.
-			if (r != 0xfe0e && r != 0xfe0f) || i == 0 || !inRanges(runes[i-1], emojiRanges) {
-				return false
-			}
-		case r == 0x200c:
-			if (i == 0 || !isVirama(runes[i-1])) && !zwnjJoins(runes, i) {
-				return false
-			}
-		case r == 0x200d:
-			if (i == 0 || !isVirama(runes[i-1])) && !joinsEmoji(runes, i) {
+		case inRanges(r, defaultIgnorableRanges):
+			if !ignorableAllowed(runes, i) {
 				return false
 			}
 		}
@@ -111,9 +142,22 @@ func textCharsOK(s string, allowNewline bool) bool {
 	return true
 }
 
-// isVariationSelector: U+FE00-FE0F and U+E0100-E01EF.
-func isVariationSelector(r rune) bool {
-	return (r >= 0xfe00 && r <= 0xfe0f) || (r >= 0xe0100 && r <= 0xe01ef)
+// ignorableAllowed: the Default_Ignorable code points that may stand where they are, by context.
+func ignorableAllowed(runes []rune, i int) bool {
+	r := runes[i]
+	afterVirama := i > 0 && isVirama(runes[i-1])
+	switch r {
+	case 0x200c:
+		return afterVirama || zwnjJoins(runes, i)
+	case 0x200d:
+		return afterVirama || joinsEmoji(runes, i)
+	case 0xfe0e, 0xfe0f:
+		// One per base: a stacked selector has no emoji before it.
+		return i > 0 && inRanges(runes[i-1], emojiRanges)
+	case 0x180b, 0x180c, 0x180d, 0x180f:
+		return i > 0 && inRanges(runes[i-1], mongolianLetterRanges)
+	}
+	return false
 }
 
 // tagSequenceAt is the length of the RGI tag sequence that starts at runes[i], 0 when none does.
@@ -136,15 +180,6 @@ func tagSequenceAt(runes []rune, i int) int {
 	return 0
 }
 
-// refusedRune: the characters that are refused wherever they stand.
-func refusedRune(r rune) bool {
-	switch r {
-	case 0x00ad, 0x034f, 0x061c, 0x115f, 0x1160, 0x180e, 0x200b, 0x200e, 0x200f, 0x2028, 0x2029, 0x2800, 0x3164, 0xfeff, 0xffa0:
-		return true
-	}
-	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2060 && r <= 0x2064) || (r >= 0x2066 && r <= 0x206f) || (r >= 0xfff9 && r <= 0xfffb)
-}
-
 func inRanges(r rune, rs []runeRange) bool {
 	i := sort.Search(len(rs), func(i int) bool { return rs[i].hi >= r })
 	return i < len(rs) && rs[i].lo <= r
@@ -152,14 +187,11 @@ func inRanges(r rune, rs []runeRange) bool {
 
 func isVirama(r rune) bool { return inRanges(r, viramaRanges) }
 
-// joinType is the Joining_Type of r: L, R, D, C or U from ArabicShaping.txt, and T for the rest of Mn, Me and Cf.
+// joinType is the Joining_Type of r: L, R, D, C or T from the generated table, U for every other code point.
 func joinType(r rune) byte {
 	i := sort.Search(len(joiningRanges), func(i int) bool { return joiningRanges[i].hi >= r })
 	if i < len(joiningRanges) && joiningRanges[i].lo <= r {
 		return joiningRanges[i].typ
-	}
-	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
-		return 'T'
 	}
 	return 'U'
 }

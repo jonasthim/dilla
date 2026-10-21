@@ -33,6 +33,8 @@ jobs:
           [ ! -d packages ] || npm run vectors --workspaces --if-present
           git diff --exit-code -- protocol/vectors
           test -z "$(git status --porcelain -- protocol/vectors)"
+      - name: profile-text tables are current
+        run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
   ui:
     runs-on: ubuntu-latest
     steps:
