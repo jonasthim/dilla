@@ -1157,7 +1157,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       d.track.stop();
     };
     const setShareSource = (id: string | null): Promise<void> => inLane(async () => {
-      sendable();
       usable();
       const s = screen;
       if (s === null || (s.audio !== null && state.shareSource === 'browser')) throw new PageCallError('E_UNAVAILABLE');
