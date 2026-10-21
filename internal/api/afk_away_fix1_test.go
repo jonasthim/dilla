@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
@@ -26,6 +28,18 @@ type awayProbeRepo struct {
 	onMembers func() // inside ListMembersOfCommunity (EligibleUsers: the op 55 audience)
 	onList    func() // inside ListAFKAway (the post-boot walk)
 	failGetVS int    // GetVoiceSession failures left (an AFK call's end at boot)
+	failList  int    // ListAFKAway failures left (the seed)
+	listCalls int    // ListAFKAway calls
+	// onGetMember runs inside GetMember after the read, before it answers (fix round 2, R2).
+	onGetMember func()
+}
+
+func (p *awayProbeRepo) GetMember(ctx context.Context, cid, uid id.ID) (store.MemberOfCommunityRow, error) {
+	row, err := p.Repository.GetMember(ctx, cid, uid)
+	if f := p.onGetMember; f != nil {
+		f()
+	}
+	return row, err
 }
 
 func newAwayProbe(r store.Repository) *awayProbeRepo {
@@ -85,6 +99,16 @@ func (p *awayProbeRepo) ListAFKAway(ctx context.Context, cid id.ID) ([]store.AFK
 	if f := p.onList; f != nil {
 		f()
 	}
+	p.mu.Lock()
+	p.listCalls++
+	fail := p.failList > 0
+	if fail {
+		p.failList--
+	}
+	p.mu.Unlock()
+	if fail {
+		return nil, errors.New("injected ListAFKAway failure")
+	}
 	return p.Repository.ListAFKAway(ctx, cid)
 }
 
@@ -106,9 +130,21 @@ func probeCalls(t *testing.T, a *awayEnv, probe store.Repository, clk clock.Cloc
 	t.Helper()
 	c := api.NewCalls(probe, api.NewResolver(a.e.Repo), a.stub, api.CallsConfig{LiveKitURL: testLiveKitURL}, clk,
 		slog.New(slog.DiscardHandler)).WithAFKAway(a.away, a.connected)
+	t.Cleanup(c.StopAFK)
+	a.away.addFlush(c.FlushAFKAwayForTest)
 	if err := c.SeedAFKAway(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	return c
+}
+
+// unseededCalls is probeCalls without the seed.
+func unseededCalls(t *testing.T, a *awayEnv, probe store.Repository) *api.Calls {
+	t.Helper()
+	c := api.NewCalls(probe, api.NewResolver(a.e.Repo), a.stub, api.CallsConfig{LiveKitURL: testLiveKitURL}, a.e.Clk,
+		slog.New(slog.DiscardHandler)).WithAFKAway(a.away, a.connected)
+	t.Cleanup(c.StopAFK)
+	a.away.addFlush(c.FlushAFKAwayForTest)
 	return c
 }
 
@@ -154,6 +190,7 @@ func TestAFKClearResolvesTheAudienceOutsideTheLock(t *testing.T) {
 		free = append(free, c.AwayLockFreeForTest())
 	}
 	c.AFKActiveInChannel(t.Context(), a.member, a.ch)
+	c.FlushAFKAwayForTest() // op 55 goes out on the drainer (fix round 2)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(free) == 0 {
@@ -230,6 +267,8 @@ func TestAFKCallEndFailingAtBootIsRetried(t *testing.T) {
 	seedLeaf(t, a.e, group, a.memberDev, 3, nil)
 	room := legacyAFKCall(t, a, group)
 	call, _, _ := cutRoom(room)
+	// The member's device left the voice call: a retried mark checks for another call (R4).
+	a.stub.setPresent(a.room, &livekit.ParticipantInfo{Identity: deviceOf(t, a.e, a.ownerTok).String()})
 	probe := newAwayProbe(a.e.Repo)
 	probe.failGetVS = 1
 	c := probeCalls(t, a, probe, a.e.Clk)

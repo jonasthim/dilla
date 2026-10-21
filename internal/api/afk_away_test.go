@@ -33,6 +33,25 @@ type awayFrame struct {
 type awayGW struct {
 	mu     sync.Mutex
 	frames []awayFrame
+	// flushes wait until every Calls writing to this recorder has sent what it queued (fix round
+	// 2: op 55 goes out on a drainer goroutine).
+	flushMu sync.Mutex
+	flushes []func()
+}
+
+func (g *awayGW) addFlush(f func()) {
+	g.flushMu.Lock()
+	defer g.flushMu.Unlock()
+	g.flushes = append(g.flushes, f)
+}
+
+func (g *awayGW) flush() {
+	g.flushMu.Lock()
+	fs := append([]func(){}, g.flushes...)
+	g.flushMu.Unlock()
+	for _, f := range fs {
+		f()
+	}
 }
 
 func (g *awayGW) DeliverUser(u id.ID, f gateway.Frame) {
@@ -55,6 +74,7 @@ func (g *awayGW) DeliverUser(u id.ID, f gateway.Frame) {
 
 // sent is every op 55 about user in community, as (recipient, since), in order.
 func (g *awayGW) sent(community, user id.ID) []awayFrame {
+	g.flush()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var out []awayFrame
@@ -67,6 +87,7 @@ func (g *awayGW) sent(community, user id.ID) []awayFrame {
 }
 
 func (g *awayGW) count() int {
+	g.flush()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.frames)
@@ -86,6 +107,8 @@ func newAwayEnv(t *testing.T) *awayEnv {
 	p := newPendingEnv(t)
 	a := &awayEnv{pendingEnv: p, away: &awayGW{}, owner: p.e.sess[p.ownerTok].UserID, offline: map[id.ID]bool{}}
 	p.calls.WithAFKAway(a.away, a.connected)
+	t.Cleanup(p.calls.StopAFK)
+	a.away.addFlush(p.calls.FlushAFKAwayForTest)
 	if err := p.calls.SeedAFKAway(t.Context()); err != nil {
 		t.Fatal(err)
 	}

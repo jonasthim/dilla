@@ -258,19 +258,41 @@ type Calls struct {
 	afkAdmitSeq uint64
 	afkAdmits   map[id.ID]map[id.ID]afkAdmit
 
-	// awayMu serialises every write of the stored away roster and guards awaySet, the in-memory
-	// index of who may be away (afkaway.go). It is taken before afkMu and awaySendMu, never inside
-	// them. awaySendMu orders the op 55 sends, which run with awayMu released.
+	// awayMu serialises every write of the stored away roster (afkaway.go). It is taken before
+	// afkMu, awayIdxMu and awayQMu, never inside them, and nothing waits on a send or an audience
+	// read while holding it.
 	awayMu        sync.Mutex
-	awaySendMu    sync.Mutex
 	awayGW        VoiceGateway
 	awayConnected func(id.ID) bool
-	awaySet       map[id.ID]map[id.ID]struct{}
-	awaySeeded    bool
+	awayDraining  func() bool
+	// awayIdxMu guards awaySet, the in-memory index of who may be away, and awaySeeded: readers
+	// (every typing op, upload and post) take the read lock alone, writers the write lock briefly,
+	// with no I/O under it.
+	awayIdxMu  sync.RWMutex
+	awaySet    map[id.ID]map[id.ID]struct{}
+	awaySeeded bool
+	// awayQMu guards the op 55 FIFO the writers append to under awayMu and the drainer goroutine
+	// sends from with no lock held; awaySending is set while the drainer sends a batch.
+	awayQMu     sync.Mutex
+	awayQueue   []awayNote
+	awaySending bool
+	awayWake    chan struct{}
+	// afkCtx is cancelled by StopAFK; afkWG tracks the drainer and the maintenance passes, and
+	// afkStopped refuses new ones after StopAFK. drainerOn is set once the drainer runs.
+	afkCtx     context.Context
+	afkCancel  context.CancelFunc
+	afkWG      sync.WaitGroup
+	afkLifeMu  sync.Mutex
+	afkStopped bool
+	drainerOn  bool
 	// awayGraceUntil is when the boot grace ends (R-AW5); awayGraceDone is set once the rows of
-	// users with no connection were cleared after it. Both under awayMu.
+	// users with no connection were cleared after it; seedNextAt and seedBackoff pace the retries of
+	// a failed seed (R5). All under awayMu.
 	awayGraceUntil time.Time
 	awayGraceDone  bool
+	awayBooted     bool
+	seedNextAt     time.Time
+	seedBackoff    time.Duration
 	// awayEndPending is set while a boot-time AFK-call end is unfinished (M4); awayMaintaining
 	// keeps AFKMaintenance to one pass at a time.
 	awayEndPending  atomic.Bool
@@ -350,8 +372,10 @@ func (b BarredDevices) DeviceBarred(ctx context.Context, device id.ID) (bool, er
 
 // NewCalls wires the call routes over the SFU.
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
+	afkCtx, afkCancel := context.WithCancel(context.Background())
 	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
-		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1)}
+		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
+		awayWake: make(chan struct{}, 1), afkCtx: afkCtx, afkCancel: afkCancel}
 }
 
 // WithCounters sets the label-free counters the routes move and returns h.

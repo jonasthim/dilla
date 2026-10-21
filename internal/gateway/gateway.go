@@ -588,6 +588,10 @@ func (g *Gateway) Online(deviceID id.ID) bool {
 	return false
 }
 
+// Draining reports whether Shutdown has begun: from then on every connection is closing, and no
+// user's lack of one means they went offline (AW2, R-AW5).
+func (g *Gateway) Draining() bool { return g.isDraining() }
+
 // isDraining reports whether Shutdown has begun.
 func (g *Gateway) isDraining() bool {
 	g.mu.Lock()

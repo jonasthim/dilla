@@ -122,3 +122,14 @@ func (h *Calls) AwayLockFreeForTest() bool {
 	}
 	return false
 }
+
+// MarkAwayForTest marks user away in cid as a sweep or a PUT would (connection checked, decided now).
+func (h *Calls) MarkAwayForTest(ctx context.Context, cid, user id.ID) {
+	_, _ = h.markAway(ctx, cid, user, h.afkDecision(), true)
+}
+
+// AwaySeededForTest reports whether the away index has been seeded from the store.
+func (h *Calls) AwaySeededForTest() bool { return h.awaySeededNow() }
+
+// FlushAFKAwayForTest waits, up to five seconds, until every queued op 55 was sent.
+func (h *Calls) FlushAFKAwayForTest() { h.flushAway(5 * time.Second) }

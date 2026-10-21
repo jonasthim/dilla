@@ -119,7 +119,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// AW2: the away roster's changes go out as op 55 to the AFK channel's audience, and a mark needs
 	// the user to hold a gateway connection (Q2). The calls left live in AFK channels end in
 	// New, after the delivery service starts (EndAFKCalls).
-	calls.WithAFKAway(p.gw, p.gw.UserConnected)
+	calls.WithAFKAway(p.gw, p.gw.UserConnected).WithAFKDraining(p.gw.Draining)
 	// R1: every community that predates web3.9, or lost its pointer, gets its built-in AFK channel
 	// once, before any listener exists (dillad serve and dilla-testhost alike).
 	// It logs its own summary and each community it could not finish; only a failure to list the

@@ -598,9 +598,10 @@ func (s *Server) sweep(ctx context.Context) {
 	}
 	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a
 	// boot-time AFK-call end that failed is retried. It runs on its own goroutine (one pass at a time,
-	// AFKMaintenance's own guard), so a large walk never delays this tick's heartbeat enforcement.
+	// AFKMaintenance's own guard; tracked and cancelled by StopAFK in shutdown), so a large walk never
+	// delays this tick's heartbeat enforcement.
 	if s.calls != nil {
-		go s.calls.AFKMaintenance(context.WithoutCancel(ctx))
+		s.calls.GoAFKMaintenance()
 	}
 }
 
@@ -697,6 +698,12 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.stopIdleClose != nil {
 		s.stopIdleClose()
+	}
+	// AW2 (R3): the op 55 drainer and any AFK maintenance pass stop, and are waited for, before the
+	// delivery service and the gateway they use: a pass that ran on would clear the rows of users who
+	// look disconnected only because the gateway drains.
+	if s.calls != nil {
+		s.calls.StopAFK()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))
