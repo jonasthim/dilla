@@ -5,10 +5,11 @@ import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { SERVER_NAME_MAX_BYTES, nameProblem } from '../Create.tsx';
+import { GifsSettings } from './GifsSettings.tsx';
 import { FooterSlot, forbidden, refused, statusIs, useRun, type SectionProps } from './shared.ts';
 
 /** Overview: rename the server. The name is checked as the instance checks it; a 409 means someone changed it meanwhile. */
-export function OverviewSection({ communityId, serverName }: SectionProps): React.JSX.Element {
+export function OverviewSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
   const client = useCore();
   const base = useId();
   const fieldId = `${base}-name`;
@@ -97,6 +98,8 @@ export function OverviewSection({ communityId, serverName }: SectionProps): Reac
           {afkLoadError ? <p role="alert">{t('admin.afk.loadError')}</p> : null}
         </SettingsRow>
       </form>
+      {/* E8: the Giphy key has its own save and remove, so it sits outside the one save bar. */}
+      <GifsSettings communityId={communityId} announce={announce} />
       {footerEl === null ? null : createPortal(
         <SettingsFooter status={saved ? t('admin.overview.saved') : undefined}>
           <Button type="submit" form={`${base}-form`} variant="accent" aria-disabled={action.busy || undefined}>

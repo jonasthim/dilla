@@ -8,7 +8,7 @@ import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescripto
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, Routes, type DeviceRow, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
+import { OWNER_TOP, Routes, type DeviceRow, type GifPage, type GifStatus, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -328,6 +328,12 @@ export function world(opts: {
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
     getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, pending: false })),
+    gifStatus: vi.fn((_c: Uint8Array): Promise<GifStatus> => Promise.resolve({ on: false, rating: 'pg-13' })),
+    gifSetKey: vi.fn((_c: Uint8Array, _key: string): Promise<void> => Promise.resolve()),
+    gifClearKey: vi.fn((_c: Uint8Array): Promise<void> => Promise.resolve()),
+    gifSetRating: vi.fn((_c: Uint8Array, _rating: string): Promise<void> => Promise.resolve()),
+    gifSearch: vi.fn((_c: Uint8Array, _q: string, _offset: number): Promise<GifPage> => Promise.resolve({ items: [], next: null })),
+    gifMedia: vi.fn((_c: Uint8Array, _id: string, _variant: 'preview' | 'full'): Promise<Uint8Array> => Promise.resolve(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]))),
     getAFKSettings: vi.fn((_id: Uint8Array): Promise<AFKSettings> => Promise.resolve({ channelId: null, timeoutSeconds: 300 })),
     setAFKSettings: vi.fn(() => Promise.resolve()),
     sendAFKActivity: vi.fn(() => Promise.resolve()),

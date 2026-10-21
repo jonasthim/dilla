@@ -8,6 +8,7 @@ import { useRoute } from '../../router.ts';
 import { t } from '../../strings/index.ts';
 import { editableText, mentionOptions, mentionRoles, offeredRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, TrayList } from './Attachments.tsx';
+import { GifPickerPanel } from './GifPicker.tsx';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 import { formatWait, spokenStep } from './slow.ts';
 
@@ -43,6 +44,22 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const bits = p.bits ?? null;
   const sliceSlow = useSlice(`slow:${p.channelId}`);
   const [route] = useRoute();
+  // E8: the GIF button exists only in a channel of a server that has a Giphy key; a direct message has none, and
+  // asks nothing, and a thread's composer has none. The key is a per-server setting, so the status is read per server (a failed read means no button).
+  const gifCommunity = route.name === 'channel' && p.threadId === undefined ? route.communityId : null;
+  const [gifStatus, setGifStatus] = useState<{ communityId: string; on: boolean } | null>(null);
+  const [gifOpen, setGifOpen] = useState(false);
+  const gifButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (gifCommunity === null) return;
+    let cancelled = false;
+    void client.call({ m: 'gifStatus', communityId: gifCommunity }).then(value => {
+      const on = typeof value === 'object' && value !== null && (value as Record<string, unknown>).on === true;
+      if (!cancelled) setGifStatus({ communityId: gifCommunity, on });
+    }, () => { if (!cancelled) setGifStatus({ communityId: gifCommunity, on: false }); });
+    return () => { cancelled = true; };
+  }, [client, gifCommunity]);
+  const gifsOn = gifCommunity !== null && gifStatus?.communityId === gifCommunity && gifStatus.on;
   const channels = useSlice(`channels:${route.name === 'channel' ? route.communityId : ''}`);
   const announcement = p.announcement ?? channels?.find(c => c.id === p.channelId)?.announcement === true;
   const bypass = p.bypass ?? (bits !== null && (bits & PERM.bypassSlowmode) !== 0);
@@ -154,6 +171,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       sendLabel={t('shell.composer.send')}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
+      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => setGifOpen(o => !o), buttonRef: gifButton } } : {})}
       {...(noticeBody !== null ? { notice: noticeBody } : {})}
       top={<>
         {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })}
@@ -161,6 +179,13 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
           onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
         <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
         {p.ui.trayError !== null ? <p className="dw-tray-error" role="alert">{p.ui.trayError}</p> : null}
+        {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} dispatch={a => { p.dispatch(a); }}
+          {...(p.announce !== undefined ? { announce: p.announce } : {})}
+          onClose={reason => {
+            setGifOpen(false);
+            if (reason === 'escape') gifButton.current?.focus();
+            else if (reason === 'picked') textareaRef.current?.focus();
+          }} /> : null}
         {open ? <MentionList id={listId} label={t('shell.composer.mentions')}
           options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary }))}
           activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}

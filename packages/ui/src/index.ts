@@ -82,6 +82,8 @@ export { MessageEditor } from './MessageEditor/MessageEditor.tsx';
 export type { MessageEditorProps } from './MessageEditor/MessageEditor.tsx';
 export { ReplyChip } from './ReplyChip/ReplyChip.tsx';
 export type { ReplyChipProps } from './ReplyChip/ReplyChip.tsx';
+export { GifPicker } from './GifPicker/GifPicker.tsx';
+export type { GifPickerItem, GifPickerProps, GifPickerStatus } from './GifPicker/GifPicker.tsx';
 export { MentionList } from './MentionList/MentionList.tsx';
 export type { MentionListProps } from './MentionList/MentionList.tsx';
 export { PinsDialog } from './PinsDialog/PinsDialog.tsx';
