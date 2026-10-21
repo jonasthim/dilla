@@ -142,6 +142,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-afk-page { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; width: 100%; }
 .dw-afk-roster { width: auto; max-width: 100%; box-sizing: border-box; padding: 0; }
 .dw-afk-away { margin: 0; color: var(--fg-2); text-align: center; }
+/* Final review N1: a notice on the AFK page (afk.failed) drops the stage's empty line, which #50's centring keys on; the
+   page's controls stay centred on their own, rather than taking the idle preview's left start. */
+.d-app-shell:not([data-layout="phone"]) .dw-voice-stage[data-call-phase="idle"][data-afk="true"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { justify-content: center; }
 [data-layout="phone"] .dw-dm-call .d-call-stage__controls { position: static; }
 [data-layout="phone"] .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
 [data-layout="phone"] .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
