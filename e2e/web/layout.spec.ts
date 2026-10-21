@@ -234,6 +234,8 @@ async function expectBar(page: Page, tag: string, name: string, bar: string, wan
 // The world.
 
 const nav = (page: Page) => channelsNav(page);
+/** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
+const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
 async function makeCategory(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -809,10 +811,10 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
     // N4: the AFK preview, one column at the top.
     await page.goto(afkPath);
-    await expect(page.locator('.dw-voice-join')).toBeVisible({ timeout: WAIT });
+    await expect(page.locator(AFK_ACTION)).toBeVisible({ timeout: WAIT });
     // AW5: the AFK channel hosts no call, so its preview has no tiles.
     await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
-    const join = (await boxes(page, '.dw-voice-join'))[0];
+    const join = (await boxes(page, AFK_ACTION))[0];
     const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
     if (join !== undefined && texts.length > 0) {
@@ -825,9 +827,9 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
-    const phoneJoin = page.locator('.dw-voice-join');
-    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
-    const pjoin = (await boxes(page, '.dw-voice-join'))[0];
+    const afkAction = page.locator(AFK_ACTION);
+    await expect(afkAction).toBeVisible({ timeout: WAIT });
+    const pjoin = (await boxes(page, AFK_ACTION))[0];
     const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
@@ -836,6 +838,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // its row (a phone's tap only opens the stage, R24), then its join.
     await page.goto(afkPath.split('/').slice(0, 3).join('/'));
     await nav(page).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
+    const phoneJoin = page.locator('.dw-voice-join');
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
     await expect(page.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });

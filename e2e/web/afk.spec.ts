@@ -555,6 +555,11 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
   await expect(stage(a.page)).not.toContainText(copy('voice.removed'));
   expect(a.afkPosts - posts, 'Ada’s client asks for no call or token in the AFK channel').toBe(0);
+  // The AFK page (Jonas, concern 2): it lists the roster with her in it, and, away, the line in place of go AFK.
+  await expect(stage(a.page).locator('.dw-afk-roster .d-voice-row__person').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
+  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible();
+  await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
+  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel with its away roster');
   // A second click while away does nothing (no second PUT, no call).
   const puts = a.awayPuts;
@@ -727,9 +732,18 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   await railItem(b.page, SERVER).click();
   await expectAfkLast(b.page, 'AFK');
   await expectAccessible(b.page, 'the channel list with the AFK channel');
-  await voiceRow(a.page, 'AFK').click();
+  // The AFK page opened by its path (no click on the row): nobody is away yet, and go AFK stands in place of join voice.
+  await a.page.goto(`/c/${communityId}/${afkId}`);
+  await expect(stage(a.page).getByText(copy('afk.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
+  await expectAccessible(a.page, 'the AFK page with nobody away');
+  const posts = a.afkPosts;
+  await button(stage(a.page), 'afk.go').click();
   for (const p of [a, b]) await expect(awayPeople(p.page, 'AFK').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
+  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeFocused({ timeout: WAIT });
+  await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0);
+  expect(a.afkPosts - posts, 'go AFK asks for no call or token').toBe(0);
   await expectAccessible(a.page, 'the AFK channel with Ada away');
   await expectAccessible(b.page, 'the channel list with Ada away under AFK');
   await serverSettings(a.page, 'admin.nav.overview');
