@@ -16,12 +16,14 @@ vi.mock('../../webauthn.ts', async (original) => ({ ...await original<typeof imp
 const PK = 'ab'.repeat(16);
 const WITH_PASSWORD: FactorsState = { owed: false, totp: { confirmedAt: 1_900_000_000 }, passkeys: [], backupCodesLeft: 8, hasPassword: true };
 const NO_PASSWORD_NO_FACTOR: FactorsState = { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false };
+const NO_PASSWORD_TOTP: FactorsState = { owed: false, totp: { confirmedAt: 1_900_000_000 }, passkeys: [], backupCodesLeft: 8, hasPassword: false };
 const NO_PASSWORD_PASSKEY: FactorsState = { owed: false, totp: null,
   passkeys: [{ id: PK, name: 'laptop', created: 1_900_000_100, lastUsed: null }], backupCodesLeft: 8, hasPassword: false };
 
 type Script = (c: Command, fake: FakeClient) => Promise<unknown>;
 const happy: Script = (c, f) => {
   switch (c.m) {
+    case 'stepUp': return Promise.resolve({ token: 'tok-code' });
     case 'stepUpPasskeyBegin': return Promise.resolve({ ceremonyId: '11'.repeat(16), options: '{}' });
     case 'stepUpPasskeyFinish': return Promise.resolve({ token: 'tok-pk' });
     case 'changePassword':
@@ -177,11 +179,89 @@ describe('setting a first password', () => {
     const again = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
     expect(within(again).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
   });
-  it('a session too old for a first password says so', async () => {
-    const { user } = setup(NO_PASSWORD_NO_FACTOR, (c, f) => c.m === 'changePassword' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : happy(c, f));
+  it('a session that went stale while the dialog was open closes it with a calm line, and the next press mints a fresh one', async () => {
+    let stale = true;
+    const { fake, user } = setup(NO_PASSWORD_NO_FACTOR, (c, f) => c.m === 'changePassword' && stale ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['settings.password.add'] }));
     const d = dialog(en['settings.password.titleSet']);
     await fill(user, d, { next: 'first password', again: 'first password{Enter}' });
-    expect(await within(d).findByRole('alert')).toHaveTextContent(en['settings.password.error.stale']);
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: en['settings.password.titleSet'] })).toBeNull(); });
+    expect(await screen.findByText(en['settings.password.error.stale'])).toBeInTheDocument();
+    expect(en['settings.password.error.stale']).not.toMatch(/sign out/i);
+    stale = false;
+    await user.click(screen.getByRole('button', { name: en['settings.password.add'] }));
+    expect(fake.callsOf('freshSession')).toHaveLength(2);
+  });
+  it('mints a fresh session before the step-up, and again before a set with no factor', async () => {
+    vi.mocked(getPasskey).mockResolvedValueOnce('{"assertion":1}');
+    const { fake, user } = setup(NO_PASSWORD_PASSKEY);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.add'] }));
+    await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await user.click(within(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] }));
+    await screen.findByRole('dialog', { name: en['settings.password.titleSet'] });
+    const order = fake.calls.map(c => c.m);
+    expect(order.indexOf('freshSession')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('freshSession')).toBeLessThan(order.indexOf('stepUpPasskeyBegin'));
+  });
+  it('a change does not mint a session', async () => {
+    const { fake, user } = setup(WITH_PASSWORD);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.change'] }));
+    expect(fake.callsOf('freshSession')).toEqual([]);
+  });
+  it('an account with only an authenticator app confirms with a code and sets a password', async () => {
+    const { fake, user } = setup(NO_PASSWORD_TOTP);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.add'] }));
+    const step = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    expect(within(step).getByText(en['factorSettings.stepUp.codeBody'])).toBeInTheDocument();
+    await user.type(within(step).getByLabelText(en['factorSettings.stepUp.code']), '123456{Enter}');
+    const d = await screen.findByRole('dialog', { name: en['settings.password.titleSet'] });
+    await fill(user, d, { next: 'first password', again: 'first password{Enter}' });
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: en['settings.password.titleSet'] })).toBeNull(); });
+    expect(fake.callsOf('stepUp')).toEqual([{ m: 'stepUp', method: 'totp', secret: '123456' }]);
+    expect(fake.callsOf('changePassword')).toEqual([{ m: 'changePassword', old: null, next: 'first password', stepup: 'tok-code' }]);
+  });
+  it('a backup code is sent as a backup code, and a malformed one is refused before it is sent', async () => {
+    const { fake, user } = setup(NO_PASSWORD_TOTP);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.add'] }));
+    const step = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await user.type(within(step).getByLabelText(en['factorSettings.stepUp.code']), 'nope{Enter}');
+    expect(await within(step).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.codeFailed']);
+    expect(fake.callsOf('stepUp')).toEqual([]);
+    await user.clear(within(step).getByLabelText(en['factorSettings.stepUp.code']));
+    await user.type(within(step).getByLabelText(en['factorSettings.stepUp.code']), 'aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-a{Enter}');
+    await screen.findByRole('dialog', { name: en['settings.password.titleSet'] });
+    expect(fake.callsOf('stepUp')).toEqual([{ m: 'stepUp', method: 'backup', secret: 'a'.repeat(26) }]);
+  });
+});
+
+describe('the dialog\'s form', () => {
+  it('holds a hidden-from-sight username for the password manager', async () => {
+    const { user } = setup(WITH_PASSWORD);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.change'] }));
+    const field = within(dialog(en['settings.password.titleChange'])).getByLabelText(en['settings.password.username']);
+    expect(field).toHaveAttribute('autocomplete', 'username');
+    expect(field).toHaveAttribute('readonly');
+    expect(field).toHaveValue(account().user?.username);
+  });
+  it('caps the new password at 1024 characters, the server has no bound of its own', async () => {
+    const { user } = setup(WITH_PASSWORD);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.change'] }));
+    const d = dialog(en['settings.password.titleChange']);
+    expect(within(d).getByLabelText(en['settings.password.new'])).toHaveAttribute('maxlength', '1024');
+    expect(within(d).getByLabelText(en['settings.password.confirm'])).toHaveAttribute('maxlength', '1024');
+  });
+  it('is empty when it is opened again after Cancel, and after a refusal', async () => {
+    const { user } = setup(WITH_PASSWORD, (c, f) => c.m === 'changePassword' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : happy(c, f));
+    const open = async () => { await user.click(await screen.findByRole('button', { name: en['settings.password.change'] })); return dialog(en['settings.password.titleChange']); };
+    let d = await open();
+    await fill(user, d, { old: 'old password', next: 'new password', again: 'new password' });
+    await user.keyboard('{Escape}');
+    d = await open();
+    for (const key of ['old', 'new', 'confirm'] as const) expect(within(d).getByLabelText(en[`settings.password.${key}`])).toHaveValue('');
+    await fill(user, d, { old: 'old password', next: 'new password', again: 'new password{Enter}' });
+    await within(d).findByRole('alert');
+    await user.click(within(d).getByRole('button', { name: en['settings.password.cancel'] }));
+    d = await open();
+    for (const key of ['old', 'new', 'confirm'] as const) expect(within(d).getByLabelText(en[`settings.password.${key}`])).toHaveValue('');
   });
 });

@@ -63,6 +63,8 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
   const [next, setNext] = useState<Phase | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** A line under the password row when a first password could not start or went stale. */
+  const [passwordNote, setPasswordNote] = useState<string | null>(null);
   const [codes, setCodes] = useState<string[]>([]);
   const action = useRun();
   const rootRef = useRef<HTMLElement>(null);
@@ -113,9 +115,16 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
     action.reset();
     setNotice(null);
     setToken(null);
+    setPasswordNote(null);
     setPurpose({ kind: 'password' });
-    if (factors?.hasPassword === false && ((factors.totp !== null) || factors.passkeys.length > 0)) { setPhase('stepup'); return; }
-    setPhase('action');
+    if (factors?.hasPassword !== false) { setPhase('action'); return; }
+    // A first password wants a session younger than the instance's reauth window, and the step-up token is bound to the
+    // session it was made in: the new session comes first, then the step-up, then the set.
+    const holdsFactor = factors.totp !== null || factors.passkeys.length > 0;
+    client.call({ m: 'freshSession' }).then(() => { setPhase(holdsFactor ? 'stepup' : 'action'); }, (e: unknown) => {
+      setPurpose(null);
+      setPasswordNote(t('settings.password.error.other', { code: errorOf(e).code }));
+    });
   };
   const end = () => {
     codesConfirmed.current = false;
@@ -259,8 +268,9 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
         </>
       )}
 
+      {passwordNote !== null ? <Banner tone="warn">{passwordNote}</Banner> : null}
       {modalOpen ? null : region}
-      <StepUpDialog open={stepUpOpen} hasPassword={hasPassword} notice={notice} live={region} onToken={gotToken} onClose={end} />
+      <StepUpDialog open={stepUpOpen} hasPassword={hasPassword} code={!hasPassword && passkeys.length === 0 && factors?.totp != null} notice={notice} live={region} onToken={gotToken} onClose={end} />
       <ConfirmDialog open={confirmOpen}
         title={purpose?.kind === 'codes' ? t('factorSettings.codes.makeTitle')
           : removing?.which === 'passkey' ? t('factorSettings.removeTitle.passkey', { name: removing.name }) : t('factorSettings.removeTitle.totp')}
@@ -272,8 +282,8 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
         onConfirm={purpose?.kind === 'codes' ? regenerate : remove} onClose={() => { if (!action.busy) end(); }}>
         {region}
       </ConfirmDialog>
-      <PasswordDialog open={passwordOpen} hasPassword={hasPassword} stepup={token} live={region} onDone={passwordSaved}
-        onStepUpLost={() => { lost('expired'); }} onClose={end} />
+      <PasswordDialog open={passwordOpen} hasPassword={hasPassword} username={account?.user?.username ?? ''} stepup={token} live={region} onDone={passwordSaved}
+        onStepUpLost={() => { lost('expired'); }} onStale={() => { end(); setPasswordNote(t('settings.password.error.stale')); }} onClose={end} />
       {addOpen && token !== null && (purpose?.kind === 'totp' || purpose?.kind === 'passkey') ? (
         <FactorSetup origin="settings" stepLabel="" instanceName={instance} username={account?.user?.username ?? ''} announce={announce}
           embedded={{ stepup: token, start: purpose.kind === 'totp' ? 'app' : 'passkey', onClose: end, onStepUpLost: lost, live: region }}

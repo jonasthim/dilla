@@ -12,6 +12,8 @@ import { sharedRefusal } from '../factor/FactorSetup.tsx';
 
 /** The same floor as the sign-up password (Onboarding). */
 const PASSWORD_MIN = 8;
+/** The instance bounds a password only by its request size; this is a clean limit before that. */
+const PASSWORD_MAX = 1024;
 const OLD = 'password-old';
 const NEW = 'password-new';
 const AGAIN = 'password-again';
@@ -23,6 +25,8 @@ export interface PasswordDialogProps {
   open: boolean;
   /** True: the dialog asks for the current password (a change). False: a first password. */
   hasPassword: boolean;
+  /** The account's username, for the password manager. */
+  username: string;
   /** The step-up token for a first password on an account holding a second factor, else null. */
   stepup: string | null;
   /** The page's one live region, shown here while this dialog is the topmost modal (the frame beneath is inert). */
@@ -31,12 +35,14 @@ export interface PasswordDialogProps {
   onDone: () => void;
   /** The step-up token was refused as spent or expired (403 E_STEP_UP): the caller goes back to the step-up dialog. */
   onStepUpLost: () => void;
+  /** A first password was refused because the session went stale while the dialog was open. */
+  onStale: () => void;
   onClose: () => void;
 }
 
 const codePoints = (s: string): number => [...s].length;
 
-export function PasswordDialog({ open, hasPassword, stepup, live, onDone, onStepUpLost, onClose }: PasswordDialogProps): React.JSX.Element {
+export function PasswordDialog({ open, hasPassword, username, stepup, live, onDone, onStepUpLost, onStale, onClose }: PasswordDialogProps): React.JSX.Element {
   const client = useCore();
   const [old, setOld] = useState('');
   const [next, setNext] = useState('');
@@ -79,7 +85,8 @@ export function PasswordDialog({ open, hasPassword, stepup, live, onDone, onStep
     if (e.status === 403 && e.code === 'E_STEP_UP') { onStepUpLost(); return ''; }
     if (e.status === 403 && e.code === 'E_FORBIDDEN') {
       if (hasPassword) { refusedWrong.current = true; return t('settings.password.error.wrong'); }
-      return t('settings.password.error.stale');
+      onStale();
+      return '';
     }
     const shared = sharedRefusal(e);
     return shared !== null ? t(shared.key, shared.vars) : t('settings.password.error.other', { code: e.code });
@@ -111,14 +118,16 @@ export function PasswordDialog({ open, hasPassword, stepup, live, onDone, onStep
       {/* Several fields need a submit button for Enter to submit; the dialog's own confirm sits in its footer, outside the form. */}
       <form noValidate onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <button type="submit" hidden tabIndex={-1} aria-hidden="true" />
+        <label className="d-sr-only" htmlFor="password-username">{t('settings.password.username')}</label>
+        <input id="password-username" className="d-sr-only" type="text" value={username} readOnly tabIndex={-1} autoComplete="username" />
         {hasPassword ? (
           <TextField id={OLD} type="password" label={t('settings.password.old')} value={old} onChange={edit('old', setOld)}
             error={text('old')} autoComplete="current-password" required />
         ) : null}
         <TextField id={NEW} type="password" label={t('settings.password.new')} value={next} onChange={edit('next', setNext)}
-          hint={t('settings.password.newHint')} error={text('next')} autoComplete="new-password" required />
+          hint={t('settings.password.newHint')} error={text('next')} autoComplete="new-password" maxLength={PASSWORD_MAX} required />
         <TextField id={AGAIN} type="password" label={t('settings.password.confirm')} value={again} onChange={edit('again', setAgain)}
-          error={text('again')} autoComplete="new-password" required />
+          error={text('again')} autoComplete="new-password" maxLength={PASSWORD_MAX} required />
       </form>
       {live}
     </ConfirmDialog>
