@@ -5,6 +5,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetUser :one
 SELECT * FROM users WHERE id = ?;
 
+-- name: GetUserKind :one
+SELECT kind FROM users WHERE id = ?;
+
 -- name: GetUserByUsername :one
 SELECT * FROM users WHERE username = ?;
 

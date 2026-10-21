@@ -76,3 +76,19 @@ DELETE FROM bot_session_bindings WHERE installation_id = ?;
 
 -- name: UpdateDeviceCredential :execrows
 UPDATE devices SET credential_blob = ? WHERE id = ?;
+
+-- name: LockDeviceDSK :exec
+-- The first DML statement in a deferred SQLite transaction reserves its single writer, serializing
+-- this key check and insert with every other device creation.
+UPDATE devices SET last_seen = last_seen
+WHERE CAST(sqlc.arg(lock_key) AS INTEGER) = CAST(sqlc.arg(lock_key) AS INTEGER) AND 0;
+
+-- name: DeviceDSKConflictCount :one
+SELECT COUNT(*) FROM devices d JOIN users u ON u.id = d.user_id
+WHERE d.dsk_pub = sqlc.arg(dsk_pub) AND (CAST(sqlc.arg(new_is_bot) AS BOOLEAN) OR u.kind = 1);
+
+-- name: ListBotInstallationsForRuntime :many
+SELECT * FROM bot_installations
+WHERE id > ? AND removed_at IS NULL
+  AND (runtime_id = ? OR (state = 0 AND runtime_id IS NULL))
+ORDER BY id LIMIT sqlc.arg(max_rows);

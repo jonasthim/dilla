@@ -692,16 +692,14 @@ func (d Deps) ListRuntimeInstallations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rows, err := d.Repo.ListBotInstallationsAfter(r.Context(), after, 100)
+	rows, err := d.Repo.ListBotInstallationsForRuntime(r.Context(), runtimeID, after, 100)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	items := make([]any, 0, len(rows))
-	for _, row := range rows {
-		if row.State == store.BotInstallationPending && row.RuntimeID == nil || row.RuntimeID != nil && *row.RuntimeID == runtimeID {
-			items = append(items, botInstallationValue(row))
-		}
+	items := make([]any, len(rows))
+	for i, row := range rows {
+		items[i] = botInstallationValue(row)
 	}
 	d.write(w, r, http.StatusOK, items)
 }
@@ -909,7 +907,7 @@ func (d Deps) EnrollBotInstallation(w http.ResponseWriter, r *http.Request) {
 		if err := tx.CreateUser(r.Context(), user); err != nil {
 			return err
 		}
-		if err := tx.CreateDevice(r.Context(), device); err != nil {
+		if err := tx.CreateBotDevice(r.Context(), device); err != nil {
 			return err
 		}
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{CommunityID: row.CommunityID, UserID: userID, Joined: now, Nick: "Dilla Bot"}); err != nil {

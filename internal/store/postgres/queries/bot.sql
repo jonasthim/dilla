@@ -76,3 +76,18 @@ DELETE FROM bot_session_bindings WHERE installation_id = $1;
 
 -- name: UpdateDeviceCredential :execrows
 UPDATE devices SET credential_blob = $1 WHERE id = $2;
+
+-- name: LockDeviceDSK :exec
+-- The 64-bit transaction advisory lock is derived from the DSK bytes. Every repository device
+-- insertion takes the same lock, so lookup plus insert is atomic without a global unique index.
+SELECT pg_advisory_xact_lock(sqlc.arg(lock_key)::bigint);
+
+-- name: DeviceDSKConflictCount :one
+SELECT COUNT(*) FROM devices d JOIN users u ON u.id = d.user_id
+WHERE d.dsk_pub = sqlc.arg(dsk_pub) AND (sqlc.arg(new_is_bot)::boolean OR u.kind = 1);
+
+-- name: ListBotInstallationsForRuntime :many
+SELECT * FROM bot_installations
+WHERE id > $1 AND removed_at IS NULL
+  AND (runtime_id = $2 OR (state = 0 AND runtime_id IS NULL))
+ORDER BY id LIMIT sqlc.arg(max_rows)::bigint;

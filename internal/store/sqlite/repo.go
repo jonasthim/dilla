@@ -338,6 +338,41 @@ func userRow(row sqlitedb.Users) store.UserRow {
 // ---------------------------------------------------------------- Devices
 
 func (r *Repo) CreateDevice(ctx context.Context, d store.DeviceRow) error {
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.CreateDevice(ctx, d) })
+	}
+	return r.createDeviceLocked(ctx, d, false)
+}
+
+func (r *Repo) CreateBotDevice(ctx context.Context, d store.DeviceRow) error {
+	if !r.inTx {
+		return errors.New("store: CreateBotDevice requires a transaction")
+	}
+	return r.createDeviceLocked(ctx, d, true)
+}
+
+func (r *Repo) createDeviceLocked(ctx context.Context, d store.DeviceRow, newIsBot bool) error {
+	if !r.inTx {
+		return errors.New("store: device DSK locking requires a transaction")
+	}
+	if err := r.w.LockDeviceDSK(ctx, sqlitedb.LockDeviceDSKParams{LockKey: 0}); err != nil {
+		return wrap(err)
+	}
+	kind, err := r.r.GetUserKind(ctx, sqlitedb.GetUserKindParams{ID: d.UserID})
+	if err != nil {
+		return wrap(err)
+	}
+	if newIsBot && kind != 1 {
+		return errors.New("store: CreateBotDevice requires a Bot account")
+	}
+	newIsBot = newIsBot || kind == 1
+	count, err := r.r.DeviceDSKConflictCount(ctx, sqlitedb.DeviceDSKConflictCountParams{DskPub: d.DSKPub, NewIsBot: newIsBot})
+	if err != nil {
+		return wrap(err)
+	}
+	if count != 0 {
+		return store.ErrConflict
+	}
 	return wrap(r.w.CreateDevice(ctx, sqlitedb.CreateDeviceParams{
 		ID:               d.ID,
 		UserID:           d.UserID,

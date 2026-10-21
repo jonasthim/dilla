@@ -465,7 +465,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
-| `GET /v1/bot-runtime/installations` | R | — | `[installations]`, at most 100; `after` is last installation id |
+| `GET /v1/bot-runtime/installations` | R | — | array of installation tuples, at most 100; `after` is last returned installation id |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation, claim_id, claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
@@ -488,6 +488,15 @@ a new enrollment. A revoked runtime cannot retrieve results. Operator credential
 rotation replaces the token hash on the same runtime id, invalidates outstanding
 claims and keeps completed operation receipts; the old token immediately fails.
 Rotation therefore preserves recovery without issuing a second bot identity.
+
+Runtime discovery filters to that runtime's assigned installations and unassigned
+pending installations before applying the page limit. Removed installations are
+excluded. The response is the direct array of installation tuples, with no extra
+outer tuple; an empty page means no further visible installation after the cursor.
+Bot enrollment refuses a device signing key already registered to any device.
+Subsequent device registration also refuses reuse of an existing bot's signing
+key, including a revoked bot device. These checks serialize competing inserts;
+they do not impose a new uniqueness constraint on legacy human-only keys.
 Enrollment creates no bearer token. The helper completes its local identity with
 the assigned account, then obtains a session using the normal device-key challenge
 and proof. This also recovers a lost enrollment response without retaining raw

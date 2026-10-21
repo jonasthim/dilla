@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/binary"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +127,188 @@ func TestRuntimeRoutesRejectOrdinaryHumanBearer(t *testing.T) {
 	}
 }
 
+func TestRuntimeDiscoveryFiltersBeforeLimitAndPaginatesVisibleRows(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			var manager *botruntime.Manager
+			h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
+				manager = botruntime.New(d.Repo, d.Clock.Now)
+				d.BotRuntime = manager
+			})
+			ctx := context.Background()
+			now := deps.Clock.Now().Unix()
+			ownerID := id.New()
+			if err := repo.CreateUser(ctx, store.UserRow{ID: ownerID, Username: "discovery" + ownerID.String()[:8], Display: "Owner",
+				UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+				t.Fatal(err)
+			}
+			var otherRuntimeID id.ID
+			var runtimeToken string
+			if _, err := manager.Create(ctx, func(_ id.ID, token string) error { runtimeToken = token; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Create(ctx, func(got id.ID, _ string) error { otherRuntimeID = got; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			insert := func(installationID id.ID, runtime *id.ID) {
+				t.Helper()
+				communityID := id.New()
+				if err := repo.CreateCommunity(ctx, store.CommunityRow{ID: communityID, Owner: ownerID, Name: "discovery" + communityID.String()[:8],
+					PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
+					t.Fatalf("CreateCommunity: %v", err)
+				}
+				if err := repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installationID, CommunityID: communityID,
+					RuntimeID: runtime, State: store.BotInstallationPending, Revision: 1, ApprovedBy: ownerID,
+					ApprovedAt: now, Created: now, Updated: now}); err != nil {
+					t.Fatalf("CreateBotInstallation: %v", err)
+				}
+			}
+			for i := 1; i <= 110; i++ {
+				var installID id.ID
+				installID[0] = 0x10
+				binary.BigEndian.PutUint16(installID[14:], uint16(i))
+				insert(installID, &otherRuntimeID)
+			}
+			visible := make([]id.ID, 205)
+			for i := range visible {
+				visible[i][0] = 0x20
+				binary.BigEndian.PutUint16(visible[i][14:], uint16(i+1))
+				insert(visible[i], nil)
+			}
+
+			fetch := func(after id.ID) []id.ID {
+				t.Helper()
+				path := "/v1/bot-runtime/installations"
+				if !after.IsZero() {
+					path += "?after=" + after.String()
+				}
+				rec := doBotCBOR(h, http.MethodGet, path, nil, "Bearer "+runtimeToken)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET runtime installations after %s = %d (%x)", after, rec.Code, rec.Body.Bytes())
+				}
+				var tuples []any
+				if err := cborx.Unmarshal(rec.Body.Bytes(), &tuples); err != nil {
+					t.Fatalf("decode discovery response: %v", err)
+				}
+				got := make([]id.ID, len(tuples))
+				for i, tuple := range tuples {
+					fields, ok := tuple.([]any)
+					if !ok || len(fields) == 0 {
+						t.Fatalf("installation tuple %d is %T (%v)", i, tuple, tuple)
+					}
+					got[i] = mustBotID(t, fields[0])
+				}
+				return got
+			}
+			first := fetch(id.ID{})
+			if len(first) != 100 {
+				t.Fatalf("first visible page has %d rows, want 100", len(first))
+			}
+			second := fetch(first[len(first)-1])
+			if len(second) != 100 {
+				t.Fatalf("second visible page has %d rows, want 100", len(second))
+			}
+			third := fetch(second[len(second)-1])
+			if len(third) != 5 {
+				t.Fatalf("third visible page has %d rows, want 5", len(third))
+			}
+			all := append(append(append([]id.ID(nil), first...), second...), third...)
+			if len(all) != len(visible) {
+				t.Fatalf("discovered %d rows, want %d", len(all), len(visible))
+			}
+			for i := range visible {
+				if all[i] != visible[i] {
+					t.Fatalf("discovery row %d = %s, want visible %s (foreign installations must remain private)", i, all[i], visible[i])
+				}
+			}
+		})
+	}
+}
+
+func TestDeviceDSKLockSerializesBotReuseWithoutRejectingHumanDuplicates(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			for index, tc := range []struct {
+				name        string
+				kinds       []uint8
+				botAPI      []bool
+				wantSuccess int
+			}{
+				{name: "bot-bot", kinds: []uint8{1, 1}, botAPI: []bool{true, true}, wantSuccess: 1},
+				{name: "human-bot", kinds: []uint8{0, 1}, botAPI: []bool{false, true}, wantSuccess: 1},
+				{name: "human-human legacy duplicates", kinds: []uint8{0, 0}, botAPI: []bool{false, false}, wantSuccess: 2},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					userIDs := make([]id.ID, len(tc.kinds))
+					for i, kind := range tc.kinds {
+						userIDs[i] = id.New()
+						if err := repo.CreateUser(context.Background(), store.UserRow{ID: userIDs[i], Username: "dsk" + userIDs[i].String()[:8],
+							Display: "DSK race", Kind: kind, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+							SigUMKSSK: make([]byte, 64), Created: 1}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					dsk := make([]byte, 32)
+					dsk[0], dsk[31] = byte(index+1), 0xA5
+					start := make(chan struct{})
+					results := make(chan error, len(tc.kinds))
+					var ready sync.WaitGroup
+					for i := range tc.kinds {
+						device := store.DeviceRow{ID: id.New(), UserID: userIDs[i], DSKPub: append([]byte(nil), dsk...),
+							CredentialBlob: []byte{1}, Created: 1}
+						ready.Add(1)
+						go func(botAPI bool) {
+							defer ready.Done()
+							<-start
+							results <- repo.Tx(context.Background(), func(tx store.Repository) error {
+								if botAPI {
+									return tx.CreateBotDevice(context.Background(), device)
+								}
+								return tx.CreateDevice(context.Background(), device)
+							})
+						}(tc.botAPI[i])
+					}
+					close(start)
+					ready.Wait()
+					close(results)
+					successes, conflicts := 0, 0
+					for err := range results {
+						if err == nil {
+							successes++
+						} else if errors.Is(err, store.ErrConflict) {
+							conflicts++
+						} else {
+							t.Errorf("CreateDevice result: %v", err)
+						}
+					}
+					if successes != tc.wantSuccess || conflicts != len(tc.kinds)-tc.wantSuccess {
+						t.Fatalf("successes=%d conflicts=%d, want %d/%d", successes, conflicts, tc.wantSuccess, len(tc.kinds)-tc.wantSuccess)
+					}
+				})
+			}
+			botID, humanID, deviceID := id.New(), id.New(), id.New()
+			for userID, kind := range map[id.ID]uint8{botID: 1, humanID: 0} {
+				if err := repo.CreateUser(context.Background(), store.UserRow{ID: userID, Username: "revoked" + userID.String()[:8],
+					Display: "Revoked DSK", Kind: kind, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32),
+					SigUMKSSK: make([]byte, 64), Created: 1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dsk := make([]byte, 32)
+			dsk[0] = 0xF0
+			revokedAt := int64(2)
+			if err := repo.CreateDevice(context.Background(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: dsk,
+				CredentialBlob: []byte{1}, RevokedAt: &revokedAt, Created: 1}); err != nil {
+				t.Fatalf("seed revoked Bot DSK: %v", err)
+			}
+			if err := repo.CreateDevice(context.Background(), store.DeviceRow{ID: id.New(), UserID: humanID, DSKPub: dsk,
+				CredentialBlob: []byte{1}, Created: 1}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("reuse revoked Bot DSK = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
 func TestRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) { testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t, repo) })
@@ -186,8 +371,16 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	enrollPath := "/v1/bot-runtime/installations/" + installationID.String() + "/enroll"
 	makeEnrollBody := func(request id.ID, identity testHumanCredential, umk, ssk, dsk, raw []byte) []byte {
 		t.Helper()
+		var credentialFields []any
+		if err := cborx.Unmarshal(raw, &credentialFields); err != nil || len(credentialFields) < 4 {
+			t.Fatalf("decode enrollment credential device id: %v", err)
+		}
+		credentialDeviceID, ok := credentialFields[3].([]byte)
+		if !ok || len(credentialDeviceID) != 16 {
+			t.Fatal("enrollment credential has malformed device id")
+		}
 		body, err := cborx.Marshal([]any{request, claimID, umk, ssk, identity.SigUMKSSK,
-			[]any{deviceID, dsk, uint64(0), uint64(0), raw}})
+			[]any{credentialDeviceID, dsk, uint64(0), uint64(0), raw}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,6 +418,33 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 			t.Errorf("enrollment with %s = %d (%x), want 400", invalid.name, bad.Code, bad.Body.Bytes())
 		}
 	}
+
+	// This credential and submitted DSK are internally valid, but the public key is
+	// already registered on another device. Enrollment must reject it transactionally.
+	duplicateCredential := makeTestCredential(t, id.New(), 1)
+	registeredDSKDevice := id.New()
+	if err := deps.Repo.CreateDevice(context.Background(), store.DeviceRow{ID: registeredDSKDevice, UserID: owner.ID,
+		DSKPub: duplicateCredential.DSKPub, CredentialBlob: []byte{1}, Tier: 0, SignerTier: 0, Created: deps.Clock.Now().Unix()}); err != nil {
+		t.Fatalf("seed existing device DSK: %v", err)
+	}
+	usersBefore := countRepoUsersAndDevices(t, deps.Repo)
+	membersBefore, err := deps.Repo.ListMembersOfCommunity(context.Background(), cid, id.ID{}, 100)
+	if err != nil {
+		t.Fatalf("list community members before duplicate enrollment: %v", err)
+	}
+	duplicateEnroll := makeEnrollBody(id.New(), duplicateCredential, duplicateCredential.UMKPub, duplicateCredential.SSKPub,
+		duplicateCredential.DSKPub, duplicateCredential.Credential)
+	if rec := doBotCBOR(h, http.MethodPost, enrollPath, duplicateEnroll, authHeader); rec.Code != http.StatusBadRequest {
+		t.Fatalf("enrollment reusing registered DSK = %d (%x), want a client refusal", rec.Code, rec.Body.Bytes())
+	}
+	if usersAfter := countRepoUsersAndDevices(t, deps.Repo); usersAfter != usersBefore {
+		t.Fatalf("duplicate DSK enrollment left account/device rows: before=%v after=%v", usersBefore, usersAfter)
+	}
+	membersAfter, err := deps.Repo.ListMembersOfCommunity(context.Background(), cid, id.ID{}, 100)
+	if err != nil || len(membersAfter) != len(membersBefore) {
+		t.Fatalf("duplicate DSK enrollment left membership: before=%d after=%d err=%v", len(membersBefore), len(membersAfter), err)
+	}
+
 	enrollBody := makeEnrollBody(enrollRequestID, credential, credential.UMKPub, credential.SSKPub, credential.DSKPub, credential.Credential)
 	enrolled := doBotCBOR(h, http.MethodPost, enrollPath, enrollBody, authHeader)
 	if enrolled.Code != http.StatusCreated {
@@ -359,6 +579,30 @@ func mutateBotCredential(t *testing.T, credential testHumanCredential, userID id
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func countRepoUsersAndDevices(t *testing.T, repo store.Repository) [2]int {
+	t.Helper()
+	var counts [2]int
+	after := id.ID{}
+	for {
+		users, err := repo.ListUsers(context.Background(), after, 100)
+		if err != nil {
+			t.Fatalf("ListUsers: %v", err)
+		}
+		counts[0] += len(users)
+		for _, user := range users {
+			devices, err := repo.ListDevicesByUser(context.Background(), user.ID)
+			if err != nil {
+				t.Fatalf("ListDevicesByUser(%s): %v", user.ID, err)
+			}
+			counts[1] += len(devices)
+		}
+		if len(users) < 100 {
+			return counts
+		}
+		after = users[len(users)-1].ID
+	}
 }
 
 func seedBotCommunity(t *testing.T, d api.Deps, owner id.ID) id.ID {

@@ -167,6 +167,23 @@ func (r *Repo) ListBotInstallationsAfter(ctx context.Context, after id.ID, limit
 	return out, nil
 }
 
+func (r *Repo) ListBotInstallationsForRuntime(ctx context.Context, runtimeID, after id.ID, limit int32) ([]store.BotInstallationRow, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, store.ErrConflict
+	}
+	rows, err := r.r.ListBotInstallationsForRuntime(ctx, sqlitedb.ListBotInstallationsForRuntimeParams{
+		ID: after, RuntimeID: &runtimeID, MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotInstallationRow, len(rows))
+	for i := range rows {
+		out[i] = botInstallationRow(rows[i])
+	}
+	return out, nil
+}
+
 func (r *Repo) ListBotInstallationsByDevice(ctx context.Context, deviceID, after id.ID, limit int32) ([]store.BotInstallationRow, error) {
 	if limit <= 0 || limit > 100 {
 		return nil, store.ErrConflict

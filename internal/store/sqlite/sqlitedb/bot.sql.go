@@ -184,6 +184,23 @@ func (q *Queries) DeleteBotSessionBindingsByInstallation(ctx context.Context, ar
 	return result.RowsAffected()
 }
 
+const deviceDSKConflictCount = `-- name: DeviceDSKConflictCount :one
+SELECT COUNT(*) FROM devices d JOIN users u ON u.id = d.user_id
+WHERE d.dsk_pub = ?1 AND (CAST(?2 AS BOOLEAN) OR u.kind = 1)
+`
+
+type DeviceDSKConflictCountParams struct {
+	DskPub   []byte
+	NewIsBot bool
+}
+
+func (q *Queries) DeviceDSKConflictCount(ctx context.Context, arg DeviceDSKConflictCountParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, deviceDSKConflictCount, arg.DskPub, arg.NewIsBot)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getActiveBotInstallationByCommunity = `-- name: GetActiveBotInstallationByCommunity :one
 SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE community_id = ? AND removed_at IS NULL
 `
@@ -454,6 +471,58 @@ func (q *Queries) ListBotInstallationsByDevice(ctx context.Context, arg ListBotI
 	return items, nil
 }
 
+const listBotInstallationsForRuntime = `-- name: ListBotInstallationsForRuntime :many
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations
+WHERE id > ? AND removed_at IS NULL
+  AND (runtime_id = ? OR (state = 0 AND runtime_id IS NULL))
+ORDER BY id LIMIT ?3
+`
+
+type ListBotInstallationsForRuntimeParams struct {
+	ID        id.ID
+	RuntimeID *id.ID
+	MaxRows   int64
+}
+
+func (q *Queries) ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error) {
+	rows, err := q.db.QueryContext(ctx, listBotInstallationsForRuntime, arg.ID, arg.RuntimeID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BotInstallations{}
+	for rows.Next() {
+		var i BotInstallations
+		if err := rows.Scan(
+			&i.ID,
+			&i.CommunityID,
+			&i.RuntimeID,
+			&i.UserID,
+			&i.DeviceID,
+			&i.RoleID,
+			&i.State,
+			&i.Revision,
+			&i.Capabilities,
+			&i.ApprovedBy,
+			&i.ApprovedAt,
+			&i.CredentialVerifiedAt,
+			&i.Created,
+			&i.Updated,
+			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBotRuntimes = `-- name: ListBotRuntimes :many
 SELECT id, token_hash, created, rotated, revoked_at FROM bot_runtimes WHERE id > ? ORDER BY id LIMIT ?2
 `
@@ -535,6 +604,22 @@ func (q *Queries) LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) 
 	var id id.ID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockDeviceDSK = `-- name: LockDeviceDSK :exec
+UPDATE devices SET last_seen = last_seen
+WHERE CAST(?1 AS INTEGER) = CAST(?1 AS INTEGER) AND 0
+`
+
+type LockDeviceDSKParams struct {
+	LockKey int64
+}
+
+// The first DML statement in a deferred SQLite transaction reserves its single writer, serializing
+// this key check and insert with every other device creation.
+func (q *Queries) LockDeviceDSK(ctx context.Context, arg LockDeviceDSKParams) error {
+	_, err := q.db.ExecContext(ctx, lockDeviceDSK, arg.LockKey)
+	return err
 }
 
 const putBotClaim = `-- name: PutBotClaim :exec

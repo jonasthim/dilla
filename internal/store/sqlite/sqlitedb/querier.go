@@ -96,6 +96,7 @@ type Querier interface {
 	DeleteWebauthnCredential(ctx context.Context, arg DeleteWebauthnCredentialParams) (int64, error)
 	DeleteWebauthnCredentialsByUser(ctx context.Context, arg DeleteWebauthnCredentialsByUserParams) error
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
+	DeviceDSKConflictCount(ctx context.Context, arg DeviceDSKConflictCountParams) (int64, error)
 	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
 	// instance no longer stores could never verify. Plan 2 task 17 moves the rest of the tuple too: the
@@ -151,6 +152,7 @@ type Querier interface {
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
 	GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 	GetUserByUsername(ctx context.Context, arg GetUserByUsernameParams) (Users, error)
+	GetUserKind(ctx context.Context, arg GetUserKindParams) (int64, error)
 	GetVoiceSession(ctx context.Context, arg GetVoiceSessionParams) (VoiceSessions, error)
 	GetWebauthnCredential(ctx context.Context, arg GetWebauthnCredentialParams) (WebauthnCredentials, error)
 	GetWebauthnUserByHandle(ctx context.Context, arg GetWebauthnUserByHandleParams) (id.ID, error)
@@ -191,6 +193,7 @@ type Querier interface {
 	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error)
 	ListBotInstallationsAfter(ctx context.Context, arg ListBotInstallationsAfterParams) ([]BotInstallations, error)
 	ListBotInstallationsByDevice(ctx context.Context, arg ListBotInstallationsByDeviceParams) ([]BotInstallations, error)
+	ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error)
 	ListBotRuntimes(ctx context.Context, arg ListBotRuntimesParams) ([]BotRuntimes, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
@@ -260,6 +263,9 @@ type Querier interface {
 	// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
 	// are already exclusive. This is the existence read the Postgres form shares.
 	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
+	// The first DML statement in a deferred SQLite transaction reserves its single writer, serializing
+	// this key check and insert with every other device creation.
+	LockDeviceDSK(ctx context.Context, arg LockDeviceDSKParams) error
 	// The Postgres twin locks these rows before ClearFactorOwedWithFactor's UPDATE. SQLite has one
 	// writer, so the UPDATE alone is atomic against an operator reset and nothing calls this here; it
 	// exists so the two engines' Querier interfaces stay identical (schema_test.go).

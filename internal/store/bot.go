@@ -98,6 +98,8 @@ type BotInstallations interface {
 	GetActiveBotInstallationByCommunity(context.Context, id.ID) (BotInstallationRow, error)
 	ListBotInstallationsAfter(context.Context, id.ID, int32) ([]BotInstallationRow, error)
 	ListBotInstallationsByDevice(context.Context, id.ID, id.ID, int32) ([]BotInstallationRow, error)
+	// ListBotInstallationsForRuntime filters to visible pending or runtime-owned rows before limit.
+	ListBotInstallationsForRuntime(context.Context, id.ID, id.ID, int32) ([]BotInstallationRow, error)
 	UpdateBotInstallation(context.Context, id.ID, uint64, BotInstallationRow) error
 	LockBotInstallation(context.Context, id.ID) error
 	LockBotCommunity(context.Context, id.ID) error

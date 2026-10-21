@@ -110,6 +110,9 @@ type Accounts interface {
 
 type Devices interface {
 	CreateDevice(ctx context.Context, d DeviceRow) error
+	// CreateBotDevice rejects any previously registered DSK and must run inside Tx.
+	// CreateDevice uses the same DSK lock and rejects reuse whenever either account is a Bot.
+	CreateBotDevice(ctx context.Context, d DeviceRow) error
 	GetDevice(ctx context.Context, deviceID id.ID) (DeviceRow, error)
 	// UpdateDeviceCredential replaces only the validated final enrollment credential.
 	UpdateDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte) error

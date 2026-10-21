@@ -148,7 +148,15 @@ func TestAReferenceStoredBeforeTheMigrationIsConfirmed(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	ch := channel.ID
-	dev := seedDevice(ctx, t, repo, userBefore17(ctx, t, write, "uploader", 0))
+	user := userBefore17(ctx, t, write, "uploader", 0)
+	dev := id.New()
+	if _, err := write.ExecContext(ctx, `INSERT INTO devices
+		(id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at,
+		 quarantined_at, quarantine_reason, last_seen, created)
+		VALUES (?, ?, ?, 0, 0, ?, NULL, NULL, NULL, '', 1, 1)`,
+		dev, user, make([]byte, 32), []byte{1}); err != nil {
+		t.Fatalf("insert device at schema 13: %v", err)
+	}
 	x := digest(0xd1)
 	if err := repo.PutBlob(ctx, store.BlobRow{BlobID: x, Size: 10, StorageRef: "fs:x", Created: 1}); err != nil {
 		t.Fatalf("PutBlob: %v", err)
