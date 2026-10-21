@@ -52,14 +52,28 @@ describe('ProfileCard content', () => {
     expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
   });
 
-  it('makes the scrolling bio reachable by keyboard: focusable, named, with a visible focus ring', () => {
+  // jsdom has no layout, so the box's measures are set by hand.
+  function measure(scrollHeight: number, clientHeight: number) {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+  }
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('makes a bio that overflows reachable by keyboard: focusable, named, with a visible focus ring', () => {
+    measure(300, 128);
     render(<ProfileCard {...props({ bio: 'x '.repeat(200) })} />);
     const about = screen.getByRole('group', { name: 'about' });
     expect(about).toHaveAttribute('tabindex', '0');
     expect(css).toMatch(/\.d-profile-card__about:focus-visible[^}]*outline: [^;}]*var\(--accent\)/);
-    expect(css).toMatch(/\.d-profile-card__bio[^}]*overflow-y: auto/);
+    expect(css).toMatch(/\.d-profile-card__about[^}]*overflow-y: auto/);
     about.focus();
     expect(about).toHaveFocus();
+  });
+
+  it('is not a tab stop when the bio fits', () => {
+    measure(60, 128);
+    render(<ProfileCard {...props({ bio: 'short' })} />);
+    expect(screen.getByRole('group', { name: 'about' })).not.toHaveAttribute('tabindex');
   });
 
   it('isolates the direction of the status message and the bio from their surroundings', () => {

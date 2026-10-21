@@ -63,11 +63,19 @@ export function ProfileCard({
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const opener = useRef<HTMLElement | null>(null);
+  const aboutRef = useRef<HTMLDivElement>(null);
+  const [scrolls, setScrolls] = useState(false);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const onCloseRef = useRef(onClose);
   const fallbackRef = useRef(fallbackFocus);
   fallbackRef.current = fallbackFocus;
   onCloseRef.current = onClose;
+
+  // The bio box is a tab stop only while it overflows (WCAG 2.1.1: a keyboard reaches what scrolls, and nothing else gets a stop).
+  useLayoutEffect(() => {
+    const box = aboutRef.current;
+    setScrolls(box !== null && box.scrollHeight > box.clientHeight);
+  }, [bio, mode]);
 
   // The row to return to is read before focus moves in: the anchor, else whatever had focus.
   useLayoutEffect(() => {
@@ -162,7 +170,7 @@ export function ProfileCard({
         </div>
         <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>
       </div>
-      {bio ? <div className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={0}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
+      {bio ? <div ref={aboutRef} className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={scrolls ? 0 : undefined}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
       {isOwner || isYou ? (
         <p className="d-profile-card__marks">
           {isOwner ? <span className="d-profile-card__mark"><Icon name="crown" size={14} />{ownerLabel}</span> : null}
