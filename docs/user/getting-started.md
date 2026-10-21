@@ -208,7 +208,7 @@ again.
 
 The **members** button in the channel header opens the list of "members of {server}", grouped by role: one group
 for each role shown apart, highest first ("{name} — {count}"), then "members". A row is the avatar with its status
-dot and the name, centred in the row; there are no tags in it. A person's name is drawn in the colour of their highest
+dot and the name, centred in the row; there are no "owner" or "you" tags in it, and a bot keeps a small "bot" tag after its name, as in Discord. A person's name is drawn in the colour of their highest
 coloured role (in the normal text colour when that colour would be hard to read in your theme), and the owner has a small
 crown after the name. A person who has set a status line shows it under the name, and then the row is two lines tall. On a
 wide window the list is a column beside the conversation. On a phone, or any window narrower than 64 rem, it is a panel
