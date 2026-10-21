@@ -55,7 +55,7 @@ export interface MessageRowProps {
 }
 
 /** A click that starts on one of these is that control's own, not a tap on the row body. */
-const INTERACTIVE = 'button, a, input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
+const INTERACTIVE = 'button, a, [data-profile="true"], input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 

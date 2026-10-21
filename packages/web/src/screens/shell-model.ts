@@ -158,6 +158,14 @@ export interface NameBook {
   ownRoles: ReadonlySet<string>;
   /** The roles whose name and colour are known (the `roles:` slice); absent where only member rows were read. */
   roleInfo?: ReadonlyMap<string, { name: string; color: number }>;
+  /** Ids known to be users beyond the members: the senders of the messages held (a person who has since left). Only these (and members and self) get a profile button. */
+  knownUsers?: ReadonlySet<string>;
+}
+
+/** The book with the senders of `items` as known users. */
+export function withSenders(book: NameBook, items: readonly { senderUser: string | null }[]): NameBook {
+  const ids = items.flatMap(i => (i.senderUser === null ? [] : [i.senderUser]));
+  return ids.length === 0 ? book : { ...book, knownUsers: new Set(ids) };
 }
 
 export function nameBook(self: NameBook['self'], members: readonly MemberSummary[], roles: readonly RoleSummary[] = []): NameBook {
@@ -241,8 +249,8 @@ export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): Bo
     const known = book.roleInfo?.get(id);
     if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
     if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
-    // Not a member, the viewer, a known role or a role of any member: someone who has left. Still a user mention, so it opens a name-only card.
-    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, userId: id };
+    // Not a member, the viewer or a known role: a user pill (a name-only card) only when we hold a message from that user, else it stays plain.
+    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, ...(book.knownUsers?.has(id) === true ? { userId: id } : {}) };
   });
 }
 

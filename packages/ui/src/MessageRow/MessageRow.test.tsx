@@ -437,6 +437,14 @@ describe('MessageRow profile opens (MP7)', () => {
     expect(onOpenProfile).toHaveBeenCalledTimes(2);
     expect(onOpenProfile.mock.calls[1]?.[0]).toBe('u-ada');
   });
+  it('on a phone a tap on the avatar opens the profile and does not reveal the row toolbar', async () => {
+    const onOpenProfile = vi.fn();
+    const onReveal = vi.fn();
+    const { container } = render(<PhoneLayoutProvider value><MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" body="hello" onOpenProfile={onOpenProfile} onReveal={onReveal} /></PhoneLayoutProvider>);
+    await userEvent.setup().click(container.querySelector('.d-message-row__avatar') as Element);
+    expect(onOpenProfile).toHaveBeenCalledTimes(1);
+    expect(onReveal).not.toHaveBeenCalled();
+  });
   it('leaves the author plain without an id', () => {
     render(<MessageRow author="ada" time="21:02" state="ok" body="hello" onOpenProfile={vi.fn()} />);
     expect(screen.queryByRole('button')).toBeNull();

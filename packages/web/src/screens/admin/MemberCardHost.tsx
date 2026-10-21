@@ -15,10 +15,14 @@ import { MemberRolesFlow } from './MemberRolesFlow.tsx';
  * every render, so a re-mounted row neither closes it nor strands it). A `mention` or `author` card is anchored to that
  * element and closes when the element is gone. `name` is the label to show when the person is no longer a member.
  */
-export interface OpenCard { id: string; source: 'list' | 'mention' | 'author'; anchor: HTMLElement; name?: string }
+export interface OpenCard { id: string; source: 'list' | 'mention' | 'author'; anchor: HTMLElement; name?: string; /** The message row it was opened from (its msg id), where focus goes if the anchor is gone. */ rowId?: string }
+
+/** Where focus goes when a message card's anchor is gone: its message row if that still exists, else the log. */
+const messageFallback = (card: OpenCard) => (): HTMLElement | null =>
+  (card.rowId === undefined ? null : document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${card.rowId}"]`)) ?? document.querySelector<HTMLElement>('[role="log"]');
 
 export const presenceLabels = (): Record<'online' | 'idle' | 'dnd' | 'offline', string> => ({
-  online: t('layout.presence.online'), idle: t('layout.presence.idle'), dnd: t('layout.presence.dnd'), offline: t('layout.presence.offline'),
+  online: t('presence.online'), idle: t('presence.idle'), dnd: t('presence.dnd'), offline: t('presence.offline'),
 });
 
 export interface MemberCardHostProps {
@@ -111,9 +115,9 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
       {card !== null && data !== null ? (
         <ProfileCard name={data.name} username={data.username} presence={presence?.[data.userId] ?? 'offline'} isOwner={data.isOwner} isYou={data.isYou}
           roles={data.roles} actions={data.actions.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' }))}
-          onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} {...labels} />
+          onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} fallbackFocus={card.source === 'list' ? undefined : messageFallback(card)} {...labels} />
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (
-        <ProfileCard name={card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" {...labels} />
+        <ProfileCard name={card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" fallbackFocus={messageFallback(card)} {...labels} />
       ) : null}
       <KickFlow open={kickOpen} communityId={communityId} serverName={community?.name ?? ''} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />

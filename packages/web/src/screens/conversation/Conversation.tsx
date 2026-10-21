@@ -7,7 +7,7 @@ import { useCore } from '../../core/context.tsx';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
-import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
+import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, withSenders, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { dayLabel, groupedWithAbove, startsDay } from './log-model.ts';
 import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
@@ -79,7 +79,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
   const roleMentionsFor = (body: string) => mentionRoles(editRoles(props.roles ?? [], broadcast, body), props.encodeWith);
-  const p = { ...props, book: withRoles(props.book, props.roles ?? []), broadcast };
+  const p = { ...props, book: withSenders(withRoles(props.book, props.roles ?? []), props.timeline?.items ?? []), broadcast };
   const items = p.timeline?.items ?? [];
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;

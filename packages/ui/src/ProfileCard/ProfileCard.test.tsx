@@ -155,6 +155,23 @@ describe('ProfileCard behaviour', () => {
     fireEvent.pointerDown(anchor);
     expect(p.onClose).not.toHaveBeenCalled();
   });
+
+  it('MP7: a pointerdown on the avatar of the author whose name opened it does not close it (the click toggles)', () => {
+    const row = document.createElement('article');
+    row.className = 'd-message-row';
+    const avatar = document.createElement('span');
+    avatar.dataset.profile = 'true';
+    const name = document.createElement('button');
+    name.className = 'd-message-row__author-open';
+    row.append(avatar, name);
+    document.body.appendChild(row);
+    const p = props({ anchor: name });
+    render(<ProfileCard {...p} />);
+    fireEvent.pointerDown(avatar);
+    expect(p.onClose).not.toHaveBeenCalled();
+    fireEvent.pointerDown(document.body);
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('ProfileCard placement', () => {

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { ChannelSummary, DeviceSummary, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { formatDay, formatTime } from '../strings/index.ts';
 import {
-  authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
+  authorName, badgeLabel, bodyParts, withSenders, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
   mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
   stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, selfName, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
@@ -198,7 +198,7 @@ describe('names in bodies (L-TS-37)', () => {
       { kind: 'text', text: ' ' },
       { kind: 'mention', label: '@role', me: false, broadcast: false },
       { kind: 'text', text: ' ' },
-      { kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false, userId: UNKNOWN },
+      { kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false },
       { kind: 'text', text: ' <@NOPE>' },
     ]);
     expect(plainBody(body, book)).toBe('hi @bob and @Ada L, @everyone @here @role @role @eeeeeeee <@NOPE>');
@@ -219,6 +219,13 @@ describe('names in bodies (L-TS-37)', () => {
   });
   it('names the own user by username when no member row holds it', () => {
     expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false, userId: SELF.id }]);
+  });
+  it('MP7: an id is a user pill only when it is known to be a user: a member, self, or a sender we hold', () => {
+    expect(bodyParts(`<@${UNKNOWN}>`, book, false)).toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false }]);
+    expect(bodyParts(`<@${UNKNOWN}>`, withSenders(book, [{ senderUser: UNKNOWN }]), false))
+      .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false, userId: UNKNOWN }]);
+    expect(bodyParts(`<@${UNKNOWN}>`, withSenders(book, [{ senderUser: null }, { senderUser: BOB }]), false))
+      .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false }]);
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { act, screen, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../../layout.ts';
 import { ME } from '../../test/fixtures.ts';
-import { A, MOD, OTHER_ROLE, P1, PEER, STRANGER, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
+import { A, GEN, MOD, NOW, OTHER_ROLE, P1, P2, PEER, STRANGER, peerRow, renderConversation, rowOf, timeline } from '../../test/conversation.tsx';
 
 afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
 
@@ -22,8 +22,13 @@ describe('a mention and an author open the profile card (MP7)', () => {
     expect(within(rowOf(P1).querySelector<HTMLElement>('.d-message-row__body')!).queryAllByRole('button')).toEqual([]);
     expect(rowOf(P1).querySelectorAll('span.d-mention')).toHaveLength(2);
   });
-  it('opens a name-only card for someone who is no longer a member', async () => {
-    const { user } = renderConversation({ items: [peerRow(P1, '1', `bye <@${STRANGER}>`)] });
+  it('keeps an id that is no member, no sender and no known role a plain pill', () => {
+    renderConversation({ items: [peerRow(P1, '1', `bye <@${STRANGER}>`)] });
+    expect(within(rowOf(P1).querySelector<HTMLElement>('.d-message-row__body')!).queryAllByRole('button')).toEqual([]);
+    expect(rowOf(P1).querySelectorAll('span.d-mention')).toHaveLength(1);
+  });
+  it('opens a name-only card for a former member we hold a message from', async () => {
+    const { user } = renderConversation({ items: [peerRow(P2, '1', 'i was here', { senderUser: STRANGER }), peerRow(P1, '2', `bye <@${STRANGER}>`)] });
     await user.click(within(rowOf(P1)).getByRole('button', { name: '@eeeeeeee' }));
     expect(card()).toHaveAccessibleName('eeeeeeee');
     expect(actionNames()).toEqual([]);
@@ -43,6 +48,22 @@ describe('a mention and an author open the profile card (MP7)', () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'hi')] });
     await user.click(within(rowOf(P1)).getByRole('button', { name: 'bob' }));
     expect(card()).toHaveAccessibleName('bob');
+  });
+  it('a click on the avatar of the author whose card is open closes it, like the name', async () => {
+    const { user } = renderConversation({ items: [peerRow(P1, '1', 'hi')] });
+    await user.click(within(rowOf(P1)).getByRole('button', { name: 'bob' }));
+    expect(card()).toHaveAccessibleName('bob');
+    await user.click(rowOf(P1).querySelector<HTMLElement>('.d-message-row__avatar')!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('when the anchor disappears the card closes and focus goes to the message row', async () => {
+    const { user, fake } = renderConversation({ items: [peerRow(P1, '1', 'hi')] });
+    await user.click(within(rowOf(P1)).getByRole('button', { name: 'bob' }));
+    expect(card()).toHaveAccessibleName('bob');
+    // An earlier message from the same sender makes P1 a grouped row: it has no author button any more.
+    act(() => fake.set(`timeline:${GEN}`, timeline([peerRow(P2, '0', 'before', { ts: NOW - 5 }), peerRow(P1, '1', 'hi')])));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(rowOf(P1)).toHaveFocus();
   });
   it('opens one card at a time: a mention replaces a card open from the member list', async () => {
     window.matchMedia = ((query: string) => ({ matches: query !== PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,

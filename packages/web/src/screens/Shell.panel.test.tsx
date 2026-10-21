@@ -126,7 +126,7 @@ describe('the desktop user panel', () => {
     const who = inPanel().getByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.online') })}$`) });
     expect(who).toHaveTextContent('@ada');
     // WCAG 2.5.3: the name holds the visible name and username.
-    expect(who).toHaveAccessibleName('ada @ada, your status: Online');
+    expect(who).toHaveAccessibleName('ada @ada, your status: online');
     await app.user.click(who);
     const menu = screen.getByRole('menu');
     expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(

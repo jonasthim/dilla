@@ -111,12 +111,10 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Shift+Tab');
   const newest = logRegion(page, channel).locator(CLASS.messageRow).last();
   await expect(newest).toBeFocused();
-  // MP7: the author name is the row's first inner stop (a grouped row has none), then the toolbar.
+  // MP7: the author name is the row's first inner stop (this is the first message of the run, so it is never grouped), then the toolbar.
   await press('Tab');
-  if (await newest.locator('.d-message-row__author-open').count() > 0) {
-    await expect(newest.locator('.d-message-row__author-open')).toBeFocused();
-    await press('Tab');
-  }
+  await expect(newest.locator('.d-message-row__author-open')).toBeFocused();
+  await press('Tab');
   const toolbar = newest.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
   await expect(toolbar).toBeVisible();
   await expect(toolbar.locator(':focus')).toHaveCount(1);

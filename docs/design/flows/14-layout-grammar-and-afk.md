@@ -70,10 +70,11 @@
 `layout.profile.close='close'`
 `layout.profile.bot='bot'`
 `layout.profile.manageRoles='edit roles'`
-`layout.presence.online='online'`
-`layout.presence.idle='idle'`
-`layout.presence.dnd='do not disturb'`
-`layout.presence.offline='offline'`
+`presence.online='online'`
+`presence.idle='idle'`
+`presence.dnd='do not disturb'`
+`presence.offline='offline'`
+`presence.invisible='invisible'`
 `layout.log.older='viewing older messages'`
 `layout.log.jump='jump to present'`
 `layout.log.today='today'`

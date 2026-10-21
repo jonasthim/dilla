@@ -1364,7 +1364,7 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
     // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: Online$/ }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: online$/ }));
     await user.tab();
     expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
     await user.tab();

@@ -36,6 +36,8 @@ export interface ProfileCardProps {
   closeLabel?: string;
   /** The words for the presence states; each defaults to the English word. */
   presenceLabels?: Partial<Record<Presence, string>>;
+  /** Where focus goes on close when the anchor is gone (and no row carries its focus key). */
+  fallbackFocus?: () => HTMLElement | null;
 }
 
 const GAP = 8;
@@ -50,7 +52,7 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  */
 export function ProfileCard({
   name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
-  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels,
+  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
@@ -59,6 +61,8 @@ export function ProfileCard({
   const opener = useRef<HTMLElement | null>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const onCloseRef = useRef(onClose);
+  const fallbackRef = useRef(fallbackFocus);
+  fallbackRef.current = fallbackFocus;
   onCloseRef.current = onClose;
 
   // The row to return to is read before focus moves in: the anchor, else whatever had focus.
@@ -75,7 +79,7 @@ export function ProfileCard({
       const active = document.activeElement;
       const inside = active === null || active === document.body || el?.contains(active) === true;
       if (!inside) return;
-      focusReturnTarget(opener.current)?.focus();
+      focusReturnTarget(opener.current, () => fallbackRef.current?.())?.focus();
     };
   }, []);
 
@@ -119,6 +123,10 @@ export function ProfileCard({
     const down = (e: PointerEvent) => {
       if (!(e.target instanceof Node)) return;
       if (ref.current?.contains(e.target) || anchor?.contains(e.target)) return;
+      // An author's avatar is the same control as the author name that opened the card: its click toggles.
+      const el = e.target instanceof Element ? e.target : e.target.parentElement;
+      if (anchor?.classList.contains('d-message-row__author-open') === true && el?.closest('[data-profile="true"]') != null
+        && anchor.closest('.d-message-row')?.contains(el) === true) return;
       onCloseRef.current();
     };
     document.addEventListener('pointerdown', down, true);

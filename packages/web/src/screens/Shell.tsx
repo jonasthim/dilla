@@ -908,7 +908,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
 
   // A click on the pill or author name that already holds the open card closes it (the card ignores a pointerdown on its anchor); any other opens, replacing the card.
   const openProfile: ProfileOpener = (userId, anchor, source, name) =>
-    setProfileCard(cur => (cur !== null && cur.anchor === anchor ? null : { id: userId, source, anchor, name }));
+    setProfileCard(cur => (cur !== null && cur.anchor === anchor ? null : { id: userId, source, anchor, name, rowId: anchor.closest<HTMLElement>('.d-message-row')?.dataset.msgId }));
   const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
@@ -1717,7 +1717,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
-            onEditingChange={setThreadEditing}
+            onEditingChange={setThreadEditing} onOpenProfile={openProfile}
             onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>

@@ -51,7 +51,7 @@ function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites
 it('keeps account presence in the user panel, no select in the sidebar, and no connection state in a status bar', () => {
   setup();
   expect(screen.queryByRole('combobox', { name: 'Your status' })).toBeNull();
-  expect(screen.getByRole('button', { name: /your status: Online$/ }).closest('.d-user-panel')).not.toBeNull();
+  expect(screen.getByRole('button', { name: /your status: online$/ }).closest('.d-user-panel')).not.toBeNull();
   expect(screen.queryByText('online', { selector: '.d-chunk__v' })).toBeNull();
   expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
 });
