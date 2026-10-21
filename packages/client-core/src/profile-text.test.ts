@@ -73,9 +73,59 @@ describe('invisible characters', () => {
   });
   it('calls a text of nothing visible blank', () => {
     expect(problem(str(0x301))).toBe('blank');
-    expect(problem(str(0xfe0f))).toBe('blank');
-    expect(problem(str(32, 0x301, 32, 0xfe0e))).toBe('blank');
+    expect(problem(str(32, 0x301, 32, 0x302))).toBe('blank');
     expect(problem(str(101, 0x301))).toBeNull();
+  });
+});
+
+describe('tag characters', () => {
+  const accepted = (...cps: number[]) => { expect(problem(str(...cps))).toBeNull(); };
+  const chars = (...cps: number[]) => { expect(problem(str(...cps))).toBe('chars'); };
+  it('keeps only the RGI tag sequences (England, Scotland, Wales)', () => {
+    accepted(0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067, 0xe007f);
+    accepted(0x1f3f4, 0xe0067, 0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f);
+    accepted(0x1f3f4, 0xe0067, 0xe0062, 0xe0077, 0xe006c, 0xe0073, 0xe007f);
+    accepted(0x1f3f4, 0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067, 0xe007f);
+  });
+  it('refuses every other run of tags, however well formed', () => {
+    chars(0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0068, 0xe007f);
+    chars(0x1f3f4, 0xe0068, 0xe0069, 0xe0064, 0xe0064, 0xe0065, 0xe006e, 0xe007f);
+    chars(0x1f3f4, 0xe0061, 0xe0062, 0xe0063, 0xe0064, 0xe0065, 0xe0066, 0xe0067, 0xe0068, 0xe007f);
+    chars(0x1f3f4, 0xe0067, 0xe007f);
+    chars(0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067);
+    chars(0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067, 0xe007f, 0xe0041);
+    chars(0x1f642, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067, 0xe007f);
+  });
+});
+
+describe('variation selectors', () => {
+  const accepted = (...cps: number[]) => { expect(problem(str(...cps))).toBeNull(); };
+  const chars = (...cps: number[]) => { expect(problem(str(...cps))).toBe('chars'); };
+  it('allows U+FE0E or U+FE0F once, right after an Emoji code point', () => {
+    accepted(0x1f642, 0xfe0e);
+    accepted(0x1f642, 0xfe0f);
+    accepted(0xa9, 0xfe0f);
+    accepted(0x31, 0xfe0f, 0x20e3);
+    accepted(0x2764, 0xfe0f, 0x200d, 0x1f525);
+    accepted(0x1f642, 0x200d, 0x2194, 0xfe0f);
+  });
+  it('refuses every other selector and every stack', () => {
+    chars(0x61, 0xfe0f);
+    chars(0x61, 0xfe0e);
+    chars(0xfe0f);
+    chars(0xfe0f, 0x1f642);
+    chars(0x1f642, 0xfe0f, 0xfe0f);
+    chars(0x1f642, 0xfe0e, 0xfe0f);
+    for (let vs = 0xfe00; vs <= 0xfe0d; vs++) { chars(0x1f642, vs); chars(0x6c49, vs); }
+    chars(0x6c49, 0xe0100);
+    chars(0x6c49, 0xe01ef);
+    chars(0x1f642, 0xe0100);
+    chars(0x6c49, 0xe0100, 0xe0101, 0xe0102);
+    chars(0x20, 0xfe0f);
+  });
+  it('never makes a text visible', () => {
+    chars(0x301, 0xfe0f);
+    chars(0x20, 0xfe0e, 0x20);
   });
 });
 

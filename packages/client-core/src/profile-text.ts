@@ -1,7 +1,7 @@
 // Profile text (a display name, a status message, a bio, a device label): the client's mirror of internal/auth
 // NormalizeUserText (internal/auth/profile_text.go has the rule in words). Pure, so the worker, the routes and the page share
 // one rule. The tables are generated from the same Unicode version as the server's (scripts/gen-profile-text-tables.mjs).
-import { EMOJI_PRESENTATION, EXT_PICT, JOINING, VIRAMA, type RuneRange } from './profile-tables';
+import { EMOJI, EMOJI_PRESENTATION, EXT_PICT, JOINING, TAG_SEQUENCES, VIRAMA, type RuneRange } from './profile-tables';
 
 const CONTROL = /\p{Cc}/u;
 const TRANSPARENT = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
@@ -64,16 +64,28 @@ function joinsEmoji(cps: readonly number[], i: number): boolean {
   return before && after;
 }
 
+function isVariationSelector(cp: number): boolean { return (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef); }
+/** The length of the RGI tag sequence that starts at cps[i], 0 when none does. */
+function tagSequenceAt(cps: readonly number[], i: number): number {
+  for (const seq of TAG_SEQUENCES) {
+    if (i + seq.length <= cps.length && seq.every((cp, k) => cps[i + k] === cp)) return seq.length;
+  }
+  return 0;
+}
+
 function charsOk(cps: readonly number[], multiline: boolean): boolean {
   for (let i = 0; i < cps.length; i++) {
     const cp = cps[i];
     if (cp === 0x0a) { if (!multiline) return false; continue; }
     if (CONTROL.test(String.fromCodePoint(cp)) || refused(cp) || (cp >= 0xe0020 && cp <= 0xe007f)) return false;
     if (cp === 0x1f3f4) {
-      // A flag tag sequence: U+1F3F4, tag characters, U+E007F. Any other tag character is refused above.
-      let j = i + 1;
-      while (j < cps.length && cps[j] >= 0xe0020 && cps[j] <= 0xe007e) j++;
-      if (j > i + 1 && j < cps.length && cps[j] === 0xe007f) i = j;
+      // A flag tag sequence from the RGI list (England, Scotland, Wales) is kept whole. Any other tag character is
+      // refused above, so a run of tags cannot carry hidden text.
+      const n = tagSequenceAt(cps, i);
+      if (n > 0) i += n - 1;
+    } else if (isVariationSelector(cp)) {
+      // Only U+FE0E or U+FE0F, one per base, right after an Emoji code point; a stacked selector has no emoji before it.
+      if ((cp !== 0xfe0e && cp !== 0xfe0f) || i === 0 || !inRanges(cps[i - 1], EMOJI)) return false;
     } else if (cp === 0x200c) {
       if (!(i > 0 && isVirama(cps[i - 1])) && !zwnjJoins(cps, i)) return false;
     } else if (cp === 0x200d) {
