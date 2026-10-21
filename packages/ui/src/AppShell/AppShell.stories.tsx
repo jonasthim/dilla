@@ -72,7 +72,7 @@ const userPanel = (
 const dock = (
   <VoiceDock phase="connected" where="longhouse" muted={false} deafened={false} announcement="" onCamera={() => {}} onShare={() => {}} onLeave={() => {}}
     labels={{ region: 'voice controls', connecting: 'connecting', reconnecting: 'reconnecting', paused: 'paused in {where}',
-      ping: '{ms} ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s', stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s', stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
       quality: { good: 'good', poor: 'poor', bad: 'bad' },
       mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen' }} />
 );

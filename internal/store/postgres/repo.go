@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -292,6 +293,18 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
+// UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+	n, err := r.w.UpdateProfile(ctx, pgdb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.
 func (r *Repo) SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error {
 	n, err := r.w.SetFactorOwed(ctx, pgdb.SetFactorOwedParams{FactorOwed: boolInt(owed), ID: userID})
@@ -339,6 +352,14 @@ func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int6
 }
 
 // boolInt is a 0/1 flag column's value.
+// nullString is a nullable text argument: nil is SQL NULL.
+func nullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
 func boolInt(b bool) int64 {
 	if b {
 		return 1
@@ -361,6 +382,8 @@ func userRow(row pgdb.Users) store.UserRow {
 		DisabledAt: ptrInt64(row.DisabledAt),
 		DeletedAt:  ptrInt64(row.DeletedAt),
 		FactorOwed: row.FactorOwed == 1,
+		StatusMsg:  row.StatusMsg,
+		Bio:        row.Bio,
 	}
 }
 
@@ -2130,6 +2153,66 @@ func (r *Repo) GetCommunityAFK(ctx context.Context, communityID id.ID) (store.Co
 		return store.CommunityAFK{}, wrap(err)
 	}
 	return store.CommunityAFK{ChannelID: row.ChannelID, TimeoutSeconds: uint64(row.TimeoutSeconds)}, nil
+}
+
+func (r *Repo) SetAFKAway(ctx context.Context, communityID, userID id.ID, since int64) (bool, error) {
+	n, err := r.w.SetAFKAway(ctx, pgdb.SetAFKAwayParams{CommunityID: communityID, UserID: userID, Since: since})
+	// The only foreign key is onto members: a user who is no member (a kick that landed between a
+	// caller's check and this insert) is ErrNotFound, as the store answers a missing member.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+		return false, fmt.Errorf("%w: %w", store.ErrNotFound, err)
+	}
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) ClearAFKAway(ctx context.Context, communityID, userID id.ID) (bool, error) {
+	n, err := r.w.ClearAFKAway(ctx, pgdb.ClearAFKAwayParams{CommunityID: communityID, UserID: userID})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) ClearAFKAwayUser(ctx context.Context, userID id.ID) ([]id.ID, error) {
+	cids, err := r.w.ClearAFKAwayUser(ctx, pgdb.ClearAFKAwayUserParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	// DELETE ... RETURNING has no ORDER BY on either engine; sort so both answer the same.
+	slices.SortFunc(cids, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	return cids, nil
+}
+
+func (r *Repo) ListAFKAway(ctx context.Context, communityID id.ID) ([]store.AFKAway, error) {
+	rows, err := r.r.ListAFKAway(ctx, pgdb.ListAFKAwayParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.AFKAway, len(rows))
+	for i, row := range rows {
+		out[i] = store.AFKAway{UserID: row.UserID, Since: row.Since}
+	}
+	return out, nil
+}
+
+func (r *Repo) AFKAwayExists(ctx context.Context, communityID, userID id.ID) (bool, error) {
+	n, err := r.r.AFKAwayExists(ctx, pgdb.AFKAwayExistsParams{CommunityID: communityID, UserID: userID})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) AFKAwayExistsUser(ctx context.Context, userID id.ID) (bool, error) {
+	n, err := r.r.AFKAwayExistsUser(ctx, pgdb.AFKAwayExistsUserParams{UserID: userID})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) ListAFKAwayFirst(ctx context.Context, communityID id.ID, limit int32) ([]store.AFKAway, error) {
+	rows, err := r.r.ListAFKAwayFirst(ctx, pgdb.ListAFKAwayFirstParams{CommunityID: communityID, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.AFKAway, len(rows))
+	for i, row := range rows {
+		out[i] = store.AFKAway{UserID: row.UserID, Since: row.Since}
+	}
+	return out, nil
 }
 
 func (r *Repo) SetCommunityAFK(ctx context.Context, communityID id.ID, config store.CommunityAFK) error {

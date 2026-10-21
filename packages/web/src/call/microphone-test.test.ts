@@ -1,6 +1,8 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { LocalMicrophoneTest } from './microphone-test';
 vi.mock('@dilla/media',()=>({DillaMicrophoneProcessor:class {processedTrack={stop(){}};async init(){} async destroy(){}}}));
+// Vitest 4 evaluates a module on its first import with the global URL; load the worklet URL module before a test stubs URL.
+beforeAll(async()=>{await import('../../../media/src/audio/record-worklet.ts?worker&url');});
 afterEach(()=>{vi.unstubAllGlobals();vi.useRealTimers();});
 function audio() {
   let closed=false, stopped=false;

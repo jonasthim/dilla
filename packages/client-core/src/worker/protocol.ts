@@ -53,6 +53,8 @@ export type Command =
   | { m: 'stepUpPasskeyBegin' }                                  // ready → { ceremonyId, options }
   | { m: 'stepUpPasskeyFinish'; ceremonyId: string; response: string }               // ready → { token }
   | { m: 'removeFactor'; stepup: string; kind: 'totp' | 'passkey'; credId: string | null } // ready → null
+  | { m: 'freshSession' }                                         // ready → null; mints a new session from the device key (a first password needs one under the reauth window)
+  | { m: 'changePassword'; old: string | null; next: string; stepup: string | null } // ready → null; slice factors (hasPassword). Neither password is kept
   | { m: 'regenerateBackupCodes'; stepup: string }               // ready → { backupCodes }
   | { m: 'signInKey'; recoveryKey: string }                      // signin-key → ready; registers when nothing is registered yet
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
@@ -63,10 +65,13 @@ export type Command =
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready
   | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
+  | { m: 'updateProfile'; display?: string; statusMsg?: string; bio?: string }   // ready: a field left out is left alone, '' clears it → null
   | { m: 'presenceActivity' }
   | { m: 'getAFKSettings'; communityId: string }
   | { m: 'setAFK'; communityId: string; timeoutSeconds: number }
   | { m: 'afkActivity'; communityId: string; channelId: string; exempt?: boolean }
+  | { m: 'afkAway'; communityId: string }                         // ready → null: PUT …/afk/away (AW4); nothing clears away
+  | { m: 'afkRead'; communityId: string; timeoutMs?: number }                       // ready → null once a fresh GET …/afk landed (AW5 fix 1); E_UNAVAILABLE if it failed
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
@@ -79,6 +84,15 @@ export type Command =
   | { m: 'checkpointFiles'; channelId: string }                                          // ready → File[] selected in this channel
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
   | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
+  // E8: the GIF picker. The Giphy key is a per-server setting. The worker holds the session, so it searches, fetches and
+  // saves the key; a GIF crosses back as a Blob and the page sends it with attachFiles, so it is an ordinary attachment,
+  // sealed like any file, and no browser contacts Giphy. The key only ever goes up: no return, slice or error carries it.
+  | { m: 'gifStatus'; communityId: string }                                               // ready → { on, rating }
+  | { m: 'gifSetKey'; communityId: string; key: string }                                  // ready → null (a server manager)
+  | { m: 'gifClearKey'; communityId: string }                                             // ready → null (a server manager)
+  | { m: 'gifSetRating'; communityId: string; rating: 'g' | 'pg' | 'pg-13' | 'r' }        // ready → null (a server manager)
+  | { m: 'gifSearch'; communityId: string; q: string; offset: number }                    // ready → { items: [{ id, title, width, height }], next }
+  | { m: 'gifFetch'; communityId: string; gifId: string; variant: 'preview' | 'full' }     // ready → { blob } (image/gif)
   | { m: 'refreshTrust' } // ready: bounded signed-list refresh
   | { m: 'verifyContact'; userId: string; umk: string }
   // ready → string: the digits for exactly `umk` (64 lowercase hex), the key the dialog will hand to verifyContact

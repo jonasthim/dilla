@@ -113,6 +113,12 @@ type CommunityAfk struct {
 	TimeoutSeconds int64
 }
 
+type CommunityAfkAway struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Since       int64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID
@@ -451,6 +457,8 @@ type Users struct {
 	DisabledAt sql.NullInt64
 	DeletedAt  sql.NullInt64
 	FactorOwed int64
+	StatusMsg  string
+	Bio        string
 }
 
 type VoiceSessions struct {

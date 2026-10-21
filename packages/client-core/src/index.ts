@@ -7,6 +7,8 @@ export type { CoreClient } from './bridge';
 export type * from './state/types';
 export { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './state/settings';
 export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
+export { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue } from './profile-text';
+export type { ProfileTextProblem } from './profile-text';
 export { attachmentKind } from './state/derive';
 export type { NotifyMode } from './state/settings';
 export type { Command, ToWorker, FromWorker, TestHook } from './worker/protocol';

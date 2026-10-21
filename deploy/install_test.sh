@@ -58,7 +58,7 @@ stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
+stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "$1" = is-active ] && [ -n "${STUB_MEDIA_INACTIVE:-}" ]; then exit 3; fi; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
 # With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
 # the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
 # STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
@@ -177,8 +177,18 @@ doctor)
 	exit "${FAKE_DOCTOR_EXIT:-0}"
 	;;
 media)
-	[ "$1" = --probe ] || exit 64
-	[ -z "${FAKE_MEDIA_PROBE_FAIL:-}" ] || exit 69
+	case "$1" in
+	--probe)
+		[ -z "${FAKE_MEDIA_PROBE_FAIL:-}" ] || exit 69
+		;;
+	--rooms)
+		# FAKE_ROOMS_FAIL: the sidecar cannot be reached. FAKE_ROOMS: a file holding what the
+		# real command prints for live rooms (default "no live rooms").
+		[ -z "${FAKE_ROOMS_FAIL:-}" ] || { echo "media rooms: sidecar unreachable" >&2; exit 69; }
+		if [ -n "${FAKE_ROOMS:-}" ]; then cat "$FAKE_ROOMS"; else echo "no live rooms"; fi
+		;;
+	*) exit 64 ;;
+	esac
 	;;
 version) echo "dillad fake ${FAKE_VERSION:-1}" ;;
 migrate)
@@ -512,6 +522,112 @@ if [ -z "$problems" ]; then pass "--upgrade replaces only the binary and the cor
 '
 fi
 
+# The live-call preflight: --upgrade asks `dillad media --rooms` as the service user, just before
+# it changes anything. The target release differs from the installed one, so "untouched" is visible.
+printf 'room-a\t2 participants\n  alice\n  bob\nroom-b\t0 participants\nroom-c\t1 participants\n  carol\n' >"$TMP/rooms.live"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+untouched() { # prints a problem list, empty when nothing was touched
+	cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight" || printf '|the binary was replaced'
+	cmp -s "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight" || printf '|dilla.toml changed'
+	# Asking whether dilla-media runs (systemctl is-active) changes nothing; any other systemctl call does.
+	grep systemctl "$LOG" | grep -vq '^systemctl is-active' && printf '|systemctl ran: %s' "$(grep systemctl "$LOG" | tr '\n' ';')"
+	has "$(cat "$LOG")" "migrate down" && printf '|migrate ran'
+	return 0
+}
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "room-a" && has "$ERR" "2 participants" && has "$ERR" "room-c" && has "$ERR" "1 participants" || problems="$problems|the rooms and counts are not listed"
+has "$ERR" "room-b" && problems="$problems|an empty room is listed"
+has "$ERR" "alice" && problems="$problems|identities are listed"
+has "$ERR" "--yes" || problems="$problems|the override is not named"
+has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad media --rooms --config=" || problems="$problems|media --rooms did not run as the service user: $(cat "$LOG")"
+[ -z "$OUT" ] || problems="$problems|stdout = \"$OUT\", want nothing"
+if [ -z "$problems" ]; then pass "--upgrade with live rooms refuses and touches nothing"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade with live rooms refuses and touches nothing" $problems
+	IFS='
+'
+fi
+
+FAKE_ROOMS_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "could not list the live rooms" || problems="$problems|the failure is not named: $ERR"
+if [ -z "$problems" ]; then pass "--upgrade refuses when the live-room check itself fails"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade refuses when the live-room check itself fails" $problems
+	IFS='
+'
+fi
+
+FAKE_ROOMS_FAIL=1 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$REL"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$ERR" "warning" && has "$ERR" "--yes" || problems="$problems|no warning about the override"
+cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
+if [ -z "$problems" ]; then pass "--upgrade --yes proceeds when the live-room check fails, with a warning"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade --yes proceeds when the live-room check fails, with a warning" $problems
+	IFS='
+'
+fi
+
+# Final review I1: the rollback stops dilla first, which stops dilla-media (PartOf), so `media --rooms` cannot answer.
+# A stopped media service has no rooms, so there are no live calls: the upgrade says so and proceeds without --yes.
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+STUB_MEDIA_INACTIVE=1 FAKE_ROOMS_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$(cat "$LOG")" "systemctl is-active --quiet dilla-media" || problems="$problems|dilla-media's state was not asked: $(cat "$LOG")"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|media --rooms ran although dilla-media is stopped"
+has "$ERR" "dilla-media is not running" || problems="$problems|the reason is not said: $ERR"
+has "$ERR" "warning" && problems="$problems|a warning although nothing was overridden"
+cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
+if [ -z "$problems" ]; then pass "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)" $problems
+	IFS='
+'
+fi
+
+# Back on the newer release for the cases below.
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --yes --release-url "file://$REL"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$ERR" "warning" && has "$ERR" "live calls" && has "$ERR" "--yes" || problems="$problems|no warning about the override: $ERR"
+cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
+has "$(cat "$LOG")" "systemctl restart dilla" || problems="$problems|dilla was not restarted"
+if [ -z "$problems" ]; then pass "--upgrade --yes proceeds over live rooms, with a warning"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade --yes proceeds over live rooms, with a warning" $problems
+	IFS='
+'
+fi
+
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$(cat "$LOG")" "media --rooms" || problems="$problems|the rooms were not asked"
+has "$ERR" "warning" && problems="$problems|a warning with no live rooms"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the binary was not replaced"
+if [ -z "$problems" ]; then pass "--upgrade with no live rooms proceeds"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade with no live rooms proceeds" $problems
+	IFS='
+'
+fi
+
 # --upgrade against a tampered release: refused, the running binary stays.
 KEEP_ROOT=1 run --upgrade --release-url "file://$BAD"
 expect_refusal "--upgrade from a tampered release is refused" "checksum"
@@ -527,6 +643,9 @@ expect_refusal "--upgrade with a mode flag is refused" "--upgrade"
 run --upgrade $URL
 expect_refusal "--upgrade with no instance is refused" "no instance"
 
+run --yes $PROXY_ARGS $URL
+expect_refusal "--yes without --upgrade is refused" "--yes is for --upgrade"
+
 # An instance from the old all-in-one release is migrated once. The old process
 # releases the UDP port before the sidecar starts, and the previous config stays
 # beside the new one for rollback.
@@ -535,7 +654,7 @@ KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
 sed -i "s/^  mode = 'in_process'$/  mode = 'in_process' # local SFU/" "$MIGRATING_CONF"
-KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
 calls="$(cat "$LOG")"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|upgrade exited $RC: $ERR"
@@ -577,7 +696,7 @@ MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-migration"
 echo 16 >"$TMP/schema"
-FAKE_SCHEMA="$TMP/schema" STUB_FAIL_V2=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+FAKE_SCHEMA="$TMP/schema" STUB_FAIL_V2=1 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
 calls="$(cat "$LOG")"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|upgrade unexpectedly succeeded"
@@ -601,7 +720,7 @@ KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-probe"
-FAKE_MEDIA_PROBE_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+FAKE_MEDIA_PROBE_FAIL=1 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|upgrade unexpectedly succeeded"
 [ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'in_process'" ] || problems="$problems|old mode was not restored"

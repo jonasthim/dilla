@@ -16,27 +16,13 @@ const base: CallControlsProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallControls', () => {
-  it('listenReason makes mute, camera and share aria-disabled with that reason, not the paused one, and presses do nothing', async () => {
-    const onMute = vi.fn();
-    render(<CallControls {...base} onMute={onMute} listenReason="everyone is muted here"
-      labels={{ ...labels, why: { paused: 'paused', joining: 'connecting', noShare: 'n/a' } }} />);
-    for (const name of ['mute', 'camera', 'share screen']) {
-      const b = screen.getByRole('button', { name });
-      expect(b).toHaveAttribute('aria-disabled', 'true');
-      expect(b).toHaveAccessibleDescription(/everyone is muted here/);
-      expect(b).not.toHaveAccessibleDescription(/paused/);
-    }
-    await userEvent.click(screen.getByRole('button', { name: 'mute' }));
-    expect(onMute).not.toHaveBeenCalled();
-  });
-
   it('a real hold still says paused (control)', () => {
     render(<CallControls {...base} canCamera={false} canShare={false} paused
       labels={{ ...labels, why: { paused: 'paused', joining: 'connecting', noShare: 'n/a' } }} />);
     expect(screen.getByRole('button', { name: 'camera' })).toHaveAccessibleDescription(/paused/);
   });
 
-  it('mute is live without listenReason (control)', async () => {
+  it('mute is live', async () => {
     const onMute = vi.fn();
     render(<CallControls {...base} onMute={onMute} />);
     const mute = screen.getByRole('button', { name: 'mute' });

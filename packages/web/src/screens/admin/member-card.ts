@@ -8,6 +8,9 @@ export interface MemberCardData {
   userId: string;
   name: string;
   username: string;
+  /** The member's status message and bio (EOD E6); '' when unset. */
+  status: string;
+  bio: string;
   isOwner: boolean;
   isYou: boolean;
   /** The member's roles, highest position first; `color` is 0 for a role with none. */
@@ -20,7 +23,20 @@ export function memberCardData(member: MemberSummary, ctx: MemberCardContext): M
   const roles = ctx.roles.filter(r => r.position !== 0 &&member.roleIds.includes(r.id)).sort((a, b) => b.position - a.position).map(r => ({ name: r.name, color: r.color }));
   return {
     userId: member.userId, name: memberName(member), username: member.username,
+    status: member.statusMsg ?? '', bio: member.bio ?? '',
     isOwner: member.userId === ctx.ownerId, isYou: member.userId === ctx.selfId,
     roles, actions: menuFor(member, ctx.access, ctx),
+  };
+}
+
+export interface DmCardContext { selfId: string; /** The DM's name, shown when no shared server lists the person. */ fallbackName: string }
+
+/** A DM peer's card (EOD E3): no server context, so no roles, owner, kick or ban; just message and compare. */
+export function dmCardData(userId: string, member: MemberSummary | undefined, ctx: DmCardContext): MemberCardData {
+  const isYou = userId === ctx.selfId;
+  return {
+    userId, name: member === undefined ? ctx.fallbackName : memberName(member), username: member?.username ?? '',
+    status: member?.statusMsg ?? '', bio: member?.bio ?? '',
+    isOwner: false, isYou, roles: [], actions: isYou ? [] : ['message', 'compare'],
   };
 }

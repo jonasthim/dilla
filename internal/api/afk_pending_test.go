@@ -141,39 +141,30 @@ func TestAFKPendingClearsOnAnyJoin(t *testing.T) {
 	}
 }
 
-func TestAFKPendingExpires(t *testing.T) {
-	p := newPendingEnv(t)
-	p.idleMove(t)
-	p.e.Clk.Advance(9 * time.Minute)
-	p.calls.SweepAFK(t.Context())
-	if got := p.pending(t, p.memberTok); got != 1 {
-		t.Fatalf("pending inside the TTL = %d, want 1", got)
-	}
-	p.e.Clk.Advance(time.Minute + time.Second)
-	p.calls.SweepAFK(t.Context())
-	if got := p.pending(t, p.memberTok); got != 0 {
-		t.Fatalf("pending past the TTL = %d, want 0", got)
-	}
-}
-
-func TestAFKPendingNamesItsCommunity(t *testing.T) {
+// The pending cut is device-scoped (fix round 4): every community's snapshot reports it to the
+// moved device.
+func TestAFKPendingIsDeviceScoped(t *testing.T) {
 	p := newPendingEnv(t)
 	other := createCommunity(t, p.e, p.ownerTok)
 	joinCommunity(t, p.e, other, p.memberTok)
 	p.idleMove(t)
-	if _, _, _, pending := afkSnapshotOf(t, p.e, other, p.memberTok); pending != 0 {
-		t.Fatalf("another community's snapshot reports pending %d", pending)
+	if _, _, _, pending := afkSnapshotOf(t, p.e, other, p.memberTok); pending != 1 {
+		t.Fatalf("another community's snapshot reports pending %d, want 1", pending)
 	}
 }
 
+// A call left live in the AFK channel by an earlier version (R-AW1 refuses any new one) is never
+// tracked: its devices are not swept out of it.
 func TestAFKCallIsNotTracked(t *testing.T) {
 	p := newPendingEnv(t)
 	group := seedCallGroup(t, p.e, p.afk, p.cid, callGroupEpoch)
 	seedLeaf(t, p.e, group, p.memberDev, 3, nil)
-	if status, body := p.e.Do(http.MethodPost, "/v1/channels/"+p.afk.String()+"/calls", p.memberTok, []any{}); status != http.StatusCreated {
-		t.Fatalf("join AFK = %d (%x)", status, body)
+	call := id.New()
+	room := call.String() + "-1-abcdef01"
+	if err := p.e.Repo.PutVoiceSession(t.Context(), store.VoiceSessionRow{CallID: call, ChannelID: p.afk, GroupID: &group,
+		LivekitRoom: room, Started: p.e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
 	}
-	room := p.stub.lastMint().Room
 	p.stub.setPresent(room, &livekit.ParticipantInfo{Identity: p.memberDev.String()})
 	p.calls.Admitted(t.Context(), room, p.memberDev, false)
 	p.e.Clk.Advance(2 * time.Hour)

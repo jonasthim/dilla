@@ -232,7 +232,7 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("PATCH /v1/accounts/me/presence", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchPresence)))
 	m.Handle("POST /v1/accounts/me/presence/activity", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PresenceActivity)))
 	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
-	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
+	m.Handle("PATCH /v1/accounts/me", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchMe)))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 
 	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside

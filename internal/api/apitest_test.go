@@ -401,8 +401,11 @@ type stubSFU struct {
 	// live is the permission the stub SFU holds per identity: set by an applied update, dropped by
 	// a removal.
 	live         map[string]*livekit.ParticipantPermission
-	failUpdates  int  // the next failUpdates pushes fail (and are not applied)
-	failRemovals int  // the next failRemovals RemoveParticipants calls fail
+	failUpdates  int // the next failUpdates pushes fail (and are not applied)
+	failRemovals int // the next failRemovals RemoveParticipants calls fail
+	// beforeRemove runs at the start of every RemoveParticipants, outside the lock: a test reads
+	// what a client would see while the cut is under way.
+	beforeRemove func(room string, device id.ID)
 	hang         bool // pushes and removals block until their context ends: a hung SFU
 	present      map[string][]*livekit.ParticipantInfo
 	listFail     error
@@ -547,6 +550,12 @@ func (s *stubSFU) UpdatePermission(ctx context.Context, room, identity string, p
 }
 
 func (s *stubSFU) RemoveParticipants(ctx context.Context, room string, device id.ID) error {
+	s.mu.Lock()
+	before := s.beforeRemove
+	s.mu.Unlock()
+	if before != nil {
+		before(room, device)
+	}
 	s.mu.Lock()
 	if s.hang {
 		s.mu.Unlock()

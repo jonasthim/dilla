@@ -106,7 +106,7 @@ describe('Settings', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     expect(within(dialog).getByRole('heading', { level: 1, name: 'Settings' })).toHaveFocus();
     const items = within(nav()).getAllByRole('button');
-    expect(items).toEqual(['devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics'].map(name => within(nav()).getByRole('button', { name })));
+    expect(items).toEqual(['profile', 'devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics'].map(name => within(nav()).getByRole('button', { name })));
     expect(within(nav()).getByRole('button', { name: 'devices' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
@@ -160,13 +160,13 @@ describe('Settings', () => {
     setup(`/c/${C}/${CH}`, null);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
-  it('opens all six sections and a shared contact’s compare dialog', async () => {
+  it('opens all nine sections and a shared contact’s compare dialog', async () => {
     const userId = 'aa'.repeat(16);
     const umk = 'bb'.repeat(32);
     const { fake, user, view } = setup('/settings/devices', null, client => {
       client.set('trust', [{ userId, name: 'Ada', shared: true, umk, firstSeen: 1, verified: false, changedUmk: null }]);
     });
-    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics']);
+    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['profile', 'devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics']);
     await user.click(within(nav()).getByRole('button', { name: 'privacy' }));
     expect(screen.getByRole('heading', { name: 'Privacy' })).toBeInTheDocument();
     expect(screen.getByText('Ada')).toBeInTheDocument();

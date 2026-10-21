@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -74,6 +76,8 @@ var nounUsage = map[string]string{
 	"device": `usage: dillad admin device <verb> [flags]
 
   revoke  --id=ID   revokes the device and deletes its sessions
+  revoke  --all --id=ID | --username=NAME [--yes]   signs every device of the user out and deletes every
+          session; it prints the user and asks for the username typed back unless --yes; audited
 `,
 	"blob": `usage: dillad admin blob <verb> [flags]
 
@@ -1016,15 +1020,34 @@ func adminDevice(verb string, args []string, stdout, stderr io.Writer) error {
 	switch verb {
 	case "revoke":
 		return runVerb(name, args, stdout, stderr, func(fs *flag.FlagSet) adminAction {
-			idFlag := fs.String("id", "", "the device's id (32 hex)")
+			// --id is the device's id without --all, and the user's id with it; --username
+			// names the user and goes with --all only. Both selectors come from userSelector,
+			// the flags the other user verbs take.
+			sel := userSelector{}.register(fs)
+			all := fs.Bool("all", false, "sign every device of the user named by --id or --username out (the recovery reset)")
+			yes := fs.Bool("yes", false, "with --all: revoke without typing the username back")
 			var did id.ID
 			return adminAction{
 				check: func() error {
+					if *all {
+						return sel.check(stderr, name)
+					}
+					if *sel.username != "" {
+						return usageError(stderr, name, "--username goes with --all; a single device is named with --id")
+					}
+					if *yes {
+						return usageError(stderr, name, "--yes goes with --all")
+					}
 					var err error
-					did, err = parseID(stderr, name, "id", *idFlag)
+					did, err = parseID(stderr, name, "id", *sel.id)
 					return err
 				},
-				run: func(ctx context.Context, e *adminEnv) error { return revokeDevice(ctx, e, did) },
+				run: func(ctx context.Context, e *adminEnv) error {
+					if *all {
+						return revokeAllDevices(ctx, e, sel, *yes)
+					}
+					return revokeDevice(ctx, e, did)
+				},
 			}
 		})
 	default:
@@ -1064,6 +1087,73 @@ func revokeDevice(ctx context.Context, e *adminEnv, did id.ID) error {
 	e.log.Info("device revoked", "device", did.String(), "user", d.UserID.String(), "sessions_deleted", sessions)
 	fmt.Fprintf(e.out, "revoked device %s of user %s; %d sessions deleted, live connections close within one heartbeat interval\n",
 		did, d.UserID, sessions)
+	return nil
+}
+
+// adminIn is where `device revoke --all` reads the typed confirmation, and adminInTerminal says
+// whether it is a terminal the operator can answer on. Tests replace both.
+var (
+	adminIn         io.Reader = os.Stdin
+	adminInTerminal           = func() bool { return stdinIsTerminal(os.Stdin) }
+)
+
+// stdinIsTerminal reports whether f is a character device, which is what a terminal is for this.
+func stdinIsTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// revokeAllDevices is `dillad admin device revoke --all` (ruling R1, the recovery reset). The user
+// is named by --id or --username (sel). It resolves the user first and prints who it is and how
+// many devices are active; a deleted user is refused and a user with no active device has nothing
+// to revoke. Otherwise it prints the history warning and asks for the username typed back, unless
+// yes is given. Without yes and without a terminal to answer on, it refuses. Then ops.RevokeAll
+// Devices signs every device out and deletes every session, in one audited transaction. Like
+// revokeDevice it publishes no new signed device list (that needs the person's own key).
+func revokeAllDevices(ctx context.Context, e *adminEnv, sel userSelector, yes bool) error {
+	u, err := sel.resolve(ctx, e.repo)
+	if err != nil {
+		return err
+	}
+	if u.DeletedAt != nil {
+		return fmt.Errorf("user %s is deleted: %w", u.ID, exit.Data)
+	}
+	devices, err := e.repo.ListDevicesByUser(ctx, u.ID)
+	if err != nil {
+		return fmt.Errorf("list devices: %w: %w", err, exit.Software)
+	}
+	active := 0
+	for _, d := range devices {
+		if d.RevokedAt == nil {
+			active++
+		}
+	}
+	fmt.Fprintf(e.out, "user %s (%s): %d active devices\n", printable(u.Username), u.ID, active)
+	if active == 0 {
+		fmt.Fprintln(e.out, "nothing to revoke: no active devices")
+		return nil
+	}
+	fmt.Fprintln(e.out, "Encrypted history is lost unless another device still holds it, and after this none of the person's devices is active.")
+	if !yes {
+		if !adminInTerminal() {
+			return usageError(e.errw, "admin device revoke", "refusing to revoke without a terminal to confirm on; pass --yes")
+		}
+		fmt.Fprintf(e.out, "type %s to sign every device out: ", printable(u.Username))
+		line, _ := bufio.NewReader(adminIn).ReadString('\n')
+		if strings.TrimRight(line, "\r\n") != u.Username {
+			return fmt.Errorf("the typed name did not match %s; nothing revoked: %w", printable(u.Username), exit.Fail)
+		}
+	}
+	res, err := ops.RevokeAllDevices(ctx, e.repo, u.ID, e.now())
+	if err != nil {
+		return fmt.Errorf("revoke every device of %s: %w: %w", u.ID, err, exit.Software)
+	}
+	e.log.Info("all devices revoked", "user", u.ID.String(), "devices_revoked", len(res.Revoked), "sessions_deleted", res.Sessions)
+	fmt.Fprintf(e.out, "revoked %d devices of user %s (%s); %d sessions deleted, live connections close within one heartbeat interval\n",
+		len(res.Revoked), u.ID, printable(u.Username), res.Sessions)
+	for _, d := range res.Revoked {
+		fmt.Fprintf(e.out, "  device %s\n", d)
+	}
 	return nil
 }
 

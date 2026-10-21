@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { profileTextProblem } from '@dilla/client-core';
 import { Banner, Button, OnboardingFrame, RecoveryKey, Splash, TextField } from '@dilla/ui';
 import { browser } from '../browser.ts';
 import { useCore } from '../core/context.tsx';
@@ -207,7 +208,11 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     setBanner(null);
     const next: Partial<Record<Field, StringKey>> = {};
     if (!USERNAME.test(username.trim().toLowerCase())) next.username = 'onboarding.error.usernameRule';
-    if (codePoints(display.trim()) > DISPLAY_MAX) next.display = 'onboarding.error.displayLength';
+    // The server's text rule, so a refusal is named next to the field and not as a banner after the keys are made.
+    const displayProblem = profileTextProblem(display, DISPLAY_MAX);
+    if (displayProblem === 'long' || codePoints(display.trim()) > DISPLAY_MAX) next.display = 'onboarding.error.displayLength';
+    else if (displayProblem === 'chars') next.display = 'profile.error.chars';
+    else if (displayProblem === 'blank' && display.trim() !== '') next.display = 'profile.error.blank';
     if (instance.passwordSignup && codePoints(password) < PASSWORD_MIN) next.password = 'onboarding.error.passwordShort';
     if (showErrors(next)) return;
     // Going back never makes new keys: signupBegin runs only while no keys exist.

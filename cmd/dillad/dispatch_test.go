@@ -20,32 +20,31 @@ import (
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
 
-// countMigrations is the goose version a fully migrated database reports: the highest numeric
-// prefix among the embedded migration files. It equals the file count while the numbering has no
-// gap; an unreleased branch built before the migrations below it have landed has one, and goose
-// applies it in order on a fresh database.
+// countMigrations is the goose version a fully migrated database reports: the highest number among the
+// embedded migration files. It is not the file count, because the numbers need not be contiguous (00021 can be
+// taken by a branch that is not released yet).
 func countMigrations(t *testing.T) int {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	n := 0
+	highest := 0
 	for _, e := range entries {
-		prefix, _, ok := strings.Cut(e.Name(), "_")
+		num, _, ok := strings.Cut(e.Name(), "_")
 		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
 			continue
 		}
-		v, err := strconv.Atoi(prefix)
+		v, err := strconv.Atoi(num)
 		if err != nil {
-			t.Fatalf("migration %s has no numeric prefix: %v", e.Name(), err)
+			t.Fatalf("migration %s does not start with a number: %v", e.Name(), err)
 		}
-		n = max(n, v)
+		highest = max(highest, v)
 	}
-	if n == 0 {
+	if highest == 0 {
 		t.Fatal("no embedded migrations at all")
 	}
-	return n
+	return highest
 }
 
 func run(t *testing.T, args ...string) (string, string, error) {

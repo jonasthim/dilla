@@ -122,6 +122,10 @@ func TestADeviceLabelIsValidated(t *testing.T) {
 		"a deprecated format character":        []any{"a\u206ab"},
 		"the last deprecated format character": []any{"a\u206fb"},
 		"a next-line control at the edge":      []any{"phone\u0085"},
+		"a byte order mark at the edge":        []any{"\ufeffphone\ufeff"},
+		"a tag character":                      []any{"a\U000E0041b"},
+		"a variation selector after a letter":  []any{"a\ufe0fb"},
+		"a braille blank":                      []any{"a\u2800b"},
 	} {
 		// One instance per case: the write bucket is small and a refusal must not hide behind a 429.
 		h, deps := newTestAPI(t)
@@ -196,18 +200,6 @@ func TestASessionOwingASecondFactorCannotNameADevice(t *testing.T) {
 	}
 	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
 		t.Fatalf("label after the refused PATCH = %v, want null", got)
-	}
-}
-
-// Both sides trim the same edge characters: a byte order mark is trimmed like a space.
-func TestADeviceLabelEdgeBOMIsTrimmedLikeTheClientDoes(t *testing.T) {
-	h, deps := newTestAPI(t)
-	_, dev, token := seedAPISession(t, deps)
-	if rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+dev.ID.String(), token, []any{"\ufeffphone\ufeff"}); rec.Code != http.StatusNoContent {
-		t.Fatalf("PATCH = %d, want 204", rec.Code)
-	}
-	if got := listedLabels(t, h, token)[dev.ID]; got != "phone" {
-		t.Fatalf("label = %q, want phone", got)
 	}
 }
 

@@ -108,34 +108,33 @@ func TestQueryHeadersAreByteIdenticalAcrossEngines(t *testing.T) {
 	}
 }
 
-// wantSchemaVersion is the goose version a fully migrated database reports: the highest
-// numeric prefix among the embedded migration files, derived rather than written down so that
-// the task which adds a migration does not also have to edit two unrelated assertions.
-// It is the highest number, not the file count, because goose applies a numbering gap in order
-// on a fresh database (an unreleased branch may be built before the migrations that will sit
-// below it have landed); once those land the two are the same number.
+// wantSchemaVersion is the goose version a fully migrated database reports: the highest version
+// among the embedded migration files, derived rather than written down so that the task which adds
+// a migration does not also have to edit two unrelated assertions. It is the highest number, not the
+// file count, because goose does not need the numbers to be contiguous: a branch that takes 00022
+// while 00021 is still unreleased reports 22 with 21 files.
 func wantSchemaVersion(t *testing.T) int64 {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var n int64
+	var highest int64
 	for _, e := range entries {
-		prefix, _, ok := strings.Cut(e.Name(), "_")
-		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !strings.HasSuffix(e.Name(), ".sql") || !ok {
 			continue
 		}
-		v, err := strconv.ParseInt(prefix, 10, 64)
+		v, err := strconv.ParseInt(num, 10, 64)
 		if err != nil {
-			t.Fatalf("migration %s has no numeric prefix: %v", e.Name(), err)
+			t.Fatalf("migration %s does not start with a number: %v", e.Name(), err)
 		}
-		n = max(n, v)
+		highest = max(highest, v)
 	}
-	if n == 0 {
+	if highest == 0 {
 		t.Fatal("no embedded migrations at all")
 	}
-	return n
+	return highest
 }
 
 func openSQLite(t *testing.T) *sql.DB {
@@ -278,7 +277,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // task 16 added 006f_voice.sql's voice_sessions; dilla-web-3.1 added 014_invite_signups.sql's
 // invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks.
 var wantTables = []string{
-	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

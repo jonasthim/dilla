@@ -1210,12 +1210,12 @@ async function main(argv) {
     await mira.mouse.move(-10, -10);
     if (!membersWereOpen) await membersButton.click();
 
-    // web3.9: the built-in AFK channel. One click joins it; everyone in it is muted, so the stage says so.
-    await joinVoice(mira, SERVER, 'AFK');
-    await mira.getByText(t('afk.stage.muted', { channel: 'AFK' }), { exact: false }).first().waitFor({ timeout: WAIT });
+    // AW6: the built-in AFK channel hosts no call. One click marks Mira away; the AFK row lists her with `afk.away`.
+    await railServer(mira, SERVER).click();
+    await voiceRow(mira, 'AFK').click();
+    await mira.locator('.d-voice-row__person[data-away="true"]').first().waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('afk-call-desktop');
-    await leaveVoice(mira);
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
 

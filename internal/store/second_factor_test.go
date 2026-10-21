@@ -252,8 +252,13 @@ func checkBackfill(ctx context.Context, t *testing.T, p *goose.Provider, repo st
 	putPasskey(ctx, t, repo, passkey, "dilla.example", bytes.Repeat([]byte{0x11}, 32))
 	bot := user("bot", 1)
 	deleted := user("deleted", 0)
-	if err := repo.TombstoneUser(ctx, deleted, 5); err != nil {
-		t.Fatalf("TombstoneUser: %v", err)
+	// By hand too: TombstoneUser also clears status_msg and bio (00022), which this schema lacks.
+	tombstone := "UPDATE users SET deleted_at = 5 WHERE id = ?"
+	if pg {
+		tombstone = "UPDATE users SET deleted_at = 5 WHERE id = $1"
+	}
+	if _, err := db.ExecContext(ctx, tombstone, deleted); err != nil {
+		t.Fatalf("tombstone: %v", err)
 	}
 
 	if _, err := p.Up(ctx); err != nil {

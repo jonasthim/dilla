@@ -1,6 +1,7 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
 import { isMuted, roleHandle, splitMentions } from '@dilla/client-core';
+import { parseMarkdown } from './markdown.ts';
 import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, MentionRole, RoleSummary, TimelineItem, VoiceParticipant } from '@dilla/client-core';
 import type { BodyPart, VoiceParticipantView, VoiceStateLabels } from '@dilla/ui';
 import { baseRoute, type Route } from '../router.ts';
@@ -243,20 +244,25 @@ export function knownName(label: string, userId: string): string {
  * is tinted as naming me only when it is set; otherwise it is a plain broadcast or role pill (W2a review 10). The core
  * flags the row, not each token, so a row that counts for any reason tints all of them.
  */
-export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): BodyPart[] {
-  return splitMentions(body).map(part => {
-    if (part.kind === 'text') return part;
-    const id = part.target;
-    if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
-    const member = book.members.find(m => m.userId === id);
-    if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false, userId: id };
-    if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false, userId: id };
-    const known = book.roleInfo?.get(id);
-    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
-    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
-    // Not a member, the viewer or a known role: a user pill (a name-only card) only when we hold a message from that user, else it stays plain.
-    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, ...(book.knownUsers?.has(id) === true ? { userId: id } : {}) };
-  });
+export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): Extract<BodyPart, { kind: 'text' | 'mention' }>[] {
+  return splitMentions(body).map(part => part.kind === 'text' ? part : mentionPill(part.target, book, mentionsMe));
+}
+
+/** A message body as shown (E5): markdown parsed into nested parts, mentions still pills. Editing and search keep the raw text. */
+export function markdownParts(body: string, book: NameBook, mentionsMe: boolean): BodyPart[] {
+  return parseMarkdown(body, target => mentionPill(target, book, mentionsMe));
+}
+
+function mentionPill(id: string, book: NameBook, mentionsMe: boolean): Extract<BodyPart, { kind: 'mention' }> {
+  if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
+  const member = book.members.find(m => m.userId === id);
+  if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false, userId: id };
+  if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false, userId: id };
+  const known = book.roleInfo?.get(id);
+  if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
+  if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
+  // Not a member, the viewer or a known role: a user pill (a name-only card) only when we hold a message from that user, else it stays plain.
+  return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, ...(book.knownUsers?.has(id) === true ? { userId: id } : {}) };
 }
 
 export function plainBody(body: string, book: NameBook): string {
@@ -366,8 +372,7 @@ export function joinFailureKey(code: string): StringKey | null {
   }
 }
 
-/** The notice for the page call's microphone outcome (listen-only), or null when the microphone is on. web3.9: 'listen'
- *  (the AFK channel) has none here; its stage says so (WEB-AFK). */
-export function micNoticeKey(mic: 'ok' | 'denied' | 'missing' | 'failed' | 'listen'): StringKey | null {
+/** The notice for the page call's microphone outcome (listen-only), or null when the microphone is on. */
+export function micNoticeKey(mic: 'ok' | 'denied' | 'missing' | 'failed'): StringKey | null {
   return mic === 'denied' ? 'voice.micDenied' : mic === 'missing' ? 'voice.micMissing' : mic === 'failed' ? 'voice.micFailed' : null;
 }

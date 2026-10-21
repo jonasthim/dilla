@@ -17,6 +17,8 @@ export interface ProfileCardProps {
   presence?: Presence;
   /** A custom status, drawn after the presence word. */
   status?: string;
+  /** The member's bio, drawn under the head with its line breaks; nothing when empty. */
+  bio?: string;
   isOwner?: boolean;
   isYou?: boolean;
   roles: readonly ProfileCardRole[];
@@ -30,6 +32,8 @@ export interface ProfileCardProps {
   layout?: 'popover' | 'sheet';
   /** A popover's side: `side` (default) beside a member row, `below` under a mention or an author name (above when there is no room below). */
   placement?: 'side' | 'below';
+  /** The bio's name for assistive technology. */
+  bioLabel?: string;
   ownerLabel?: string;
   youLabel?: string;
   rolesLabel?: string;
@@ -51,19 +55,27 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  * room, else right); on a phone it is a modal sheet from the bottom over a scrim.
  */
 export function ProfileCard({
-  name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
-  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
+  name, username, presence, status, bio, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
+  bioLabel = 'about', ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const opener = useRef<HTMLElement | null>(null);
+  const aboutRef = useRef<HTMLDivElement>(null);
+  const [scrolls, setScrolls] = useState(false);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const onCloseRef = useRef(onClose);
   const fallbackRef = useRef(fallbackFocus);
   fallbackRef.current = fallbackFocus;
   onCloseRef.current = onClose;
+
+  // The bio box is a tab stop only while it overflows (WCAG 2.1.1: a keyboard reaches what scrolls, and nothing else gets a stop).
+  useLayoutEffect(() => {
+    const box = aboutRef.current;
+    setScrolls(box !== null && box.scrollHeight > box.clientHeight);
+  }, [bio, mode]);
 
   // The row to return to is read before focus moves in: the anchor, else whatever had focus.
   useLayoutEffect(() => {
@@ -153,11 +165,12 @@ export function ProfileCard({
           <h2 id={titleId} className="d-profile-card__name">{name}</h2>
           {username === '' ? null : <p className="d-profile-card__username">@{username}</p>}
           {presence !== undefined || status ? (
-            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <span>{status}</span> : null}</p>
+            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <bdi dir="auto">{status}</bdi> : null}</p>
           ) : null}
         </div>
         <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>
       </div>
+      {bio ? <div ref={aboutRef} className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={scrolls ? 0 : undefined}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
       {isOwner || isYou ? (
         <p className="d-profile-card__marks">
           {isOwner ? <span className="d-profile-card__mark"><Icon name="crown" size={14} />{ownerLabel}</span> : null}

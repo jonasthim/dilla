@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-21 ("web3.10"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-21 ("web3.11"): starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -162,8 +162,8 @@ cannot rename this server." or "Could not save ({code}). Try again." If "Someone
 time. Check the name and save again.
 
 Under the name, **Overview** holds the "inactive timeout": how long someone can sit idle in a voice channel on a computer
-before the server moves them to the server's AFK channel ("Members idle in voice this long move to AFK and are muted.
-Phones are not moved."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
+before the server disconnects them and lists them as away in the server's AFK channel ("Members idle in voice this long
+are disconnected and listed as away in AFK. Phones are not disconnected."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
@@ -182,7 +182,7 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
-  channel. Everyone in it is muted."), and no **delete** and no move up or down: it can be renamed and moved to another
+  channel. Nobody is connected here; people who are away are listed."), and no **delete** and no move up or down: it can be renamed and moved to another
   category, but it always stays last in its list.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
@@ -221,7 +221,7 @@ Björn's card with his roles and actions](screenshots/members-desktop.png)
 A whole row is one button. Click it, press Enter on it, right-click it, or press Shift+F10 or the ContextMenu key with the
 row focused, and it opens that person's **profile card**. On a wide window the card is a popover beside the row; on a phone
 it is a sheet from the bottom. The card shows a large avatar, the name, the @username, the status ("online", "idle", "do not
-disturb" or "offline", then the status line if there is one), "owner" and "you" where they apply (these two words are only in
+disturb" or "offline", then the person's status message if they set one), their bio under it, "owner" and "you" where they apply (these two words are only in
 the card, never in the list), the person's roles as coloured chips, and the actions. Escape or **close** shuts the card and
 puts focus back on the row; Tab stays inside it. Only one card is open at a time.
 
@@ -1170,6 +1170,24 @@ reduced motion, an outline instead of the animation). When the original is furth
 cannot read it: "the original message cannot be shown here". When it was deleted: "the original message was
 deleted".
 
+### Formatting a message
+
+A message can use a few markdown marks. They are shown when you read the message; the box where you write, and
+the editor, always show what you typed.
+
+- `**bold**`, `*italic*` or `_italic_`, and `~~struck through~~`.
+- `` `code` `` inside a line, and a block between two lines of three backticks.
+- `> ` at the start of a line makes a quote.
+- A web address that starts with `http://` or `https://`, or an email address written `mailto:name@example.com`, becomes
+  a link. It shows the address it opens (a name with letters outside a to z is shown in its `xn--` form, so a lookalike
+  cannot pass for the real site) and opens in a new tab. dilla never loads the page by itself. A `mailto:` link is the
+  bare address; anything after a `?` is not linked.
+- A backslash before a mark (`\*`) shows the mark as it is. A mark that is never closed is shown as typed.
+- Anything else stays as typed, including raw HTML and `[text](address)`. Other kinds of address, such as
+  `javascript:`, are never links.
+
+Mentions still work inside bold or a quote, and not inside code.
+
 ### Reactions
 
 **react**, or **add a reaction** under a message that already has reactions, opens "pick a reaction": 32 emoji in
@@ -1231,6 +1249,28 @@ between the images of the same message, **Save** saves it, **Close** or Escape c
 browser downloads a file each time you open or save it and keeps no copy of opened files; the small previews come
 with the message. When a message with files is deleted, its files are deleted from the instance too.
 
+### GIFs
+
+When the server's managers have entered a Giphy key (server settings → overview, "GIFs (Giphy)"), a **gif** button
+(named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
+field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
+press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
+the picker and puts focus back on the **gif** button.
+
+Picking a GIF adds it to "files to send" like any file you attach, named `giphy-{id}.gif`, and puts focus in the message
+field; press Enter to send it, with or without text, or **remove** it. Nothing is sent until you do.
+
+Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
+
+For a server manager: in server settings → overview, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
+developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
+**replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
+
+Two things to know about privacy. Your searches go to {instance}, which asks Giphy for you using the server's key, so
+Giphy sees the instance and not you; the instance itself sees what you search for and which GIF you pick. The GIF is
+downloaded by the instance and sent to the conversation as an ordinary file, protected like any other, so the people who
+read it never contact giphy.com.
+
 ### Keys in the conversation
 
 | Key | What it does |
@@ -1244,6 +1284,22 @@ with the message. When a message with files is deleted, its files are deleted fr
 | Enter, Shift+Enter, Escape | While editing: save, new line, cancel |
 
 ## 10. Privacy, search and settings
+
+### Profile
+
+Settings → **profile** is the first section. It has three fields: **display name** (up to 64 characters, and never empty),
+**status message** (one line, up to 190 characters) and **bio** (up to 500 characters, with line breaks). **save** is
+disabled until something changes, and it sends only what you changed; emptying the status message or the bio and saving
+clears it, and spaces at either end are dropped. Text the server would refuse is named under its field as you type or paste:
+"That has characters dilla can’t show." (a tab, an invisible or direction-changing character, or a line break in the status
+message), "Too long.", or "Write something, or leave it empty." for only spaces; **save** stays disabled until it is fixed,
+and again after a save until you change something. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
+profile card. If the save fails, "Could not save your profile. Try again." shows and what you typed stays.
+
+The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
+breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
+and are not end-to-end encrypted: do not put anything in them that the host should not read. There is no picture yet.
+Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers
 
@@ -1397,7 +1453,7 @@ and when the other tab closes it takes over by itself.
   its own.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
-- No link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
+- No link previews, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
   plays only the listed audio and video types. Received link previews are not shown.
 - Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
@@ -1435,7 +1491,7 @@ The test peer has no display name of its own (the testkit driver cannot set one)
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
 identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.9 ada makes the categories Raids and Boats and sets the inactive timeout (server settings), mira opens Home, taps a
-message on the phone, joins the AFK channel and shoots the dock, the member list and a header tooltip. For web3.10 mira then opens Björn's profile card from the member list, and the dock and the member list are re-shot with the new rows. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
+message on the phone, goes AFK (the AFK row then lists her as away) and shoots the dock, the member list and a header tooltip. For web3.10 mira then opens Björn's profile card from the member list, and the dock and the member list are re-shot with the new rows. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
 common phone size, from the same session: the home tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and

@@ -32,6 +32,10 @@ type UserRow struct {
 	// FactorOwed is users.factor_owed (web3.6 S1): the account holds no second factor yet, so its
 	// enrolled sessions reach only protocol/09's `F` and `P` routes.
 	FactorOwed bool
+	// StatusMsg (at most 190 characters) and Bio (at most 500) are the account's profile text (EOD E6):
+	// readable by the server like Display; "" is none.
+	StatusMsg string
+	Bio       string
 }
 
 // UserFlag bits, recorded in protocol/09-http-api.md § Flags (NV8).
@@ -371,6 +375,13 @@ type CommunityRow struct {
 	RequireMod2FA        uint8
 	Created              int64
 	DeletedAt            *int64
+}
+
+// AFKAway is one row of a community's away roster: the member is in the AFK channel and has
+// no voice connection, since a unix time.
+type AFKAway struct {
+	UserID id.ID
+	Since  int64
 }
 
 // CommunityAFK configures the optional silent destination for idle voice devices.

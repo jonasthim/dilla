@@ -9,7 +9,7 @@ describe('gateway frame vectors', () => {
 
   it('carries one accept case per opcode in the catalogue', () => {
     const ops = new Set(v.cases.map((c) => c.op));
-    for (const op of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 32, 33, 48, 49, 50, 51, 52, 53, 54]) {
+    for (const op of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 32, 33, 48, 49, 50, 51, 52, 53, 54, 55]) {
       expect(ops.has(op), `opcode ${op} has no case`).toBe(true);
     }
   });
@@ -40,6 +40,9 @@ describe('gateway frame vectors', () => {
       { name: 'call_ring state 2', op: 53, payload: [new Uint8Array(16).fill(0x0d), new Uint8Array(16).fill(0x0c), new Uint8Array(16).fill(0x09), 2, 1758659030] },
       // op 54 community_changed (dilla-web-3.1): [community_id]
       { name: 'community_changed', op: 54, payload: [new Uint8Array(16).fill(0x0e)] },
+      // op 55 afk_away (AW3): [community_id, user_id, since_ts]; since_ts 0 means cleared
+      { name: 'afk_away', op: 55, payload: [new Uint8Array(16).fill(0x0e), new Uint8Array(16).fill(0x09), 1758659040] },
+      { name: 'afk_away cleared', op: 55, payload: [new Uint8Array(16).fill(0x0e), new Uint8Array(16).fill(0x09), 0] },
     ];
     for (const want of cases) {
       const found = v.cases.find(c => c.name === want.name);
@@ -91,5 +94,14 @@ describe('gateway frame vectors', () => {
     const found = v.rejects.find(r => r.name === 'community_changed with 2 elements');
     expect(found?.code).toBe('E_FRAME_TYPE');
     expect(decode(fromHex(found!.frame))).toEqual([54, 0, null, [new Uint8Array(16).fill(0x0e), 1]]);
+  });
+
+  // op 55 is server-to-client as op 54 is: the corpus code is the instance decoder's verdict.
+  it('commits the afk_away refusal with the instance code E_FRAME_TYPE', () => {
+    const found = v.rejects.find(r => r.name === 'afk_away with 4 elements');
+    expect(found?.code).toBe('E_FRAME_TYPE');
+    expect(decode(fromHex(found!.frame))).toEqual(
+      [55, 0, null, [new Uint8Array(16).fill(0x0e), new Uint8Array(16).fill(0x09), 1758659040, 1]],
+    );
   });
 });
