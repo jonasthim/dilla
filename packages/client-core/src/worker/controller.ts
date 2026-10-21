@@ -18,7 +18,7 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, communityChangedOf, voiceStateOf, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -232,6 +232,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getAFKSettings',
   'setAFK',
   'afkActivity',
+  'afkAway',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -297,6 +298,8 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
+/** AW4: the away roster is sorted by user id, as the instance sorts it. */
+const byUserId = (a: { userId: string }, b: { userId: string }): number => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
   selectCommunity: ['communityId'],
   createChannel: ['communityId'],
@@ -341,6 +344,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
+  afkAway: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -405,6 +409,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getAFKSettings',
     'setAFK',
     'afkActivity',
+    'afkAway',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -1053,6 +1058,8 @@ export class Controller {
           timeoutSeconds: settings.timeoutSeconds }));
       case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
+      // AW4 (R-AW3): choosing AFK. The page leaves its call first; the roster changes by op 55, not here.
+      case 'afkAway': return this.routes.putAFKAway(fromHex(command.communityId)).then(() => null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -1530,6 +1537,8 @@ export class Controller {
       this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'frame' && e.frame.op === Op.communityChanged) {
       this.safely(() => { this.scheduleCommunityReload(toHex(communityChangedOf(e.frame))); });
+    } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
+      this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -2720,6 +2729,30 @@ export class Controller {
     this.slices.set(`afk:${communityId}`, null);
   }
 
+  /** AW4: op 55 patches the away roster of a landed snapshot in place; `seq` stays, so no move is announced. Before the
+   *  snapshot has landed (null: loading, offline, or not listed) the frame is dropped, since the read carries the roster
+   *  and a read that lands later wins. A set older than the held `since` is stale and ignored; a change that changes
+   *  nothing publishes nothing. */
+  private incomingAFKAway(frame: AFKAwayFrame): void {
+    const communityId = toHex(frame.communityId);
+    if (!this.listed(communityId)) return;
+    const key = `afk:${communityId}` as const;
+    const held = this.slices.get(key);
+    if (held == null) return;
+    const userId = toHex(frame.userId);
+    const away = held.away ?? [];
+    const at = away.findIndex((row) => row.userId === userId);
+    let next: { userId: string; since: number }[];
+    if (frame.since === 0) {
+      if (at < 0) return;
+      next = away.filter((_, i) => i !== at);
+    } else {
+      if (at >= 0 && away[at].since >= frame.since) return;
+      next = [...away.filter((_, i) => i !== at), { userId, since: frame.since }].sort(byUserId);
+    }
+    this.slices.set(key, { ...held, away: next });
+  }
+
   /** Reads the snapshot. R-AFK3 (a): the slice keeps its previous value until this read lands (a re-read never passes
    *  through null), so a voice join that needs it is never held by a re-read. */
   private async loadAFK(communityId: string): Promise<void> {
@@ -2731,7 +2764,8 @@ export class Controller {
       this.stopAFKRetry(communityId);
       // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq,
+        away: row.away.map((r) => ({ userId: toHex(r.userId), since: r.since })).sort(byUserId) });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;

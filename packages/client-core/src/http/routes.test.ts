@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encode } from '../cbor';
+import { encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
@@ -94,13 +94,26 @@ const CASES: Case[] = [
     name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true },
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, away: [] },
+  },
+  {
+    // AW4: the fifth element is the away roster [[user_id, since_ts]].
+    name: 'AFK snapshot reads the away roster of a 5-element answer', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 1758659040], [member(2), 1758659100]]]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: false,
+      away: [{ userId: member(1), since: 1758659040 }, { userId: member(2), since: 1758659100 }] },
   },
   {
     name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [null, 300, []]),
-    expected: { channelId: null, timeoutSeconds: 300, pending: false },
+    expected: { channelId: null, timeoutSeconds: 300, pending: false, away: [] },
+  },
+  {
+    name: 'AFK away (choosing AFK) sends [] and takes 204', call: r => r.putAFKAway(COMMUNITY),
+    method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/away`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([]), reply: () => noContent(), expected: undefined,
   },
   {
     name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
@@ -1623,6 +1636,29 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(noContent());
     await routes.sendAFKActivity(COMMUNITY, CHANNEL, false);
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([CHANNEL])));
+  });
+  // AW4: a web3.9 instance answers four elements; its roster is empty.
+  it('a 4-element web3.9 snapshot has an empty away roster', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 1]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([]);
+  });
+  it('an away roster over 1024 rows, a short user id, a missing since or a since past the safe integers is refused', async () => {
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => [member(i % 256), 1]);
+    const bad: [CborInput[], string][] = [
+      [rows(1025), 'E_CBOR_SHAPE'],
+      [[[member(1).slice(1), 1]], 'E_CBOR_SHAPE'],
+      [[[member(1)]], 'E_CBOR_SHAPE'],
+      [[[member(1), 2n ** 60n]], 'E_CBOR_RANGE'],
+    ];
+    for (const [away, code] of bad) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, away]));
+      await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code });
+    }
+    const ok = setup();
+    ok.t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, rows(1024)]));
+    expect((await ok.routes.getAFK(COMMUNITY)).away).toHaveLength(1024);
   });
   it('moveToAFK and leaveAFK no longer exist', () => {
     const { routes } = setup();

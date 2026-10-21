@@ -66,6 +66,7 @@ export type Command =
   | { m: 'getAFKSettings'; communityId: string }
   | { m: 'setAFK'; communityId: string; timeoutSeconds: number }
   | { m: 'afkActivity'; communityId: string; channelId: string; exempt?: boolean }
+  | { m: 'afkAway'; communityId: string }                         // ready → null: PUT …/afk/away (AW4); nothing clears away
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)

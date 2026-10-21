@@ -207,6 +207,10 @@ export interface AFKState {
    *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
    *  leave it out. */
   seq?: number;
+  /** AW4: the community's away roster, sorted by user id (lower-case hex): each member listed under the AFK channel with
+   *  no voice connection, and the unix second it became away there. Set by client-core on every read and kept current by
+   *  op 55; a fixture may leave it out. */
+  away?: { userId: string; since: number }[];
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `afk:${string}`
