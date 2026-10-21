@@ -53,3 +53,22 @@ Jonas, 2026-10-21: "gifs are not animated until you open them", and "animate it 
 - `npm test` (includes check:copy, check:docs and check:css)
 - typecheck
 - e2e: if an existing attachment spec covers images, run it on chromium-web under `flock /home/thim/.cache/dilla-w3/e2e.lock`, with DILLA_TESTKIT=/home/thim/.cache/dilla-w3/i37e2e-target/release/dilla-testkit.
+
+## 9. The gutter time beside a GIF is clipped
+Jonas, 2026-10-21: a screenshot shows "10:06p" in the left gutter of a grouped (continuation) row beside an image-only message, cut off where it should read "10:06 PM".
+- Find the gutter time in packages/ui MessageRow and its CSS.
+- Check whether the clipping happens for every continuation row or only for attachment-only rows. Likely causes: a fixed gutter width, the line-height or alignment against a tall image, or the 12-hour format being too wide.
+- Fix it so the full time fits, and aligns with the first line of content, in both 12-hour and 24-hour formats, at desktop width and at 390 px.
+- Add a unit or story test that fails today.
+
+## 10. The Giphy picker tiles crop the GIFs
+Jonas, 2026-10-21: every tile in GifPicker.tsx is a fixed box, so the whole image cannot be seen.
+- Size the tiles to each GIF's own aspect ratio: a masonry grid of 3 columns, 2 at 390 px, each tile's height taken from the width and height Giphy returns for the preview.
+- Check the server's search response (internal/api/gifs.go) and client-core's gifSearch types. If they do not carry the width and height, add them. They are plain numbers from Giphy and no new privacy surface, but keep them validated as small positive integers, and update the Go and TS tests.
+- Before a preview loads, reserve its box from those dimensions so the grid does not jump.
+- Keep keyboard order and visible focus in reading order (left to right, then down), and keep "Powered by GIPHY".
+- No object-fit cropping.
+- Tests: a tall and a wide result get different tile heights, and the dimensions are validated.
+
+## Gates (9 and 10)
+lint, npm test, typecheck, Go tests for gifs if touched, golangci-lint.

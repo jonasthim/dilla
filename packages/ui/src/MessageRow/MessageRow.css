@@ -76,8 +76,8 @@ button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underl
 @media (prefers-reduced-motion: reduce) { .d-message-row__thread { transition: none; } }
 
 /* web3.9 (R29, G2): a grouped row shows its time in the avatar column on hover or focus; the head's author and time stay for a screen reader. */
-/* The time is compact ("12:59p", "23:59") at 11px with tabular figures, and the gutter is the avatar column plus its gap, centred, so it never leaves the row's left padding. */
-.d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--avatar-size) + 0.75rem); margin-right: -0.75rem; padding-top: 0.125rem; text-align: center; font-size: 0.6875rem; font-variant-numeric: tabular-nums; line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
+/* The full time ("10:06 PM", "23:59") at 10px with tabular figures, right-aligned in a gutter that reaches from the row's left edge to the content column: the row padding, the avatar column and its gap, so a 12-hour time never overflows at any density. Its line box is the body's, 2px down like the main column, so the time sits on the first line of content. */
+.d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--row-pad-x) + var(--avatar-size) + 0.75rem); margin-left: calc(-1 * var(--row-pad-x)); margin-right: -0.75rem; padding: 0.125rem 0.125rem 0 0; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: calc(var(--text-base) * var(--line-height)); color: var(--fg-3); white-space: nowrap; opacity: 0; }
 .d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
 .d-message-row[data-grouped="true"] { margin-top: 0; }
 /* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */

@@ -407,6 +407,13 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     expect(rowOf(P2)).toHaveAttribute('data-grouped', 'true');
     expect(rowOf(O1)).toHaveAttribute('data-grouped', 'true');
   });
+  it('shows a grouped row’s full time in its gutter, not a shortened one that does not fit', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'one', { ts: NOON }), peerRow(P2, '2', 'two', { ts: NOON + 3 * MIN })] });
+    const row = rowOf(P2);
+    const full = row.querySelector('.d-message-row__head .d-message-row__time')?.textContent ?? '';
+    expect(full).not.toBe('');
+    expect(row.querySelector('.d-message-row__gutter')).toHaveTextContent(full);
+  });
   it('starts a new group after a gap of more than 7 minutes, and at another author', () => {
     renderConversation({ items: [
       peerRow(P1, '1', 'one', { ts: NOON }), peerRow(P2, '2', 'two', { ts: NOON + 8 * MIN }), ownRow(O1, '3', 'three', { ts: NOON + 8 * MIN + 1 }),
