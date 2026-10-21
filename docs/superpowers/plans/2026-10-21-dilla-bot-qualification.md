@@ -4,6 +4,10 @@ Date: 2026-10-21. Scope: Task 0 baseline and Task 1 development probes.
 Provider revision: the user approved evaluating librespot instead of Soloist.
 The Soloist observations below are retained as historical evidence.
 Status: **not qualified; production implementation and release gates remain closed**.
+Latest evidence: isolated YouTube extraction and real audio through Chromium and
+Firefox pass. Removing the encryption hook makes both browser checks fail.
+Dedicated-account Spotify playback and the intended service environment remain
+unverified; see the final section for the current evidence and remaining gates.
 See [implementation plan](2026-10-21-dilla-bot.md) and
 [design](../specs/2026-10-21-dilla-bot.md).
 
@@ -87,8 +91,9 @@ Production deployment remains a separate action. See the current
 Task 1 then needs actual evidence for headless authorization/direct PCM output, restart
 and reboot, complete track/album/playlist resolution without playback, pause/seek/
 transition/completion behavior, bounded Opus output and browser SFrame decryption.
-The latter needs a development test peer before production Task 8; mocks and
-command acknowledgements cannot pass that row.
+The development test peer now accepts captured Opus; real YouTube audio has passed
+it in both browsers. Spotify still needs actual account audio through this path.
+Mocks and command acknowledgements cannot pass that row.
 
 ## Initial baseline failures
 
@@ -217,3 +222,120 @@ Use the [probe guide](../../../experiments/bot-providers/README.md) for the next
 account test. Soloist binaries, API keys, sink setup and build-expiry requirements
 are superseded. Task 0 is complete; Task 1 remains unqualified; Tasks 2–16 remain
 unstarted. No production bot release or live deployment has occurred.
+
+## Isolated YouTube extraction and browser audio
+
+Continued work used `gpt-6-luna` implementers and independent reviewers, with the
+coordinator integrating and verifying the results. All changes remain development
+probes or test infrastructure; no `dillabot` runtime or bot UI is delivered.
+
+The pinned Python virtual environment contains yt-dlp 2026.8.19 and yt-dlp-ejs
+0.8.0, installed with hashes from `youtube-requirements.txt`. The actual sandbox
+used Node 24.15.0 and FFmpeg/ffprobe n9.0.2. The runner mounts the selected Node
+executable individually: the host's `/usr/bin/node` was 20.20.2 and would not meet
+the upstream EJS requirement. The packaged JavaScript setup follows the
+[yt-dlp EJS instructions](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+
+The Linux runner uses bubblewrap with private filesystem, process and network
+namespaces. Its private Unix-socket broker permits CONNECT to approved YouTube
+domains on port 443 only, rejects non-public DNS answers, and connects to the
+validated numeric address. Tests exercise actual namespaces, including direct
+network denial, hidden host files, output limits and process cleanup. The virtual
+environment mount is restricted to the probe's dedicated directory; personal
+configuration, cookies and plugins are absent. Missing isolation fails closed.
+
+Integration exposed three compatibility issues that were reproduced and fixed:
+
+- The system CA symlink pointed outside the mounted certificate directory. The
+  resolved certificate bundle is now mounted explicitly; certificate validation
+  remains enabled.
+- Full search-result format lists exceeded the 2 MiB metadata bound. Flat playlist
+  enumeration now produces bounded descriptors, with duration optional when
+  unknown. Individual playback still resolves the selected video fully.
+- FFmpeg's CONNECT request uses `Host: 127.0.0.1:3128`, naming its proxy. The parser
+  accepts that exact value while retaining the CONNECT authority as the sole
+  destination for allowlist, DNS and routing checks. Wrong proxy ports, arbitrary
+  Host values and private CONNECT destinations remain rejected.
+
+Independent review also found an overly broad optional tools mount, an input
+control-character normalization gap, an incorrect default media-peer path, a
+timeout test that could terminate before installing its signal handler, and a
+malformed flat playlist-entry type that could pass as a track. Each finding was
+fixed with focused regression coverage and returned for review. Entry validation
+now distinguishes full videos from flat YouTube URLs and rejects nested playlists.
+The 500-entry accepted boundary and 501-entry atomic rejection have unit coverage.
+The final scoped reviews approved the probe, egress runner and browser test; the
+final evidence/documentation review found no Important or critical findings.
+
+The coordinator observed these live extraction results on the development
+workstation, without cookies or a personal account:
+
+| Check | Observed result |
+| --- | --- |
+| Video `aqz-KE-bpKQ` | One descriptor, duration 635 seconds |
+| Search `Big Buck Bunny Blender` | Five descriptors with durations |
+| Publicly reachable unlisted playlist `PLt5yu3-wZAlQLfIN0MMgp0wVV6MP3bM4_` | Complete one-video enumeration |
+| Older yt-dlp test video `BaW_jenozKc` | Unavailable; probe returned nonzero with sanitized error |
+| Ten-second sample from `aqz-KE-bpKQ` | 121,173-byte Ogg Opus file; capture completed in 2.22 seconds |
+| Packet inspection of that sample | 501 packets, 240 bytes each, 48 kHz stereo; 20 ms interior cadence with Ogg edge trimming |
+| Dependency doctor with explicit probe paths | All tools available; qualification still explicitly unverified |
+
+The captured file's SHA-256 is
+`c101d5ff7a941f9e376aa81cce9d0d8baed5859c5ade7a319b596d2282fa16c7`.
+It remains a private local artifact, not a committed media fixture. The
+[probe guide](../../../experiments/bot-providers/README.md) gives installation,
+capture and browser commands. This short real playlist does not prove the large
+playlist qualification row.
+
+`e2e/media/provider-opus.spec.ts` publishes the captured file through the existing
+Go peer, LiveKit SFU and browser SFrame worker, using MLS-derived test-call keys.
+The peer's new protected token-file input avoids room tokens in arguments; keys
+travel through stdin. The test disables traces that could retain those values.
+It checks the expected publisher, microphone track, received RTP, advancing
+authenticated-frame count for the expected epoch, decoded samples and nonzero
+audio RMS. A provider label alone cannot establish the source of an arbitrary
+file: the actual capture and matching hash above supply that provenance here.
+
+| Browser | Authenticated frames at observation | Decoded samples | Audio RMS |
+| --- | --- | --- | --- |
+| Chromium | 63 | 59,520 | 0.005740 |
+| Firefox | 57 | 54,240 | 0.005562 |
+
+All six tests passed: one real-audio test and two subprocess-boundary tests per
+browser. The subprocess tests prove bounded output and TERM-to-KILL escalation
+with process reaping. Firefox used a temporary private PipeWire null sink with
+WirePlumber's policy-only profile; no physical sound device was required.
+
+For the negative control, a separate binary was built using a Go overlay that
+removed only `lksdk.WithFrameEncryptor(enc)` in `internal/media/publish.go`.
+Tracked production source was unchanged. The same real YouTube artifact reached
+both browser receivers as RTP, but both tests failed at the authenticated-frame
+assertion with zero frames. This demonstrates that a connected plaintext sender
+cannot pass the check. A synthetic fixture had separately passed both browsers
+and failed the same negative control; it was recorded as harness evidence only.
+
+This file-based test covers one epoch. It does not establish a production live
+provider, continuous key rotation, removal of a listener, independent rooms,
+queue recovery, service-host lifecycle or the shipping bot UI. Those acceptance
+requirements remain open. In particular, no real Spotify authorization, audio,
+complete playlist or restart/reboot test has occurred.
+
+Task 0 remains complete. Task 1 now has real isolated YouTube capture and browser
+decryption evidence, but is still unqualified pending the dedicated Spotify
+account and intended Linux host/service user. Tasks 2–16 remain unstarted under
+the explicit provider gate. No complete bot release, PR or live deployment has
+occurred.
+
+Final coordinator checks for this increment:
+
+| Command | Result |
+| --- | --- |
+| `python3 -m unittest -v test_provider_harness test_youtube_probe test_youtube_sandbox` from the probe directory | 46 passed, including actual namespace checks |
+| `go test -race ./cmd/dilla-mediabot` | Passed |
+| `npm run typecheck:e2e` | Passed |
+| `npm run lint` | Passed (existing client-core/web scope) |
+| `npm run check:docs` and `git diff --check` | Passed |
+
+After the final entry-kind fix, the coordinator repeated live video/search/playlist
+resolution and sample extraction successfully. The browser test and media peer
+were unchanged by that metadata fix. Full production acceptance remains pending.

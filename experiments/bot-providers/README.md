@@ -27,7 +27,8 @@ python3 provider_harness.py opus-smoke
 The probe is a standalone Cargo workspace, keeping provider dependencies out of
 `dillad` and the existing Rust workspace. The committed lockfile fixes the tested
 dependency set. `doctor` checks the probe, yt-dlp, ffmpeg, ffprobe, and a JavaScript
-runtime (Deno, Node or Bun). It prints sanitized version tokens and exits nonzero
+runtime (Deno, Node or Bun). The YouTube probe specifically uses Node. The checker
+prints sanitized version tokens and exits nonzero
 for missing prerequisites. Executable overrides are `--librespot-bin`,
 `--yt-dlp-bin`, `--ffmpeg-bin`, `--ffprobe-bin`, and `--js-runtime-bin`.
 
@@ -39,6 +40,107 @@ second of synthetic signed 16-bit little-endian stereo PCM at 44.1 kHz through
 the same sink used for Spotify. Pipe this output into FFmpeg with input options
 `-f s16le -ar 44100 -ac 2`, then resample to 48 kHz for Opus. Never send raw PCM
 to a terminal. Neither smoke command authenticates or reads account credentials.
+
+## YouTube development probe
+
+Install the hash-pinned candidate dependencies into the probe's dedicated virtual
+environment. They are separate from Dilla's application dependencies:
+
+```sh
+python3 -m venv .youtube-venv
+.youtube-venv/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r youtube-requirements.txt
+python3 -m unittest -v test_provider_harness test_youtube_probe test_youtube_sandbox
+python3 provider_harness.py doctor --yt-dlp-bin .youtube-venv/bin/yt-dlp --librespot-bin librespot-probe/target/debug/dilla-librespot-probe
+```
+
+The candidate pair is yt-dlp 2026.8.19 and yt-dlp-ejs 0.8.0. The probe disables
+remote component downloads and explicitly selects Node. Its packaged EJS setup
+follows the [upstream instructions](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+Use Node 22 or newer on PATH. The sandbox mounts that single executable at
+`/usr/bin/node`; the host's `/usr/bin/node` may be a different version. The local
+checks used Node 24.15.0 and FFmpeg/ffprobe n9.0.2. This set successfully resolved
+a video, five search results and a one-video playlist, and captured a real
+ten-second audio sample. See the
+[qualification record](../../docs/superpowers/plans/2026-10-21-dilla-bot-qualification.md)
+for evidence and remaining checks.
+
+The Linux runner requires bubblewrap and working unprivileged namespaces. It gives
+the extractor a private filesystem and network namespace. HTTPS goes through a
+bounded CONNECT broker that checks allowed YouTube hosts and all resolved IP
+addresses, then connects to the validated numeric address. Direct network access,
+private addresses, personal configuration, browser cookies and arbitrary plugins
+are unavailable. A sandbox failure stops the operation. There is no unrestricted
+fallback. Process, output and resource limits apply to these development probes;
+production service packaging remains a later task.
+
+```sh
+python3 youtube_probe.py metadata 'instrumental study music'
+python3 youtube_probe.py metadata 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+```
+
+Metadata output contains bounded video descriptors. Playlist validation completes
+before anything is printed; incomplete or oversized collections fail without
+returning a partial list. Flat enumeration avoids downloading every item's format
+list. A descriptor may omit an unknown duration; playback resolves the selected
+video separately. Large real playlists still need qualification. Diagnostics omit
+provider output and signed media URLs.
+
+`sample INPUT` writes up to ten seconds of Ogg Opus to stdout and refuses a
+terminal. Redirect it to a private file for browser testing. The sample uses
+48 kHz stereo, 20 ms frames, 96 kbps CBR and disabled DTX. Failed extraction
+returns nonzero; an empty or failed artifact is not playback evidence.
+
+For example, create a new private artifact without overwriting an existing file:
+
+```sh
+umask 077
+set -o noclobber
+python3 youtube_probe.py sample 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' > /absolute/private/path/youtube-sample.ogg
+```
+
+Use the file only after the command exits successfully. The probe buffers the
+bounded result before writing it; failed extraction can leave an empty redirected
+file.
+
+## Browser audio verification
+
+`e2e/media/provider-opus.spec.ts` uses the existing Go media peer, MLS test driver,
+LiveKit SFU and browser encryption worker. It requires authenticated frames for
+the expected publisher, microphone track and epoch, decoded samples and nonzero
+rendered audio. Its source is an explicit Ogg file, not a live provider pipe.
+
+Build the existing media prerequisites from the repository root:
+
+```sh
+cargo build -p dilla-testkit --release --locked
+npm run build:wasm -w @dilla/media
+go build -o target/dilla-mediabot ./cmd/dilla-mediabot
+```
+
+The generated WASI fixture must also exist at
+`internal/mlswasi/testdata/dilla_core_wasi.wasm`, as described in the baseline
+record. Install the repository's Playwright Chromium and Firefox builds. Firefox
+needs a working audio backend; the existing CI setup is
+`scripts/ci-audio-server.sh`. A private null sink suffices for this check.
+
+Set `DILLA_PROVIDER_OPUS_FILE` to the absolute path of the captured file and
+`DILLA_PROVIDER_NAME` to `youtube` or `spotify`, then run:
+
+```sh
+npx playwright test --config e2e/playwright.media.config.ts --project=chromium-media --project=firefox-media provider-opus.spec.ts
+```
+
+Use `DILLA_PROVIDER_NAME=synthetic` for harness checks. Synthetic results are
+labeled `harness-smoke-only`; missing inputs skip rather than qualify a provider.
+The provider label is operator-supplied provenance, not independent proof of the
+file's origin. Preserve the actual capture result with the file hash. The browser
+test suppresses traces containing call credentials and passes the room token via
+a private file and the SFrame key via stdin.
+
+The qualification record distinguishes synthetic browser checks from real source
+playback and records the encryption-removal negative control. This file-based
+check does not qualify live queues, provider control, rekeying, restart or the
+shipping bot UI.
 
 ## Authorize the dedicated account
 
@@ -124,7 +226,8 @@ helper that will own MLS and encrypted application state.
 | Browser encryption | Real Chromium/Firefox playback through existing LiveKit/SFrame, encrypted SFU frames, epoch change and removal evidence. |
 | Operational limits | One global Spotify lease, independent sessions, disconnect cleanup and restart paused, in the integrated runtime. |
 
-The workstation still lacks yt-dlp and an authorized dedicated test account.
+The workstation now has the pinned extraction dependencies. An authorized
+dedicated test account and the intended service identity are still needed.
 The full Dilla Bot production implementation and release gates remain closed.
 The source dependency is pinned, but upstream reports audio-key failures for
 some accounts; actual playback must be tested with the selected account.
