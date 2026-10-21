@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -8,6 +9,9 @@ import { join } from 'node:path';
  * to declare its `needs: rust-wasi` edge (see below).
  */
 export const REQUIRED_JOBS = [
+  // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
+  'changes',
+  'docs',
   'node',
   'ui',
   'rust-native',
@@ -43,6 +47,13 @@ export const REQUIRED_JOBS = [
   'firefox-web',
   'webkit-web',
 ];
+
+/**
+ * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
+ * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
+ * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
+ */
+export const CHANGE_GATE_EXEMPT = ['changes', 'docs'];
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -132,6 +143,17 @@ export const UI_SHOTS_3 = [
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
+  // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
+  // fetch-depth: 0 gives it the base commit to diff against.
+  changes: [
+    'fetch-depth: 0',
+    'node scripts/ci-areas.mjs',
+    'EVENT_NAME: ${{ github.event_name }}',
+    'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
+    ...['go', 'core', 'web', 'e2e', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
+  ],
+  // The cheap docs gates, for every change.
+  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs'],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -140,6 +162,10 @@ const REQUIRED_STEPS = {
     'cargo build -p dilla-testkit --release --locked',
     'name: dilla-testkit',
     'if-no-files-found: error',
+    // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
+    "if: needs.changes.outputs.core == 'true'\n        run: cargo fmt --all --check",
+    "if: needs.changes.outputs.core == 'true'\n        run: cargo clippy --workspace",
+    "if: needs.changes.outputs.core == 'true'\n        run: cargo test --workspace",
   ],
   'rust-wasm-node': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',
@@ -176,7 +202,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ['npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ["- if: needs.changes.outputs.web == 'true'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web == 'true'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -697,6 +723,30 @@ export function checkWorkflow(root) {
     }
     for (const step of REQUIRED_STEPS[name] ?? []) {
       if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
+    }
+  }
+
+  // Every job but the two exempt ones needs `changes` and carries its gate, or it would run on a docs-only pull
+  // request (or, with a wrong condition, be skipped on code).
+  for (const [name, body] of Object.entries(jobs)) {
+    const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
+    const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
+    if (CHANGE_GATE_EXEMPT.includes(name)) {
+      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`ci.yml: job "${name}" must run for every change: no needs: changes, no job-level if:`);
+      continue;
+    }
+    if (!(name in JOB_GATES)) {
+      problems.push(`ci.yml: job "${name}" has no gate in JOB_GATES (scripts/ci-areas.mjs)`);
+      continue;
+    }
+    if (!needList.includes('changes')) problems.push(`ci.yml: job "${name}" must list "changes" in its needs:`);
+    if (!body.split('\n').includes(`    if: ${gateExpression(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${gateExpression(name)}`);
+    // A job whose needs are skipped is skipped too, so its gate may not be true where a needed job's is false.
+    for (const need of needList) {
+      if (!(need in JOB_GATES)) continue;
+      if (reachableOutputs().some((outputs) => jobRuns(name, outputs) && !jobRuns(need, outputs))) {
+        problems.push(`ci.yml: job "${name}" can run while the job it needs, "${need}", is skipped`);
+      }
     }
   }
 

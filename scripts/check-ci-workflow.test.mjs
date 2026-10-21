@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gateExpression, JOB_GATES } from './ci-areas.mjs';
 import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
@@ -22,7 +23,7 @@ test('workflow steps execute only commit-pinned GitHub actions', () => {
 
 test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
   for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
-    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n    runs-on: ubuntu-24\\.04$`, 'm'));
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
   }
   assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
 });
@@ -45,8 +46,8 @@ test('the CI checker rejects a movable GitHub action tag', () => {
 
 test('the CI checker rejects a flow-style action step', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(
-    '      - run: npm test\n',
-    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: npm test\n',
+    '      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n',
+    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n' + '      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n',
   )));
   assert.ok(problems.some((problem) => problem.includes('flow-style action')), problems.join('\n'));
 });
@@ -77,7 +78,11 @@ jobs:
   node:
     runs-on: ubuntu-latest
     steps:
-      - run: npm test
+      - if: needs.changes.outputs.web == 'true'
+        run: npm test
+      - name: vectors are up to date
+        if: needs.changes.outputs.web == 'true'
+        run: npm run vectors
       - run: npm run test:css-check
       - run: npm run check:css
       - run: npm run test:ci-check
@@ -113,9 +118,12 @@ jobs:
   rust-native:
     runs-on: ubuntu-latest
     steps:
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-features --locked
+      - if: needs.changes.outputs.core == 'true'
+        run: cargo fmt --all --check
+      - if: needs.changes.outputs.core == 'true'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - if: needs.changes.outputs.core == 'true'
+        run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -500,7 +508,53 @@ function withWasmClang(text) {
   return out.join('\n');
 }
 
-const GOOD = withWasmClang(GOOD_BASE);
+// The shape ci.yml gives the change filter: a `changes` job, a `docs` job that always runs, and every other job gated
+// on `changes` as JOB_GATES says (its own needs merged in).
+const CHANGES_JOB = `  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: \${{ steps.areas.outputs.go }}
+      core: \${{ steps.areas.outputs.core }}
+      web: \${{ steps.areas.outputs.web }}
+      e2e: \${{ steps.areas.outputs.e2e }}
+      code: \${{ steps.areas.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: areas
+        run: node scripts/ci-areas.mjs
+        env:
+          EVENT_NAME: \${{ github.event_name }}
+          BASE_SHA: \${{ github.event.pull_request.base.sha }}
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run test:docs-check
+      - run: npm run test:brief-check
+      - run: npm run test:copy-check
+      - run: npm run check:docs
+`;
+
+function withChanges(text) {
+  const lines = text.replace('jobs:\n', `jobs:\n${CHANGES_JOB}`).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    out.push(line);
+    if (key === null || !(key[1] in JOB_GATES) || !lines.slice(0, i).includes('jobs:')) continue;
+    let needs = [];
+    for (let j = i + 1; j < lines.length && !/^ {2}\S/.test(lines[j]); j++) {
+      const m = /^ {4}needs: \[(.*)\]$/.exec(lines[j]);
+      if (m) { needs = m[1].split(',').map((s) => s.trim()); lines.splice(j, 1); break; }
+    }
+    out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
+  }
+  return out.join('\n');
+}
+
+const GOOD = withChanges(withWasmClang(GOOD_BASE));
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -546,7 +600,7 @@ test('a missing job is reported by name', () => {
 });
 
 test('|| true is reported with its line number', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('- run: npm test\n', '- run: npm test || true\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('run: npm test\n', 'run: npm test || true\n')));
   assert.ok(problems.some((p) => /\|\| true/.test(p)), problems.join('\n'));
 });
 
@@ -556,7 +610,7 @@ test('continue-on-error is reported', () => {
 });
 
 test('if: always() is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm test\n', '      - if: always()\n        run: npm test\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n', '      - if: always()\n        run: npm test\n')));
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
@@ -565,13 +619,13 @@ test('if: always() is reported', () => {
 // catch it too.
 test('if: ${{ always() }} is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
+    fixture(GOOD.replace('      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
   );
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
 test('a job that lost a required step is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('      - run: cargo fmt --all --check\n', '')));
+  const problems = checkWorkflow(fixture(GOOD.replace("      - if: needs.changes.outputs.core == 'true'\n        run: cargo fmt --all --check\n", '')));
   assert.ok(problems.some((p) => p.includes('cargo fmt')), problems.join('\n'));
 });
 
@@ -598,19 +652,19 @@ test('a rust-wasi job that lost the artifact path is reported', () => {
 });
 
 test('a go job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '    needs: [deny]\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi]\n', '    needs: [changes, deny]\n')));
   assert.ok(problems.some((p) => p.includes('"go"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 test('a go-harness job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi, rust-native]\n', '    needs: [rust-native]\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n')));
   assert.ok(problems.some((p) => p.includes('"go-harness"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 // The edges are order-independent to GitHub, so the ordering rule must accept either order.
 test('a go-harness job whose needs: lists the two edges in the other order passes', () => {
   assert.deepEqual(
-    checkWorkflow(fixture(GOOD.replace('needs: [rust-wasi, rust-native]', 'needs: [rust-native, rust-wasi]'))),
+    checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]'))),
     [],
   );
 });
@@ -630,7 +684,7 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('  go-harness:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n', '  go-harness:\n    runs-on: ubuntu-latest\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 30\n/, '$1')));
   assert.ok(problems.some((p) => p.includes('timeout-minutes: 30')), problems.join('\n'));
 });
 
@@ -644,7 +698,7 @@ test('a node job that stopped running the checker\'s own tests is reported', () 
 // deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
 // cross-plan ordering rule already, so it must own this half of the hand-off too.
 test('a go-harness job without needs: rust-native is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [rust-wasi, rust-native]', 'needs: [rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('needs: rust-native')), problems.join('\n'));
 });
 
@@ -766,19 +820,19 @@ test('a go job that stopped leaving out internal/api is reported', () => {
 test('a go-api job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-api:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, rust-wasi]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('rust-wasi')), problems.join('\n'));
 });
 
 test('a go-ds job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, rust-wasi]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('rust-wasi')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
@@ -913,12 +967,12 @@ test('setup-qemu-action anywhere in the workflow is reported', () => {
 // `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
 // reported as not waiting for go.
 test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
 });
 
 test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-ds, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
 });
 
@@ -928,11 +982,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')),
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -972,7 +1026,7 @@ test('the browser-media job requires the real-SFU AV1 leg', () => {
 
 for (const [need, kept] of [['rust-wasi', 'rust-native'], ['rust-native', 'rust-wasi']]) {
   test(`a browser-media job without needs: ${need} is reported`, () => {
-    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi]\n', `    needs: [${kept}]\n`)));
+    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-native, rust-wasi]\n', `    needs: [changes, ${kept}]\n`)));
     assert.ok(problems.some((p) => p.includes('"browser-media"') && p.includes(`needs: ${need}`)), problems.join('\n'));
   });
 }
@@ -1191,7 +1245,7 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
     test(`a ${job} job without needs: ${need} is reported`, () => {
       const body = jobBody(job);
       const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
-      const cut = body.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`);
+      const cut = body.replace('    needs: [changes, rust-native, rust-wasi, web-build]\n', `    needs: [changes, ${kept}]\n`);
       assert.notEqual(cut, body, 'fixture sanity: needs');
       const problems = checkWorkflow(fixture(GOOD.replace(body, () => cut)));
       assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`needs: ${need}`)), problems.join('\n'));
@@ -1306,12 +1360,12 @@ test('go-release must point the webdist test at the downloaded client', () => {
 
 test('a go-release job without needs: web-build is reported', () => {
   const body = jobBody('go-release');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [web-build]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, web-build]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('needs: web-build')), problems.join('\n'));
 });
 
 test('an image job that does not wait for web-build is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-ds, go-lint, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
 });
 
@@ -1789,4 +1843,30 @@ test('the CLI checks release.yml too', () => {
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /release\.yml/);
+});
+
+test('a job that lost its change gate is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 25\n')));
+  assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
+});
+
+test('a job that does not need changes is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  deny:\n)    needs: \[changes\]\n/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"deny" must list "changes"')), problems.join('\n'));
+});
+
+test('the docs job may not be gated: it is the one that runs for a docs-only change', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('  docs:\n', "  docs:\n    needs: [changes]\n    if: needs.changes.outputs.code == 'true'\n")));
+  assert.ok(problems.some((p) => p.includes('"docs" must run for every change')), problems.join('\n'));
+});
+
+test('a job added without a gate is reported', () => {
+  const problems = checkWorkflow(fixture(`${GOOD}\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`));
+  assert.ok(problems.some((p) => p.includes('"extra" has no gate')), problems.join('\n'));
+});
+
+test('a gate that can run while a needed job is skipped is reported', () => {
+  // go-release (go or web) needs web-build (e2e): fine. Narrow web-build to core and a UI change would skip go-release's dependency.
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  web-build:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core == 'true'\n")));
+  assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
 });

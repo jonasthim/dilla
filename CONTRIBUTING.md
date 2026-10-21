@@ -64,3 +64,21 @@ configures.
 ## Commits
 
 Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, `ci:`.
+
+## Continuous integration
+
+A pull request runs only the parts of CI it touches. The `changes` job (`scripts/ci-areas.mjs`, which holds the path
+table and has its own tests) reads the changed paths and sets one output per area:
+
+| Area | Paths | Also forces |
+| --- | --- | --- |
+| docs | `docs/**`, any `*.md` | nothing: only the `docs` job (docs, copy and brief checks) runs |
+| go | `internal/**`, `cmd/**`, `go.mod`, `go.sum`, `sqlc*`, `deploy/**`, `Dockerfile` | e2e |
+| core | `core/**`, `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e |
+| web | `packages/**`, `package*.json`, `.nvmrc` | e2e |
+| e2e | `e2e/**` | |
+| ci | `.github/**`, `scripts/**` | everything |
+
+The browser suites always run all three engines. A push to main runs everything, and so does a pull request whose diff
+cannot be computed or touches a path no rule names. Skipped jobs count as passed for required checks. A new job in
+`ci.yml` needs `needs: changes`, an `if:` and an entry in `JOB_GATES`; `npm run check:ci` enforces all three.
