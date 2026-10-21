@@ -624,13 +624,13 @@ func (s *Session) Welcomes(ctx context.Context, after uint64, limit uint64) ([]W
 		return nil, ErrProtocol
 	}
 	out := make([]Welcome, len(a))
-	var last uint64
+	last := after
 	for i, row := range a {
 		v, ok := row.([]any)
 		if !ok || len(v) != 7 {
 			return nil, ErrProtocol
 		}
-		if out[i].ID, ok = asUint(v[0]); !ok || out[i].ID <= last {
+		if out[i].ID, ok = asUint(v[0]); !ok || out[i].ID == 0 || out[i].ID <= last {
 			return nil, ErrProtocol
 		}
 		last = out[i].ID

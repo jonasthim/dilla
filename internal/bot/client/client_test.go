@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -337,6 +338,71 @@ func TestTypedRecoveryRoutesAndResponseStatuses(t *testing.T) {
 	}
 	if err = s.ForkReport(context.Background(), testID(7), 2, 9, "diverged"); err != nil || !report {
 		t.Fatalf("report=%v err=%v", report, err)
+	}
+}
+
+func TestLargeCommitRequiredRefusalsRetainProposalRefs(t *testing.T) {
+	refs := make([]any, 10000)
+	for i := range refs {
+		refs[i] = bytes.Repeat([]byte{byte(i)}, 16)
+	}
+	response := cbor(t, []any{"E_COMMIT_REQUIRED", "outstanding proposals", uint64(25), refs})
+	if len(response) <= MaxSmallBody || len(response) > MaxDSBody {
+		t.Fatalf("fixture size %d outside expected bounded range", len(response))
+	}
+	for _, route := range []string{"message", "resync"} {
+		t.Run(route, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/instance" {
+					reply(w, 200, discovery(testID(99)))
+					return
+				}
+				w.Header().Set("Content-Type", "application/cbor")
+				w.WriteHeader(425)
+				_, _ = w.Write(response)
+			}, time.Second)
+			s, _ := c.Session("device")
+			var err error
+			if route == "message" {
+				_, err = s.SendMessage(context.Background(), testID(7), 0, []byte("message"), 0)
+			} else {
+				_, err = s.Resync(context.Background(), testID(7), []byte("commit"), []byte("info"))
+			}
+			var ae *APIError
+			if !errors.As(err, &ae) || ae.Code != "E_COMMIT_REQUIRED" || ae.Outcome != OutcomeDefinitive || ae.RetryAfterMS == nil || *ae.RetryAfterMS != 25 || len(ae.Proposals) != len(refs) {
+				t.Fatalf("large typed refusal=%#v err=%v", ae, err)
+			}
+		})
+	}
+}
+
+func TestWelcomePageRejectsZeroStaleAndRegressingIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after uint64
+		ids   []uint64
+	}{
+		{name: "zero", ids: []uint64{0}},
+		{name: "stale", after: 4, ids: []uint64{4}},
+		{name: "mixed page", after: 4, ids: []uint64{5, 6, 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := make([]any, len(tc.ids))
+			for i, idv := range tc.ids {
+				rows[i] = []any{idv, testID(7), uint64(1), uint64(1), []byte("welcome"), []byte("tree"), make([]byte, 32)}
+			}
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/instance" {
+					reply(w, 200, discovery(testID(99)))
+					return
+				}
+				reply(w, 200, rows)
+			}, time.Second)
+			s, _ := c.Session("device")
+			if _, err := s.Welcomes(context.Background(), tc.after, 64); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("malformed page error=%v", err)
+			}
+		})
 	}
 }
 

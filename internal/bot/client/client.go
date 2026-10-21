@@ -215,10 +215,7 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errorLimit := int64(MaxSmallBody)
-		if strings.HasSuffix(path, "/commit") {
-			errorLimit = MaxCommitBody
-		}
+		errorLimit := errorBodyLimit(path)
 		b, readErr := io.ReadAll(io.LimitReader(resp.Body, errorLimit+1))
 		if mutation && resp.StatusCode >= 500 || mutation && (resp.StatusCode >= 300 && resp.StatusCode < 400) || readErr != nil || int64(len(b)) > errorLimit {
 			return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
@@ -266,6 +263,17 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 		return nil, resp.StatusCode, ErrProtocol
 	}
 	return b, resp.StatusCode, nil
+}
+
+func errorBodyLimit(path string) int64 {
+	switch {
+	case strings.HasSuffix(path, "/commit"):
+		return MaxCommitBody
+	case strings.HasSuffix(path, "/message"), strings.HasSuffix(path, "/resync"):
+		return MaxDSBody
+	default:
+		return MaxSmallBody
+	}
 }
 
 func (c *Client) aggregateContext(ctx context.Context) (context.Context, context.CancelFunc) {
