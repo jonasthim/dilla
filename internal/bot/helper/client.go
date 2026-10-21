@@ -161,7 +161,10 @@ func (c *Client) serial(ctx context.Context, fn func() ([]any, error)) ([]any, e
 }
 
 func (c *Client) request(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
-	requestID := id.New()
+	var requestID id.ID
+	for requestID.IsZero() {
+		requestID = id.New()
+	}
 	if err := validateBounded(payload, protocol.MaxHelperPayload); err != nil {
 		return nil, errors.New("invalid helper payload")
 	}
