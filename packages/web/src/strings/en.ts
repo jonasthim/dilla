@@ -542,6 +542,7 @@ export const en = {
   'voice.removed': 'You were removed from voice.',
   'voice.removedNotMember': 'You were removed from this server, so you left its voice.',
   'voice.disconnected': 'The connection to voice was lost. Join again to continue.',
+  'voice.leftWhileAway': 'You left the call while away.',
   'voice.ended': 'Voice ended for everyone.',
   'voice.full': 'This voice is full.',
   'voice.sharersFull': 'Too many people are sharing. Try again when someone stops.',

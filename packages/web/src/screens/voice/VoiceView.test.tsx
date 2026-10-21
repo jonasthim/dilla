@@ -113,6 +113,27 @@ describe('voice in the shell', () => {
     expect(app.session.setCamera).toHaveBeenCalledWith(true);
     expect(screen.getByText(t('update.sharingStopped'))).toBeInTheDocument();
   });
+  it('late rejoin: a device gone longer than the AFK timeout is not rejoined; the stage says so and its join button joins', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [] });
+    // The lid was closed for 301 s: the wall clock moved on, the page's monotonic clock with it.
+    const wall = Date.now.bind(Date);
+    const perf = performance.now.bind(performance);
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => wall() + 301_000);
+    const perfSpy = vi.spyOn(performance, 'now').mockImplementation(() => perf() + 301_000);
+    try {
+      act(() => app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+      expect(await main().findByText(t('voice.leftWhileAway'), {}, { timeout: 4_000 })).toBeInTheDocument();
+      expect(app.sessions).toHaveLength(1);
+      expect(screen.queryByText(t('update.rejoiningVoice'))).toBeNull();
+      await app.user.click(main().getByRole('button', { name: 'join voice' }));
+      await waitFor(() => expect(app.sessions).toHaveLength(2));
+      expect(app.client.callsOf('callJoin')).toHaveLength(2);
+    } finally {
+      nowSpy.mockRestore();
+      perfSpy.mockRestore();
+    }
+  });
   it('lets the person cancel a pending automatic voice rejoin', async () => {
     const app = await inVoice();
     act(() => app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' }));

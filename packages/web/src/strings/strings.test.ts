@@ -116,6 +116,10 @@ describe('flow 06 (L-COPY-05)', () => {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
   });
+  it('late rejoin (2026-10-21): a device gone longer than the AFK timeout is told it left, and the flow lists the line', () => {
+    expect(en['voice.leftWhileAway']).toBe('You left the call while away.');
+    expect(pairs.find(([k]) => k === 'voice.leftWhileAway')?.[1]).toBe('You left the call while away.');
+  });
   it('names the joined voice row for assistive technology (MP6)', () => {
     expect(en['voice.row.joined']).toBe('connected');
   });
