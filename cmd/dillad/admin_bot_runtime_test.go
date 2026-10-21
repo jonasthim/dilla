@@ -13,6 +13,7 @@ import (
 
 	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 func TestProtectedRuntimeSecretFilesAndAdminLifecycle(t *testing.T) {
@@ -159,5 +160,77 @@ func TestProtectedRuntimeSecretWriterRefusesUnsafeDestinations(t *testing.T) {
 	got, err = os.ReadFile(replacementPath)
 	if err != nil || string(got) != "keep me" {
 		t.Fatalf("replacement file was removed or changed: %q %v", got, err)
+	}
+}
+
+type lostRuntimeCommitAck struct{ store.Repository }
+
+func (r lostRuntimeCommitAck) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	if err := r.Repository.Tx(ctx, fn); err != nil {
+		return err
+	}
+	return errors.New("simulated lost commit acknowledgement")
+}
+
+type failRuntimeRotation struct{ store.Repository }
+
+func (r failRuntimeRotation) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	return r.Repository.Tx(ctx, func(tx store.Repository) error { return fn(failRuntimeRotationTx{Repository: tx}) })
+}
+
+type failRuntimeRotationTx struct{ store.Repository }
+
+func (failRuntimeRotationTx) RotateBotRuntime(context.Context, id.ID, []byte, []byte, int64) error {
+	return store.ErrConflict
+}
+
+func TestProtectedRuntimeSecretCommitUncertaintyRetainsSecret(t *testing.T) {
+	h := newCLIHarness(t)
+	base := h.Repo(t)
+	defer base.Close()
+	ctx := context.Background()
+	initialPath := filepath.Join(t.TempDir(), "initial.token")
+	manager := botruntime.New(base, func() time.Time { return h.clk.Now() })
+	runtimeID, err := createBotRuntimeSecret(ctx, manager, initialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialBytes, err := os.ReadFile(initialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialToken := strings.TrimSpace(string(initialBytes))
+
+	knownFailurePath := filepath.Join(filepath.Dir(initialPath), "known-failure.token")
+	knownManager := botruntime.New(failRuntimeRotation{Repository: base}, func() time.Time { return h.clk.Now() })
+	if err := rotateBotRuntimeSecret(ctx, knownManager, runtimeID, knownFailurePath); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("known CAS failure = %v, want conflict", err)
+	}
+	if _, err := os.Lstat(knownFailurePath); !os.IsNotExist(err) {
+		t.Fatalf("known CAS failure secret file remains: %v", err)
+	}
+	if got, err := manager.Authenticate(ctx, initialToken); err != nil || got != runtimeID {
+		t.Fatalf("old token after known rollback = %s, %v", got, err)
+	}
+
+	uncertainPath := filepath.Join(filepath.Dir(initialPath), "uncertain.token")
+	uncertainManager := botruntime.New(lostRuntimeCommitAck{Repository: base}, func() time.Time { return h.clk.Now() })
+	uncertainErr := rotateBotRuntimeSecret(ctx, uncertainManager, runtimeID, uncertainPath)
+	if !errors.Is(uncertainErr, botruntime.ErrCommitUncertain) {
+		t.Fatalf("lost commit acknowledgement = %v", uncertainErr)
+	}
+	uncertainBytes, err := os.ReadFile(uncertainPath)
+	if err != nil {
+		t.Fatalf("secret file was removed after uncertain commit: %v", err)
+	}
+	if strings.Contains(uncertainErr.Error(), "dbr_") {
+		t.Fatalf("error leaked credential: %v", uncertainErr)
+	}
+	newToken := strings.TrimSpace(string(uncertainBytes))
+	if _, err := manager.Authenticate(ctx, initialToken); !errors.Is(err, botruntime.ErrUnauthorized) {
+		t.Fatalf("old token after committed but uncertain rotation = %v", err)
+	}
+	if got, err := manager.Authenticate(ctx, newToken); err != nil || got != runtimeID {
+		t.Fatalf("retained token after uncertain commit = %s, %v", got, err)
 	}
 }

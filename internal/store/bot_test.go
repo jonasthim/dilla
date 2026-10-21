@@ -90,6 +90,96 @@ func TestBotCASAllowsOnlyOneConcurrentRevision(t *testing.T) {
 	}
 }
 
+func TestBotInstallationRemovalRequiresDisabledState(t *testing.T) {
+	ctx := context.Background()
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			community := seedCommunity(ctx, t, repo)
+			approver := seedUser(ctx, t, repo).ID
+			removedAt := int64(20)
+			row := store.BotInstallationRow{ID: id.New(), CommunityID: community, State: store.BotInstallationReady, Revision: 1, ApprovedBy: approver, ApprovedAt: 1, Created: 1, Updated: 1, RemovedAt: &removedAt}
+			if err := repo.CreateBotInstallation(ctx, row); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("create ready tombstone = %v, want conflict", err)
+			}
+
+			row.State = store.BotInstallationReady
+			row.RemovedAt = nil
+			if err := repo.CreateBotInstallation(ctx, row); err != nil {
+				t.Fatalf("create active installation: %v", err)
+			}
+			next := row
+			next.Revision = 2
+			next.Updated = 20
+			next.RemovedAt = &removedAt
+			if err := repo.UpdateBotInstallation(ctx, row.ID, 1, next); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("CAS to ready tombstone = %v, want conflict", err)
+			}
+
+			query := `UPDATE bot_installations SET removed_at = ? WHERE id = ?`
+			if engine == "postgres" {
+				query = `UPDATE bot_installations SET removed_at = $1 WHERE id = $2`
+			}
+			if _, err := rawDB(t, repo).ExecContext(ctx, query, removedAt, row.ID); err == nil {
+				t.Fatal("database accepted ready installation with removed_at")
+			}
+		})
+	}
+}
+
+func TestBotClaimPutReplacesAtomicallyAndRollsBack(t *testing.T) {
+	ctx := context.Background()
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			community := seedCommunity(ctx, t, repo)
+			approver := seedUser(ctx, t, repo).ID
+			firstRuntime := store.BotRuntimeRow{ID: id.New(), TokenHash: make([]byte, 32), Created: 1, Rotated: 1}
+			firstRuntime.TokenHash[0] = 1
+			if err := repo.CreateBotRuntime(ctx, firstRuntime); err != nil {
+				t.Fatal(err)
+			}
+			firstID := firstRuntime.ID
+			installation := store.BotInstallationRow{ID: id.New(), CommunityID: community, RuntimeID: &firstID, State: store.BotInstallationEnrolling, Revision: 1, ApprovedBy: approver, ApprovedAt: 1, Created: 1, Updated: 1}
+			if err := repo.CreateBotInstallation(ctx, installation); err != nil {
+				t.Fatal(err)
+			}
+			original := store.BotClaimRow{InstallationID: installation.ID, RuntimeID: firstRuntime.ID, ClaimID: id.New(), RequestID: id.New(), Expires: 100}
+			if err := repo.PutBotClaim(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			replacement := store.BotClaimRow{InstallationID: installation.ID, RuntimeID: firstRuntime.ID, ClaimID: id.New(), RequestID: id.New(), Expires: 200}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutBotClaim(ctx, replacement) }); err != nil {
+				t.Fatalf("replace claim: %v", err)
+			}
+			// Read through the outer repository after commit to cover persistence across caller restarts.
+			if got, err := repo.GetBotClaim(ctx, installation.ID); err != nil || got.RuntimeID != firstID || got.ClaimID != replacement.ClaimID || got.RequestID != replacement.RequestID || got.Expires != replacement.Expires {
+				t.Fatalf("replacement claim = %+v, %v", got, err)
+			}
+			otherCommunity := seedCommunity(ctx, t, repo)
+			otherInstallation := store.BotInstallationRow{ID: id.New(), CommunityID: otherCommunity, RuntimeID: &firstID, State: store.BotInstallationEnrolling, Revision: 1, ApprovedBy: approver, ApprovedAt: 1, Created: 1, Updated: 1}
+			if err := repo.CreateBotInstallation(ctx, otherInstallation); err != nil {
+				t.Fatal(err)
+			}
+			duplicateGlobalClaim := store.BotClaimRow{InstallationID: otherInstallation.ID, RuntimeID: firstRuntime.ID, ClaimID: replacement.ClaimID, RequestID: id.New(), Expires: 250}
+			if err := repo.PutBotClaim(ctx, duplicateGlobalClaim); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate global claim ID = %v, want conflict", err)
+			}
+			rollback := store.BotClaimRow{InstallationID: installation.ID, RuntimeID: firstRuntime.ID, ClaimID: id.New(), RequestID: id.New(), Expires: 300}
+			txErr := errors.New("rollback claim replacement")
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.PutBotClaim(ctx, rollback); err != nil {
+					return err
+				}
+				return txErr
+			}); !errors.Is(err, txErr) {
+				t.Fatalf("claim replacement rollback = %v", err)
+			}
+			if got, err := repo.GetBotClaim(ctx, installation.ID); err != nil || got.ClaimID != replacement.ClaimID || got.RuntimeID != firstRuntime.ID {
+				t.Fatalf("claim after rollback = %+v, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestBotCommunityAndInstallationLocksRequireTransactions(t *testing.T) {
 	ctx := context.Background()
 	for engine, repo := range engines(t) {
@@ -100,13 +190,24 @@ func TestBotCommunityAndInstallationLocksRequireTransactions(t *testing.T) {
 			if err := repo.CreateBotInstallation(ctx, installation); err != nil {
 				t.Fatal(err)
 			}
+			runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: make([]byte, 32), Created: 1, Rotated: 1}
+			runtime.TokenHash[0] = 1
+			if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
+				t.Fatal(err)
+			}
 			if err := repo.LockBotCommunity(ctx, community); err == nil {
 				t.Fatal("community lock outside Tx succeeded")
 			}
 			if err := repo.LockBotInstallation(ctx, installation.ID); err == nil {
 				t.Fatal("installation lock outside Tx succeeded")
 			}
+			if err := repo.LockBotRuntime(ctx, runtime.ID); err == nil {
+				t.Fatal("runtime lock outside Tx succeeded")
+			}
 			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.LockBotRuntime(ctx, runtime.ID); err != nil {
+					return err
+				}
 				if err := tx.LockBotCommunity(ctx, community); err != nil {
 					return err
 				}
@@ -116,6 +217,9 @@ func TestBotCommunityAndInstallationLocksRequireTransactions(t *testing.T) {
 			}
 			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.LockBotInstallation(ctx, id.New()) }); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("missing row lock = %v", err)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.LockBotRuntime(ctx, id.New()) }); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("missing runtime lock = %v", err)
 			}
 		})
 	}

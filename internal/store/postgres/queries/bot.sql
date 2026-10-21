@@ -7,6 +7,9 @@ SELECT * FROM bot_runtimes WHERE id = $1;
 -- name: GetBotRuntimeByHash :one
 SELECT * FROM bot_runtimes WHERE token_hash = $1;
 
+-- name: LockBotRuntime :one
+SELECT id FROM bot_runtimes WHERE id = $1 FOR UPDATE;
+
 -- name: RotateBotRuntime :execrows
 UPDATE bot_runtimes SET token_hash = $1, rotated = $2 WHERE id = $3 AND token_hash = $4 AND revoked_at IS NULL;
 
@@ -46,7 +49,8 @@ SELECT id FROM communities WHERE id = $1 FOR UPDATE;
 SELECT * FROM bot_claims WHERE installation_id = $1;
 
 -- name: PutBotClaim :exec
-INSERT INTO bot_claims(installation_id, runtime_id, claim_id, request_id, expires) VALUES ($1, $2, $3, $4, $5);
+INSERT INTO bot_claims(installation_id, runtime_id, claim_id, request_id, expires) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (installation_id) DO UPDATE SET runtime_id = EXCLUDED.runtime_id, claim_id = EXCLUDED.claim_id, request_id = EXCLUDED.request_id, expires = EXCLUDED.expires;
 
 -- name: DeleteBotClaim :execrows
 DELETE FROM bot_claims WHERE installation_id = $1;

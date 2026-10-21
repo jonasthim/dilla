@@ -83,6 +83,9 @@ type BotRuntimes interface {
 	CreateBotRuntime(context.Context, BotRuntimeRow) error
 	GetBotRuntime(context.Context, id.ID) (BotRuntimeRow, error)
 	GetBotRuntimeByHash(context.Context, []byte) (BotRuntimeRow, error)
+	// LockBotRuntime requires a Tx; callers recheck the authenticated token hash
+	// after acquiring this lock so a rotation cannot race claim creation.
+	LockBotRuntime(context.Context, id.ID) error
 	RotateBotRuntime(context.Context, id.ID, []byte, []byte, int64) error
 	RevokeBotRuntime(context.Context, id.ID, int64) error
 	ListBotRuntimes(context.Context, id.ID, int32) ([]BotRuntimeRow, error)
@@ -102,6 +105,9 @@ type BotInstallations interface {
 
 type BotClaims interface {
 	GetBotClaim(context.Context, id.ID) (BotClaimRow, error)
+	// PutBotClaim atomically creates or replaces the installation's current claim.
+	// The caller must hold the installation lock and verify that RuntimeID matches
+	// its active runtime and that the installation is not removed in the same Tx.
 	PutBotClaim(context.Context, BotClaimRow) error
 	DeleteBotClaim(context.Context, id.ID) error
 	DeleteBotClaimsByRuntime(context.Context, id.ID) (int64, error)

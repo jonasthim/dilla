@@ -522,8 +522,24 @@ func (q *Queries) LockBotInstallation(ctx context.Context, arg LockBotInstallati
 	return id, err
 }
 
+const lockBotRuntime = `-- name: LockBotRuntime :one
+UPDATE bot_runtimes SET rotated = rotated WHERE id = ? RETURNING id
+`
+
+type LockBotRuntimeParams struct {
+	ID id.ID
+}
+
+func (q *Queries) LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error) {
+	row := q.db.QueryRowContext(ctx, lockBotRuntime, arg.ID)
+	var id id.ID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const putBotClaim = `-- name: PutBotClaim :exec
 INSERT INTO bot_claims(installation_id, runtime_id, claim_id, request_id, expires) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(installation_id) DO UPDATE SET runtime_id = excluded.runtime_id, claim_id = excluded.claim_id, request_id = excluded.request_id, expires = excluded.expires
 `
 
 type PutBotClaimParams struct {

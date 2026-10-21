@@ -255,6 +255,7 @@ type Querier interface {
 	LockBlob(ctx context.Context, arg LockBlobParams) error
 	LockBotCommunity(ctx context.Context, arg LockBotCommunityParams) (id.ID, error)
 	LockBotInstallation(ctx context.Context, arg LockBotInstallationParams) (id.ID, error)
+	LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error)
 	// SQLite has no row locks and needs none: every write transaction is BEGIN
 	// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
 	// are already exclusive. This is the existence read the Postgres form shares.

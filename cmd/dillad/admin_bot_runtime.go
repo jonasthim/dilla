@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,21 +26,13 @@ func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error
 			outPath := fs.String("out", "", "new protected file for the credential")
 			return adminAction{check: func() error { return validateBotRuntimeSecretPath(*outPath, stderr, name) }, run: func(ctx context.Context, e *adminEnv) error {
 				manager := botruntime.New(e.repo, func() time.Time { return cliClock.Now() })
-				var created *createdBotRuntimeSecret
-				runtimeID, err := manager.Create(ctx, func(_ id.ID, token string) error {
-					var writeErr error
-					created, writeErr = writeBotRuntimeSecret(*outPath, token)
-					return writeErr
-				})
+				runtimeID, err := createBotRuntimeSecret(ctx, manager, *outPath)
 				if err != nil {
-					if created != nil {
-						if removeErr := created.cleanup(); removeErr != nil {
-							return fmt.Errorf("create runtime failed and its new secret file could not be removed: %w: %w", removeErr, exit.Software)
-						}
+					if errors.Is(err, botruntime.ErrCommitUncertain) {
+						return fmt.Errorf("create bot runtime %s: %w: %w", runtimeID, err, exit.Software)
 					}
 					return fmt.Errorf("create bot runtime: %w: %w", err, exit.Software)
 				}
-				created.release()
 				fmt.Fprintf(e.out, "created bot runtime %s; secret written to protected file\n", runtimeID)
 				return nil
 			}}
@@ -58,24 +51,16 @@ func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error
 				return validateBotRuntimeSecretPath(*outPath, stderr, name)
 			}, run: func(ctx context.Context, e *adminEnv) error {
 				manager := botruntime.New(e.repo, func() time.Time { return cliClock.Now() })
-				var created *createdBotRuntimeSecret
-				err := manager.Rotate(ctx, runtimeID, func(_ id.ID, token string) error {
-					var writeErr error
-					created, writeErr = writeBotRuntimeSecret(*outPath, token)
-					return writeErr
-				})
+				err := rotateBotRuntimeSecret(ctx, manager, runtimeID, *outPath)
 				if err != nil {
-					if created != nil {
-						if removeErr := created.cleanup(); removeErr != nil {
-							return fmt.Errorf("rotate runtime failed and its new secret file could not be removed: %w: %w", removeErr, exit.Software)
-						}
+					if errors.Is(err, botruntime.ErrCommitUncertain) {
+						return fmt.Errorf("rotate bot runtime %s: %w: %w", runtimeID, err, exit.Software)
 					}
 					if err == store.ErrNotFound {
 						return notFound("bot runtime", err)
 					}
 					return fmt.Errorf("rotate bot runtime: %w: %w", err, exit.Software)
 				}
-				created.release()
 				fmt.Fprintf(e.out, "rotated bot runtime %s; secret written to protected file\n", runtimeID)
 				return nil
 			}}
@@ -134,6 +119,43 @@ func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error
 	default:
 		return unknownVerb("bot-runtime", verb, stderr)
 	}
+}
+
+func createBotRuntimeSecret(ctx context.Context, manager *botruntime.Manager, path string) (id.ID, error) {
+	var created *createdBotRuntimeSecret
+	runtimeID, err := manager.Create(ctx, func(_ id.ID, token string) error {
+		var writeErr error
+		created, writeErr = writeBotRuntimeSecret(path, token)
+		return writeErr
+	})
+	return runtimeID, finishBotRuntimeSecretFile(created, err)
+}
+
+func rotateBotRuntimeSecret(ctx context.Context, manager *botruntime.Manager, runtimeID id.ID, path string) error {
+	var created *createdBotRuntimeSecret
+	err := manager.Rotate(ctx, runtimeID, func(_ id.ID, token string) error {
+		var writeErr error
+		created, writeErr = writeBotRuntimeSecret(path, token)
+		return writeErr
+	})
+	return finishBotRuntimeSecretFile(created, err)
+}
+
+func finishBotRuntimeSecretFile(created *createdBotRuntimeSecret, operationErr error) error {
+	if errors.Is(operationErr, botruntime.ErrCommitUncertain) {
+		created.release()
+		return fmt.Errorf("database commit outcome uncertain; protected secret file retained: %w", botruntime.ErrCommitUncertain)
+	}
+	if operationErr != nil {
+		if created != nil {
+			if removeErr := created.cleanup(); removeErr != nil {
+				return fmt.Errorf("operation failed and its new secret file could not be removed: %w", removeErr)
+			}
+		}
+		return operationErr
+	}
+	created.release()
+	return nil
 }
 
 func validateSecretParent(parent string) error {

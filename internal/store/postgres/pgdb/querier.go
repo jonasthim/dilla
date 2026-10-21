@@ -255,6 +255,7 @@ type Querier interface {
 	LockBlob(ctx context.Context, arg LockBlobParams) error
 	LockBotCommunity(ctx context.Context, arg LockBotCommunityParams) (id.ID, error)
 	LockBotInstallation(ctx context.Context, arg LockBotInstallationParams) (id.ID, error)
+	LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error)
 	// The join and the ban both take this lock before they read or write the
 	// membership, so a join's ban check and its member insert cannot interleave with
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the

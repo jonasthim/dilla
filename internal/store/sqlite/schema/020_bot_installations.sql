@@ -27,6 +27,7 @@ CREATE TABLE bot_installations (
   created                 INTEGER NOT NULL,
   updated                 INTEGER NOT NULL,
   removed_at              INTEGER,
+  CHECK (removed_at IS NULL OR state = 4),
   CHECK ((user_id IS NULL AND device_id IS NULL) OR (user_id IS NOT NULL AND device_id IS NOT NULL)),
   UNIQUE (id, user_id, device_id),
   FOREIGN KEY (device_id, user_id) REFERENCES devices(id, user_id) ON DELETE SET NULL,

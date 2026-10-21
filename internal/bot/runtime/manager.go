@@ -17,6 +17,7 @@ import (
 )
 
 var ErrUnauthorized = errors.New("bot runtime: invalid credential")
+var ErrCommitUncertain = errors.New("bot runtime: credential commit outcome uncertain")
 
 const tokenPrefix = "dbr_"
 
@@ -47,13 +48,21 @@ func (m *Manager) Create(ctx context.Context, writeSecret func(id.ID, string) er
 		return id.ID{}, err
 	}
 	at := m.now().Unix()
+	callbackSucceeded := false
 	err = m.repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.CreateBotRuntime(ctx, store.BotRuntimeRow{ID: runtimeID, TokenHash: hash, Created: at, Rotated: at}); err != nil {
 			return err
 		}
-		return writeSecret(runtimeID, token)
+		if err := writeSecret(runtimeID, token); err != nil {
+			return err
+		}
+		callbackSucceeded = true
+		return nil
 	})
 	if err != nil {
+		if callbackSucceeded {
+			return runtimeID, ErrCommitUncertain
+		}
 		return id.ID{}, err
 	}
 	return runtimeID, nil
@@ -70,7 +79,8 @@ func (m *Manager) Rotate(ctx context.Context, runtimeID id.ID, writeSecret func(
 		return err
 	}
 	at := m.now().Unix()
-	return m.repo.Tx(ctx, func(tx store.Repository) error {
+	callbackSucceeded := false
+	err = m.repo.Tx(ctx, func(tx store.Repository) error {
 		current, err := tx.GetBotRuntime(ctx, runtimeID)
 		if err != nil {
 			return err
@@ -81,8 +91,16 @@ func (m *Manager) Rotate(ctx context.Context, runtimeID id.ID, writeSecret func(
 		if err := writeSecret(runtimeID, token); err != nil {
 			return err
 		}
-		return tx.RotateBotRuntime(ctx, runtimeID, current.TokenHash, hash, at)
+		if err := tx.RotateBotRuntime(ctx, runtimeID, current.TokenHash, hash, at); err != nil {
+			return err
+		}
+		callbackSucceeded = true
+		return nil
 	})
+	if err != nil && callbackSucceeded {
+		return ErrCommitUncertain
+	}
+	return err
 }
 
 func (m *Manager) Revoke(ctx context.Context, runtimeID id.ID) error {

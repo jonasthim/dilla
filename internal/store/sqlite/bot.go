@@ -40,6 +40,17 @@ func (r *Repo) GetBotRuntimeByHash(ctx context.Context, hash []byte) (store.BotR
 	return botRuntimeRow(b), nil
 }
 
+func (r *Repo) LockBotRuntime(ctx context.Context, runtimeID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.w.LockBotRuntime(ctx, sqlitedb.LockBotRuntimeParams{ID: runtimeID})
+	if err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
 func (r *Repo) RotateBotRuntime(ctx context.Context, runtimeID id.ID, expectedHash, hash []byte, at int64) error {
 	if len(hash) != 32 {
 		return store.ErrConflict
@@ -99,6 +110,9 @@ func (r *Repo) ListBotRuntimes(ctx context.Context, after id.ID, limit int32) ([
 
 func checkBotInstallation(b store.BotInstallationRow) error {
 	if b.State > store.BotInstallationError || b.Revision == 0 || b.Revision > math.MaxInt64 {
+		return store.ErrConflict
+	}
+	if b.RemovedAt != nil && b.State != store.BotInstallationDisabled {
 		return store.ErrConflict
 	}
 	if (b.UserID == nil) != (b.DeviceID == nil) {

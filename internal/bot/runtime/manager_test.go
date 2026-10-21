@@ -103,3 +103,37 @@ func TestManagerCreateRollsBackWhenTransactionCannotCommit(t *testing.T) {
 		t.Fatalf("runtime rows after failed commit: %d, %v", len(rows), err)
 	}
 }
+
+type commitAcknowledgementLost struct{ store.Repository }
+
+func (r commitAcknowledgementLost) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	if err := r.Repository.Tx(ctx, fn); err != nil {
+		return err
+	}
+	return errors.New("simulated lost commit acknowledgement")
+}
+
+func TestManagerPreservesCredentialOnUncertainCommit(t *testing.T) {
+	base := testRepository(t)
+	repo := commitAcknowledgementLost{Repository: base}
+	manager := New(repo, func() time.Time { return time.Unix(1_800_000_000, 0) })
+	ctx := context.Background()
+	var token string
+	runtimeID, err := manager.Create(ctx, func(_ id.ID, value string) error { token = value; return nil })
+	if !errors.Is(err, ErrCommitUncertain) || runtimeID.IsZero() {
+		t.Fatalf("Create = %s, %v; want runtime ID and uncertain commit", runtimeID, err)
+	}
+	if got, err := manager.Authenticate(ctx, token); err != nil || got != runtimeID {
+		t.Fatalf("created credential after lost acknowledgement = %s, %v", got, err)
+	}
+	var rotated string
+	if err := manager.Rotate(ctx, runtimeID, func(_ id.ID, value string) error { rotated = value; return nil }); !errors.Is(err, ErrCommitUncertain) {
+		t.Fatalf("Rotate = %v; want uncertain commit", err)
+	}
+	if _, err := manager.Authenticate(ctx, token); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("old credential after committed rotation = %v", err)
+	}
+	if got, err := manager.Authenticate(ctx, rotated); err != nil || got != runtimeID {
+		t.Fatalf("rotated credential after lost acknowledgement = %s, %v", got, err)
+	}
+}
