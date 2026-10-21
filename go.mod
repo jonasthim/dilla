@@ -1,6 +1,6 @@
 module github.com/jonasthim/dilla
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/caddyserver/certmagic v0.25.4
