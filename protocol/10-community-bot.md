@@ -106,14 +106,28 @@ ack semantics and pagination handled by API. Event id survives retries.
 
 ## Send receipt
 
-`[1, operation_id, community_id, group_id, ciphertext_sha256 bstr32,
- status uint0..1, sequence uint>0|null, epoch uint|null]`.
-0pending requires null sequence/epoch;1accepted requires both uint (seq>0).
-Max512 bytes. Context validation requires expected community and group.
-Caller installation/device is authenticated externally; receipt lookup scoped
-accordingly. Retry uses same operation id; conflicting ciphertext hash refuses.
-Resolve unknown outcome before encrypting again. Receipt is structural and never
-contains decrypted body. Both codecs must reject non-bstr IDs/hashes.
+`[1, operation_id, attempt_id, predecessor_attempt_id|null, community_id,
+ group_id, expected_generation, ciphertext_sha256 bstr32, class uint0..1,
+ outcome uint0..2, epoch, send_response_body|null]`.
+
+Outcome 0 closes an attempt as not accepted, 1 records acceptance, and 2 records
+an unknown outcome after restore. Accepted alone requires a nonnull bstr holding
+the exact original deterministic `[sequence,franking_tag32,receive_timestamp]`
+response. Other outcomes require null. Sequence is positive; generation, epoch,
+sequence and timestamp are uint at most signed-int64 max. The attempted epoch is
+present for every outcome. All IDs, including a nonnull predecessor, are nonzero
+bstr16. Max receipt 512 bytes. Decode the embedded response strictly; integer
+arrays cannot substitute for byte strings, and noncanonical embedded CBOR fails.
+Context validation requires expected community and group. The authenticated
+caller supplies installation/device authority; no plaintext is stored here.
+
+The logical operation ID identifies one welcome, occurrence or application
+action. Each exact ciphertext has its own attempt ID. HTTP retries preserve both
+IDs and all bytes. A successor may name only the immediately previous attempt
+durably closed with outcome 0. Acceptance seals the entire logical operation;
+outcome 2 suppresses automatic retry. A missing response or receipt is not proof
+of nonacceptance. This replaces the unreleased eight-field pending/accepted
+receipt without changing wire 3, E2EE or media versions.
 
 ## Helper transport envelope
 
@@ -156,8 +170,8 @@ never contain database, provider or decrypted-message error text.
 | 4 session | `[suboperation, ...arguments]`, below | core body or void |
 | 5 key_packages | `[operation_id, count, last_resort, expected_generation]`, count1..32, last_resort0..1 | `[upload_body, package_refs, greatest_expiry]` |
 | 6 group_apply | `[suboperation, ...arguments]`, below | core body or void |
-| 7 prepare_send | `[operation_id, group_id, send_request_body, now]` | `[message_id, upload_body]` |
-| 8 send_receipt | `[operation_id, receipt_body, send_response_body]` | `[]` |
+| 7 prepare_send | `[operation_id, attempt_id, group_id, send_request_body, original_now, expected_generation]` | `[message_id, upload_body]` |
+| 8 send_receipt | `[operation_id, receipt_body]` | `[]` |
 | 9 call_epoch | `[suboperation, group_id]`, below | core body or void |
 | 10 sign_removal | `[request_id, group_id, target_sequence, expires, now]` | `[proof, signature64]` |
 | 11 state_get | `[suboperation, ...arguments]`, below | state records |
@@ -394,16 +408,25 @@ epoch material is returned only for an active, authorized call group, with its
 epoch and roster. The private Go media pump owns separate key rings per call and
 clears these secrets when that call stops.
 
-Prepare-send persists an operation-to-outbox association and the exact encrypted
-request before returning. Repeating the same operation/input returns those bytes;
-conflicting reuse fails. No crash or uncertain upload can silently re-encrypt it.
-Upload body is the existing `[epoch,private_message,class]`; send-response body
-is the existing `[sequence,franking_tag32,receive_timestamp]`. The franking
-commitment remains inside the existing MLS construction, not an extra caller-
-supplied field. Neither wire-2 upload-class enforcement nor franking is bypassed.
-Receipt confirmation verifies operation/community/group/hash before changing the
-outbox or timeline. A new ciphertext after a conclusively refused upload needs an
-explicit resolved-outcome transition; absence of a response is not that proof.
+Prepare-send durably associates a logical operation with its immutable input,
+original timestamp, message ID and envelope. Crypto state, attempt and exact
+upload result commit together before returning. Exact attempt retries return
+identical bytes after reopen. Upload body is the seven-field Bot upload below;
+its predecessor is derived from the native journal, never trusted from a caller.
+Keep one unresolved attempt per operation and the normal one-flight-per-group
+rule. A helper timeout never permits a new attempt ID or replacement envelope.
+The franking commitment remains inside the existing MLS construction; neither
+upload-class enforcement nor franking is bypassed.
+
+Receipt confirmation checks operation, attempt, predecessor, community, group,
+generation, epoch, class, ciphertext hash and the exact original response before
+changing the outbox or timeline. Acceptance atomically confirms the outgoing
+message and seals the operation, with idempotent confirmation after outbox
+deletion. Outcome 0 retires only that attempt and permits the same logical
+envelope/message ID to produce a successor. Outcome 2 makes the operation
+visibly uncertain and terminal for automatic execution. Conflicting or opposite
+outcomes fail; an old retry cannot change a newer successor. Retiring unused
+ciphertext never rewinds MLS ratchets. No generic send-requeue bypass is exposed.
 
 State areas are 0 settings,1 queues,2 schedules,3 occurrences,4 moderation,
 5 processed operations,6 structural cursors,7 role-grant sources,8 send operations.
@@ -675,8 +698,9 @@ remain one exclusive server operation.
 | --- | --- | --- | --- |
 | `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]` |
 | `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | 204 |
-| `GET /v1/communities/{community}/bot/receipts/{operation}` | B | — | `[receipt, send_response|null]` or 404 |
-| `POST /v1/groups/{group}/bot/messages` | B | `[operation_id, epoch, private_message, class]` | `[sequence, franking_tag32, receive_timestamp]` |
+| `GET /v1/communities/{community}/bot/receipts/{operation}?attempt=ID` | B | — | send receipt or 404 |
+| `POST /v1/communities/{community}/bot/receipts/{operation}/resolve` | B | `[attempt_id,predecessor_attempt_id\|null,group_id,expected_generation,epoch,class,ciphertext_sha256]` | send receipt |
+| `POST /v1/groups/{group}/bot/messages` | B | `[operation_id,attempt_id,predecessor_attempt_id\|null,expected_generation,epoch,private_message,class]` | send receipt |
 
 L defaults to 100 and is at most 250; each page also stays below 1 MiB. Sequence
 values admitted to SQL are at most signed-int64 max; overflow refuses, never wraps.
@@ -687,17 +711,71 @@ and high-water. Reconcile current membership/configuration, report the gap and
 avoid inventing historical welcomes. Ack is monotone and cannot exceed the
 published high-water; consumer commits progress locally before acknowledging.
 
-Send admission applies normal group/channel ACLs and MLS epoch checks. Lookup is
-scoped to the authenticated installation, group and operation. Store the accepted
-message, ciphertext hash, receipt and original send response atomically. Accepted
-receipt lookups retain that response even after message-content retention; pending
-receipts have a null response. A replay with identical bytes
-returns the original result even after epoch advancement; a conflicting hash
-is `409 E_INVALID_REQUEST`. The bot resolves uncertain outcomes before generating
-another ciphertext. Structural events retain 30 days; accepted send receipts
-retain until installation removal so a delayed retry cannot duplicate a welcome
-or announcement. Disabled installations retain receipts for inspection/recovery
-but cannot send. Unknown operations have no receipt.
+### Send attempts and resolution
+
+All three send endpoints return the direct twelve-field receipt above, without a
+wrapper or separate response parameter. Every generation and epoch is bounded
+to signed-int64 before any row is written, including resolve without ciphertext.
+Attempt IDs and logical operation IDs are independent nonzero identifiers. First
+attempt has a null predecessor; a successor names the immediately preceding
+closed-not-accepted attempt. A logical operation is immutably bound to its
+installation, account, device, community and group. Reusing an attempt with
+different immutable data returns 409 and causes no write or notification.
+
+The immutable fingerprint is SHA256 of deterministic
+`[1,installation,user,device,operation,attempt,predecessor|null,community,group,
+expected_generation,epoch,class,SHA256(private_message)]`. Resolve supplies that
+same ciphertext hash without sending content. Under the same database locks as
+upload, it returns a matching existing receipt or closes the unused attempt.
+A later original upload must consult that closure and cannot accept it.
+
+When the expected generation is current, resolve can durably record outcome 0.
+When it is older and no receipt survived restore, resolve records outcome 2;
+it must never claim the old message was not displayed. Future generations refuse.
+Retained exact historical receipts take precedence over generation/epoch changes.
+Unknown outcomes require visible recovery; no automatic re-encryption, delivered
+status or skipped status may replace uncertainty. A deliberate human retry is a
+new operation with the possible duplicate made clear. A trusted local accepted
+record is not downgraded because a restored server lacks its receipt.
+
+Current session, runtime, installation, account, device and group access are
+checked before receipt lookup. Current members who lost send permission can
+recover their accepted receipt or close an unused attempt; new acceptance still
+requires current send policy. Revoked or disabled identities, removed membership
+and lost group access refuse. Receipt recovery does not reapply mutable epoch,
+slowmode or send permission to a historical result.
+
+### Atomic acceptance
+
+Both databases persist a logical operation row keyed by installation/operation,
+with immutable scope, current attempt, optional accepted attempt and state
+active/accepted/uncertain. Attempt rows are keyed by installation/operation/attempt
+with immutable predecessor, generation, epoch, class, ciphertext hash, fingerprint,
+outcome and canonical receipt. Enforce one null-predecessor first attempt per
+operation and one successor per nonnull predecessor with database uniqueness.
+Acceptance and successor creation use compare-and-swap on the logical current
+attempt and require no accepted attempt. A concurrent second branch cannot win.
+
+Use the lock order generation → runtime → community → installation → user →
+device → logical operation → MLS group. The runtime validity lock applies even
+when authentication used a Bot device session. Re-read authority under these
+locks. Community authorization writers share the actual community row fence;
+epoch, sequence, membership and freeze writers must share the actual MLS group
+row fence. An in-process mutex alone cannot serialize different server processes.
+Policy and permission resolvers must read the transaction's repository, including
+channel/member/role/overwrite/slowmode state. Sample one server receipt time after
+locking for policy, franking, stored message and original response.
+
+Message, sequence allocation, slowmode update, canonical receipt and logical
+acceptance seal commit atomically. Notify only after a new acceptance, never on
+replay. Resolve uses the same operation/attempt chain and group serialization.
+If restore lost an entire operation, an outcome-2 row may retain an orphan
+predecessor identifier without inventing its missing history. A conflicting
+existing branch refuses and stays unresolved; unknown is never a valid successor
+predecessor. Structural events retain 30 days. Compact send receipts for all
+outcomes retain until installation removal, independently of message retention,
+so delayed closed attempts cannot become acceptable. Removal revokes the identity
+before deleting receipts. The ordinary human upload API remains unchanged.
 
 ## Role delegation and human moderation API
 

@@ -944,29 +944,88 @@ fn decode_event_data(d: &mut Decoder<'_>, k: u64) -> Result<EventData, CborError
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    ClosedNotAccepted,
+    Accepted,
+    UnknownAfterRestore,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct OriginalSendResponse {
+    pub sequence: u64,
+    pub franking_tag: [u8; 32],
+    pub receive_timestamp: u64,
+    /// The exact canonical response bytes returned by the original send.
+    pub body: Vec<u8>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Receipt {
     pub operation_id: MsgId,
+    pub attempt_id: MsgId,
+    pub predecessor_attempt_id: Option<MsgId>,
     pub community_id: CommunityId,
     pub group_id: MsgId,
+    pub expected_generation: u64,
     pub ciphertext_sha256: [u8; 32],
-    pub status: u64,
-    pub sequence: Option<u64>,
-    pub epoch: Option<u64>,
+    pub class: u64,
+    pub outcome: SendOutcome,
+    pub epoch: u64,
+    pub send_response: Option<OriginalSendResponse>,
 }
+
+fn decode_original_send_response(raw: &[u8]) -> Result<OriginalSendResponse, CodecError> {
+    decode_strict(raw, |d| {
+        d.array(3)?;
+        let sequence = d.uint()?;
+        let franking_tag = d.bytes_exact::<32>()?;
+        let receive_timestamp = d.uint()?;
+        if sequence == 0 || sequence > i64::MAX as u64 || receive_timestamp > i64::MAX as u64 {
+            return Err(CborError::TypeMismatch {
+                expected: "bounded send response",
+                offset: d.position(),
+            });
+        }
+        Ok((sequence, franking_tag, receive_timestamp))
+    })
+    .map(
+        |(sequence, franking_tag, receive_timestamp)| OriginalSendResponse {
+            sequence,
+            franking_tag,
+            receive_timestamp,
+            body: raw.to_vec(),
+        },
+    )
+    .map_err(Into::into)
+}
+
 impl Receipt {
     pub fn encode(&self) -> Result<Vec<u8>, CodecError> {
         self.validate()?;
         let mut e = Encoder::new();
-        e.array(8)
+        e.array(12)
             .uint(1)
             .bytes(self.operation_id.as_bytes())
+            .bytes(self.attempt_id.as_bytes())
+            .opt_bytes(
+                self.predecessor_attempt_id
+                    .as_ref()
+                    .map(MsgId::as_bytes)
+                    .map(|x| x.as_slice()),
+            )
             .bytes(self.community_id.as_bytes())
             .bytes(self.group_id.as_bytes())
+            .uint(self.expected_generation)
             .bytes(&self.ciphertext_sha256)
-            .uint(self.status)
-            .opt_uint(self.sequence)
-            .opt_uint(self.epoch);
+            .uint(self.class)
+            .uint(match self.outcome {
+                SendOutcome::ClosedNotAccepted => 0,
+                SendOutcome::Accepted => 1,
+                SendOutcome::UnknownAfterRestore => 2,
+            })
+            .uint(self.epoch)
+            .opt_bytes(self.send_response.as_ref().map(|x| x.body.as_slice()));
         let b = e.into_vec();
         if b.len() > RECEIPT_MAX {
             Err(CodecError::Limit)
@@ -979,24 +1038,55 @@ impl Receipt {
             return Err(CodecError::Limit);
         };
         decode_strict(b, |d| {
-            d.array(8)?;
+            d.array(12)?;
             let v = d.uint()?;
-            let x = Self {
-                operation_id: read_msg(d)?,
-                community_id: read_comm(d)?,
-                group_id: read_msg(d)?,
-                ciphertext_sha256: d.bytes_exact::<32>()?,
-                status: d.uint()?,
-                sequence: d.opt_uint()?,
-                epoch: d.opt_uint()?,
-            };
             if v != 1 {
                 return Err(CborError::TypeMismatch {
                     expected: "version",
                     offset: 0,
                 });
             };
-            Ok(x)
+            let operation_id = read_msg(d)?;
+            let attempt_id = read_msg(d)?;
+            let predecessor_attempt_id = d.opt_bytes_exact::<16>()?.map(MsgId::from_bytes);
+            let community_id = read_comm(d)?;
+            let group_id = read_msg(d)?;
+            let expected_generation = d.uint()?;
+            let ciphertext_sha256 = d.bytes_exact::<32>()?;
+            let class = d.uint()?;
+            let outcome = match d.uint()? {
+                0 => SendOutcome::ClosedNotAccepted,
+                1 => SendOutcome::Accepted,
+                2 => SendOutcome::UnknownAfterRestore,
+                _ => {
+                    return Err(CborError::TypeMismatch {
+                        expected: "send outcome",
+                        offset: d.position(),
+                    });
+                }
+            };
+            let epoch = d.uint()?;
+            let send_response = d
+                .opt_bytes()?
+                .map(decode_original_send_response)
+                .transpose()
+                .map_err(|_| CborError::TypeMismatch {
+                    expected: "canonical send response",
+                    offset: d.position(),
+                })?;
+            Ok(Self {
+                operation_id,
+                attempt_id,
+                predecessor_attempt_id,
+                community_id,
+                group_id,
+                expected_generation,
+                ciphertext_sha256,
+                class,
+                outcome,
+                epoch,
+                send_response,
+            })
         })
         .map_err(Into::into)
         .and_then(|x| {
@@ -1007,17 +1097,31 @@ impl Receipt {
     fn validate(&self) -> Result<(), CodecError> {
         for b in [
             self.operation_id.as_bytes(),
+            self.attempt_id.as_bytes(),
             self.community_id.as_bytes(),
             self.group_id.as_bytes(),
         ] {
             check_id16(b)?;
         }
-        if self.status == 0 && self.sequence.is_none() && self.epoch.is_none()
-            || self.status == 1 && self.sequence.is_some_and(|s| s > 0) && self.epoch.is_some()
+        if let Some(predecessor) = self.predecessor_attempt_id {
+            check_id16(predecessor.as_bytes())?;
+        }
+        if self.expected_generation > i64::MAX as u64
+            || self.epoch > i64::MAX as u64
+            || self.class > 1
         {
-            Ok(())
-        } else {
-            Err(CodecError::Value)
+            return Err(CodecError::Value);
+        }
+        match (self.outcome, &self.send_response) {
+            (SendOutcome::Accepted, Some(response)) => {
+                let decoded = decode_original_send_response(&response.body)?;
+                if decoded != *response {
+                    return Err(CodecError::Value);
+                }
+                Ok(())
+            }
+            (SendOutcome::ClosedNotAccepted | SendOutcome::UnknownAfterRestore, None) => Ok(()),
+            _ => Err(CodecError::Value),
         }
     }
     pub fn validate_context(&self, c: CommunityId, g: MsgId) -> Result<(), CodecError> {

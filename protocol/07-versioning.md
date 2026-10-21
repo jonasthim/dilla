@@ -6,6 +6,7 @@ Three independent unsigned integers:
 
 | version | covers | current |
 |---|---|---|
+| 2026-10-21 | e2ee 1, media 1, wire 3 | The unreleased Bot send receipt in `10` changes to twelve fields with logical operation and exact ciphertext attempt IDs, predecessor, generation, class, outcome and original send response. A serialized resolve route closes unused attempts and records uncertainty after restore; only a durable nonacceptance permits a successor. Helper op7/op8 and shared codecs/vectors advance together. Human uploads and E2EE/media formats stay unchanged. |
 | 2026-10-21 | e2ee 1, media 1, wire 3 | Managed Bot KeyPackage inventory adds a read-only collection GET in `09`/`10`: current generation, server time, active ordinary count and fallback availability under the publication authority fences. Historical receipts remain separate. The authenticated timestamp supports safe obsolete-intent recovery without trusting the bot host clock. No MLS or browser ABI change. |
 | `wire_version` | HTTP API paths under `/v1`, gateway frame layouts | 3 |
 | `e2ee_version` | `01-groups.md`, `02`, `03`, `04`, `06` | 1 |

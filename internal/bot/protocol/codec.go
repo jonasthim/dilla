@@ -4,6 +4,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -585,39 +586,68 @@ func eventIDs(k EventKind, d []any) {
 	}
 }
 
-type ReceiptStatus uint64
+type SendOutcome uint64
 
 const (
-	ReceiptPending ReceiptStatus = iota
+	ReceiptClosedNotAccepted SendOutcome = iota
 	ReceiptAccepted
+	ReceiptUnknownAfterRestore
 )
 
+type OriginalSendResponse struct {
+	Sequence         uint64
+	FrankingTag      []byte
+	ReceiveTimestamp uint64
+	Body             []byte
+}
+
 type SendReceipt struct {
-	OperationID, CommunityID, GroupID id.ID
-	CiphertextHash                    []byte
-	Status                            ReceiptStatus
-	Sequence, Epoch                   *uint64
+	OperationID, AttemptID id.ID
+	PredecessorAttemptID   *id.ID
+	CommunityID, GroupID   id.ID
+	ExpectedGeneration     uint64
+	CiphertextHash         []byte
+	Class                  uint64
+	Outcome                SendOutcome
+	Epoch                  uint64
+	SendResponse           *OriginalSendResponse
+}
+
+func decodeOriginalSendResponse(body []byte) (*OriginalSendResponse, error) {
+	n, err := parse(body)
+	if err != nil || n.major != 4 || len(n.a) != 3 || n.a[0].major != 0 || n.a[1].major != 2 || len(n.a[1].b) != 32 || n.a[2].major != 0 {
+		return nil, invalid()
+	}
+	if n.a[0].u == 0 || n.a[0].u > math.MaxInt64 || n.a[2].u > math.MaxInt64 {
+		return nil, invalid()
+	}
+	return &OriginalSendResponse{Sequence: n.a[0].u, FrankingTag: append([]byte(nil), n.a[1].b...), ReceiveTimestamp: n.a[2].u, Body: append([]byte(nil), body...)}, nil
 }
 
 func EncodeReceipt(r SendReceipt) ([]byte, error) {
-	if !isID(r.OperationID) || !isID(r.CommunityID) || !isID(r.GroupID) || len(r.CiphertextHash) != 32 || r.Status > 1 {
+	if !isID(r.OperationID) || !isID(r.AttemptID) || !isID(r.CommunityID) || !isID(r.GroupID) || len(r.CiphertextHash) != 32 || r.Class > 1 || r.Outcome > ReceiptUnknownAfterRestore || r.ExpectedGeneration > math.MaxInt64 || r.Epoch > math.MaxInt64 {
 		return nil, invalid()
 	}
-	if r.Status == 0 {
-		if r.Sequence != nil || r.Epoch != nil {
+	if r.PredecessorAttemptID != nil && !isID(*r.PredecessorAttemptID) {
+		return nil, invalid()
+	}
+	var predecessor, response any
+	if r.PredecessorAttemptID != nil {
+		predecessor = *r.PredecessorAttemptID
+	}
+	if r.Outcome == ReceiptAccepted {
+		if r.SendResponse == nil {
 			return nil, invalid()
 		}
-	} else if r.Sequence == nil || *r.Sequence == 0 || r.Epoch == nil {
+		decoded, err := decodeOriginalSendResponse(r.SendResponse.Body)
+		if err != nil || decoded.Sequence != r.SendResponse.Sequence || decoded.ReceiveTimestamp != r.SendResponse.ReceiveTimestamp || !bytes.Equal(decoded.FrankingTag, r.SendResponse.FrankingTag) {
+			return nil, invalid()
+		}
+		response = r.SendResponse.Body
+	} else if r.SendResponse != nil {
 		return nil, invalid()
 	}
-	var s, e any
-	if r.Sequence != nil {
-		s = *r.Sequence
-	}
-	if r.Epoch != nil {
-		e = *r.Epoch
-	}
-	b, er := cborx.Marshal([]any{uint64(1), r.OperationID, r.CommunityID, r.GroupID, r.CiphertextHash, uint64(r.Status), s, e})
+	b, er := cborx.Marshal([]any{uint64(1), r.OperationID, r.AttemptID, predecessor, r.CommunityID, r.GroupID, r.ExpectedGeneration, r.CiphertextHash, r.Class, uint64(r.Outcome), r.Epoch, response})
 	if er != nil || len(b) > 512 {
 		return nil, invalid()
 	}
@@ -629,29 +659,31 @@ func DecodeReceipt(b []byte) (SendReceipt, error) {
 		return z, ErrLimit
 	}
 	n, e := parse(b)
-	if e != nil || len(n.a) != 8 {
+	if e != nil || n.major != 4 || len(n.a) != 12 {
 		return z, invalid()
 	}
 	a := n.a
-	if a[0].major != 0 || a[0].u != 1 || a[5].major != 0 || !isNullableUintNode(a[6]) || !isNullableUintNode(a[7]) {
+	if a[0].major != 0 || a[0].u != 1 || !isNullableIDNode(a[3]) || a[4].major != 2 || a[5].major != 2 || a[6].major != 0 || a[7].major != 2 || len(a[7].b) != 32 || a[8].major != 0 || a[9].major != 0 || a[10].major != 0 || !(a[11].null || a[11].major == 2) {
 		return z, invalid()
 	}
-	for _, i := range []int{1, 2, 3} {
+	for _, i := range []int{1, 2, 4, 5} {
 		if a[i].major != 2 || len(a[i].b) != 16 {
 			return z, invalid()
 		}
 	}
-	if a[4].major != 2 || len(a[4].b) != 32 {
+	if a[3].major == 2 && len(a[3].b) != 16 || a[8].u > 1 || a[9].u > uint64(ReceiptUnknownAfterRestore) || a[6].u > math.MaxInt64 || a[10].u > math.MaxInt64 {
 		return z, invalid()
 	}
-	r := SendReceipt{OperationID: nodeID(a[1]), CommunityID: nodeID(a[2]), GroupID: nodeID(a[3]), CiphertextHash: append([]byte(nil), a[4].b...), Status: ReceiptStatus(a[5].u)}
-	if !a[6].null {
-		v := a[6].u
-		r.Sequence = &v
+	r := SendReceipt{OperationID: nodeID(a[1]), AttemptID: nodeID(a[2]), CommunityID: nodeID(a[4]), GroupID: nodeID(a[5]), ExpectedGeneration: a[6].u, CiphertextHash: append([]byte(nil), a[7].b...), Class: a[8].u, Outcome: SendOutcome(a[9].u), Epoch: a[10].u}
+	if a[3].major == 2 {
+		v := nodeID(a[3])
+		r.PredecessorAttemptID = &v
 	}
-	if !a[7].null {
-		v := a[7].u
-		r.Epoch = &v
+	if !a[11].null {
+		r.SendResponse, e = decodeOriginalSendResponse(a[11].b)
+		if e != nil {
+			return z, invalid()
+		}
 	}
 	if _, e = EncodeReceipt(r); e != nil {
 		return z, invalid()

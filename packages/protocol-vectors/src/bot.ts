@@ -33,9 +33,18 @@ export function botVectors() {
   [id(1),id(2),id(3),id(4),null,group,9n,4n,null],[id(1),7n,1n],
  ];
  eventData.forEach((d,i)=>{const v=[1n,id(0x80+i),BigInt(i+1),comm,1700000000n,BigInt(i+1),d];cases.push({name:`event kind ${i+1}`,kind:'event',hex:cbor(v),context});});
- for(const [name,status,seq,epoch] of [['pending',0n,null,null],['accepted',1n,8n,4n]] as const){
-  const v=[1n,id(9),comm,group,new Uint8Array(32).fill(0x88),status,seq,epoch];cases.push({name:`send receipt ${name}`,kind:'receipt',hex:cbor(v),context:{...context,group:hex(group)}});
- }
+ const sendResponse=(seq:bigint,tag:Uint8Array,at:bigint)=>encode([seq,tag,at]);
+ const receipt=(op:Uint8Array,attempt:Uint8Array,predecessor:Uint8Array|null,generation:bigint,hash:Uint8Array,cls:bigint,outcome:bigint,epoch:bigint,body:Uint8Array|null)=>[
+  1n,op,attempt,predecessor,comm,group,generation,hash,cls,outcome,epoch,body,
+ ];
+ const receiptContext={...context,group:hex(group)};
+ const receipts:[string,unknown][]=[
+  ['send receipt closed not accepted zero boundary',receipt(id(9),id(10),null,0n,new Uint8Array(32),0n,0n,0n,null)],
+  ['send receipt accepted successor maximum boundary',receipt(id(9),id(11),id(10),(1n<<63n)-1n,new Uint8Array(32).fill(0x88),1n,1n,(1n<<63n)-1n,sendResponse((1n<<63n)-1n,new Uint8Array(32),(1n<<63n)-1n))],
+  ['send receipt unknown after restore successor zero epoch',receipt(id(9),id(12),id(11),0n,new Uint8Array(32).fill(0x99),0n,2n,0n,null)],
+  ['send receipt accepted zero receive time and opaque zero tag',receipt(id(9),id(13),null,1n,new Uint8Array(32),0n,1n,1n,sendResponse(1n,new Uint8Array(32),0n))],
+ ];
+ for(const [name,value] of receipts)cases.push({name,kind:'receipt',hex:cbor(value),context:receiptContext});
  for(const [kind,name,v] of [
   ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
@@ -72,8 +81,42 @@ export function botVectors() {
   context:{...context,group:hex(group),actor_user:hex(id(4)),actor_device:hex(id(9))}});
  rej('event metadata invalid','event',[1n,id(1),1n,comm,1n,3n,[id(2),6n,7n]]);
  rej('timeout event missing expiry','event',[1n,id(1),1n,comm,10n,6n,[id(2),id(3),id(4),id(5),id(6),null,null,1n,null]]);
- rej('receipt pending with sequence','receipt',[1n,id(1),comm,group,new Uint8Array(32),0n,1n,null]);
- rej('receipt accepted without epoch','receipt',[1n,id(1),comm,group,new Uint8Array(32),1n,1n,null]);
+ const receiptBase=receipt(id(1),id(2),null,0n,new Uint8Array(32),0n,0n,0n,null);
+ rej('send receipt obsolete eight field tuple','receipt',[1n,id(1),comm,group,new Uint8Array(32),0n,1n,null]);
+ rej('send receipt wrong version','receipt',[2n,...receiptBase.slice(1)]);
+ rej('send receipt wrong twelve field shape','receipt',receiptBase.slice(0,11));
+ for(const [name,index,value] of [
+  ['zero operation id',1,id(0)],['wrong type operation id',1,1n],['wrong length operation id',1,new Uint8Array(15).fill(1)],
+  ['zero attempt id',2,id(0)],['wrong type attempt id',2,1n],['wrong length attempt id',2,new Uint8Array(17).fill(1)],
+  ['zero predecessor id',3,id(0)],['wrong type predecessor id',3,1n],['wrong length predecessor id',3,new Uint8Array(15).fill(1)],
+  ['zero community id',4,id(0)],['wrong type community id',4,1n],['wrong length community id',4,new Uint8Array(15).fill(1)],
+  ['zero group id',5,id(0)],['wrong type group id',5,1n],['wrong length group id',5,new Uint8Array(17).fill(1)],
+  ['wrong hash type',7,Array(32).fill(0)],['wrong hash length',7,new Uint8Array(31)],
+  ['invalid class',8,2n],['invalid outcome',9,3n],
+ ] as const){const v=[...receiptBase];v[index]=value;rej(`send receipt ${name}`,'receipt',v);}
+ for(const [name,index] of [['generation exceeds int64',6],['epoch exceeds int64',10]] as const){const v=[...receiptBase];v[index]=1n<<63n;rej(`send receipt ${name}`,'receipt',v);}
+ for(const [name,seq,time,body] of [
+  ['accepted sequence zero',0n,0n,null],
+  ['accepted sequence exceeds int64',(1n<<63n),0n,null],
+  ['accepted time exceeds int64',1n,(1n<<63n),null],
+  ['accepted null response',1n,0n,null],
+ ] as const){const v=[...receiptBase];v[9]=1n;v[11]=name==='accepted null response'?null:body??sendResponse(seq,new Uint8Array(32),time);rej(`send receipt ${name}`,'receipt',v);}
+ const malformedNested:[string,Uint8Array][]=[
+  ['nested wrong shape',encode([1n,new Uint8Array(32)])],
+  ['nested noncanonical',Uint8Array.from([0x98,0x03,0x01,0x58,0x20,...new Uint8Array(32),0x00])],
+  ['nested trailing item',Uint8Array.from([...sendResponse(1n,new Uint8Array(32),0n),0x00])],
+  ['nested map',Uint8Array.from([0x83,0x01,0xa0,0x00])],
+  ['nested tagged item',Uint8Array.from([0x83,0x01,0xd8,0x2a,0x58,0x20,...new Uint8Array(32),0x00])],
+  ['nested boolean timestamp',Uint8Array.from([0x83,0x01,0x58,0x20,...new Uint8Array(32),0xf5])],
+  ['nested integer array tag',encode([1n,Array(32).fill(0),0n])],
+ ];
+ for(const [name,body] of malformedNested){const v=receipt(id(1),id(2),null,0n,new Uint8Array(32),0n,1n,0n,body);rej(`send receipt ${name}`,'receipt',v);}
+ for(const [name,outcome,body] of [['closed not accepted with response',0n,sendResponse(1n,new Uint8Array(32),0n)],['unknown after restore with response',2n,sendResponse(1n,new Uint8Array(32),0n)]] as const)
+  rej(`send receipt ${name}`,'receipt',receipt(id(1),id(2),null,0n,new Uint8Array(32),0n,outcome,0n,body));
+ rej('send receipt response byte coercion','receipt',receipt(id(1),id(2),null,0n,new Uint8Array(32),0n,1n,0n,Array.from(sendResponse(1n,new Uint8Array(32),0n))));
+ rej('send receipt exceeds 512 bytes','receipt',receipt(id(1),id(2),null,0n,new Uint8Array(32),0n,0n,0n,new Uint8Array(500)));
+ rej('send receipt cross community context','receipt',receiptBase,{context:{...receiptContext,community:hex(id(0x23))}});
+ rej('send receipt cross group context','receipt',receiptBase,{context:{...receiptContext,group:hex(id(0x34))}});
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
  rej('helper operation 17 is unknown','helper_request',[1n,id(1),17n,encode([])]);
  const oversizedPayload=encode([new Uint8Array(1_048_475)]);

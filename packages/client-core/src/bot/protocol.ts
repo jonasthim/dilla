@@ -333,45 +333,88 @@ export function validateEventContext(event: DurableEvent, community: Uint8Array)
   if (!equalId(event.communityId, community)) fail('E_BOT_COMMUNITY');
 }
 
+export enum SendOutcome {
+  ClosedNotAccepted = 0,
+  Accepted = 1,
+  UnknownAfterRestore = 2,
+}
+
+export interface OriginalSendResponse {
+  sequence: bigint;
+  frankingTag: Uint8Array;
+  receiveTimestamp: bigint;
+  /** Exact original canonical response bytes. */
+  body: Uint8Array;
+}
+
 export interface SendReceipt {
   operationId: Uint8Array;
+  attemptId: Uint8Array;
+  predecessorAttemptId: Uint8Array | null;
   communityId: Uint8Array;
   groupId: Uint8Array;
+  expectedGeneration: bigint;
   ciphertextSha256: Uint8Array;
-  status: number;
-  sequence: bigint | null;
-  epoch: bigint | null;
+  class: number;
+  outcome: SendOutcome;
+  epoch: bigint;
+  sendResponse: OriginalSendResponse | null;
+}
+
+const MAX_I64 = (1n << 63n) - 1n;
+
+function readOriginalSendResponse(body: Uint8Array): OriginalSendResponse {
+  const fields = arr(decode(body), 3);
+  const sequence = u64(fields[0]);
+  const frankingTag = bytes(fields[1], 32);
+  const receiveTimestamp = u64(fields[2]);
+  if (sequence === 0n || sequence > MAX_I64 || receiveTimestamp > MAX_I64) fail('E_BOT_RANGE');
+  return { sequence, frankingTag, receiveTimestamp, body };
 }
 
 function receiptValue(receipt: SendReceipt): CborInput[] {
   id(receipt.operationId);
+  id(receipt.attemptId);
+  nullable(receipt.predecessorAttemptId, id);
   id(receipt.communityId);
   id(receipt.groupId);
+  uint(receipt.expectedGeneration, 0n, MAX_I64);
   bytes(receipt.ciphertextSha256, 32);
-  uint(receipt.status, 0n, 1n);
-  if (!Number.isInteger(receipt.status)) fail('E_BOT_RANGE');
-  if (receipt.status === 0
-      ? receipt.sequence !== null || receipt.epoch !== null
-      : receipt.sequence === null || receipt.epoch === null) {
+  uint(receipt.class, 0n, 1n);
+  uint(receipt.outcome, 0n, 2n);
+  if (!Number.isInteger(receipt.class) || !Number.isInteger(receipt.outcome)) fail('E_BOT_RANGE');
+  uint(receipt.epoch, 0n, MAX_I64);
+  let sendResponseBody: Uint8Array | null = null;
+  if (receipt.outcome === SendOutcome.Accepted) {
+    const originalResponse = receipt.sendResponse;
+    if (originalResponse === null) return fail('E_BOT_SHAPE');
+    const parsed = readOriginalSendResponse(originalResponse.body);
+    if (parsed.sequence !== originalResponse.sequence || parsed.receiveTimestamp !== originalResponse.receiveTimestamp ||
+        !equalId(parsed.frankingTag, originalResponse.frankingTag)) fail('E_BOT_SHAPE');
+    sendResponseBody = originalResponse.body;
+  } else if (receipt.sendResponse !== null) {
     fail('E_BOT_SHAPE');
   }
-  if (receipt.sequence !== null) uint(receipt.sequence, 1n);
-  if (receipt.epoch !== null) uint(receipt.epoch);
-  return [1n, receipt.operationId, receipt.communityId, receipt.groupId,
-    receipt.ciphertextSha256, BigInt(receipt.status), receipt.sequence, receipt.epoch];
+  return [1n, receipt.operationId, receipt.attemptId, receipt.predecessorAttemptId,
+    receipt.communityId, receipt.groupId, receipt.expectedGeneration, receipt.ciphertextSha256,
+    BigInt(receipt.class), BigInt(receipt.outcome), receipt.epoch, sendResponseBody];
 }
 
 function readReceipt(value: CborValue): SendReceipt {
-  const fields = arr(value, 8);
+  const fields = arr(value, 12);
   if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
   const receipt: SendReceipt = {
     operationId: readId(fields[1]),
-    communityId: readId(fields[2]),
-    groupId: readId(fields[3]),
-    ciphertextSha256: bytes(fields[4]!, 32),
-    status: Number(u64(fields[5])),
-    sequence: readOptU(fields[6]),
-    epoch: readOptU(fields[7]),
+    attemptId: readId(fields[2]),
+    predecessorAttemptId: readOptId(fields[3]),
+    communityId: readId(fields[4]),
+    groupId: readId(fields[5]),
+    expectedGeneration: u64(fields[6]),
+    ciphertextSha256: bytes(fields[7]!, 32),
+    class: Number(u64(fields[8])),
+    outcome: Number(u64(fields[9])),
+    epoch: u64(fields[10]),
+    sendResponse: fields[11] === null ? null : readOriginalSendResponse(bytes(fields[11])),
   };
   receiptValue(receipt);
   return receipt;

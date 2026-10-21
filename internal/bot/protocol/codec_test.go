@@ -530,7 +530,7 @@ func TestEventReceiptAndHelperRoundTrips(t *testing.T) {
 	if _, err := DecodeEvent(eb); err != nil {
 		t.Fatal(err)
 	}
-	receipt := SendReceipt{OperationID: fixtureID(1), CommunityID: fixtureID(2), GroupID: fixtureID(3), CiphertextHash: make([]byte, 32), Status: ReceiptPending}
+	receipt := SendReceipt{OperationID: fixtureID(1), AttemptID: fixtureID(4), CommunityID: fixtureID(2), GroupID: fixtureID(3), CiphertextHash: make([]byte, 32), Outcome: ReceiptClosedNotAccepted}
 	rb, err := EncodeReceipt(receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -550,6 +550,49 @@ func TestEventReceiptAndHelperRoundTrips(t *testing.T) {
 	frame[len(frame)-1] ^= 1
 	if _, err := DecodeHelperRequestFrame(frame); err == nil {
 		t.Fatal("accepted mismatched helper frame")
+	}
+}
+
+func TestSendReceiptEncoderRejectsInvalidTypedValues(t *testing.T) {
+	base := SendReceipt{OperationID: fixtureID(1), AttemptID: fixtureID(2), CommunityID: fixtureID(3), GroupID: fixtureID(4), CiphertextHash: make([]byte, 32), Outcome: ReceiptClosedNotAccepted}
+	validBody, err := cborx.Marshal([]any{uint64(1), make([]byte, 32), uint64(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := decodeOriginalSendResponse(validBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := base
+	good.Outcome = ReceiptAccepted
+	good.SendResponse = accepted
+	if _, err := EncodeReceipt(good); err != nil {
+		t.Fatalf("valid accepted receipt: %v", err)
+	}
+
+	bad := []SendReceipt{}
+	x := base
+	x.AttemptID = id.ID{}
+	bad = append(bad, x)
+	x = base
+	x.ExpectedGeneration = math.MaxInt64 + 1
+	bad = append(bad, x)
+	x = base
+	x.Class = 2
+	bad = append(bad, x)
+	x = base
+	x.Outcome = ReceiptAccepted
+	bad = append(bad, x)
+	x = base
+	x.SendResponse = accepted
+	bad = append(bad, x)
+	x = good
+	x.SendResponse = &OriginalSendResponse{Sequence: 2, FrankingTag: make([]byte, 32), ReceiveTimestamp: 0, Body: validBody}
+	bad = append(bad, x)
+	for i, receipt := range bad {
+		if _, err := EncodeReceipt(receipt); err == nil {
+			t.Fatalf("invalid receipt %d encoded", i)
+		}
 	}
 }
 

@@ -196,6 +196,19 @@ directory availability, and remain subject to current installation authority.
 The collection GET is a read-only current inventory snapshot with server Unix
 time in seconds; it never consumes a package. Its fallback flag is uint 0 or 1.
 
+Managed Bot sends use the attempt and recovery contract in `10`:
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/groups/{group}/bot/messages` | B | `[operation_id,attempt_id,predecessor_attempt_id\|null,expected_generation,epoch,private_message,class]` | twelve-field send receipt |
+| `GET /v1/communities/{community}/bot/receipts/{operation}?attempt=ID` | B | — | send receipt or 404 |
+| `POST /v1/communities/{community}/bot/receipts/{operation}/resolve` | B | `[attempt_id,predecessor_attempt_id\|null,group_id,expected_generation,epoch,class,ciphertext_sha256]` | send receipt |
+
+These routes require current managed identity and group access. New acceptance
+also requires current send permission. Recovery returns historical acceptance,
+durable nonacceptance or uncertainty after restore; a missing receipt alone never
+permits another ciphertext. The existing human message upload API is unchanged.
+
 ## Invites
 
 | Method and path | Auth | Request | Response |

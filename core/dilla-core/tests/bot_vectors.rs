@@ -1,7 +1,10 @@
 use dilla_core::bot::keypackage::{
     Intent, IntentResult, Publication, PublicationReceipt, Resolution,
 };
-use dilla_core::bot::{Event, HelperRequest, HelperResponse, Receipt, RemovalProof, Response};
+use dilla_core::bot::{
+    Event, HelperRequest, HelperResponse, OriginalSendResponse, Receipt, RemovalProof, Response,
+    SendOutcome,
+};
 use dilla_core::bot::{Request, RequestArgs};
 use dilla_core::cbor::Encoder;
 use dilla_core::ids::{CommunityId, DeviceId, MsgId, UserId};
@@ -45,6 +48,53 @@ fn application_context_is_checked_explicitly() {
             .validate_context(CommunityId::from_bytes([3; 16]), 100)
             .is_err()
     );
+}
+
+#[test]
+fn send_receipt_encoder_rejects_invalid_typed_values() {
+    let base = Receipt {
+        operation_id: MsgId::from_bytes([1; 16]),
+        attempt_id: MsgId::from_bytes([2; 16]),
+        predecessor_attempt_id: None,
+        community_id: CommunityId::from_bytes([3; 16]),
+        group_id: MsgId::from_bytes([4; 16]),
+        expected_generation: 0,
+        ciphertext_sha256: [0; 32],
+        class: 0,
+        outcome: SendOutcome::ClosedNotAccepted,
+        epoch: 0,
+        send_response: None,
+    };
+    assert!(base.encode().is_ok());
+
+    let mut response = Encoder::new();
+    response.array(3).uint(1).bytes(&[0; 32]).uint(0);
+    let response = OriginalSendResponse {
+        sequence: 1,
+        franking_tag: [0; 32],
+        receive_timestamp: 0,
+        body: response.into_vec(),
+    };
+    let mut accepted = base.clone();
+    accepted.outcome = SendOutcome::Accepted;
+    accepted.send_response = Some(response.clone());
+    assert!(accepted.encode().is_ok());
+
+    let mut invalid = base.clone();
+    invalid.class = 2;
+    assert!(invalid.encode().is_err());
+    invalid = base.clone();
+    invalid.expected_generation = i64::MAX as u64 + 1;
+    assert!(invalid.encode().is_err());
+    invalid = base.clone();
+    invalid.outcome = SendOutcome::Accepted;
+    assert!(invalid.encode().is_err());
+    invalid = base.clone();
+    invalid.send_response = Some(response.clone());
+    assert!(invalid.encode().is_err());
+    invalid = accepted;
+    invalid.send_response.as_mut().unwrap().sequence = 2;
+    assert!(invalid.encode().is_err());
 }
 
 #[test]

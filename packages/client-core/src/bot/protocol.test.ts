@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as bot from './protocol.ts';
-import { decode } from '../cbor/index.ts';
+import { decode, encode } from '../cbor/index.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const request = (operation = 0, args: (bigint | Uint8Array | string | null)[] = []) => ({
@@ -41,5 +41,25 @@ describe('bot application codecs', () => {
     expect(() => bot.validateRemovalContext(proof, {
       community: id(4), group: id(5), actorUser: id(2), actorDevice: id(9), now: 100n,
     })).toThrow(bot.BotError);
+  });
+
+  it('validates send receipt encoder values and preserves the exact original response', () => {
+    const responseBody = encode([1n, new Uint8Array(32), 0n]);
+    const receipt: bot.SendReceipt = {
+      operationId: id(1), attemptId: id(2), predecessorAttemptId: null,
+      communityId: id(3), groupId: id(4), expectedGeneration: 0n,
+      ciphertextSha256: new Uint8Array(32), class: 0,
+      outcome: bot.SendOutcome.Accepted, epoch: 0n,
+      sendResponse: { sequence: 1n, frankingTag: new Uint8Array(32), receiveTimestamp: 0n, body: responseBody },
+    };
+    const encoded = bot.encodeSendReceipt(receipt);
+    const decoded = bot.decodeSendReceipt(encoded);
+    expect(decoded.sendResponse?.body).toEqual(responseBody);
+    expect(decoded.outcome).toBe(bot.SendOutcome.Accepted);
+
+    expect(() => bot.encodeSendReceipt({ ...receipt, class: 2 })).toThrow(bot.BotError);
+    expect(() => bot.encodeSendReceipt({ ...receipt, expectedGeneration: 1n << 63n })).toThrow(bot.BotError);
+    expect(() => bot.encodeSendReceipt({ ...receipt, sendResponse: { ...receipt.sendResponse!, sequence: 2n } })).toThrow(bot.BotError);
+    expect(() => bot.encodeSendReceipt({ ...receipt, outcome: bot.SendOutcome.UnknownAfterRestore })).toThrow(bot.BotError);
   });
 });
