@@ -24,17 +24,45 @@ func migrationState(ctx context.Context, p *goose.Provider) (pending bool, err e
 	if derr != nil || serr != nil {
 		return false, fmt.Errorf("check migrations: %w", err)
 	}
-	var missing []string
+	var missing []int64
+	var applied []int64
 	for _, r := range results {
-		if r.State == goose.StatePending && r.Source.Version < current {
-			missing = append(missing, fmt.Sprint(r.Source.Version))
+		switch {
+		case r.State == goose.StatePending && r.Source.Version < current:
+			missing = append(missing, r.Source.Version)
+		case r.State == goose.StateApplied:
+			applied = append(applied, r.Source.Version)
 		}
 	}
 	if len(missing) == 0 {
 		return false, fmt.Errorf("check migrations: %w", err)
 	}
 	slices.Sort(missing)
-	return false, fmt.Errorf("missing migration %s below the database's version %d: this database was migrated by a build that lacked them, "+
-		"so it has not got their schema; run the dillad that carries every migration against a restored backup from before, or restore this "+
-		"database from a backup taken before that build ran", strings.Join(missing, ", "), current)
+	// The last version the database can go back to without losing a migration that did run in order.
+	var back int64
+	for _, v := range applied {
+		if v < missing[0] {
+			back = max(back, v)
+		}
+	}
+	names := make([]string, len(missing))
+	for i, v := range missing {
+		names[i] = fmt.Sprint(v)
+	}
+	noun := "migration"
+	if len(missing) > 1 {
+		noun = "migrations"
+	}
+	return false, fmt.Errorf("missing %s %s below the database's version %d: a build that lacked %s ran against this database, so it has not got their schema. "+
+		"Stop dilla, run `dillad migrate down --to=%d --i-know-what-i-am-doing` (it undoes only the newer migrations that ran out of order), "+
+		"then start a dillad that carries every migration. The copy dillad took before its last migration, <db.path>.pre-migration-<time>, "+
+		"holds the database as it was; if neither way works, restore a backup taken before that build ran",
+		noun, strings.Join(names, ", "), current, pronoun(len(missing)), back)
+}
+
+func pronoun(n int) string {
+	if n > 1 {
+		return "them"
+	}
+	return "it"
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -136,22 +137,27 @@ type patchDeviceRequest struct {
 	Label *string
 }
 
+// editSpace is what a label is trimmed of at its edges, the same set as the client's String.trim:
+// white space, except U+0085 (a control, which is refused), plus the byte order mark.
+func editSpace(r rune) bool { return (unicode.IsSpace(r) && r != '\u0085') || r == '\ufeff' }
+
 // normalizeDeviceLabel is the stored form of a device name: trimmed, NFC, 1..64 characters, with
 // the display-name rule (auth.NormalizeDisplay: no control or bidi character) plus the invisible
 // characters a name could hide behind: zero-width characters, the Arabic letter mark and the line
 // and paragraph separators. A name that is empty once trimmed is refused; clearing is null.
 func normalizeDeviceLabel(s string) (string, error) {
-	out, err := auth.NormalizeDisplay(strings.TrimSpace(s))
+	out, err := auth.NormalizeDisplay(strings.TrimFunc(s, editSpace))
 	if err != nil {
 		return "", err
 	}
-	out = strings.TrimSpace(out)
+	out = strings.TrimFunc(out, editSpace)
 	if out == "" || !utf8.ValidString(out) {
 		return "", auth.ErrDisplayControl
 	}
 	for _, r := range out {
-		switch r {
-		case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u061c', '\u2028', '\u2029':
+		switch {
+		case r >= '\u200b' && r <= '\u200d', r >= '\u2060' && r <= '\u2065', r >= '\u206a' && r <= '\u206f',
+			r == '\ufeff', r == '\u061c', r == '\u2028', r == '\u2029':
 			return "", auth.ErrDisplayControl
 		}
 	}

@@ -3694,15 +3694,15 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     const w = world();
     await toReady(w);
     const bad: unknown[] = ['', '   ', 'x'.repeat(65), 'two\nlines', 7, undefined, 'a\u202eb', 'a\u2066b', 'a\u200fb', 'a\u200eb',
-      'a\u2028b', 'a\u061cb', 'a\u200bb', 'a\u200db', 'a\ufeffb', 'a\u2060b'];
+      'a\u2028b', 'a\u061cb', 'a\u200bb', 'a\u200db', 'a\ufeffb', 'a\u2060b', 'a\u2061b', 'a\u2065b', 'a\u206ab', 'a\u206fb', 'phone\u0085'];
     bad.forEach((label, i) => w.call(10 + i, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label }));
-    w.call(20, { m: 'renameDevice', deviceId: 'nothex', label: 'ok' });
-    await vi.waitFor(() => expect(w.ret(20)).toBeDefined());
+    w.call(99, { m: 'renameDevice', deviceId: 'nothex', label: 'ok' });
+    await vi.waitFor(() => expect(w.ret(99)).toBeDefined());
     for (let i = 0; i < bad.length; i++) {
       await vi.waitFor(() => expect(w.ret(10 + i)).toBeDefined());
       expect(w.ret(10 + i)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     }
-    expect(w.ret(20)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.ret(99)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(w.routes.patchDevice).not.toHaveBeenCalled();
   });
 

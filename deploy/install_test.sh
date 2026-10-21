@@ -191,7 +191,10 @@ migrate)
 	current=16
 	if [ -n "${FAKE_SCHEMA:-}" ] && [ -e "$FAKE_SCHEMA" ]; then current="$(cat "$FAKE_SCHEMA")"; fi
 	case "$sub" in
-	status) echo "current $current, target $target" ;;
+	status)
+		# A database that skipped a migration: the real dillad refuses to report it and says which.
+		[ -z "${FAKE_STATUS_GAP:-}" ] || { echo "migrate status: missing migration 21 below the database's version 23: run dillad migrate down" >&2; exit 65; }
+		echo "current $current, target $target" ;;
 	down)
 		to=""
 		force=""
@@ -545,6 +548,23 @@ if [ -z "$problems" ]; then pass "an all-in-one install migrates to the sidecar 
 	IFS='|'
 	# shellcheck disable=SC2086
 	fail "an all-in-one install migrates to the sidecar on upgrade" $problems
+	IFS='
+'
+fi
+
+# An installed database that skipped a migration: the upgrade changes nothing, and the operator
+# sees dillad's own words (which migration is missing), not only the generic line.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+FAKE_STATUS_GAP=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|the upgrade unexpectedly succeeded"
+has "$ERR" "missing migration 21" || problems="$problems|dillad's missing-migration text did not reach the operator"
+has "$ERR" "nothing was changed" || problems="$problems|the upgrade did not say nothing was changed"
+if [ -z "$problems" ]; then pass "an upgrade of a database with a skipped migration shows dillad's reason"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "an upgrade of a database with a skipped migration shows dillad's reason" $problems "stderr: $ERR"
 	IFS='
 '
 fi

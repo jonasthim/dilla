@@ -98,36 +98,48 @@ func TestNobodyNamesAnotherUsersDevice(t *testing.T) {
 }
 
 func TestADeviceLabelIsValidated(t *testing.T) {
-	h, deps := newTestAPI(t)
-	_, dev, token := seedAPISession(t, deps)
-	path := "/v1/devices/" + dev.ID.String()
 	for name, body := range map[string]any{
-		"empty":                    []any{""},
-		"over 64 characters":       []any{strings.Repeat("x", 65)},
-		"a control byte":           []any{"bad\x00name"},
-		"a newline":                []any{"two\nlines"},
-		"no element":               []any{},
-		"two elements":             []any{"a", "b"},
-		"a number":                 []any{7},
-		"whitespace only":          []any{"   "},
-		"a right-to-left override": []any{"phone\u202eexe"},
-		"a bidi isolate":           []any{"a\u2066b"},
-		"a right-to-left mark":     []any{"a\u200fb"},
-		"a left-to-right mark":     []any{"a\u200eb"},
-		"a line separator":         []any{"a\u2028b"},
-		"an arabic letter mark":    []any{"a\u061cb"},
-		"a zero-width space":       []any{"a\u200bb"},
-		"a zero-width joiner":      []any{"a\u200db"},
-		"a byte order mark":        []any{"a\ufeffb"},
-		"a word joiner":            []any{"a\u2060b"},
+		"empty":                                []any{""},
+		"over 64 characters":                   []any{strings.Repeat("x", 65)},
+		"a control byte":                       []any{"bad\x00name"},
+		"a newline":                            []any{"two\nlines"},
+		"no element":                           []any{},
+		"two elements":                         []any{"a", "b"},
+		"a number":                             []any{7},
+		"whitespace only":                      []any{"   "},
+		"a right-to-left override":             []any{"phone\u202eexe"},
+		"a bidi isolate":                       []any{"a\u2066b"},
+		"a right-to-left mark":                 []any{"a\u200fb"},
+		"a left-to-right mark":                 []any{"a\u200eb"},
+		"a line separator":                     []any{"a\u2028b"},
+		"an arabic letter mark":                []any{"a\u061cb"},
+		"a zero-width space":                   []any{"a\u200bb"},
+		"a zero-width joiner":                  []any{"a\u200db"},
+		"a byte order mark":                    []any{"a\ufeffb"},
+		"a word joiner":                        []any{"a\u2060b"},
+		"an invisible operator":                []any{"a\u2061b"},
+		"the last invisible operator":          []any{"a\u2065b"},
+		"a deprecated format character":        []any{"a\u206ab"},
+		"the last deprecated format character": []any{"a\u206fb"},
+		"a next-line control at the edge":      []any{"phone\u0085"},
 	} {
+		// One instance per case: the write bucket is small and a refusal must not hide behind a 429.
+		h, deps := newTestAPI(t)
+		_, dev, token := seedAPISession(t, deps)
+		path := "/v1/devices/" + dev.ID.String()
 		if rec := cborCall(t, h, http.MethodPatch, path, token, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: PATCH = %d, want 400", name, rec.Code)
 		}
+		if got := listedLabels(t, h, token)[dev.ID]; got != nil {
+			t.Errorf("%s: label after the refused PATCH = %v, want null", name, got)
+		}
 	}
-	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
-		t.Fatalf("label after refused PATCHes = %v, want null", got)
-	}
+}
+
+func TestADeviceLabelOf64CharactersIsAccepted(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, dev, token := seedAPISession(t, deps)
+	path := "/v1/devices/" + dev.ID.String()
 	// 64 characters, counted as characters and not bytes, is the limit.
 	edge := strings.Repeat("é", 64)
 	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{edge}); rec.Code != http.StatusNoContent {
@@ -184,6 +196,18 @@ func TestASessionOwingASecondFactorCannotNameADevice(t *testing.T) {
 	}
 	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
 		t.Fatalf("label after the refused PATCH = %v, want null", got)
+	}
+}
+
+// Both sides trim the same edge characters: a byte order mark is trimmed like a space.
+func TestADeviceLabelEdgeBOMIsTrimmedLikeTheClientDoes(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, dev, token := seedAPISession(t, deps)
+	if rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+dev.ID.String(), token, []any{"\ufeffphone\ufeff"}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH = %d, want 204", rec.Code)
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != "phone" {
+		t.Fatalf("label = %q, want phone", got)
 	}
 }
 

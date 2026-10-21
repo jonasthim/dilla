@@ -301,6 +301,11 @@ func doctorMigrations(ctx context.Context, cfg *config.Config, db *sql.DB) error
 	if err != nil {
 		return err
 	}
+	if current, target, err := provider.GetVersions(ctx); err != nil {
+		return err
+	} else if current > target {
+		return fmt.Errorf("database schema %d is newer than this binary's highest migration %d; this dillad will not serve it", current, target)
+	}
 	_, err = migrationState(ctx, provider)
 	return err
 }
