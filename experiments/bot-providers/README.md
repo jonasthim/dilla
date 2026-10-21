@@ -5,6 +5,11 @@ approval. The isolated Rust probe sends PCM directly to an encoder. It needs no
 physical sound device, PipeWire/PulseAudio sink, Soloist binary or API key.
 This is Task 1 preparation, not a shipping Dilla bot or a qualified provider.
 
+The shipping Spotify setup belongs in Server Settings > Bot > Music. That UI is
+not implemented yet. The manual commands below are optional development tools;
+operators do not need to run them to unblock development. Real account playback
+remains a release acceptance requirement.
+
 The Python harness checks dependencies and synthetic Opus encoding. The Rust
 probe adds protected-file OAuth authorization, metadata resolution, limited
 playback controls and direct PCM output. Real dedicated-account playback,
@@ -142,7 +147,7 @@ playback and records the encryption-removal negative control. This file-based
 check does not qualify live queues, provider control, rekeying, restart or the
 shipping bot UI.
 
-## Authorize the dedicated account
+## Optional developer authorization of the dedicated account
 
 Run under the intended test/service identity. Use a new private state directory;
 do not import a personal Spotify desktop cache. The probe requires state directory
@@ -226,9 +231,11 @@ helper that will own MLS and encrypted application state.
 | Browser encryption | Real Chromium/Firefox playback through existing LiveKit/SFrame, encrypted SFU frames, epoch change and removal evidence. |
 | Operational limits | One global Spotify lease, independent sessions, disconnect cleanup and restart paused, in the integrated runtime. |
 
-The workstation now has the pinned extraction dependencies. An authorized
-dedicated test account and the intended service identity are still needed.
-The full Dilla Bot production implementation and release gates remain closed.
+The workstation now has the pinned extraction dependencies. The intended bot host
+is the existing Dilla server, using a separate bot service account. Real Spotify
+authorization and playback will be checked through the server settings flow when
+ready; development can continue in the meantime. The complete release remains
+blocked until actual provider and integration acceptance passes.
 The source dependency is pinned, but upstream reports audio-key failures for
 some accounts; actual playback must be tested with the selected account.
 See [librespot's issue](https://github.com/librespot-org/librespot/issues/1649).

@@ -3,11 +3,14 @@
 Date: 2026-10-21. Scope: Task 0 baseline and Task 1 development probes.
 Provider revision: the user approved evaluating librespot instead of Soloist.
 The Soloist observations below are retained as historical evidence.
-Status: **not qualified; production implementation and release gates remain closed**.
+Status: **not qualified; release gate remains closed; implementation may continue**.
 Latest evidence: isolated YouTube extraction and real audio through Chromium and
 Firefox pass. Removing the encryption hook makes both browser checks fail.
 Dedicated-account Spotify playback and the intended service environment remain
-unverified; see the final section for the current evidence and remaining gates.
+unverified. The intended host is the existing Dilla server. The user's later
+correction moves account connection into server settings and supersedes the
+earlier implementation blocker; see the final section. Earlier gate statements
+below are the historical record, not current instructions to stop development.
 See [implementation plan](2026-10-21-dilla-bot.md) and
 [design](../specs/2026-10-21-dilla-bot.md).
 
@@ -79,13 +82,15 @@ network isolation, actual extraction and bounded decoding. Node availability by
 itself proves none of these.
 Source: [yt-dlp documentation](https://github.com/yt-dlp/yt-dlp).
 
-## Operator input needed to resume qualification
+## Optional developer account qualification (historical manual flow)
 
-Supply the intended Linux test/service host and service identity, and authorize
-the dedicated Premium account with the development helper's protected-file PKCE
-flow. Provide only paths and test-host information in chat, never credentials or
-the redirected authorization URL. Soloist and its API key are no longer required.
-Production deployment remains a separate action. See the current
+The original probe used protected-file PKCE authorization and requested a test
+host/service identity. The user has since selected the existing Dilla host and
+clarified that Spotify authorization belongs in the shipping server settings.
+The manual probe is optional developer tooling, not a prerequisite for continuing
+implementation. Never provide credentials or the redirected authorization URL in
+chat. Soloist and its API key are no longer required. Production deployment
+remains a separate action. See the development
 [probe instructions](../../../experiments/bot-providers/README.md).
 
 Task 1 then needs actual evidence for headless authorization/direct PCM output, restart
@@ -339,3 +344,23 @@ Final coordinator checks for this increment:
 After the final entry-kind fix, the coordinator repeated live video/search/playlist
 resolution and sample extraction successfully. The browser test and media peer
 were unchanged by that metadata fix. Full production acceptance remains pending.
+
+## User correction: connect Spotify in server settings
+
+The user clarified that the bot belongs on the existing Dilla server and that
+Spotify authorization should be part of server settings. The request for manual
+prototype authorization as a prerequisite to further development was premature.
+The approved plan and design now put the connection flow in Server Settings >
+Bot > Music. It will include connection progress, cancellation/errors, readiness,
+reconnection and disconnection. Because the account is installation-wide, account
+changes require instance-admin authority; community managers receive only the
+status needed to configure music.
+
+Task 1 remains open and its real Spotify observations are still required before
+release. Missing account authorization no longer blocks Tasks 2–15. The next work
+is the shared contracts and application setup flow, using controlled responses
+for development tests and keeping real-account qualification explicitly pending.
+No Spotify account setup, service deployment or production feature completion is
+claimed by this correction. The development probe's fixed loopback redirect must
+not be assumed to support automatic callbacks from remote browsers; verify the
+shipping redirect mechanism against the registered client's capabilities.
