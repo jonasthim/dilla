@@ -1527,8 +1527,8 @@ The discovery document is an eleven-element array, in this order:
 ]
 ```
 
-`wire_versions` is the list the gateway's `hello` offers, from the same value: `[2]` in this
-version (`02` § Gateway frames, op 0). `e2ee_versions` and `media_versions` are `[1]`.
+`wire_versions` is the list the gateway's `hello` offers, from the same value: `[3,2]` in this
+version (`02` § Gateway frames, op 0; `10` § Session capability and compatibility). `e2ee_versions` and `media_versions` are `[1]`.
 
 `external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
 instance's current external-sender signing key (`03-identity.md` § Instance keys): the entry of
