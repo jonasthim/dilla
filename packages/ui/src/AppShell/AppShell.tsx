@@ -226,7 +226,7 @@ export function AppShell({
   const asideId = `${mainId}-aside`;
   const splitter = (pane: Pane, controls: string) => resizeLabels === undefined ? null : (
     <Splitter pane={pane} label={resizeLabels[pane]} controls={controls} now={widths[pane]} min={ranges[pane].min} max={ranges[pane].max}
-      rem={remPx} onDrag={px => onDrag(pane, px)} onDragEnd={onDragEnd} onSet={px => onSet(pane, px)} />
+      rem={remPx} onDrag={px => onDrag(pane, px)} onDragEnd={onDragEnd} onSet={px => onSet(pane, px)} inert={pane === 'sidebar' && overlay} />
   );
 
   // The drawer takes focus on open and hands it back to its opener when it closes; a column does neither.

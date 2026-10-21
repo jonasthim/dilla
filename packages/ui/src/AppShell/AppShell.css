@@ -5,8 +5,6 @@
 .d-app-shell__grid:has(> .d-app-shell__status) { grid-template-rows: auto minmax(0, 1fr) auto auto; grid-template-areas: "banner banner banner" "rail sidebar main" "panel panel main" "status status status"; }
 /* The bottom-left area spans under the rail and the sidebar (the voice dock over the user panel); main spans its row too. */
 .d-app-shell__panel { grid-area: panel; min-width: 0; min-height: 0; }
-/* MP8: the sidebar's hairline continues down the panel's right edge (the panel spans under the rail and the sidebar), so the splitter's one line is unbroken. */
-.d-app-shell__grid > .d-splitter--sidebar ~ .d-app-shell__panel { box-shadow: inset -1px 0 0 var(--hairline); }
 .d-app-shell__rail { grid-area: rail; min-height: 0; }
 .d-app-shell__sidebar { grid-area: sidebar; position: relative; min-height: 0; min-width: 0; }
 .d-app-shell__main { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }

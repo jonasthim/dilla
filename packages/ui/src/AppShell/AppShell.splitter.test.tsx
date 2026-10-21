@@ -103,6 +103,16 @@ describe('AppShell splitters', () => {
     expect(screen.queryByRole('separator', { name: labels.aside })).toBeNull();
   });
 
+  it('with the aside overlay open the sidebar splitter is inert (out of the tab order); on a column it is live', () => {
+    shellW = 800; stubWidths();
+    const a = render(<ComposedShell shell={shellProps()} />);
+    expect(screen.getByRole('separator', { name: labels.sidebar, hidden: true })).toHaveAttribute('inert');
+    a.unmount();
+    shellW = 1280; stubWidths();
+    render(<ComposedShell shell={shellProps()} />);
+    expect(sep(labels.sidebar)).not.toHaveAttribute('inert');
+  });
+
   const key = (el: HTMLElement, k: string, shiftKey = false) => fireEvent.keyDown(el, { key: k, shiftKey });
 
   it('ArrowRight and ArrowLeft move the sidebar by 16px, 64px with Shift', () => {

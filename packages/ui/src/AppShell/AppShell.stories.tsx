@@ -103,6 +103,15 @@ const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement })
   const pr = panel.getBoundingClientRect();
   const x = pr.right - 1, y = pr.bottom - 10;
   if (document.elementFromPoint(x, y) !== sep) throw new Error('the panel edge, 10px above its bottom, does not hit the splitter');
+  // The resting hairline is the splitter's own one line, drawn above the sidebar and the panel (what they paint under it cannot cut it).
+  const line = getComputedStyle(sep, '::before');
+  if (line.backgroundColor === 'rgba(0, 0, 0, 0)' || line.width !== '1px') throw new Error(`the splitter draws no 1px resting line (${line.backgroundColor}, ${line.width})`);
+  if (Math.abs(parseFloat(line.height) - s.height) > 1) throw new Error(`the resting line is ${line.height} high, the splitter ${s.height}px`);
+  if (getComputedStyle(panel).boxShadow !== 'none') throw new Error('the panel draws a second line');
+  const userRow = canvasElement.querySelector<HTMLElement>('.d-user-panel');
+  if (userRow === null) throw new Error('no user panel');
+  const u = userRow.getBoundingClientRect();
+  if (u.top < s.top || u.bottom > s.bottom + 1) throw new Error('the line does not cover the user panel rows');
   const before = Number(sep.getAttribute('aria-valuenow'));
   const ev = (type: string, dx: number) => sep.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x + dx, clientY: y }));
   ev('pointerdown', 0); ev('pointermove', 40);
@@ -114,6 +123,18 @@ const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement })
 export const BottomPanelSplitter: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
   globals: { theme: 'mesh' }, play: fullHeightPlay,
+};
+/** MP8: with a status bar the splitter stops above the status row. */
+export const BottomPanelSplitterStatus: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, statusBar: fixtureStatusBar, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
+  globals: { theme: 'mesh' },
+  play: async ({ canvasElement }) => {
+    await fullHeightPlay({ canvasElement });
+    const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
+    const status = canvasElement.querySelector<HTMLElement>('.d-app-shell__status');
+    if (sep === null || status === null) throw new Error('no splitter or status bar');
+    if (sep.getBoundingClientRect().bottom > status.getBoundingClientRect().top + 1) throw new Error('the splitter runs into the status bar');
+  },
 };
 export const BottomPanelLight: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
