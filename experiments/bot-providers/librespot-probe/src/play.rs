@@ -1,6 +1,8 @@
 use crate::{
     control::{self, Control},
-    pcm, source,
+    pcm,
+    session_lifecycle::ShutdownGuard,
+    source,
 };
 use librespot::{
     core::{Session, SpotifyUri},
@@ -154,37 +156,28 @@ fn read_control_loop<R: AsFd>(reader: R, tx: std::sync::mpsc::SyncSender<InputEv
 }
 
 pub async fn play(session: Session, input: &str, max_seconds: u64) -> Result<(), &'static str> {
+    let session = ShutdownGuard::new(session);
     if librespot::playback::SAMPLE_RATE != 44_100 || librespot::playback::NUM_CHANNELS != 2 {
-        session.shutdown();
         return Err("pcm format unavailable");
     }
     if !(1..=300).contains(&max_seconds) {
-        session.shutdown();
         return Err("invalid duration");
     }
     if std::io::stdout().is_terminal() {
-        session.shutdown();
         return Err("terminal output refused");
     }
     let parsed = match source::parse_source(input) {
         Ok(parsed) => parsed,
-        Err(error) => {
-            session.shutdown();
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     if parsed.kind != source::Kind::Track {
-        session.shutdown();
         return Err("track required");
     }
     let uri = SpotifyUri::from_uri(&format!("spotify:track:{}", parsed.id))
         .map_err(|_| "invalid source")?;
     let _stdout_flags = match enable_nonblocking_stdout() {
         Ok(guard) => guard,
-        Err(error) => {
-            session.shutdown();
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     let deadline = Instant::now() + Duration::from_secs(max_seconds);
     let first_pcm = Arc::new(AtomicBool::new(false));
@@ -196,7 +189,7 @@ pub async fn play(session: Session, input: &str, max_seconds: u64) -> Result<(),
     let cancel_for_sink = cancelled.clone();
     let player = Player::new(
         PlayerConfig::default(),
-        session.clone(),
+        session.session().clone(),
         Box::new(ProbeVolume(volume.clone())),
         move || {
             Box::new(PcmSink {
@@ -255,7 +248,7 @@ pub async fn play(session: Session, input: &str, max_seconds: u64) -> Result<(),
         }
     };
     cancelled.store(true, Ordering::Release);
-    session.shutdown();
+    drop(session);
     player.stop();
     drop(player);
     outcome

@@ -30,6 +30,7 @@ mod tests {
         );
         let loose = root.join("loose");
         fs::create_dir(&loose).unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(ensure_state_dir(&loose).is_err());
         let target = root.join("target");
         fs::create_dir(&target).unwrap();

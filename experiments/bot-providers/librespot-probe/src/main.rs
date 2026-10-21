@@ -2,6 +2,7 @@ mod control;
 mod oauth;
 mod pcm;
 mod play;
+mod session_lifecycle;
 mod source;
 mod storage;
 
@@ -129,11 +130,12 @@ async fn authorize_complete(state: &Path, redirect_path: &Path) -> Result<(), &'
             return Err("session timeout");
         }
     }
-    let result: Result<(), &'static str> = {
+    let session = session_lifecycle::ShutdownGuard::new(session);
+    let result: Result<(), &'static str> = (|| {
         let reusable = Credentials {
-            username: Some(session.username()),
+            username: Some(session.session().username()),
             auth_type: AuthenticationType::AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS,
-            auth_data: session.auth_data(),
+            auth_data: session.session().auth_data(),
         };
         if reusable.username.as_deref().unwrap_or_default().is_empty()
             || reusable.auth_data.is_empty()
@@ -143,8 +145,8 @@ async fn authorize_complete(state: &Path, redirect_path: &Path) -> Result<(), &'
         let json = serde_json::to_vec(&reusable).map_err(|_| "credentials unavailable")?;
         storage::atomic_write(&credentials_path(state), &json)?;
         Ok(())
-    };
-    session.shutdown();
+    })();
+    drop(session);
     result?;
     status("ok", "authorize-complete", "credentials-saved");
     Ok(())
