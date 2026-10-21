@@ -118,13 +118,13 @@ contains decrypted body. Both codecs must reject non-bstr IDs/hashes.
 ## Helper transport envelope
 
 Private inherited Unix socket; 4-byte BIG-ENDIAN unsigned length (excluding prefix),
-1..1048576 bytes. No network listener. Request `[1, request_id, operation uint1..15,
+1..1048576 bytes. No network listener. Request `[1, request_id, operation uint1..16,
  payload bstr]`; response `[1, request_id, status uint0..9, payload bstr]`.
 Payload is encoded strict deterministic CBOR array (possibly empty array), maximum
 1048480 bytes and total encoded body<=1048576. No empty raw bstr. Request operations:
 1open,2bootstrap,3enroll_complete,4session,5key_packages,6group_apply,7prepare_send,
 8send_receipt,9call_epoch,10sign_removal,11state_get,12state_transaction,
-13cursor_ack,14key_packages_uploaded,15shutdown. No generic SQL or identity-key
+13cursor_ack,14key_packages_uploaded,15shutdown,16group_transfer. No generic SQL or identity-key
 export. The open key arrives only in this private channel or a protected
 descriptor. Truncated, mismatched and oversized lengths close the connection
 without allocating the announced body. Request and response decoders are distinct.
@@ -165,6 +165,7 @@ never contain database, provider or decrypted-message error text.
 | 13 cursor_ack | `[group_id, through_sequence, through_epoch]` | `[]` |
 | 14 key_packages_uploaded | `[package_refs]`, at most100 distinct bstr32 | `[]` |
 | 15 shutdown | `[]` | `[]`, then close |
+| 16 group_transfer | `[suboperation, ...arguments]`, below | transfer result |
 
 Bootstrap is repeatable across restarts and returns the same pending identity.
 It fixes Bot/Native/Native together and cannot adopt a human identity or overwrite
@@ -182,18 +183,22 @@ bytes and exists only within protected IPC and the encrypted store. Session
 responses never include an identity signing key or recovery key.
 
 Group suboperations are: 0 list `[]`; 1 inspect `[group_id]`;
-2 create `[group_id,target_id,kind,policy,external_sender_pub32|null]`;
-3 registered `[group_id,next_sequence]`; 4 discard `[group_id]`;
-5 external_join `[group_id,channel_id,kind,policy,group_info,tree]`;
-6 joined `[group_id,sequence]`; 7 welcomes `[welcomes_body,expected_bindings_body]`;
+2 create `[operation_id,group_id,target_id,kind,policy,external_sender_pub32|null]`;
+3 registered `[operation_id,group_id,next_sequence]`;
+4 discard `[operation_id,group_id]`;
+5 external_join `[operation_id,group_id,channel_id,kind,policy,group_info,tree]`;
+6 joined `[operation_id,group_id,sequence]`;
+7 welcomes `[welcomes_body,expected_bindings_body]`;
 8 apply `[group_id,handshakes_body,messages_body,through_sequence]`;
-9 build_commit `[group_id,proposals_body]`; 10 confirm_commit `[group_id]`;
-11 abort_commit `[group_id]`; 12 cursor `[group_id]`;
+9 build_commit `[operation_id,group_id,proposals_body]`;
+10 confirm_commit `[operation_id,group_id]`;
+11 abort_commit `[operation_id,group_id]`; 12 cursor `[group_id]`;
 13 revalidate_sender `[group_id,leaf_index,limit]`;
 14 trust_sender `[group_id,leaf_index,requested_user,history_body,head_list,now]`;
 15 proposed_adds `[group_id,proposals_body]`;
 16 trust_add `[group_id,proposals_body,index,requested_user,history_body,head_list,now]`;
-17 pending_leaves `[]`.
+17 pending_leaves `[]`; 18 events_read `[after_delivery_id,limit]`;
+19 events_ack `[through_delivery_id]`; 20 intent_result `[operation_id]`.
 Here argument arrays expand after the suboperation number rather than adding a
 nested array. Kind is the existing text, call or interaction group kind. Text and
 call groups require this installation's community. Interaction groups preserve
@@ -205,10 +210,122 @@ interaction groups; their membership uses ordinary signed Add/Welcome processing
 Welcome expectations, participants and actual bindings must agree with that
 scope. Sender validation uses the existing credential/device-list chain;
 unvalidated pending history must never produce actionable bot messages.
-Revalidation limit1..256; leaf index at most uint32 max. All network bodies are
-paginated below the helper frame limit before transport. Apply results retain the
-core-authenticated sender user/device and server receipt time for each actionable
-decrypted message; a user field in application content cannot replace attribution.
+Revalidation limit1..256; leaf index at most uint32 max. Network pages are bounded
+by encoded size; indivisible large group objects use group_transfer below.
+Actionable decrypted messages are delivered through the durable event journal,
+retaining the core-authenticated sender and server receipt time. A user field in
+application content cannot replace attribution.
+
+### Group upload intents and recovery
+
+Operation ids are nonzero bstr16. Create, external_join and build_commit persist
+their exact public upload body and canonical input hash in the same core storage
+unit as the MLS mutation. The intent binds operation id, installation, group and
+suboperation. A matching pending retry returns those bytes; conflicting input
+fails. This applies to both direct requests and group_transfer. The native core
+must not generate another pending commit after a lost helper or HTTP response.
+
+intent_result returns `[kind,group_id,state,result|null]`, or `[null]` if absent.
+kind is2 create,5 external_join or9 build_commit; state0 pending,1 accepted or2
+refused. Pending result is the exact original core upload body as bstr. Registered,
+joined, confirm_commit and their matching discard/abort operations resolve only
+the matching intent in the same unit as the core transition. They retain the
+resolution argument hash: equal retries are no-ops, conflicting outcomes or
+sequence arguments fail. Resolved intents retain input/binding/state metadata and
+clear the large result. Retrying a crypto-producing operation for a resolved id
+returns conflict; intent_result provides its outcome without generating crypto.
+
+The Go client persists its operation id before requesting an intent and queries
+it after restart. It resolves an intent only after determining the authoritative
+server outcome from a matching binding, handshake and epoch or a conclusive
+refusal. A missing response is not refusal. Group application and Welcome retries
+instead recover through persisted source progress and group membership; successful
+late sender revalidation recovers through the event journal.
+
+### Authenticated event journal
+
+Only a validated native Bot identity can populate or read the journal. Accepted
+non-own text-group applications enter it in the same core unit as their verified
+message insertion, before folding changes their body. Successful pending-sender
+revalidation does the same, even for an older source sequence. No event is created
+from an undecryptable, pending, mismatched, deleted or pruned row, a call-group
+application, or an own upload echo. Group scope comes from the verified stored
+binding. The initial feed admits only text groups in the installation community;
+interaction admission and its event context require the later typed installation
+binding and are refused until that contract is implemented.
+
+Each event has an independent, monotonically increasing delivery id. The unique
+source key is `(group_id,source_sequence)`, which remains after acknowledgement.
+A newly authenticated old message receives a new delivery id. The event shape is:
+
+`[delivery_id,group_id,community_id,channel_id,source_sequence,epoch,recv_ts,
+ sender_user,sender_device,sender_kind,sender_tier,sender_leaf,message_id,
+ envelope_type,original_body,reply_to|null,thread_id|null]`.
+
+The original body is the authenticated envelope body, bounded by the existing
+envelope limit. Sender fields derive from MLS credential, uploader agreement and
+device-list validation. Internal provenance retains the signature-key information
+needed for current trust checks; no private key, franking key or raw envelope is
+exported to Go.
+
+events_read has limit1..100 and returns `[events,next_delivery_id,high_water]`.
+Its exclusive cursor is the greater of after_delivery_id and the durable ack.
+Pages obey the full encoded response limit. next_delivery_id is the last examined
+id, including retracted rows; a live row excluded for size stays unexamined. An
+oversized first live row fails, never silently skips. high_water is the maximum
+created delivery id. events_ack persists its id and clears acknowledged plaintext;
+an equal ack is an idempotent retry, while lower or future ids fail. Compact
+source/delivery/disposition metadata remains until a proven non-replay floor
+permits removal. This acknowledgement is distinct from server cursor_ack op13.
+
+Tombstones, author deletions and trust retraction suppress queued plaintext in
+the same unit that withdraws their source. This includes late tombstones,
+message_deleted, fold-driven target deletion and trust quarantine. An authenticated
+author-delete event may itself be delivered while its target is suppressed.
+Drain rechecks source status and current group binding/state/trust; a journal row
+alone is not authority. Go persists feature progress before acknowledging, uses
+stable effect ids on redelivery, and checks current permission before acting.
+There is no atomic transaction spanning an external effect and the local journal.
+
+### Bounded group transfer
+
+Some server-valid group objects exceed one helper frame. Op16 retains the1MiB
+frame cap while carrying a typed op6 logical request/result in bounded chunks.
+Only target operation6 is allowed: no nested transfer, path, SQL, identity export
+or arbitrary byte store. Input and result are each at most32MiB; existing core
+and server operation limits still apply, including the256-Welcome commit limit.
+
+| Suboperation payload | Response |
+| --- | --- |
+| `[0,6,input_length,input_sha256]` | `[transfer_id]` |
+| `[1,transfer_id,offset,chunk_bstr]` | `[next_offset]` |
+| `[2,transfer_id]` | `[target_status,result_length,result_sha256]` |
+| `[3,transfer_id,offset,requested_length]` | `[chunk_bstr]` |
+| `[4,transfer_id]` | `[]` |
+
+transfer_id is a generated opaque bstr16 bound to the initiating request and
+inherited socket connection. One transfer exists per helper; chunks are at most
+768KiB. Validate declared lengths before allocation, exact increasing upload
+offsets, full length and SHA256 before executing. Reads require execution and an
+in-range slice of1..768KiB; repeated reads are allowed. Repeated execute returns
+the same saved descriptor without executing again on that connection. A target
+failure returns its normal sanitized status with deterministic `[]` as result.
+
+Transfers use no disk staging. Clear and zeroize buffers on failure, release,
+shutdown or disconnect. Upload has a30-second deadline from begin; completed
+results expire after30 idle seconds. A silent peer must not prevent expiry.
+A second connection cannot resume/read another transfer.
+Unknown ids, invalid length/hash/offset/target or reads before execution fail with
+status1; contention uses6. Core mutation stays serialized; unrelated mutation
+requests receive6 until release rather than blocking the socket. Shutdown remains
+available. Transport-owned input, result and encoding/chunk scratch stay
+within96MiB in aggregate; do not multiply whole-payload copies. Core MLS working
+state separately follows its existing bounds.
+
+The Go parent enforces execution deadlines and terminates an unresponsive helper.
+A transfer descriptor is not durable proof of execution: after interruption,
+the client uses the typed intent or source-progress recovery rules above. It never
+blindly repeats a crypto-producing operation or discards uncertain network work.
 
 Call suboperations are: 0 media_epoch; 1 join_check; 2 leave_proposal; 3 rotate;
 4 forget. Each calls the corresponding existing call-group core operation. Media
