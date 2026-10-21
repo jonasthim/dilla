@@ -19,7 +19,7 @@ import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
 import {
-  callStatsReport, connectionOf, linkSample, LINK_EVERY_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
+  callStatsReport, connectionOf, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
 } from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
@@ -1145,31 +1145,40 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.phase === 'connected') void reportStats().catch(() => undefined); // a 429 or a 404 is not the person’s problem
       later(statsTick, STATS_EVERY_MS);
     };
-    // MP5: the dock's own link read, every LINK_EVERY_MS while connected; it never goes to the server.
+    // MP5: the dock’s own link read, every LINK_EVERY_MS while connected; it never goes to the server.
     let linkTotals: LinkTotals | null = null;
     let linkAt = 0;
     let linkBusy = false;
+    let linkStartedAt = 0;
+    const sameLink = (a: LinkSample | undefined, b: LinkSample | undefined): boolean =>
+      a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
     const readLink = async (): Promise<void> => {
       const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
       const [pub, sub] = await Promise.all([
         Promise.resolve(pcs?.publisher?.getStats?.()).catch(() => undefined),
         Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
       ]);
-      if (ended || state.phase !== 'connected') return;
+      if (ended || state.phase !== 'connected' || state.paused) return;
       const at = deps.now();
       const next = linkSample(linkTotals, pub, sub, at - linkAt);
       linkTotals = next.totals;
       linkAt = at;
-      set({ link: next.sample ?? state.link });
+      const link = next.sample ?? state.link;
+      if (!sameLink(link, state.link)) set({ link });
     };
+    // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not
+    // settle within LINK_STALL_MS takes the stats away (the dock falls back to its no-sample text) and no second read starts meanwhile.
     const linkTick = (): void => {
       if (ended) return;
-      if (state.phase !== 'connected') {
+      if (state.phase !== 'connected' || state.paused) {
         linkTotals = null;
         if (state.link !== undefined) set({ link: undefined });
       } else if (!linkBusy) {
         linkBusy = true;
+        linkStartedAt = deps.now();
         void readLink().catch(() => undefined).finally(() => { linkBusy = false; });
+      } else if (deps.now() - linkStartedAt >= LINK_STALL_MS && state.link !== undefined) {
+        set({ link: undefined });
       }
       later(linkTick, LINK_EVERY_MS);
     };

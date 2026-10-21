@@ -1290,7 +1290,7 @@ describe('the voice stage header (web3.9)', () => {
   });
 });
 
-// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, "voice connected", channel · server, three icon buttons; speaking is a
+// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, the channel name over the link stats, three icon buttons; speaking is a
 // ring on the list row and on the tile and nothing else.
 describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
   const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;

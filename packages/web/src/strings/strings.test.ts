@@ -135,6 +135,7 @@ describe('flow 06 (L-COPY-05)', () => {
       expect(pairs.find(([k]) => k === key)?.[1], `${key} in flow 06`).toBe(value);
     }
     expect(table['layout.dock.connected']).toBeUndefined();
+    expect(table['voice.dock.connected']).toBeUndefined();
     expect(Object.values(table)).not.toContain('voice connected');
   });
 });

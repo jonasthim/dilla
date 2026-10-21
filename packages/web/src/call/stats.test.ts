@@ -79,47 +79,79 @@ describe('linkSample (the dock link read, MP5)', () => {
     { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: rtt },
     { id: 'L', type: 'local-candidate', candidateType: 'host' },
   ];
-  const pub = (bytesSent: number, extra: Array<Record<string, unknown>> = []) =>
-    rtc([...pair(0.024), { id: 'O1', type: 'outbound-rtp', kind: 'audio', bytesSent }, ...extra]);
-  const sub = (bytesReceived: number) => rtc([{ id: 'I1', type: 'inbound-rtp', kind: 'audio', bytesReceived }]);
+  const out = (id: string, bytesSent: number) => ({ id, type: 'outbound-rtp', kind: 'audio', bytesSent });
+  const inn = (id: string, bytesReceived: number, packetsReceived = 0, packetsLost = 0) =>
+    ({ id, type: 'inbound-rtp', kind: 'audio', bytesReceived, packetsReceived, packetsLost });
+  const pub = (...extra: Array<Record<string, unknown>>) => rtc([...pair(0.024), ...extra]);
+  const sub = (...extra: Array<Record<string, unknown>>) => rtc(extra);
+  /** A baseline read, so the next one has previous totals. */
+  const base = (p: ReturnType<typeof pub> | undefined, s: ReturnType<typeof sub> | undefined) => linkSample(null, p, s, 2000).totals;
 
-  it('turns byte deltas into integer kb/s and reads the ping from the selected pair', () => {
-    const r = linkSample({ up: 10_000, down: 20_000 }, pub(22_000), sub(44_000), 2000);
+  it('the first read is only a baseline: no sample, so the dock keeps "— ms"', () => {
+    const r = linkSample(null, pub(out('O1', 50_000)), sub(inn('I1', 50_000)), 2000);
+    expect(r.sample).toBeNull();
+    expect(r.totals).toBeDefined();
+  });
+
+  it('turns per-stream byte deltas into integer kb/s and reads the ping from the selected pair', () => {
+    const t = base(pub(out('O1', 10_000)), sub(inn('I1', 20_000)));
+    const r = linkSample(t, pub(out('O1', 22_000)), sub(inn('I1', 44_000)), 2000);
     expect(r.sample).toEqual({ rttMs: 24, upKbps: 48, downKbps: 96, lossPct: 0 });
-    expect(r.totals).toEqual({ up: 22_000, down: 44_000 });
   });
 
   it('sums every outbound and inbound rtp (mic, camera, screen) across both peer connections', () => {
-    const p = pub(1000, [{ id: 'O2', type: 'outbound-rtp', kind: 'video', bytesSent: 3000 }]);
-    const s = rtc([{ id: 'I1', type: 'inbound-rtp', bytesReceived: 500 }, { id: 'I2', type: 'inbound-rtp', bytesReceived: 1500 }]);
-    const r = linkSample({ up: 0, down: 0 }, p, s, 1000);
-    expect(r.totals).toEqual({ up: 4000, down: 2000 });
+    const t = base(pub(out('O1', 0), out('O2', 0)), sub(inn('I1', 0), inn('I2', 0)));
+    const r = linkSample(t, pub(out('O1', 1000), out('O2', 3000)), sub(inn('I1', 500), inn('I2', 1500)), 1000);
     expect(r.sample).toMatchObject({ upKbps: 32, downKbps: 16 });
   });
 
-  it('a counter that went down (a new peer connection) counts from 0 for that sample', () => {
-    const r = linkSample({ up: 90_000, down: 90_000 }, pub(2500), sub(5000), 2000);
-    expect(r.sample).toMatchObject({ upKbps: 10, downKbps: 20 });
-    expect(r.totals).toEqual({ up: 2500, down: 5000 });
+  it('a stream whose counter went down (a new one under the same id) counts from 0', () => {
+    const t = base(pub(out('O1', 90_000)), sub(inn('I1', 90_000)));
+    expect(linkSample(t, pub(out('O1', 2500)), sub(inn('I1', 5000)), 2000).sample).toMatchObject({ upKbps: 10, downKbps: 20 });
   });
 
-  it('the first sample has no previous totals: 0 kb/s, not the whole counter', () => {
-    expect(linkSample(null, pub(50_000), sub(50_000), 2000).sample).toMatchObject({ upKbps: 0, downKbps: 0 });
+  it('a stream that disappears or appears adds no delta (a remote person leaves)', () => {
+    const t = base(pub(out('O1', 10_000_000)), sub(inn('I1', 10_000_000), inn('I2', 10_000_000)));
+    const gone = linkSample(t, pub(out('O1', 10_002_000)), sub(inn('I1', 10_004_000)), 2000);
+    expect(gone.sample).toMatchObject({ upKbps: 8, downKbps: 16 });
+    const back = linkSample(gone.totals, pub(out('O1', 10_004_000)), sub(inn('I1', 10_008_000), inn('I3', 7_000_000)), 2000);
+    expect(back.sample).toMatchObject({ upKbps: 8, downKbps: 16 });
+  });
+
+  it('a missing report (a failed getStats) is no data for that side: the next good read is not a spike', () => {
+    const t = base(pub(out('O1', 10_000_000)), sub(inn('I1', 10_000_000)));
+    const failed = linkSample(t, undefined, rtc([...pair(0.03), inn('I1', 10_004_000)]), 2000);
+    expect(failed.sample).toMatchObject({ downKbps: 16 });
+    expect(failed.sample?.upKbps).toBe(0);
+    // the publisher is back after one lost interval: its delta spans two intervals (4 s), not the whole counter
+    const good = linkSample(failed.totals, pub(out('O1', 10_004_000)), sub(inn('I1', 10_008_000)), 2000);
+    expect(good.sample).toMatchObject({ upKbps: 8, downKbps: 16 });
   });
 
   it('no selected pair on either side: no sample, but the totals still advance', () => {
-    const r = linkSample({ up: 0, down: 0 }, rtc([{ id: 'O1', type: 'outbound-rtp', bytesSent: 800 }]), sub(100), 1000);
-    expect(r.sample).toBeNull();
-    expect(r.totals).toEqual({ up: 800, down: 100 });
-    expect(linkSample(null, undefined, undefined, 2000)).toEqual({ sample: null, totals: { up: 0, down: 0 } });
+    const t = base(pub(out('O1', 0)), sub());
+    expect(linkSample(t, rtc([out('O1', 800)]), sub(), 1000).sample).toBeNull();
+    expect(linkSample(null, undefined, undefined, 2000).sample).toBeNull();
   });
 
-  it('falls back to the subscriber pair when the publisher has none, and gives loss in percent', () => {
-    const s = rtc([...pair(0.2), { id: 'R', type: 'remote-inbound-rtp', fractionLost: 0.0625 }]);
-    expect(linkSample(null, rtc([]), s, 2000).sample).toMatchObject({ rttMs: 200, lossPct: 6.3 });
+  it('falls back to the subscriber pair when the publisher has none', () => {
+    const s = rtc([...pair(0.2), inn('I1', 0)]);
+    const t = base(rtc([]), s);
+    expect(linkSample(t, rtc([]), rtc([...pair(0.2), inn('I1', 0)]), 2000).sample).toMatchObject({ rttMs: 200 });
+  });
+
+  it('loss is the worse of outgoing (remote-inbound-rtp) and incoming (packetsLost over received plus lost, per stream)', () => {
+    const t = base(pub(), sub(inn('I1', 0, 1000, 0), inn('I2', 0, 1000, 0)));
+    const outgoing = { id: 'R', type: 'remote-inbound-rtp', fractionLost: 0.02 };
+    // I1 lost 10 of 100 packets in the interval (10 %), I2 none; outgoing 2 %
+    const r = linkSample(t, pub(outgoing), sub(inn('I1', 0, 1090, 10), inn('I2', 0, 1100, 0)), 2000);
+    expect(r.sample).toMatchObject({ lossPct: 10 });
+    const t2 = base(pub(), sub(inn('I1', 0, 1000, 0)));
+    expect(linkSample(t2, pub({ ...outgoing, fractionLost: 0.0625 }), sub(inn('I1', 0, 1100, 0)), 2000).sample).toMatchObject({ lossPct: 6.3 });
   });
 
   it('a zero interval gives 0 kb/s', () => {
-    expect(linkSample({ up: 0, down: 0 }, pub(9000), sub(9000), 0).sample).toMatchObject({ upKbps: 0, downKbps: 0 });
+    const t = base(pub(out('O1', 0)), sub(inn('I1', 0)));
+    expect(linkSample(t, pub(out('O1', 9000)), sub(inn('I1', 9000)), 0).sample).toMatchObject({ upKbps: 0, downKbps: 0 });
   });
 });

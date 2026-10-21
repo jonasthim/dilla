@@ -102,7 +102,8 @@ export function VoiceDock({
   const line1 = (
     <>
       <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
-      <span className="d-voice-dock__text">{where}</span>
+      <span className="d-voice-dock__text" aria-hidden="true">{where}</span>
+      <span className="d-sr-only">{full}</span>
     </>
   );
   const fill = (template: string, values: Record<string, string | number>): string =>
@@ -124,7 +125,7 @@ export function VoiceDock({
     <div className="d-voice-dock" data-phase={phase}>
       <div className="d-voice-dock__status">
         {onStatus !== undefined
-          ? <button type="button" className="d-voice-dock__line1" title={full} aria-label={full} onClick={onStatus}>{line1}</button>
+          ? <button type="button" className="d-voice-dock__line1" title={full} onClick={onStatus}>{line1}</button>
           : <p className="d-voice-dock__line1" title={full}>{line1}</p>}
         <p className="d-voice-dock__where">{line2}</p>
       </div>

@@ -469,7 +469,6 @@ export const en = {
   'call.join': 'join call',
   'voice.dock.region': 'voice controls',
   'voice.dock.connecting': 'connecting',
-  'voice.dock.connected': 'in {where}',
   'voice.dock.reconnecting': 'reconnecting',
   'voice.dock.ping': '{ms} ms',
   'voice.dock.pingNone': '— ms',

@@ -30,6 +30,7 @@ describe('VoiceDock (MP5)', () => {
     expect(screen.queryByText(/voice connected/)).toBeNull();
     const line1 = screen.getByRole('button', { name: 'harbour · Midgard Crew' });
     expect(line1).toHaveAttribute('title', 'harbour · Midgard Crew');
+    expect(line1).not.toHaveAttribute('aria-label'); // its name comes from its content: the visible name is aria-hidden, the full one is sr-only
   });
 
   it('without labels.where the channel is the whole name; as plain text the server is still in the tooltip', () => {
@@ -97,7 +98,8 @@ describe('VoiceDock (MP5)', () => {
   it('without onStatus the channel is plain text, not a button', () => {
     render(<VoiceDock {...dock} />);
     expect(screen.queryByRole('button', { name: /harbour/ })).toBeNull();
-    expect(screen.getByText('harbour')).toBeInTheDocument();
+    expect(document.querySelector('.d-voice-dock__text')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('harbour · Midgard Crew')).toHaveClass('d-sr-only'); // the server is read in plain text too
   });
 
   it('camera, share and leave are 32px icon buttons in one toolbar, each with a tooltip anchor; there is no mute or deafen', () => {
@@ -189,7 +191,7 @@ describe('VoiceDock (MP5)', () => {
     render(<VoiceDock {...dock} controls={false} announcement="Joined harbour." />);
     expect(screen.queryByRole('toolbar')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.getByText('harbour')).toBeInTheDocument();
+    expect(screen.getByText('harbour · Midgard Crew')).toBeInTheDocument();
     expect(screen.getByText('— ms')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Joined harbour.');
   });

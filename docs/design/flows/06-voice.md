@@ -279,7 +279,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.open='voice {name}'`, `voice.count='{n} in voice'`, `voice.join='join voice'`
 - `voice.row.joined='connected'` (added to the accessible name of the voice row this device is in: "voice harbour, connected")
 - `call.start='call'`, `call.join='join call'`
-- `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.connected='in {where}'`, `voice.dock.reconnecting='reconnecting'`
+- `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.reconnecting='reconnecting'`
 - `voice.dock.ping='{ms} ms'`, `voice.dock.pingNone='— ms'`, `voice.dock.rate='↑{up} ↓{down} kb/s'` (the dock's second line while connected: "24 ms · ↑48 ↓96 kb/s"; ↑ is all outbound RTP of this device, ↓ all inbound, integer kb/s over the 2 s sample; `— ms` before the first sample; added 2026-10-21, MP5)
 - `voice.dock.stats='Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.'` (the stats' accessible text, never announced), `voice.dock.quality.good='good'`, `voice.dock.quality.poor='poor'`, `voice.dock.quality.bad='bad'` (good under 150 ms, poor 150 to 300 ms, bad above 300 ms or loss above 5 %; poor takes `--warn`, bad `--danger`)
 - `voice.dock.ptt='hold {key} to talk'`, `voice.dock.pttNoKey='push to talk: no key set'`, `voice.dock.pttSetKey='set a key'` (the dock's line while push to talk is in force, on its own line under the meter; `{key}` is the stored key as Settings shows it; `set a key` opens Settings → voice; added 2026-10-14, product walk M7, replacing `settings.voice.ptt` there)
