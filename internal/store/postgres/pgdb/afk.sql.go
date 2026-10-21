@@ -11,6 +11,54 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const clearAFKAway = `-- name: ClearAFKAway :execrows
+DELETE FROM community_afk_away WHERE community_id = $1 AND user_id = $2
+`
+
+type ClearAFKAwayParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+}
+
+func (q *Queries) ClearAFKAway(ctx context.Context, arg ClearAFKAwayParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearAFKAway, arg.CommunityID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const clearAFKAwayUser = `-- name: ClearAFKAwayUser :many
+DELETE FROM community_afk_away WHERE user_id = $1 RETURNING community_id
+`
+
+type ClearAFKAwayUserParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) ClearAFKAwayUser(ctx context.Context, arg ClearAFKAwayUserParams) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, clearAFKAwayUser, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var community_id id.ID
+		if err := rows.Scan(&community_id); err != nil {
+			return nil, err
+		}
+		items = append(items, community_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCommunityAFK = `-- name: GetCommunityAFK :one
 SELECT channel_id, timeout_seconds FROM community_afk WHERE community_id = $1
 `
@@ -29,6 +77,62 @@ func (q *Queries) GetCommunityAFK(ctx context.Context, arg GetCommunityAFKParams
 	var i GetCommunityAFKRow
 	err := row.Scan(&i.ChannelID, &i.TimeoutSeconds)
 	return i, err
+}
+
+const listAFKAway = `-- name: ListAFKAway :many
+SELECT user_id, since FROM community_afk_away WHERE community_id = $1 ORDER BY user_id
+`
+
+type ListAFKAwayParams struct {
+	CommunityID id.ID
+}
+
+type ListAFKAwayRow struct {
+	UserID id.ID
+	Since  int64
+}
+
+func (q *Queries) ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAFKAway, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAFKAwayRow{}
+	for rows.Next() {
+		var i ListAFKAwayRow
+		if err := rows.Scan(&i.UserID, &i.Since); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setAFKAway = `-- name: SetAFKAway :execrows
+INSERT INTO community_afk_away (community_id, user_id, since)
+VALUES ($1, $2, $3)
+ON CONFLICT (community_id, user_id) DO NOTHING
+`
+
+type SetAFKAwayParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Since       int64
+}
+
+func (q *Queries) SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setAFKAway, arg.CommunityID, arg.UserID, arg.Since)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setCommunityAFK = `-- name: SetCommunityAFK :exec

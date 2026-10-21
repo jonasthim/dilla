@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -2071,6 +2072,38 @@ func (r *Repo) GetCommunityAFK(ctx context.Context, communityID id.ID) (store.Co
 		return store.CommunityAFK{}, wrap(err)
 	}
 	return store.CommunityAFK{ChannelID: row.ChannelID, TimeoutSeconds: uint64(row.TimeoutSeconds)}, nil
+}
+
+func (r *Repo) SetAFKAway(ctx context.Context, communityID, userID id.ID, since int64) (bool, error) {
+	n, err := r.w.SetAFKAway(ctx, sqlitedb.SetAFKAwayParams{CommunityID: communityID, UserID: userID, Since: since})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) ClearAFKAway(ctx context.Context, communityID, userID id.ID) (bool, error) {
+	n, err := r.w.ClearAFKAway(ctx, sqlitedb.ClearAFKAwayParams{CommunityID: communityID, UserID: userID})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) ClearAFKAwayUser(ctx context.Context, userID id.ID) ([]id.ID, error) {
+	cids, err := r.w.ClearAFKAwayUser(ctx, sqlitedb.ClearAFKAwayUserParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	// DELETE ... RETURNING has no ORDER BY on either engine; sort so both answer the same.
+	slices.SortFunc(cids, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	return cids, nil
+}
+
+func (r *Repo) ListAFKAway(ctx context.Context, communityID id.ID) ([]store.AFKAway, error) {
+	rows, err := r.r.ListAFKAway(ctx, sqlitedb.ListAFKAwayParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.AFKAway, len(rows))
+	for i, row := range rows {
+		out[i] = store.AFKAway{UserID: row.UserID, Since: row.Since}
+	}
+	return out, nil
 }
 
 func (r *Repo) SetCommunityAFK(ctx context.Context, communityID id.ID, config store.CommunityAFK) error {

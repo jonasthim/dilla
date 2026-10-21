@@ -401,6 +401,19 @@ type ChannelMembers interface {
 type Communities interface {
 	GetCommunityAFK(ctx context.Context, communityID id.ID) (CommunityAFK, error)
 	SetCommunityAFK(ctx context.Context, communityID id.ID, config CommunityAFK) error
+	// SetAFKAway marks a member away in the community (in its AFK channel, with no voice
+	// connection), since a unix time > 0. It answers false and keeps the stored since when the
+	// member is already away (R-AW7), and fails for a non-member (the row references members).
+	SetAFKAway(ctx context.Context, communityID, userID id.ID, since int64) (bool, error)
+	// ClearAFKAway clears one away row and answers whether there was one.
+	ClearAFKAway(ctx context.Context, communityID, userID id.ID) (bool, error)
+	// ClearAFKAwayUser clears the user's away rows in every community and answers those
+	// communities, ordered by id (R-AW4: an admission anywhere, or the last gateway connection
+	// closing).
+	ClearAFKAwayUser(ctx context.Context, userID id.ID) ([]id.ID, error)
+	// ListAFKAway is the community's away roster ordered by user id. It is bounded by the
+	// community's member count.
+	ListAFKAway(ctx context.Context, communityID id.ID) ([]AFKAway, error)
 	CreateCommunity(ctx context.Context, c CommunityRow) error
 	// GetCommunity answers ErrNotFound for a soft-deleted community too.
 	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)
