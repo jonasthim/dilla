@@ -84,22 +84,29 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - report "dilla-media keeps vX until its calls end".
   - **It is not compatible, or the operator passed `--restart-sfu`:**
     - web3.11's preflight (refuse while calls are live, unless `--restart-sfu`; `--yes` is still accepted as an alias for one release);
-    - then restart `dilla` and `dilla-media` once each.
+    - then restart each once, **`dilla-media` first**: wait (bounded, 60 s) for its `READY` and a valid `media.json`, then restart `dilla`. The API then sees the new SFU's capabilities at boot (R-UP11).
+    - If the API restart fails: restore the `.prev` pair, stop `dilla-media`, then start `dilla-media` and `dilla` on the restored binary, in that order.
   - **The running SFU's level comes from:**
-    - `/var/lib/dillad/media.json` (written by a web3.12+ SFU at start: `{version, media_level, capabilities, pid, started}`);
-    - with no file, from the installed binary: v0.1.0-web3.11 counts as level 1, the baseline CI proves; anything older needs a restart.
-  - **Refusals and fallbacks:**
-    - a `release.json` that is missing from SHA256SUMS, or that disagrees with the new binary's `version --json`, is refused;
-    - a release without `release.json` (downgrading to an older release) is treated as restart required.
+    - `<StateDirectory>/media.json`, written by a web3.12+ SFU once it is ready: `{version, media_level, capabilities, pid, started}`. A file whose `pid` is not the unit's `MainPID` (`systemctl show -P MainPID dilla-media`) is stale, after a crash or a reboot, and is treated as absent.
+    - With no valid file, from the running process's own binary: `/proc/$MAINPID/exe version` (it runs even when the file was replaced). v0.1.0-web3.11 maps to level 1, the baseline CI proves. Any other or unknown answer means a restart is required.
+  - **Is `release.json` present? SHA256SUMS decides:**
+    - listed in SHA256SUMS: fetch it and verify it. A mismatch with its sum, or with the new binary's `version --json`, is refused.
+    - not listed: a restart is required. This is refused only when the tag being installed is v0.1.0-web3.12 or later, which must ship it. An older tag (a downgrade) just takes the restart path.
 - **R-UP4 The pending restart is a root timer.**
   - `dilla-media-refresh.timer` runs every minute and is enabled by the installer.
   - Its oneshot service restarts `dilla-media` only when both hold:
     - the running SFU's executable inode differs from `/usr/local/bin/dillad` (`stat -L /proc/$MAINPID/exe`);
-    - `dillad media --idle`, run as dillad, exits 0. That means no room has participants and no room is younger than 60 s, so a start in flight counts as busy.
+    - `dillad media --idle`, run as dillad, exits 0. Idle means:
+      - no room has participants;
+      - no room is younger than 60 s;
+      - no call token was minted in the last 60 s, which it asks the API over `api.sock` (`GET /media/recent-mints`).
+      An API that does not answer counts as busy, so a start in flight never races the restart.
   - This works for a web3.11 SFU too, which knows nothing of the scheme. Each restart is logged to the journal.
-  - **The TURN handoff (R-UP11).** When the SFU that is restarting gains TURN (`media.json` before the restart has no `turn` capability, and the new binary's `version --json` has it), the service next restarts `dilla`, so that the API lets go of `turn.listen`. Rooms are empty, so no relay is in use.
-- **R-UP5 No PartOf.**
+  - **The TURN handoff (R-UP11).** It applies when the SFU being restarted gains TURN: `media.json` before the restart has no `turn`, and the new binary's `version --json` has it. The service then restarts `dilla-media`, waits for its READY (TURN is bound only once the API has let go, so READY there means "media ready; TURN bind pending"), restarts `dilla`, and waits until `media.json` lists `turn`. Rooms are empty, so no relay is in use.
+- **R-UP5 No PartOf; the SFU says when it is ready.**
   - `dilla-media.service` drops `PartOf=dilla.service`.
+  - It becomes `Type=notify` (`NotifyAccess=main`). `dillad media` sends `READY=1` after the SFU accepts RoomService requests and `media.json` is written. `media.json` lists `turn` only once a TURN listener is actually bound, and is rewritten when that happens.
+  - On a reboot both units start from the one installed binary, so a mixed-version pair cannot come back. A stale `media.json` is caught by the `MainPID` check (R-UP3).
   - `dilla.service` keeps `Wants=`/`After=dilla-media.service`, for start order only.
   - After `daemon-reload`, restarting `dilla` never touches the SFU.
 - **R-UP6 A held call (fix a).**
@@ -111,6 +118,10 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - Otherwise the device forgets the group and does an external join.
   - Abandoning a hold runs `leaveLive`, which includes the self-Remove.
   - For a reload, the hold is persisted as a worker-store marker `callKeep {groupId, channelId, until}`. The boot sweep spares that group until `until`.
+  - **`until` is wall-clock, so it is never trusted alone:**
+    - An expired marker is acted on (self-Remove and forget) only once the instance answers. Offline, nothing is posted or forgotten.
+    - A resume after `until` is still tried. The server's leaf check decides (`requireCurrentLeaf`; a removed or epoch-unknown leaf gives `E_LEAF_NOT_CURRENT`).
+    - A resume from an expired marker loses the update-reload exemption and takes the normal late-rejoin path (R-UP9).
 - **R-UP7 A pending cut is transient (fix b).**
   - These answer **503 `E_UNAVAILABLE` with `retry_after_ms`** instead of 403 or 500:
     - `isPending` at the start (`:606`);
@@ -129,21 +140,30 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - An absence longer than the community's AFK timeout still never auto-rejoins.
 - **R-UP10 One SFU restart (fix d).** It follows from R-UP3 and R-UP5. `install_test.sh` asserts the number of restarts.
 - **R-UP11 TURN belongs to the media process (Q2 = B).**
-  - **Who serves it.** A web3.12+ `dillad media` serves TURN. `dillad serve` serves it only while the running SFU's `media.json` lacks the `turn` capability, that is, a web3.11 SFU during the transition. Exactly one process binds `turn.listen` at a time.
+  - **Who serves it.**
+    - A web3.12+ `dillad media` serves TURN on `turn.listen` whenever that is configured: behind a proxy, or the public-mode opt-in.
+    - `dillad serve` binds `turn.listen` only while the running SFU's valid `media.json` lacks `turn`, that is, a web3.11 SFU during the transition. Exactly one process binds `turn.listen` at a time.
+    - In public mode **without** the opt-in, `serve` always keeps its 443 demux relay, whatever the capability says, so public mode never loses TURN.
+    - With the opt-in, the handed-out `iceServers` name only the media relay, and `serve` binds no 443 relay: the demux sends STUN traffic nowhere and closes it. There are never two relays.
   - **Credentials.**
     - Unchanged: the API mints `TURNCredential` with `turn.shared_secret_file`, and the media relay verifies it with the same file. Both run as `dillad` and read the same `dilla.toml`, so there is no new secret.
-    - The media relay refuses credentials issued before its own start. A cut set lost in an SFU restart can therefore never be bypassed, and clients that rejoin get fresh credentials from `startCall`.
-  - **Revocation and the barred lookup** move behind a local control socket, `/var/lib/dillad/media.sock` (0600, `dillad`, served by `dillad media`).
-    - The API implements `RelayRevoker` as a client of that socket (`POST /relay/cut`).
-    - On every (re)connect, the API replays the cuts it holds (`PUT /relay/cuts`).
-    - The relay's `BarredLookup` asks the API over `/var/lib/dillad/api.sock` (served by `dillad serve`). It fails closed: while the API is down, new allocations are refused, and existing allocations keep relaying. The relay keeps its own cut map, so cuts survive an API restart, which is better than today.
+    - The media relay refuses credentials issued before its own start. This reuses the existing process-start floor (`internal/server/turnrevoke.go:79-81`), with its comment corrected: the premise that the SFU is in-process no longer holds. A cut set lost in an SFU restart can therefore never be bypassed, and clients that rejoin get fresh credentials from `startCall`.
+  - **Revocation and the barred lookup** go over local control sockets in the state directory: `<StateDirectory>/media.sock` (served by `dillad media`) and `<StateDirectory>/api.sock` (served by `dillad serve`). Both are 0600, owned by `dillad`, and their paths derive from the configured data directory, never a hard-coded `/var/lib/dillad`.
+    - The API **keeps its local `RelayRevocations`**. `Mint` stays ordered against cuts under its one lock, exactly as today. The media relay is an extra enforcer, fed through a `RelayRevoker` that does both:
+      - revokes locally;
+      - forwards the cut over `POST /relay/cut`.
+    - A cut the media relay has not acknowledged keeps the device `isPending`, so it gets 503s and the retry loop resends it until it is acknowledged.
+    - On every (re)connect, the API replays its cuts with `PUT /relay/cuts`. That is a **merge**: the union of both maps, keeping the later cut time per device. It never removes an entry and never lowers a cut time. Only the relay's own expiry (`max_allocation_age` after the cut) drops entries.
+    - Across an API restart the API's local map is empty, and the media relay still holds every cut.
+    - The relay's `BarredLookup` asks the API over `api.sock`, with today's semantics: a failed lookup caches nothing, is logged at WARN, and the cut map stays authoritative.
   - **Ports and config.**
     - `behind_proxy`: `turn.listen`, `turn.proxy_protocol`, `relay_ip` and `public_url` are read by the media process at the same address. The operator edits nothing.
-    - `public` (`acme_tls_alpn`): TCP 443 belongs to the API, so `turns:` on 443 keeps being demuxed into the API's relay instance, which cannot survive an API restart. An optional `turn.listen` in public mode (today refused by `validate.go:165`) lets the media process serve `turns:` on its own port, with the ACME certificate from the shared certmagic storage. That needs a firewall port, so it is opt-in and documented, and the default is unchanged.
+    - `public` (`acme_tls_alpn`): TCP 443 belongs to the API, so `turns:` on 443 keeps being demuxed into the API's relay instance, which cannot survive an API restart. An optional `turn.listen` in public mode (today refused by `validate.go:165`) lets the media process serve `turns:` on its own port, with the ACME certificate read **read-only** from the shared certmagic storage. It reloads the certificate when the file changes, and never issues or renews. That needs a firewall port, so it is opt-in and documented, and the default is unchanged.
     - If `turn.listen`'s port is below 1024, the installer adds `AmbientCapabilities=CAP_NET_BIND_SERVICE` to `dilla-media.service`.
   - **Compatibility.**
     - New API, old SFU (level 1, no `turn`): the API serves TURN as in web3.11. CI's compat job covers this.
     - Old API, new SFU (a rollback below web3.12): web3.11's `serve` would bind `turn.listen` too and fail. The rollback (installer and by hand) therefore stops `dilla-media` before it starts the old API.
+    - The public-mode opt-in `turn.listen` is refused by web3.11's config validation (`validate.go:165`). A rollback below web3.12 with that key set refuses before changing anything ("remove turn.listen from dilla.toml first; public-mode TURN goes back to 443"). The rollback text documents it.
 
 ## Tasks
 
@@ -154,12 +174,15 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - the livekit-server module version from `go.mod`;
     - `ClientProtocol`;
     - the SHA-256 of `testdata/livekit-signal-schema.json`;
+    - the SHA-256 of the rendered LiveKit config (`sfuConfig` → livekit `config.Config`, marshalled) for a fixed `dilla.toml` input;
+    - the sorted RoomService methods called anywhere under `internal/` (an AST scan with `go/packages` for calls on livekit's `RoomService` client and on `sfu.Server` and `Remote` methods that wrap it);
+    - the sorted webhook event names handled (an AST scan of the `case webhook.Event…` labels in `internal/api/callevents.go` and `internal/sfu`);
     - the level.
-    The test fails with "bump MediaLevel" when an input changes without the level.
+    The test fails with "bump MediaLevel" when an input changes without the level. It has its own mutation test: a temp copy of a source with one extra `case webhook.EventTrackUpdated` makes it red.
   - `cmd/dillad/version.go`: `--json` prints `{version, revision, wire:[2], schema, media_level, min_sfu_media_level, media_capabilities}`;
   - `cmd/dillad/media.go`:
-    - `--idle` (exclusive with `--probe` and `--rooms`): exit 0 when idle, 1 when busy (rooms are listed on stderr), 69 when it cannot tell. A room counts as busy while it has participants or is younger than 60 s (`Room.CreationTime`).
-    - `serveMedia` writes `media.json` (0600, atomically, in `StateDirectory`) at start, and removes it on a clean stop.
+    - `--idle` (exclusive with `--probe` and `--rooms`): exit 0 when idle, 1 when busy (rooms are listed on stderr), 69 when it cannot tell. A room counts as busy while it has participants or is younger than 60 s (`Room.CreationTime`). UP8 adds the recent-mint check over `api.sock`.
+    - `serveMedia` writes `media.json` (0600, atomically, in the state directory derived from the config) once the SFU accepts RoomService requests. It then sends `READY=1` over `NOTIFY_SOCKET` (the `serve` pattern), and removes the file on a clean stop. The `turn` capability is added by UP8 only after a bind succeeds.
   - `cmd/dillad/doctor.go`: a new leg, `media_binary`, read from `media.json`:
     - green when the SFU runs this version;
     - yellow when it runs an older one, or when there is no file: "dilla-media runs vX (older); it restarts onto this binary when its calls end (dilla-media-refresh.timer)";
@@ -170,10 +193,11 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - a room with 0 participants created 10 s ago (busy);
     - a room with 0 participants created 2 min ago (idle);
     - an unreachable SFU (69);
-  - `media.json` written and removed;
+  - `media.json` written before `READY=1`, and removed on a clean stop;
+  - the doctor treats a `media.json` whose `pid` is not the unit's `MainPID` as absent;
   - `version --json` matches its golden output;
   - the doctor leg's three colours;
-  - the level guard is red when an input is mutated.
+  - the level guard is red when any input is mutated, the rendered config, the RoomService method set and the webhook event set included.
 - **Gates:** `go test ./cmd/dillad/... ./internal/sfu/...`; golangci-lint.
 
 ### Task UP2 (opus): server, calls that survive an API restart
@@ -185,50 +209,70 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - The first whole-room reconcile of a live call whose lease map is empty after boot adopts a slot for each participant that publishes CAMERA or SCREEN_SHARE, oldest publication first, up to `livekit.max_publishers`. Only the excess is demoted.
   - Fix the comment at `callshare.go:23`.
 - **Boot:**
-  - Nothing at start ends a live call whose room the SFU still holds.
-  - Add a test that pins this, so a future change cannot make the boot reap such calls.
+  - Before the routes serve, run one whole-room reconcile (`reconcileRoom` with no scope) of every live call's room, bounded by `sweepPassBudget`. This rebuilds what memory lost:
+    - adopted slots (F1);
+    - cuts of participants without a current leaf, or barred.
+  - If the SFU does not answer at boot, nothing is reaped. Each such room is left as a pending room resync (`roomResync`, `callgrants.go:157`) for the retry loop, and the API serves anyway.
+  - Nothing at start ends a live call whose room the SFU still holds. Add a test that pins this, so a future change cannot make the boot reap such calls.
 - **Tests (`-race`):**
   - a pending cut answers 503 with `retry_after_ms`, and after the repair lands, a barred device gets 403;
   - an SFU down at start answers 503;
   - API restart with a live camera publisher: the camera is still allowed after the first sweep;
   - API restart with a live room: the call row, the group and the participants are untouched, and no Remove is proposed for a participant the SFU still holds;
-  - a webhook lost during the restart (`participant_left`) is recovered by the room sweep within one interval.
+  - a webhook lost during the restart (`participant_left`) is recovered by the room sweep within one interval;
+  - a device barred while the API was down, still in the SFU's room, is evicted by the boot reconcile before the first request is served;
+  - with the SFU unreachable at boot: no call ended, no Remove proposed, and a room resync is pending.
 - **Gates:** `go test -race ./internal/api/... ./internal/dillad/...`; `check:docs` (the 503 rows in protocol/09).
 
 ### Task UP3 (opus): installer and units
 - **Files:**
-  - `deploy/dilla-media.service`: drop `PartOf`; add `RestartForceExitStatus=` only if UP1 needs it (it does not: the timer restarts the SFU);
+  - `deploy/dilla-media.service`: drop `PartOf`; `Type=notify`, `NotifyAccess=main`, `TimeoutStartSec=60s` (R-UP5);
   - `deploy/dilla-media-refresh.service` and `deploy/dilla-media-refresh.timer` (new, R-UP4);
   - `deploy/install.sh`:
     - `write_media_unit` (`:483-522`) and new writers for the timer units;
-    - the download and verify block (`:425-470`): fetch `release.json` and check it against SHA256SUMS;
+    - the download and verify block (`:425-470`): if SHA256SUMS lists `release.json`, fetch it and verify it; if not, take the restart path, or refuse when the tag is v0.1.0-web3.12 or later (R-UP3);
+    - the running SFU's level: `media.json` only when its `pid` equals `MainPID`; otherwise `/proc/$MAINPID/exe version`, mapping v0.1.0-web3.11 to level 1 and anything else to restart required;
     - the `--release-json FILE` flag for `--binary` mode;
     - the `--restart-sfu` flag;
     - the upgrade block (`:658-738`);
     - `live_calls_preflight` (`:627-656`, and the comment at `:633`);
     - the rollback text (`:596-622`);
     - the TURN handoff in the refresh service (R-UP4, R-UP11), and the conditional `AmbientCapabilities` on `dilla-media.service`;
-    - a rollback below web3.12 while the SFU runs web3.12+: stop `dilla-media` first, and say that this ends calls;
+    - a rollback below web3.12 while the SFU runs web3.12+: stop `dilla-media` first, and say that this ends calls. With the public-mode opt-in `turn.listen` set, refuse before changing anything and tell the operator to remove the key first (R-UP11);
   - `deploy/install_test.sh`, `deploy/deploy_test.go`, `deploy/proxmox-lxc.sh` (if it writes units).
 - **Upgrade flow:**
-  1. Verify the binary, the core and `release.json`. Cross-check `release.json` against `"$WORK/dillad" version --json`.
+  1. Verify the binary and the core, and `release.json` when SHA256SUMS lists it. Cross-check `release.json` against `"$WORK/dillad" version --json`.
   2. Read the running SFU's level (R-UP3), then decide between keep and restart.
   3. On restart only: the preflight.
   4. Keep the `.prev` copies, put the new files in place, write the units, `daemon-reload`, and enable `dilla-media-refresh.timer`.
-  5. `systemctl restart dilla`. On failure, run today's rollback. It touches `dilla-media` only if this run restarted it.
-  6. On restart only: `systemctl restart dilla-media` and `media --probe`.
+  5. **Keep:**
+     - `systemctl restart dilla`.
+     - On failure, run today's rollback (schema down, `.prev` back, start `dilla`); `dilla-media` is untouched, because it still runs the previous binary.
+  6. **Restart:**
+     - `systemctl restart dilla-media`. With `Type=notify` the call returns at READY; then check that `media.json` is valid with the new version.
+     - Then `systemctl restart dilla`.
+     - If the API fails:
+       - schema down as today;
+       - restore the `.prev` pair;
+       - `systemctl stop dilla-media`;
+       - `systemctl start dilla-media` and wait for READY;
+       - `systemctl start dilla`.
   7. Doctor, and report which binary the SFU runs.
 - **First install:** write and enable the timer too.
 - **The in_process → sidecar migration** keeps today's path. It ends calls, and it is the one case that still needs `--yes`.
 - **Tests** (stub `systemctl`, `runuser` and `dillad`):
   - compatible upgrade with live rooms: `dilla` is restarted once, `dilla-media` never, and the upgrade is not refused;
-  - incompatible upgrade with live rooms: refused, nothing changed; with `--restart-sfu`: one restart each;
+  - incompatible upgrade with live rooms: refused, nothing changed; with `--restart-sfu`: one restart each, `dilla-media` before `dilla`;
+  - restart path, the API fails: `.prev` restored, then `dilla-media` stopped and started before `dilla`;
+  - a stale `media.json` (pid ≠ `MainPID`) is ignored, and the `/proc/$MAINPID/exe version` fallback decides;
+  - a reboot of a mixed pair (SFU on web3.11 with a stale `media.json`, the binary on disk web3.12): both units come up on web3.12, `media.json` is rewritten by the new process, and the refresh service then finds nothing to do;
   - `--restart-sfu` on a compatible release;
   - a web3.11 SFU (no `media.json`, installed `v0.1.0-web3.11`) counts as level 1, and an older one needs a restart;
   - `release.json`:
-    - missing from SHA256SUMS: refused;
+    - listed with a wrong sum: refused;
     - disagrees with the binary: refused;
-    - absent from the release: restart required;
+    - not listed for tag web3.12: refused;
+    - not listed for tag web3.11 (a downgrade): restart path;
   - the API restart fails: rollback, and the SFU is untouched;
   - the units have no `PartOf`, and the timer is enabled;
   - the refresh service:
@@ -238,20 +282,21 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - `--idle` exits 69: no restart;
     - TURN handoff: an idle restart from a no-`turn` SFU onto a `turn` binary restarts `dilla-media`, then `dilla`, in that order; between two `turn` binaries, `dilla` is not restarted;
     - `turn.listen` on port 3478: no capability added; on port 443 behind a proxy: the capability is added;
-    - a rollback to web3.11 with a web3.12 SFU stops `dilla-media` before it starts `dilla`.
+    - a rollback to web3.11 with a web3.12 SFU stops `dilla-media` before it starts `dilla`;
+    - a rollback to web3.11 with the public-mode opt-in `turn.listen` set: refused, nothing changed, and the message names the key.
 - **Gates:** `sh deploy/install_test.sh`; `go test ./deploy/...`; shellcheck.
 
 ### Task UP4 (sonnet): release metadata and CI compatibility
 - **Files:**
   - `.github/workflows/release.yml`, the assets step (`:202-227`):
-    - write `release.json` from `./dillad-linux-amd64 version --json` plus the tag, with `sfu_restart` computed against the previous release's `release.json` (no previous file: `"required"`);
+    - write `release.json` from `./dillad-linux-amd64 version --json` plus the tag. `sfu_restart` is computed against the previous release's `release.json`. When the previous release has none, it is v0.1.0-web3.11 and counts as `media_level` 1, so web3.12 comes out `"when-idle"`, matching UP10's Versions row. A previous release older than web3.11 with no file counts as `"required"`.
     - add it to SHA256SUMS and to the uploaded assets; the asset count goes from 4 to 5;
     - add a needs-gate on `sfu-compat`.
   - `.github/workflows/ci.yml`, the job `sfu-compat`:
-    - download the latest release's `dillad-linux-amd64`, SHA256SUMS and `release.json` with `gh release download`, and verify the sums;
+    - download the latest release's `dillad-linux-amd64` and SHA256SUMS, plus `release.json` when SHA256SUMS lists it, with `gh release download`, and verify the sums. Without a `release.json`, the previous release is v0.1.0-web3.11 = level 1, the same rule as release.yml;
     - run e2e `voice/upgrade.spec.ts --grep compat` with the test host's sidecar SFU taken from that binary (UP5).
     - Skip it, with a notice, when the new `min_sfu_media_level` is above the previous `media_level`: an incompatible release is announced, and the job then only asserts the notes say "required".
-  - `scripts/check-release-meta.mjs` (part of `check:ci`): the notes file's Versions row "Media server (SFU)" must agree with the computed `sfu_restart`.
+  - `scripts/check-release-meta.mjs` (part of `check:ci`): the notes file's Versions row "Media server (SFU)" must agree with the computed `sfu_restart`, using the same rule that a missing previous file means web3.11 = level 1. One shared helper, `scripts/release-meta.mjs`, holds that rule and is used by all three: release.yml, the CI job and this check.
 - **Gates:** actionlint; `npm run check:ci`; a dry run of the asset step on a local build.
 
 ### Task UP5 (sonnet): test host sidecar mode
@@ -261,6 +306,7 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
 - **The API restarts on its own:** `host.stop()` and `startTestHost` with `keepData` restart only the API.
 - **`restartMedia()`** restarts the SFU process.
 - **`-web-root` swap** serves a copy of `packages/web/dist` with a changed `app-version.json`, so the page sees a new build.
+- **`-state-dir`:** each process takes its state directory from its own generated config, never `/var/lib/dillad`. The TURN and socket settings are added in UP9.
 - **Tests:** `host.ts` unit tests for the argument shapes; a smoke spec that starts and stops both processes.
 - **Gates:** `go test ./cmd/dilla-testhost/...`; the e2e typecheck.
 
@@ -279,7 +325,15 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - `joinCall` first checks the hold or `callKeep` for `t.channelId`.
   - If `read.groupId` equals the held group, catch up on the group lane, then `mediaEpoch` and `startCall`.
   - On `E_LEAF_NOT_CURRENT`, a removed member row, `E_NOT_FOUND` for the group, or a different `read.groupId`: forget (no Remove: the leaf is already gone, or the group is closed), then run `joinLoop` as today.
-- **Sweep:** `sweepStaleCalls` skips the group named in a `callKeep` whose `until` has not passed, and deletes expired markers.
+  - **A marker past `until` is still tried.** The server's leaf check decides. The worker reports `expired: true`, so the page applies late-rejoin (UP7).
+- **Sweep:**
+  - `sweepStaleCalls` skips the group named in a `callKeep` whose `until` has not passed.
+  - An expired marker is acted on (self-Remove and forget, then the marker is deleted) only after the instance has answered, that is, `getChannelCall` succeeded. Offline (status 0), it keeps both the marker and the group.
+- **`protocol/01-groups.md`, call groups:**
+  - a held leaf is bounded by the room sweep alone;
+  - `E_LEAF_NOT_CURRENT` covers a removed leaf and a group whose epoch is unknown (`EpochUnknown`);
+  - forgetting without a Remove is safe, because the sweep is authoritative: the instance proposes the Remove of an absent leaf itself.
+- **`protocol/08-threat-model.md`:** the same bound, in one paragraph.
 - **Tests:**
   - lost: no `postProposal`, no forget;
   - rejoin within the hold: no external commit (`postGroup`, external join), the same epoch key, and `startCall` called;
@@ -288,6 +342,9 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - `callRelease` and expiry: exactly one self-Remove;
   - a blocked leave and a user leave: a self-Remove as today;
   - the boot sweep spares the kept group and sweeps an expired or unnamed one (`sweep.test.ts`);
+  - an expired marker while offline: nothing posted, nothing forgotten, the marker kept; once online: exactly one self-Remove;
+  - a resume from an expired marker is tried, and succeeds when the leaf is still current, with `expired: true` reported;
+  - a leaf whose group is `EpochUnknown` answers `E_LEAF_NOT_CURRENT`, then forget and an external join;
   - sign-out drops the hold with a self-Remove.
 - **Gates:** client-core vitest and typecheck; the wasm-pack build; `check:docs`.
 
@@ -308,15 +365,17 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - local track published.
     Record the measured budget in the code comment. Target: at most 5 s from `pagehide` to the published track on the CI host.
   - **The late-rejoin rule never fires on an update reload.**
-    - A resume from `callKeep` records no absence and skips the `leftAway` verdict entirely, whatever the clocks say.
-    - Test this with the clock 10 minutes ahead and an AFK timeout of 60 s.
+    - A resume from an **unexpired** `callKeep` records no absence and skips the `leftAway` verdict entirely, whatever the clocks say.
+    - A resume from an expired marker (`expired: true`) takes the normal late-rejoin path, so an absence longer than the AFK timeout does not auto-rejoin.
+    - Test: the wall clock (`Date.now`) is moved 10 minutes ahead **before** `pagehide`, with an AFK timeout of 60 s and an unexpired marker. The resume still happens, with no `leftAway`.
+    - Test: an expired marker with an absence over the timeout ends `leftAway`.
   - **Microphone permission.** If the browser asks again (for example a Firefox "ask every time" grant), the resume shows the existing microphone prompt. This one case cannot meet 5 s, and it is listed as a known limit.
 - **useCall:**
   - `E_UNAVAILABLE` is transient: the next attempt waits at least `retry_after_ms`.
   - The restore window follows R-UP8 and counts only while the worker reports the instance online. The `online` slice already exists; reuse it.
   - The instance answering again triggers an immediate attempt.
   - `endRecovery` and a person's leave post `callRelease`.
-  - R-UP9, if fix/late-rejoin has merged; otherwise leave a `TODO(late-rejoin)` test that is skipped with a reason, and the reviewer checks it at merge.
+  - R-UP9. This is a hard dependency on fix/late-rejoin (PR #62): UP7 starts only after it has merged, on top of it.
 - **LiveKit:**
   - Set `reconnectPolicy` so the signalling resume keeps trying for 90 s, with a delay capped at 5 s.
   - First measure how long livekit-server v1.13.7 holds a participant whose signalling dropped while its media flows. Record the number in the code comment. If that is shorter than 90 s, raise it in the media config (`internal/sfu/config.go`).
@@ -334,32 +393,51 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
 
 ### Task UP8 (opus): TURN moves into `dilla-media` (R-UP11, Q2 = B)
 - **Files:**
-  - `cmd/dillad/media.go` (`serveMedia`): start TURN with the media process's listener. Behind a proxy that is `turn.listen`, with `proxy_protocol`; in public mode it is the opt-in `turn.listen` with the certmagic certificate. Pass `turnPeers` and the `node_ip` anchor, now computed here.
-  - `cmd/dillad/front.go` (`:110-125`, `:175-185`, `:500-510`): `serve` starts TURN only when the running SFU lacks the `turn` capability, or when `livekit.mode` is `in_process`. The 443 demux branch stays in `serve`.
+  - `cmd/dillad/media.go` (`serveMedia`):
+    - Start TURN with the media process's listener. Behind a proxy that is `turn.listen`, with `proxy_protocol`; in public mode it is the opt-in `turn.listen`, with the certmagic certificate read only. Pass `turnPeers` and the `node_ip` anchor, now computed here.
+    - Retry a bind that fails (the API still holds the port during the handoff) every 5 s.
+    - Rewrite `media.json` with `turn` **only once the bind has succeeded**.
+    - `--idle` adds the recent-mint check over `api.sock` (R-UP4).
+  - `cmd/dillad/front.go` (`:110-125`, `:175-185`, `:500-510`):
+    - `serve` binds `turn.listen` only when the running SFU's valid `media.json` lacks `turn`, or when `livekit.mode` is `in_process`.
+    - In public mode without the opt-in, the 443 demux relay always runs, whatever the capability says.
+    - With the opt-in, no 443 relay runs, and `iceServers` names only `turn.public_url` or the media listener.
   - `internal/server/turnrevoke.go`:
-    - `RelayRevocations` gains `floor = start time` for a media-owned relay;
-    - a `RemoteBarred` that implements `BarredLookup` over `api.sock` and fails closed;
+    - the media-owned relay reuses the existing process-start floor (`:79-81`; fix the comment's in-process premise);
+    - a new `MergeCuts([]cut)`: a union that keeps the later cut time per device, never removes an entry and never lowers a time;
+    - a `RemoteBarred` that implements `BarredLookup` over `api.sock`, keeping today's failure semantics;
   - `internal/server/relayctl.go` (new):
-    - the `media.sock` server: `POST /relay/cut {device, at}`, `PUT /relay/cuts [...]`, `GET /relay/state` (allocation count, owner, floor);
-    - the client the API uses as `RelayRevoker`, which replays the cut set on (re)connect;
-  - `internal/dillad/routes.go:105` and `server.go`: wire the remote revoker; serve `api.sock` with the one route `GET /relay/barred/{device}`;
+    - the `media.sock` server: `POST /relay/cut {device, at}` (answers once applied), `PUT /relay/cuts [...]` (`MergeCuts`), `GET /relay/state` (allocation count, owner, floor);
+    - a `RelayRevoker` that wraps the API's local `RelayRevocations` and the socket client. `Revoke` applies locally first, so `Mint` stays ordered under its lock, then forwards. The device stays `isPending` (UP2's 503) until the media relay acknowledges. The retry loop resends unacknowledged cuts and replays the whole set with `PUT /relay/cuts` on every reconnect.
+  - `internal/dillad/routes.go:105` and `server.go`: wire the wrapping revoker; serve `api.sock` with two routes, `GET /relay/barred/{device}` and `GET /media/recent-mints` (a count of call tokens minted in the last 60 s);
   - `internal/config/validate.go:165-170`: allow `turn.listen` in public mode (opt-in);
   - `cmd/dillad/doctor.go:221` (and `internal/ops/doctor.go:326`): the `turn` leg names the owner (`media` or `api`) from `media.json` and `GET /relay/state`, then probes the listener as today; it is red when both or neither process serves TURN;
   - TURN metrics: the media process exposes them if it has a metrics listener; otherwise this is a known limit, and they appear in `GET /relay/state`.
-- **Socket security:** both sockets are 0600 in the 0700 `StateDirectory`, owned by `dillad`. The server checks `SO_PEERCRED` for the `dillad` uid. Requests are bounded in size and time, and are not reachable from the network.
+- **Socket security:** both sockets are 0600 in the 0700 state directory (derived from the config, never hard-coded), owned by `dillad`. The server checks `SO_PEERCRED` for the `dillad` uid. Requests are bounded in size and time, and are not reachable from the network.
 - **Tests:**
   - a credential minted by the API is accepted by the media relay;
   - a credential issued before the relay started is refused;
   - a cut through `media.sock` ends that device's allocations and refuses new ones;
   - the API reconnects and replays its cut set;
-  - the barred lookup fails closed while `api.sock` is down, and existing allocations keep relaying;
-  - `serve` binds no TURN when `media.json` has `turn`, and binds it as before with a web3.11 `media.json` (none);
+  - **a cut holds across an API restart and a replay:** cut device D, restart the API (its local map is now empty), let it replay an empty or older set. D's credential issued before the cut is still refused, and D's cut time is unchanged.
+  - the merge keeps the later of two cut times and never drops an entry;
+  - an unacknowledged cut (`media.sock` down) keeps D `isPending` (503) and is resent once the socket returns;
+  - `Mint` stays ordered against a concurrent `Revoke` (today's race test, run through the wrapper);
+  - a failed barred lookup over `api.sock` caches nothing and is logged; the cut map still refuses cut devices;
+  - `serve` binds no `turn.listen` when a valid `media.json` has `turn`, and binds it as before with a web3.11 SFU (no file);
+  - `media.json` lists `turn` only after the bind succeeded: test it with the port held by another listener, then released;
+  - **public mode:** without the opt-in, `serve` keeps the 443 demux relay even when `media.json` has `turn`, and a relayed allocation over 443 works; with the opt-in, `serve` binds no 443 relay, and `iceServers` names only the media relay;
+  - `--idle` is busy while a token was minted within 60 s, and also while `api.sock` does not answer;
   - the doctor's owner reporting, and red when both or neither serve TURN;
   - **a relayed client survives an API-only restart:** a Go integration test with a pion TURN client allocating through the media relay to the SFU, while the API process restarts. Its allocation and data keep flowing, and new allocations during the outage are refused.
   - e2e: covered in UP9 with a forced relay peer.
 - **Gates:** `go test -race ./internal/server/... ./cmd/dillad/... ./internal/dillad/...`; golangci-lint; `check:docs`.
 
 ### Task UP9 (sonnet): acceptance e2e, `e2e/voice/upgrade.spec.ts`
+- **Test-host config (moved here from UP5):**
+  - the sidecar's generated `dilla.toml` gains `turn.enabled`, `turn.listen` on a free loopback port and a `turn.shared_secret_file` shared with the API host;
+  - both processes get the same per-test state directory, so `media.sock`, `api.sock` and `media.json` resolve from config;
+  - the API host is started with TURN handed to the media process.
 - **Setup:** the UP5 sidecar host, with TURN served by the media process. Three peers (the `peer-browser` support) in one community voice channel, all heard by each other. Peer 3 forces relay (`iceTransportPolicy: 'relay'`).
 - **A, full restart, no input:**
   - stop the API, restart the SFU, start the API with a new web build;
@@ -382,7 +460,10 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - the intro (`:1-10`) and the mermaid diagram (`:13-30`): the SFU and its TURN relay are no longer restarted with the API;
   - §1's TURN sections (`:92-180`): TURN runs in `dilla-media`; the public-mode 443 path and the opt-in `turn.listen`; the ports are unchanged behind a proxy;
   - §3 systemd (`:300-330`): no `PartOf`, the refresh timer, `media --idle`, `media.sock` and `api.sock`;
-  - the install script upgrade section (`:431-497`): `--restart-sfu`, `release.json`, how the keep-or-restart decision is reported, the one-time TURN handoff, rollback by hand (stop **both** units; below web3.12, stop `dilla-media` first; `systemctl disable --now dilla-media-refresh.timer`).
+  - the install script upgrade section (`:431-497`): `--restart-sfu`, `release.json`, how the keep-or-restart decision is reported, the one-time TURN handoff, rollback by hand:
+    - stop **both** units;
+    - below web3.12, stop `dilla-media` first, and remove a public-mode `turn.listen` from `dilla.toml` first, because web3.11 refuses it;
+    - `systemctl disable --now dilla-media-refresh.timer`.
 - **`docs/deploy/releases/v0.1.0-web3.12.md`** (append to late-rejoin's stub):
   - a new Versions row, **"Media server (SFU) | when-idle (level 2, keeps web3.11's level 1) | …"**;
   - the operator notes below;
@@ -395,14 +476,18 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
 
 **Order and dependencies:**
 1. UP1: every later task reads `version --json`, `media.json`, the capability or `--idle`.
-2. UP2 ∥ UP5 ∥ UP8: disjoint files. UP8 touches `cmd/dillad/{media,front,doctor}.go`, `internal/server` and `internal/dillad`; UP2 touches `internal/api`. The one shared file is the doctor, which UP1 has already changed. Writers in the same worktree stay sequential.
-3. UP3 after UP1 and UP8: the TURN handoff, the capability rule and the rollback order depend on UP8's behaviour.
-4. UP6, then UP7. UP7 needs UP2's 503 and fix/late-rejoin, merged or rebased.
-5. UP9 needs UP5, UP7 and UP8.
-6. UP4 needs UP9's spec, because its compat job runs it.
-7. UP10 last.
+2. UP2 ∥ UP5: disjoint files (`internal/api`; `cmd/dilla-testhost` and `e2e/web/support`).
+3. UP8 after UP1 and UP2:
+   - it edits `cmd/dillad/doctor.go` and `cmd/dillad/media.go`, which UP1 also changes;
+   - its unacknowledged-cut rule extends UP2's `isPending` 503 in `internal/api`.
+   Writers in the same worktree stay sequential.
+4. UP3 after UP1 and UP8: the TURN handoff, the capability rule, `Type=notify` and the rollback order depend on their behaviour.
+5. UP6, then UP7. UP7 needs UP2's 503, and has a hard dependency on fix/late-rejoin (PR #62) having merged.
+6. UP9 needs UP5, UP7 and UP8.
+7. UP4 needs UP9's spec, because its compat job runs it.
+8. UP10 last.
 
-In short: UP1 → (UP2 ∥ UP5 ∥ UP8) → UP3 → UP6 → UP7 → UP9 → UP4 → UP10.
+In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → UP7 (after PR #62) → UP9 → UP4 → UP10. UP6 has no server dependency and may start in a parallel copy after UP1.
 
 ## Edge cases
 - **A start in flight while the timer restarts the SFU.** A room under 60 s old counts as busy. The few milliseconds left between the check and the restart give a start a 503 followed by a retry (R-UP7, R-UP8).
@@ -414,7 +499,7 @@ In short: UP1 → (UP2 ∥ UP5 ∥ UP8) → UP3 → UP6 → UP7 → UP9 → UP4 
   - the media process retries the bind every 5 s and logs it;
   - the doctor shows red "TURN served by neither process" only if the API has let go of the port;
   - calls recover through R-UP6; the call ended, so they join a fresh group.
-- **The API is down and a relayed client needs a new allocation** (an ICE restart). It is refused, because the barred lookup fails closed. The client retries after the API is back.
+- **The API is down and a relayed client needs a new allocation** (an ICE restart). Its credential still authenticates against the media relay's cut map, and the allocation is granted. The barred lookup fails, caches nothing and is retried later, as today. A cut device is refused by the cut map whatever the lookup does.
 - **Two tabs.** The hold lives in the tab's worker. `E_CALL_IN_OTHER_TAB` rules are unchanged.
 - **A DM call.** It is held the same way. Late-rejoin does not apply to DM calls.
 
@@ -425,9 +510,10 @@ In short: UP1 → (UP2 ∥ UP5 ∥ UP8) → UP3 → UP6 → UP7 → UP9 → UP4 
   - Behind a proxy: the same `turn.listen`, no edits.
   - The handoff from a web3.11 SFU happens once, at the first idle refresh, which also restarts `dilla` once.
   - Public mode: `turns:` on 443 stays in the API (it does not survive an API restart), and an optional `turn.listen` moves it to the media service.
-  - New sockets: `/var/lib/dillad/media.sock` and `/var/lib/dillad/api.sock`.
+  - New sockets, in the state directory (`/var/lib/dillad` with the shipped units): `media.sock` and `api.sock`.
   - The doctor's `turn` leg names the owner.
-  - Rollback below web3.12: stop `dilla-media` first, which ends calls.
+  - Rollback below web3.12: stop `dilla-media` first, which ends calls. Remove a public-mode `turn.listen` first; the installer refuses until you do.
+- **`dilla-media.service` is `Type=notify`:** `systemctl start` returns once the SFU is ready.
 - **`dilla-media` keeps the previous binary** until its calls end. `dilla-media-refresh.timer` then restarts it onto the new one. `dillad doctor` shows "dilla-media runs vX (older)" until then.
 - **`--restart-sfu`** restarts the media server now and ends live calls. `--yes` is kept as an alias for one release.
 - **New release asset `release.json`**, listed in SHA256SUMS. The installer refuses a mismatch. `--binary` mode takes `--release-json FILE`.
@@ -453,7 +539,8 @@ In short: UP1 → (UP2 ∥ UP5 ∥ UP8) → UP3 → UP6 → UP7 → UP9 → UP4 
 - **Authz (UP2, UP8):**
   - the 503 is still a refusal at both the start and the `/rtc` gate;
   - slot adoption never exceeds `max_publishers` and never grants a penalised or barred device;
-  - the media relay's credential floor, its fail-closed barred lookup and the cut replay leave no window in which a cut or barred device gets a new allocation;
+  - the media relay's credential floor, the merge-only cut replay and the acknowledged cut (`isPending` until acked) leave no window in which a cut device gets a new allocation;
+  - `Mint` stays ordered against cuts under the API's local lock;
   - the sockets accept only the `dillad` uid.
 - **Installer safety (UP3):**
   - no path restarts `dilla-media` without a decision logged;
@@ -470,3 +557,7 @@ In short: UP1 → (UP2 ∥ UP5 ∥ UP8) → UP3 → UP6 → UP7 → UP9 → UP4 
 ## Decided
 - **Q1 = B** (Jonas, 2026-10-21): reload at once and resume, with an audio gap of at most 5 s. The former UP8 (deferring the reload) is dropped.
 - **Q2 = B** (Jonas, 2026-10-21): TURN moves into `dilla-media` now (UP8). Public-mode `turns:` on 443 stays with the API by necessity, and the opt-in `turn.listen` covers it.
+- **Pre-flight review (opus): NEEDS-CHANGES, all 18 corrections applied.** One clarification, not a rejection:
+  - The plan's earlier "the barred lookup fails closed" contradicted today's `RelayRevocations` design (`turnrevoke.go:85-93`): a failed lookup caches nothing, the auth handler never waits on a lookup, and the cut map is authoritative. UP8 now keeps those semantics.
+  - Failing closed would refuse every relayed ICE restart during an API restart, which is exactly what Q2 is meant to keep working. Revocation safety rests on the merged, acknowledged cut map (corrections 2 and 16).
+- **Correction 13** is implemented, not listed as a limit: `--idle` asks `api.sock` for tokens minted in the last 60 s, and an API that does not answer counts as busy.
