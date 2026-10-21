@@ -872,7 +872,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
+| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**); `503 E_UNAVAILABLE` with `retry_after_ms` 2000 when a removal or demotion of the device in the call is pending (see **Losing access**) or the SFU does not answer (it cannot open the room or mint the token) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
@@ -1101,10 +1101,23 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   publish grant away from that participant rather than leave the old one in place. A participant
   whose identity is no device of the instance is removed from a call's room. A removal or demotion
   the SFU does not take stays **pending**: the device keeps counting against
-  `livekit.max_publishers`, a start of the call answers it `403 E_FORBIDDEN` and the signalling proxy
-  refuses it, and the instance retries every five seconds and at that device's next start, share or
-  signalling request until the SFU holds a permission within the device's entitlement or the device
-  has left. Every slot transition and every permission the instance pushes for a call is serialised
+  `livekit.max_publishers`, a start of the call and the signalling proxy answer it
+  `503 E_UNAVAILABLE` with `retry_after_ms` 2000 — a refusal that mints and admits nothing, but a
+  transient one, which the client retries — a share answers it `403 E_FORBIDDEN`, and the instance
+  retries every five seconds and at that device's next start, share or signalling request until the
+  SFU holds a permission within the device's entitlement or the device has left. Once the repair
+  lands every other check runs again, so a barred device then gets its `403 E_FORBIDDEN`.
+  **An instance restart.** The SFU can outlive a restart of the instance's API process, keeping its
+  rooms and their participants, while the instance's own record of sharing slots, pending repairs
+  and strikes is lost. Before it serves any request, the restarted instance reconciles every live
+  call's room once, as the room sweep does (within the sweep's 20-second budget): a device the room
+  lists publishing a camera or screen track gets its sharing slot back, oldest publication first, up
+  to `livekit.max_publishers`, when it is still entitled to one, and only the excess is demoted; a
+  participant that is barred or no current leaf is disconnected. That reconcile ends no call and
+  removes no leaf; a call group member the room does not list is removed one sweep period later, as
+  for a lost leave. When the SFU does not answer at that moment, nothing is changed: each live call's
+  room is reconciled by the retry loop once the SFU answers, and the instance serves meanwhile.
+  Every slot transition and every permission the instance pushes for a call is serialised
   per call, so the devices that may publish a camera or screen source are always among the slot
   holders. A start, a share, an unshare or the signalling proxy that cannot take that serialisation
   within two seconds — the SFU is stuck on the call — answers `503 E_UNAVAILABLE` with
@@ -1116,8 +1129,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   that device must be a current leaf of the live call whose room the token names
   (`403 E_LEAF_NOT_CURRENT` otherwise), so a device the call group has removed cannot rejoin with a
   token the SFU re-issued to it. The device must not be barred, its user must still hold
-  `view_channel` and `connect` in the channel, and no removal or demotion of it may be pending
-  (`403 E_FORBIDDEN`), and the token may
+  `view_channel` and `connect` in the channel (`403 E_FORBIDDEN`), no removal or demotion of it may
+  be pending (`503 E_UNAVAILABLE` with `retry_after_ms` 2000; checked before the others, which run
+  again once the repair lands), and the token may
   confer nothing beyond the device's current base grant (`403 E_FORBIDDEN`): a token minted while
   the device held `speak` is refused once `speak` is revoked, and a token the SFU re-issued while the
   device shared (it carries the camera) is refused for a fresh join — the client starts the call

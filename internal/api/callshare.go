@@ -20,8 +20,13 @@ import (
 // it: per call, the devices holding a sharing slot and when they took it, the participants whose
 // required cut or demotion has not landed in the SFU yet (pending repairs), and the per-call lock.
 // A slot covers camera, screen and screen audio together; screen audio never counts alone and the
-// microphone never counts. It lives in memory because the SFU is in-process: a restart drops every
-// call, and every lease and repair with it.
+// microphone never counts. It lives in memory, so an API restart loses it while the SFU — a sidecar
+// (`dilla-media`) that outlives the restart — keeps its rooms, their participants and the permissions
+// last pushed. The boot reconcile (BootReconcile, UP2) rebuilds what the SFU still shows: each live
+// call's first whole-room reconcile after boot adopts a slot for every camera or screen publisher,
+// oldest publication first, up to livekit.max_publishers (adoptSlots), and cuts every barred
+// participant and every one without a current leaf, so a repair lost with the old process is redone.
+// F11 strikes are counted again from the tracks the room still lists (strikeListed).
 //
 // The per-call lock (lockCall) serialises every lease transition of a call together with the SFU
 // push that goes with it: no path pushes a permission for a call, takes or frees a slot, or records
@@ -39,6 +44,11 @@ type shareLeases struct {
 	// the /rtc gate — so neither the room sweep nor a grant sync re-grants it, and it lasts as long
 	// as the room.
 	penalties map[id.ID]map[id.ID]penalty
+	// adopt is each call live at boot whose slots have not been adopted yet, with its room (F1, UP2):
+	// set by BootReconcile while no lease of the call exists, consumed by the call's first whole-room
+	// reconcile that completes, and given up by the first share or unshare of the call, after which
+	// the lease map is the devices' own again.
+	adopt map[id.ID]string
 }
 
 // penalty is one device's F11 strikes in the room of a call they were counted in, and the track sids
@@ -86,7 +96,37 @@ func newShareLeases() *shareLeases {
 		pending:   map[id.ID]map[string]pendingRepair{},
 		locks:     map[id.ID]*callLock{},
 		penalties: map[id.ID]map[id.ID]penalty{},
+		adopt:     map[id.ID]string{},
 	}
+}
+
+// markAdopt records that call, live in room at boot, adopts its publishers' slots at its first
+// whole-room reconcile (F1). A call that already holds a slot of room adopts nothing.
+func (l *shareLeases) markAdopt(call id.ID, room string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, s := range l.byCall[call] {
+		if s.room == room {
+			return
+		}
+	}
+	l.adopt[call] = room
+}
+
+// adopting reports whether call's room still adopts its publishers' slots.
+func (l *shareLeases) adopting(call id.ID, room string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.adopt[call]
+	return ok && r == room
+}
+
+// endAdopt ends call's adoption: its first whole-room reconcile completed, or a device shared or
+// unshared in it.
+func (l *shareLeases) endAdopt(call id.ID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.adopt, call)
 }
 
 // strikeTrack counts one F11 violation of dev in call's room for the publication track (its track
@@ -321,6 +361,7 @@ func (l *shareLeases) dropCall(call id.ID) {
 	delete(l.byCall, call)
 	delete(l.pending, call)
 	delete(l.penalties, call)
+	delete(l.adopt, call)
 }
 
 // dropRoom forgets every slot, repair and F11 penalty of call recorded for room: that room's call
@@ -352,6 +393,9 @@ func (l *shareLeases) dropRoom(call id.ID, room string) {
 	}
 	if len(l.penalties[call]) == 0 {
 		delete(l.penalties, call)
+	}
+	if l.adopt[call] == room {
+		delete(l.adopt, call)
 	}
 }
 
@@ -483,6 +527,9 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
+	// The lease map is the devices' own from the first share after boot on (F1): no slot is adopted
+	// past it.
+	h.leases.endAdopt(cur.CallID)
 	// A request drives only its own device's repair; every other one is the retry loop's.
 	h.drainPending(ctx, h.deps(), ch, cur, 1, s.DeviceID.String())
 	if h.leases.isPending(cur.CallID, s.DeviceID) {
@@ -580,6 +627,9 @@ func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store
 	if !live {
 		return nil
 	}
+	// An unshare after boot is a device's own lease decision: no slot is adopted past it (F1), so a
+	// camera the SFU still lists while it unpublishes is never adopted back.
+	h.leases.endAdopt(cur.CallID)
 	d := h.deps()
 	h.drainPending(ctx, d, ch, cur, 1, dev.String())
 	if !h.leases.held(cur.CallID, cur.LivekitRoom, dev) {

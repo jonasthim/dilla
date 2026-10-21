@@ -592,9 +592,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	// DEV-44: the SFU never creates a room on a join (room.auto_create: false), so every start opens
 	// it first. CreateRoom is idempotent on a live room, and re-opens one LiveKit reaped (20 s after
 	// the last leave, 300 s when nobody joined) while the row was still live.
+	// R-UP7: an SFU that does not answer (dilla-media restarting, or not up yet) is transient: 503
+	// with retry_after_ms, which the client retries, not a 500 it gives up on.
 	if err := h.sfu.CreateRoom(r.Context(), row.LivekitRoom); err != nil {
 		h.log.ErrorContext(r.Context(), "opening a LiveKit room failed", "room", row.LivekitRoom, "err", err)
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not open the room"))
+		server.WriteError(w, errMediaDown())
 		return
 	}
 	// A device whose cut or demotion in this call has not landed in the SFU gets no token for it until
@@ -604,7 +606,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.leases.isPending(callID, s.DeviceID) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
+		server.WriteError(w, errRepairPending())
 		return
 	}
 	if h.callFull(r.Context(), row.LivekitRoom, s.DeviceID) {
@@ -618,7 +620,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
+		server.WriteError(w, errMediaDown())
 		return
 	}
 	h.startStage("mint")
@@ -1169,9 +1171,10 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 // source, exactly what a token is minted with — which the gate compares the token's grants against,
 // so a token can never confer more at admission than the device holds now (a microphone after speak
 // was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
-// room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
-// that is barred, lost access or whose repair is pending, and for a room of the AFK channel (R-AW1).
-// Anything else is a store failure.
+// room that is no live call's or a device that is no current leaf of it, E_UNAVAILABLE with
+// retry_after_ms for a device whose repair is pending (R-UP7: still a refusal, and once the repair
+// lands every check below runs again), E_FORBIDDEN for a device that is barred or lost access, and
+// for a room of the AFK channel (R-AW1). Anything else is a store failure.
 func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
 	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
@@ -1206,7 +1209,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		return nil, err
 	}
 	if h.leases.isPending(callID, device) {
-		return nil, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked")
+		return nil, errRepairPending()
 	}
 	dev, err := h.repo.GetDevice(ctx, device)
 	if errors.Is(err, store.ErrNotFound) {
@@ -1300,6 +1303,24 @@ func barred(ctx context.Context, repo store.Repository, dv store.DeviceRow) (boo
 
 func errBarred() error {
 	return server.Errorf(server.CodeForbidden, "your device or account may not take part in calls")
+}
+
+// transientRetryAfterMS is the retry_after_ms of R-UP7's transient refusals (errRepairPending,
+// errMediaDown).
+const transientRetryAfterMS = 2_000
+
+// errRepairPending is R-UP7's answer at the start and at the /rtc gate to a device whose cut or
+// demotion in the call has not landed in the SFU: 503 E_UNAVAILABLE with retry_after_ms. It is a
+// refusal like the 403 it replaces — nothing is minted or admitted — but a transient one: once the
+// repair lands, every other check runs again, so a barred device then gets its 403.
+func errRepairPending() error {
+	return server.Unavailable(transientRetryAfterMS, "your device's access to this call is being settled")
+}
+
+// errMediaDown is R-UP7's answer to a start whose CreateRoom or token mint the SFU failed: 503
+// E_UNAVAILABLE with retry_after_ms, since the media server restarting is transient.
+func errMediaDown() error {
+	return server.Unavailable(transientRetryAfterMS, "the media server is not answering")
 }
 
 // refuseBarred is 403 E_FORBIDDEN for a barred device (barred), nil otherwise, or a store failure.
