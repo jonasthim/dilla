@@ -69,9 +69,12 @@ librespot-probe/target/debug/dilla-librespot-probe authorize-complete \
 
 The helper validates PKCE state, redirect destination and expiry before exchanging
 the code, then connects and saves reusable credentials in `credentials.json`.
-A pending authorization is single-use. If completion fails or expires, start a
-new authorization. Remove the local redirect file after the attempt. Treat the
-whole state directory, including backups, as secret material. This flow is
+A pending authorization is single-use once the callback file is successfully
+read. If callback validation or the exchange fails, start a new authorization.
+For file-path or permission errors, correct the file and retry completion. To
+discard an unused or expired flow, remove only `pending.json` in the private state
+directory before authorizing again. Remove the local redirect file after the
+attempt. Treat the whole state directory, including backups, as secret material. This flow is
 implemented for qualification; successful real pairing has not yet been observed.
 
 ## Metadata and bounded audio probe

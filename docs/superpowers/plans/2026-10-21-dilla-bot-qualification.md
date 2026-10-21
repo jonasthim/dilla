@@ -157,3 +157,63 @@ implemented and verified. Tasks 2–16 have not begun. No production bot service
 UI, APIs, protocol change, provider integration, feature release, PR, or live
 deployment is represented by this preparation. Resume from the current operator inputs
 and qualification matrix; do not bypass the qualification gate.
+
+## Librespot development probe
+
+The user approved replacing Soloist with librespot for qualification. The
+standalone Rust probe in `experiments/bot-providers/librespot-probe` pins
+librespot 0.8.0 with default audio/discovery features disabled. A private PCM pipe
+replaces the virtual sink and unauthenticated control socket. The community
+identity/MLS helper remains a separate planned component.
+
+The nested Cargo.lock also fixes `vergen` at 9.0.6 with `vergen-gitcl` 1.0.5.
+Initial dependency resolution selected vergen 9.1.0, which mixed incompatible
+vergen-lib traits in librespot-core's build script. The compatible lockfile
+builds without modifying upstream source or the main workspace's dependencies.
+
+Implemented development commands are authorization begin/completion, metadata
+resolution, bounded track playback, and a synthetic PCM smoke check. Controls
+cover pause/resume/seek/volume/stop; queues remain a future runtime feature.
+OAuth uses PKCE with state, exact callback and expiry validation. Files and
+callbacks are size-bounded; secret files require mode 0600 and the state directory
+0700. Metadata resolution constructs no player and rejects incomplete, truncated,
+non-track or oversized collections before returning descriptors.
+
+Independent OAuth-module review approved the implementation. The integrated
+helper review found a post-login cleanup gap when credential persistence fails.
+Commit `5db759ae` fixes it with a session shutdown guard, preserves shutdown before
+joining the player thread, and adds an offline lifecycle regression using a real
+librespot Session without connecting. The coordinator also reproduced and fixed
+a test fixture that depended on the ambient umask. The scoped re-review approved
+both fixes with no remaining findings.
+
+The coordinator independently verified the final integrated helper:
+
+| Check | Observed result |
+| --- | --- |
+| Locked Rust tests | 20 unit and 2 subprocess tests passed after the cleanup fix |
+| Formatting and clippy with warnings denied | Passed |
+| Shared production sink and converter, synthetic input | 176,400 bytes: one second of 44.1 kHz stereo signed 16-bit little-endian PCM |
+| That PCM through FFmpeg and ffprobe | 51 Opus packets, 48 kHz stereo, 20 ms frame cadence, 96 kbps CBR |
+| Local authorization setup, without browser/account | Created mode-0700 state and mode-0600 pending file |
+| Synthetic wrong-state callback | Rejected without token exchange, consumed pending state, allowed a new attempt |
+| Doctor with built probe path | Helper available; yt-dlp absent; exit 1 and qualification explicitly unverified |
+| Private-umask fixture check | Passed under umask 077 after making the loose-mode fixture explicit |
+
+These tests use synthetic audio and locally generated authorization state only.
+No account token exchange, cached-account login, real Spotify audio, service host
+restart/reboot or browser decryption was tested. Actual provider qualification
+remains open, including complete real playlists and upstream audio-key behavior
+for the selected account. The known compatibility issue is tracked
+[upstream](https://github.com/librespot-org/librespot/issues/1649).
+
+The Python checker revision also passed all 14 tests; protocol documentation
+checks passed. No root-workspace Rust/Go/TypeScript implementation was changed.
+The isolated worktree retains signed-off commits; original main and `.claude/`
+remain untouched. The development probe and its review are complete; this does
+not complete Task 1's real provider qualification.
+
+Use the [probe guide](../../../experiments/bot-providers/README.md) for the next
+account test. Soloist binaries, API keys, sink setup and build-expiry requirements
+are superseded. Task 0 is complete; Task 1 remains unqualified; Tasks 2–16 remain
+unstarted. No production bot release or live deployment has occurred.
