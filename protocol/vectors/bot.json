@@ -1,0 +1,516 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "overview.get",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f600f6f680",
+      "body": "dilla.bot/1:iAFQAQEBAQEBAQEBAQEBAQEBAVAiIiIiIiIiIiIiIiIiIiIi9gD29oA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "settings.get",
+      "kind": "request",
+      "hex": "880150020202020202020202020202020202025022222222222222222222222222222222f601f6f68102",
+      "body": "dilla.bot/1:iAFQAgICAgICAgICAgICAgICAlAiIiIiIiIiIiIiIiIiIiIi9gH29oEC",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "settings.put",
+      "kind": "request",
+      "hex": "880150030303030303030303030303030303035022222222222222222222222222222222f6021878187882024482016178",
+      "body": "dilla.bot/1:iAFQAwMDAwMDAwMDAwMDAwMDA1AiIiIiIiIiIiIiIiIiIiIi9gIYeBh4ggJEggFheA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.state",
+      "kind": "request",
+      "hex": "8801500b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b502222222222222222222222222222222250444444444444444444444444444444440af6f680",
+      "body": "dilla.bot/1:iAFQCwsLCwsLCwsLCwsLCwsLC1AiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQK9vaA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.search",
+      "kind": "request",
+      "hex": "8801500c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c502222222222222222222222222222222250444444444444444444444444444444440bf6f68166736561726368",
+      "body": "dilla.bot/1:iAFQDAwMDAwMDAwMDAwMDAwMDFAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQL9vaBZnNlYXJjaA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.enqueue",
+      "kind": "request",
+      "hex": "8801500d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d502222222222222222222222222222222250444444444444444444444444444444440c187818788167656e7175657565",
+      "body": "dilla.bot/1:iAFQDQ0NDQ0NDQ0NDQ0NDQ0NDVAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQMGHgYeIFnZW5xdWV1ZQ",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.pause",
+      "kind": "request",
+      "hex": "8801500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e502222222222222222222222222222222250444444444444444444444444444444440d1878187880",
+      "body": "dilla.bot/1:iAFQDg4ODg4ODg4ODg4ODg4ODlAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQNGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.resume",
+      "kind": "request",
+      "hex": "8801500f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f502222222222222222222222222222222250444444444444444444444444444444440e1878187880",
+      "body": "dilla.bot/1:iAFQDw8PDw8PDw8PDw8PDw8PD1AiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQOGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.skip",
+      "kind": "request",
+      "hex": "88015010101010101010101010101010101010502222222222222222222222222222222250444444444444444444444444444444440f1878187880",
+      "body": "dilla.bot/1:iAFQEBAQEBAQEBAQEBAQEBAQEFAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQPGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.stop",
+      "kind": "request",
+      "hex": "8801501111111111111111111111111111111150222222222222222222222222222222225044444444444444444444444444444444101878187880",
+      "body": "dilla.bot/1:iAFQEREREREREREREREREREREVAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQQGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.seek uint64",
+      "kind": "request",
+      "hex": "88015012121212121212121212121212121212502222222222222222222222222222222250444444444444444444444444444444441118781878811bffffffffffffffff",
+      "body": "dilla.bot/1:iAFQEhISEhISEhISEhISEhISElAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQRGHgYeIEb__________8",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.volume",
+      "kind": "request",
+      "hex": "88015013131313131313131313131313131313502222222222222222222222222222222250444444444444444444444444444444441218781878811850",
+      "body": "dilla.bot/1:iAFQExMTExMTExMTExMTExMTE1AiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQSGHgYeIEYUA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.shuffle",
+      "kind": "request",
+      "hex": "8801501414141414141414141414141414141450222222222222222222222222222222225044444444444444444444444444444444131878187880",
+      "body": "dilla.bot/1:iAFQFBQUFBQUFBQUFBQUFBQUFFAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQTGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.repeat",
+      "kind": "request",
+      "hex": "880150151515151515151515151515151515155022222222222222222222222222222222504444444444444444444444444444444414187818788102",
+      "body": "dilla.bot/1:iAFQFRUVFRUVFRUVFRUVFRUVFVAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQUGHgYeIEC",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.remove",
+      "kind": "request",
+      "hex": "88015016161616161616161616161616161616502222222222222222222222222222222250444444444444444444444444444444441518781878815055555555555555555555555555555555",
+      "body": "dilla.bot/1:iAFQFhYWFhYWFhYWFhYWFhYWFlAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQVGHgYeIFQVVVVVVVVVVVVVVVVVVVVVQ",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.move",
+      "kind": "request",
+      "hex": "88015017171717171717171717171717171717502222222222222222222222222222222250444444444444444444444444444444441618781878825055555555555555555555555555555555f6",
+      "body": "dilla.bot/1:iAFQFxcXFxcXFxcXFxcXFxcXF1AiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQWGHgYeIJQVVVVVVVVVVVVVVVVVVVVVfY",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "music.clear",
+      "kind": "request",
+      "hex": "8801501818181818181818181818181818181850222222222222222222222222222222225044444444444444444444444444444444171878187880",
+      "body": "dilla.bot/1:iAFQGBgYGBgYGBgYGBgYGBgYGFAiIiIiIiIiIiIiIiIiIiIiUEREREREREREREREREREREQXGHgYeIA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "welcome.preview",
+      "kind": "request",
+      "hex": "8801501f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f5022222222222222222222222222222222f6181ef6f6816568656c6c6f",
+      "body": "dilla.bot/1:iAFQHx8fHx8fHx8fHx8fHx8fH1AiIiIiIiIiIiIiIiIiIiIi9hge9vaBZWhlbGxv",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "roles.list",
+      "kind": "request",
+      "hex": "880150292929292929292929292929292929295022222222222222222222222222222222f61828f6f68100",
+      "body": "dilla.bot/1:iAFQKSkpKSkpKSkpKSkpKSkpKVAiIiIiIiIiIiIiIiIiIiIi9hgo9vaBAA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "announcements.list",
+      "kind": "request",
+      "hex": "880150333333333333333333333333333333335022222222222222222222222222222222f61832f6f68100",
+      "body": "dilla.bot/1:iAFQMzMzMzMzMzMzMzMzMzMzM1AiIiIiIiIiIiIiIiIiIiIi9hgy9vaBAA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "announcements.put",
+      "kind": "request",
+      "hex": "880150343434343434343434343434343434345022222222222222222222222222222222f618331878187882f6428101",
+      "body": "dilla.bot/1:iAFQNDQ0NDQ0NDQ0NDQ0NDQ0NFAiIiIiIiIiIiIiIiIiIiIi9hgzGHgYeIL2QoEB",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "announcements.delete",
+      "kind": "request",
+      "hex": "880150353535353535353535353535353535355022222222222222222222222222222222f6183418781878815066666666666666666666666666666666",
+      "body": "dilla.bot/1:iAFQNTU1NTU1NTU1NTU1NTU1NVAiIiIiIiIiIiIiIiIiIiIi9hg0GHgYeIFQZmZmZmZmZmZmZmZmZmZmZg",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "moderation.cases",
+      "kind": "request",
+      "hex": "8801503d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d5022222222222222222222222222222222f6183cf6f68100",
+      "body": "dilla.bot/1:iAFQPT09PT09PT09PT09PT09PVAiIiIiIiIiIiIiIiIiIiIi9hg89vaBAA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "moderation.evidence",
+      "kind": "request",
+      "hex": "8801503e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e5022222222222222222222222222222222f6183d1878187883507777777777777777777777777777777766726561736f6e6765786365727074",
+      "body": "dilla.bot/1:iAFQPj4-Pj4-Pj4-Pj4-Pj4-PlAiIiIiIiIiIiIiIiIiIiIi9hg9GHgYeINQd3d3d3d3d3d3d3d3d3d3d2ZyZWFzb25nZXhjZXJwdA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "response ok",
+      "kind": "response",
+      "hex": "86015002020202020202020202020202020202502222222222222222222222222222222200f640",
+      "body": "dilla.bot/1:hgFQAgICAgICAgICAgICAgICAlAiIiIiIiIiIiIiIiIiIiIiAPZA",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "signed moderation removal proof",
+      "kind": "removal",
+      "hex": "880150030303030303030303030303030303035004040404040404040404040404040404500505050505050505050505050505050550222222222222222222222222222222225033333333333333333333333333333333071878",
+      "preimage_hex": "64696c6c61206d6f6465726174696f6e2072656d6f76616c207631880150030303030303030303030303030303035004040404040404040404040404040404500505050505050505050505050505050550222222222222222222222222222222225033333333333333333333333333333333071878",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100",
+        "group": "33333333333333333333333333333333",
+        "actor_user": "04040404040404040404040404040404",
+        "actor_device": "05050505050505050505050505050505"
+      }
+    },
+    {
+      "name": "event kind 1",
+      "kind": "event",
+      "hex": "870150808080808080808080808080808080800150222222222222222222222222222222221a6553f100018250010101010101010101010101010101015002020202020202020202020202020202",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 2",
+      "kind": "event",
+      "hex": "870150818181818181818181818181818181810250222222222222222222222222222222221a6553f100028250010101010101010101010101010101015002020202020202020202020202020202",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 3",
+      "kind": "event",
+      "hex": "870150828282828282828282828282828282820350222222222222222222222222222222221a6553f100038350010101010101010101010101010101010307",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 4",
+      "kind": "event",
+      "hex": "870150838383838383838383838383838383830450222222222222222222222222222222221a6553f100048300500202020202020202020202020202020207",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 5",
+      "kind": "event",
+      "hex": "870150848484848484848484848484848484840550222222222222222222222222222222221a6553f100058350020202020202020202020202020202020107",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 6",
+      "kind": "event",
+      "hex": "870150858585858585858585858585858585850650222222222222222222222222222222221a6553f10006895001010101010101010101010101010101500202020202020202020202020202020250030303030303030303030303030303035004040404040404040404040404040404f650333333333333333333333333333333330904f6",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "event kind 7",
+      "kind": "event",
+      "hex": "870150868686868686868686868686868686860750222222222222222222222222222222221a6553f100078350010101010101010101010101010101010701",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "send receipt pending",
+      "kind": "receipt",
+      "hex": "88015009090909090909090909090909090909502222222222222222222222222222222250333333333333333333333333333333335820888888888888888888888888888888888888888888888888888888888888888800f6f6",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100",
+        "group": "33333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "send receipt accepted",
+      "kind": "receipt",
+      "hex": "880150090909090909090909090909090909095022222222222222222222222222222222503333333333333333333333333333333358208888888888888888888888888888888888888888888888888888888888888888010804",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100",
+        "group": "33333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "helper request",
+      "kind": "helper_request",
+      "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a014180"
+    },
+    {
+      "name": "helper response",
+      "kind": "helper_response",
+      "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a004180"
+    }
+  ],
+  "rejects": [
+    {
+      "name": "application wrong version",
+      "kind": "request",
+      "hex": "880250010101010101010101010101010101015022222222222222222222222222222222f600f6f680"
+    },
+    {
+      "name": "application wrong shape",
+      "kind": "request",
+      "hex": "82015001010101010101010101010101010101"
+    },
+    {
+      "name": "identifier wrong type",
+      "kind": "request",
+      "hex": "8801015022222222222222222222222222222222f600f6f680"
+    },
+    {
+      "name": "identifier wrong length",
+      "kind": "request",
+      "hex": "88014f0101010101010101010101010101015022222222222222222222222222222222f600f6f680"
+    },
+    {
+      "name": "identifier zero",
+      "kind": "request",
+      "hex": "880150000000000000000000000000000000005022222222222222222222222222222222f600f6f680"
+    },
+    {
+      "name": "unsupported application operation",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f61903e7f6f680"
+    },
+    {
+      "name": "missing mutation revision",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f602f618788200428101"
+    },
+    {
+      "name": "missing required channel",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f60af6f680"
+    },
+    {
+      "name": "wrong argument type",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f601f6f68163626164"
+    },
+    {
+      "name": "wrong argument count",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f600f6f68101"
+    },
+    {
+      "name": "query over UTF8 byte limit",
+      "kind": "request",
+      "hex": "88015001010101010101010101010101010101502222222222222222222222222222222250444444444444444444444444444444440bf6f68178cac3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9"
+    },
+    {
+      "name": "cross community context",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f600f6f680",
+      "body": "dilla.bot/1:iAFQAQEBAQEBAQEBAQEBAQEBAVAiIiIiIiIiIiIiIiIiIiIi9gD29oA",
+      "context": {
+        "community": "23232323232323232323232323232323",
+        "now": "100"
+      }
+    },
+    {
+      "name": "expired mutation context",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f602186418838200428101",
+      "body": "dilla.bot/1:iAFQAQEBAQEBAQEBAQEBAQEBAVAiIiIiIiIiIiIiIiIiIiIi9gIYZBiDggBCgQE",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "far future mutation context",
+      "kind": "request",
+      "hex": "880150010101010101010101010101010101015022222222222222222222222222222222f602186418a18200428101",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "noncanonical base64url",
+      "kind": "request",
+      "body": "dilla.bot/1:gA=",
+      "context": {
+        "community": "22222222222222222222222222222222",
+        "now": "100"
+      }
+    },
+    {
+      "name": "nonminimal CBOR",
+      "kind": "request",
+      "hex": "9800"
+    },
+    {
+      "name": "trailing CBOR",
+      "kind": "request",
+      "hex": "8000"
+    },
+    {
+      "name": "CBOR map",
+      "kind": "request",
+      "hex": "a0"
+    },
+    {
+      "name": "CBOR nesting over limit",
+      "kind": "request",
+      "hex": "8181818181818181818100"
+    },
+    {
+      "name": "removal sequence zero",
+      "kind": "removal",
+      "hex": "880150030303030303030303030303030303035004040404040404040404040404040404500505050505050505050505050505050550222222222222222222222222222222225033333333333333333333333333333333001878"
+    },
+    {
+      "name": "event metadata invalid",
+      "kind": "event",
+      "hex": "8701500101010101010101010101010101010101502222222222222222222222222222222201038350020202020202020202020202020202020607"
+    },
+    {
+      "name": "timeout event missing expiry",
+      "kind": "event",
+      "hex": "870150010101010101010101010101010101010150222222222222222222222222222222220a068950020202020202020202020202020202025003030303030303030303030303030303500404040404040404040404040404040450050505050505050505050505050505055006060606060606060606060606060606f6f601f6"
+    },
+    {
+      "name": "receipt pending with sequence",
+      "kind": "receipt",
+      "hex": "8801500101010101010101010101010101010150222222222222222222222222222222225033333333333333333333333333333333582000000000000000000000000000000000000000000000000000000000000000000001f6"
+    },
+    {
+      "name": "receipt accepted without epoch",
+      "kind": "receipt",
+      "hex": "8801500101010101010101010101010101010150222222222222222222222222222222225033333333333333333333333333333333582000000000000000000000000000000000000000000000000000000000000000000101f6"
+    },
+    {
+      "name": "response unsupported status",
+      "kind": "response",
+      "hex": "8601500101010101010101010101010101010150222222222222222222222222222222220af640"
+    },
+    {
+      "name": "helper unknown operation",
+      "kind": "helper_request",
+      "hex": "84015001010101010101010101010101010101104180"
+    },
+    {
+      "name": "helper malformed length prefix",
+      "kind": "helper_request",
+      "hex": "0000000580"
+    }
+  ]
+}
