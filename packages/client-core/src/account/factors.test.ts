@@ -38,6 +38,7 @@ function rig() {
     stepUpPasskeyFinish: vi.fn((_c: Uint8Array, _r: string) => { log.push('stepUpPasskeyFinish'); return Promise.resolve({ token: 'su-2', expires: 9n }); }),
     removeFactor: vi.fn((_s: string, _k: 0 | 1, _c: Uint8Array | null) => { log.push('removeFactor'); return Promise.resolve(); }),
     regenerateBackupCodes: vi.fn((_s: string) => { log.push('regenerateBackupCodes'); return Promise.resolve(CODES); }),
+    changePassword: vi.fn((_o: string | null, _n: string, _s: string | null) => { log.push('changePassword'); return Promise.resolve(); }),
   } satisfies FactorsRoutes;
   const hold = { on: true };
   const ctl = new FactorsController({ routes, holdsFactors: () => hold.on, publish: (name, value) => { log.push(`publish:${name}`); published.push(value as FactorsState); } });
@@ -112,6 +113,28 @@ describe('FactorsController', () => {
     const r = rig();
     expect(await r.ctl.regenerateBackupCodes('su-1')).toEqual({ backupCodes: CODES });
     expect(r.log).toEqual(['regenerateBackupCodes', 'getFactors', 'publish:factors']);
+  });
+
+  it('changePassword sends old, new and the step-up as given, and publishes the factors before it resolves', async () => {
+    const r = rig();
+    expect(await r.ctl.changePassword('old pw', 'new pw', null)).toBeNull();
+    expect(r.routes.changePassword).toHaveBeenLastCalledWith('old pw', 'new pw', null);
+    expect(r.log).toEqual(['changePassword', 'getFactors', 'publish:factors']);
+    await r.ctl.changePassword(null, 'first pw', 'su-1');
+    expect(r.routes.changePassword).toHaveBeenLastCalledWith(null, 'first pw', 'su-1');
+  });
+
+  it('changePassword: a wrong old password (403) and a throttle (429) are rethrown with no re-read; a lost step-up reads again', async () => {
+    const r = rig();
+    for (const e of [refused(403, 'E_FORBIDDEN'), refused(429, 'E_RATE_LIMITED')]) {
+      r.routes.changePassword.mockImplementationOnce(() => Promise.reject(e));
+      await expect(r.ctl.changePassword('x', 'y', null)).rejects.toBe(e);
+    }
+    expect(r.routes.getFactors).not.toHaveBeenCalled();
+    const lost = refused(403, 'E_STEP_UP');
+    r.routes.changePassword.mockImplementationOnce(() => Promise.reject(lost));
+    await expect(r.ctl.changePassword(null, 'y', 'su-1')).rejects.toBe(lost);
+    expect(r.routes.getFactors).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -207,6 +230,18 @@ describe('a commit survives a failed re-read (C3 review)', () => {
 });
 
 describe('the factor validators', () => {
+  it('changePassword: the new password is non-empty, the old one a non-empty string or null, the step-up a non-empty string or null', () => {
+    const w = (c: Record<string, unknown>): string | null => FACTOR_VALIDATORS.changePassword?.(c) ?? null;
+    expect(w({ old: 'a', next: 'b', stepup: null })).toBeNull();
+    expect(w({ old: null, next: 'b', stepup: 'su-1' })).toBeNull();
+    expect(w({ old: 'a', next: '', stepup: null })).toBe('the new password is empty');
+    expect(w({ old: 'a', next: 7, stepup: null })).toBe('the new password is empty');
+    expect(w({ old: '', next: 'b', stepup: null })).toBe('the old password is empty');
+    expect(w({ old: 3, next: 'b', stepup: null })).toBe('the old password is empty');
+    expect(w({ old: 'a', next: 'b', stepup: '' })).toBe('stepup is empty');
+    expect(w({ old: 'a', next: 'b' })).toBe('stepup is empty');
+  });
+
   const v = (m: keyof typeof FACTOR_VALIDATORS, c: Record<string, unknown>): string | null => FACTOR_VALIDATORS[m]?.(c) ?? null;
   const longName = 'x'.repeat(65);
 
@@ -272,14 +307,35 @@ const answered = async (w: World, id: number): Promise<unknown> => { await vi.wa
 
 describe('the factor commands through the worker', () => {
   const FACTOR_COMMANDS = ['refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish'] as const;
-  const READY_ONLY = ['stepUp', 'stepUpPasskeyBegin', 'stepUpPasskeyFinish', 'removeFactor', 'regenerateBackupCodes'] as const;
+  const READY_ONLY = ['stepUp', 'stepUpPasskeyBegin', 'stepUpPasskeyFinish', 'removeFactor', 'regenerateBackupCodes', 'changePassword', 'freshSession'] as const;
 
-  it('ready accepts all ten; factor-setup accepts the five that enrol and read', () => {
+  it('ready accepts all twelve; factor-setup accepts the five that enrol and read', () => {
     for (const m of [...FACTOR_COMMANDS, ...READY_ONLY]) expect(ACCEPTS.ready).toContain(m);
     for (const m of FACTOR_COMMANDS) expect(ACCEPTS['factor-setup']).toContain(m);
     for (const m of READY_ONLY) expect(ACCEPTS['factor-setup']).not.toContain(m);
     expect(ACCEPTS['factor-setup']).toEqual(expect.arrayContaining(['factorSetupDone', 'forgetBrowser']));
     expect(ACCEPTS['signin-login']).not.toContain('refreshFactors');
+  });
+
+  it('freshSession establishes a new session from the device key and answers null; a refused establish is E_SIGNIN_EVICTED', async () => {
+    const w = world();
+    await toReady(w);
+    const before = w.calls.filter((c) => c === 'session.establish').length;
+    w.call(30, { m: 'freshSession' });
+    expect(await answered(w, 30)).toEqual({ t: 'ret', id: 30, ok: true, value: null });
+    expect(w.calls.filter((c) => c === 'session.establish')).toHaveLength(before + 1);
+    w.session.establish.mockImplementationOnce(() => Promise.resolve(false));
+    w.call(31, { m: 'freshSession' });
+    expect(await answered(w, 31)).toMatchObject({ ok: false, error: { code: 'E_SIGNIN_EVICTED' } });
+  });
+
+  it('freshSession: a refused establish (the double 401) leaves the worker revoked, as the other reauthentications do', async () => {
+    const w = world();
+    await toReady(w);
+    w.session.establish.mockImplementationOnce(() => Promise.resolve(false));
+    w.call(32, { m: 'freshSession' });
+    expect(await answered(w, 32)).toMatchObject({ ok: false });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
   });
 
   it('a malformed command is E_BAD_INPUT with its reason; the route is not called', async () => {
@@ -323,6 +379,7 @@ describe('the factor commands through the worker', () => {
       stepUpPasskeyFinish: vi.fn(() => Promise.resolve({ token: 'su-token-2', expires: 9n })),
       removeFactor: vi.fn(() => Promise.resolve()),
       regenerateBackupCodes: vi.fn(() => Promise.resolve(CODES)),
+      changePassword: vi.fn(() => Promise.resolve()),
     });
     const cmds: Record<string, unknown>[] = [
       { m: 'factorTotpBegin', stepup: null }, { m: 'factorTotpConfirm', code: '123456' },
@@ -330,6 +387,7 @@ describe('the factor commands through the worker', () => {
       { m: 'stepUp', method: 'password', secret: 'pw' }, { m: 'stepUpPasskeyBegin' },
       { m: 'stepUpPasskeyFinish', ceremonyId: CEREMONY_HEX, response: '{}' },
       { m: 'removeFactor', stepup: 'su-token-1', kind: 'totp', credId: null }, { m: 'regenerateBackupCodes', stepup: 'su-token-1' },
+      { m: 'changePassword', old: 'hunter2 old', next: 'hunter2 new', stepup: null },
     ];
     const before = w.posted.length;
     for (const [i, c] of cmds.entries()) {
@@ -337,7 +395,7 @@ describe('the factor commands through the worker', () => {
       expect(await answered(w, 100 + i)).toMatchObject({ ok: true });
     }
     const slices = JSON.stringify(w.posted.slice(before).filter((p) => p.t === 'slice'));
-    for (const secret of [...CODES, SECRET, URI, 'su-token-1', 'su-token-2', 'otpauth']) expect(slices).not.toContain(secret);
+    for (const secret of [...CODES, SECRET, URI, 'su-token-1', 'su-token-2', 'otpauth', 'hunter2']) expect(slices).not.toContain(secret);
   });
 
   it('forgetting the browser empties the factors slice', async () => {

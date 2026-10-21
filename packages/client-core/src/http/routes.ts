@@ -856,6 +856,12 @@ export class Routes {
     if ((kind === 1) !== (credId !== null)) throw new RangeError('E_ROUTE_INPUT: credId is for a passkey and only for a passkey');
     await this.body('POST', '/v1/auth/factors/remove', 'write', false, { body: encode([stepup, kind, credId]), ok: [204] });
   }
+  /** POST /v1/auth/password: [old|null, new, stepup|null] → 204. With a password on the account the old one is the step-up
+   *  (wrong is 403 E_FORBIDDEN, throttled is 429 with retry-after); a first password on an account that holds a second factor
+   *  needs a step-up token instead. A 429 is not waited out, which would send the password again: the person decides. */
+  async changePassword(old: string | null, next: string, stepup: string | null): Promise<void> {
+    await this.body('POST', '/v1/auth/password', 'write', false, { body: encode([old, next, stepup]), ok: [204], retry429: false });
+  }
   /** POST /v1/auth/recovery/codes: [stepup] → [backup_codes]; every earlier code stops working. */
   async regenerateBackupCodes(stepup: string): Promise<string[]> {
     const a = atLeast(decode(await this.body('POST', '/v1/auth/recovery/codes', 'write', false, { body: encode([stepup]) })), 1);

@@ -12,6 +12,7 @@ import { serverNotify } from './serverNotify.ts';
 import { factor } from './factor.ts';
 import { factorSignin } from './factorSignin.ts';
 import { factorSettings } from './factorSettings.ts';
+import { password } from './password.ts';
 import { nav } from './nav.ts';
 import { activity } from './activity.ts';
 import { you } from './you.ts';
@@ -42,6 +43,7 @@ export const en = {
   ...factor,
   ...factorSignin,
   ...factorSettings,
+  ...password,
   ...nav,
   ...activity,
   ...you,

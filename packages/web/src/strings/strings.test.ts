@@ -61,8 +61,9 @@ describe('the copy rules', () => {
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
+    // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(119);
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(142);
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
