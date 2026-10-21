@@ -24,3 +24,14 @@ export function memberCardData(member: MemberSummary, ctx: MemberCardContext): M
     roles, actions: menuFor(member, ctx.access, ctx),
   };
 }
+
+export interface DmCardContext { selfId: string; /** The DM's name, shown when no shared server lists the person. */ fallbackName: string }
+
+/** A DM peer's card (EOD E3): no server context, so no roles, owner, kick or ban; just message and compare. */
+export function dmCardData(userId: string, member: MemberSummary | undefined, ctx: DmCardContext): MemberCardData {
+  const isYou = userId === ctx.selfId;
+  return {
+    userId, name: member === undefined ? ctx.fallbackName : memberName(member), username: member?.username ?? '',
+    isOwner: false, isYou, roles: [], actions: isYou ? [] : ['message', 'compare'],
+  };
+}
