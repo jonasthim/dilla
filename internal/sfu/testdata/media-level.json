@@ -1,0 +1,23 @@
+{
+  "livekit_server": "v1.13.7",
+  "client_protocol": 17,
+  "signal_schema_sha256": "631d8cbcd14a755cf57c96de82a37a7df986b2ab0255005c9466f9ae17e6e520",
+  "sfu_config_sha256": "514b033f2e4612b7b5b0becb0a2d5f20019c8b547acbe9ec71c970f26a66ae37",
+  "room_service_methods": [
+    "CreateRoom",
+    "DeleteRoom",
+    "ListParticipants",
+    "ListRooms",
+    "RemoveParticipant",
+    "UpdateParticipant"
+  ],
+  "webhook_events": [
+    "EventParticipantConnectionAborted",
+    "EventParticipantJoined",
+    "EventParticipantLeft",
+    "EventRoomFinished",
+    "EventTrackPublished",
+    "EventTrackUnpublished"
+  ],
+  "media_level": 2
+}

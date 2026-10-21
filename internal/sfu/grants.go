@@ -158,9 +158,9 @@ func (s *Server) Participants(ctx context.Context, room string) ([]*livekit.Part
 	return res.GetParticipants(), nil
 }
 
-// Rooms is the name of every room LiveKit holds (RoomService ListRooms, which needs the roomList
-// grant): the room sweep's input.
-func (s *Server) Rooms(ctx context.Context) ([]string, error) {
+// RoomInfos is every room LiveKit holds with its participant count and creation time (RoomService
+// ListRooms, which needs the roomList grant): the input of `dillad media --idle`.
+func (s *Server) RoomInfos(ctx context.Context) ([]*livekit.Room, error) {
 	rs, ctx, err := s.roomServiceFor(ctx, &auth.VideoGrant{RoomList: true})
 	if err != nil {
 		return nil, err
@@ -169,8 +169,17 @@ func (s *Server) Rooms(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sfu: list rooms: %w", err)
 	}
-	out := make([]string, 0, len(res.GetRooms()))
-	for _, r := range res.GetRooms() {
+	return res.GetRooms(), nil
+}
+
+// Rooms is the name of every room LiveKit holds: the room sweep's input.
+func (s *Server) Rooms(ctx context.Context) ([]string, error) {
+	rooms, err := s.RoomInfos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rooms))
+	for _, r := range rooms {
 		out = append(out, r.GetName())
 	}
 	return out, nil
