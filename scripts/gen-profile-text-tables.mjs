@@ -3,7 +3,7 @@
 //   packages/client-core/src/profile-tables.ts
 //   internal/auth/testdata/rgi-zwj-sequences.txt   (one sequence per line, hex code points)
 // from the Unicode Character Database files, for ONE Unicode version, so the server and the client agree:
-//   node scripts/gen-profile-text-tables.mjs <dir with ArabicShaping.txt DerivedCombiningClass.txt emoji-data.txt emoji-zwj-sequences.txt>
+//   node scripts/gen-profile-text-tables.mjs <dir with ArabicShaping.txt DerivedCombiningClass.txt emoji-data.txt emoji-zwj-sequences.txt emoji-sequences.txt>
 // The files come from https://www.unicode.org/Public/<version>/ucd/ (extracted/, emoji/) and /emoji/.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -54,6 +54,14 @@ const viramaRows = merge(viramas).map(([lo, hi]) => [lo, hi]);
 const emojiData = read('emoji-data.txt');
 const extPict = ranges(emojiData, 'Extended_Pictographic');
 const emojiPres = ranges(emojiData, 'Emoji_Presentation');
+const emoji = ranges(emojiData, 'Emoji');
+
+// RGI_Emoji_Tag_Sequence: the only runs of tag characters a text may carry.
+const tagSeqs = [];
+for (const line of read('emoji-sequences.txt').split('\n')) {
+  const m = /^([0-9A-F ]+);\s*RGI_Emoji_Tag_Sequence/.exec(line);
+  if (m) tagSeqs.push(m[1].trim().split(/\s+/).map((h) => parseInt(h, 16)));
+}
 
 const version = /ArabicShaping-([0-9.]+)\.txt/.exec(read('ArabicShaping.txt'))?.[1] ?? 'unknown';
 
@@ -81,6 +89,12 @@ var extPictRanges = []runeRange{${goPairs(extPict)}}
 // emojiPresentationRanges are the code points with Emoji_Presentation=Yes.
 var emojiPresentationRanges = []runeRange{${goPairs(emojiPres)}}
 
+// emojiRanges are the code points with Emoji=Yes: the bases a variation selector U+FE0E or U+FE0F may follow.
+var emojiRanges = []runeRange{${goPairs(emoji)}}
+
+// tagSequences are the RGI_Emoji_Tag_Sequence: the only runs of tag characters a text may carry.
+var tagSequences = [][]rune{${tagSeqs.map((q) => `{${q.map(hex).join(', ')}}`).join(', ')}}
+
 // joiningRanges are the explicit Joining_Type entries of ArabicShaping.txt (L, R, D, C, U, T).
 var joiningRanges = []joinRange{${joinRows.map(([lo, hi, t]) => `{${hex(lo)}, ${hex(hi)}, '${t}'}`).join(', ')}}
 `;
@@ -98,6 +112,10 @@ export const VIRAMA: readonly RuneRange[] = ${tsPairs(viramaRows)};
 export const EXT_PICT: readonly RuneRange[] = ${tsPairs(extPict)};
 /** Emoji_Presentation=Yes. */
 export const EMOJI_PRESENTATION: readonly RuneRange[] = ${tsPairs(emojiPres)};
+/** Emoji=Yes: the bases a variation selector U+FE0E or U+FE0F may follow. */
+export const EMOJI: readonly RuneRange[] = ${tsPairs(emoji)};
+/** RGI_Emoji_Tag_Sequence: the only runs of tag characters a text may carry. */
+export const TAG_SEQUENCES: readonly (readonly number[])[] = [${tagSeqs.map((q) => `[${q.map(hex).join(', ')}]`).join(', ')}];
 /** The explicit Joining_Type entries of ArabicShaping.txt: [from, to, type]. */
 export const JOINING: readonly (readonly [number, number, string])[] = [${joinRows.map(([lo, hi, t]) => `[${hex(lo)}, ${hex(hi)}, '${t}']`).join(', ')}];
 `;
@@ -111,4 +129,4 @@ for (const line of read('emoji-zwj-sequences.txt').split('\n')) {
 }
 mkdirSync(join(root, 'internal/auth/testdata'), { recursive: true });
 writeFileSync(join(root, 'internal/auth/testdata/rgi-zwj-sequences.txt'), `# RGI_Emoji_ZWJ_Sequence of Unicode ${version}: one sequence per line, hex code points.\n${seqs.join('\n')}\n`);
-console.log({ version, viramas: viramaRows.length, extPict: extPict.length, emojiPres: emojiPres.length, joining: joinRows.length, rgi: seqs.length });
+console.log({ version, viramas: viramaRows.length, extPict: extPict.length, emojiPres: emojiPres.length, emoji: emoji.length, tagSeqs: tagSeqs.length, joining: joinRows.length, rgi: seqs.length });

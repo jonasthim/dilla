@@ -153,7 +153,7 @@ func TestInvisibleCharactersAreRefused(t *testing.T) {
 // A text of nothing visible is blank: only spaces, joiners-free marks or variation selectors.
 func TestAnInvisibleOnlyTextIsBlank(t *testing.T) {
 	for name, in := range map[string]string{
-		"a combining mark alone": runes(0x301), "a variation selector": runes(0xfe0f), "marks and spaces": runes(' ', 0x301, ' ', 0xfe0e),
+		"a combining mark alone": runes(0x301), "marks and spaces": runes(' ', 0x301, ' ', 0x302),
 	} {
 		if err := textErr(in); !errors.Is(err, auth.ErrTextBlank) {
 			t.Errorf("%s: %v, want ErrTextBlank", name, err)

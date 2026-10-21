@@ -33,8 +33,10 @@ var (
 //   - a bidi control (U+200E, U+200F, U+202A-202E, U+2066-2069), U+061C, U+2028 or U+2029;
 //   - an invisible character: U+00AD, U+034F, U+115F, U+1160, U+180E, U+200B, U+2060-2064, U+206A-206F,
 //     U+2800, U+3164, U+FEFF, U+FFA0, U+FFF9-FFFB;
-//   - a tag character (U+E0020-E007F), except as the tag sequence that follows a black flag (U+1F3F4)
-//     and ends in U+E007F;
+//   - a tag character (U+E0020-E007F), except inside an RGI emoji tag sequence (the England, Scotland and
+//     Wales flags), so a run of tags cannot carry hidden text;
+//   - a variation selector (U+FE00-FE0F, U+E0100-E01EF), except one U+FE0E or U+FE0F directly after an
+//     Emoji code point;
 //   - a zero-width non-joiner (U+200C) or joiner (U+200D) outside its context: after a virama
 //     (Canonical_Combining_Class 9), a ZWNJ between joining letters (RFC 5892 Appendix A.1, which keeps
 //     Persian, Kurdish and other Arabic-script text working), or a ZWJ joining two emoji (Extended_Pictographic
@@ -85,13 +87,16 @@ func textCharsOK(s string, allowNewline bool) bool {
 		case unicode.IsControl(r), refusedRune(r), r >= 0xe0020 && r <= 0xe007f:
 			return false
 		case r == 0x1f3f4:
-			// A flag tag sequence: U+1F3F4, tag characters, U+E007F. Anything else tagged is refused above.
-			j := i + 1
-			for j < len(runes) && runes[j] >= 0xe0020 && runes[j] <= 0xe007e {
-				j++
+			// A flag tag sequence from the RGI list (England, Scotland, Wales) is kept whole. Any other tag character
+			// is refused above, so a run of tags cannot carry hidden text.
+			if n := tagSequenceAt(runes, i); n > 0 {
+				i += n - 1
 			}
-			if j > i+1 && j < len(runes) && runes[j] == 0xe007f {
-				i = j
+		case isVariationSelector(r):
+			// Only U+FE0E or U+FE0F, one per base, right after an Emoji code point; a stacked selector has no
+			// emoji before it, so it is refused. Every other selector (U+FE00-FE0D, U+E0100-E01EF) is refused.
+			if (r != 0xfe0e && r != 0xfe0f) || i == 0 || !inRanges(runes[i-1], emojiRanges) {
+				return false
 			}
 		case r == 0x200c:
 			if (i == 0 || !isVirama(runes[i-1])) && !zwnjJoins(runes, i) {
@@ -104,6 +109,31 @@ func textCharsOK(s string, allowNewline bool) bool {
 		}
 	}
 	return true
+}
+
+// isVariationSelector: U+FE00-FE0F and U+E0100-E01EF.
+func isVariationSelector(r rune) bool {
+	return (r >= 0xfe00 && r <= 0xfe0f) || (r >= 0xe0100 && r <= 0xe01ef)
+}
+
+// tagSequenceAt is the length of the RGI tag sequence that starts at runes[i], 0 when none does.
+func tagSequenceAt(runes []rune, i int) int {
+	for _, seq := range tagSequences {
+		if i+len(seq) > len(runes) {
+			continue
+		}
+		match := true
+		for k, r := range seq {
+			if runes[i+k] != r {
+				match = false
+				break
+			}
+		}
+		if match {
+			return len(seq)
+		}
+	}
+	return 0
 }
 
 // refusedRune: the characters that are refused wherever they stand.

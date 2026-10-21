@@ -110,8 +110,9 @@ and write (`POST`, `DELETE`) buckets.
 marks. A line break is refused except in a `bio` (where `\r\n` becomes `\n`). The rule refuses a control character; the
 bidi controls (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); U+061C; U+2028 and U+2029; the invisible characters
 U+00AD, U+034F, U+115F, U+1160, U+180E, U+200B, U+2060 to U+2064, U+206A to U+206F, U+2800, U+3164, U+FEFF, U+FFA0 and
-U+FFF9 to U+FFFB; and the tag characters U+E0020 to U+E007F except as the tag sequence after a black flag (U+1F3F4) that
-ends in U+E007F. U+200C and U+200D are refused unless RFC 5892 Appendix A.1 and A.2 allow them: after a virama (Canonical_
+U+FFF9 to U+FFFB; the tag characters U+E0020 to U+E007F except inside an RGI emoji tag sequence (the England, Scotland and
+Wales flags); and every variation selector (U+FE00 to U+FE0F, U+E0100 to U+E01EF) except one U+FE0E or U+FE0F directly
+after an Emoji code point. U+200C and U+200D are refused unless RFC 5892 Appendix A.1 and A.2 allow them: after a virama (Canonical_
 Combining_Class 9), a ZWNJ between joining letters (so Persian, Kurdish and Sinhala text keeps working), or a ZWJ joining
 two emoji (an Extended_Pictographic with an emoji presentation, so a family is kept and two copyright signs are not). The
 tables are Unicode 17. Only a new or changed text is checked: **a display name stored before this rule is kept as it is**
