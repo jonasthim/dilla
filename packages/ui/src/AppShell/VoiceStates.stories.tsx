@@ -218,7 +218,11 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   if (!main || !text || !join) throw new Error(`${story}: the main area, the empty text or the join button is missing`);
   const m = centreOf(main.getBoundingClientRect());
   const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
-  const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), tr.top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - tr.top));
+  // The AFK preview's line leads the group, above the message.
+  const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
+  if (lead && Math.abs(centreOf(lead).x - m.x) > 2) throw new Error(`${story}: the lead line is not centred across (main ${String(m.x)}, line ${String(centreOf(lead).x)})`);
+  const top = lead?.top ?? tr.top;
+  const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - top));
   if (Math.abs(centreOf(tr).x - m.x) > 2 || Math.abs(centreOf(jr).x - m.x) > 2) throw new Error(`${story}: not centred across (main ${String(m.x)}, text ${String(centreOf(tr).x)}, button ${String(centreOf(jr).x)})`);
   if (Math.abs(group.y - m.y) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
   if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
@@ -230,6 +234,11 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
 export const EmptyNotJoined: Story = {
   render: () => <Screen header={null} main={stage({ joined: false, empty: true, header: <ChannelHeader kind="voice" name="harbour" /> })} />,
   play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoined', false); },
+};
+/** The AFK preview: the 'everyone is muted' line, the message and the join are one centred group. */
+export const EmptyNotJoinedAfk: Story = {
+  render: () => <Screen header={null} main={stage({ joined: false, empty: true, outgoing: t('afk.stage.muted', { channel: 'AFK' }), header: <ChannelHeader kind="voice" name="AFK" /> })} />,
+  play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoinedAfk', false); },
 };
 /** The same on a phone, the pushed view (the test runner visits it at 360 x 740). */
 export const EmptyNotJoinedPhone: Story = {
