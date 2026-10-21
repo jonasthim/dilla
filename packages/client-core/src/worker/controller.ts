@@ -233,6 +233,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setAFK',
   'afkActivity',
   'afkAway',
+  'afkRead',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -354,6 +355,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
   afkAway: ['communityId'],
+  afkRead: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -419,6 +421,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'setAFK',
     'afkActivity',
     'afkAway',
+    'afkRead',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -1069,6 +1072,7 @@ export class Controller {
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
       // AW4 (R-AW3): choosing AFK. The page leaves its call first; the roster changes by op 55, not here.
       case 'afkAway': return this.afkAway(command.communityId);
+      case 'afkRead': return this.afkRead(command.communityId);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -2793,6 +2797,17 @@ export class Controller {
 
   /** AW4 fix round 1 (M1): an unlisted community is refused here, as setAFK refuses it; the instance's 403 or 404 reaches
    *  the page unchanged. */
+  /** AW5 fix round 1 (I1): a fresh read of the community's AFK snapshot, answered once one landed after this call (this
+   *  read, or a newer one that superseded it); E_UNAVAILABLE when none did (offline, a failed read). The page's restore
+   *  and recovery act only on such a read, never on a slice left from before a sleep or a reload. */
+  private async afkRead(communityId: string): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const before = this.afkLandedSeq;
+    await this.loadAFK(communityId);
+    const now = this.slices.get(`afk:${communityId}`);
+    if (now == null || (now.seq ?? 0) <= before) throw new Refusal('E_UNAVAILABLE', 'the AFK state could not be read');
+    return null;
+  }
   private async afkAway(communityId: string): Promise<null> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     await this.routes.putAFKAway(fromHex(communityId));

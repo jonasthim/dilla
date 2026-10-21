@@ -214,6 +214,24 @@ describe('Controller', () => {
       expect(w.routes.putAFKAway).toHaveBeenCalledTimes(1);
     });
 
+    // AW5 fix round 1 (I1): the page's restore and recovery ask for a fresh read and act only once it landed.
+    it('afkRead answers once a fresh read landed, and refuses when the read fails or the community is unlisted', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      const reads = w.routes.getAFK.mock.calls.length;
+      w.call(1010, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1010)).toMatchObject({ ok: true, value: null }));
+      expect(w.routes.getAFK.mock.calls.length).toBe(reads + 1);
+      expect(w.last(key)).toMatchObject({ pending: true });
+      w.routes.getAFK.mockRejectedValueOnce(new DillaHttpError({ status: 503, code: 'E_UNAVAILABLE', detail: '', retryAfterMs: null, extra: [] }));
+      w.call(1011, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1011)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
+      w.call(1012, { m: 'afkRead', communityId: toHex(NEW_COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1012)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    });
+
     // Fix round 1, M1: an unlisted community is refused locally, as setAFK refuses it.
     it('afkAway refuses a community this client does not list, without a request', async () => {
       const w = world();
