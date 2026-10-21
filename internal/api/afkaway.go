@@ -701,8 +701,9 @@ func (h *Calls) eachUserParticipant(ctx context.Context, devices map[string]bool
 
 // markAway marks user away in community cid since now, unless an admission of the user came after
 // decided (R-AW7) or, with needConn, the user holds no gateway connection (Q2), and announces a row
-// it wrote with the since it stored. It answers whether a row was written; ErrNotFound when the user
-// is no member (a racing kick). Only the boot marks without needConn: nobody is connected yet, and
+// it wrote with the since it stored. It answers whether the user holds the row afterwards (written
+// now, or kept from an earlier mark); false when the mark was skipped. ErrNotFound when the user is
+// no member (a racing kick). Only the boot marks without needConn: nobody is connected yet, and
 // the boot grace decides.
 func (h *Calls) markAway(ctx context.Context, cid, user id.ID, decided uint64, needConn bool) (bool, error) {
 	ctx = context.WithoutCancel(ctx)
@@ -739,7 +740,9 @@ func (h *Calls) markAway(ctx context.Context, cid, user id.ID, decided uint64, n
 		notes = []awayNote{{community: cid, user: user, since: uint64(now)}} //nolint:gosec // G115: the instance clock is after 1970
 	}
 	h.releaseAway(ctx, notes)
-	return set, nil
+	// SetAFKAway answers false for a row that was already there, which keeps its earlier since: the
+	// user is away either way.
+	return true, nil
 }
 
 // sweepMarkAway is the sweep's mark after its cut of dev (R-AW3): only when no other device of the
@@ -763,8 +766,9 @@ func (h *Calls) sweepMarkAway(ctx context.Context, tracked afkTracked, dev id.ID
 // afkAway is PUT /v1/communities/{id}/afk/away `[]` (R-AW3, by choosing AFK): member-only. It marks
 // the caller's user away in the community first, keeping an earlier since, and then cuts every
 // device of the user from every SFU room (cutUserEverywhere). A cut that fails is logged and the
-// request still answers 204 (R3-n2): the mark stands and every device carries its reason. There is
-// no DELETE (Q3).
+// request still answers 204 (R3-n2): the mark stands, every device carries its reason, and the next
+// AFK maintenance passes retry the cut while the user is away (final review I3). A skipped mark cuts
+// nothing (M1). There is no DELETE (Q3).
 func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
 	cid, user, dev, err := h.afkMember(r)
 	if err != nil {
@@ -791,12 +795,77 @@ func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
 	}
 	decided := h.afkDecision()
 	h.afkStage("away-decided")
-	if _, err := h.markAway(r.Context(), cid, user, decided, true); err != nil {
+	away, err := h.markAway(r.Context(), cid, user, decided, true)
+	if err != nil {
 		server.WriteError(w, notFound(err))
 		return
 	}
-	h.cutUserEverywhere(r.Context(), user, dev)
+	// Final review M1: a skipped mark (a newer admission, or no gateway connection) leaves the user
+	// not away, so nothing is cut: a call admitted meanwhile wins (R-AW7).
+	if away && !h.cutUserEverywhere(r.Context(), user, dev) {
+		h.noteCutRetry(user)
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// afkCutRetryMax bounds the maintenance passes that retry one user's unfinished cut (I3).
+const afkCutRetryMax = 5
+
+// noteCutRetry records that user's chosen-AFK cut did not finish; the next AFKMaintenance retries it.
+// Every device it listed already carries its pending reason (setAFKPendingLocked).
+func (h *Calls) noteCutRetry(user id.ID) {
+	h.afkMu.Lock()
+	defer h.afkMu.Unlock()
+	if h.afkCutRetries == nil {
+		h.afkCutRetries = make(map[id.ID]int)
+	}
+	if _, ok := h.afkCutRetries[user]; !ok {
+		h.afkCutRetries[user] = 0
+	}
+}
+
+// retryAFKCuts is AFKMaintenance's retry of the unfinished chosen-AFK cuts (final review I3): for
+// each recorded user still away, it lists and cuts the user's devices again, and drops the record
+// once a pass went through, once the user is no longer away, or after afkCutRetryMax failed passes.
+func (h *Calls) retryAFKCuts(ctx context.Context) {
+	h.afkMu.Lock()
+	users := make(map[id.ID]int, len(h.afkCutRetries))
+	for u, n := range h.afkCutRetries {
+		users[u] = n
+	}
+	h.afkMu.Unlock()
+	for user, n := range users {
+		if ctx.Err() != nil || h.draining() {
+			return
+		}
+		if !h.idxHas(user, nil) {
+			h.dropCutRetry(user)
+			continue
+		}
+		if h.cutUserEverywhere(ctx, user, id.ID{}) {
+			h.dropCutRetry(user)
+			h.log.InfoContext(ctx, "retried an unfinished AFK cut; it went through", "user", user, "attempt", n+1)
+			continue
+		}
+		if n+1 >= afkCutRetryMax {
+			h.dropCutRetry(user)
+			h.log.ErrorContext(ctx, "an AFK cut failed on every retry; giving up, a device may stay in a call while its user is away",
+				"user", user, "attempts", n+1)
+			continue
+		}
+		h.afkMu.Lock()
+		if _, ok := h.afkCutRetries[user]; ok {
+			h.afkCutRetries[user] = n + 1
+		}
+		h.afkMu.Unlock()
+		h.log.WarnContext(ctx, "retrying an unfinished AFK cut failed; the next maintenance pass tries again", "user", user, "attempt", n+1)
+	}
+}
+
+func (h *Calls) dropCutRetry(user id.ID) {
+	h.afkMu.Lock()
+	delete(h.afkCutRetries, user)
+	h.afkMu.Unlock()
 }
 
 // cutUserEverywhere removes every device of user, with its "#" shadows, from every SFU room it is
@@ -805,7 +874,10 @@ func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
 // every device of the user other than caller that was admitted to a call within afkRecoverWindow
 // and that no room lists now (R3-M1): a call the SFU dropped, whose recovery then reads 2 and does
 // not rejoin. A failed room listing or removal is logged, and the device keeps its reason (R3-n2).
-func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
+// It answers whether the cut finished: the devices and rooms were listed and every removal went
+// through. A zero caller (a maintenance retry) leaves out no device.
+func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) bool {
+	complete := true
 	type cut struct {
 		room string
 		dev  id.ID
@@ -816,6 +888,7 @@ func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
 		devices, err := h.repo.ListDevicesByUser(ctx, user)
 		if err != nil {
 			h.log.ErrorContext(ctx, "listing a user's devices for AFK failed; none is cut", "user", user, "err", err)
+			complete = false
 		}
 		mine := make(map[string]bool, len(devices))
 		for _, d := range devices {
@@ -836,6 +909,7 @@ func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
 				return true
 			}); err != nil {
 				h.log.ErrorContext(ctx, "listing the SFU rooms for AFK failed; the devices it listed are cut", "user", user, "err", err)
+				complete = false
 			}
 		}
 	}
@@ -857,7 +931,9 @@ func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
 		err := h.sfu.RemoveParticipants(rctx, c.room, c.dev)
 		cancel()
 		if err != nil {
-			h.log.ErrorContext(ctx, "cutting a device for AFK failed; it keeps its pending reason", "device", c.dev, "room", c.room, "err", err)
+			h.log.ErrorContext(ctx, "cutting a device for AFK failed; it keeps its pending reason, and maintenance retries the cut",
+				"device", c.dev, "room", c.room, "err", err)
+			complete = false
 			continue
 		}
 		h.revokeRelay(c.dev)
@@ -865,6 +941,7 @@ func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
 		delete(h.afkTracked, c.dev)
 		h.afkMu.Unlock()
 	}
+	return complete
 }
 
 // eachCommunity calls f for every live community, a page at a time.
@@ -1084,6 +1161,10 @@ func (h *Calls) AFKMaintenance(ctx context.Context) {
 			h.log.InfoContext(ctx, "ended the calls in AFK channels on a retry", "calls", n)
 		}
 	}
+	if ctx.Err() != nil || h.draining() {
+		return
+	}
+	h.retryAFKCuts(ctx)
 	if ctx.Err() != nil || h.draining() {
 		return
 	}

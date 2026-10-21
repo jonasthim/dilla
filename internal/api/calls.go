@@ -251,7 +251,11 @@ type Calls struct {
 	afkTracked map[id.ID]afkTracked
 	afkPending map[id.ID]afkPendingEntry
 	afkExempt  map[id.ID]string
-	afkNotify  *StructureNotifier
+	// afkCutRetries is each user whose chosen-AFK cut did not finish (a failed SFU listing or
+	// removal; final review I3), with the retries made so far. AFKMaintenance retries the cut while
+	// the user is still away, at most afkCutRetryMax times. Under afkMu.
+	afkCutRetries map[id.ID]int
+	afkNotify     *StructureNotifier
 	// afkAdmitSeq numbers every admission (afkaway.go); afkAdmits is each device's latest one per
 	// user, which the away mark checks under afkMu so that an admission newer than the decision
 	// wins (R-AW7) and a device still joining keeps its user busy (R-AW2).
