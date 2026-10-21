@@ -225,6 +225,8 @@ test('a screen share and a camera reach the other browser verified, and stop', a
 test('a share without sound says so on both sides', async ({ peerBrowser, browserName }) => {
   test.skip(browserName !== 'chromium' && browserName !== 'firefox', 'a screen share is measured on Chromium and Firefox only');
   const firefox = browserName === 'firefox';
+  // The notice names what this browser can do (#37): Firefox shares no sound; Chromium on Linux (CI) only a tab's.
+  const noticeKey = firefox ? 'voice.shareAudio.none.unsupported' : 'voice.shareAudio.none.tabOnly';
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
@@ -245,7 +247,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     const shared = screenTile(bob.page, 'alice');
     const mark = stateWord(shared, 'no-sound');
     // Before the share: no notice (D4, nothing before the picker).
-    await expect(notice).not.toContainText(copy('voice.shareAudio.none'));
+    await expect(notice).not.toContainText(copy(noticeKey));
 
     await share.click();
     await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
@@ -257,7 +259,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
         .toBeGreaterThan(0);
     }
     // The sharer: one polite notice, in the stage's status region, that says how to share sound.
-    await expect(notice).toContainText(copy('voice.shareAudio.none'), { timeout: WAIT });
+    await expect(notice).toContainText(copy(noticeKey), { timeout: WAIT });
     // The viewer: the screen arrives verified, and its tile says it carries no sound, as an icon whose word is its name.
     await expect(shared).toHaveAttribute('data-media', 'true', { timeout: WAIT });
     await expect(mark).toBeVisible({ timeout: WAIT });
@@ -274,7 +276,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     // Stop: the notice, the mark and the tile go.
     await share.click();
     await expect(share).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
-    await expect(notice).not.toContainText(copy('voice.shareAudio.none'), { timeout: WAIT });
+    await expect(notice).not.toContainText(copy(noticeKey), { timeout: WAIT });
     await expect(mark).toHaveCount(0, { timeout: WAIT });
     await expect(shared).toHaveCount(0, { timeout: WAIT });
   } finally {
@@ -356,7 +358,7 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       const shared = screenTile(bob.page, 'alice');
       await expect(stateWord(shared, 'no-sound')).toHaveCount(0);
       await expect(shared.getByRole('img', { name: copy('voice.state.noSound'), exact: true })).toHaveCount(0);
-      await expect(stage(alice.page).locator('.d-call-stage__notice[role="status"]')).not.toContainText(copy('voice.shareAudio.none'));
+      await expect(stage(alice.page).locator('.d-call-stage__notice[role="status"]')).not.toContainText(copy('voice.shareAudio.none.tabOnly'));
       // E2EE: the tab's sound went out in the screen-audio slot, encrypted, and the very track bob plays at 440 Hz is one his
       // media worker decrypted and authenticated frame by frame.
       expect(await slotSent(alice.page, 3), 'screen-audio frames alice encrypted').toBeGreaterThan(0);

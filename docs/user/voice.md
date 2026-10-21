@@ -194,7 +194,13 @@ beside the person's own tile, so with the camera and a share both on, a person h
 - A browser tab on Linux (no screen or window audio).
 - No sound from Firefox or Safari.
 
-A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing how to get sound, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+
+The notice to the person sharing depends on the browser:
+
+- In Firefox (and browsers built on it) and Safari: "This browser can’t share sound; Chrome or Edge can share a browser tab with its sound."
+- In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
+- In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 

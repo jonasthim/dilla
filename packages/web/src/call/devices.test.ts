@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/require-await -- the doubles answer as the async functions they stand for do */
 import { describe, expect, it, vi } from 'vitest';
-import { acquireMic, acquireCamera, acquireScreen } from './devices.ts';
+import { acquireMic, acquireCamera, acquireScreen, shareAudioAdvice } from './devices.ts';
 
 const vtrack = (surface: string) => ({ kind: 'video', stop: vi.fn(), getSettings: () => ({ displaySurface: surface }) }) as unknown as MediaStreamTrack;
 const atrack = (restrict?: boolean) => ({ kind: 'audio', stop: vi.fn(), getSettings: () => (restrict === undefined ? {} : { restrictOwnAudio: restrict }) }) as unknown as MediaStreamTrack;
@@ -106,4 +106,20 @@ it('Off disables browser suppression at acquisition while retaining echo cancell
   const media = { enumerateDevices: async () => [{kind:'audioinput'} as MediaDeviceInfo], getUserMedia: async (c:MediaStreamConstraints) => {calls.push(c); return {getAudioTracks:()=>[track],getTracks:()=>[track]} as MediaStream;} };
   await acquireMic(media, '', false);
   expect(calls[0]).toMatchObject({audio:{noiseSuppression:false,echoCancellation:true,autoGainControl:true}});
+});
+
+describe('shareAudioAdvice (#37): what sound a share can carry on this browser', () => {
+  const cases: Array<[string, { ua: string; uaPlatform?: string; brands?: string[] }, 'unsupported' | 'tab-only' | 'tab-or-system']> = [
+    ['Firefox on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0' }, 'unsupported'],
+    ['Zen (Firefox-based) on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0 Zen/1.0' }, 'unsupported'],
+    ['Safari on macOS', { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15' }, 'unsupported'],
+    ['Chrome on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Linux', brands: ['Chromium', 'Google Chrome'] }, 'tab-only'],
+    ['Chrome on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Windows', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Edge on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0' }, 'tab-or-system'],
+    ['Chrome on macOS', { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'macOS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Chrome on Chrome OS', { ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Chrome OS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+  ];
+  it.each(cases)('%s', (_name, env, want) => {
+    expect(shareAudioAdvice(env)).toBe(want);
+  });
 });

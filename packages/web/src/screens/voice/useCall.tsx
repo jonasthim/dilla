@@ -9,6 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { CallState, CoreClient } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
+import { shareAudioAdvice } from '../../call/devices.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
 import type { PageCall, PageCallState } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
@@ -453,8 +454,8 @@ export function useCall(o: UseCallOptions): CallView {
       // #37: a share that went out without sound tells its sharer once, in the stage's status region (D3, D4: only after
       // the share started); the notice goes when the share gets sound again or stops.
       const silentShare = next.state.shareAudio === 'none';
-      if (silentShare && !sharedSilent) setNotice({ channelId: id, key: 'voice.shareAudio.none' });
-      else if (!silentShare && sharedSilent) setNotice(n => (n?.key === 'voice.shareAudio.none' ? null : n));
+      if (silentShare && !sharedSilent) setNotice({ channelId: id, key: shareAudioKey() });
+      else if (!silentShare && sharedSilent) setNotice(n => (n?.key.startsWith('voice.shareAudio.none') ? null : n));
       sharedSilent = silentShare;
       if (next.state.phase !== 'ended') {
         cameraBeforeLoss = next.state.camera;
@@ -1077,4 +1078,12 @@ export function useCall(o: UseCallOptions): CallView {
     join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, setStreamVolume, toggleStreamMute, startAudio,
     afkFailed,
   };
+}
+
+/** #37: the silent-share notice that names what this browser and system can do. */
+function shareAudioKey(): StringKey {
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
+  const advice = shareAudioAdvice({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand) });
+  return advice === 'unsupported' ? 'voice.shareAudio.none.unsupported'
+    : advice === 'tab-or-system' ? 'voice.shareAudio.none.tabOrSystem' : 'voice.shareAudio.none.tabOnly';
 }

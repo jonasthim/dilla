@@ -595,13 +595,27 @@ describe('#37: a share without sound, and the stream mute', () => {
     await h.joined(GENV);
     expect(h.v.notice).toBeNull();
     act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.none' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.none.tabOnly' }));
     act(() => h.sessions[0].update({ shareAudio: 'tab' }));
     await waitFor(() => expect(h.v.notice).toBeNull());
     act(() => h.sessions[0].update({ shareAudio: 'none' }));
-    await waitFor(() => expect(h.v.notice?.key).toBe('voice.shareAudio.none'));
+    await waitFor(() => expect(h.v.notice?.key).toBe('voice.shareAudio.none.tabOnly'));
     act(() => h.sessions[0].update({ sharing: false, shareAudio: null }));
     await waitFor(() => expect(h.v.notice).toBeNull());
+  });
+
+  it.each([
+    ['Firefox', 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0', 'voice.shareAudio.none.unsupported'],
+    ['Chrome on Linux', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOnly'],
+    ['Chrome on Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOrSystem'],
+  ] as const)('the notice for a silent share on %s uses %s', async (_name, ua, key) => {
+    const spy = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(ua);
+    try {
+      const h = harness();
+      await h.joined(GENV);
+      act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+      await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key }));
+    } finally { spy.mockRestore(); }
   });
 
   it('a share with sound raises no notice', async () => {
