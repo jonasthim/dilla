@@ -247,7 +247,7 @@ func (d Deps) registrationError(r *http.Request, err error) error {
 	return server.Errorf(server.CodeInternal, "")
 }
 
-// GetMe answers [user_id, username, display, kind, flags, created, presence_choice].
+// GetMe answers [user_id, username, display, kind, flags, created, presence_choice, status_msg, bio].
 func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -265,42 +265,80 @@ func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{
-		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), choice, //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
+		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), choice, u.StatusMsg, u.Bio, //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
 	})
 }
 
-// PatchMe is [display|null, status_msg|null] → 204.
-//
-// It answers 501 and writes nothing. The body is validated, so a client learns
-// immediately that its display name is too long or carries a bidi control, but
-// there is nowhere to put the result: interfaces.md §4.1 declares no profile
-// update on store.Accounts (CreateUser, GetUser, GetUserByUsername, ListUsers,
-// SetUserDisabled, TombstoneUser — and internal/store/contract_test.go asserts
-// exactly that list), and `users` has no status column at all. Inventing a
-// store method here would rename a contract another task owns; answering 204
-// and discarding the change would be worse than refusing. The route lands when
-// the store gains the method.
-//
-// protocol/09-http-api.md § Accounts and devices records the same refusal, so
-// the document and this binary say one thing; that paragraph goes when the 204
-// lands.
+// PatchMe is [display|null, status_msg|null, bio|null] -> 204 (EOD E6). A null leaves the field as it
+// is and an empty string clears it; every given field is validated before anything is written, so a
+// refusal changes nothing. The three are stored readable by the server (R4).
 func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
 	var req struct {
 		_         struct{} `cbor:",toarray"`
 		Display   *string
 		StatusMsg *string
+		Bio       *string
 	}
 	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
 		server.WriteError(w, err)
 		return
 	}
+	var err error
 	if req.Display != nil {
-		if _, err := auth.NormalizeDisplay(*req.Display); err != nil {
+		var v string
+		if v, err = auth.NormalizeDisplay(*req.Display); err != nil {
 			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "display: %v", err))
 			return
 		}
+		req.Display = &v
 	}
-	server.WriteError(w, notImplemented("profile updates need a store method interfaces.md §4.1 does not declare"))
+	if req.StatusMsg != nil {
+		var v string
+		if v, err = auth.NormalizeStatus(*req.StatusMsg); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "status_msg: %v", err))
+			return
+		}
+		req.StatusMsg = &v
+	}
+	if req.Bio != nil {
+		var v string
+		if v, err = auth.NormalizeBio(*req.Bio); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "bio: %v", err))
+			return
+		}
+		req.Bio = &v
+	}
+	if req.Display == nil && req.StatusMsg == nil && req.Bio == nil {
+		d.noContent(w, r)
+		return
+	}
+	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+		u, err := tx.GetUser(r.Context(), sess.UserID)
+		if err != nil {
+			return err
+		}
+		display, status, bio := u.Display, u.StatusMsg, u.Bio
+		if req.Display != nil {
+			display = *req.Display
+		}
+		if req.StatusMsg != nil {
+			status = *req.StatusMsg
+		}
+		if req.Bio != nil {
+			bio = *req.Bio
+		}
+		return tx.UpdateProfile(r.Context(), sess.UserID, display, status, bio)
+	})
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.noContent(w, r)
 }
 
 // DeleteMe tombstones the account: the row keeps its username so it can never

@@ -720,6 +720,9 @@ type memberResp struct {
 	Username string
 	Display  string
 	Kind     uint64
+	// StatusMsg and Bio are the account's profile text (EOD E6); "" when the user row is gone.
+	StatusMsg string
+	Bio       string
 }
 
 func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
@@ -750,7 +753,7 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 		if roles == nil {
 			roles = []id.ID{} // an array on the wire, never null
 		}
-		var username, display string
+		var username, display, statusMsg, bio string
 		var kind uint64
 		u, err := c.repo.GetUser(r.Context(), m.UserID)
 		switch {
@@ -760,9 +763,10 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			username, display, kind = u.Username, u.Display, uint64(u.Kind)
+			statusMsg, bio = u.StatusMsg, u.Bio
 		}
 		out = append(out, memberResp{UserID: m.UserID, Joined: m.Joined, Nick: m.Nick, Roles: roles,
-			Username: username, Display: display, Kind: kind})
+			Username: username, Display: display, Kind: kind, StatusMsg: statusMsg, Bio: bio})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		c.log.Error("encode members", "err", err)

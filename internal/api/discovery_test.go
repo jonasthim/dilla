@@ -38,6 +38,8 @@ type discMember struct {
 	Username string
 	Display  string
 	Kind     uint64
+	Status   string
+	Bio      string
 }
 
 // discGet is one GET that must answer 200; it returns the body.
@@ -115,15 +117,15 @@ func discListedGroup(t *testing.T, e *env, tok string, cid, ch id.ID) (g *id.ID,
 }
 
 // discMembers is GET /v1/communities/{cid}/members as tok, keyed by user id, every row checked to
-// be seven elements long.
+// be nine elements long (the last two are the status message and the bio, EOD E6).
 func discMembers(t *testing.T, e *env, cid id.ID, tok string) map[id.ID]discMember {
 	t.Helper()
 	body := discGet(t, e, "/v1/communities/"+cid.String()+"/members", tok)
 	var raw [][]cbor.RawMessage
 	mustUnmarshal(t, body, &raw)
 	for i, r := range raw {
-		if len(r) != 7 {
-			t.Fatalf("member row %d has %d elements, want 7", i, len(r))
+		if len(r) != 9 {
+			t.Fatalf("member row %d has %d elements, want 9", i, len(r))
 		}
 	}
 	var rows []discMember
