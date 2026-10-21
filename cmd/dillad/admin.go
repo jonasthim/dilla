@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -74,7 +76,8 @@ var nounUsage = map[string]string{
 	"device": `usage: dillad admin device <verb> [flags]
 
   revoke  --id=ID   revokes the device and deletes its sessions
-  revoke  --all USER   signs every device of USER out (username or id) and deletes every session; audited
+  revoke  --all --id=ID | --username=NAME [--yes]   signs every device of the user out and deletes every
+          session; it prints the user and asks for the username typed back unless --yes; audited
 `,
 	"blob": `usage: dillad admin blob <verb> [flags]
 
@@ -131,10 +134,6 @@ func unknownVerb(noun, verb string, stderr io.Writer) error {
 type adminAction struct {
 	check func() error
 	run   func(ctx context.Context, e *adminEnv) error
-	// operand, when set, takes one positional argument wherever it sits among the flags (the
-	// `device revoke --all <user> --config=PATH` form). Without it a positional argument is a
-	// usage error, as before.
-	operand func(arg string) error
 }
 
 // usageError prints "dillad <verb>: <message>" to stderr and is exit 2.
@@ -155,25 +154,12 @@ func runVerb(name string, args []string, stdout, stderr io.Writer, setup func(fs
 	if slices.ContainsFunc(args, isHelpFlag) {
 		fs.SetOutput(stdout)
 	}
-	rest := args
-	for {
-		if err := fs.Parse(rest); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				// parse() would return nil here too, but its caller goes on to run the verb.
-				return nil
-			}
-			return fmt.Errorf("%s: %w", fs.Name(), exit.Usage)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// parse() would return nil here too, but its caller goes on to run the verb.
+			return nil
 		}
-		rest = fs.Args()
-		// flag stops at the first positional argument; an operand verb takes it and goes on
-		// parsing the flags after it.
-		if action.operand == nil || len(rest) == 0 {
-			break
-		}
-		if err := action.operand(rest[0]); err != nil {
-			return err
-		}
-		rest = rest[1:]
+		return fmt.Errorf("%s: %w", fs.Name(), exit.Usage)
 	}
 	if fs.NArg() > 0 {
 		return usageError(stderr, name, "unexpected argument %q", fs.Arg(0))
@@ -1034,38 +1020,31 @@ func adminDevice(verb string, args []string, stdout, stderr io.Writer) error {
 	switch verb {
 	case "revoke":
 		return runVerb(name, args, stdout, stderr, func(fs *flag.FlagSet) adminAction {
-			idFlag := fs.String("id", "", "the device's id (32 hex)")
-			all := fs.Bool("all", false, "sign every device of the user named as the argument out (the recovery reset)")
-			var user string
+			// --id is the device's id without --all, and the user's id with it; --username
+			// names the user and goes with --all only. Both selectors come from userSelector,
+			// the flags the other user verbs take.
+			sel := userSelector{}.register(fs)
+			all := fs.Bool("all", false, "sign every device of the user named by --id or --username out (the recovery reset)")
+			yes := fs.Bool("yes", false, "with --all: revoke without typing the username back")
 			var did id.ID
 			return adminAction{
-				operand: func(arg string) error {
-					if user != "" {
-						return usageError(stderr, name, "one user at a time; %q is a second", arg)
-					}
-					user = arg
-					return nil
-				},
 				check: func() error {
 					if *all {
-						switch {
-						case *idFlag != "":
-							return usageError(stderr, name, "--all and --id are alternatives; give one")
-						case user == "":
-							return usageError(stderr, name, "--all needs the user, by username or id")
-						}
-						return nil
+						return sel.check(stderr, name)
 					}
-					if user != "" {
-						return usageError(stderr, name, "unexpected argument %q", user)
+					if *sel.username != "" {
+						return usageError(stderr, name, "--username goes with --all; a single device is named with --id")
+					}
+					if *yes {
+						return usageError(stderr, name, "--yes goes with --all")
 					}
 					var err error
-					did, err = parseID(stderr, name, "id", *idFlag)
+					did, err = parseID(stderr, name, "id", *sel.id)
 					return err
 				},
 				run: func(ctx context.Context, e *adminEnv) error {
 					if *all {
-						return revokeAllDevices(ctx, e, user)
+						return revokeAllDevices(ctx, e, sel, *yes)
 					}
 					return revokeDevice(ctx, e, did)
 				},
@@ -1111,25 +1090,59 @@ func revokeDevice(ctx context.Context, e *adminEnv, did id.ID) error {
 	return nil
 }
 
-// revokeAllDevices is `dillad admin device revoke --all <user>` (ruling R1, the recovery reset): it
-// signs every device of the person out and deletes every session in one transaction (ops.RevokeAllDevices),
-// and audits it. The user is named by username, or by id when the argument is 32 hex.
-// What it prints says what the person loses: the encrypted history that only these devices held.
-// Like revokeDevice it publishes no new signed device list (that needs the person's own key).
-func revokeAllDevices(ctx context.Context, e *adminEnv, arg string) error {
-	var idArg, nameArg string
-	if _, err := id.Parse(arg); err == nil {
-		idArg = arg
-	} else {
-		nameArg = arg
-	}
-	sel := userSelector{id: &idArg, username: &nameArg}
+// adminIn is where `device revoke --all` reads the typed confirmation, and adminInTerminal says
+// whether it is a terminal the operator can answer on. Tests replace both.
+var (
+	adminIn         io.Reader = os.Stdin
+	adminInTerminal           = func() bool { return stdinIsTerminal(os.Stdin) }
+)
+
+// stdinIsTerminal reports whether f is a character device, which is what a terminal is for this.
+func stdinIsTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// revokeAllDevices is `dillad admin device revoke --all` (ruling R1, the recovery reset). The user
+// is named by --id or --username (sel). It resolves the user first and prints who it is and how
+// many devices are active; a deleted user is refused and a user with no active device has nothing
+// to revoke. Otherwise it prints the history warning and asks for the username typed back, unless
+// yes is given. Without yes and without a terminal to answer on, it refuses. Then ops.RevokeAll
+// Devices signs every device out and deletes every session, in one audited transaction. Like
+// revokeDevice it publishes no new signed device list (that needs the person's own key).
+func revokeAllDevices(ctx context.Context, e *adminEnv, sel userSelector, yes bool) error {
 	u, err := sel.resolve(ctx, e.repo)
 	if err != nil {
 		return err
 	}
 	if u.DeletedAt != nil {
 		return fmt.Errorf("user %s is deleted: %w", u.ID, exit.Data)
+	}
+	devices, err := e.repo.ListDevicesByUser(ctx, u.ID)
+	if err != nil {
+		return fmt.Errorf("list devices: %w: %w", err, exit.Software)
+	}
+	active := 0
+	for _, d := range devices {
+		if d.RevokedAt == nil {
+			active++
+		}
+	}
+	fmt.Fprintf(e.out, "user %s (%s): %d active devices\n", printable(u.Username), u.ID, active)
+	if active == 0 {
+		fmt.Fprintln(e.out, "nothing to revoke: no active devices")
+		return nil
+	}
+	fmt.Fprintln(e.out, "Encrypted history is lost unless another device still holds it, and after this none of the person's devices is active.")
+	if !yes {
+		if !adminInTerminal() {
+			return usageError(e.errw, "admin device revoke", "refusing to revoke without a terminal to confirm on; pass --yes")
+		}
+		fmt.Fprintf(e.out, "type %s to sign every device out: ", printable(u.Username))
+		line, _ := bufio.NewReader(adminIn).ReadString('\n')
+		if strings.TrimRight(line, "\r\n") != u.Username {
+			return fmt.Errorf("the typed name did not match %s; nothing revoked: %w", printable(u.Username), exit.Fail)
+		}
 	}
 	res, err := ops.RevokeAllDevices(ctx, e.repo, u.ID, e.now())
 	if err != nil {
@@ -1141,8 +1154,6 @@ func revokeAllDevices(ctx context.Context, e *adminEnv, arg string) error {
 	for _, d := range res.Revoked {
 		fmt.Fprintf(e.out, "  device %s\n", d)
 	}
-	fmt.Fprintf(e.out, "encrypted history is lost unless another device still holds it; none of the person's devices is active now, "+
-		"so the history these devices held is gone. They sign in again to use dilla.\n")
 	return nil
 }
 

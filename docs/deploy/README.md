@@ -782,16 +782,19 @@ writes a `user.factors_reset` audit row, all in one transaction. A bot account a
 ### A person has lost every device: `dillad admin device revoke --all`
 
 ```sh
-sudo -u dillad dillad admin device revoke --all --config=/etc/dilla/dilla.toml mira
+sudo -u dillad dillad admin device revoke --all --username=mira --config=/etc/dilla/dilla.toml
 ```
 
-It takes the person's username, or their id (32 hex) in place of it. It revokes every device that is not yet revoked,
-deletes every session of the person and writes a `device.revoke_all` audit row, all in one transaction under the user
-lock. A device revoked before keeps its first revoke time. It prints each device it revoked and says what the person
-loses.
+It takes exactly one of `--username=NAME` or `--id=ID` (the user's id, 32 hex), the same selectors as the other user
+verbs. It first prints the resolved user, its id and its number of active devices. It then asks you to type the
+username back, and revokes only if the answer matches. Pass `--yes` to skip the question; without `--yes` and without a
+terminal to answer on, it refuses. It revokes every device that is not yet revoked, deletes every session of the
+person and writes a `device.revoke_all` audit row, all in one transaction under the user lock. A device revoked before
+keeps its first revoke time. A deleted account is refused, and an account with no active device is reported and left
+alone. It prints each device it revoked.
 
-- **Encrypted history is lost** unless another device still holds it. After this command none of the person's devices
-  is active, so the history those devices held is gone for good. The person signs in again to use dilla.
+- **Encrypted history is lost** unless another device still holds it, and after this none of the person's devices is
+  active. The person signs in again to use dilla.
 - **The signed device list is not changed.** The server cannot sign it, so the list clients read still names the
   revoked devices (marked revoked) until the person's own device removes them.
 - **Live connections close within one heartbeat**, as with `device revoke --id`: the serving process notices that the
