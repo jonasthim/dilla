@@ -612,6 +612,16 @@ const FACTOR_CASES: Case[] = [
     reply: () => noContent(), expected: undefined,
   },
   {
+    name: 'changePassword with the old one', call: (r) => r.changePassword('old pw', 'new pw', null),
+    method: 'POST', path: '/v1/auth/password', bucket: 'write', idempotent: false, auth: true, sent: encode(['old pw', 'new pw', null]),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'changePassword, a first password with a step-up', call: (r) => r.changePassword(null, 'new pw', 'su-1'),
+    method: 'POST', path: '/v1/auth/password', bucket: 'write', idempotent: false, auth: true, sent: encode([null, 'new pw', 'su-1']),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
     name: 'regenerateBackupCodes', call: (r) => r.regenerateBackupCodes('su-1'),
     method: 'POST', path: '/v1/auth/recovery/codes', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1']),
     reply: () => cborReply(200, [CODES]), expected: CODES,
@@ -699,6 +709,8 @@ const REFUSALS: RefusalCase[] = [
   { name: 'stepUp 403 E_STEP_UP', call: (r) => r.stepUp(0, 'x'), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
   { name: 'totpEnroll 403 E_STEP_UP', call: (r) => r.totpEnroll(null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
   { name: 'removeFactor 403 E_STEP_UP', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
+  { name: 'changePassword 403 wrong password', call: (r) => r.changePassword('x', 'y', null), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'changePassword 429 throttled', call: (r) => r.changePassword('x', 'y', null), reply: () => refusal(429, 'E_RATE_LIMITED', '', 60_000), status: 429, code: 'E_RATE_LIMITED' },
   { name: 'removeFactor 409 last factor', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(409, 'E_INVALID_REQUEST'), status: 409, code: 'E_INVALID_REQUEST' },
   { name: 'getFactors 403 E_FACTOR_REQUIRED', call: (r) => r.getFactors(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
   { name: 'listDevices 403 E_FACTOR_REQUIRED', call: (r) => r.listDevices(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
@@ -781,6 +793,7 @@ describe('deleteGroupMessage membership check', () => {
 describe('Routes: retries and inputs', () => {
   it('sends one request for a short 429 on login and session routes', async () => {
     for (const call of [
+      (routes: Routes) => routes.changePassword('old', 'new', null),
       (routes: Routes) => routes.passwordLogin('ada', 'pw'),
       (routes: Routes) => routes.postSession(DEVICE, BODY),
       (routes: Routes) => routes.postSessionPending(DEVICE, BODY),

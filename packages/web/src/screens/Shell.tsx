@@ -914,7 +914,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report}
     {...(channel !== null ? { onOpenThread: openThread } : {})}
-    {...(channel !== null ? { onOpenProfile: openProfile } : {})} />;
+    onOpenProfile={openProfile} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
@@ -1736,8 +1736,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         {main}
       </AppShell>
       {/* The message card sits beside the shell, not inside it: main, the rail and the aside go inert while an overlay (the thread sheet) is open, and the card must stay live above it. */}
-      {community !== null && self !== null ? (
-        <MemberCardHost communityId={community.id} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
+      {self !== null && (dm !== null || community !== null) ? (
+        <MemberCardHost communityId={dm !== null ? null : community?.id ?? null}
+          {...(dm !== null ? { dm: { members: allMembers, peerId: dm.kind === 3 ? dm.members.find(id => id !== self.id) ?? null : null, peerName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
           onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
       ) : null}
       <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}

@@ -794,6 +794,48 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link?.upKbps).toBe(Math.round(24_000 * 8 / 6_000)); // the lost ticks are spanned, not a spike
   });
 
+  it('FD1: with no subscriber connection (nothing subscribed) the down rate is 0, not a dash', async () => {
+    const { f, s } = linkFakes();
+    (f.room.engine.pcManager as unknown as { subscriber?: unknown }).subscriber = undefined;
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    await f.advance(2_000);
+    expect(call.state.link).toEqual({ rttMs: 24, upKbps: 48, downKbps: 0, lossPct: 0 });
+  });
+
+  it('FD1: a subscriber getStats that rejects is no read: the down rate is kept one tick, then a dash', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: 96 });
+    s.sub = () => Promise.reject(new Error('closed'));
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: 96 });
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: null });
+  });
+
+  it('FD1: single-peer-connection inbound on the publisher report is the down rate, counted once', async () => {
+    const { f, s } = linkFakes();
+    (f.room.engine.pcManager as unknown as { subscriber?: unknown }).subscriber = undefined;
+    s.pub = () => Promise.resolve(new Map<string, unknown>([
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: s.rtt }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['O', { id: 'O', type: 'outbound-rtp', bytesSent: s.sent }],
+      ['I', { id: 'I', type: 'inbound-rtp', bytesReceived: s.received }],
+    ]));
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 96 });
+  });
+
   it('MP5: the poll stops while the call is paused and restarts with a fresh baseline', async () => {
     const { f, s } = linkFakes();
     const call = await start(f);

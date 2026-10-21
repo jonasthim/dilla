@@ -38,7 +38,7 @@ const meta = {
     labels: {
       region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
       paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
-      ping: '{ms} ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
       stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
       quality: { good: 'good', poor: 'poor', bad: 'bad' },
       why: { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' },

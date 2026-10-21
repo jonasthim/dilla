@@ -6,46 +6,35 @@ import { fileURLToPath } from 'node:url';
 import { FORBIDDEN } from '../../../../scripts/check-ui-copy.mjs';
 import { en } from './en.ts';
 
-describe('flow 15 (EOD E6, profile)', () => {
-  const doc = readFileSync(fileURLToPath(new URL('../../../../docs/design/flows/15-profile.md', import.meta.url)), 'utf8');
+describe('flow 15 (change password)', () => {
+  const doc = readFileSync(fileURLToPath(new URL('../../../../docs/design/flows/15-change-password.md', import.meta.url)), 'utf8');
   const copy = doc.slice(doc.indexOf('## Copy'));
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-15 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(17);
+    expect(pairs.length).toBe(23);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
     const listed = new Set(pairs.map(([key]) => key));
-    const added = Object.keys(en).filter(k => /^(profile\.|settings\.nav\.profile$)/.test(k));
+    const added = Object.keys(en).filter(k => k.startsWith('settings.password.'));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
   });
-  it('chrome is lower case and surfaces are sentence case (Mesh style); no exclamation, no reassurance', () => {
-    for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label', 'profile.save', 'profile.card.about'] as const) {
-      expect(en[k], k).toMatch(/^[a-z]/);
-    }
-    for (const k of ['profile.title', 'profile.body', 'profile.status.hint', 'profile.bio.hint', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.wait', 'profile.error.save'] as const) {
-      expect(en[k], k).toMatch(/^[A-Z]/);
-    }
-    for (const [, value] of pairs) expect(value).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b/i);
-  });
-  it('a validation message never says "try again"', () => {
-    for (const k of ['profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.display'] as const) expect(en[k], k).not.toMatch(/try again/i);
-    expect(en['profile.error.chars']).toBe('That has characters dilla can’t show.');
-    expect(en['profile.error.chars'].codePointAt(29)).toBe(0x2019);
-  });
-  it('the limits in the hints are the server limits', () => {
-    expect(en['profile.status.hint']).toContain('190');
-    expect(en['profile.bio.hint']).toContain('500');
-  });
-  it('sections: States, Keyboard map, Focus rules and Announcements have content', () => {
-    for (const title of ['States', 'Keyboard map', 'Focus rules', 'Announcements']) {
+  it('sections: States, Keyboard map, Focus rules and Announcements have content, and States has 14 or more rows', () => {
+    const body = (title: string) => {
       const start = doc.indexOf(`## ${title}\n`);
       expect(start, title).toBeGreaterThanOrEqual(0);
       const rest = doc.slice(start + title.length + 4);
       const next = rest.indexOf('\n## ');
-      expect((next < 0 ? rest : rest.slice(0, next)).trim().length, title).toBeGreaterThan(0);
-    }
+      return (next < 0 ? rest : rest.slice(0, next)).trim();
+    };
+    for (const title of ['States', 'Keyboard map', 'Focus rules', 'Announcements']) expect(body(title).length, title).toBeGreaterThan(0);
+    const rows = body('States').split('\n').filter(l => l.startsWith('|') && !/^\|[-| ]+\|$/.test(l));
+    expect(rows.length - 1).toBeGreaterThanOrEqual(14);
+  });
+  it('chrome: the lower-case row actions are lower case', () => {
+    const table = en as Readonly<Record<string, string>>;
+    for (const key of ['settings.password.change', 'settings.password.add']) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

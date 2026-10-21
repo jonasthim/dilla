@@ -1,4 +1,4 @@
-# Flow 15: profile, the display name, a status message and a bio (EOD E6)
+# Flow 16: profile, the display name, a status message and a bio (EOD E6)
 
 ## States
 

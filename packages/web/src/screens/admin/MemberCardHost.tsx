@@ -1,12 +1,13 @@
 // Flow 08/14: the one open profile card of the app, its actions and the dialogs they open. The member pane (a row) and the
 // conversation (a mention pill, an author name or avatar) both open it; the shell holds the one open state.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { MemberSummary, PresenceStatus } from '@dilla/client-core';
 import { ProfileCard, focusReturnTarget } from '@dilla/ui';
-import { useSlice } from '../../core/use-slice.ts';
+import { useSlice, useSlices } from '../../core/use-slice.ts';
 import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { memberName, type MenuAction } from './members-model.ts';
-import { memberCardData } from './member-card.ts';
+import { dmCardData, memberCardData } from './member-card.ts';
 import { BanFlow, KickFlow, type ModTarget } from './Moderation.tsx';
 import { MemberRolesFlow } from './MemberRolesFlow.tsx';
 
@@ -28,7 +29,10 @@ export const presenceLabels = (): Record<'online' | 'idle' | 'dnd' | 'offline', 
 });
 
 export interface MemberCardHostProps {
-  communityId: string;
+  /** The server the card belongs to; null in a DM, where the card has no roles or moderation (`dm` then names the people). */
+  communityId: string | null;
+  /** A DM's context: everyone the shell knows by id, and the name to show for a person none of them lists. */
+  dm?: { members: readonly MemberSummary[]; /** The other person of a 1:1 DM (null in a group); only they are named by `peerName` when no server lists them. */ peerId: string | null; peerName: string };
   selfId: string;
   card: OpenCard | null;
   onCard: (next: OpenCard | null) => void;
@@ -43,10 +47,15 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   const { communityId, selfId, card, onCard } = props;
   const phone = usePhoneLayout();
   const communities = useSlice('communities');
-  const members = useSlice(`members:${communityId}`);
-  const presence = useSlice(`presence:${communityId}`);
-  const roles = useSlice(`roles:${communityId}`);
-  const access = useSlice(`permissions:${communityId}`);
+  const inDm = communityId === null;
+  const cid = communityId ?? '';
+  const communitySlice = useSlice(`members:${cid}`);
+  const members = inDm ? props.dm?.members : communitySlice;
+  // In a DM there is no server: a peer's presence is the best any shared server reports.
+  const presences = useSlices((inDm ? (communities ?? []).map(c => c.id) : [cid]).map(id => `presence:${id}` as const));
+  const presence = bestPresence(presences);
+  const roles = useSlice(`roles:${cid}`);
+  const access = useSlice(`permissions:${cid}`);
   const [kick, setKick] = useState<ModTarget | null>(null);
   const [ban, setBan] = useState<ModTarget | null>(null);
   const [kickOpen, setKickOpen] = useState(false);
@@ -88,15 +97,17 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   });
 
   const member = card === null ? undefined : byId.get(card.id);
-  const data = member === undefined ? null : memberCardData(member, { selfId, ownerId, roles: roles ?? [], access });
+  const dmName = card === null ? '' : card.id === props.dm?.peerId ? props.dm.peerName : card.name !== undefined && card.name !== '' ? card.name : t('layout.profile.formerMember');
+  const data = inDm ? (card === null ? null : dmCardData(card.id, member, { selfId, fallbackName: dmName }))
+    : member === undefined ? null : memberCardData(member, { selfId, ownerId, roles: roles ?? [], access });
 
   const labelOf: Record<MenuAction, string> = {
     message: t('members.menu.message'), compare: t('members.menu.compare'), roles: t('layout.profile.manageRoles'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
   };
   const onAction = (userId: string, action: string) => {
     const row = byId.get(userId);
-    if (row === undefined) return;
-    const target = { userId, name: memberName(row) };
+    if (row === undefined && !(inDm && (action === 'message' || action === 'compare'))) return;
+    const target = { userId, name: row === undefined ? '' : memberName(row) };
     opener.current = card?.anchor ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     restore.current = action === 'kick' || action === 'ban' || action === 'roles';
     if (action === 'message') props.onMessage(userId);
@@ -121,13 +132,21 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (
         <ProfileCard name={card.name === '' ? t('layout.profile.formerMember') : card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" fallbackFocus={messageFallback(card)} {...labels} />
       ) : null}
-      <KickFlow open={kickOpen} communityId={communityId} serverName={community?.name ?? ''} target={kick} announce={text => props.announce(text)}
+      <KickFlow open={kickOpen} communityId={cid} serverName={community?.name ?? ''} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
-      <BanFlow open={banOpen} communityId={communityId} serverName={community?.name ?? ''} target={ban} announce={text => props.announce(text)}
+      <BanFlow open={banOpen} communityId={cid} serverName={community?.name ?? ''} target={ban} announce={text => props.announce(text)}
         onClose={() => setBanOpen(false)} onDone={() => setBanOpen(false)} />
       {rolesFor !== null
-        ? <MemberRolesFlow communityId={communityId} userId={rolesFor} announce={text => props.announce(text)} onClose={() => setRolesFor(null)} />
+        ? <MemberRolesFlow communityId={cid} userId={rolesFor} announce={text => props.announce(text)} onClose={() => setRolesFor(null)} />
         : null}
     </>
   );
+}
+
+const RANK: Record<PresenceStatus, number> = { offline: 0, idle: 1, dnd: 2, online: 3 };
+/** The most present status any of the snapshots gives each person. */
+function bestPresence(all: readonly (Record<string, PresenceStatus> | null | undefined)[]): Record<string, PresenceStatus> {
+  const out: Record<string, PresenceStatus> = {};
+  for (const p of all) for (const [id, st] of Object.entries(p ?? {})) { const cur = out[id]; if (cur === undefined || RANK[st] > RANK[cur]) out[id] = st; }
+  return out;
 }
