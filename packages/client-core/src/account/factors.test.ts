@@ -329,6 +329,15 @@ describe('the factor commands through the worker', () => {
     expect(await answered(w, 31)).toMatchObject({ ok: false, error: { code: 'E_SIGNIN_EVICTED' } });
   });
 
+  it('freshSession: a refused establish (the double 401) leaves the worker revoked, as the other reauthentications do', async () => {
+    const w = world();
+    await toReady(w);
+    w.session.establish.mockImplementationOnce(() => Promise.resolve(false));
+    w.call(32, { m: 'freshSession' });
+    expect(await answered(w, 32)).toMatchObject({ ok: false });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('revoked'));
+  });
+
   it('a malformed command is E_BAD_INPUT with its reason; the route is not called', async () => {
     const w = world();
     await toReady(w);

@@ -666,7 +666,8 @@ export class Controller {
    *  is bound to the session it was made in, so the page runs this before the step-up, not after. */
   private async freshSession(): Promise<null> {
     if (this.session === null) throw new Refusal('E_NOT_READY', 'no session');
-    if (!(await this.session.establish())) throw new Error('E_SIGNIN_EVICTED');
+    // reauthenticate: a refused establish is a revocation (enterRevoked), and a wipe in progress mints nothing.
+    if (!(await this.reauthenticate())) throw new Error('E_SIGNIN_EVICTED');
     return null;
   }
   /** The socket re-establish retry onRevokedSocket armed after a network failure (I4). */
