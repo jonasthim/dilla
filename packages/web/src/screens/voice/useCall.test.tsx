@@ -9,7 +9,7 @@ import type { PageCallOptions } from '../../call/session.ts';
 import { t } from '../../strings/index.ts';
 import { A, CHANNELS, FakeClient, FakeSession, GENV, callState } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
-import { AFK_READ_WAIT_MS, REMOVED_HOLD_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
+import { AFK_READ_WAIT_MS, REMOVED_HOLD_MS, RESTORE_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
 
 const AFK_CH = 'af'.repeat(16);
 const B = 'b7'.repeat(16);
@@ -418,18 +418,62 @@ describe('AW5 fix round 1: fail closed, cancel and sequence', () => {
     expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED });
   }, 10_000);
 
-  it('I1: a recovery whose afk: read never answers gives up without a join and shows the lost call', async () => {
+  it('fix round 2 (B-I1): a failed afk: read skips that attempt only; the recovery keeps its backoff and rejoins once a read answers clear', async () => {
     const h = harness();
     const general = await h.joined(GENV);
     act(() => { h.client.set(`afk:${A}`, null); });
+    let reads = 0;
     const base = h.client.handler;
-    h.client.handler = (c) => (c.m === 'afkRead' ? new Promise(() => undefined) : base(c));
+    h.client.handler = (c) => {
+      if (c.m !== 'afkRead') return base(c);
+      reads += 1;
+      if (reads <= 2) return Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' }));
+      act(() => { h.client.set(`afk:${A}`, afkOf(AFK_CH, { seq: 9 })); });
+      return Promise.resolve(null);
+    };
     act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
-    await wait(1_000 + AFK_READ_WAIT_MS + 1_000);
+    // Retries at 1 s and 2 s fail their read: no join, the recovery stands (the dock says reconnecting).
+    await wait(3_300);
+    expect(reads).toBe(2);
     expect(h.started).toHaveLength(1);
-    expect(h.v.recoveryChannelId).toBeNull();
-    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    expect(h.v.notice).toBeNull();
+    // The third (at 4 s more) reads clear and rejoins.
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([GENV, GENV]), { timeout: 6_000 });
+    expect(reads).toBe(3);
   }, 15_000);
+
+  it('fix round 2 (B-I1): a read that fails and then answers away ends the recovery with no join', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    let reads = 0;
+    const base = h.client.handler;
+    h.client.handler = (c) => {
+      if (c.m !== 'afkRead') return base(c);
+      reads += 1;
+      if (reads === 1) return Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' }));
+      act(() => { h.client.set(`afk:${A}`, afkOf(AFK_CH, { seq: 9, away: [{ userId: ME.id, since: nowSec() }] })); });
+      return Promise.resolve(null);
+    };
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 6_000 });
+    expect(reads).toBe(2);
+    expect(h.started).toHaveLength(1);
+    await wait(2_500);
+    expect(h.started).toHaveLength(1);
+  }, 15_000);
+
+  it('fix round 2 (B-M2): an upgrade restore waits past the 5 s read budget for slow slices, then joins', async () => {
+    const h = harness({ lagging: true });
+    act(() => h.v.restore(GENV, false, false));
+    await wait(AFK_READ_WAIT_MS + 1_500);
+    expect(h.started).toEqual([]);
+    expect(h.v.notice).toBeNull();
+    act(() => { loadSlices(h.client); });
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([GENV]), { timeout: 4_000 });
+    expect(RESTORE_WAIT_MS).toBe(120_000);
+  }, 20_000);
+
 
   it('I1: a web3.9 call in AFK restored after the upgrade, before the slices land, opens no microphone and says no failure', async () => {
     const h = harness({ lagging: true });
@@ -497,6 +541,21 @@ describe('AW5 fix round 1: fail closed, cancel and sequence', () => {
     act(() => h.v.join(AFK_CH));
     await waitFor(() => expect(h.client.callsOf('afkAway')).toHaveLength(1));
     await wait(200);
+    expect(h.client.callsOf('afkAway')).toHaveLength(1);
+  });
+
+  it('fix round 2 (B-n1): a click while the first away mark is in flight sends no second mark once that one made the person away', async () => {
+    const h = harness();
+    const base = h.client.handler;
+    h.client.handler = (c) => (c.m === 'afkAway' ? new Promise((r) => setTimeout(() => {
+      // Its op 55 lands with the answer.
+      act(() => { h.client.set(`afk:${A}`, { ...afkOf(AFK_CH), away: [{ userId: ME.id, since: nowSec() }] }); });
+      r(null);
+    }, 200)) : base(c));
+    act(() => h.v.join(AFK_CH));
+    await waitFor(() => expect(h.client.callsOf('afkAway')).toHaveLength(1));
+    act(() => h.v.join(AFK_CH));
+    await wait(600);
     expect(h.client.callsOf('afkAway')).toHaveLength(1);
   });
 

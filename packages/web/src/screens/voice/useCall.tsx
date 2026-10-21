@@ -212,6 +212,9 @@ const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_R
 export const REMOVED_HOLD_MS = 2_000;
 /** AW5 fix round 1 (I1): the longest a restore or a recovery waits for its channel's community and a fresh AFK read. */
 export const AFK_READ_WAIT_MS = 5_000;
+/** Fix round 2 (B-M2): the longest an upgrade restore keeps asking for its channel's AFK state: the shell's upgrade
+ *  rejoin window. */
+export const RESTORE_WAIT_MS = 120_000;
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -363,7 +366,7 @@ export function useCall(o: UseCallOptions): CallView {
       const mine = removedSeq.current;
       let timer: ReturnType<typeof setTimeout> | undefined;
       void Promise.race([
-        client.call({ m: 'afkRead', communityId: cid }).then(() => undefined, () => undefined),
+        client.call({ m: 'afkRead', communityId: cid, timeoutMs: AFK_READ_WAIT_MS }).then(() => undefined, () => undefined),
         new Promise<void>((r) => { timer = setTimeout(r, AFK_READ_WAIT_MS); }),
       ]).then(() => {
         clearTimeout(timer);
@@ -705,7 +708,8 @@ export function useCall(o: UseCallOptions): CallView {
     await startDone.current;
     await leaving.current?.catch(() => undefined);
     await awayPut.current;
-    if (mine !== intent.current || !mounted.current) return;
+    // Fix round 2 (B-n1): a mark that landed meanwhile (its op 55) made this press redundant.
+    if (mine !== intent.current || !mounted.current || awaySince(cid) !== null) return;
     const put = client.call({ m: 'afkAway', communityId: cid });
     const settled = put.then(() => undefined, () => undefined);
     awayPut.current = settled;
@@ -757,7 +761,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (cid === null) return 'unknown';
     let timer: ReturnType<typeof setTimeout> | undefined;
     const read = await Promise.race([
-      client.call({ m: 'afkRead', communityId: cid }).then(() => true, () => false),
+      client.call({ m: 'afkRead', communityId: cid, timeoutMs: AFK_READ_WAIT_MS }).then(() => true, () => false),
       new Promise<boolean>((r) => { timer = setTimeout(() => r(false), Math.max(0, deadline - Date.now())); }),
     ]);
     clearTimeout(timer);
@@ -785,12 +789,28 @@ export function useCall(o: UseCallOptions): CallView {
     setNotice(swept !== null ? { channelId: id, key: 'afk.moved', text } : { channelId: id, key: 'voice.disconnected' });
     if (!live.current.stageShown(id)) setLasting(text);
   }, [sweptName, awayElsewhere]);
+  // Fix round 2 (B-n2): the recovery effect reads these through refs, so a slice change does not re-arm its backoff.
+  const afkFreshRef = useRef(afkFresh);
+  afkFreshRef.current = afkFresh;
+  const endRecoveryRef = useRef(endRecovery);
+  endRecoveryRef.current = endRecovery;
   const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
     // AW5 (R-AW7), fix round 1 (I1): a web3.9 call in the AFK channel, a call in a community the person is away in, or one
-    // whose AFK state cannot be read is not restored.
+    // whose AFK state cannot be read is not restored. Fix round 2 (B-M2): after the upgrade reload the worker, the servers
+    // and the read may take a while, so an unknown answer is asked again (each ask bounded by AFK_READ_WAIT_MS) until
+    // RESTORE_WAIT_MS, the upgrade's rejoin window, has passed.
     const mine = ++intent.current;
-    void afkFresh(id, null).then((verdict) => {
-      if (mine !== intent.current || !mounted.current) return;
+    const until = Date.now() + RESTORE_WAIT_MS;
+    void (async () => {
+      let verdict = await afkFresh(id, null);
+      while (verdict === 'unknown' && Date.now() < until && mine === intent.current && mounted.current) {
+        await new Promise<void>((r) => { setTimeout(r, 1_000); });
+        if (mine !== intent.current || !mounted.current) return;
+        verdict = await afkFreshRef.current(id, null);
+      }
+      return verdict;
+    })().then((verdict) => {
+      if (verdict === undefined || mine !== intent.current || !mounted.current) return;
       if (verdict !== 'clear') { if (verdict === 'unknown') endRecovery(id, verdict); return; }
       recoveryRef.current = id;
       recoveryMark.current = null;
@@ -1023,17 +1043,19 @@ export function useCall(o: UseCallOptions): CallView {
       if (navigator.onLine && sessionRef.current === null && !starting.current) {
         // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
         // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
-        const verdict = await afkFresh(recoveryChannelId, recoveryMark.current);
+        // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the
+        // join's permanent refusals end a recovery, as before. Only the AFK channel or an away answer ends it here.
+        const verdict = await afkFreshRef.current(recoveryChannelId, recoveryMark.current);
         if (cancelled || recoveryRef.current !== recoveryChannelId) return;
-        if (verdict !== 'clear') { endRecovery(recoveryChannelId, verdict); return; }
-        if (sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
+        if (verdict === 'afk' || verdict === 'away') { endRecoveryRef.current(recoveryChannelId, verdict); return; }
+        if (verdict === 'clear' && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
       }
       delay = Math.min(delay * 2, 30_000);
       timer = setTimeout(() => { void retry(); }, delay);
     };
     timer = setTimeout(() => { void retry(); }, delay);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [recoveryChannelId, client, afkFresh, endRecovery]);
+  }, [recoveryChannelId, client]);
 
   // Product walk I6: the outgoing ring of a DM call this device opened. It lasts 30 s from the call's start, whoever was
   // rung; once every ring ended with nobody else ever in the call, the caller leaves by itself after a short grace, and the
