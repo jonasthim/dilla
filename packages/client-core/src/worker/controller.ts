@@ -462,12 +462,13 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
-/** A device name as the server accepts it: trimmed, 1..64 characters, no control character. Null when it is not one. */
+/** A device name as the server stores it (the display-name rule plus invisible characters): NFC, trimmed, 1..64 characters,
+ *  with no control, bidi or zero-width character. Null when the value is not one. */
 const deviceLabel = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
-  const label = value.trim();
+  const label = value.normalize('NFC').trim();
   const length = [...label].length;
-  return length >= 1 && length <= 64 && !/\p{Cc}/u.test(label) ? label : null;
+  return length >= 1 && length <= 64 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(label) ? label : null;
 };
 
 /** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */

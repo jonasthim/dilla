@@ -105,6 +105,14 @@ export function Devices(): React.JSX.Element {
   const renaming = target?.kind === 'rename' ? devices?.find(d => d.id === target.deviceId) : undefined;
   const renameStart = renaming === undefined ? '' : renaming.label ?? (renaming.own ? suggestedName() : '');
 
+  // The remove dialogs name the device by its label and its id: the label is the server's to change.
+  const subjectOf = (deviceId: string | null) => {
+    const device = deviceId === null ? undefined : devices?.find(d => d.id === deviceId);
+    if (deviceId === null) return undefined;
+    return device?.label == null
+      ? <span>{deviceId.slice(0, 8)}</span>
+      : <><bdi>{device.label}</bdi> <span>{deviceId.slice(0, 8)}</span></>;
+  };
   const revokeId = target?.kind === 'revoke' ? target.deviceId : null;
   const unlistedId = target?.kind === 'removeUnlisted' ? target.deviceId : null;
   const plainBanner = plainError === null ? null : <Banner tone="danger">{t('settings.error.other', { code: plainError.code })}</Banner>;
@@ -128,7 +136,7 @@ export function Devices(): React.JSX.Element {
       <p>{t('devices.body')}</p>
       <ul className="dw-device-list">
         {ordered.map(d => (
-          <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
+          <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} idHint={d.label === null ? undefined : d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
             tierLabel={t(d.tier === 1 ? 'devices.tier.web' : 'devices.tier.native')}
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
@@ -150,7 +158,7 @@ export function Devices(): React.JSX.Element {
         <Button onClick={() => choose({ kind: 'forget' })}>{t('devices.forget')}</Button>
       </SettingsRow>
 
-      <KeyDialog open={revokeId !== null} id="devices-revoke" title={t('devices.revokeTitle')} body={t('devices.revokeBody')}
+      <KeyDialog open={revokeId !== null} id="devices-revoke" subject={subjectOf(revokeId)} title={t('devices.revokeTitle')} body={t('devices.revokeBody')}
         confirmLabel={t('devices.confirmRevoke')} onClose={() => setTarget(null)}
         onConfirm={async key => {
           if (revokeId === null) return;
@@ -164,6 +172,7 @@ export function Devices(): React.JSX.Element {
           if (unlistedId !== null) void confirmPlain({ m: 'revokeDevice', deviceId: unlistedId, recoveryKey: null }, true);
         })}>
         {plainBanner}
+        <p className="dw-device-subject">{subjectOf(unlistedId)}</p>
         <p>{t('devices.removeUnlistedBody')}</p>
       </Dialog>
       <Dialog open={target?.kind === 'forget'} title={t('devices.forgetTitle')} closeLabel={t('dialog.close')} onClose={close}

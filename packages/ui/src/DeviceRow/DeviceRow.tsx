@@ -4,6 +4,11 @@ import './DeviceRow.css';
 
 export interface DeviceRowProps {
   name: string;
+  /**
+   * The device id's first characters, shown beside `name` when the name is the owner's own label (the label is held by the
+   * server, which can change it, so the id stays the identifier). Omit it when `name` is the id.
+   */
+  idHint?: string;
   tier: 'web' | 'native';
   tierLabel: string;
   own?: boolean;
@@ -20,13 +25,17 @@ export interface DeviceRowProps {
  * fact is shown, and nowhere in the chrome (F9). The action, when given, is described by the
  * device's name, so "remove" is heard with the device it removes; so is the extra one. Every text arrives as a prop.
  */
-export function DeviceRow({ name, tier, tierLabel, own, ownLabel, state, lastSeen, action, extraAction }: DeviceRowProps) {
+export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state, lastSeen, action, extraAction }: DeviceRowProps) {
   const nameId = useId();
+  const idId = useId();
+  const describedBy = idHint ? `${nameId} ${idId}` : nameId;
   return (
     <li className="d-device-row" data-tier={tier} data-own={own ? 'true' : undefined}>
       <div className="d-device-row__main">
         <div className="d-device-row__head">
-          <span id={nameId} className="d-device-row__name">{name}</span>
+          {/* A label is free text: <bdi> keeps its direction from reordering the id and tags around it. */}
+          <span id={nameId} className="d-device-row__name">{idHint ? <bdi>{name}</bdi> : name}</span>
+          {idHint ? <span id={idId} className="d-device-row__id">{idHint}</span> : null}
           <span className="d-device-row__tag" data-kind="tier">{tierLabel}</span>
           {own && ownLabel ? <span className="d-device-row__tag" data-kind="own">{ownLabel}</span> : null}
         </div>
@@ -40,8 +49,8 @@ export function DeviceRow({ name, tier, tierLabel, own, ownLabel, state, lastSee
       </div>
       {action || extraAction ? (
         <div className="d-device-row__actions">
-          {extraAction ? <Button aria-describedby={nameId} onClick={extraAction.onAction}>{extraAction.label}</Button> : null}
-          {action ? <Button variant={action.danger ? 'danger' : 'default'} aria-describedby={nameId} onClick={action.onAction}>{action.label}</Button> : null}
+          {extraAction ? <Button aria-describedby={describedBy} onClick={extraAction.onAction}>{extraAction.label}</Button> : null}
+          {action ? <Button variant={action.danger ? 'danger' : 'default'} aria-describedby={describedBy} onClick={action.onAction}>{action.label}</Button> : null}
         </div>
       ) : null}
     </li>

@@ -208,16 +208,42 @@ describe('naming a device', () => {
 
   it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
     setup(undefined, list());
-    expect(within(rowNamed('work laptop')).queryByText(NAMED.slice(0, 8))).toBeNull();
+    expect(within(rowNamed('work laptop')).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
     expect(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
     expect(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
     expect(within(rowNamed(OLD.slice(0, 8))).queryByRole('button', { name: 'rename' })).toBeNull();
+  });
+  it('keeps the id beside a name, in an isolated span, so a swapped name does not hide which device it is', () => {
+    setup(undefined, list());
+    const row = rowNamed('work laptop');
+    expect(within(row).getByText('work laptop').tagName).toBe('BDI');
+    expect(within(row).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
+    // An unnamed device shows its id once.
+    expect(within(rowNamed(PHONE.slice(0, 8))).getAllByText(PHONE.slice(0, 8))).toHaveLength(1);
+  });
+  it('names the device by its label and its id in both remove dialogs', async () => {
+    const named = [dev(OWN, { own: true }), dev(NAMED, { label: 'work laptop' }), dev(FORGOTTEN, { label: 'old tablet', listed: false })];
+    const { user } = setup(undefined, named);
+    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'remove' }));
+    let dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
+    expect(within(dialog).getByText('work laptop').tagName).toBe('BDI');
+    expect(within(dialog).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await user.click(within(rowNamed('old tablet')).getByRole('button', { name: 'remove' }));
+    dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
+    expect(within(dialog).getByText('old tablet')).toBeInTheDocument();
+    expect(within(dialog).getByText(FORGOTTEN.slice(0, 8))).toBeInTheDocument();
+  });
+  it('names an unnamed device by its id in the remove dialog', async () => {
+    const { user } = setup();
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    expect(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByText(PHONE.slice(0, 8))).toBeInTheDocument();
   });
   it('opens on the current name, saves it trimmed with the device, and closes', async () => {
     const { fake, user, view } = setup(undefined, list());
     await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
-    expect(within(dialog).getByText('A name you will recognise. The server can read it, and it is not part of the signed device list.')).toBeInTheDocument();
+    expect(within(dialog).getByText('A name you will recognise. The server can read and change it, so check a device by its id before you remove it.')).toBeInTheDocument();
     expect(field()).toHaveValue('work laptop');
     expect(field()).toHaveFocus();
     expect(field()).toHaveAttribute('maxlength', '64');

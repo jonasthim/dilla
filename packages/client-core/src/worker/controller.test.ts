@@ -3679,8 +3679,11 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     const w = world();
     await toReady(w);
     w.call(2, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: '  phone  ' });
+    w.call(4, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: 'cafe\u0301' });
     await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
     expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'phone');
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'caf\u00e9');
     expect(w.calls.lastIndexOf('listDevices')).toBeGreaterThan(w.calls.indexOf('patchDevice'));
     w.call(3, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: null });
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null }));
@@ -3690,7 +3693,8 @@ describe('Controller devices (L-TS-23, Q13)', () => {
   it('renameDevice refuses a blank, a too long, a control-character or a non-string label, and a bad id, before any request', async () => {
     const w = world();
     await toReady(w);
-    const bad: unknown[] = ['', '   ', 'x'.repeat(65), 'two\nlines', 7, undefined];
+    const bad: unknown[] = ['', '   ', 'x'.repeat(65), 'two\nlines', 7, undefined, 'a\u202eb', 'a\u2066b', 'a\u200fb', 'a\u200eb',
+      'a\u2028b', 'a\u061cb', 'a\u200bb', 'a\u200db', 'a\ufeffb', 'a\u2060b'];
     bad.forEach((label, i) => w.call(10 + i, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label }));
     w.call(20, { m: 'renameDevice', deviceId: 'nothex', label: 'ok' });
     await vi.waitFor(() => expect(w.ret(20)).toBeDefined());

@@ -56,7 +56,7 @@ before it ("every route below is `E`").
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
 | `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
 | `GET /v1/devices` | E | — | `[[device_id, tier, signer_tier, verified_at, revoked_at, last_seen, label\|null]]` |
-| `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is 1 to 64 characters, valid UTF-8, no control character, else `400 E_INVALID_REQUEST`; the device may be the caller's own or another device of the same user, and `404 E_NOT_FOUND` for another user's or an unknown device; spends the device session's write bucket |
+| `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is trimmed, NFC, 1 to 64 characters, with no control, bidirectional (U+202A-202E, U+2066-2069, U+200E/F, U+061C) or zero-width character (U+200B-200D, U+2060, U+FEFF) and no U+2028/2029, else `400 E_INVALID_REQUEST`; the device may be the caller's own or another live device of the same user; `404 E_NOT_FOUND` for another user's, an unknown or a removed (revoked) device; `403 E_FACTOR_REQUIRED` while the session owes a second factor; spends the device session's write bucket |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
 | `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
@@ -107,8 +107,10 @@ the list `PUT` that names it. The `/v1/devices` routes spend the device session'
 and write (`POST`, `PATCH`, `DELETE`) buckets.
 
 A device's `label` is the owner's own name for it. It is not part of the signed device list: the
-instance stores it readable, like a display name, and could read or change it. A client shows it
-beside the device and treats it as a hint, never as a statement about which key the device holds.
+instance stores it readable, like a display name, and could read or change it. `GET /v1/devices` returns it only to the owner, for the owner's own devices, so no other user ever
+sees it. A client shows it with the first characters of the `device_id` beside it, the name isolated from the text
+around it (`<bdi>`), and names a device by both wherever a person acts on it (removal); it treats the label as a
+hint, never as a statement about which key the device holds.
 
 Two rows above describe more than any released instance does. They are recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:

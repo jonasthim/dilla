@@ -68,6 +68,21 @@ describe('DeviceRow', () => {
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['rename']);
   });
 
+  it('keeps the id beside a name, isolates the name from the text around it, and describes the actions by both', () => {
+    render(list({ name: 'work laptop', idHint: '7c01e5aa', tier: 'web', tierLabel: 'browser', extraAction: { label: 'rename', onAction: () => {} },
+      action: { label: 'remove', onAction: () => {} } }));
+    const item = screen.getByRole('listitem');
+    const name = within(item).getByText('work laptop');
+    expect(name.tagName).toBe('BDI');
+    expect(within(item).getByText('7c01e5aa').tagName).toBe('SPAN');
+    for (const b of within(item).getAllByRole('button')) expect(b).toHaveAccessibleDescription('work laptop 7c01e5aa');
+  });
+
+  it('shows no id hint when the name is the id', () => {
+    render(list({ name: '7c01e5aa', tier: 'web', tierLabel: 'browser' }));
+    expect(screen.getAllByText('7c01e5aa')).toHaveLength(1);
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(
       <div className="d-root">

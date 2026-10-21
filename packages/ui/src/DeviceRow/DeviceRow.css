@@ -5,3 +5,4 @@
 .d-device-row__tag[data-kind="own"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .d-device-row__meta { margin-top: 0.125rem; font-size: var(--text-sm); color: var(--fg-3); }
 .d-device-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+.d-device-row__id { font-size: var(--text-sm); color: var(--fg-3); font-variant-numeric: tabular-nums; }
