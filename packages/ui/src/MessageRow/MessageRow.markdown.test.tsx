@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { act, render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { MessageRow, type BodyPart } from './MessageRow.tsx';
@@ -55,7 +56,7 @@ describe('MessageRow markdown parts', () => {
     ]);
     expect(container.querySelector('a[href^="javascript"], a[href^="data"]')).toBeNull();
     expect(container.querySelectorAll('a')).toHaveLength(1);
-    expect(container.querySelector('.d-message-row__body')?.textContent).toBe('javascript:alert(1)datapaddedupper');
+    expect(container.querySelector('.d-message-row__body')?.textContent).toBe('javascript:alert(1)datapaddedHTTPS://example.com/');
   });
 
   it('puts a link on the roving tab stop like the pills: not a stop unless the row is active', () => {
@@ -75,5 +76,35 @@ describe('MessageRow markdown parts', () => {
       { kind: 'quote', children: [text('q')] }, { kind: 'codeblock', text: 'b' },
     ]);
     await expectNoAxeViolations(container);
+  });
+});
+
+describe('MessageRow markdown hardening (fix round 1)', () => {
+  const css = () => readFileSync(`${process.cwd()}/src/MessageRow/MessageRow.css`, 'utf8');
+  it('F1: a link is a left-to-right isolate and shows exactly its href, whatever its text part says', () => {
+    row([text('‮ '), { kind: 'link', href: 'https://evil.example/?moc.elgoog//:sptth', text: 'something else' }]);
+    const a = screen.getByRole('link');
+    expect(a).toHaveAttribute('dir', 'ltr');
+    expect(a.textContent).toBe('https://evil.example/?moc.elgoog//:sptth');
+  });
+  it('F1: the stylesheet isolates the anchor', () => {
+    expect(/\.d-message-row__body \.d-link \{([^}]*)\}/.exec(css())?.[1] ?? '').toMatch(/unicode-bidi: isolate/);
+  });
+  it('F3: a code span cannot be mistaken for a mention pill', () => {
+    const code = /\.d-message-row__code \{([^}]*)\}/.exec(css())?.[1] ?? '';
+    const pill = /\.d-mention \{([^}]*)\}/.exec(css())?.[1] ?? '';
+    expect(code).toMatch(/border: 1px solid var\(--hairline-2\)/);
+    expect(code).toMatch(/background: transparent/);
+    expect(code).toMatch(/border-radius: 0/);
+    expect(pill).toMatch(/background: var\(--surface-hi\)/);
+    expect(pill).not.toMatch(/border:/);
+  });
+  it('F4: a code block with a language shows it', () => {
+    const { container } = row([{ kind: 'codeblock', text: 'x', lang: 'ts' }]);
+    expect(container.querySelector('pre')).toHaveAttribute('data-lang', 'ts');
+  });
+  it('a mailto link with a query is not an anchor', () => {
+    const { container } = row([{ kind: 'link', href: 'mailto:a@b.example?attach=/etc/passwd', text: 'x' }]);
+    expect(container.querySelector('a')).toBeNull();
   });
 });

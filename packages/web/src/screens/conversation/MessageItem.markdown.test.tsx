@@ -37,6 +37,14 @@ describe('markdown in a message body (E5)', () => {
     expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
     expect(body.textContent).toContain('javascript:alert(2)');
   });
+  it('F1: a bidi override before a link cannot reorder the link: it is gone, and the anchor is a ltr isolate showing its href', () => {
+    renderConversation({ items: [peerRow(P1, '1', '‮ https://evil.example/?moc.elgoog//:sptth')] });
+    const a = within(bodyOf(P1)).getByRole('link');
+    expect(a).toHaveAttribute('dir', 'ltr');
+    expect(a.textContent).toBe('https://evil.example/?moc.elgoog//:sptth');
+    expect(a).toHaveAttribute('href', a.textContent);
+    expect(bodyOf(P1).textContent).not.toMatch(/[‪-‮⁦-⁩]/);
+  });
   it('renders the raw text of a message in the editor, markers and all', async () => {
     const { user } = renderConversation({ items: [ownRow('1'.repeat(32), '1', '**bold** https://example.com')] });
     await user.hover(rowOf('1'.repeat(32)));

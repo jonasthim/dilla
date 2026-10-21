@@ -15,8 +15,10 @@ export type BodyPart =
   | { kind: 'text'; text: string }
   | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null; /** A user mention's id: with `onOpenProfile` the pill is a button that opens that user's card. Role and broadcast pills have none. */ userId?: string }
   | { kind: 'strong' | 'em' | 'strike' | 'quote'; children: readonly BodyPart[] }
-  | { kind: 'code' | 'codeblock'; text: string }
-  /** A link shown as its own text. The row renders an anchor only for an `http:`, `https:` or `mailto:` href; any other is plain text. */
+  | { kind: 'code'; text: string }
+  /** `lang` is the fence's language word, shown on the block. */
+  | { kind: 'codeblock'; text: string; lang?: string }
+  /** A link. The row shows the href itself as its text (never `text`), isolated left to right, and renders an anchor only for an `http:`, `https:` or bare `mailto:` href; any other is plain `text`. */
   | { kind: 'link'; href: string; text: string };
 
 export interface MessageRowProps {
@@ -68,7 +70,7 @@ const INTERACTIVE = 'button, a, [data-profile="true"], input, textarea, select, 
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 
-const SAFE_HREF = /^(?:https?:\/\/[^\s/]|mailto:[^\s])/i;
+const SAFE_HREF = /^(?:https?:\/\/[^\s/]\S*|mailto:[^\s?]+)$/i;
 
 /** The body's parts as text children and mention pills: never HTML, never the raw token. A user pill is a button when the caller can open a profile. */
 function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOpenProfile: MessageRowProps['onOpenProfile']): ReactNode {
@@ -81,11 +83,11 @@ function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOp
       case 'strike': return <s key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</s>;
       case 'quote': return <blockquote key={i} className="d-message-row__quote">{bodyChildren(part.children, tabIndex, onOpenProfile)}</blockquote>;
       case 'code': return <code key={i} className="d-message-row__code">{part.text}</code>;
-      case 'codeblock': return <pre key={i} className="d-message-row__codeblock"><code>{part.text}</code></pre>;
+      case 'codeblock': return <pre key={i} className="d-message-row__codeblock" data-lang={part.lang}><code>{part.text}</code></pre>;
       case 'link':
         // Defence in depth: the parser already refuses other schemes; an href that is not exactly http(s) or mailto is shown as the text it came with.
         if (!SAFE_HREF.test(part.href)) return part.text;
-        return <a key={i} className="d-link" href={part.href} target="_blank" rel="noopener noreferrer nofollow" tabIndex={tabIndex}>{part.text}</a>;
+        return <a key={i} className="d-link" href={part.href} target="_blank" rel="noopener noreferrer nofollow" dir="ltr" tabIndex={tabIndex}>{part.href}</a>;
       case 'mention': {
         const inner = <>{part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</>;
         const attrs = { className: 'd-mention', 'data-me': flag(part.me), 'data-broadcast': flag(part.broadcast) };

@@ -260,9 +260,9 @@ When the focused control goes away, focus never falls to the page:
 ## Markdown in message bodies (E5)
 
 - Parsed on the reader's device, from the decrypted text; the wire body, editing and search stay raw text.
-- Shown: `**strong**`, `*em*` or `_em_`, `~~strike~~`, `` `code` ``, fenced code blocks, `> quote` lines, and bare `http://`, `https://` and `mailto:` links. Anything else, including `[text](url)` and raw HTML, is literal text.
+- Shown: `**strong**`, `*em*` or `_em_`, `~~strike~~`, `` `code` ``, fenced code blocks, `> quote` lines, and bare `http://`, `https://` and `mailto:` links. Anything else, including `[text](url)` and raw HTML, is literal text. A fence whose opening line says more than a language word, or that is never closed, is literal text. A code span is outlined, never filled, so it cannot pass for a mention pill.
 - A body is rendered as React elements from a parsed tree. There is no `dangerouslySetInnerHTML` and no HTML parsing.
-- A link is shown as its own text, opens in a new tab with `rel="noopener noreferrer nofollow"`, and loads nothing by itself. Other schemes (`javascript:`, `data:`, `blob:`, `file:`), addresses with a user name or password, and links with control or bidi characters are plain text.
+- A link shows exactly the address it opens (the normalised address: a trailing `/` is added, and a host with non-ASCII letters is shown as punycode, `xn--...`, so a lookalike cannot pass for the real domain). It is a left-to-right isolate, opens in a new tab with `rel="noopener noreferrer nofollow"`, and loads nothing by itself. In a message that holds a link, bidi control characters are removed from the text around it. A `mailto:` link is the bare address only (a query such as `?attach=` or `?body=` is not linked). Other schemes (`javascript:`, `data:`, `blob:`, `file:`), addresses with a user name or password, and addresses holding a control, format, bidi, zero-width or filler character are plain text.
 - Mentions stay pills inside formatting; code never makes a pill. Unclosed markers and backslash escapes (`\*`) stay literal.
 - Links are underlined and keep the text colour; a link is a tab stop only while focus is in its row, like the author name and the mention pills.
 

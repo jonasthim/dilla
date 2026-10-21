@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BodyPart } from '@dilla/ui';
-import { parseMarkdown, safeLink } from './markdown.ts';
+import { parseMarkdown, parseTree, parseTreeUncached, safeLink } from './markdown.ts';
 
 const ID = 'a'.repeat(32);
 const resolve = (target: string): BodyPart => ({ kind: 'mention', label: `@${target.slice(0, 3)}`, me: false, broadcast: false });
@@ -11,7 +11,8 @@ const text = (t: string): BodyPart => ({ kind: 'text', text: t });
 function visible(parts: readonly BodyPart[]): string {
   return parts.map(p => {
     switch (p.kind) {
-      case 'text': case 'code': case 'codeblock': case 'link': return p.text;
+      case 'text': case 'code': case 'link': return p.text;
+      case 'codeblock': return (p.lang ?? '') + p.text;
       case 'mention': return p.label;
       default: return visible(p.children);
     }
@@ -41,14 +42,16 @@ describe('parseMarkdown', () => {
     ['a backslash before a letter stays', 'C:\\dir', [text('C:\\dir')]],
     ['a trailing backslash stays', 'end\\', [text('end\\')]],
     ['fenced block', '```\nline *1*\nline 2\n```', [{ kind: 'codeblock', text: 'line *1*\nline 2' }]],
-    ['fenced block with a language tag', '```ts\nlet a;\n```', [{ kind: 'codeblock', text: 'let a;' }]],
+    ['fenced block with a language tag', '```ts\nlet a;\n```', [{ kind: 'codeblock', text: 'let a;', lang: 'ts' }]],
+    ['F4: an opening line that says more than a language is literal', '```hidden text a moderator never sees\nshown\n```', [{ kind: 'code', text: 'hidden text a moderator never sees\nshown\n' }]],
+    ['F4: text after an unclosed fence stays visible', 'a\n```\nsecret\nmore', [text('a\n```\nsecret\nmore')]],
     ['an unclosed fence is text', '```\nopen', [text('```\nopen')]],
     ['text around a fence', 'before\n```\nx\n```\nafter', [text('before'), { kind: 'codeblock', text: 'x' }, text('after')]],
     ['quote', '> hi *you*', [{ kind: 'quote', children: [text('hi '), { kind: 'em', children: [text('you')] }] }]],
     ['quote of two lines', '> a\n> b', [{ kind: 'quote', children: [text('a\nb')] }]],
     ['quote then text', '> a\nb', [{ kind: 'quote', children: [text('a')] }, text('b')]],
     ['a > mid-line is text', 'a > b', [text('a > b')]],
-    ['markdown link syntax is not a link, the url inside is', '[click](https://evil.example)', [text('[click]('), { kind: 'link', href: 'https://evil.example/', text: 'https://evil.example' }, text(')')]],
+    ['markdown link syntax is not a link, the url inside is', '[click](https://evil.example)', [text('[click]('), { kind: 'link', href: 'https://evil.example/', text: 'https://evil.example/' }, text(')')]],
     ['raw html stays text', '<b>x</b><img src=x onerror=alert(1)>', [text('<b>x</b><img src=x onerror=alert(1)>')]],
   ])('%s', (_name, input, expected) => {
     expect(parse(input)).toEqual(expected);
@@ -61,7 +64,7 @@ describe('parseMarkdown', () => {
       ]);
     });
     it('links http and mailto', () => {
-      expect(parse('http://example.com')).toEqual([{ kind: 'link', href: 'http://example.com/', text: 'http://example.com' }]);
+      expect(parse('http://example.com')).toEqual([{ kind: 'link', href: 'http://example.com/', text: 'http://example.com/' }]);
       expect(parse('mailto:a@example.com')).toEqual([{ kind: 'link', href: 'mailto:a@example.com', text: 'mailto:a@example.com' }]);
     });
     it('leaves trailing punctuation out of the link', () => {
@@ -69,7 +72,7 @@ describe('parseMarkdown', () => {
       expect(parse('https://example.com/a_(b)')).toEqual([{ kind: 'link', href: 'https://example.com/a_(b)', text: 'https://example.com/a_(b)' }]);
     });
     it('links inside formatting', () => {
-      expect(parse('**https://example.com**')).toEqual([{ kind: 'strong', children: [{ kind: 'link', href: 'https://example.com/', text: 'https://example.com' }] }]);
+      expect(parse('**https://example.com**')).toEqual([{ kind: 'strong', children: [{ kind: 'link', href: 'https://example.com/', text: 'https://example.com/' }] }]);
     });
     it.each([
       'javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,<script>alert(1)</script>', 'vbscript:x', 'file:///etc/passwd',
@@ -121,33 +124,123 @@ describe('parseMarkdown', () => {
     expect(() => parse('`'.repeat(3000) + '~'.repeat(3000) + '>'.repeat(3000))).not.toThrow();
   });
 
-  // The parser only removes markers: what a reader sees is the input with some of `\ * _ ~ ` > `, line breaks, and a
-  // fence's lines taken out, in the same order, whatever the input is.
-  it('fuzz: the visible text is always the input minus markers', () => {
-    const alphabet = ['a', 'b', ' ', '*', '_', '~', '`', '\\', '>', '\n', ':', '/', '.', 'h', 't', 'p', 's', '@', `<@${ID}>`, '<', 'mailto:x@y.z', 'https://a.b', '[', ']', '(', ')'];
-    let seed = 7;
-    const rand = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
-    const MARKERS = new Set([...'\\*_~`>\n ']);
-    for (let run = 0; run < 3000; run++) {
-      const input = Array.from({ length: rand(40) }, () => alphabet[rand(alphabet.length)]).join('');
+  // The parser only removes markers: what a reader sees is the input with some of `\ * _ ~ ` > `, line breaks, spaces and a
+  // fence's lines taken out, in the same order, whatever the input is. (No address in the alphabet: a link shows its
+  // normalised href, which is the next test.)
+  const MARKERS = new Set([...'\\*_~`>\n ']);
+  function fuzz(alphabet: readonly string[], runs: number, maxLen: number, seed0: number): void {
+    let seed = seed0;
+    const rand = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >> 8) % n; };
+    for (let run = 0; run < runs; run++) {
+      const input = Array.from({ length: rand(maxLen) }, () => alphabet[rand(alphabet.length)]).join('');
       const parts = parseMarkdown(input, t => ({ kind: 'mention', label: `<@${t}>`, me: false, broadcast: false }));
       const seen = visible(parts);
-      // Subsequence of the input, and every dropped character is a marker.
       let at = 0;
+      let bad = '';
       for (const ch of seen) {
         const found = input.indexOf(ch, at);
-        expect(found, `${JSON.stringify(input)} -> ${JSON.stringify(seen)}`).toBeGreaterThanOrEqual(0);
-        for (const dropped of input.slice(at, found)) expect(MARKERS.has(dropped) || dropped === '`', JSON.stringify(input)).toBe(true);
+        if (found < 0) { bad = 'not in order'; break; }
+        if ([...input.slice(at, found)].some(d => !MARKERS.has(d))) { bad = 'dropped a non-marker'; break; }
         at = found + ch.length;
       }
-      for (const dropped of input.slice(at)) expect(MARKERS.has(dropped) || dropped === '`', JSON.stringify(input)).toBe(true);
-      // Never a link that is not http, https or mailto.
-      const walk = (ps: readonly BodyPart[]): void => ps.forEach(p => {
-        if (p.kind === 'link') expect(safeLink(p.href)).toBe(p.href);
-        if ('children' in p) walk(p.children);
-      });
-      walk(parts);
+      if (bad === '' && [...input.slice(at)].some(d => !MARKERS.has(d))) bad = 'dropped a non-marker at the end';
+      expect(bad, `${JSON.stringify(input)} -> ${JSON.stringify(seen)}`).toBe('');
     }
+  }
+  it('fuzz: the visible text is always the input minus markers', () => {
+    fuzz(['a', 'b', ' ', '*', '_', '~', '`', '\\', '>', '\n', ':', '/', '.', '@', `<@${ID}>`, '<', '[', ']', '(', ')', 'x'], 4000, 40, 7);
+  });
+  it('F5: fuzz with long inputs and fences, backticks, newlines and brackets', () => {
+    fuzz(['a', 'x', ' ', '*', '_', '~~', '`', '```', '\n```\n', '```x\n', '\n', '\\', '> ', '[', ']', '(', ')', `<@${ID}>`, '**', 'a b'], 1500, 200, 11);
+  });
+  it('fuzz: every link that comes out is canonical, safe and shown as its own href', () => {
+    const alphabet = ['a', ' ', '*', '_', '`', '\n', '(', ')', 'http', 'https://', 'mailto:', 'x@y.z', 'a.b', '/', ':', '.', '\u202e', '\u061c', '\u3164', 'а', '?', '#'];
+    let seed = 3;
+    const rand = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >> 8) % n; };
+    const walk = (ps: readonly BodyPart[]): void => ps.forEach(p => {
+      if (p.kind === 'link') { expect(safeLink(p.href)).toBe(p.href); expect(p.text).toBe(p.href); }
+      if ('children' in p) walk(p.children);
+    });
+    for (let run = 0; run < 3000; run++) walk(parse(Array.from({ length: rand(60) }, () => alphabet[rand(alphabet.length)]).join('')));
+  });
+
+  describe('F1: bidi controls cannot reorder a link', () => {
+    const BODY = '\u202e https://evil.example/?moc.elgoog//:sptth';
+    it('the link keeps its typed order and the override is gone from the text around it', () => {
+      const parts = parse(BODY);
+      expect(parts).toEqual([text(' '), { kind: 'link', href: 'https://evil.example/?moc.elgoog//:sptth', text: 'https://evil.example/?moc.elgoog//:sptth' }]);
+    });
+    it('removes every bidi control from text, code, blocks and pill labels of a body that holds a link', () => {
+      const controls = '\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c';
+      const parts = parseMarkdown(`${controls}a \`${controls}b\` **${controls}c** <@${ID}> https://example.com`, () => ({ kind: 'mention', label: `${controls}@bob`, me: false, broadcast: false }));
+      expect(JSON.stringify(parts)).not.toMatch(/[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/);
+    });
+    it('leaves bidi controls alone in a body with no link (a plain Arabic sentence keeps its marks)', () => {
+      expect(visible(parse('abc \u200f def \u061c'))).toBe('abc \u200f def \u061c');
+    });
+  });
+
+  describe('F2: the parse is linear', () => {
+    const best = (input: string): number => {
+      parseTreeUncached(input);
+      let min = Infinity;
+      for (let k = 0; k < 5; k++) { const t0 = performance.now(); parseTreeUncached(input); min = Math.min(min, performance.now() - t0); }
+      return min;
+    };
+    const cases: Record<string, (n: number) => string> = {
+      'a url then ) repeated': n => 'http://a/' + ')'.repeat(n - 9),
+      '(h repeated': n => '(h'.repeat(n / 2),
+      'a url then dots': n => 'http://a' + '.'.repeat(n - 8),
+      'unclosed fences': n => '```a\n'.repeat(n / 5),
+      'unclosed stars': n => '*a '.repeat(n / 3),
+      'unclosed tildes and underscores': n => '~~a_a '.repeat(n / 6),
+      'backtick runs of growing length': n => { let s = ''; let k = 1; while (s.length < n) { s += '`'.repeat(k) + 'a'; k++; } return s.slice(0, n); },
+      'quotes': n => '> *a\n'.repeat(n / 5),
+    };
+    for (const [name, make] of Object.entries(cases)) {
+      it(`${name}: 4000 characters in under 5 ms, 50000 in under 50 ms`, () => {
+        expect(best(make(4000))).toBeLessThan(5);
+        expect(best(make(50000))).toBeLessThan(50);
+      });
+    }
+    it('remembers the parse of a body, so a re-render does not parse again', () => {
+      const body = '**x** https://example.com ' + Math.random();
+      expect(parseTree(body)).toBe(parseTree(body));
+      expect(parseTreeUncached(body)).not.toBe(parseTree(body));
+    });
+  });
+
+  describe('F6: invisible and format characters', () => {
+    it.each([
+      ['U+061C', '\u061c'], ['U+115F', '\u115f'], ['U+1160', '\u1160'], ['U+3164', '\u3164'], ['U+FFA0', '\uffa0'], ['tag U+E0041', '\u{e0041}'],
+      ['U+E0000', '\u{e0000}'], ['U+034F', '\u034f'], ['U+180E', '\u180e'], ['U+2800', '\u2800'], ['ZWJ', '\u200d'], ['soft hyphen', '\u00ad'],
+      ['U+FFF9', '\ufff9'], ['word joiner', '\u2060'], ['U+202E', '\u202e'],
+    ])('refuses a link holding %s', (_n, ch) => {
+      for (const url of [`https://good.example/${ch}x`, `https://good.example/x${ch}`, `https://go${ch}od.example/`]) {
+        expect(safeLink(url)).toBeNull();
+        expect(parse(url).some(p => p.kind === 'link')).toBe(false);
+      }
+    });
+  });
+
+  describe('F7: the host is shown as ASCII', () => {
+    it('shows and opens the punycode host of a lookalike', () => {
+      expect(parse('https://\u0430pple.com/login')).toEqual([{ kind: 'link', href: 'https://xn--pple-43d.com/login', text: 'https://xn--pple-43d.com/login' }]);
+      expect(parse('https://g\u00f6\u00f6gle.com/')).toEqual([{ kind: 'link', href: 'https://xn--ggle-5qaa.com/', text: 'https://xn--ggle-5qaa.com/' }]);
+    });
+    it('shows a non-ASCII path percent-encoded, as it is opened', () => {
+      expect(parse('https://example.com/\u00e5')).toEqual([{ kind: 'link', href: 'https://example.com/%C3%A5', text: 'https://example.com/%C3%A5' }]);
+    });
+  });
+
+  describe('mailto links are the bare address only', () => {
+    it('links the bare address', () => {
+      expect(parse('mail mailto:Ada.L+x@example.com now')).toEqual([text('mail '), { kind: 'link', href: 'mailto:Ada.L+x@example.com', text: 'mailto:Ada.L+x@example.com' }, text(' now')]);
+    });
+    it.each(['mailto:a@b.example?attach=/etc/passwd', 'mailto:a@b.example?body=x', 'mailto:a@b.example?cc=c@d.example', 'mailto:a@b.example,c@d.example', 'mailto:?to=a@b.example', 'mailto:nobody', 'mailto:a@b.example/x'])('does not link %s', input => {
+      expect(safeLink(input)).toBeNull();
+      expect(parse(input).some(p => p.kind === 'link')).toBe(false);
+    });
   });
 
   it('fuzz: text without any marker comes back as exactly itself', () => {

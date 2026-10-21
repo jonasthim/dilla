@@ -1179,7 +1179,9 @@ the editor, always show what you typed.
 - `` `code` `` inside a line, and a block between two lines of three backticks.
 - `> ` at the start of a line makes a quote.
 - A web address that starts with `http://` or `https://`, or an email address written `mailto:name@example.com`, becomes
-  a link. It shows the address itself and opens in a new tab. dilla never loads the page by itself.
+  a link. It shows the address it opens (a name with letters outside a to z is shown in its `xn--` form, so a lookalike
+  cannot pass for the real site) and opens in a new tab. dilla never loads the page by itself. A `mailto:` link is the
+  bare address; anything after a `?` is not linked.
 - A backslash before a mark (`\*`) shows the mark as it is. A mark that is never closed is shown as typed.
 - Anything else stays as typed, including raw HTML and `[text](address)`. Other kinds of address, such as
   `javascript:`, are never links.
