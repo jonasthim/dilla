@@ -40,6 +40,9 @@ export interface JoinDeps {
  */
 export const REJOIN_STEP_MS = 2_000;
 export const REJOIN_WAIT_MS = 30_000;
+/** The most reads of a call group's GroupInfo and tree (a pair each) one external join makes when the core finds the
+ *  pair disagreeing (a commit landed between the two reads). */
+export const JOIN_READS_MAX = 3;
 
 export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string }
 export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStarted }
@@ -169,13 +172,23 @@ async function waitForRemove(d: JoinDeps, t: JoinTarget, refusal: JoinRefused, s
  *  bounded list refresh, and the commit is posted only after call_join_check passes (RV-1). `tried.info` is the
  *  GroupInfo the commit was built on (the rejoin's wait compares it). */
 async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { info: Uint8Array | null }): Promise<void> {
-  const info = await d.routes.getGroupInfo(groupId);
-  tried.info = info;
-  const tree = await d.routes.getGroupTree(groupId);
   const eg: ExpectedGroup = { groupId, communityId: t.communityId, channelId: t.channelId, policyVersion: d.policyVersion };
   let body: Uint8Array;
-  try { body = d.core.callGroupJoinExternal(eg, info, tree); }
-  catch (e) { throw refused(e, null); }
+  for (let reads = 1; ; reads++) {
+    const info = await d.routes.getGroupInfo(groupId);
+    tried.info = info;
+    const tree = await d.routes.getGroupTree(groupId);
+    try {
+      body = d.core.callGroupJoinExternal(eg, info, tree);
+      break;
+    } catch (e) {
+      // The two reads are not one: a commit that lands between them (another member committing a Remove, a rotation)
+      // serves a GroupInfo and a tree of different epochs, which the core refuses as E_CORE_INPUT before anything is
+      // staged. Both are read again, a bounded number of times, as the text group's external join does.
+      if (codeOf(e) === 'E_CORE_INPUT' && reads < JOIN_READS_MAX && !d.cancelled()) continue;
+      throw refused(e, null);
+    }
+  }
   try {
     try { d.core.callJoinCheck(groupId); }
     catch (e) {
