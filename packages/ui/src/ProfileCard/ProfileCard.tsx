@@ -32,6 +32,8 @@ export interface ProfileCardProps {
   youLabel?: string;
   rolesLabel?: string;
   closeLabel?: string;
+  /** The words for the presence states; each defaults to the English word. */
+  presenceLabels?: Partial<Record<Presence, string>>;
 }
 
 const GAP = 8;
@@ -46,7 +48,7 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  */
 export function ProfileCard({
   name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout,
-  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close',
+  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
@@ -130,9 +132,9 @@ export function ProfileCard({
         <Avatar name={name} size="lg" />
         <div className="d-profile-card__who">
           <h2 id={titleId} className="d-profile-card__name">{name}</h2>
-          <p className="d-profile-card__username">@{username}</p>
+          {username === '' ? null : <p className="d-profile-card__username">@{username}</p>}
           {presence !== undefined || status ? (
-            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <span>{status}</span> : null}</p>
+            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <span>{status}</span> : null}</p>
           ) : null}
         </div>
         <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>

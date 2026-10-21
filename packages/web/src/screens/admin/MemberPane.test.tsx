@@ -53,7 +53,7 @@ describe('MemberPane', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading members');
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle' }));
     expect(screen.getByRole('heading', { name: 'offline — 1' })).toBeInTheDocument();
-    expect(screen.getByText('Do Not Disturb')).toBeInTheDocument();
+    expect(screen.getByText('do not disturb')).toBeInTheDocument();
   });
   it('orders a hoisted role section, then online, then offline, each with its count', () => {
     const { fake } = setup();
@@ -115,7 +115,7 @@ describe('MemberPane', () => {
   it('the viewer\'s own card has no message, compare, kick or ban', async () => {
     const { user } = setup(access({ manageRoles: true }));
     await user.click(row('ada'));
-    expect(cardActions()).toEqual(['roles']);
+    expect(cardActions()).toEqual(['edit roles']);
   });
   it('offers kick and ban on bob, and none on the owner or an equal rank', async () => {
     const { user } = setup();
@@ -159,13 +159,25 @@ describe('MemberPane', () => {
     await user.keyboard('{Enter}');
     expect(card()).toHaveAccessibleName('bob');
   });
-  it('N3: a card whose row is re-mounted closes, and focus lands on that member\'s row again', async () => {
+  it('I1: a card follows its member\'s row when a presence change re-mounts it, and a click on the new row closes it', async () => {
     const { user, fake } = setup();
     await user.click(row('bob'));
+    const old = row('bob');
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
-    fireEvent(window, new Event('resize'));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await waitFor(() => expect(row('bob')).toHaveFocus());
+    expect(old.isConnected).toBe(false);
+    await waitFor(() => expect(row('bob')).toHaveAttribute('aria-expanded', 'true'));
+    expect(card()).toHaveAccessibleName('bob');
+    await user.click(row('bob'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('I2: a member who leaves closes the card, and a rejoin does not bring it back', async () => {
+    const { user, fake } = setup();
+    await user.click(row('bob'));
+    act(() => fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(CAL, 'carol', [MOD.id])]));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    act(() => fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob'), m(CAL, 'carol', [MOD.id])]));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(row('bob')).toHaveAttribute('aria-expanded', 'false');
   });
   it('Enter on a focused row and the context key open the card', async () => {
     const { user } = setup();
@@ -195,8 +207,8 @@ describe('role assignment', () => {
   it('offers roles only with manageRoles, opens the dialog and closes it with done', async () => {
     const { user } = setup(access({ manageRoles: true }));
     await user.click(row('bob'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'roles', 'kick', 'ban']);
-    await user.click(within(card()).getByRole('button', { name: 'roles' }));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'edit roles', 'kick', 'ban']);
+    await user.click(within(card()).getByRole('button', { name: 'edit roles' }));
     const dialog = screen.getByRole('dialog', { name: 'Roles of bob' });
     expect(within(dialog).getByRole('checkbox', { name: 'mods' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Done' }));
@@ -205,7 +217,7 @@ describe('role assignment', () => {
   it('has no roles item without manageRoles', async () => {
     const { user } = setup();
     await user.click(row('bob'));
-    expect(within(card()).queryByRole('button', { name: 'roles' })).toBeNull();
+    expect(within(card()).queryByRole('button', { name: 'edit roles' })).toBeNull();
   });
 });
 
@@ -350,7 +362,7 @@ describe('BanFlow', () => {
 describe('role assignment focus', () => {
   it('returns focus when the member list reloads while the dialog closes', async () => {
     const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
-    await pick(user, 'bob', 'roles');
+    await pick(user, 'bob', 'edit roles');
     act(() => fake.set(`presence:${CID}`, null));
     expect(screen.getByRole('status')).toHaveTextContent('Loading members');
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
@@ -365,7 +377,7 @@ describe('role assignment focus', () => {
       return Promise.resolve(null);
     };
     const before = row('bob');
-    await pick(user, 'bob', 'roles');
+    await pick(user, 'bob', 'edit roles');
     await user.click(within(screen.getByRole('dialog')).getByRole('checkbox', { name: 'mods' }));
     await waitFor(() => expect(row('bob')).not.toBe(before));
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));

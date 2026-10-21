@@ -208,7 +208,7 @@ describe('the role flows', () => {
     wide();
     const { user } = setup({ acc: { manageRoles: true } });
     await user.click(screen.getByRole('button', { name: /\bBob\b/ }));
-    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'roles' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'edit roles' }));
     const dialog = await screen.findByRole('dialog', { name: 'Roles of Bob' });
     await user.keyboard('{Escape}');
     expect(dialog).not.toBeInTheDocument();
@@ -220,7 +220,7 @@ describe('the role flows', () => {
     const { user } = setup({ acc: { manageRoles: true } });
     await user.click(screen.getByRole('button', { name: /^members/ }));
     await user.click(screen.getByRole('button', { name: /\bBob\b/ }));
-    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'roles' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'edit roles' }));
     await screen.findByRole('dialog', { name: 'Roles of Bob' });
     await user.keyboard('{Escape}');
     expect(screen.getByRole('button', { name: /\bBob\b/ })).toHaveFocus();

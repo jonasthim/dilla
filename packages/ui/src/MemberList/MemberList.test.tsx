@@ -313,4 +313,10 @@ describe('MemberList vertical alignment (P4)', () => {
     expect(css).toMatch(/\.d-member-list__open \{[^}]*align-items: center/);
     expect(css).not.toMatch(/d-member-list__tag/);
   });
+  it('reads the presence word from presenceLabels (M2)', () => {
+    render(<MemberList {...props({ presenceLabels: { online: 'på nätet' }, groups: [
+      { id: 'o', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', presence: 'online' }] }] })} />);
+    expect(screen.getByText('på nätet')).toHaveClass('d-sr-only');
+    expect(screen.queryByText('Online')).toBeNull();
+  });
 });

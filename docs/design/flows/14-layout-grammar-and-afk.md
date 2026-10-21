@@ -69,6 +69,11 @@
 `layout.profile.roles='roles'`
 `layout.profile.close='close'`
 `layout.profile.bot='bot'`
+`layout.profile.manageRoles='edit roles'`
+`layout.presence.online='online'`
+`layout.presence.idle='idle'`
+`layout.presence.dnd='do not disturb'`
+`layout.presence.offline='offline'`
 `layout.log.older='viewing older messages'`
 `layout.log.jump='jump to present'`
 `layout.log.today='today'`

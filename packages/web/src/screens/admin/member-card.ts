@@ -17,7 +17,7 @@ export interface MemberCardData {
 }
 
 export function memberCardData(member: MemberSummary, ctx: MemberCardContext): MemberCardData {
-  const roles = ctx.roles.filter(r => r.id !== ctx.access?.everyoneId && member.roleIds.includes(r.id)).sort((a, b) => b.position - a.position).map(r => ({ name: r.name, color: r.color }));
+  const roles = ctx.roles.filter(r => r.position !== 0 &&member.roleIds.includes(r.id)).sort((a, b) => b.position - a.position).map(r => ({ name: r.name, color: r.color }));
   return {
     userId: member.userId, name: memberName(member), username: member.username,
     isOwner: member.userId === ctx.ownerId, isYou: member.userId === ctx.selfId,

@@ -237,3 +237,20 @@ describe('ProfileCard accessibility', () => {
     }
   });
 });
+
+describe('ProfileCard presence words (M2)', () => {
+  it('reads the presence word from presenceLabels', () => {
+    render(<ProfileCard {...props({ presence: 'dnd', presenceLabels: { dnd: 'do not disturb' } })} />);
+    expect(screen.getByText('do not disturb')).toBeInTheDocument();
+    expect(screen.queryByText('Do Not Disturb')).toBeNull();
+  });
+});
+
+describe('ProfileCard name only (MP7)', () => {
+  it('draws no @username line, roles, marks or actions for a person who is no longer a member', () => {
+    const { container } = render(<ProfileCard {...props({ username: '', presence: undefined, isOwner: false, isYou: false, roles: [], actions: [] })} />);
+    expect(screen.getByRole('dialog', { name: 'Astrid' })).toBeInTheDocument();
+    expect(container.querySelector('.d-profile-card__username')).toBeNull();
+    expect(screen.queryByText('@')).toBeNull();
+  });
+});

@@ -45,6 +45,8 @@ export interface MemberListProps {
   ownerLabel?: string;
   /** The word of a bot's tag. Default `bot`. */
   botLabel?: string;
+  /** The words read for the presence states; each defaults to the English word. */
+  presenceLabels?: Partial<Record<'online' | 'idle' | 'dnd' | 'offline', string>>;
   /** The member whose card is open, if any: that row's button reports `aria-expanded`. */
   openId?: string | null;
   /** `via` is `click` for a primary pointer click and `menu` for Enter, a right-click, Shift+F10 and the ContextMenu key: a caller that toggles closes only on `click`.
@@ -60,7 +62,7 @@ export interface MemberListProps {
  * click open the member's profile card; a right-click, Shift+F10 and the ContextMenu key open it too. The name is
  * centred in the row while there is no status line, and drawn in the member's role colour when that is readable.
  */
-export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, ownerLabel = 'owner', botLabel = 'bot', openId = null, onOpen }: MemberListProps) {
+export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, ownerLabel = 'owner', botLabel = 'bot', presenceLabels, openId = null, onOpen }: MemberListProps) {
   const shown = groups.filter(g => g.members.length > 0);
   const theme = useThemeName();
 
@@ -105,7 +107,7 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
                   <button type="button" className="d-member-list__open" data-focus-key={`member:${m.id}`} aria-haspopup="dialog" aria-expanded={openId === m.id} onClick={e => onOpen?.(m.id, e.currentTarget, e.detail > 0 ? 'click' : 'menu')}>
                     {/* The name is the button's own text, so the avatar is decorative; the presence is read as a word. */}
                     <span className="d-member-list__avatar" aria-hidden="true"><Avatar name={m.name} size="row" presence={m.presence} /></span>
-                    {m.presence ? <span className="d-sr-only">{PRESENCE_WORD[m.presence]}</span> : null}
+                    {m.presence ? <span className="d-sr-only">{presenceLabels?.[m.presence] ?? PRESENCE_WORD[m.presence]}</span> : null}
                     <span className="d-member-list__text">
                       <span className="d-member-list__line1">
                         <span className="d-member-list__name" style={tint === null ? undefined : { color: tint }}>{m.name}</span>

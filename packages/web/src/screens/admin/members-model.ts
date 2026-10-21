@@ -70,8 +70,8 @@ export function menuFor(member: MemberSummary, access: CommunityAccess | undefin
   if (access !== undefined && access.loaded) {
     if (access.manageRoles) out.push('roles');
     const may = canModerate({ me: ctx.selfId, target: member.userId, owner: ctx.ownerId, myTop: access.top, targetTop: topOf(member.roleIds, ctx.roles) });
-    if (may && !self && member.userId !== ctx.ownerId && access.kickMembers) out.push('kick');
-    if (may && !self && member.userId !== ctx.ownerId && access.banMembers) out.push('ban');
+    if (may && access.kickMembers) out.push('kick');
+    if (may && access.banMembers) out.push('ban');
   }
   return out;
 }
