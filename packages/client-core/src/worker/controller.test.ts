@@ -191,16 +191,24 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
-  it('updateProfile sends only the changed fields, then shows the new profile on the account and the own member row', async () => {
+  it('updateProfile sends only the changed fields and shows the saved (trimmed) profile on the account and the own member row, without reading the lists again', async () => {
     const w = world();
     await toReady(w);
-    w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Ada', kind: 0, flags: 0n, presenceChoice: 1, statusMsg: 'on a call', bio: 'hi' });
-    w.routes.listMembers.mockResolvedValue([{ userId: USER, username: 'web', display: 'Ada', kind: 0 as const, nick: '', roleIds: [], statusMsg: 'on a call', bio: 'hi' }]);
-    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const listReads = w.routes.listMembers.mock.calls.length;
+    const meReads = w.routes.getAccountMe.mock.calls.length;
+    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: ' on a call ', bio: 'hi' });
     await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: true }));
     expect(w.routes.patchMe).toHaveBeenCalledWith({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
-    await vi.waitFor(() => expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' }));
-    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.[0]).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' }));
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.routes.listMembers.mock.calls.length).toBe(listReads);
+    expect(w.routes.getAccountMe.mock.calls.length).toBe(meReads);
+    // Clearing a field drops it from the slices.
+    w.call(1005, { m: 'updateProfile', statusMsg: '' });
+    await vi.waitFor(() => expect(w.ret(1005)).toMatchObject({ ok: true }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+    expect(w.account()?.user?.bio).toBe('hi');
   });
   it('updateProfile with nothing to change makes no request, and a field of the wrong type is E_BAD_INPUT', async () => {
     const w = world();

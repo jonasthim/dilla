@@ -4,6 +4,9 @@ import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
+import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '../profile-text';
+export { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue };
+export type { ProfileTextProblem };
 
 export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
@@ -196,27 +199,12 @@ export function nameProblem(v: unknown, maxBytes: number): string | null {
   if (CONTROL.test(v)) return 'contains a control character';
   return null;
 }
-export const DISPLAY_MAX_CHARS = 64;
-export const STATUS_MAX_CHARS = 190;
-export const BIO_MAX_CHARS = 500;
-// The bidi controls the instance refuses in a display name, status message and bio (auth/handle.go).
-const BIDI = /[\u202a-\u202e\u2066-\u2069\u200e\u200f]/u;
-/** Profile text as the instance checks it: at most `maxChars` characters (code points, after NFC), no control or bidi
- *  character; a bio (`multiline`) keeps its line breaks. null when it passes. */
-export function profileTextProblem(v: unknown, maxChars: number, multiline = false): string | null {
-  if (typeof v !== 'string') return 'is not a string';
-  const text = v.normalize('NFC');
-  if ([...text].length > maxChars) return `must be at most ${String(maxChars)} characters`;
-  if (BIDI.test(text)) return 'contains a bidi control character';
-  const rest = multiline ? text.replace(/\r?\n/gu, '') : text;
-  for (const ch of rest) if (CONTROL.test(ch)) return 'contains a control character';
-  return null;
-}
+const PROFILE_PROBLEM_TEXT: Record<ProfileTextProblem, string> = { long: 'is too long', chars: 'has characters that cannot be shown', blank: 'is only whitespace' };
 function checkedProfile(field: string, v: string | undefined, maxChars: number, multiline = false): string | null {
   if (v === undefined) return null;
   const problem = profileTextProblem(v, maxChars, multiline);
-  if (problem !== null) throw new RangeError(`E_ROUTE_INPUT: ${field} ${problem}`);
-  return v;
+  if (problem !== null) throw new RangeError(`E_ROUTE_INPUT: ${field} ${PROFILE_PROBLEM_TEXT[problem]}`);
+  return profileTextValue(v, multiline);
 }
 function checkedName(field: string, v: string, maxBytes: number): string {
   const problem = nameProblem(v, maxBytes);

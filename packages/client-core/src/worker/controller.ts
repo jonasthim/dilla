@@ -24,7 +24,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes,
-  nameProblem, profileTextProblem, type ChannelRow,
+  nameProblem, profileTextProblem, profileTextValue, type ChannelRow,
   type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -603,7 +603,7 @@ function invalid(command: Record<string, unknown>): string | null {
       const value = command[field];
       if (value === undefined) continue;
       const problem = profileTextProblem(value, max, multiline);
-      if (problem !== null) return `${field} ${problem}`;
+      if (problem !== null) return `${field}: ${problem}`;
     }
   }
   if (m === 'setPresenceChoice' && !['online', 'idle', 'dnd', 'invisible'].includes(command.choice as string)) return 'invalid presence choice';
@@ -2811,17 +2811,33 @@ export class Controller {
     } catch { /* the next ready retries */ }
   }
 
-  /** EOD E6: saves the given profile fields (a field left out is left alone), then reads the account and every server's
-   *  member list again so the own profile shows at once. Other people's edits arrive with their next member-list read. */
+  /** EOD E6: saves the given profile fields (a field left out is left alone, '' clears one), then shows the saved text on the
+   *  account and on the own row of every loaded member list, with no read: the server stored what was sent, trimmed. Other
+   *  people's edits arrive with their next member-list read. */
   private async updateProfile(command: { display?: string; statusMsg?: string; bio?: string }): Promise<null> {
-    const patch: { display?: string; statusMsg?: string; bio?: string } = {};
-    if (command.display !== undefined) patch.display = command.display;
-    if (command.statusMsg !== undefined) patch.statusMsg = command.statusMsg;
-    if (command.bio !== undefined) patch.bio = command.bio;
-    if (Object.keys(patch).length === 0) return null;
-    await this.routes.patchMe(patch);
-    await this.refreshPresenceChoice();
-    await Promise.all((this.slices.get('communities') ?? []).map((c) => this.reloadMembers(c.id).catch(() => undefined)));
+    const saved = {
+      ...(command.display === undefined ? {} : { display: profileTextValue(command.display) }),
+      ...(command.statusMsg === undefined ? {} : { statusMsg: profileTextValue(command.statusMsg) }),
+      ...(command.bio === undefined ? {} : { bio: profileTextValue(command.bio, true) }),
+    };
+    if (Object.keys(saved).length === 0) return null;
+    await this.routes.patchMe(saved);
+    const user = this.accountState.user;
+    if (user === null) return null;
+    const apply = <T extends { display?: string; statusMsg?: string; bio?: string }>(row: T): T => {
+      const next = { ...row, ...saved };
+      if (next.statusMsg === '') delete next.statusMsg;
+      if (next.bio === '') delete next.bio;
+      return next;
+    };
+    if (saved.display !== undefined) this.selfDisplay = { userId: user.id, display: saved.display };
+    this.setAccount({ user: apply(user) });
+    for (const community of this.slices.get('communities') ?? []) {
+      const key = `members:${community.id}` as const;
+      const rows = this.slices.get(key);
+      if (rows == null) continue;
+      this.slices.set(key, rows.map((m) => (m.userId === user.id ? apply(m) : m)));
+    }
     return null;
   }
 

@@ -6,7 +6,7 @@ import { DillaHttpError } from './errors';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE } from './routes';
+import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -1001,13 +1001,55 @@ describe('Routes: patchMe', () => {
     await routes.patchMe({ display: 'Ada', bio: '' });
     expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
   });
+  it('sends the text trimmed', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: '  hello  ', bio: '\nbio\n' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'hello', 'bio']);
+  });
   it('refuses a too long field before any request', async () => {
     const { t, routes } = setup();
     await expect(routes.patchMe({ display: 'x'.repeat(65) })).rejects.toThrow(/display/);
     await expect(routes.patchMe({ statusMsg: 'x'.repeat(191) })).rejects.toThrow(/statusMsg/);
     await expect(routes.patchMe({ statusMsg: 'a\nb' })).rejects.toThrow(/statusMsg/);
     await expect(routes.patchMe({ bio: 'x'.repeat(501) })).rejects.toThrow(/bio/);
+    await expect(routes.patchMe({ bio: '   ' })).rejects.toThrow(/bio/);
     expect(t.seen).toHaveLength(0);
+  });
+});
+
+// The mirror of internal/auth NormalizeUserText. Code points, never literals, so the test shows what it pins.
+describe('profileTextProblem', () => {
+  const glyph = (cp: number) => `a${String.fromCodePoint(cp)}b`;
+  const refused: Record<string, number> = {
+    tab: 0x09, nul: 0x00, esc: 0x1b, 'lone carriage return': 0x0d,
+    lrm: 0x200e, rlm: 0x200f, lre: 0x202a, rlo: 0x202e, lri: 0x2066, pdi: 0x2069,
+    'zero width space': 0x200b, zwnj: 0x200c, 'bare zwj': 0x200d, 'word joiner': 0x2060, bom: 0xfeff,
+    'arabic letter mark': 0x061c, 'line separator': 0x2028, 'paragraph separator': 0x2029,
+  };
+  it('names what is wrong: long, chars, blank', () => {
+    expect(profileTextProblem('x'.repeat(191), 190)).toBe('long');
+    expect(profileTextProblem('x'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem('   ', 190)).toBe('blank');
+    expect(profileTextProblem('\u00a0\u3000', 190)).toBe('blank');
+    expect(profileTextProblem('', 190)).toBeNull();
+    for (const [name, cp] of Object.entries(refused)) expect(profileTextProblem(glyph(cp), 190, true), name).toBe('chars');
+  });
+  it('allows a line break only in a multiline field, and an emoji joiner sequence in both', () => {
+    expect(profileTextProblem('a\nb', 190)).toBe('chars');
+    expect(profileTextProblem('a\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('a\r\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('\n \n', 500, true)).toBe('blank');
+    const zwj = String.fromCodePoint(0x200d);
+    const family = [0x1f468, 0x1f469, 0x1f467].map((cp) => String.fromCodePoint(cp)).join(zwj);
+    expect(profileTextProblem(family, 190)).toBeNull();
+  });
+  it('counts characters after NFC, not UTF-16 units', () => {
+    expect(profileTextProblem('e\u0301'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem(String.fromCodePoint(0x1f600).repeat(190), 190)).toBeNull();
+  });
+  it('profileTextValue is the NFC, trimmed text with CRLF as LF', () => {
+    expect(profileTextValue('  e\u0301\r\nx  ', true)).toBe('\u00e9\nx');
   });
 });
 
