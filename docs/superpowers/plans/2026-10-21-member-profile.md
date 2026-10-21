@@ -65,5 +65,14 @@ Jonas, 2026-10-21, on the dock: "instead of voice connected, show the channel na
 - Shots: the dock in the three stat states and reconnecting, desktop 1440, mesh, for Jonas.
 - Order: after MP4 (both touch VoiceDock), in the same lane.
 
+### Task MP6 (sonnet): the AFK channel always last, and the joined row says so (ui + web)
+Jonas, 2026-10-21: "AFK channel should always be in the bottom". His answer is binding: **the very bottom, in its own spot**. The AFK channel is always the last row of the whole channel list, below every category and in no category, whatever its stored `position` or `parentId`.
+- **Order:** in `packages/web/src/screens/Shell.tsx` (the `ordered` channels and the category rows, around lines 940-1080), the server's AFK channel (`afkChannels`, from the `afk:<community>` slice) is taken out of its category or uncategorised group and rendered after the last category. Put the ordering in a pure function, for example `withAfkLast(rows, afkIds)`, with a unit test: AFK last with no categories, AFK last when its `parentId` names a category, and no change when there is no AFK channel.
+- **Pinned:** if the list supports drag or keyboard reordering, or "move to category" (find it in `packages/ui/src/ChannelList` and `packages/web/src/screens`), the AFK row cannot be moved, and nothing can be dropped below it. The server is not changed: the pin is display-only. A move that would land below AFK lands just above it.
+- **Collapsing:** folding a category never hides the AFK row.
+- **Joined row for screen readers** (MP4 review, medium): the voice row you are connected to adds `voice.row.joined` 'connected' to its accessible name, for example "harbour, 3, connected". Use `packages/ui/src/VoiceChannelRow` labels (a new `joined` label) and pass it from web. Add the string, its flow doc and its test under the `voice.` prefix.
+- Gates: web vitest for the new function and the Shell list tests; ui vitest for VoiceChannelRow; typecheck; check:copy; the e2e layout.spec on chromium-web if it orders channel rows (grep for the AFK channel's name or `afk`).
+- Shot: a server with two categories plus AFK, desktop 1440, mesh.
+
 ## Release
 Ships after v0.1.0-web3.9.1, with release notes (client only: no schema, store or wire change) and the Homelab deploy.
