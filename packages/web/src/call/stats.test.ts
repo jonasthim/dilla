@@ -87,6 +87,17 @@ describe('linkSample (the dock link read, MP5)', () => {
   /** A baseline read, so the next one has previous totals. */
   const base = (p: ReturnType<typeof pub> | undefined, s: ReturnType<typeof sub> | undefined) => linkSample(null, p, s, 2000).totals;
 
+  it('FD1: the same inbound stream id on both reports (one peer connection) counts once', () => {
+    const t = base(pub(inn('I1', 10_000_000)), sub(inn('I1', 10_000_000)));
+    const r = linkSample(t, pub(inn('I1', 10_002_000)), sub(inn('I1', 10_002_000)), 2000);
+    expect(r.sample).toMatchObject({ downKbps: 8 });
+  });
+
+  it('FD1: inbound-rtp on the publisher report counts when the subscriber report is an empty one', () => {
+    const t = base(pub(inn('I1', 10_000_000)), sub());
+    expect(linkSample(t, pub(inn('I1', 10_002_000)), sub(), 2000).sample).toMatchObject({ downKbps: 8 });
+  });
+
   it('the first read is only a baseline: no sample, so the dock keeps "— ms"', () => {
     const r = linkSample(null, pub(out('O1', 50_000)), sub(inn('I1', 50_000)), 2000);
     expect(r.sample).toBeNull();

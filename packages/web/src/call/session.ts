@@ -19,7 +19,7 @@ import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
 import {
-  callStatsReport, connectionOf, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
+  callStatsReport, connectionOf, EMPTY_REPORT, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
 } from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
@@ -1308,9 +1308,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
     const readLink = async (): Promise<void> => {
       const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
+      // A subscriber connection LiveKit has not made (nothing subscribed yet, or single-peer-connection mode) receives nothing:
+      // an empty report, so down is 0. Only a getStats that rejects is "no read" (undefined), which the dock shows as a dash.
+      const getSub = pcs?.subscriber?.getStats;
       const [pub, sub] = await Promise.all([
         Promise.resolve(pcs?.publisher?.getStats?.()).catch(() => undefined),
-        Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
+        getSub === undefined ? EMPTY_REPORT : Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
       ]);
       if (ended || state.phase !== 'connected' || state.paused) return;
       const at = deps.now();

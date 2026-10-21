@@ -471,6 +471,7 @@ export const en = {
   'voice.dock.connecting': 'connecting',
   'voice.dock.reconnecting': 'reconnecting',
   'voice.dock.ping': '{ms} ms',
+  'voice.dock.pingSub': '<1 ms',
   'voice.dock.pingNone': '— ms',
   'voice.dock.rate': '↑{up} ↓{down} kb/s',
   'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',

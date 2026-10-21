@@ -80,6 +80,9 @@ interface SideTotals { out: Record<string, number>; inn: Record<string, InboundT
 /** What the next link read counts from, per peer connection and per stream; null before the first read. */
 export interface LinkTotals { pub: SideTotals | null; sub: SideTotals | null }
 
+/** What a peer connection that does not exist reports: no streams. Distinct from `null`/`undefined`, a getStats that failed. */
+export const EMPTY_REPORT: StatsLike = new Map<string, unknown>();
+
 /** The dock’s quality word: good under 150 ms; poor from 150 to 300 ms; bad above 300 ms or above 5 % loss. */
 export function linkQuality(rttMs: number, lossPct: number): 'good' | 'poor' | 'bad' {
   return rttMs > 300 || lossPct > 5 ? 'bad' : rttMs >= 150 ? 'poor' : 'good';
@@ -105,7 +108,9 @@ const delta = (now: number, before: number): number => (now >= before ? now - be
  * One local link read (the dock’s 2 s poll, not the 10 s server report). Up is all outbound RTP, down all inbound RTP, as
  * kb/s from the byte deltas per stream id over `dtMs`: a stream that appears or disappears adds no delta, and a missing
  * report (a failed getStats) is no data for that side, so its previous totals stay and the next read spans the gap. The first
- * read, with no previous totals, is only a baseline: no sample. The ping is the publisher’s selected pair, else the
+ * read, with no previous totals, is only a baseline: no sample. Inbound RTP counts from every report that has it (the
+ * publisher’s too, for a single peer connection), once per stream id; the down rate is "read" only when the subscriber
+ * side was (an `EMPTY_REPORT` stands for "no subscriber connection": nothing is received, which is 0, not unknown). The ping is the publisher’s selected pair, else the
  * subscriber’s. Loss is the worse of what the server reports of our upstream (remote-inbound-rtp) and the packets lost of
  * each incoming stream over the interval.
  */
@@ -118,6 +123,7 @@ export function linkSample(
   let based = false;
   let upRead = false;
   let downRead = false;
+  const counted = new Set<string>(); // inbound stream ids already counted: in single-peer-connection mode both reports can list one
   const next = (before: SideTotals | null | undefined, report: StatsLike | null | undefined, up: boolean): SideTotals | null => {
     const prev = before ?? null;
     if (!report) return prev === null ? null : { ...prev, gap: prev.gap + 1 };
@@ -131,7 +137,8 @@ export function linkSample(
       for (const [id, bytes] of Object.entries(now.out)) if (id in prev.out) sent += delta(bytes, prev.out[id] ?? 0);
       for (const [id, s] of Object.entries(now.inn)) {
         const was = prev.inn[id];
-        if (was === undefined) continue;
+        if (was === undefined || counted.has(id)) continue;
+        counted.add(id);
         received += delta(s.bytes, was.bytes);
         if (s.recv >= was.recv && s.lost >= was.lost) {
           const lost = s.lost - was.lost;
