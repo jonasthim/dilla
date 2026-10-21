@@ -234,6 +234,8 @@ async function expectBar(page: Page, tag: string, name: string, bar: string, wan
 // The world.
 
 const nav = (page: Page) => channelsNav(page);
+/** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
+const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
 async function makeCategory(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -759,7 +761,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
   await expectComposerReady(page, 'general');
   const link = await makeInviteLink(page, 'Ydalir');
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
-  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
+  const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions) as typeof launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const cy = second.pages()[0] ?? (await second.newPage());
     await cy.goto(new URL(link).pathname);
@@ -778,7 +780,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await dmBox.press('Enter');
     await expect(cy.getByRole('log').locator('.d-message-row').filter({ hasText: 'hello Bea' })).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // The AFK channel's path: a click on a desktop voice row joins, and a reload at the path leaves the call (the preview).
+    // The AFK channel's path: a click on its desktop row opens it and marks the person away, with no call (AW5); its stage is the preview.
     await nav(page).getByRole('button', { name: copy('voice.open', { name: 'AFK' }), exact: true }).click();
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
     const afkPath = new URL(page.url()).pathname;
@@ -809,11 +811,10 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
     // N4: the AFK preview, one column at the top.
     await page.goto(afkPath);
-    await expect(page.locator('.dw-voice-join')).toBeVisible({ timeout: WAIT });
-    // The reload left the call, but the room can still name this device until the boot sweep (R32) ends the call it left
-    // behind and the room says so; the preview is measured empty, as it settles.
-    await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the reload left the call: the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
-    const join = (await boxes(page, '.dw-voice-join'))[0];
+    await expect(page.locator(AFK_ACTION)).toBeVisible({ timeout: WAIT });
+    // AW5: the AFK channel hosts no call, so its preview has no tiles.
+    await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
+    const join = (await boxes(page, AFK_ACTION))[0];
     const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
     if (join !== undefined && texts.length > 0) {
@@ -833,17 +834,26 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
-    const phoneJoin = page.locator('.dw-voice-join');
-    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
-    const pjoin = (await boxes(page, '.dw-voice-join'))[0];
+    const afkAction = page.locator(AFK_ACTION);
+    await expect(afkAction).toBeVisible({ timeout: WAIT });
+    const pjoin = (await boxes(page, AFK_ACTION))[0];
     const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
     }
+    // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general, joined with a microphone. Cy's browser
+    // has the fake one (Firefox's default page has none and would hold the join at the permission prompt): the phone's
+    // server list, a tap on its row (a phone's tap only opens the stage, R24), then its join.
+    await cy.setViewportSize({ width: 390, height: 844 });
+    await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
+    await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+    await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
+    const phoneJoin = cy.locator('.dw-voice-join');
+    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
-    await expect(page.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-    const tabs = (await boxes(page, '.d-tab-bar'))[0];
-    const controls = (await boxes(page, '.d-call-stage__controls'))[0];
+    await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
+    const tabs = (await boxes(cy, '.d-tab-bar'))[0];
+    const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the tab bar and the controls are on screen').toBe(true);
     if (tabs !== undefined && controls !== undefined) {
       expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);

@@ -24,7 +24,7 @@ import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
-  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody,
+  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody, userName,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
 import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
@@ -208,19 +208,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const members = useSlice(`members:${communityId ?? ''}`);
   const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
-  // web3.9: the AFK channel is an ordinary voice channel. Every listed server's built-in one is listen-only (R3); the
-  // sweep's move for this device (R33) is the first server whose slice says pending, with its channel's current name.
+  // AW5: every listed server's built-in AFK channel. Nobody joins a call there (R-AW1): a press on it chooses AFK, which
+  // leaves the current call and marks the person away (useCall); the sweep's cut says so (`afk.moved`) and joins nothing.
   const afkChannelsKey = afkLists.map(a => a?.channelId ?? '').join(',');
   const afkChannels = useMemo<ReadonlySet<string>>(() => new Set(afkChannelsKey.split(',').filter(id => id !== '')), [afkChannelsKey]);
-  const pendingIndex = afkLists.findIndex(a => a != null && a.pending && a.channelId !== null);
-  const pendingList = pendingIndex < 0 ? null : afkLists[pendingIndex];
-  const pendingCommunity = pendingIndex < 0 ? null : communities?.[pendingIndex]?.id ?? null;
-  const pendingChannel = pendingList?.channelId ?? null;
-  const pendingName = pendingChannel === null ? null : (railSlices[pendingIndex] ?? []).find(ch => ch.id === pendingChannel)?.name ?? 'AFK';
-  const pendingSeq = pendingList?.seq ?? 0;
-  const afkPending = useMemo(() => pendingCommunity === null || pendingChannel === null || pendingName === null ? null
-    : { communityId: pendingCommunity, channelId: pendingChannel, name: pendingName, seq: pendingSeq },
-  [pendingCommunity, pendingChannel, pendingName, pendingSeq]);
+  const afkOption = useMemo(() => ({ channels: afkChannels }), [afkChannels]);
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
 
@@ -234,7 +226,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The channel or DM whose loadEarlier call is in flight.
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
-  const [draft, setDraft] = useState<{ channelId: string | null; text: string }>({ channelId: null, text: '' });
+  // `typed`: the person edited this draft in this page. Only such a draft sends typing (final review M3: one restored from an
+  // update checkpoint would otherwise clear away with nobody at the keyboard).
+  const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
   // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
@@ -448,7 +442,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
     stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone, announce,
-    afk: { channels: afkChannels, pending: afkPending } });
+    afk: afkOption });
   // The clock lives on the server. This device reports only real input or microphone speech;
   // listening, another tab and another device do not refresh this call's AFK timer.
   const afkTrackingKey = useRef<string | null>(null);
@@ -531,7 +525,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const typingSent = useRef<string | null>(null);
   const typingAt = useRef(0);
   useEffect(() => {
-    const active = draft.channelId === targetId && draft.text.trim() !== '' ? targetId : null;
+    const active = draft.channelId === targetId && draft.typed === true && draft.text.trim() !== '' ? targetId : null;
     if (typingSent.current === active) {
       // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
       if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
@@ -546,7 +540,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       typingAt.current = Date.now();
       client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
     }
-  }, [client, draft.channelId, draft.text, targetId, typingRefused]);
+  }, [client, draft.channelId, draft.text, draft.typed, targetId, typingRefused]);
   useEffect(() => () => {
     if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
   }, [client, typingRefused]);
@@ -929,12 +923,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+  // AW6: the AFK channel hosts no call (R-AW1). Its people are this server's away roster, named from its members and shown
+  // as away, never the voice book's: under its row and on its page (fix round 1, Jonas's concern 2 ruling).
+  const afkHere = afkLists[(communities ?? []).findIndex(c => c.id === communityId)];
+  const awayPeople = (afkHere?.away ?? []).map(row => ({
+    deviceId: `away:${row.userId}`, userId: row.userId, name: userName(row.userId, members ?? [], trust), state: 'ok' as const,
+    speaking: false, muted: false, deafened: false, video: false, screen: false, web: false, bot: false, away: true,
+  }));
+  const selfAway = self !== null && (afkHere?.away ?? []).some(row => row.userId === self.id);
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
-    afkChannels,
+    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway } : null),
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -987,15 +989,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
     held: removedFromServer({ slice: callSlice }, c.id) }));
   // A voice channel this client cannot join (a readable one, `kind` voice but not `isVoice`) has no join and nobody under it.
-  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[] }> = {};
+  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[]; count?: string }> = {};
   for (const r of channelRows) if (r.kind === 'voice') voiceRooms[r.id] = { joined: false, held: true, participants: [] };
   for (const r of voiceRows) {
-    voiceRooms[r.id] = { joined: r.joined, held: r.held,
-      participants: (r.room?.participants ?? []).map(p => {
-        const view = participantView(p, 'ok', r.speaking.has(p.deviceId));
-        // Nobody speaks in the AFK channel: every person there shows muted.
-        return afkChannels.has(r.id) ? { ...view, muted: true } : view;
-      }) };
+    // Fix round 1 (M4): nobody listed under AFK is in voice, so its count says '{n} in AFK'.
+    voiceRooms[r.id] = afkChannels.has(r.id) ? { joined: r.joined, held: r.held, participants: awayPeople, count: en['voice.afk.count'] }
+      : { joined: r.joined, held: r.held, participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
   }
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
@@ -1130,7 +1129,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
-      onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      onDraft={text => setDraft({ channelId: targetId, text, typed: true })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
       announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
@@ -1701,8 +1700,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => navigate({ name: 'dms' }) }} />}
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
-          {call.afkFailed !== null ? <Banner tone="info" action={{ label: t('afk.moved.join'), onAction: () => call.join(call.afkFailed!.channelId) }}>
-            {t('afk.moved', { channel: call.afkFailed.name })}</Banner> : null}
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
             server={dockServer} onStatus={() => navigate({ name: 'settings', section: 'diagnostics', from: null })}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />

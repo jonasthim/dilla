@@ -113,6 +113,12 @@ type CommunityAfk struct {
 	TimeoutSeconds int64
 }
 
+type CommunityAfkAway struct {
+	CommunityID id.ID
+	UserID      id.ID
+	Since       int64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID

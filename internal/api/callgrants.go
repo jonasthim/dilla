@@ -108,6 +108,11 @@ func (h *Calls) endCallsOfGoneChannel(ctx context.Context, channelID id.ID) erro
 // devices. A nil h (no SFU) touches nothing.
 func syncAfterMembership(ctx context.Context, h *Calls, communityID id.ID, userID id.ID, channelID *id.ID) {
 	h.RequestSync(ctx, communityID, &userID, channelID)
+	// A community membership that went took the user's away row with it (the store's cascade): the
+	// remaining audience hears op 55 since 0 (AW2 fix round 1, M6).
+	if channelID == nil {
+		h.AFKMemberRemoved(ctx, communityID, userID)
+	}
 }
 
 // roomResync is the pending-repair key for "reconcile every participant of the room": a grant sync

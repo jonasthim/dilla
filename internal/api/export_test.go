@@ -107,3 +107,41 @@ func SetMemberPageForTest(n int32) func() {
 	memberPage = n
 	return func() { memberPage = old }
 }
+
+// SetAFKHookForTest makes the AFK paths call f at their named points ("cut": the sweep's cut has
+// landed and the mark is not yet decided; "sweep-pending": the sweep recorded pending 1 and has not
+// yet asked the SFU to cut; "away-decided": PUT …/afk/away has decided and not yet marked;
+// "away-pending": the PUT marked the user away and recorded every pending 2, and cuts next).
+func (h *Calls) SetAFKHookForTest(f func(stage string)) { h.afkHook = f }
+
+// AwayLockFreeForTest reports whether awayMu is free right now (a clear must not hold it while it
+// resolves the op 55 audience).
+func (h *Calls) AwayLockFreeForTest() bool {
+	if h.awayMu.TryLock() {
+		h.awayMu.Unlock()
+		return true
+	}
+	return false
+}
+
+// MarkAwayForTest marks user away in cid as a sweep or a PUT would (connection checked, decided now).
+func (h *Calls) MarkAwayForTest(ctx context.Context, cid, user id.ID) {
+	_, _ = h.markAway(ctx, cid, user, h.afkDecision(), true)
+}
+
+// AwaySeededForTest reports whether the away index has been seeded from the store.
+func (h *Calls) AwaySeededForTest() bool { return h.awaySeededNow() }
+
+// FlushAFKAwayForTest waits, up to five seconds, until every queued op 55 was sent.
+func (h *Calls) FlushAFKAwayForTest() { h.flushAway(5 * time.Second) }
+
+// AFKOfflineWaitersForTest is how many goroutines wait out a user's offline grace now.
+func (h *Calls) AFKOfflineWaitersForTest() int { return int(h.awayOffWaiters.Load()) }
+
+// AFKAdmissionStateForTest reads, in one afkMu section, dev's pending reason and the number of its
+// latest recorded admission (0 for none).
+func (h *Calls) AFKAdmissionStateForTest(user, dev id.ID) (pending, admitSeq uint64) {
+	h.afkMu.Lock()
+	defer h.afkMu.Unlock()
+	return h.afkPending[dev].reason, h.afkAdmits[user][dev].seq
+}

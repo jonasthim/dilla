@@ -60,6 +60,10 @@ const (
 	// OpCommunityChanged tells a community's members that its channels or settings changed
 	// (dilla-web-3.1): S->C only, never persisted or replayed.
 	OpCommunityChanged Op = 54
+	// OpAFKAway tells the members who can see a community's AFK channel that a member became
+	// away there (since_ts > 0) or is no longer away (since_ts = 0) (AW3): S->C only, never
+	// persisted or replayed.
+	OpAFKAway Op = 55
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -140,6 +144,9 @@ var opSpecs = map[Op]opSpec{
 	OpCallRing: {elements: 5},
 	// [community_id]. Server-to-client, so a client op 54 is E_FRAME_TYPE at the opcode check.
 	OpCommunityChanged: {elements: 1},
+	// [community_id, user_id, since_ts]. Server-to-client, so a client op 55 is E_FRAME_TYPE at
+	// the opcode check.
+	OpAFKAway: {elements: 3},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

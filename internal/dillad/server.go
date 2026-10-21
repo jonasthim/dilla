@@ -34,7 +34,9 @@ import (
 )
 
 type Server struct {
-	o        Options
+	o Options
+	// calls is the call route group; the maintenance tick runs its post-boot AFK clear (AW2).
+	calls    *api.Calls
 	mux      *server.Mux
 	handler  http.Handler
 	sessions *auth.Sessions
@@ -214,7 +216,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ownsWasm = true
 	}
 	blobs, ownsBlobs := o.Blobs, false
+	// stopAFK stops the call routes' op 55 drainer when New fails after mounting them (AW2 I-4).
+	var stopAFK func()
 	closeWasmOnError := func() {
+		if stopAFK != nil {
+			stopAFK()
+		}
 		if ownsWasm {
 			_ = wasm.Close(context.Background())
 		}
@@ -269,7 +276,20 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		WireVersions: o.WireVersions,
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
-		OnFactorOwed:      func(device id.ID) { cutFromCalls(context.Background(), device) },
+		OnFactorOwed: func(device id.ID) { cutFromCalls(context.Background(), device) },
+		// AW2: a user's last connection closing starts the 30 s grace after which their AFK away
+		// rows clear unless they reconnect (Q2, as revised), and a typing op clears the
+		// community's (Q1).
+		OnUserOffline: func(user id.ID) {
+			if callRoutes != nil {
+				callRoutes.AFKOffline(context.Background(), user)
+			}
+		},
+		OnTyping: func(ctx context.Context, user, channel id.ID) {
+			if callRoutes != nil {
+				callRoutes.AFKActiveInChannel(ctx, user, channel)
+			}
+		},
 		Store:             o.Repo,
 		Clock:             o.Clock,
 		Log:               o.Log,
@@ -453,6 +473,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		DS:                 delivery,
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
 		Limiter:            limiter,
+		// An upload into a community text group is activity (AW2, Q1).
+		AfterUpload: func(ctx context.Context, user, group id.ID) {
+			if callRoutes != nil {
+				callRoutes.AFKActiveInGroup(ctx, user, group)
+			}
+		},
 	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
 
 	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
@@ -463,6 +489,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
+	stopAFK = callRoutes.StopAFK
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()
@@ -479,6 +506,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if err := delivery.Start(ctx); err != nil {
 		closeWasmOnError()
 		return nil, err
+	}
+	// AW2 (R-AW1): a call left live in an AFK channel ends and its users are listed as away, before
+	// any listener exists; the boot grace starts here (R-AW5), and the maintenance tick clears the
+	// rows of users who did not reconnect within it (sweep).
+	if _, err := callRoutes.EndAFKCalls(ctx); err != nil {
+		o.Log.ErrorContext(ctx, "ending the calls in AFK channels", "err", err)
 	}
 	// From here an error return must also stop what Start started: the watchdog and the sweeper
 	// would otherwise keep running against a runtime closeWasmOnError has just closed.
@@ -521,6 +554,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, events: events,
+		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
@@ -568,6 +602,13 @@ func (s *Server) sweep(ctx context.Context) {
 	s.limiter.Sweep()
 	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
 		s.o.Log.Warn("pruning expired sessions failed", "err", err)
+	}
+	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a
+	// boot-time AFK-call end that failed is retried. It runs on its own goroutine (one pass at a time,
+	// AFKMaintenance's own guard; tracked and cancelled by StopAFK in shutdown), so a large walk never
+	// delays this tick's heartbeat enforcement.
+	if s.calls != nil {
+		s.calls.GoAFKMaintenance()
 	}
 }
 
@@ -664,6 +705,12 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.stopIdleClose != nil {
 		s.stopIdleClose()
+	}
+	// AW2 (R3): the op 55 drainer and any AFK maintenance pass stop, and are waited for, before the
+	// delivery service and the gateway they use: a pass that ran on would clear the rows of users who
+	// look disconnected only because the gateway drains.
+	if s.calls != nil {
+		s.calls.StopAFK()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))

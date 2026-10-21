@@ -430,3 +430,77 @@ func TestMessageCTCarriesTheUploadClass(t *testing.T) {
 		}
 	}
 }
+
+// Op 55 `afk_away` is server-to-client (AW3): a client that sends one, of any shape, is refused at
+// the opcode check with E_FRAME_TYPE. Attacker: a client forging an away notice toward the
+// instance in the hope it is fanned out to the community; the instance alone produces it.
+func TestOp55FromAClientIsEFrameType(t *testing.T) {
+	cid, uid := id.New(), id.New()
+	for _, payload := range [][]any{{cid[:], uid[:], uint64(1758659000)}, {cid[:], uid[:], uint64(1758659000), uint64(1)}} {
+		raw, err := cborx.Marshal(payload)
+		if err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		frame, err := cborx.MarshalFrame(55, 0, nil, raw)
+		if err != nil {
+			t.Fatalf("MarshalFrame: %v", err)
+		}
+		var fe *FrameError
+		if _, err := Decode(frame, 16384); !errors.As(err, &fe) || fe.Code != "E_FRAME_TYPE" {
+			t.Fatalf("got %v, want E_FRAME_TYPE for a client op 55 with %d elements", err, len(payload))
+		}
+	}
+}
+
+// The server side of op 55: three elements, ungrouped, non-replayable (n = 0), and the encoded
+// notice round-trips with the community id, the user id and since_ts (0 means cleared).
+func TestAFKAwayEncodesThreeElementsAndRoundTrips(t *testing.T) {
+	spec, ok := opSpecs[OpAFKAway]
+	if !ok || OpAFKAway != 55 {
+		t.Fatalf("OpAFKAway = %d, in catalogue %v; want 55 in the catalogue", OpAFKAway, ok)
+	}
+	if spec.elements != 3 || spec.fromClient || spec.grouped || spec.replayable {
+		t.Fatalf("opSpecs[55] = %+v, want {elements: 3} only", spec)
+	}
+	if opNames[OpAFKAway] != "afk_away" {
+		t.Fatalf("opNames[55] = %q, want afk_away", opNames[OpAFKAway])
+	}
+	for _, since := range []uint64{1758659000, 0} {
+		cid, uid := id.New(), id.New()
+		raw, err := AFKAwayPayload(cid, uid, since)
+		if err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		b, err := Encode(Frame{Op: OpAFKAway, Payload: raw}, 7)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		var elems []cbor.RawMessage
+		if err := cborx.Unmarshal(b, &elems); err != nil || len(elems) != 4 {
+			t.Fatalf("frame: %v, %d elements", err, len(elems))
+		}
+		if op, _ := rawUint(elems[0]); op != 55 {
+			t.Fatalf("op = %d, want 55", op)
+		}
+		if n, _ := rawUint(elems[1]); n != 0 {
+			t.Fatalf("n = %d, want 0 for an ephemeral frame", n)
+		}
+		if !isNull(elems[2]) {
+			t.Fatalf("group_id = %x, want null", elems[2])
+		}
+		var payload []cbor.RawMessage
+		if err := cborx.Unmarshal(elems[3], &payload); err != nil || len(payload) != 3 {
+			t.Fatalf("payload: %v, %d elements, want 3", err, len(payload))
+		}
+		var gotC, gotU id.ID
+		if err := cborx.Unmarshal(payload[0], &gotC); err != nil || gotC != cid {
+			t.Fatalf("community_id = %v (%v), want %v", gotC, err, cid)
+		}
+		if err := cborx.Unmarshal(payload[1], &gotU); err != nil || gotU != uid {
+			t.Fatalf("user_id = %v (%v), want %v", gotU, err, uid)
+		}
+		if got, err := rawUint(payload[2]); err != nil || got != since {
+			t.Fatalf("since_ts = %d (%v), want %d", got, err, since)
+		}
+	}
+}

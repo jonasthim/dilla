@@ -56,12 +56,27 @@ type Readable struct {
 	keys FrankingKeys
 	clk  clock.Clock
 	log  *slog.Logger
+	afk  AFKActivity
 }
 
 // NewReadable wires the routes. fan may be nil, which stores and answers
 // without a live fan-out (a build with no gateway); keys may not.
 func NewReadable(repo store.Repository, res *Resolver, fan Fanout, keys FrankingKeys, clk clock.Clock, log *slog.Logger) *Readable {
 	return &Readable{repo: repo, res: res, fan: fan, keys: keys, clk: clk, log: log}
+}
+
+// WithAFK sets where an accepted post reports its sender's activity (AW2, Q1: a message takes the
+// sender out of the community's AFK list) and returns h.
+func (h *Readable) WithAFK(a AFKActivity) *Readable {
+	h.afk = a
+	return h
+}
+
+// active reports user's activity in channel, when an AFK roster is wired.
+func (h *Readable) active(ctx context.Context, user, channel id.ID) {
+	if h.afk != nil {
+		h.afk.AFKActiveInChannel(ctx, user, channel)
+	}
 }
 
 func (h *Readable) Register(mux *server.Mux) {
@@ -182,6 +197,7 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, r, "post readable message", err)
 			return
 		}
+		h.active(r.Context(), s.UserID, ch.ID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case EnvPin, EnvUnpin:
@@ -240,6 +256,7 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.deliver(r.Context(), ch.ID, seq, s.UserID, req.Envelope, tag, 0, 0)
+	h.active(r.Context(), s.UserID, ch.ID)
 	if err := server.EncodeBody(w, http.StatusOK, postResponse{Seq: seq, FrankingTag: tag, RecvTS: uint64(now)}); err != nil { //nolint:gosec // G115: a unix second from the instance clock
 		h.log.Error("encode readable post", "err", err)
 	}

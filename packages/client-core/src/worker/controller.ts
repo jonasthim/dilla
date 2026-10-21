@@ -18,7 +18,7 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, communityChangedOf, voiceStateOf, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -234,6 +234,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getAFKSettings',
   'setAFK',
   'afkActivity',
+  'afkAway',
+  'afkRead',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -307,6 +309,17 @@ const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
+/** AW4: the away roster is sorted by user id, as the instance sorts it. */
+const byUserId = (a: { userId: string }, b: { userId: string }): number => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
+/** AW4: the roster after one op 55 change (since 0 = cleared), or null when it changes nothing: a clear of a member who
+ *  is not away, or a set no newer than the held since (stale). */
+function awayPatched(away: readonly { userId: string; since: number }[], change: { userId: string; since: number }):
+  { userId: string; since: number }[] | null {
+  const at = away.findIndex((row) => row.userId === change.userId);
+  if (change.since === 0) return at < 0 ? null : away.filter((_, i) => i !== at);
+  if (at >= 0 && away[at].since >= change.since) return null;
+  return [...away.filter((_, i) => i !== at), change].sort(byUserId);
+}
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
   selectCommunity: ['communityId'],
   createChannel: ['communityId'],
@@ -357,6 +370,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
+  afkAway: ['communityId'],
+  afkRead: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -423,6 +438,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getAFKSettings',
     'setAFK',
     'afkActivity',
+    'afkAway',
+    'afkRead',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -1099,6 +1116,9 @@ export class Controller {
           timeoutSeconds: settings.timeoutSeconds }));
       case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
+      // AW4 (R-AW3): choosing AFK. The page leaves its call first; the roster changes by op 55, not here.
+      case 'afkAway': return this.afkAway(command.communityId);
+      case 'afkRead': return this.afkRead(command.communityId, command.timeoutMs);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -1583,6 +1603,8 @@ export class Controller {
       this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'frame' && e.frame.op === Op.communityChanged) {
       this.safely(() => { this.scheduleCommunityReload(toHex(communityChangedOf(e.frame))); });
+    } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
+      this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -2755,6 +2777,9 @@ export class Controller {
 
   /** web3.9 R-AFK3 (b): a failed AFK read is read again after 1 s, 2 s, 4 s … (at most 30 s) while the community stays listed. */
   private readonly afkRetry = new Map<string, { timer: number; attempt: number }>();
+  /** AW4 fix round 1 (I1): per community, the op 55 changes received while its newest read is in flight. Each read owns
+   *  its buffer; a newer read or clearAFK replaces or drops it, so a superseded read's frames are never replayed. */
+  private readonly afkReadBuffer = new Map<string, { frames: { userId: string; since: number }[] }>();
   /** R-AFK4: the seq of the newest landed AFK read, across every community; it only rises. */
   private afkLandedSeq = 0;
   private static readonly AFK_RETRY_MAX_MS = 30_000;
@@ -2770,21 +2795,53 @@ export class Controller {
   private clearAFK(communityId: string): void {
     this.afkReadSeq.set(communityId, (this.afkReadSeq.get(communityId) ?? 0) + 1);
     this.stopAFKRetry(communityId);
+    this.afkReadBuffer.delete(communityId);
     this.slices.set(`afk:${communityId}`, null);
+  }
+
+  /** AW4: op 55 patches the away roster of a landed snapshot in place; `seq` stays, so no move is announced. Fix round 1
+   *  (I1): while a read is in flight the frame is also kept in that read's buffer, and replayed in order onto the read's
+   *  roster when it lands, since the instance may have served the read before the change. With no read in flight and no
+   *  snapshot (offline, unlisted) the frame is dropped: the next read is served after it. */
+  private incomingAFKAway(frame: AFKAwayFrame): void {
+    const communityId = toHex(frame.communityId);
+    const change = { userId: toHex(frame.userId), since: frame.since };
+    this.afkReadBuffer.get(communityId)?.frames.push(change);
+    const key = `afk:${communityId}` as const;
+    const held = this.slices.get(key);
+    if (held == null) return;
+    const next = awayPatched(held.away ?? [], change);
+    if (next !== null) this.slices.set(key, { ...held, away: next });
+  }
+
+  /** AW5 fix round 2 (B-M1): the newest read of each community's snapshot while it is in flight; afkRead waits for it. */
+  private readonly afkLoads = new Map<string, Promise<void>>();
+  /** Starts a read of the snapshot (readAFK) and keeps it as the community's newest. It never rejects. */
+  private loadAFK(communityId: string): Promise<void> {
+    const load = this.readAFK(communityId);
+    this.afkLoads.set(communityId, load);
+    void load.finally(() => { if (this.afkLoads.get(communityId) === load) this.afkLoads.delete(communityId); });
+    return load;
   }
 
   /** Reads the snapshot. R-AFK3 (a): the slice keeps its previous value until this read lands (a re-read never passes
    *  through null), so a voice join that needs it is never held by a re-read. */
-  private async loadAFK(communityId: string): Promise<void> {
+  private async readAFK(communityId: string): Promise<void> {
     const seq = (this.afkReadSeq.get(communityId) ?? 0) + 1;
     this.afkReadSeq.set(communityId, seq);
+    const buffer = { frames: [] as { userId: string; since: number }[] };
+    this.afkReadBuffer.set(communityId, buffer);
     try {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
       this.stopAFKRetry(communityId);
+      // Fix round 1 (I1): the op 55 frames received while this read was in flight, replayed in order.
+      let away = row.away.map((r) => ({ userId: toHex(r.userId), since: r.since })).sort(byUserId);
+      for (const change of buffer.frames) away = awayPatched(away, change) ?? away;
       // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, pendingReason: row.reason ?? (row.pending ? 1 : 0),
+        seq: ++this.afkLandedSeq, away });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
@@ -2797,9 +2854,47 @@ export class Controller {
         void this.barrier.track(this.loadAFK(communityId));
       }, delay);
       this.afkRetry.set(communityId, { timer, attempt: attempt + 1 });
+    } finally {
+      if (this.afkReadBuffer.get(communityId) === buffer) this.afkReadBuffer.delete(communityId);
     }
   }
 
+  /** AW5 fix round 1 (I1): a fresh read of the community's AFK snapshot, answered once one landed after this call; the
+   *  page's restore and recovery act only on such a read, never on a slice left from before a sleep or a reload.
+   *  Fix round 2 (B-M1): a newer read of the same community that supersedes this one's (a reload, setAFK, another
+   *  afkRead) is waited for and answers for it; E_UNAVAILABLE only when no read landed (a failed read, offline) or
+   *  `timeoutMs` (the page's own wait; at most 60 s) passed first. */
+  private async afkRead(communityId: string, timeoutMs: number | undefined): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    if (timeoutMs !== undefined && !(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60_000)) {
+      throw new Refusal('E_BAD_INPUT', 'invalid timeout');
+    }
+    const before = this.afkLandedSeq;
+    const settled = (async () => {
+      let load = this.loadAFK(communityId);
+      for (;;) {
+        await load;
+        const newer = this.afkLoads.get(communityId);
+        if (newer === undefined || newer === load) return;
+        load = newer;
+      }
+    })();
+    let timer: number | undefined;
+    const inTime = timeoutMs === undefined ? settled.then(() => true)
+      : Promise.race([settled.then(() => true), new Promise<boolean>((r) => { timer = this.deps.setTimeout(() => r(false), timeoutMs); })]);
+    const landed = await inTime;
+    if (timer !== undefined) this.deps.clearTimeout(timer);
+    const now = this.slices.get(`afk:${communityId}`);
+    if (!landed || now == null || (now.seq ?? 0) <= before) throw new Refusal('E_UNAVAILABLE', 'the AFK state could not be read');
+    return null;
+  }
+  /** AW4 fix round 1 (M1): an unlisted community is refused here, as setAFK refuses it; the instance's 403 or 404 reaches
+   *  the page unchanged. */
+  private async afkAway(communityId: string): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.putAFKAway(fromHex(communityId));
+    return null;
+  }
   private async setAFK(communityId: string, timeoutSeconds: number): Promise<null> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     if (![60, 300, 900, 1800, 3600].includes(timeoutSeconds)) throw new Refusal('E_BAD_INPUT', 'invalid AFK timeout');

@@ -83,6 +83,8 @@ with no media port to reach. Run it after every change.
 | `acme_ip` | The instance has no domain of its own and clients connect to an address. | A public IP the certificate authority can reach on 443/tcp (validation is TLS-ALPN-01). dillad forces the `shortlived` profile, the only one that permits IP names, so certificates are renewed far more often; `tls.renewal_window_ratio` sets when. |
 | `behind_proxy` | A reverse proxy you already run terminates TLS. | dillad listens on `server.plain_listen` (`127.0.0.1:8080` by default) and trusts `X-Forwarded-For` only from `server.trusted_proxy_cidrs`, which must be non-empty. `instance.public_ip` and `tls.agreed` are not required. |
 
+**Probing health.** `/healthz` (liveness) and `/readyz` (readiness) are served on `server.plain_listen` only. dillad does not also listen on the loopback address, so probe the address configured there, for example `curl -fsS http://10.0.0.5:8080/readyz` for `plain_listen = '10.0.0.5:8080'`. A `curl` to `127.0.0.1` prints `000` unless `plain_listen` is a loopback address. The installer's `--listen` sets it.
+
 In every mode except `behind_proxy`, TURN shares 443 with the web server: a demultiplexer in front
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
 7882/udp (LiveKit's media port) need to be open.
@@ -772,6 +774,8 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 | web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
 | web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
+| web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
+| web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

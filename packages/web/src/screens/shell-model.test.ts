@@ -306,7 +306,6 @@ describe('voice (flow 06)', () => {
     expect(joinFailureKey('E_NETWORK')).toBe('voice.failed');
     expect(micNoticeKey('failed')).toBe('voice.micFailed');
     expect(micNoticeKey('ok')).toBeNull();
-    expect(micNoticeKey('listen')).toBeNull(); // web3.9 VOICE-AFK: the AFK channel's listen-only is not a microphone failure
   });
   it('opens a voice channel but not a readable one', () => {
     expect(isVoice({ kind: 1, mode: 0 })).toBe(true);
