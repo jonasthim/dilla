@@ -63,21 +63,23 @@ type Entry =
   | { kind: 'channel'; channel: ChannelListChannel };
 
 /**
- * The rows in display order: the uncategorised channels, then each category's header and its children. A collapsed
+ * The rows in display order: the uncategorised channels, then each category's header and its children, then the AFK channel. A collapsed
  * category still shows the children that are the active one, that have unread or mentions, or that this device has joined (R23).
  */
 function entriesOf(channels: readonly ChannelListChannel[], categories: NonNullable<ChannelListProps['categories']>,
   activeId: string | null, joined: (c: ChannelListChannel) => boolean): Entry[] {
   const known = new Set(categories.map(c => c.id));
-  const out: Entry[] = channels.filter(c => c.parentId == null || !known.has(c.parentId)).map(channel => ({ kind: 'channel', channel }));
+  // The AFK channel is the very last row of the list, in no category, whatever its parent; folding never hides it.
+  const out: Entry[] = channels.filter(c => c.afk !== true && (c.parentId == null || !known.has(c.parentId))).map(channel => ({ kind: 'channel', channel }));
   for (const cat of categories) {
     out.push({ kind: 'category', id: cat.id, name: cat.name, collapsed: cat.collapsed });
     for (const channel of channels) {
-      if (channel.parentId !== cat.id) continue;
+      if (channel.parentId !== cat.id || channel.afk === true) continue;
       if (cat.collapsed && channel.id !== activeId && (channel.unread ?? 0) === 0 && (channel.mentions ?? 0) === 0 && !joined(channel)) continue;
       out.push({ kind: 'channel', channel });
     }
   }
+  for (const channel of channels) if (channel.afk === true) out.push({ kind: 'channel', channel });
   return out;
 }
 

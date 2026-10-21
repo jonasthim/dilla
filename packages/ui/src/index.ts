@@ -144,6 +144,8 @@ export { Select } from './Select/Select.tsx';
 export type { SelectProps } from './Select/Select.tsx';
 export { MemberList } from './MemberList/MemberList.tsx';
 export type { MemberListProps, MemberListGroup, MemberListMember } from './MemberList/MemberList.tsx';
+export { ProfileCard } from './ProfileCard/ProfileCard.tsx';
+export type { ProfileCardProps, ProfileCardRole } from './ProfileCard/ProfileCard.tsx';
 export { ManageList } from './ManageList/ManageList.tsx';
 export type { ManageListProps, ManageListRow } from './ManageList/ManageList.tsx';
 export { ChannelSettings } from './ChannelSettings/ChannelSettings.tsx';

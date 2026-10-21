@@ -126,7 +126,7 @@ describe('the desktop user panel', () => {
     const who = inPanel().getByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.online') })}$`) });
     expect(who).toHaveTextContent('@ada');
     // WCAG 2.5.3: the name holds the visible name and username.
-    expect(who).toHaveAccessibleName('ada @ada, your status: Online');
+    expect(who).toHaveAccessibleName('ada @ada, your status: online');
     await app.user.click(who);
     const menu = screen.getByRole('menu');
     expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(
@@ -262,16 +262,17 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(callPanel.parentElement).toBe(panel()!.parentElement);
   });
 
-  it('web3.9 R26: the call panel reads "voice connected" over "general · Midgard", opens Diagnostics, and has no meter or level text', async () => {
+  it('web3.9 R26, MP5: the call panel reads the channel over the link stats ("general · Midgard" is its name), opens Diagnostics, and has no meter or level text', async () => {
     const app = shell();
     await joinVoice(app);
     const callPanel = within(document.querySelector<HTMLElement>('.dw-voice-dock')!);
-    expect(callPanel.getByRole('button', { name: t('layout.dock.connected') })).toBeInTheDocument();
-    expect(document.querySelector('.dw-voice-dock .d-voice-dock__where')).toHaveTextContent('general · Midgard');
+    expect(callPanel.getByRole('button', { name: 'general · Midgard' })).toBeInTheDocument();
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__text')).toHaveTextContent(/^general$/);
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__where')).toHaveTextContent('— ms');
     expect(document.querySelector('.dw-voice-dock')).not.toHaveTextContent(t('settings.voice.level'));
     expect(document.querySelector('.dw-voice-dock [role="meter"], .dw-voice-dock .d-audio-meter')).toBeNull();
     for (const b of callPanel.getAllByRole('button').filter(x => x.closest('[role="toolbar"]') !== null)) expect(b).toHaveAttribute('data-size', '32');
-    await app.user.click(callPanel.getByRole('button', { name: t('layout.dock.connected') }));
+    await app.user.click(callPanel.getByRole('button', { name: 'general · Midgard' }));
     await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
   });
 

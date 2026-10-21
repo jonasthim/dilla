@@ -58,7 +58,7 @@ describe('the voice row grammar (CSS pin)', () => {
     expect(d).toMatch(/height: var\(--row-h-sub\);/);
     expect(d).toMatch(/grid-template-columns: subgrid;/);
     const l = rule(row, '.d-voice-row__people');
-    expect(l).toMatch(/grid-template-columns: 1\.5rem minmax\(2\.5rem, max-content\) minmax\(0, max-content\) 1fr var\(--slot-w\);/);
+    expect(l).toMatch(/grid-template-columns: 1\.5rem minmax\(2\.5rem, max-content\) minmax\(0, max-content\) 1fr minmax\(var\(--slot-w\), max-content\);/);
     expect(l).toMatch(/padding: 0 0\.5rem 0 2rem;/);
   });
   it('the join icon ring is inset', () => {
@@ -76,5 +76,17 @@ describe('the voice row grammar (CSS pin)', () => {
   it('the count never shrinks and the name cuts first', () => {
     expect(rule(row, '.d-voice-row__count')).toMatch(/flex: none;/);
     expect(rule(row, '.d-voice-row__name')).toMatch(/text-overflow: ellipsis;/);
+  });
+  it('V1: a joined row has no accent glyph and no connected icon; its name is --fg at 600', () => {
+    expect(row).not.toContain('.d-voice-row__connected');
+    expect(row).not.toMatch(/\[data-joined="true"\] \.d-voice-row__glyph/);
+    expect(row).toMatch(/\.d-voice-row\[data-joined="true"\] \.d-voice-row__name \{ color: var\(--fg\); font-weight: 600; \}/);
+  });
+  it('V2: the participant slot grows with its glyphs, 0.25rem apart, right-aligned to the row trailing edge', () => {
+    const d = rule(row, '.d-voice-row__person > .d-slot');
+    expect(d).toMatch(/width: auto;/);
+    expect(d).toMatch(/min-width: var\(--slot-w\);/);
+    expect(d).toMatch(/gap: 0\.25rem;/);
+    expect(d).toMatch(/justify-content: flex-end;/);
   });
 });

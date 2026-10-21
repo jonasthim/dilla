@@ -11,6 +11,7 @@ import { en } from '../../strings/index.ts';
 import { formatTime } from '../../strings/index.ts';
 import { A, GEN, NOW, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
+import type { ProfileOpener } from './MessageItem.tsx';
 
 const ROOT = P1;
 
@@ -21,7 +22,7 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; onDraftChange?: (text: string) => void } = {}) {
+function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -32,11 +33,27 @@ function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraf
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
     <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce}
-      initialDraft={over.initialDraft} onDraftChange={over.onDraftChange} />
+      initialDraft={over.initialDraft} onDraftChange={over.onDraftChange} onOpenProfile={over.onOpenProfile} />
   </CoreProvider></div>);
   return { fake, user, view, onClose, announce };
 }
 const box = () => screen.getByRole('textbox', { name: en['thread.composer'] });
+
+describe('ThreadView profile opens (MP7)', () => {
+  it('opens the author card from the root post and from a mention in a reply', async () => {
+    const onOpenProfile = vi.fn();
+    const { user } = setup({ onOpenProfile, thread: thread({ items: [peerRow(P2, '2', `hey <@${PEER}>`)] }) });
+    const root = document.querySelector('.d-thread-pane__root') as HTMLElement;
+    await user.click(within(root).getByRole('button', { name: 'bob' }));
+    expect(onOpenProfile).toHaveBeenLastCalledWith(PEER, expect.any(HTMLElement), 'author', 'bob');
+    await user.click(within(document.querySelector('.d-thread-pane__replies') as HTMLElement).getByRole('button', { name: '@bob' }));
+    expect(onOpenProfile).toHaveBeenLastCalledWith(PEER, expect.any(HTMLElement), 'mention', 'bob');
+  });
+  it('shows no buttons without a handler', () => {
+    setup();
+    expect(document.querySelector('.d-message-row__author-open')).toBeNull();
+  });
+});
 
 describe('ThreadView (web3.7)', () => {
   it('restores a thread draft and reports later edits for update recovery', async () => {

@@ -19,13 +19,15 @@ export interface SplitterProps {
   onDragEnd(): void;
   /** A key or a reset: the requested width, or null for the default. */
   onSet(px: number | null): void;
+  /** Out of the tab order and the pointer's reach (the aside overlay is open). */
+  inert?: boolean;
 }
 
 /**
  * Internal (not exported from the package): the separator between two panes of the desktop shell.
  * A 24px hit area centred on the 1px line the neighbouring pane already draws.
  */
-export function Splitter({ pane, label, controls, now, min, max, rem, onDrag, onDragEnd, onSet }: SplitterProps) {
+export function Splitter({ pane, label, controls, now, min, max, rem, onDrag, onDragEnd, onSet, inert }: SplitterProps) {
   const start = useRef<{ x: number; width: number } | null>(null);
   // The aside's splitter sits on its left edge, so moving left widens it.
   const sign = pane === 'sidebar' ? 1 : -1;
@@ -69,6 +71,7 @@ export function Splitter({ pane, label, controls, now, min, max, rem, onDrag, on
       aria-valuemin={Math.round(min)}
       aria-valuemax={Math.round(max)}
       tabIndex={0}
+      inert={inert || undefined}
       className={`d-splitter d-splitter--${pane}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

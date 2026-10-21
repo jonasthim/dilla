@@ -461,11 +461,11 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     await user.click(screen.getByRole('button', { name: en['layout.log.jump'] }));
     expect(log.scrollTop).toBe(1500);
   });
-  it('tags a web client on hover only, and a bot always', () => {
+  it('tags a web client and a bot always', () => {
     renderConversation({ items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, ts: NOON + 3600 })] });
-    expect(rowOf(O1).querySelector('.d-tag')?.closest('[data-reveal="hover"]')).not.toBeNull();
+    expect(rowOf(O1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
-    expect(rowOf(P1).querySelector('[data-reveal="hover"]')).toBeNull();
+    expect(rowOf(P1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(P1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'bot');
   });
 });

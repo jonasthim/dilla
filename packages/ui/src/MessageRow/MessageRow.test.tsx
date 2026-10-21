@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { MessageRow } from './MessageRow.tsx';
@@ -322,15 +323,15 @@ describe('MessageRow mention colour dot', () => {
     });
   });
 
-  describe('deviceTag (G2)', () => {
-    it('marks the web tag hover-only', () => {
-      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" deviceTag="hover" />);
-      expect(screen.getByText('web').closest('.d-message-row__tag')).toHaveAttribute('data-reveal', 'hover');
-      expect(container.querySelector('article')).not.toBeNull();
-    });
-    it('keeps the tag always shown by default', () => {
-      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" />);
+  describe('device tag (V4)', () => {
+    it('shows the web tag always, with no hover wrapper', () => {
+      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" />);
       expect(screen.getByText('web').closest('.d-message-row__tag')).toBeNull();
+      expect(container.querySelector('[data-reveal]')).toBeNull();
+    });
+    it('shows no tag on a grouped row', () => {
+      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" grouped />);
+      expect(screen.queryByText('web')).toBeNull();
     });
   });
 
@@ -388,5 +389,80 @@ describe('MessageRow mention colour dot', () => {
       render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} /></PhoneLayoutProvider>);
       expect(screen.getByRole('toolbar')).toBeInTheDocument();
     });
+  });
+});
+
+describe('MessageRow profile opens (MP7)', () => {
+  const body = [
+    { kind: 'text' as const, text: 'hi ' }, { kind: 'mention' as const, label: '@bob', me: false, broadcast: false, userId: 'u-bob' },
+    { kind: 'text' as const, text: ' ' }, { kind: 'mention' as const, label: '@everyone', me: false, broadcast: true },
+    { kind: 'text' as const, text: ' ' }, { kind: 'mention' as const, label: '@mods', me: false, broadcast: false, color: 0x3498db },
+  ];
+  it('makes a user mention a button that opens that user, and leaves role and broadcast pills plain', async () => {
+    const onOpenProfile = vi.fn();
+    const onReveal = vi.fn();
+    const { container } = render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" state="ok" body={body} onOpenProfile={onOpenProfile} onReveal={onReveal} /></PhoneLayoutProvider>);
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['@bob']);
+    expect(container.querySelectorAll('.d-mention').length).toBe(3);
+    expect(screen.getByText('@everyone').tagName).toBe('SPAN');
+    const pill = screen.getByRole('button', { name: '@bob' });
+    await userEvent.setup().click(pill);
+    expect(onOpenProfile).toHaveBeenCalledWith('u-bob', pill, 'mention');
+    expect(onReveal).not.toHaveBeenCalled();
+  });
+  it('keeps the pill plain with no handler', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body={body} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+  it('opens on Enter from the focused pill', async () => {
+    const onOpenProfile = vi.fn();
+    render(<MessageRow author="ada" time="21:02" state="ok" active body={body} onOpenProfile={onOpenProfile} />);
+    const user = userEvent.setup();
+    const pill = screen.getByRole('button', { name: '@bob' });
+    pill.focus();
+    await user.keyboard('{Enter}');
+    expect(onOpenProfile).toHaveBeenCalledWith('u-bob', pill, 'mention');
+  });
+  it('CI: the pill and the author name are tab stops only once focus is in the row, so Shift+Tab from after the log lands on the row itself', () => {
+    const { container } = render(<MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" active body={body} onOpenProfile={vi.fn()} />);
+    const row = container.querySelector('article') as HTMLElement;
+    const stops = () => [screen.getByRole('button', { name: '@bob' }), screen.getByRole('button', { name: 'ada' })].map(b => b.getAttribute('tabindex'));
+    expect(stops()).toEqual(['-1', '-1']);
+    act(() => row.focus());
+    expect(stops()).toEqual(['0', '0']);
+    act(() => row.blur());
+    expect(stops()).toEqual(['-1', '-1']);
+  });
+  it('takes the pill out of the tab order while the row is not active', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body={body} onOpenProfile={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '@bob' })).toHaveAttribute('tabindex', '-1');
+  });
+  it('makes the author name a button and the avatar a click target when the author is known', async () => {
+    const onOpenProfile = vi.fn();
+    const { container } = render(<MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" body="hello" onOpenProfile={onOpenProfile} />);
+    const name = screen.getByRole('button', { name: 'ada' });
+    await userEvent.setup().click(name);
+    expect(onOpenProfile).toHaveBeenLastCalledWith('u-ada', name, 'author');
+    await userEvent.setup().click(container.querySelector('.d-message-row__avatar') as Element);
+    expect(onOpenProfile).toHaveBeenCalledTimes(2);
+    expect(onOpenProfile.mock.calls[1]?.[0]).toBe('u-ada');
+  });
+  it('on a phone a tap on the avatar opens the profile and does not reveal the row toolbar', async () => {
+    const onOpenProfile = vi.fn();
+    const onReveal = vi.fn();
+    const { container } = render(<PhoneLayoutProvider value><MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" body="hello" onOpenProfile={onOpenProfile} onReveal={onReveal} /></PhoneLayoutProvider>);
+    await userEvent.setup().click(container.querySelector('.d-message-row__avatar') as Element);
+    expect(onOpenProfile).toHaveBeenCalledTimes(1);
+    expect(onReveal).not.toHaveBeenCalled();
+  });
+  it('N3: the phone target of the avatar is 44 px square whatever the avatar size', () => {
+    const css = readFileSync(`${process.cwd()}/src/MessageRow/MessageRow.css`, 'utf8');
+    const rule = /\[data-layout="phone"\] \.d-message-row__avatar\[data-profile="true"\]::after \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/width: 2\.75rem/);
+    expect(rule).toMatch(/height: 2\.75rem/);
+  });
+  it('leaves the author plain without an id', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body="hello" onOpenProfile={vi.fn()} />);
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });

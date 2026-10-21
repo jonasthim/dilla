@@ -784,7 +784,9 @@ describe('timeline', () => {
     expect(within(log).getAllByText('Ada L')).toHaveLength(3);
     expect(within(log).getByText('4a4a4a4a')).toBeInTheDocument();
     expect(within(log).getByText('device 29292929')).toBeInTheDocument();
-    expect(within(log).getAllByText('web')).toHaveLength(3);
+    // MP4 removed the device tag from grouped rows: Ada's s3 and the pending row head runs of their own (s4 to s6 sit between),
+    // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
+    expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
     // Each row names its time once; the gutter of a row folded into its author's run shows a compact time (R29), not this one.
     expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
@@ -1362,7 +1364,7 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
     // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: Online$/ }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: online$/ }));
     await user.tab();
     expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
     await user.tab();
@@ -1384,6 +1386,9 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
+    await user.tab();
+    // MP7: the author name is the row's first inner stop.
+    expect(document.activeElement).toBe(screen.getByRole('article').querySelector('.d-message-row__author-open'));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
     await user.tab();

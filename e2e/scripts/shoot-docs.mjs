@@ -98,6 +98,7 @@ export const CREATE_SHOTS = ['create-empty', 'create-server', 'create-channel', 
 // the stage (1440×900), the resizable panes and the link line that replaced the status bar.
 export const SIGNIN_SHOTS = ['signin-0-entry', 'signin-1-login', 'signin-2-code', 'signin-3-recovery-key', 'signin-4-done'];
 export const WEB38_SHOTS = ['invite-landing-light', 'voice-stage-focused-desktop', 'voice-stage-grid-desktop', 'panes-resized-desktop', 'link-offline-desktop'];
+// web3.10: members-desktop shows Björn's profile card open beside the list; dock-desktop shows the channel name over the link stats.
 // web3.9: the Discord-style layout. The @ tile and the Home list (desktop and phone), a collapsed category, the built-in
 // AFK channel's call and its timeout setting, the dock close up, the two-line member rows, a message revealed by a tap on
 // a phone and a header icon's tooltip.
@@ -1152,9 +1153,11 @@ async function main(argv) {
     // Mira reads #general and stays in voice: the dock above her user panel keeps the controls.
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
+    // web3.10: the dock's second line shows the ping and the up/down rates once the first link read (every 2 s) has landed.
+    await mira.locator('.d-voice-dock__stats:not([data-quality="none"])').waitFor({ timeout: 20_000 });
     // Product walk I4: no scroll helper: at 360 the dock is pinned on screen by itself.
     await shootState(mira, 'voice-dock');
-    // web3.9: the dock and the user panel up close: "voice connected" (no meter), where she is, camera, share and leave.
+    // web3.9: the dock and the user panel up close: the channel name over the link stats (no meter), camera, share and leave.
     {
       const dockBox = await dock(mira).boundingBox();
       const panelBox = await mira.locator('.d-user-panel').boundingBox();
@@ -1193,7 +1196,14 @@ async function main(argv) {
     await mira.locator('.d-member-list').waitFor({ timeout: WAIT });
     await mira.locator('.d-member-list__row').nth(2).waitFor({ timeout: WAIT });
     await settle(mira);
+    // web3.10: Björn's row opens his profile card beside the list (message and compare safety numbers; Mira cannot kick or ban).
+    const bjornRow = mira.locator('.d-member-list__row', { hasText: 'Björn' }).first();
+    await bjornRow.click();
+    await mira.locator('.d-profile-card').waitFor({ timeout: WAIT });
+    await settle(mira, { keepFocus: true });
     await shoot('members-desktop');
+    await mira.keyboard.press('Escape');
+    await mira.locator('.d-profile-card').waitFor({ state: 'detached', timeout: WAIT });
     await membersButton.hover();
     await mira.getByRole('tooltip').waitFor({ timeout: WAIT });
     await shoot('header-tooltip-desktop');

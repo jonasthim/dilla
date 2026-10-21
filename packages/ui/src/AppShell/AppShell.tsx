@@ -226,7 +226,7 @@ export function AppShell({
   const asideId = `${mainId}-aside`;
   const splitter = (pane: Pane, controls: string) => resizeLabels === undefined ? null : (
     <Splitter pane={pane} label={resizeLabels[pane]} controls={controls} now={widths[pane]} min={ranges[pane].min} max={ranges[pane].max}
-      rem={remPx} onDrag={px => onDrag(pane, px)} onDragEnd={onDragEnd} onSet={px => onSet(pane, px)} />
+      rem={remPx} onDrag={px => onDrag(pane, px)} onDragEnd={onDragEnd} onSet={px => onSet(pane, px)} inert={pane === 'sidebar' && overlay} />
   );
 
   // The drawer takes focus on open and hands it back to its opener when it closes; a column does neither.
@@ -402,7 +402,8 @@ export function AppShell({
       <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
         <div ref={railRef} className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
-        <div id={resizable ? splitSidebarId : undefined} className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}{resizable ? splitter('sidebar', splitSidebarId) : null}</div>
+        <div id={resizable ? splitSidebarId : undefined} className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}</div>
+        {resizable ? splitter('sidebar', splitSidebarId) : null}
         {hasBottom ? <div className="d-app-shell__panel" inert={overlay || undefined}>{bottom}</div> : null}
         <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" inert={overlay || undefined}>
           {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}

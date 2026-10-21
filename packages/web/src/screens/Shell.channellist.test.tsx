@@ -39,6 +39,16 @@ describe('one channel list (web3.8 item 12)', () => {
     expect(list().querySelectorAll('ul[role="list"]:not(.d-voice-row__people)').length).toBe(1);
   });
 
+  it('puts the server\'s AFK channel last, below every other row, whatever its position (MP6)', async () => {
+    const app = mount();
+    act(() => app.client.publish(`afk:${A}`, { channelId: VV, timeoutSeconds: 300, pending: false }));
+    await within(list()).findByRole('button', { name: 'voice lounge' });
+    const text = list().textContent ?? '';
+    const order = ['alpha', 'beta', 'studio', 'lounge'].map(n => text.indexOf(n));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(order.every(i => i >= 0)).toBe(true);
+  });
+
   it('has no "active voice" and no "voice" heading, and gives the voice row its speaker icon', async () => {
     mount();
     const lounge = await within(list()).findByRole('button', { name: 'voice lounge' });

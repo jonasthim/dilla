@@ -693,6 +693,155 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.error).toBeNull();
   });
 
+  /** MP5: a call whose peer connections report what the test sets; `stats.pub` or `stats.sub` may be a function that throws or hangs. */
+  const linkFakes = () => {
+    const f = fakes();
+    const s = {
+      sent: 0, received: 0, rtt: 0.024,
+      pub: undefined as undefined | (() => Promise<Map<string, unknown>>),
+      sub: undefined as undefined | (() => Promise<Map<string, unknown>>),
+    };
+    const pc = f.room.engine.pcManager as unknown as { publisher: { getStats: () => Promise<Map<string, unknown>> }; subscriber: { getStats: () => Promise<Map<string, unknown>> } };
+    pc.publisher.getStats = () => s.pub?.() ?? Promise.resolve(new Map<string, unknown>([
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: s.rtt }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['O', { id: 'O', type: 'outbound-rtp', bytesSent: s.sent }],
+    ]));
+    pc.subscriber = { getStats: () => s.sub?.() ?? Promise.resolve(new Map<string, unknown>([['I', { id: 'I', type: 'inbound-rtp', bytesReceived: s.received }]])) };
+    return { f, s };
+  };
+
+  it('MP5: a local 2 s poll publishes call.state.link while connected, apart from the 10 s server report; the first read is a baseline; leave clears it', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    expect(call.state.link).toBeUndefined();
+    await f.advance(2_000);
+    expect(call.state.link).toBeUndefined(); // the baseline: no sample, the dock keeps "— ms"
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toEqual({ rttMs: 24, upKbps: 48, downKbps: 96, lossPct: 0 });
+    expect(f.calls.filter((c) => c.m === 'callStats')).toHaveLength(0); // the server report is still every 10 s
+    f.room.emit('reconnecting');
+    expect(call.state.link).toBeUndefined();
+    f.room.emit('reconnected');
+    await f.advance(2_000);
+    expect(call.state.link).toBeUndefined(); // a fresh baseline after every reconnect
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 0, downKbps: 0 });
+    await call.leave('user');
+    expect(call.state.link).toBeUndefined();
+  });
+
+  it('MP5: a failed getStats keeps the previous totals, so the next good read is no spike', async () => {
+    const { f, s } = linkFakes();
+    s.sent = 10_000_000;
+    const call = await start(f);
+    await f.advance(2_000);
+    s.pub = () => Promise.reject(new Error('closed'));
+    await f.advance(2_000);
+    s.pub = undefined;
+    s.sent = 10_000_000 + 8_000;
+    await f.advance(2_000);
+    // the publisher missed one interval: 8000 bytes over 4 s = 16 kb/s, not the whole 10 MB counter
+    expect(call.state.link).toMatchObject({ upKbps: 16 });
+  });
+
+  it('L5: a read with no round-trip time clears the link (the dock says "— ms") instead of keeping the last numbers', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 48 });
+    s.rtt = undefined as unknown as number; // the selected pair has no RTT, as during an ICE restart
+    s.sent = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toBeUndefined();
+    s.rtt = 0.03;
+    s.sent = 36_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 30, upKbps: 48 });
+  });
+
+  it('L5: when one direction cannot be read it keeps its previous value for one tick, then shows nothing for it; the other direction stays live', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 96 });
+    s.pub = () => Promise.reject(new Error('closed'));
+    s.sub = () => Promise.resolve(new Map<string, unknown>([ // the subscriber alone still gives the ping
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: s.rtt }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['I', { id: 'I', type: 'inbound-rtp', bytesReceived: s.received }],
+    ]));
+    s.received = 36_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 48 }); // up is last tick's value, once
+    s.received = 60_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: null, downKbps: 96 });
+    s.pub = undefined;
+    s.sent = 36_000;
+    s.received = 84_000;
+    await f.advance(2_000);
+    expect(call.state.link?.upKbps).toBe(Math.round(24_000 * 8 / 6_000)); // the lost ticks are spanned, not a spike
+  });
+
+  it('MP5: the poll stops while the call is paused and restarts with a fresh baseline', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 2_000;
+    await f.advance(2_000);
+    expect(call.state.link).toBeDefined();
+    const reads = vi.fn(f.room.engine.pcManager.publisher.getStats);
+    f.room.engine.pcManager.publisher.getStats = reads;
+    await call.setPaused(true);
+    await f.advance(5_000); // under the 10 s server report, which reads the publisher too
+    expect(reads).not.toHaveBeenCalled();
+    expect(call.state.link).toBeUndefined();
+    await call.setPaused(false);
+    await f.advance(2_000);
+    expect(call.state.link).toBeUndefined();
+    s.sent = 4_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 8 });
+  });
+
+  it('MP5: an unchanged sample keeps the state as it is (no new object, no re-render)', async () => {
+    const { f } = linkFakes();
+    const call = await start(f);
+    await f.advance(4_000);
+    const first = call.state.link;
+    expect(first).toBeDefined();
+    await f.advance(6_000);
+    expect(call.state.link).toBe(first);
+  });
+
+  it('MP5: a getStats that does not settle in 5 s shows no stats and starts no second read', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 2_000;
+    await f.advance(2_000);
+    expect(call.state.link).toBeDefined();
+    let calls = 0;
+    s.pub = () => { calls += 1; return new Promise<Map<string, unknown>>(() => undefined); };
+    await f.advance(3_000); // the tick at 6 s starts the hanging read, the next ticks find it busy
+    expect(calls).toBe(1);
+    expect(call.state.link).toBeDefined();
+    await f.advance(5_000); // 6 s since the read started
+    expect(calls).toBeLessThanOrEqual(2); // the second is the 10 s server report, not a link read
+    expect(call.state.link).toBeUndefined();
+  });
+
   it('E_CALL_IN_OTHER_TAB ends the attempt with that code and calls callLeave', async () => {
     const f = fakes({ joinCallError: new Error('E_CALL_IN_OTHER_TAB') });
     await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts)).rejects.toMatchObject({ code: 'E_CALL_IN_OTHER_TAB' });

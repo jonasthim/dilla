@@ -241,7 +241,7 @@ describe('ChannelList, one list with voice rooms in place', () => {
     { id: 'l', name: 'lfg', kind: 'text', readable: false },
   ];
   const voice = (over: Partial<NonNullable<ChannelListProps['voice']>> = {}): NonNullable<ChannelListProps['voice']> => ({
-    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', state },
+    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected', state },
     rooms: { v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })] } },
     onJoin: vi.fn(), ...over,
   });
@@ -318,7 +318,7 @@ describe('ChannelList, categories', () => {
   ];
   const categories = [{ id: 'raids', name: 'raids', collapsed: true }, { id: 'lounge', name: 'lounge', collapsed: false }];
   const names = () => [...document.querySelectorAll('.d-channel-list__list > li')].map(li => li.querySelector('.d-chrow__name, .d-channel-list__cat-label, .d-voice-row__name')?.textContent);
-  const voice = { labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
+  const voice = { labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
     state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } },
     rooms: {} };
 
@@ -382,5 +382,30 @@ describe('ChannelList, categories', () => {
   it('has no serious axe violations with categories', async () => {
     const { container } = render(<div className="d-root"><ChannelList {...props({ channels, categories, voice, activeId: 'r2', onAddInCategory: () => {}, addInCategoryLabel: n => `new channel in ${n}` })} /></div>);
     await expectNoAxeViolations(container);
+  });
+  describe('the AFK channel is always the very last row', () => {
+    const rows: ChannelListProps['channels'] = [
+      { id: 'a', name: 'afk', kind: 'voice', readable: false, afk: true, parentId: 'c1' },
+      { id: 'g', name: 'general', kind: 'text', readable: false },
+      { id: 'h', name: 'harbour', kind: 'text', readable: false, parentId: 'c1' },
+      { id: 'k', name: 'keep', kind: 'text', readable: false, parentId: 'c2' },
+    ];
+    const cats = [{ id: 'c1', name: 'one', collapsed: false }, { id: 'c2', name: 'two', collapsed: false }];
+    const names = () => within(screen.getByRole('list')).getAllByRole('listitem').map(li => li.textContent);
+    it('sits after every category, in none, whatever its parent', () => {
+      render(<ChannelList {...props({ channels: rows, categories: cats })} />);
+      expect(names().map(n => n?.replace(/[#\s]+/g, ''))).toEqual(['general', 'one', 'harbour', 'two', 'keep', 'afk']);
+    });
+    it('is last with no categories at all', () => {
+      render(<ChannelList {...props({ channels: rows })} />);
+      expect(names().at(-1)).toContain('afk');
+    });
+    it('stays when its category is folded, and does not move with no AFK channel', () => {
+      const { rerender } = render(<ChannelList {...props({ channels: rows, categories: [{ ...cats[0], collapsed: true }, cats[1]] })} />);
+      expect(screen.getByRole('button', { name: /afk/ })).toBeInTheDocument();
+      expect(names().at(-1)).toContain('afk');
+      rerender(<ChannelList {...props({ channels: rows.slice(1), categories: cats })} />);
+      expect(names().map(n => n?.replace(/[#\s]+/g, ''))).toEqual(['general', 'one', 'harbour', 'two', 'keep']);
+    });
   });
 });

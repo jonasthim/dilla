@@ -61,7 +61,9 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement={announcement}
-        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
+        labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
+          ping: en['voice.dock.ping'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
+          quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave') }}
         onMute={noop} onDeafen={noop} onLeave={noop} />
@@ -91,7 +93,7 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
                 { id: 'harbour', name: 'harbour', kind: 'voice' as const, readable: false },
                 { id: 'build', name: 'build', kind: 'text' as const, readable: false },
                 { id: 'workshop', name: 'workshop', kind: 'voice' as const, readable: false }]}
-            voice={tab === 'dms' ? undefined : { labels: { ...ROW_LABELS, join: t('voice.join') }, onJoin: noop, rooms: {
+            voice={tab === 'dms' ? undefined : { labels: { ...ROW_LABELS, join: t('voice.join'), joined: t('voice.row.joined') }, onJoin: noop, rooms: {
               harbour: { joined: p.joined === true, participants: [ADA, BO, HELPER] }, workshop: { joined: false, participants: [] } } }}
             activeId={tab === 'dms' ? 'bob' : 'harbour'} onSelect={noop} emptyLabel={t('shell.channels.empty')}
             footer={tab === 'channels' ? undefined : <Button variant="ghost">{t('shell.dms.new')}</Button>} />

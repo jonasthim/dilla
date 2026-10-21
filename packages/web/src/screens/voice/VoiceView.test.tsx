@@ -308,7 +308,7 @@ describe('voice in the shell', () => {
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
-    expect(screen.getByText(t('layout.dock.connected'))).toBeInTheDocument();
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__text')).toHaveTextContent(/^general$/);
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
@@ -1321,7 +1321,7 @@ describe('the voice stage header (web3.9)', () => {
   });
 });
 
-// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, "voice connected", channel · server, three icon buttons; speaking is a
+// web3.9 WEB-DOCK (R26): the dock as Discord's: no meter, the channel name over the link stats, three icon buttons; speaking is a
 // ring on the list row and on the tile and nothing else.
 describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
   const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;
@@ -1337,13 +1337,33 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     expect(dock.querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
   });
 
-  it('line 1 reads "voice connected" and opens Diagnostics; line 2 reads the channel and the server', async () => {
+  it('MP5: line 1 is the channel name (the server in its tooltip and accessible name) and opens Diagnostics', async () => {
     const app = await inVoice();
     await offStage();
-    const status = within(dockEl()).getByRole('button', { name: t('layout.dock.connected') });
-    expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('general · Midgard');
+    const status = within(dockEl()).getByRole('button', { name: 'general · Midgard' });
+    expect(status).toHaveAttribute('title', 'general · Midgard');
+    expect(dockEl().querySelector('.d-voice-dock__text')).toHaveTextContent(/^general$/);
+    expect(dockEl()).not.toHaveTextContent('voice connected');
     await app.user.click(status);
     await waitFor(() => expect(window.location.pathname).toBe('/settings/diagnostics'));
+  });
+
+  it('MP5: line 2 reads "— ms" before the first sample, then the ping and rates from call.state.link, naming the quality', async () => {
+    const app = await inVoice();
+    await offStage();
+    const stats = () => dockEl().querySelector('.d-voice-dock__stats')!;
+    expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent(/^— ms$/);
+    act(() => app.session.update({ link: { rttMs: 24, upKbps: 48, downKbps: 96, lossPct: 0 } }));
+    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s'));
+    expect(stats()).toHaveAttribute('data-quality', 'good');
+    expect(stats()).toHaveTextContent('Ping 24 milliseconds, good. Sending 48, receiving 96 kilobits per second.');
+    act(() => app.session.update({ link: { rttMs: 210, upKbps: 5, downKbps: 6, lossPct: 0 } }));
+    await waitFor(() => expect(stats()).toHaveAttribute('data-quality', 'poor'));
+    act(() => app.session.update({ link: { rttMs: 40, upKbps: 5, downKbps: 6, lossPct: 6 } }));
+    await waitFor(() => expect(stats()).toHaveAttribute('data-quality', 'bad'));
+    expect(stats()).toHaveTextContent('Ping 40 milliseconds, bad.');
+    act(() => app.session.update({ phase: 'reconnecting', link: undefined }));
+    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent(/^reconnecting$/));
   });
 
   it('camera, share and leave are 32px icon buttons', async () => {

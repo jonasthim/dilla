@@ -67,7 +67,7 @@ describe('AppShell splitters', () => {
     expect(s).toHaveAttribute('aria-valuemin', '192');
     expect(s).toHaveAttribute('aria-valuemax', '384');
     const sidebar = container.querySelector('.d-app-shell__sidebar')!;
-    expect(sidebar.lastElementChild).toBe(s);
+    expect(sidebar.nextElementSibling).toBe(s);
     expect(s).toHaveAttribute('aria-controls', sidebar.id);
     expect(sidebar.id).not.toBe('');
     const a = sep(labels.aside);
@@ -101,6 +101,16 @@ describe('AppShell splitters', () => {
     render(<ComposedShell shell={shellProps()} />);
     expect(screen.getByRole('separator', { name: labels.sidebar })).toBeInTheDocument();
     expect(screen.queryByRole('separator', { name: labels.aside })).toBeNull();
+  });
+
+  it('with the aside overlay open the sidebar splitter is inert (out of the tab order); on a column it is live', () => {
+    shellW = 800; stubWidths();
+    const a = render(<ComposedShell shell={shellProps()} />);
+    expect(screen.getByRole('separator', { name: labels.sidebar, hidden: true })).toHaveAttribute('inert');
+    a.unmount();
+    shellW = 1280; stubWidths();
+    render(<ComposedShell shell={shellProps()} />);
+    expect(sep(labels.sidebar)).not.toHaveAttribute('inert');
   });
 
   const key = (el: HTMLElement, k: string, shiftKey = false) => fireEvent.keyDown(el, { key: k, shiftKey });

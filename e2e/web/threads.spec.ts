@@ -143,6 +143,16 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.edit'), exact: true })).toHaveCount(0);
       await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.delete'), exact: true })).toHaveCount(0);
 
+      // MP7 (N1): a thread row's author name opens the profile card; it is live (not inert) and takes focus, and Escape returns focus to the name.
+      const author = paneRow(page, ok).locator('.d-message-row__author-open');
+      await author.click();
+      const authorCard = page.getByRole('dialog').filter({ has: page.locator('.d-profile-card__close') });
+      await expect(authorCard).toBeVisible();
+      await expect(authorCard.locator(':focus')).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await expect(authorCard).toBeHidden();
+      await expect(author).toBeFocused();
+
       // Ada replies from the pane: Björn receives it, and both counts read 2.
       const go = `go ${tag()}`;
       await threadComposer(page).fill(go);

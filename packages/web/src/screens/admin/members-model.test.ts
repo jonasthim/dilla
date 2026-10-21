@@ -45,8 +45,9 @@ describe('menuFor', () => {
   it('offers message, compare, kick and ban on a lower-ranked member', () => {
     expect(menuFor(m(CAL, 'carol', [CREW.id]), access(), ctx)).toEqual(['message', 'compare', 'kick', 'ban']);
   });
-  it('has no message on self, and no kick or ban', () => {
-    expect(menuFor(MEMBERS[1], access(), ctx)).toEqual(['compare']);
+  it('has no message, compare, kick or ban on self', () => {
+    expect(menuFor(MEMBERS[1], access(), ctx)).toEqual([]);
+    expect(menuFor(MEMBERS[1], access({ manageRoles: true }), ctx)).toEqual(['roles']);
   });
   it('hides kick and ban on the owner and on a higher-ranked target', () => {
     expect(menuFor(MEMBERS[0], access(), ctx)).toEqual(['message', 'compare']);

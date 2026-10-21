@@ -17,6 +17,7 @@ import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
+import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
 import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
@@ -30,6 +31,7 @@ import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, spe
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
+import { MemberCardHost, type OpenCard } from './admin/MemberCardHost.tsx';
 import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
@@ -283,6 +285,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     setSide(null);
     setMembersOpen(open);
   };
+  // The open profile card from a mention pill or a message's author (MP7); the member pane holds its own for a row. Opening one closes the other.
+  const [profileCard, setProfileCard] = useState<OpenCard | null>(null);
   const [adminFor, setAdminFor] = useState<string | null>(null);
   const [adminTab, setAdminTab] = useState<AdminTab>('overview');
   // Final fix I1: where focus was when server settings opened (as searchOpener); it goes back there when the dialog closes.
@@ -325,7 +329,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<UiError | null>(null);
 
-  const ordered = useMemo(() => orderChannels(channels ?? []), [channels]);
+  const ordered = useMemo(() => orderChannels(channels ?? [], afkChannels), [channels, afkChannels]);
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;
@@ -902,11 +906,15 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     void run();
   };
 
+  // A click on the pill or author name that already holds the open card closes it (the card ignores a pointerdown on its anchor); any other opens, replacing the card.
+  const openProfile: ProfileOpener = (userId, anchor, source, name) =>
+    setProfileCard(cur => (cur !== null && cur.anchor === anchor ? null : { id: userId, source, anchor, name, rowId: anchor.closest<HTMLElement>('.d-message-row')?.dataset.msgId, scope: anchor.closest<HTMLElement>('.d-thread-pane, [role="log"]') ?? undefined }));
   const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report}
-    {...(channel !== null ? { onOpenThread: openThread } : {})} />;
+    {...(channel !== null ? { onOpenThread: openThread } : {})}
+    {...(channel !== null ? { onOpenProfile: openProfile } : {})} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
@@ -1066,7 +1074,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         titleKind={onDms ? 'plain' : 'server'}
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
-        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
+        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,
           onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => {
@@ -1709,7 +1717,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
-            onEditingChange={setThreadEditing}
+            onEditingChange={setThreadEditing} onOpenProfile={openProfile}
             onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
@@ -1717,7 +1725,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
-              announce={announce} /> : undefined}
+              announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
@@ -1727,6 +1735,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       >
         {main}
       </AppShell>
+      {/* The message card sits beside the shell, not inside it: main, the rail and the aside go inert while an overlay (the thread sheet) is open, and the card must stay live above it. */}
+      {community !== null && self !== null ? (
+        <MemberCardHost communityId={community.id} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
+          onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
+      ) : null}
       <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
         requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
         hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}
