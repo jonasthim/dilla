@@ -92,7 +92,7 @@ async function setSwitch(toggle: Locator, on: boolean): Promise<void> {
 
 /** Ticks (or unticks) `role` for `name` in the assign dialog, waits for the announcement, and presses Done. */
 async function assign(page: Page, name: string, role: string, on: boolean): Promise<void> {
-  await memberAction(page, name, 'roles.menu.assign');
+  await memberAction(page, name, 'layout.profile.manageRoles');
   const dialog = dialogOf(page, 'roles.assign.title', { name });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   const box = dialog.getByRole('checkbox', { name: role, exact: true });

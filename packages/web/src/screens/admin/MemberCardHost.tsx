@@ -25,12 +25,12 @@ export interface MemberCardHostProps {
   communityId: string;
   selfId: string;
   card: OpenCard | null;
-  onCard(next: OpenCard | null): void;
-  onMessage(userId: string): void;
-  onCompare(userId: string): void;
-  announce(text: string): void;
+  onCard: (next: OpenCard | null) => void;
+  onMessage: (userId: string) => void;
+  onCompare: (userId: string) => void;
+  announce: (text: string) => void;
   /** Where focus goes when a dialog closes and its trigger is gone. */
-  fallbackFocus?(): HTMLElement | null;
+  fallbackFocus?: () => HTMLElement | null;
 }
 
 export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
@@ -111,9 +111,9 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
       {card !== null && data !== null ? (
         <ProfileCard name={data.name} username={data.username} presence={presence?.[data.userId] ?? 'offline'} isOwner={data.isOwner} isYou={data.isYou}
           roles={data.roles} actions={data.actions.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' }))}
-          onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} {...labels} />
+          onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} {...labels} />
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (
-        <ProfileCard name={card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} {...labels} />
+        <ProfileCard name={card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" {...labels} />
       ) : null}
       <KickFlow open={kickOpen} communityId={communityId} serverName={community?.name ?? ''} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />

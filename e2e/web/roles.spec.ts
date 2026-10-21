@@ -185,7 +185,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await closeSettings(page);
 
     // 4. Ada gives Björn the role from his member menu. "Done" returns focus to his menu trigger; both lists group "Crew — 1".
-    await memberAction(page, FRIEND, 'roles.menu.assign');
+    await memberAction(page, FRIEND, 'layout.profile.manageRoles');
     const assign = dialogOf(page, 'roles.assign.title', { name: FRIEND });
     await expect(assign).toBeVisible({ timeout: WAIT });
     const crew = assign.getByRole('checkbox', { name: ROLE, exact: true });
@@ -200,7 +200,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(groupHeading(page, 1)).toBeVisible({ timeout: WAIT });
     await expect(groupHeading(page2, 1)).toBeVisible({ timeout: WAIT });
     // Escape closes the same dialog the same way.
-    await memberAction(page, FRIEND, 'roles.menu.assign');
+    await memberAction(page, FRIEND, 'layout.profile.manageRoles');
     await expect(assign).toBeVisible({ timeout: WAIT });
     await page.keyboard.press('Escape');
     await expect(assign).toBeHidden();
@@ -242,6 +242,39 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     const theirPing = logRegion(page2, 'general').locator(CLASS.messageRow).filter({ has: page2.locator(CLASS.mention).filter({ hasText: `@${ROLE}` }) });
     await expect(theirPing).toBeVisible({ timeout: WAIT });
     await expect(theirPing.locator(CLASS.mention)).toHaveText(`@${ROLE}`);
+    // MP7: a role pill is plain; a user pill and the author's name open the profile card.
+    await expect(theirPing.locator(`${CLASS.mention}:is(button)`)).toHaveCount(0);
+    await box1.fill('hey @bj');
+    const userOptions = mentionList(page);
+    await expect(userOptions).toBeVisible({ timeout: WAIT });
+    await userOptions.getByRole('option', { name: new RegExp(FRIEND) }).click();
+    await page.keyboard.press('Enter');
+    const userPing = logRegion(page, 'general').locator(CLASS.messageRow).filter({ has: page.locator(`${CLASS.mention}:is(button)`) });
+    await expect(userPing).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    const pill = userPing.locator(`${CLASS.mention}:is(button)`);
+    await pill.click();
+    const pillCard = page.getByRole('dialog', { name: FRIEND });
+    await expect(pillCard).toBeVisible();
+    await expect(pillCard.locator('.d-profile-card__action').first()).toHaveText(copy('members.menu.message'));
+    await page.keyboard.press('Escape');
+    await expect(pillCard).toBeHidden();
+    await expect(pill).toBeFocused();
+    const shots = process.env.DILLA_SHOTS;
+    if (shots) {
+      for (const [name, width, height] of [['desktop-1440', 1440, 900], ['phone-390', 390, 844]] as const) {
+        await page.setViewportSize({ width, height });
+        await pill.click();
+        await expect(pillCard).toBeVisible();
+        await page.screenshot({ path: `${shots}/mention-card-${name}.png` });
+        await page.keyboard.press('Escape');
+        await expect(pillCard).toBeHidden();
+      }
+      await page.setViewportSize({ width: 1280, height: 720 });
+    }
+    // The head of a run (a grouped row has no author) opens the author's own card.
+    await logRegion(page, 'general').locator('.d-message-row__author-open').filter({ hasText: OWNER }).first().click();
+    await expect(page.getByRole('dialog', { name: OWNER })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // 7. Ada takes "pin messages" from Crew: Björn's pin stops counting. Ada's pins list no longer shows it, and her row loses the pin.
     settings = await openSettings(page);

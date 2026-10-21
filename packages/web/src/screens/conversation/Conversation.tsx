@@ -10,7 +10,7 @@ import { madeHere } from '../Create.tsx';
 import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { dayLabel, groupedWithAbove, startsDay } from './log-model.ts';
-import { MessageItem, type RowEvent } from './MessageItem.tsx';
+import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
 
 export const FLASH_MS = 1400;
@@ -69,7 +69,9 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
   book: NameBook; encodeWith: readonly MentionMember[]; broadcast: boolean; bits?: number | null; roles?: readonly RoleSummary[]; pinsTitle: string; ui: ConversationUi;
   dispatch(a: ConversationAction): void; loadingEarlier: boolean; onLoadEarlier(): void; onError(e: unknown): void;
   /** Opens a message's thread (web3.7); without it a row offers no thread item and no chip. */
-  onOpenThread?: (msgId: string) => void }
+  onOpenThread?: (msgId: string) => void;
+  /** Opens a profile card for a mentioned user or a message's author (MP7); without it neither is a button. */
+  onOpenProfile?: ProfileOpener }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
@@ -290,7 +292,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         }}
         onEditCancel={() => { p.dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
         onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)}
-        {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})} />
+        {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})}
+        {...(p.onOpenProfile !== undefined ? { onOpenProfile: p.onOpenProfile } : {})} />
       </Fragment>)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}

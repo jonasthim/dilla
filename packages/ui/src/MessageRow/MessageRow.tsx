@@ -1,4 +1,4 @@
-import { useId, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, useRef, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
@@ -8,10 +8,14 @@ import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
 /** A piece of a message body: plain text, or a mention shown as a pill whose text is its `@` name. */
-export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null };
+export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null; /** A user mention's id: with `onOpenProfile` the pill is a button that opens that user's card. Role and broadcast pills have none. */ userId?: string };
 
 export interface MessageRowProps {
   author: string;
+  /** The author's id: with `onOpenProfile` the name and the avatar open the author's profile card. */
+  authorId?: string;
+  /** Opens a user's profile card, anchored to `anchor` (a mention pill, the author name or the avatar). */
+  onOpenProfile?(userId: string, anchor: HTMLElement, from: 'mention' | 'author'): void;
   time: string;
   body: string | readonly BodyPart[];
   own?: boolean;
@@ -55,13 +59,17 @@ const INTERACTIVE = 'button, a, input, textarea, select, summary, label, [role="
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 
-/** The body's parts as text children and mention pills: never HTML, never the raw token. */
-function bodyChildren(body: string | readonly BodyPart[]): ReactNode {
+/** The body's parts as text children and mention pills: never HTML, never the raw token. A user pill is a button when the caller can open a profile. */
+function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOpenProfile: MessageRowProps['onOpenProfile']): ReactNode {
   if (typeof body === 'string') return body;
-  return body.map((part, i) => (part.kind === 'text'
-    ? part.text
-    : <span key={i} className="d-mention" data-me={flag(part.me)} data-broadcast={flag(part.broadcast)}>
-      {part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</span>));
+  return body.map((part, i) => {
+    if (part.kind === 'text') return part.text;
+    const inner = <>{part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</>;
+    const attrs = { className: 'd-mention', 'data-me': flag(part.me), 'data-broadcast': flag(part.broadcast) };
+    if (part.userId === undefined || onOpenProfile === undefined) return <span key={i} {...attrs}>{inner}</span>;
+    const userId = part.userId;
+    return <button key={i} type="button" {...attrs} tabIndex={tabIndex} onClick={e => onOpenProfile(userId, e.currentTarget, 'mention')}>{inner}</button>;
+  });
 }
 
 function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['reply']>; tabIndex: number }) {
@@ -104,7 +112,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
+  author, authorId, onOpenProfile, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
   reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
@@ -114,6 +122,8 @@ export function MessageRow({
   const note = (state === 'cannot-read' || state === 'deleted') && !!stateLabel;
   const showDetail = (state === 'cannot-read' || state === 'failed') && !!detail;
 
+  const authorEl = useRef<HTMLButtonElement>(null);
+  const opens = authorId !== undefined && onOpenProfile !== undefined;
   const phone = usePhoneLayout();
   const reveals = phone && onReveal !== undefined;
 
@@ -152,10 +162,15 @@ export function MessageRow({
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
       {grouped === true
         ? <span className="d-message-row__gutter" aria-hidden="true">{gutterTime ?? time}</span>
-        : <span className="d-message-row__avatar" aria-hidden="true"><Avatar name={author} /></span>}
+        : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
+          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} /></span>}
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId}>
-          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>{author}</span>
+          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>
+            {opens && grouped !== true
+              ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={tabIndex} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
+              : author}
+          </span>
           {tag && grouped !== true ? <Tag kind={tag} /> : null}
           <span className={grouped === true ? 'd-message-row__time d-sr-only' : 'd-message-row__time'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}
@@ -164,7 +179,7 @@ export function MessageRow({
         </p>
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
-        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body)}</p> : null}
+        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body, tabIndex, onOpenProfile)}</p> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (

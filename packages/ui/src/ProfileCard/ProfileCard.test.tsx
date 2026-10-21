@@ -171,6 +171,20 @@ describe('ProfileCard placement', () => {
     expect(card.style.top).toBe('100px');
   });
 
+  it('MP7: placement "below" sits under the anchor at its left edge, and above it when there is no room below', () => {
+    const anchor = anchorButton();
+    const spy = vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(300, 100, 60, 20));
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(200);
+    render(<ProfileCard {...props({ anchor, placement: 'below' })} />);
+    const card = screen.getByRole('dialog');
+    expect(card.style.left).toBe('300px');
+    expect(card.style.top).toBe('128px');
+    spy.mockReturnValue(rect(300, window.innerHeight - 40, 60, 20));
+    fireEvent(window, new Event('resize'));
+    expect(card.style.top).toBe(`${window.innerHeight - 40 - 8 - 200}px`);
+    vi.restoreAllMocks();
+  });
+
   it('goes right of the row when there is no room on its left', () => {
     const anchor = anchorButton();
     vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(4, 100));

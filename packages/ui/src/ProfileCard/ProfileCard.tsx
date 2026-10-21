@@ -28,6 +28,8 @@ export interface ProfileCardProps {
   anchor?: HTMLElement | null;
   /** `popover` beside the row (desktop) or `sheet` from the bottom (phone). Default: a sheet inside a phone shell, else a popover. */
   layout?: 'popover' | 'sheet';
+  /** A popover's side: `side` (default) beside a member row, `below` under a mention or an author name (above when there is no room below). */
+  placement?: 'side' | 'below';
   ownerLabel?: string;
   youLabel?: string;
   rolesLabel?: string;
@@ -47,7 +49,7 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  * room, else right); on a phone it is a modal sheet from the bottom over a scrim.
  */
 export function ProfileCard({
-  name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout,
+  name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
   ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
@@ -90,9 +92,18 @@ export function ProfileCard({
       const shell = anchor.closest('.d-app-shell')?.getBoundingClientRect();
       const box = shell ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
       const a = anchor.getBoundingClientRect();
-      const leftOfRow = a.left - box.left - GAP - w;
-      const x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
-      const y = Math.max(0, Math.min(a.top - box.top, box.height - h));
+      let x: number;
+      let y: number;
+      if (placement === 'below') {
+        // Under the anchor at its left edge (a mention, an author name), above it when there is no room below.
+        x = a.left - box.left;
+        y = a.bottom - box.top + GAP;
+        if (y + h > box.height) y = Math.max(0, a.top - box.top - GAP - h);
+      } else {
+        const leftOfRow = a.left - box.left - GAP - w;
+        x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
+        y = Math.max(0, Math.min(a.top - box.top, box.height - h));
+      }
       const next = { x: Math.max(0, Math.min(x, box.width - w)), y };
       setAt(cur => (cur !== null && cur.x === next.x && cur.y === next.y ? cur : next));
     };
@@ -100,7 +111,7 @@ export function ProfileCard({
     window.addEventListener('resize', place);
     document.addEventListener('scroll', place, true);
     return () => { window.removeEventListener('resize', place); document.removeEventListener('scroll', place, true); };
-  }, [mode, anchor]);
+  }, [mode, anchor, placement]);
 
   // A pointerdown outside the popover (and its own row, which decides for itself) closes it.
   useEffect(() => {

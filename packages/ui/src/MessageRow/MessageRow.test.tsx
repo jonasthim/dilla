@@ -390,3 +390,55 @@ describe('MessageRow mention colour dot', () => {
     });
   });
 });
+
+describe('MessageRow profile opens (MP7)', () => {
+  const body = [
+    { kind: 'text' as const, text: 'hi ' }, { kind: 'mention' as const, label: '@bob', me: false, broadcast: false, userId: 'u-bob' },
+    { kind: 'text' as const, text: ' ' }, { kind: 'mention' as const, label: '@everyone', me: false, broadcast: true },
+    { kind: 'text' as const, text: ' ' }, { kind: 'mention' as const, label: '@mods', me: false, broadcast: false, color: 0x3498db },
+  ];
+  it('makes a user mention a button that opens that user, and leaves role and broadcast pills plain', async () => {
+    const onOpenProfile = vi.fn();
+    const onReveal = vi.fn();
+    const { container } = render(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" state="ok" body={body} onOpenProfile={onOpenProfile} onReveal={onReveal} /></PhoneLayoutProvider>);
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['@bob']);
+    expect(container.querySelectorAll('.d-mention').length).toBe(3);
+    expect(screen.getByText('@everyone').tagName).toBe('SPAN');
+    const pill = screen.getByRole('button', { name: '@bob' });
+    await userEvent.setup().click(pill);
+    expect(onOpenProfile).toHaveBeenCalledWith('u-bob', pill, 'mention');
+    expect(onReveal).not.toHaveBeenCalled();
+  });
+  it('keeps the pill plain with no handler', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body={body} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+  it('opens on Enter from the focused pill', async () => {
+    const onOpenProfile = vi.fn();
+    render(<MessageRow author="ada" time="21:02" state="ok" active body={body} onOpenProfile={onOpenProfile} />);
+    const user = userEvent.setup();
+    const pill = screen.getByRole('button', { name: '@bob' });
+    expect(pill).toHaveAttribute('tabindex', '0');
+    pill.focus();
+    await user.keyboard('{Enter}');
+    expect(onOpenProfile).toHaveBeenCalledWith('u-bob', pill, 'mention');
+  });
+  it('takes the pill out of the tab order while the row is not active', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body={body} onOpenProfile={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '@bob' })).toHaveAttribute('tabindex', '-1');
+  });
+  it('makes the author name a button and the avatar a click target when the author is known', async () => {
+    const onOpenProfile = vi.fn();
+    const { container } = render(<MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" body="hello" onOpenProfile={onOpenProfile} />);
+    const name = screen.getByRole('button', { name: 'ada' });
+    await userEvent.setup().click(name);
+    expect(onOpenProfile).toHaveBeenLastCalledWith('u-ada', name, 'author');
+    await userEvent.setup().click(container.querySelector('.d-message-row__avatar') as Element);
+    expect(onOpenProfile).toHaveBeenCalledTimes(2);
+    expect(onOpenProfile.mock.calls[1]?.[0]).toBe('u-ada');
+  });
+  it('leaves the author plain without an id', () => {
+    render(<MessageRow author="ada" time="21:02" state="ok" body="hello" onOpenProfile={vi.fn()} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});

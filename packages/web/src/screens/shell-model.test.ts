@@ -186,9 +186,9 @@ describe('names in bodies (L-TS-37)', () => {
     const body = `hi <@${BOB}> and <@${SELF.id}>, <@everyone> <@here> <@${ROLE}> <@${OTHER}> <@${UNKNOWN}> <@NOPE>`;
     expect(bodyParts(body, book, true)).toEqual([
       { kind: 'text', text: 'hi ' },
-      { kind: 'mention', label: '@bob', me: false, broadcast: false },
+      { kind: 'mention', label: '@bob', me: false, broadcast: false, userId: BOB },
       { kind: 'text', text: ' and ' },
-      { kind: 'mention', label: '@Ada L', me: true, broadcast: false },
+      { kind: 'mention', label: '@Ada L', me: true, broadcast: false, userId: SELF.id },
       { kind: 'text', text: ', ' },
       { kind: 'mention', label: '@everyone', me: true, broadcast: true },
       { kind: 'text', text: ' ' },
@@ -198,7 +198,7 @@ describe('names in bodies (L-TS-37)', () => {
       { kind: 'text', text: ' ' },
       { kind: 'mention', label: '@role', me: false, broadcast: false },
       { kind: 'text', text: ' ' },
-      { kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false },
+      { kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false, userId: UNKNOWN },
       { kind: 'text', text: ' <@NOPE>' },
     ]);
     expect(plainBody(body, book)).toBe('hi @bob and @Ada L, @everyone @here @role @role @eeeeeeee <@NOPE>');
@@ -215,10 +215,10 @@ describe('names in bodies (L-TS-37)', () => {
       { kind: 'text', text: ' ' },
       { kind: 'mention', label: '@role', me: false, broadcast: false },
     ]);
-    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false, userId: SELF.id }]);
   });
   it('names the own user by username when no member row holds it', () => {
-    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false, userId: SELF.id }]);
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))

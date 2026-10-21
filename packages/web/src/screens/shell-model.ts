@@ -236,12 +236,13 @@ export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): Bo
     const id = part.target;
     if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
     const member = book.members.find(m => m.userId === id);
-    if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
-    if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
+    if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false, userId: id };
+    if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false, userId: id };
     const known = book.roleInfo?.get(id);
     if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
     if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
-    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
+    // Not a member, the viewer, a known role or a role of any member: someone who has left. Still a user mention, so it opens a name-only card.
+    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, userId: id };
   });
 }
 

@@ -111,7 +111,12 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Shift+Tab');
   const newest = logRegion(page, channel).locator(CLASS.messageRow).last();
   await expect(newest).toBeFocused();
+  // MP7: the author name is the row's first inner stop (a grouped row has none), then the toolbar.
   await press('Tab');
+  if (await newest.locator('.d-message-row__author-open').count() > 0) {
+    await expect(newest.locator('.d-message-row__author-open')).toBeFocused();
+    await press('Tab');
+  }
   const toolbar = newest.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true });
   await expect(toolbar).toBeVisible();
   await expect(toolbar.locator(':focus')).toHaveCount(1);
@@ -153,12 +158,12 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // 17 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
   // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
   // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 17; i++) {
     await press('Tab');
     if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());

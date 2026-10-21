@@ -1387,6 +1387,9 @@ describe('keyboard', () => {
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
+    // MP7: the author name is the row's first inner stop.
+    expect(document.activeElement).toBe(screen.getByRole('article').querySelector('.d-message-row__author-open'));
+    await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
     await user.tab();
     expect(composer()).toHaveFocus();

@@ -1,5 +1,5 @@
 // Flow 08: the member pane. W3 mounts it in the shell's aside; it reads the members, roles and permissions slices.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { usePhoneLayout } from '../../layout.ts';
@@ -11,14 +11,15 @@ export interface MemberPaneProps {
   communityId: string;
   selfId: string;
   /** Opens (or finds) the direct message with `userId` and goes there. */
-  onMessage(userId: string): void;
+  onMessage: (userId: string) => void;
   /** Goes to the privacy screen's safety-number comparison for `userId`. */
-  onCompare(userId: string): void;
+  onCompare: (userId: string) => void;
   /** The shell's polite announcer. */
-  announce(text: string): void;
-  /** The shell's one open card, when the shell owns it (it also opens from a mention). Left out: the pane holds its own card and renders it. */
-  card?: OpenCard | null;
-  onCard?(next: OpenCard | null): void;
+  announce: (text: string) => void;
+  /** The card open from a mention pill or an author name (the shell holds it). While one is open the pane's own card is closed. */
+  messageCard?: OpenCard | null;
+  /** The pane opened a card from a row: the shell closes its message card. */
+  onCardOpen?: () => void;
 }
 
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
@@ -28,16 +29,21 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const presence = useSlice(`presence:${communityId}`);
   const roles = useSlice(`roles:${communityId}`);
   const communities = useSlice('communities');
-  // The open card: the shell's, or the pane's own when it stands alone.
-  const [own, setOwn] = useState<OpenCard | null>(null);
-  const controlled = props.onCard !== undefined;
-  const card = controlled ? props.card ?? null : own;
-  const setCard = props.onCard ?? setOwn;
+  // The card open from a row of this list. One card at a time across the app: a message card closes it.
+  const [card, setCard] = useState<OpenCard | null>(null);
 
   // A presence snapshot can briefly replace every row with a loading message. Keep the old row key while focus rests on
   // the pane, then return to its new trigger when the snapshot brings the row back.
   const region = useRef<HTMLDivElement>(null);
   const focusedRow = useRef<HTMLElement | null>(null);
+  // A card opened from a pill or an author name has taken focus away from the rows: the pane must not take it back
+  // (when that card closes, focus goes to the pill) if a row was re-mounted meanwhile.
+  const fromMessage = props.messageCard != null;
+  useEffect(() => {
+    if (!fromMessage) return;
+    focusedRow.current = null;
+    setCard(null);
+  }, [fromMessage, props.messageCard]);
   useLayoutEffect(() => {
     const old = focusedRow.current;
     if (old === null || old.isConnected) return;
@@ -68,8 +74,11 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
 
   // A primary click on the open member's row closes the card, another row switches it (the card itself ignores a pointerdown on its anchor).
   // Enter, a right-click, Shift+F10 and the ContextMenu key only ever open.
-  const onOpen = (userId: string, anchor: HTMLElement, via: 'click' | 'menu') =>
-    setCard(card !== null && card.source === 'list' && card.id === userId && via === 'click' ? null : { id: userId, source: 'list', anchor });
+  const onOpen = (userId: string, anchor: HTMLElement, via: 'click' | 'menu') => {
+    const closes = card !== null && card.id === userId && via === 'click';
+    if (!closes) props.onCardOpen?.();
+    setCard(closes ? null : { id: userId, source: 'list', anchor });
+  };
 
   return (
     <div ref={region} tabIndex={-1} onFocusCapture={event => {
@@ -79,11 +88,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
           A phone's sheet already has its PhoneHeader, so it draws no second bar. */}
       <MemberList label={phone ? undefined : t('members.toggle')} groups={groups} loading={members === undefined || presence === undefined || presence === null}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} presenceLabels={presenceLabels()}
-        ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.source === 'list' ? card.id : null} onOpen={onOpen} />
-      {controlled ? null : (
-        <MemberCardHost communityId={communityId} selfId={selfId} card={card} onCard={setCard} onMessage={props.onMessage} onCompare={props.onCompare}
-          announce={props.announce} fallbackFocus={() => region.current} />
-      )}
+        ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.id ?? null} onOpen={onOpen} />
+      <MemberCardHost communityId={communityId} selfId={selfId} card={card} onCard={setCard} onMessage={props.onMessage} onCompare={props.onCompare}
+        announce={props.announce} fallbackFocus={() => region.current} />
     </div>
   );
 }

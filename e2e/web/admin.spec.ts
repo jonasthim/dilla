@@ -134,7 +134,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(ownerCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
     await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toBeVisible();
     // Her own card: no message, compare, kick or ban, only the roles she may assign.
-    await expect(ownerCard.locator('.d-profile-card__action')).toHaveText([copy('roles.menu.assign')]);
+    await expect(ownerCard.locator('.d-profile-card__action')).toHaveText([copy('layout.profile.manageRoles')]);
     const shots = process.env.DILLA_SHOTS;
     if (shots) {
       await page.setViewportSize({ width: 1440, height: 900 });

@@ -70,6 +70,12 @@ export const MentionsMe: Story = {
   args: { author: 'mira', time: '21:05', mention: true,
     body: [{ kind: 'mention', label: '@ada', me: true, broadcast: false }, { kind: 'text', text: ' are you bringing the map?' }] },
 };
+/** MP7: a user mention and the author name are buttons that open a profile card; role and broadcast pills stay plain. */
+export const OpensProfile: Story = {
+  args: { author: 'mira', authorId: 'u-mira', time: '21:05', onOpenProfile: () => undefined,
+    body: [{ kind: 'mention', label: '@ada', me: false, broadcast: false, userId: 'u-ada' }, { kind: 'text', text: ' and ' },
+      { kind: 'mention', label: '@everyone', me: false, broadcast: true }, { kind: 'text', text: ' take a look' }] },
+};
 /** A role mention carries its role colour as a dot before the name; the text keeps its token colour. */
 export const RoleMention: Story = {
   args: { author: 'mira', time: '21:05',

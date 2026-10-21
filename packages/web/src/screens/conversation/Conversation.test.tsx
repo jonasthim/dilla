@@ -51,7 +51,7 @@ describe('the roving log (keyboard map, ruling 21)', () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'first'), peerRow(P2, '2', 'second'), ownRow(O1, '3', 'third')] });
     expect([rowOf(P1), rowOf(P2), rowOf(O1)].map(r => r.tabIndex)).toEqual([-1, -1, 0]);
     expect(tabbable(rowOf(P1))).toEqual([]);
-    expect(tabbable(rowOf(O1))).toHaveLength(1);
+    expect(tabbable(rowOf(O1))).toHaveLength(2);
     act(() => rowOf(O1).focus());
     await user.keyboard('{ArrowUp}');
     expect(rowOf(P2)).toHaveFocus();
