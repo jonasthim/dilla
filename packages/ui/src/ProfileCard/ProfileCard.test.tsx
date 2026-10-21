@@ -192,6 +192,15 @@ describe('ProfileCard placement', () => {
     expect(card.style.top).toBe('350px');
   });
 
+  it('N3: closes when its anchor is no longer connected on a reposition', () => {
+    const anchor = anchorButton();
+    const p = props({ anchor });
+    render(<ProfileCard {...p} />);
+    anchor.remove();
+    fireEvent(window, new Event('resize'));
+    expect(p.onClose).toHaveBeenCalledOnce();
+  });
+
   it('is a sheet when asked to, or inside a phone shell: a modal dialog on a scrim, with no position of its own', () => {
     const { unmount } = render(<ProfileCard {...props({ layout: 'sheet' })} />);
     expect(screen.getByRole('dialog')).toHaveAttribute('data-layout', 'sheet');

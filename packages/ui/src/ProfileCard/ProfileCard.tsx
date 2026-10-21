@@ -81,6 +81,8 @@ export function ProfileCard({
     if (mode !== 'popover' || !anchor || !ref.current) { setAt(null); return; }
     const place = () => {
       if (!ref.current) return;
+      // The row went away (a re-mount, a kick): close; the unmount returns focus to that member's row if it is back, else the list.
+      if (!anchor.isConnected) { onCloseRef.current(); return; }
       const w = ref.current.offsetWidth;
       const h = ref.current.offsetHeight;
       const shell = anchor.closest('.d-app-shell')?.getBoundingClientRect();

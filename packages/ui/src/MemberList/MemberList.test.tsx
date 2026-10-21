@@ -66,7 +66,7 @@ describe('MemberList', () => {
     render(<MemberList {...props({ onOpen })} />);
     const btn = screen.getByRole('button', { name: /Bjorn/ });
     await user.click(btn);
-    expect(onOpen).toHaveBeenCalledExactlyOnceWith('u2', btn);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith('u2', btn, 'click');
     expect(btn.closest('li')).toHaveAttribute('data-row');
     expect(screen.getAllByRole('button')).toHaveLength(3);
   });
@@ -77,7 +77,7 @@ describe('MemberList', () => {
     render(<MemberList {...props({ onOpen })} />);
     screen.getByRole('button', { name: /Bjorn/ }).focus();
     await user.keyboard('{Enter}');
-    expect(onOpen).toHaveBeenCalledOnce();
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith('u2', expect.anything(), 'menu');
   });
 
   it('a right-click, Shift+F10 and the ContextMenu key open the card too, and the browser menu is suppressed', async () => {
@@ -86,7 +86,7 @@ describe('MemberList', () => {
     render(<MemberList {...props({ onOpen })} />);
     const btn = screen.getByRole('button', { name: /Bjorn/ });
     expect(fireEvent.contextMenu(btn.closest('li')!, { clientX: 3, clientY: 4, button: 2, detail: 1 })).toBe(false);
-    expect(onOpen).toHaveBeenLastCalledWith('u2', btn);
+    expect(onOpen).toHaveBeenLastCalledWith('u2', btn, 'menu');
     btn.focus();
     await user.keyboard('{Shift>}{F10}{/Shift}');
     expect(onOpen).toHaveBeenCalledTimes(2);

@@ -47,8 +47,9 @@ export interface MemberListProps {
   botLabel?: string;
   /** The member whose card is open, if any: that row's button reports `aria-expanded`. */
   openId?: string | null;
-  /** A click or Enter on a row, a right-click and Shift+F10 or the ContextMenu key: open that member's profile card beside `anchor`, the row's button. */
-  onOpen?(memberId: string, anchor: HTMLElement): void;
+  /** `via` is `click` for a primary pointer click and `menu` for Enter, a right-click, Shift+F10 and the ContextMenu key: a caller that toggles closes only on `click`.
+   * A click or Enter on a row, a right-click and Shift+F10 or the ContextMenu key: open that member's profile card beside `anchor`, the row's button. */
+  onOpen?(memberId: string, anchor: HTMLElement, via: 'click' | 'menu'): void;
   /** @deprecated The row has no action menu any more; the profile card reports its actions. Ignored. */
   onAction?(memberId: string, actionId: string): void;
 }
@@ -67,7 +68,7 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
   const keyOpenedAt = useRef(-Infinity);
   const openFrom = (m: MemberListMember, row: HTMLElement) => {
     const button = row.querySelector<HTMLElement>('.d-member-list__open');
-    if (button !== null) onOpen?.(m.id, button);
+    if (button !== null) onOpen?.(m.id, button, 'menu');
   };
   const onContextMenu = (m: MemberListMember, e: MouseEvent<HTMLLIElement>) => {
     if (onOpen === undefined) return;
@@ -101,7 +102,7 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
               const tint = roleNameColor(m.color, theme, group.kind === 'offline' ? 0.8 : 1);
               return (
                 <li key={m.id} className="d-member-list__row" data-row="" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
-                  <button type="button" className="d-member-list__open" data-focus-key={`member:${m.id}`} aria-haspopup="dialog" aria-expanded={openId === m.id} onClick={e => onOpen?.(m.id, e.currentTarget)}>
+                  <button type="button" className="d-member-list__open" data-focus-key={`member:${m.id}`} aria-haspopup="dialog" aria-expanded={openId === m.id} onClick={e => onOpen?.(m.id, e.currentTarget, e.detail > 0 ? 'click' : 'menu')}>
                     {/* The name is the button's own text, so the avatar is decorative; the presence is read as a word. */}
                     <span className="d-member-list__avatar" aria-hidden="true"><Avatar name={m.name} size="row" presence={m.presence} /></span>
                     {m.presence ? <span className="d-sr-only">{PRESENCE_WORD[m.presence]}</span> : null}
