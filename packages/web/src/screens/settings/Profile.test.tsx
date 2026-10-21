@@ -128,6 +128,32 @@ describe('Settings → Profile', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(t('profile.error.chars'));
   });
 
+  it('does not validate a stored display name nobody changed, so status and bio still save', async () => {
+    const legacy = `Ada${String.fromCodePoint(0x200b)}L`;
+    const { fake, u } = setup({ display: legacy });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(save()).toBeDisabled();
+    await u.type(status(), 'still works');
+    expect(save()).toBeEnabled();
+    await u.click(save());
+    expect(fake.calls).toEqual([{ m: 'updateProfile', statusMsg: 'still works' }]);
+    // editing the name checks it, and putting the same name back is not an edit
+    fireEvent.change(display(), { target: { value: `${legacy}x` } });
+    expect(screen.getByRole('alert')).toHaveTextContent(t('profile.error.chars'));
+    fireEvent.change(display(), { target: { value: legacy } });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps what was typed when the account changes under the form, and follows it for a field left alone', async () => {
+    const { fake, u } = setup({ statusMsg: 'old' });
+    await u.type(bio(), 'my draft');
+    fake.set('account', account({ user: { ...ME, display: 'Ada', statusMsg: 'from device two', bio: 'bio from device two' } }));
+    await waitFor(() => expect(status()).toHaveValue('from device two'));
+    // the bio was being edited: the draft stays
+    expect(bio()).toHaveValue('my draft');
+    expect(save()).toBeEnabled();
+  });
+
   it('says so when the save is refused, keeps what was typed, and lets it be tried again', async () => {
     const { fake, u } = setup();
     fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK', status: 0 }));
@@ -140,6 +166,14 @@ describe('Settings → Profile', () => {
     await u.click(save());
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(await screen.findByRole('status')).toHaveTextContent(t('profile.saved'));
+  });
+
+  it('tells a rate-limited save to wait', async () => {
+    const { fake, u } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 2000 }));
+    await u.type(bio(), 'text');
+    await u.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('profile.error.wait'));
   });
 
   it('follows the account when it changes on another device and nothing is being edited', () => {

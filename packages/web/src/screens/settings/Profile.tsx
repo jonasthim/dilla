@@ -26,7 +26,7 @@ export function Profile(): React.JSX.Element {
   // What the last successful save wrote: the baseline until the account slice says the same.
   const [sent, setSent] = useState<Fields | null>(null);
   const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState<'save' | 'text' | null>(null);
+  const [failed, setFailed] = useState<'save' | 'text' | 'wait' | null>(null);
   const [done, setDone] = useState(false);
   const [displayError, setDisplayError] = useState(false);
   const baseline = sent ?? saved;
@@ -38,23 +38,29 @@ export function Profile(): React.JSX.Element {
     previous.current = saved;
     if (same(before, saved)) return;
     setSent(null);
-    setFields(current => (same(current, before) ? saved : current));
+    // Each field follows the account unless it is being edited: a field still equal to the old stored value is replaced.
+    setFields(current => ({
+      display: current.display === before.display ? saved.display : current.display,
+      statusMsg: current.statusMsg === before.statusMsg ? saved.statusMsg : current.statusMsg,
+      bio: current.bio === before.bio ? saved.bio : current.bio,
+    }));
   }, [saved.display, saved.statusMsg, saved.bio]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const edit = (patch: Partial<Fields>) => { setFields(current => ({ ...current, ...patch })); setDone(false); setFailed(null); setDisplayError(false); };
-  const problem = {
-    display: profileTextProblem(fields.display, DISPLAY_MAX_CHARS),
-    statusMsg: profileTextProblem(fields.statusMsg, STATUS_MAX_CHARS),
-    bio: profileTextProblem(fields.bio, BIO_MAX_CHARS, true),
-  };
-  const invalid = problem.display !== null || problem.statusMsg !== null || problem.bio !== null;
-  const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
   const next: Fields = { display: profileTextValue(fields.display), statusMsg: profileTextValue(fields.statusMsg), bio: profileTextValue(fields.bio, true) };
   const changed = {
     ...(next.display !== baseline.display ? { display: next.display } : {}),
     ...(next.statusMsg !== baseline.statusMsg ? { statusMsg: next.statusMsg } : {}),
     ...(next.bio !== baseline.bio ? { bio: next.bio } : {}),
   };
+  // Only a field that was changed is checked: a stored value that fails today's rule (it was kept from before) never blocks the others.
+  const problem = {
+    display: fields.display !== baseline.display ? profileTextProblem(fields.display, DISPLAY_MAX_CHARS) : null,
+    statusMsg: fields.statusMsg !== baseline.statusMsg ? profileTextProblem(fields.statusMsg, STATUS_MAX_CHARS) : null,
+    bio: fields.bio !== baseline.bio ? profileTextProblem(fields.bio, BIO_MAX_CHARS, true) : null,
+  };
+  const invalid = problem.display !== null || problem.statusMsg !== null || problem.bio !== null;
+  const text = (p: ProfileTextProblem | null) => (p === null ? undefined : t(PROBLEM[p]));
   const dirty = Object.keys(changed).length > 0;
 
   const submit = (event: FormEvent) => {
@@ -65,7 +71,7 @@ export function Profile(): React.JSX.Element {
     setFailed(null);
     client.call({ m: 'updateProfile', ...changed }).then(() => { setSent(next); setDone(true); }).catch((e: unknown) => {
       const code = errorOf(e).code;
-      setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : 'save');
+      setFailed(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? 'text' : code === 'E_RATE_LIMITED' ? 'wait' : 'save');
     }).finally(() => { setPending(false); });
   };
 
@@ -73,7 +79,7 @@ export function Profile(): React.JSX.Element {
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
       <h2 id={TITLE_ID} tabIndex={-1}>{t('profile.title')}</h2>
       <p>{t('profile.body')}</p>
-      {failed === null ? null : <Banner tone="danger">{t(failed === 'text' ? 'profile.error.chars' : 'profile.error.save')}</Banner>}
+      {failed === null ? null : <Banner tone="danger">{t(failed === 'text' ? 'profile.error.chars' : failed === 'wait' ? 'profile.error.wait' : 'profile.error.save')}</Banner>}
       <form className="dw-profile-form" onSubmit={submit} noValidate>
         <TextField id="profile-display" label={t('profile.display.label')} value={fields.display} onChange={display => { edit({ display }); }}
           maxLength={DISPLAY_MAX_CHARS} required autoComplete="nickname" error={text(problem.display) ?? (displayError ? t('profile.error.display') : undefined)} />

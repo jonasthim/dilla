@@ -13,6 +13,7 @@ export const profile = {
   'profile.error.chars': 'That has characters dilla can’t show.',
   'profile.error.long': 'Too long.',
   'profile.error.blank': 'Write something, or leave it empty.',
+  'profile.error.wait': 'Too many saves. Wait a moment, then save again.',
   'profile.error.save': 'Could not save your profile. Try again.',
   'profile.card.about': 'about',
 };

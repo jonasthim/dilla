@@ -901,6 +901,10 @@ channel's rules until it reloads.
 
 ### Upgrading with profile text: migration 00022
 
+**Release note.** New display names, status messages and bios refuse control, bidi, zero-width and other invisible characters
+(a joiner is kept where Persian, Sinhala, Devanagari and similar scripts, and emoji, need it); existing display names are kept
+as they are, and sign-up, rename and `PATCH /v1/accounts/me` apply the rule only to a new or changed name.
+
 Migration `00022_profile` adds two columns to `users`, `status_msg` (at most 190 characters) and `bio` (at most 500), both
 empty for every existing account. The server stores them readable, like the display name: they are not end-to-end
 encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes them (it answered 501 before), and

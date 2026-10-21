@@ -114,6 +114,21 @@ describe('identity', () => {
     expect(fake.callsOf('signupBegin')).toEqual([{ m: 'signupBegin' }]);
     expect(h1()).toHaveTextContent('Your recovery key');
   });
+  it('names a display name the server would refuse next to the field, before making keys', async () => {
+    const { user, fake } = setup();
+    await toIdentity(user);
+    await user.type(field('Username'), 'ada');
+    // an invisible character (U+200B) pasted into the name
+    await user.click(field('Display name (optional)'));
+    await user.paste(`Ada${String.fromCodePoint(0x200b)}L`);
+    await user.click(button('Continue'));
+    expect(field('Display name (optional)')).toHaveAccessibleDescription(expect.stringContaining('That has characters dilla can’t show.'));
+    expect(fake.callsOf('signupBegin')).toHaveLength(0);
+    await user.clear(field('Display name (optional)'));
+    await user.type(field('Display name (optional)'), '   ');
+    await user.click(button('Continue'));
+    expect(fake.callsOf('signupBegin')).toEqual([{ m: 'signupBegin' }]);
+  });
   it('Enter in the username field advances', async () => {
     const { user, fake } = setup();
     await toIdentity(user);

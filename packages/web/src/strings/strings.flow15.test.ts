@@ -12,7 +12,7 @@ describe('flow 15 (EOD E6, profile)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-15 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(16);
+    expect(pairs.length).toBe(17);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -25,7 +25,7 @@ describe('flow 15 (EOD E6, profile)', () => {
     for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label', 'profile.save', 'profile.card.about'] as const) {
       expect(en[k], k).toMatch(/^[a-z]/);
     }
-    for (const k of ['profile.title', 'profile.body', 'profile.status.hint', 'profile.bio.hint', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.save'] as const) {
+    for (const k of ['profile.title', 'profile.body', 'profile.status.hint', 'profile.bio.hint', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.wait', 'profile.error.save'] as const) {
       expect(en[k], k).toMatch(/^[A-Z]/);
     }
     for (const [, value] of pairs) expect(value).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b/i);
