@@ -39,7 +39,7 @@ does not grant installation or feature authority.
 See `10`'s Session capability and compatibility section for bot upgrade gates;
 request headers never establish negotiated capability.
 
-Every endpoint in this document except the ones marked `—` requires a device session exactly as
+Every endpoint in this document except the ones marked `—` or `R` requires a device session exactly as
 `02-delivery-service.md`'s `§ Device sessions` defines: `Authorization: Bearer <token>` resolved to
 a `sessions` row by `SHA-256(token)`; no cookie and therefore no CSRF surface on `/v1`. The `Auth`
 column below uses these scopes:
@@ -51,6 +51,8 @@ column below uses these scopes:
 | `V` | `provisional` also accepted |
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
 | `F` | an `enrolled` session whose account owes a second factor is also accepted |
+| `B` | an enrolled managed-bot session bound to its live installation, account and device; additional phase/capability restrictions are in `10` |
+| `R` | an operator-registered bot-runtime credential, distinct from device sessions and instance administration |
 | `—` | no session required |
 
 An account owes a second factor until it holds a confirmed TOTP secret or a passkey registered
@@ -146,6 +148,7 @@ on its revocations (`02` § Device sessions item 6).
 | `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
 | `DELETE /v1/devices/{device_id}/sessions` | E, F | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
+| `POST /v1/sessions/negotiate` | E | `[[wire_versions], [e2ee_versions], [media_versions]]` | `[wire,e2ee,media]`; highest common versions persisted on this bearer session |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
 `02-delivery-service.md`'s `§ Device sessions`; this table only locates the routes.
@@ -159,6 +162,29 @@ are removed by any enrolled session of the user. A client whose own list is unpu
 row's eviction, not a revocation.
 An assertion registration with a native `tier` or `signer_tier` is `400 E_INVALID_REQUEST`:
 assertion registration is for browser devices; `03`'s pairing ceremony is the native path.
+
+## Community bot installation
+
+These routes are the installation subset of `10-community-bot.md`. That document
+defines the tuples, phase transitions, idempotent receipts, capability approval
+and recovery semantics. Human and bot device sessions require negotiated wire 3;
+runtime credentials use the explicit wire 3 provisioning contract. An ordinary
+human bearer cannot call an `R` route, and a runtime credential grants no general
+instance-admin authority. A `B` endpoint still applies enrolled-session middleware
+before checking its managed-bot binding; it is not an exception for humans who owe
+a second factor.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
+| `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
+| `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
+| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id |
+| `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation,claim_id,claim_expires]` |
+| `POST /v1/bot-runtime/installations/{installation}/enroll` | R | `[request_id,claim_id,umk_pub,ssk_pub,sig_umk_ssk,device]` | `[bot_user,bot_device,username]`; no bearer token |
+| `PUT /v1/bot-runtime/installations/{installation}/credential` | B (enrolling; completed retries in joining/ready) | `[request_id,expected_revision,credential]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/ready` | B (joining; completed retry in ready) | `[request_id,expected_revision]` | installation |
 
 ## Invites
 
