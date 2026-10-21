@@ -431,6 +431,16 @@ impl ClientCore {
         proposals_body: &[u8],
         rotate: bool,
     ) -> Result<Vec<u8>, ClientError> {
+        self.commit_build_inner_with_intent(id, proposals_body, rotate, None)
+    }
+
+    pub(super) fn commit_build_inner_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        proposals_body: &[u8],
+        rotate: bool,
+        intent: Option<super::bot_intents::IntentWrite>,
+    ) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         let proposals = wire::decode_proposals_body(proposals_body)?;
         let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
@@ -504,7 +514,12 @@ impl ClientCore {
                 out.array(bundle.welcomes.len());
                 for (device, welcome) in &bundle.welcomes { out.array(2).bytes(device.as_bytes()).bytes(&wire::tls(welcome)?); }
                 out.null();
-                Ok(out.into_vec())
+                let result = out.into_vec();
+                if let Some(intent) = intent {
+                    super::bot_intents::check_result_size(&result)?;
+                    u.with_conn(|c| super::bot_intents::persist(c, intent, id, &result))?;
+                }
+                Ok(result)
             });
             if result.is_ok() { this.keep_group(*id, group); }
             result
@@ -512,6 +527,19 @@ impl ClientCore {
     }
 
     pub fn commit_confirm(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.commit_confirm_with_intent(id, None)
+    }
+
+    pub(super) fn commit_confirm_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<Vec<u8>, ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(Vec::new());
+        }
         self.own()?;
         let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         if row.state != STATE_ACTIVE {
@@ -523,18 +551,29 @@ impl ClientCore {
         self.retry_reload(id, |this| {
             let mut group = this.take_group(id)?.ok_or_else(absent)?;
             let result = this.write(|ctx, u| {
-                if group.has_pending_commit() {
+                let had_pending_commit = group.has_pending_commit();
+                if had_pending_commit {
                     group.merge_pending_commit(ctx.provider)?;
                 }
                 let held = checked("epoch", group.epoch())?;
                 u.with_conn(|c| {
-                    c.execute(
-                        "DELETE FROM app_proposals WHERE group_id=?1",
-                        [id.as_slice()],
-                    )?;
-                    raise_floor(c, id, held)?;
-                    set_mls(c, id, held, false)
+                    // A Bot result may be confirmed after group_apply already consumed that
+                    // commit and advanced the stored group. In that case this finalizer owns no
+                    // pending MLS state, so it must not erase proposals staged afterward or
+                    // rewrite an epoch that has since advanced.
+                    if had_pending_commit || intent.is_none() {
+                        c.execute(
+                            "DELETE FROM app_proposals WHERE group_id=?1",
+                            [id.as_slice()],
+                        )?;
+                        raise_floor(c, id, held)?;
+                        set_mls(c, id, held, false)?;
+                    }
+                    Ok(())
                 })?;
+                if let Some(intent) = intent {
+                    super::bot_intents::resolve(u, intent)?;
+                }
                 Ok(wire::encode_apply_result(&wire::ApplyResult {
                     state: 2,
                     epoch: group.epoch(),
@@ -552,19 +591,41 @@ impl ClientCore {
     }
 
     pub fn commit_abort(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
+        self.commit_abort_with_intent(id, None)
+    }
+
+    pub(super) fn commit_abort_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<(), ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(());
+        }
         self.own()?;
         self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         self.retry_reload(id, |this| {
             let Some(mut group) = this.take_group(id)? else {
+                if let Some(intent) = intent {
+                    return this.write(|_, u| super::bot_intents::resolve(u, intent));
+                }
                 return Ok(());
             };
             if !group.has_pending_commit() {
                 this.keep_group(*id, group);
+                if let Some(intent) = intent {
+                    return this.write(|_, u| super::bot_intents::resolve(u, intent));
+                }
                 return Ok(());
             }
             let result = this.write(|ctx, u| {
                 group.clear_pending_commit(ctx.provider)?;
                 u.with_conn(|c| set_pending(c, id, false))?;
+                if let Some(intent) = intent {
+                    super::bot_intents::resolve(u, intent)?;
+                }
                 Ok(())
             });
             if result.is_ok() {

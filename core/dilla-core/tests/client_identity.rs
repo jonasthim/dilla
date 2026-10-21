@@ -624,17 +624,17 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v6 (Bot journal) and ClientCore::open
+// app schema v7 (Bot journal and upload intents) and ClientCore::open
 // (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v6_and_reopens_idempotently() {
+fn open_creates_app_schema_v7_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        6
+        7
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -656,6 +656,9 @@ fn open_creates_app_schema_v6_and_reopens_idempotently() {
             "app_bot_event_state",
             "app_bot_events",
             "app_bot_events_page",
+            "app_bot_intents",
+            "app_bot_intents_by_group",
+            "app_bot_intents_one_pending_per_group",
             "app_device_lists",
             "app_groups",
             "app_groups_by_target",
@@ -698,7 +701,7 @@ fn open_creates_app_schema_v6_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x06]);
+    assert_eq!(schema, [0x07]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -823,19 +826,19 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'07');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'08');",
         )
         .expect("seed");
     let e = match ClientCore::open(Arc::clone(&c)) {
         Ok(_) => panic!("a newer schema must be refused"),
         Err(e) => e,
     };
-    // C4x (web3.6): its own code, with both numbers, and nothing created in the store.
+    // C4x: its own code, with both numbers, and nothing created in the store.
     assert_eq!(
         e,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 7, supported 6".into()
+            detail: "found 8, supported 7".into()
         }
     );
     let app_tables: i64 = c

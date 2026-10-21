@@ -303,6 +303,20 @@ impl ClientCore {
         external: &[u8; 32],
         kind: GroupKind,
     ) -> Result<Vec<u8>, ClientError> {
+        self.group_create_kind_with_intent(id, community, channel, policy, external, kind, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn group_create_kind_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+        policy: u64,
+        external: &[u8; 32],
+        kind: GroupKind,
+        intent: Option<super::bot_intents::IntentWrite>,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let row = self.read(|c| group_row(c, id))?;
         if let Some(r) = row {
@@ -319,7 +333,7 @@ impl ClientCore {
         }
         let bind = binding(&own, community, channel, policy, kind);
         self.signer()?;
-        let (g, info, tree) = self.write(|ctx, u| {
+        let (g, result) = self.write(|ctx, u| {
             let signer = ctx
                 .signer
                 .ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?;
@@ -336,6 +350,16 @@ impl ClientCore {
             )?;
             let info = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
             let tree = wire::tls(&g.export_ratchet_tree())?;
+            let mut e = Encoder::new();
+            e.array(4)
+                .bytes(id)
+                .bytes(&bind.encode())
+                .bytes(&info)
+                .bytes(&tree);
+            let result = e.into_vec();
+            if intent.is_some() {
+                super::bot_intents::check_result_size(&result)?;
+            }
             in_unit(u, |c| {
                 c.execute(
                     "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
@@ -347,21 +371,32 @@ impl ClientCore {
                         row_kind(kind)
                     ],
                 )?;
+                if let Some(intent) = intent {
+                    super::bot_intents::persist(c, intent, id, &result)?;
+                }
                 Ok(())
             })?;
-            Ok::<_, ClientError>((g, info, tree))
+            Ok::<_, ClientError>((g, result))
         })?;
         self.keep_group(*id, g);
-        let mut e = Encoder::new();
-        e.array(4)
-            .bytes(id)
-            .bytes(&bind.encode())
-            .bytes(&info)
-            .bytes(&tree);
-        Ok(e.into_vec())
+        Ok(result)
     }
 
     pub fn group_registered(&mut self, id: &[u8; 16], next_seq: u64) -> Result<(), ClientError> {
+        self.group_registered_with_intent(id, next_seq, None)
+    }
+
+    pub(super) fn group_registered_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        next_seq: u64,
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<(), ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(());
+        }
         self.own()?;
         let next = checked("next_seq", next_seq)?;
         if next < 1 {
@@ -381,11 +416,28 @@ impl ClientCore {
                     params![id.as_slice(), next],
                 )?;
                 Ok(())
-            })
+            })?;
+            if let Some(intent) = intent {
+                super::bot_intents::resolve(u, intent)?;
+            }
+            Ok(())
         })
     }
 
     pub fn group_discard(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
+        self.group_discard_with_intent(id, None)
+    }
+
+    pub(super) fn group_discard_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<(), ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(());
+        }
         self.own()?;
         let r = self.read(|c| group_row(c, id))?.ok_or_else(missing)?;
         if r.state != STATE_REGISTERING && r.state != STATE_JOINING {
@@ -433,7 +485,9 @@ impl ClientCore {
                     c.execute("DELETE FROM app_groups WHERE group_id=?1", [id.as_slice()])?;
                 }
                 Ok(())
-            })
+            })?;
+            if let Some(intent) = intent { super::bot_intents::resolve(u, intent)?; }
+            Ok(())
         })
     }
 
@@ -470,6 +524,23 @@ impl ClientCore {
         info_body: &[u8],
         tree_body: &[u8],
         kind: GroupKind,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.group_join_kind_with_intent(
+            id, community, channel, policy, info_body, tree_body, kind, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn group_join_kind_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+        policy: u64,
+        info_body: &[u8],
+        tree_body: &[u8],
+        kind: GroupKind,
+        intent: Option<super::bot_intents::IntentWrite>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let info = wire::decode_info_body(info_body)?;
@@ -548,6 +619,10 @@ impl ClientCore {
             let joined = checked("epoch", g.epoch())?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
+            let mut result = Encoder::new();
+            result.array(2).bytes(&commit).bytes(&exported);
+            let result = result.into_vec();
+            if intent.is_some() { super::bot_intents::check_result_size(&result)?; }
             in_unit(u, |c| {
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
@@ -568,17 +643,32 @@ impl ClientCore {
                         params![id.as_slice(), community.map(|c| c.as_slice()), channel.as_slice(), joined, row_kind(kind)],
                     )?;
                 }
+                if let Some(intent) = intent {
+                    super::bot_intents::persist(c, intent, id, &result)?;
+                }
                 Ok(())
             })?;
-            Ok::<_, ClientError>((g, commit, exported))
+            Ok::<_, ClientError>((g, result))
         })?;
         self.keep_group(*id, result.0);
-        let mut e = Encoder::new();
-        e.array(2).bytes(&result.1).bytes(&result.2);
-        Ok(e.into_vec())
+        Ok(result.1)
     }
 
     pub fn group_joined(&mut self, id: &[u8; 16], seq: u64) -> Result<(), ClientError> {
+        self.group_joined_with_intent(id, seq, None)
+    }
+
+    pub(super) fn group_joined_with_intent(
+        &mut self,
+        id: &[u8; 16],
+        seq: u64,
+        intent: Option<super::bot_intents::Resolution>,
+    ) -> Result<(), ClientError> {
+        if let Some(intent) = intent
+            && super::bot_intents::already_resolved(self, intent)?
+        {
+            return Ok(());
+        }
         self.own()?;
         let seq = checked("seq", seq)?;
         if seq < 1 || seq == i64::MAX {
@@ -607,7 +697,11 @@ impl ClientCore {
                     params![id.as_slice(), seq + 1, held],
                 )?;
                 Ok(())
-            })
+            })?;
+            if let Some(intent) = intent {
+                super::bot_intents::resolve(u, intent)?;
+            }
+            Ok(())
         })
     }
 

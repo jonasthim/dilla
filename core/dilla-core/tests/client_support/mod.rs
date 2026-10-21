@@ -1102,9 +1102,39 @@ pub fn ingest_add_candidate_in(
     group_id: &[u8; 16],
 ) {
     let proposals = relay.proposals_body();
+    ingest_add_candidate_body(receiver, &proposals, sender, group_id);
+}
+
+/// Ingest the authentic signed list for one distinct Add without repeatedly validating every
+/// other queued candidate in the test's large Welcome fixture.
+pub fn ingest_add_candidate_proposal(
+    receiver: &mut Core,
+    relay: &Relay,
+    proposal_index: usize,
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
+    let proposal = relay.proposals.get(proposal_index).expect("proposal index");
+    let mut e = Encoder::new();
+    e.array(1)
+        .array(5)
+        .bytes(&proposal.reference)
+        .uint(proposal.kind)
+        .opt_uint(proposal.target_leaf)
+        .bytes(&proposal.blob)
+        .uint(0);
+    ingest_add_candidate_body(receiver, &e.into_vec(), sender, group_id);
+}
+
+fn ingest_add_candidate_body(
+    receiver: &mut Core,
+    proposals: &[u8],
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
     let candidates = receiver
         .core
-        .proposed_adds(group_id, &proposals)
+        .proposed_adds(group_id, proposals)
         .expect("candidates");
     let index = decode_strict(&candidates, |d| {
         let n = d.array_len()?;
@@ -1145,7 +1175,7 @@ pub fn ingest_add_candidate_in(
         .core
         .device_list_ingest_add(
             group_id,
-            &proposals,
+            proposals,
             index,
             &sender.user,
             &history.into_vec(),
