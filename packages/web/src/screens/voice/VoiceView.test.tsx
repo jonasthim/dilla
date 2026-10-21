@@ -43,51 +43,6 @@ describe('voice in the shell', () => {
     expect(screen.queryByRole('region', { name: t('voice.afk.title') })).toBeNull();
   });
 
-  it('in the AFK call every tile and row shows the muted glyph, the stage says so, and mic, camera and share are disabled', async () => {
-    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
-      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
-    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
-    await main().findByRole('toolbar', { name: 'voice channel controls' });
-    expect(document.querySelector('.d-call-stage__outgoing')).toHaveTextContent(t('afk.stage.muted', { channel: 'music' }));
-    for (const name of ['mute', 'camera', 'share screen']) {
-      const control = main().getByRole('button', { name });
-      expect(control).toHaveAttribute('aria-disabled', 'true');
-      expect(control).toHaveAccessibleDescription(new RegExp(t('afk.stage.muted', { channel: 'music' })));
-      expect(control).not.toHaveAccessibleDescription(new RegExp(t('voice.why.paused')));
-    }
-    expect(main().getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
-    for (const tile of document.querySelectorAll('.dw-voice-stage .d-call-tile')) {
-      expect(within(tile as HTMLElement).getByRole('img', { name: 'muted' })).toBeInTheDocument();
-    }
-    expect(document.querySelectorAll('.dw-voice-stage .d-call-tile').length).toBeGreaterThan(0);
-    // The sidebar row of the AFK channel lists its people muted too.
-    const people = [...document.querySelectorAll('.d-voice-row__person')];
-    expect(people.length).toBeGreaterThan(0);
-    for (const person of people) expect(person.querySelector('[data-state="muted"]')).not.toBeNull();
-  });
-
-  it('final review I-2: in the AFK call the dock\u2019s camera and share are disabled with the stage\u2019s AFK reason', async () => {
-    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
-      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
-    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
-    const dock = within(await screen.findByRole('toolbar', { name: t('voice.dock.region') }));
-    for (const name of ['camera', 'share screen']) {
-      const control = dock.getByRole('button', { name });
-      expect(control).toHaveAttribute('aria-disabled', 'true');
-      expect(control).toHaveAccessibleDescription(t('afk.stage.muted', { channel: 'music' }));
-      await app.user.click(control);
-    }
-    expect(app.session.setCamera).not.toHaveBeenCalled();
-    expect(dock.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
-  });
-
   it('final review I-2 control: in an ordinary call the dock\u2019s camera is live', async () => {
     await inVoice();
     const dock = within(screen.getByRole('toolbar', { name: t('voice.dock.region') }));
@@ -641,73 +596,53 @@ describe('review round 1', () => {
   });
 });
 
-describe('web3.9 WEB-AFK: the AFK channel in the shell', () => {
-  const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, ...over });
-  it('the AFK row is a plain voice row: not held, with the voice glyph and a join; no move or leave command exists', async () => {
-    const app = renderVoiceShell({ voice: { [MUSIC]: { callId: MUSIC, participants: [
-      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
+describe('AW5: the AFK channel in the shell never hosts a call', () => {
+  const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [], ...over });
+  const order = (app: ReturnType<typeof renderVoiceShell>) => app.client.calls.map(c => c.m).filter(m => m === 'callLeave' || m === 'afkAway' || m === 'callJoin');
+  it('the AFK row is a plain voice row; its join starts no call and marks the person away', async () => {
+    const app = renderVoiceShell();
     app.client.publish(`afk:${A}`, afkSlice());
     const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
     expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
-    expect(within(row).getByRole('button', { name: /join/i })).toBeInTheDocument();
     await app.user.click(within(row).getByRole('button', { name: /join/i }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+    await waitFor(() => expect(app.client.callsOf('afkAway')).toEqual([{ m: 'afkAway', communityId: A }]));
+    expect(app.module.startPageCall).not.toHaveBeenCalled();
+    expect(order(app)).toEqual(['afkAway']);
   });
 
-  it('while in an ordinary call, the open AFK channel offers a join and no move or leave control', async () => {
+  it('in an ordinary call, the AFK stage’s join leaves the call first, then marks the person away, and the dock goes', async () => {
     const app = await inVoice();
     app.client.publish(`afk:${A}`, afkSlice());
     go(`/c/${A}/${MUSIC}`);
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
-    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: /move to afk|leave afk/i })).toBeNull();
-  });
-
-  it('Shell hands the slice’s seq to useCall: a second sweep’s read (a higher seq, no false read between) moves again', async () => {
-    const app = renderVoiceShell();
-    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
-    // The person leaves the AFK call and joins general; later the sweep cuts that call and its read lands seq 4.
-    await app.user.click(await screen.findByRole('button', { name: 'leave' }));
-    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
+    expect(await screen.findByRole('toolbar', { name: t('voice.dock.region') })).toBeInTheDocument();
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
-    await waitFor(() => expect(app.sessions).toHaveLength(2));
-    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-    const real = Date.now.bind(Date);
-    vi.spyOn(Date, 'now').mockImplementation(() => real() + 120_000);
-    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
-    await waitFor(() => expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2));
-    vi.restoreAllMocks();
+    await waitFor(() => expect(app.client.callsOf('afkAway')).toHaveLength(1));
+    expect(app.session.leave).toHaveBeenCalledWith('user');
+    expect(order(app).slice(-2)).toEqual(['callLeave', 'afkAway']);
+    expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('toolbar', { name: t('voice.dock.region') })).toBeNull();
+    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
   });
 
-  it('a pending move joins the AFK channel once, and a republished read of it does not join again', async () => {
+  it('a read that says pending joins nothing', async () => {
     const app = renderVoiceShell();
-    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
     app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
     await new Promise(r => setTimeout(r, 200));
-    expect(app.log.filter(l => l === `callJoin:${MUSIC}`)).toHaveLength(1);
-    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
+    expect(app.module.startPageCall).not.toHaveBeenCalled();
+    expect(app.client.callsOf('callJoin')).toEqual([]);
   });
 
-  it('a failed move shows afk.moved with a join button that joins the AFK channel', async () => {
-    const app = renderVoiceShell();
-    let fail = true;
-    const base = app.client.handler;
-    app.client.handler = command => command.m === 'callJoin' && command.channelId === MUSIC && fail
-      ? Promise.reject(Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN' })) : base(command);
-    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
-    const line = await screen.findByText(t('afk.moved', { channel: 'music' }));
-    const banner = line.closest('.d-banner') as HTMLElement;
-    fail = false;
-    await app.user.click(within(banner).getByRole('button', { name: t('afk.moved.join') }));
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2);
-    await waitFor(() => expect(screen.queryByText(t('afk.moved', { channel: 'music' }), { selector: '.d-banner *' })).toBeNull());
+  it('the sweep’s cut says afk.moved on the stage and starts no call', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 2 }));
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
+    expect(await main().findByText(t('afk.moved', { channel: 'music' }))).toBeInTheDocument();
+    expect(main().queryByText(t('voice.removed'))).toBeNull();
+    await new Promise(r => setTimeout(r, 200));
+    expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
+    expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toEqual([]);
+    expect(document.querySelector('.d-banner')).toBeNull();
   });
 });
 

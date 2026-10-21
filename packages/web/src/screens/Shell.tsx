@@ -206,19 +206,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const members = useSlice(`members:${communityId ?? ''}`);
   const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
-  // web3.9: the AFK channel is an ordinary voice channel. Every listed server's built-in one is listen-only (R3); the
-  // sweep's move for this device (R33) is the first server whose slice says pending, with its channel's current name.
+  // AW5: every listed server's built-in AFK channel. Nobody joins a call there (R-AW1): a press on it chooses AFK, which
+  // leaves the current call and marks the person away (useCall); the sweep's cut says so (`afk.moved`) and joins nothing.
   const afkChannelsKey = afkLists.map(a => a?.channelId ?? '').join(',');
   const afkChannels = useMemo<ReadonlySet<string>>(() => new Set(afkChannelsKey.split(',').filter(id => id !== '')), [afkChannelsKey]);
-  const pendingIndex = afkLists.findIndex(a => a != null && a.pending && a.channelId !== null);
-  const pendingList = pendingIndex < 0 ? null : afkLists[pendingIndex];
-  const pendingCommunity = pendingIndex < 0 ? null : communities?.[pendingIndex]?.id ?? null;
-  const pendingChannel = pendingList?.channelId ?? null;
-  const pendingName = pendingChannel === null ? null : (railSlices[pendingIndex] ?? []).find(ch => ch.id === pendingChannel)?.name ?? 'AFK';
-  const pendingSeq = pendingList?.seq ?? 0;
-  const afkPending = useMemo(() => pendingCommunity === null || pendingChannel === null || pendingName === null ? null
-    : { communityId: pendingCommunity, channelId: pendingChannel, name: pendingName, seq: pendingSeq },
-  [pendingCommunity, pendingChannel, pendingName, pendingSeq]);
+  const afkOption = useMemo(() => ({ channels: afkChannels }), [afkChannels]);
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
 
@@ -443,7 +435,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
     stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone, announce,
-    afk: { channels: afkChannels, pending: afkPending } });
+    afk: afkOption });
   // The clock lives on the server. This device reports only real input or microphone speech;
   // listening, another tab and another device do not refresh this call's AFK timer.
   const afkTrackingKey = useRef<string | null>(null);
@@ -1679,8 +1671,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             selected: homeSelected, unread: dmCounts.unread, mentions: dmCounts.mentions, onSelect: () => navigate({ name: 'dms' }) }} />}
         sidebar={sidebar}
         bottom={phone || self === null ? undefined : <>
-          {call.afkFailed !== null ? <Banner tone="info" action={{ label: t('afk.moved.join'), onAction: () => call.join(call.afkFailed!.channelId) }}>
-            {t('afk.moved', { channel: call.afkFailed.name })}</Banner> : null}
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
             server={dockServer} onStatus={() => navigate({ name: 'settings', section: 'diagnostics', from: null })}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
