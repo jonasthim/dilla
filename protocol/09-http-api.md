@@ -106,13 +106,16 @@ the list `PUT` that names it. The three `/v1/devices` routes spend the device se
 and write (`POST`, `DELETE`) buckets.
 
 `PATCH /v1/accounts/me` writes the profile (EOD E6; schema 22, migration `00022_profile`). `display`
-is at most 64 characters, `status_msg` at most 190 and one line, `bio` at most 500 with line breaks;
-all three are NFC-normalised, counted in characters, and refuse a control or bidi character (a
-bio keeps `\n`, and `\r\n` becomes `\n`). The server stores them **readable**, like the display
-name: they are not end-to-end encrypted, and anyone who shares a community with the account reads
-them. The account has no avatar. `GET /v1/accounts/me` and each row of the member list answer
-`status_msg` and `bio` as the last two elements (`""` when unset). A client written for the
-seven-element `me` row or the seven-element member row reads the extra elements as absent.
+is at most 64 characters, `status_msg` at most 190 and one line, `bio` at most 500 with line breaks. Each is
+NFC-normalised and counted in characters. `status_msg` and `bio` are also trimmed, and whitespace only is refused. All three
+refuse a control character (a bio keeps `\n`, and `\r\n` becomes `\n`), the bidi controls (U+200E, U+200F, U+202A to U+202E,
+U+2066 to U+2069), U+061C, the zero-width characters (U+200B, U+200C, U+2060, U+FEFF; U+200D only joining two emoji) and
+U+2028 and U+2029. Each given field is checked before anything is written, and one `UPDATE` writes only the fields given, so
+two devices that change different fields do not lose each other's edit. The route spends the device session's write bucket
+like the presence writes. The server stores the text **readable**, like the display
+name: it is not end-to-end encrypted, and anyone who shares a community with the account reads it. The account has no
+avatar. `GET /v1/accounts/me` and each row of the member list answer `status_msg` and `bio` as the last two elements (`""`
+when unset). A client written for the seven-element `me` row or the seven-element member row reads the extra elements as absent.
 
 One row above describes more than any released instance does. It is recorded here so a client
 plans against what an instance answers, not against what the table would otherwise promise:

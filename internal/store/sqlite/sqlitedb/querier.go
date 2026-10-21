@@ -411,6 +411,7 @@ type Querier interface {
 	// number clients already hold. Zero rows is either an unknown community or a
 	// lost race; the adapter tells the two apart.
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
+	// A NULL argument leaves that column as it is, so a write names only the fields it changes.
 	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error

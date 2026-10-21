@@ -293,8 +293,8 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 }
 
 // UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
-func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio string) error {
-	n, err := r.w.UpdateProfile(ctx, pgdb.UpdateProfileParams{Display: display, StatusMsg: statusMsg, Bio: bio, ID: userID})
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+	n, err := r.w.UpdateProfile(ctx, pgdb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
 	if err != nil {
 		return wrap(err)
 	}
@@ -351,6 +351,14 @@ func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int6
 }
 
 // boolInt is a 0/1 flag column's value.
+// nullString is a nullable text argument: nil is SQL NULL.
+func nullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
 func boolInt(b bool) int64 {
 	if b {
 		return 1

@@ -286,16 +286,19 @@ func (q *Queries) TombstoneUser(ctx context.Context, arg TombstoneUserParams) er
 }
 
 const updateProfile = `-- name: UpdateProfile :execrows
-UPDATE users SET display = ?, status_msg = ?, bio = ? WHERE id = ? AND deleted_at IS NULL
+UPDATE users SET display = COALESCE(?1, display), status_msg = COALESCE(?2, status_msg),
+                 bio = COALESCE(?3, bio)
+WHERE id = ?4 AND deleted_at IS NULL
 `
 
 type UpdateProfileParams struct {
-	Display   string
-	StatusMsg string
-	Bio       string
+	Display   sql.NullString
+	StatusMsg sql.NullString
+	Bio       sql.NullString
 	ID        id.ID
 }
 
+// A NULL argument leaves that column as it is, so a write names only the fields it changes.
 func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateProfile,
 		arg.Display,

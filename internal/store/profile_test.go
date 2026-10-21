@@ -21,7 +21,7 @@ func TestUpdateProfileRoundTrips(t *testing.T) {
 			if err != nil || fresh.StatusMsg != "" || fresh.Bio != "" {
 				t.Fatalf("a new account has status %q and bio %q, want both empty (%v)", fresh.StatusMsg, fresh.Bio, err)
 			}
-			if err := repo.UpdateProfile(ctx, user.ID, "Ada L", "on a call", "line one\nline two"); err != nil {
+			if err := repo.UpdateProfile(ctx, user.ID, sp("Ada L"), sp("on a call"), sp("line one\nline two")); err != nil {
 				t.Fatalf("UpdateProfile: %v", err)
 			}
 			got, err := repo.GetUser(ctx, user.ID)
@@ -31,7 +31,7 @@ func TestUpdateProfileRoundTrips(t *testing.T) {
 			if got.Username != fresh.Username {
 				t.Fatalf("the username changed: %q", got.Username)
 			}
-			if err := repo.UpdateProfile(ctx, id.New(), "x", "", ""); !errors.Is(err, store.ErrNotFound) {
+			if err := repo.UpdateProfile(ctx, id.New(), sp("x"), nil, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("UpdateProfile of an unknown user = %v, want ErrNotFound", err)
 			}
 			if err := repo.TombstoneUser(ctx, user.ID, 5); err != nil {
@@ -52,14 +52,50 @@ func TestProfileColumnsBoundTheirLength(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			user := seedUser(ctx, t, repo)
-			if err := repo.UpdateProfile(ctx, user.ID, "d", strings.Repeat("ä", 190), strings.Repeat("ö", 500)); err != nil {
+			if err := repo.UpdateProfile(ctx, user.ID, sp("d"), sp(strings.Repeat("ä", 190)), sp(strings.Repeat("ö", 500))); err != nil {
 				t.Fatalf("the maximum lengths are refused: %v", err)
 			}
-			if err := repo.UpdateProfile(ctx, user.ID, "d", strings.Repeat("a", 191), ""); err == nil {
+			if err := repo.UpdateProfile(ctx, user.ID, sp("d"), sp(strings.Repeat("a", 191)), nil); err == nil {
 				t.Fatal("a 191-character status message was stored")
 			}
-			if err := repo.UpdateProfile(ctx, user.ID, "d", "", strings.Repeat("a", 501)); err == nil {
+			if err := repo.UpdateProfile(ctx, user.ID, sp("d"), nil, sp(strings.Repeat("a", 501))); err == nil {
 				t.Fatal("a 501-character bio was stored")
+			}
+		})
+	}
+}
+
+func sp(s string) *string { return &s }
+
+// A nil field is left as it is, in the same statement: two devices that each change one field never
+// overwrite the other's, and "" clears a field.
+func TestUpdateProfileWritesOnlyTheFieldsGiven(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			user := seedUser(ctx, t, repo)
+			if err := repo.UpdateProfile(ctx, user.ID, sp("Ada"), sp("status"), sp("bio")); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.UpdateProfile(ctx, user.ID, nil, sp("new status"), nil); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := repo.GetUser(ctx, user.ID)
+			if got.Display != "Ada" || got.StatusMsg != "new status" || got.Bio != "bio" {
+				t.Fatalf("after changing only the status: %+v", got)
+			}
+			if err := repo.UpdateProfile(ctx, user.ID, nil, nil, sp("")); err != nil {
+				t.Fatal(err)
+			}
+			got, _ = repo.GetUser(ctx, user.ID)
+			if got.Bio != "" || got.StatusMsg != "new status" {
+				t.Fatalf("after clearing only the bio: %+v", got)
+			}
+			if err := repo.UpdateProfile(ctx, user.ID, nil, nil, nil); err != nil {
+				t.Fatalf("nothing to write: %v", err)
+			}
+			if err := repo.UpdateProfile(ctx, id.New(), nil, nil, nil); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("an unknown user with nothing to write = %v, want ErrNotFound", err)
 			}
 		})
 	}

@@ -24,7 +24,7 @@ var (
 	ErrHandleSyntax   = errors.New("auth: a handle is lowercase a-z, 0-9, dot, underscore or dash, and does not start or end with a dot")
 	ErrHandleUnicode  = errors.New("auth: v1 handles are ASCII only")
 	ErrDisplayLength  = errors.New("auth: a display name is at most 64 characters")
-	ErrDisplayControl = errors.New("auth: a display name may not contain a bidi control character")
+	ErrDisplayControl = errors.New("auth: a display name may not contain a control, bidi or invisible character")
 )
 
 // NormalizeHandle canonicalises a handle: PRECIS UsernameCaseMapped (RFC 8265 —
@@ -88,15 +88,8 @@ func NormalizeDisplay(s string) (string, error) {
 	if utf8.RuneCountInString(out) > displayMax {
 		return "", ErrDisplayLength
 	}
-	for _, r := range out {
-		switch r {
-		case '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-			'\u2066', '\u2067', '\u2068', '\u2069', '\u200e', '\u200f':
-			return "", ErrDisplayControl
-		}
-		if unicode.IsControl(r) {
-			return "", ErrDisplayControl
-		}
+	if !textCharsOK(out, false) {
+		return "", ErrDisplayControl
 	}
 	return out, nil
 }

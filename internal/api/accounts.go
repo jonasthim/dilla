@@ -288,57 +288,44 @@ func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	var err error
-	if req.Display != nil {
-		var v string
-		if v, err = auth.NormalizeDisplay(*req.Display); err != nil {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "display: %v", err))
-			return
-		}
-		req.Display = &v
-	}
-	if req.StatusMsg != nil {
-		var v string
-		if v, err = auth.NormalizeStatus(*req.StatusMsg); err != nil {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "status_msg: %v", err))
-			return
-		}
-		req.StatusMsg = &v
-	}
-	if req.Bio != nil {
-		var v string
-		if v, err = auth.NormalizeBio(*req.Bio); err != nil {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "bio: %v", err))
-			return
-		}
-		req.Bio = &v
-	}
-	if req.Display == nil && req.StatusMsg == nil && req.Bio == nil {
-		d.noContent(w, r)
+	display, err := normalizeProfileField("display", req.Display, func(v string) (string, error) { return auth.NormalizeDisplay(v) })
+	if err != nil {
+		server.WriteError(w, err)
 		return
 	}
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
-		u, err := tx.GetUser(r.Context(), sess.UserID)
-		if err != nil {
-			return err
-		}
-		display, status, bio := u.Display, u.StatusMsg, u.Bio
-		if req.Display != nil {
-			display = *req.Display
-		}
-		if req.StatusMsg != nil {
-			status = *req.StatusMsg
-		}
-		if req.Bio != nil {
-			bio = *req.Bio
-		}
-		return tx.UpdateProfile(r.Context(), sess.UserID, display, status, bio)
+	status, err := normalizeProfileField("status_msg", req.StatusMsg, func(v string) (string, error) {
+		return auth.NormalizeUserText(v, auth.StatusMaxRunes, false)
 	})
 	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	bio, err := normalizeProfileField("bio", req.Bio, func(v string) (string, error) {
+		return auth.NormalizeUserText(v, auth.BioMaxRunes, true)
+	})
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// One UPDATE that names only the given fields, so two devices changing different fields never
+	// overwrite each other (a null leaves the column as it is).
+	if err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	d.noContent(w, r)
+}
+
+// normalizeProfileField validates one optional profile field; a nil field stays nil.
+func normalizeProfileField(name string, v *string, normalize func(string) (string, error)) (*string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	out, err := normalize(*v)
+	if err != nil {
+		return nil, server.Errorf(server.CodeInvalidRequest, "%s: %v", name, err)
+	}
+	return &out, nil
 }
 
 // DeleteMe tombstones the account: the row keeps its username so it can never
