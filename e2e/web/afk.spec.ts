@@ -23,7 +23,7 @@
 //   click does nothing, and a message in that server takes them off it (Q1);
 // - a phone is never cut (its desktop twin, idle beside it in the same call, is, and is not listed away: R-AW3);
 // - a member whose roles leave out view_channel community-wide still sees AFK and a click lists him away there;
-// - his last connection closing takes him off the roster at once (Q2), and coming back joins nothing;
+// - his last connection closing takes him off the roster once a 30 s grace ends (Q2, revised), and coming back joins nothing;
 // - a web3.8 server whose administrator picked an AFK gets a new one, and the old one becomes ordinary.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -659,12 +659,21 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
   await expect(voiceRow(b.page, 'general')).toBeVisible({ timeout: WAIT });
 });
 
-test('8. Q2: his last connection closing takes Björn off the roster at once; back, nothing joins', async () => {
+test('8. Q2 (revised, AW2 final): his last connection closing keeps Björn away through the 30 s grace, then takes him off the roster; back, nothing joins', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   const posts = b.afkPosts;
   await b.page.goto('about:blank');
+  // A reload or a short drop keeps him away: the grace (afkOfflineGrace, 30 s) runs on the host's clock, which stands still
+  // here, so he stays listed while the close lands.
+  await a.page.waitForTimeout(3_000);
+  await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND }), 'still away inside the 30 s grace').toHaveCount(1);
+  await advanceClock(20);
+  await a.page.waitForTimeout(1_000);
+  await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND }), 'still away 20 s into the grace').toHaveCount(1);
+  // Once the grace ends with no connection, the roster drops him.
+  await advanceClock(11);
   await expect(awayPeople(a.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
   await b.page.goto(`/c/${communityId}`);
   await expect(railItem(b.page, SERVER)).toBeVisible({ timeout: WAIT });
