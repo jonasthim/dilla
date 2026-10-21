@@ -91,7 +91,7 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
                 { id: 'harbour', name: 'harbour', kind: 'voice' as const, readable: false },
                 { id: 'build', name: 'build', kind: 'text' as const, readable: false },
                 { id: 'workshop', name: 'workshop', kind: 'voice' as const, readable: false }]}
-            voice={tab === 'dms' ? undefined : { labels: { ...ROW_LABELS, join: t('voice.join') }, onJoin: noop, rooms: {
+            voice={tab === 'dms' ? undefined : { labels: { ...ROW_LABELS, join: t('voice.join'), joined: t('voice.row.joined') }, onJoin: noop, rooms: {
               harbour: { joined: p.joined === true, participants: [ADA, BO, HELPER] }, workshop: { joined: false, participants: [] } } }}
             activeId={tab === 'dms' ? 'bob' : 'harbour'} onSelect={noop} emptyLabel={t('shell.channels.empty')}
             footer={tab === 'channels' ? undefined : <Button variant="ghost">{t('shell.dms.new')}</Button>} />

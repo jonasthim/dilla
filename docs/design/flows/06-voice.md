@@ -275,6 +275,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 *Sidebar, rows and dock:*
 - `voice.heading.active='active voice'`, `voice.heading.channels='voice'` (unused since web3.8)
 - `voice.open='voice {name}'`, `voice.count='{n} in voice'`, `voice.join='join voice'`
+- `voice.row.joined='connected'` (added to the accessible name of the voice row this device is in: "voice harbour, connected")
 - `call.start='call'`, `call.join='join call'`
 - `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.connected='in {where}'`, `voice.dock.reconnecting='reconnecting'`
 - `voice.dock.ptt='hold {key} to talk'`, `voice.dock.pttNoKey='push to talk: no key set'`, `voice.dock.pttSetKey='set a key'` (the dock's line while push to talk is in force, on its own line under the meter; `{key}` is the stored key as Settings shows it; `set a key` opens Settings → voice; added 2026-10-14, product walk M7, replacing `settings.voice.ptt` there)

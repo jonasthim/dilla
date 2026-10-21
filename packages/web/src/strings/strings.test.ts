@@ -115,6 +115,9 @@ describe('flow 06 (L-COPY-05)', () => {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
   });
+  it('names the joined voice row for assistive technology (MP6)', () => {
+    expect(en['voice.row.joined']).toBe('connected');
+  });
   it('fills each placeholder the flow names and keeps chrome lower case', () => {
     expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
     for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',

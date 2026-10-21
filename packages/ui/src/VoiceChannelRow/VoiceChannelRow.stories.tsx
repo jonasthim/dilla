@@ -77,7 +77,7 @@ const meta = {
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
+      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',

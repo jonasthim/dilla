@@ -18,9 +18,9 @@ export interface VoiceChannelRowProps {
   readable?: boolean;
   /**
    * `open` is `voice.open` ('voice {name}'), `count` is `voice.count` ('{n} in voice'), both filled here;
-   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button.
+   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the name of the row this device is in.
    */
-  labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string };
+  labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string; joined: string };
   /** Opens the voice in the main pane (the row's own click). */
   onOpen(): void;
   /** The trailing join icon; without it, or when `joined`, the row has none. Its own click never opens the row (Shell decides, R24). */
@@ -64,7 +64,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
   const n = participants.length;
   return (
     <>
-      <button type="button" className="d-voice-row" data-row aria-label={labels.open.replaceAll('{name}', name)}
+      <button type="button" className="d-voice-row" data-row aria-label={`${labels.open.replaceAll('{name}', name)}${joined ? `, ${labels.joined}` : ''}`}
         aria-describedby={n > 0 ? countId : undefined} aria-current={current ? 'page' : undefined}
         data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} onClick={() => onOpen()}>
         <span className="d-voice-row__glyph" aria-hidden="true"><Icon name="volume-2" size={14} /></span>

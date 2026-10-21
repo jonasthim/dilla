@@ -458,6 +458,7 @@ export const en = {
   'voice.open': 'voice {name}',
   'voice.count': '{n} in voice',
   'voice.join': 'join voice',
+  'voice.row.joined': 'connected',
   'voice.afk.title': 'AFK channel',
   'voice.afk.loading': 'Loading voice channels…',
   'voice.afk.silent': 'This channel is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return.',

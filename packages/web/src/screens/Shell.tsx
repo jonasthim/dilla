@@ -1066,7 +1066,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         titleKind={onDms ? 'plain' : 'server'}
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
-        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
+        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,
           onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => {
