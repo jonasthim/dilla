@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
 import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
+const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
@@ -46,8 +47,8 @@ test('the CI checker rejects a movable GitHub action tag', () => {
 
 test('the CI checker rejects a flow-style action step', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(
-    '      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n',
-    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n' + '      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n',
+    NPM_TEST,
+    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n' + NPM_TEST,
   )));
   assert.ok(problems.some((problem) => problem.includes('flow-style action')), problems.join('\n'));
 });
@@ -78,10 +79,10 @@ jobs:
   node:
     runs-on: ubuntu-latest
     steps:
-      - if: needs.changes.outputs.web == 'true'
+      - if: needs.changes.outputs.web != 'false'
         run: npm test
       - name: vectors are up to date
-        if: needs.changes.outputs.web == 'true'
+        if: needs.changes.outputs.web != 'false'
         run: npm run vectors
       - run: npm run test:css-check
       - run: npm run check:css
@@ -118,11 +119,11 @@ jobs:
   rust-native:
     runs-on: ubuntu-latest
     steps:
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -534,6 +535,19 @@ const CHANGES_JOB = `  changes:
       - run: npm run test:brief-check
       - run: npm run test:copy-check
       - run: npm run check:docs
+      - run: npm run check:brief
+      - run: npm run check:copy
+      - run: npm run check:ci
+`;
+
+const CI_OK_JOB = (jobs) => `  ci-ok:
+    needs: [${jobs.join(', ')}]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo ok
 `;
 
 function withChanges(text) {
@@ -551,7 +565,8 @@ function withChanges(text) {
     }
     out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
   }
-  return out.join('\n');
+  const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
+  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
 }
 
 const GOOD = withChanges(withWasmClang(GOOD_BASE));
@@ -610,7 +625,7 @@ test('continue-on-error is reported', () => {
 });
 
 test('if: always() is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n', '      - if: always()\n        run: npm test\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace(NPM_TEST, '      - if: always()\n        run: npm test\n')));
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
@@ -619,13 +634,13 @@ test('if: always() is reported', () => {
 // catch it too.
 test('if: ${{ always() }} is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - if: needs.changes.outputs.web == \'true\'\n        run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
+    fixture(GOOD.replace(NPM_TEST, '      - if: ${{ always() }}\n        run: npm test\n')),
   );
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
 test('a job that lost a required step is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("      - if: needs.changes.outputs.core == 'true'\n        run: cargo fmt --all --check\n", '')));
+  const problems = checkWorkflow(fixture(GOOD.replace("      - if: needs.changes.outputs.core != 'false'\n        run: cargo fmt --all --check\n", '')));
   assert.ok(problems.some((p) => p.includes('cargo fmt')), problems.join('\n'));
 });
 
@@ -982,11 +997,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES')),
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES')), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -1394,8 +1409,8 @@ test('a go-release job that builds before it fetches the web client is reported'
 
 test('an image job that checks for the placeholder only after the build is reported', () => {
   assert.ok(GOOD.includes(PLACEHOLDER_GUARD_IMAGE), 'fixture sanity: the image guard');
-  // image is the last job of GOOD, so appending puts the guard after docker/build-push-action.
-  const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '') + PLACEHOLDER_GUARD_IMAGE));
+  // image is the last job of GOOD but ci-ok, so appending to it puts the guard after docker/build-push-action.
+  const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '').replace('  ci-ok:', () => `${PLACEHOLDER_GUARD_IMAGE}  ci-ok:`)));
   assert.ok(problems.some((p) => p.includes('"image"') && p.includes('before it builds')), problems.join('\n'));
 });
 
@@ -1846,7 +1861,7 @@ test('the CLI checks release.yml too', () => {
 });
 
 test('a job that lost its change gate is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 25\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 25\n')));
   assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
 });
 
@@ -1856,7 +1871,7 @@ test('a job that does not need changes is reported', () => {
 });
 
 test('the docs job may not be gated: it is the one that runs for a docs-only change', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('  docs:\n', "  docs:\n    needs: [changes]\n    if: needs.changes.outputs.code == 'true'\n")));
+  const problems = checkWorkflow(fixture(GOOD.replace('  docs:\n', "  docs:\n    needs: [changes]\n    if: needs.changes.outputs.code != 'false'\n")));
   assert.ok(problems.some((p) => p.includes('"docs" must run for every change')), problems.join('\n'));
 });
 
@@ -1867,6 +1882,44 @@ test('a job added without a gate is reported', () => {
 
 test('a gate that can run while a needed job is skipped is reported', () => {
   // go-release (go or web) needs web-build (e2e): fine. Narrow web-build to core and a UI change would skip go-release's dependency.
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  web-build:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core == 'true'\n")));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  web-build:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core != 'false'\n")));
   assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
+});
+
+test('the real ci-ok job needs every other job', () => {
+  const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
+  const needs = /needs: \[([^\]]*)\]/.exec(body)[1].split(',').map((s) => s.trim());
+  const jobs = [...REAL_CI.slice(REAL_CI.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => job !== 'ci-ok');
+  assert.deepEqual(needs.sort(), jobs.sort());
+});
+
+test('a ci-ok job that forgot a job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[)changes, /, '$1')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"changes"')), problems.join('\n'));
+});
+
+test('a ci-ok job without the failure check, or without always(), is reported', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("contains(needs.*.result, 'cancelled')", 'false')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('cancelled')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace('    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - if: contains', '    runs-on: ubuntu-latest\n    steps:\n      - if: contains')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('always()')), problems.join('\n'));
+});
+
+test('if: always() stays forbidden in every job but ci-ok, and in ci-ok steps', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("  deny:\n    needs: [changes]\n    if: needs.changes.outputs.core != 'false'\n", '  deny:\n    needs: [changes]\n    if: always()\n')));
+  assert.ok(problems.some((p) => p.includes('if: always()') && p.includes('R22')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace('      - run: echo ok\n', '      - if: always()\n        run: echo ok\n')));
+  assert.ok(problems.some((p) => p.includes('if: always()') && p.includes('R22')), problems.join('\n'));
+});
+
+test('a gate that tests == true instead of != false is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace("needs.changes.outputs.go != 'false'", "needs.changes.outputs.go == 'true'")));
+  assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
+});
+
+test('the docs job must run the real checks, not only their unit tests', () => {
+  for (const step of ['check:brief', 'check:copy', 'check:docs', 'check:ci']) {
+    const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
+    assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
+  }
 });

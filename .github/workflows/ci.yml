@@ -31,7 +31,8 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-  # The cheap docs gates: they run for every change, docs-only included.
+  # The cheap docs gates, their unit tests and the real checks against the real files: they run for every change,
+  # docs-only included.
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -45,10 +46,15 @@ jobs:
       - run: npm run test:brief-check
       - run: npm run test:copy-check
       - run: npm run check:docs
+      - run: npm run check:brief
+      - run: npm run check:copy
+      # The workflow checker against the real tree; it reads the Go tests for the race and Postgres rules, so it
+      # must run whatever the change was.
+      - run: npm run check:ci
   # Heavy node gates. Any code change runs the script gates; `npm test` and the vectors check need the web or core areas.
   node:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,17 +69,17 @@ jobs:
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
-      - if: needs.changes.outputs.web == 'true'
+      - if: needs.changes.outputs.web != 'false'
         run: npm test
       - name: vectors are up to date
-        if: needs.changes.outputs.web == 'true'
+        if: needs.changes.outputs.web != 'false'
         run: |
           [ ! -d packages ] || npm run vectors --workspaces --if-present
           git diff --exit-code -- protocol/vectors
           test -z "$(git status --porcelain -- protocol/vectors)"
   ui:
     needs: [changes]
-    if: needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.web != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -132,7 +138,7 @@ jobs:
           if-no-files-found: error
   rust-wasm-node:
     needs: [changes]
-    if: needs.changes.outputs.core == 'true'
+    if: needs.changes.outputs.web != 'false'
     runs-on: ubuntu-24.04
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
@@ -192,7 +198,7 @@ jobs:
 
   rust-native:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -206,11 +212,11 @@ jobs:
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       # The lint and test steps need the core area; the job itself runs for any code, because go-harness and the
       # browser suites download the testkit binary built below.
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - if: needs.changes.outputs.core == 'true'
+      - if: needs.changes.outputs.core != 'false'
         run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -221,7 +227,7 @@ jobs:
 
   rust-wasi:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -242,7 +248,7 @@ jobs:
 
   vectors:
     needs: [changes]
-    if: needs.changes.outputs.core == 'true'
+    if: needs.changes.outputs.core != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -266,7 +272,7 @@ jobs:
 
   browser-spike:
     needs: [changes]
-    if: needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
@@ -318,7 +324,7 @@ jobs:
 
   browser-media:
     needs: [changes, rust-native, rust-wasi]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
     # SP-27's cold container run was unavailable; the controller retains the 25-minute budget.
     timeout-minutes: 25
@@ -398,7 +404,7 @@ jobs:
 
   web-build:
     needs: [changes]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
     # C9: the web client is built once here and handed to chromium-web, firefox-web, webkit-web, go-release and image, so every
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
@@ -472,7 +478,7 @@ jobs:
 
   chromium-web:
     needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
@@ -534,7 +540,7 @@ jobs:
 
   firefox-web:
     needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-latest
     # C18: the core-worker suite and the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
@@ -599,7 +605,7 @@ jobs:
 
   webkit-web:
     needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-latest
     # C18: the web suite (signup and reload) in WebKit, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
@@ -652,7 +658,7 @@ jobs:
 
   deny:
     needs: [changes]
-    if: needs.changes.outputs.core == 'true'
+    if: needs.changes.outputs.core != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -662,7 +668,7 @@ jobs:
 
   go:
     needs: [changes, rust-wasi]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
@@ -704,7 +710,7 @@ jobs:
 
   go-ds:
     needs: [changes, rust-wasi]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
@@ -729,7 +735,7 @@ jobs:
 
   go-api:
     needs: [changes, rust-wasi]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # internal/api under the race detector takes about 620 s on a 4-core machine and ran into a
@@ -753,7 +759,7 @@ jobs:
 
   go-harness:
     needs: [changes, rust-wasi, rust-native]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The scenario harness drives a real instance with the Rust testkit clients:
@@ -788,7 +794,7 @@ jobs:
 
   go-fts5-arm64:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -804,7 +810,7 @@ jobs:
   # waits for web-build: the release binaries embed the real client, never the placeholder (C9).
   go-lint:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -817,7 +823,7 @@ jobs:
 
   go-vuln:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -831,7 +837,7 @@ jobs:
 
   go-sqlc:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -842,7 +848,7 @@ jobs:
 
   go-postgres:
     needs: [changes, rust-wasi]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -885,7 +891,7 @@ jobs:
 
   go-release:
     needs: [changes, web-build]
-    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -921,7 +927,7 @@ jobs:
 
   image:
     needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
     # The wasi core is not built here: dillad loads it from beside its own binary
     # and the Dockerfile copies it in, so the image job fetches rust-wasi's
@@ -955,3 +961,13 @@ jobs:
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Build both architectures and publish only from main
         run: bash scripts/build-ci-image.sh
+  # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
+  # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
+  ci-ok:
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, image]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo ok

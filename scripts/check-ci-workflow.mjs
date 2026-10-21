@@ -12,6 +12,8 @@ export const REQUIRED_JOBS = [
   // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
   'changes',
   'docs',
+  // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
+  'ci-ok',
   'node',
   'ui',
   'rust-native',
@@ -53,7 +55,7 @@ export const REQUIRED_JOBS = [
  * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
  * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
  */
-export const CHANGE_GATE_EXEMPT = ['changes', 'docs'];
+export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -153,7 +155,10 @@ const REQUIRED_STEPS = {
     ...['go', 'core', 'web', 'e2e', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
   ],
   // The cheap docs gates, for every change.
-  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs'],
+  // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
+  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
+  // The only job that may say `if: always()` (checked below): it must run whatever the others did, and fail on a failure or a cancel.
+  'ci-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -163,9 +168,9 @@ const REQUIRED_STEPS = {
     'name: dilla-testkit',
     'if-no-files-found: error',
     // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
-    "if: needs.changes.outputs.core == 'true'\n        run: cargo fmt --all --check",
-    "if: needs.changes.outputs.core == 'true'\n        run: cargo clippy --workspace",
-    "if: needs.changes.outputs.core == 'true'\n        run: cargo test --workspace",
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo fmt --all --check",
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo clippy --workspace",
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo test --workspace",
   ],
   'rust-wasm-node': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',
@@ -202,7 +207,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ["- if: needs.changes.outputs.web == 'true'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web == 'true'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -694,9 +699,14 @@ export function checkWorkflow(root) {
   const text = readFileSync(path, 'utf8');
   const problems = [];
 
+  let currentJob = null;
   text.split('\n').forEach((line, i) => {
     checkActionReference(line, 'ci.yml', i + 1, problems);
+    const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
+      // ci-ok's own job-level `if: always()` is the one allowed escape hatch: a step of it is still held to the rule.
+      if (what === 'if: always()' && currentJob === 'ci-ok' && line === '    if: always()') continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -731,6 +741,13 @@ export function checkWorkflow(root) {
   for (const [name, body] of Object.entries(jobs)) {
     const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
     const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
+    if (name === 'ci-ok') {
+      if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
+      for (const other of Object.keys(jobs)) {
+        if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
+      }
+      continue;
+    }
     if (CHANGE_GATE_EXEMPT.includes(name)) {
       if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`ci.yml: job "${name}" must run for every change: no needs: changes, no job-level if:`);
       continue;

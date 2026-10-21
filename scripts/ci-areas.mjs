@@ -17,17 +17,33 @@ import { fileURLToPath } from 'node:url';
 export const AREAS = ['go', 'core', 'web', 'e2e'];
 
 /**
- * The path table. A pattern with a slash matches the whole path (`**` crosses directories, `*` does not); a pattern
- * without one matches the file name at any depth. `docs` is checked first: a file that matches it never counts as code.
+ * The path tables. A pattern with a slash matches the whole path (`**` crosses directories, `*` does not); a pattern
+ * without one matches the file name at any depth.
+ *
+ * A file that matches DOC_PATTERNS is documentation: it sets no area, except through DOC_RULES, the Markdown that a
+ * test or a build reads (found by scanning the sources for reads, see the guard test in ci-areas.test.mjs). Every
+ * other file takes the union of the areas of all PATH_RULES it matches, and a file that matches none is unknown.
  * `ci` is a pseudo-area that forces every area.
  */
+export const DOC_PATTERNS = ['docs/**', '*.md', 'LICENSE', 'LICENSE-APACHE', 'DCO'];
+export const DOC_RULES = [
+  // packages/web copy.test.ts and strings*.test.ts byte-compare each flow's `## Copy` table with en.ts.
+  { areas: ['web'], patterns: ['docs/design/flows/**'] },
+  // internal/dillad/factor_owed_test.go parses the route tables of 02 and 09; check:docs (the docs job) reads the rest.
+  { areas: ['go'], patterns: ['protocol/*.md'] },
+  // core/vendor/sqlite-wasm-vfs/src/lib.rs: #![doc = include_str!("../README.md")].
+  { areas: ['core'], patterns: ['core/**'] },
+];
 export const PATH_RULES = [
-  { area: 'docs', patterns: ['docs/**', '*.md', 'LICENSE', 'LICENSE-APACHE', 'DCO'] },
-  { area: 'ci', patterns: ['.github/**', 'scripts/**'] },
-  { area: 'go', patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', 'Dockerfile', '.dockerignore', '.golangci.yml'] },
-  { area: 'core', patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
-  { area: 'web', patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
-  { area: 'e2e', patterns: ['e2e/**'] },
+  { areas: ['ci'], patterns: ['.github/**', 'scripts/**'] },
+  { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', 'Dockerfile', '.dockerignore', '.golangci.yml'] },
+  { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
+  { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
+  { areas: ['e2e'], patterns: ['e2e/**'] },
+  // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
+  { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  // packages/media/scripts/check-protocol-schema.mjs compares @livekit/protocol with this Go golden.
+  { areas: ['web'], patterns: ['internal/sfu/testdata/**'] },
 ];
 
 /** What an area drags in with it: the WASI core is used by the Go tests, and the browser suites run the server and the client together. */
@@ -50,10 +66,11 @@ export const JOB_GATES = {
   node: ['code'],
   ui: ['web'],
   'rust-native': ['code'],
-  'rust-wasm-node': ['core'],
+  // Besides the wasm core's tests it runs packages/media's typecheck, wasm tests and the LiveKit schema check.
+  'rust-wasm-node': ['web'],
   'rust-wasi': ['code'],
   vectors: ['core'],
-  'browser-spike': ['web'],
+  'browser-spike': ['e2e'],
   'browser-media': ['e2e'],
   'web-build': ['e2e'],
   'chromium-web': ['e2e'],
@@ -73,31 +90,40 @@ export const JOB_GATES = {
   image: ['go'],
 };
 
-/** The `if:` expression ci.yml must carry for a job. */
+/**
+ * The `if:` expression ci.yml must carry for a job. It tests `!= 'false'`, not `== 'true'`, so an output that is
+ * missing or empty (a renamed step id, say) runs the job instead of silently skipping it.
+ */
 export function gateExpression(job) {
-  return JOB_GATES[job].map((output) => `needs.changes.outputs.${output} == 'true'`).join(' || ');
+  return JOB_GATES[job].map((output) => `needs.changes.outputs.${output} != 'false'`).join(' || ');
 }
 
-/** Whether a job runs for a set of outputs (as areasFor returns them). */
+/** Whether a job runs for a set of outputs (as areasFor returns them): like the expression, anything but false runs it. */
 export function jobRuns(job, outputs) {
-  return JOB_GATES[job].some((output) => outputs[output]);
+  return JOB_GATES[job].some((output) => outputs[output] !== false);
 }
 
+const compiled = new Map();
 function matches(pattern, file) {
-  const subject = pattern.includes('/') ? file : file.slice(file.lastIndexOf('/') + 1);
-  const re = pattern
-    .split('**')
-    .map((part) => part.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*'))
-    .join('.*');
-  return new RegExp(`^${re}$`).test(subject);
+  let re = compiled.get(pattern);
+  if (re === undefined) {
+    const source = pattern
+      .split('**')
+      .map((part) => part.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*'))
+      .join('[\\s\\S]*');
+    re = new RegExp(`^${source}$`);
+    compiled.set(pattern, re);
+  }
+  return re.test(pattern.includes('/') ? file : file.slice(file.lastIndexOf('/') + 1));
 }
 
-/** `docs`, a list of areas (maybe `ci`), or `unknown` for a file no rule names. */
+const areasOf = (rules, file) => rules.filter((rule) => rule.patterns.some((pattern) => matches(pattern, file))).flatMap((rule) => rule.areas);
+
+/** The areas of a file (docs set none, but for DOC_RULES), or `unknown` for a file no rule names. */
 export function classifyFile(file) {
-  const hit = PATH_RULES.filter((rule) => rule.patterns.some((pattern) => matches(pattern, file)));
-  if (hit.some((rule) => rule.area === 'docs')) return { docs: true, areas: [] };
-  if (hit.length === 0) return { unknown: true, areas: [] };
-  return { areas: hit.map((rule) => rule.area) };
+  if (DOC_PATTERNS.some((pattern) => matches(pattern, file))) return { docs: true, areas: areasOf(DOC_RULES, file) };
+  const areas = areasOf(PATH_RULES, file);
+  return areas.length === 0 ? { unknown: true, areas: [] } : { areas };
 }
 
 const everything = () => ({ go: true, core: true, web: true, e2e: true, code: true });
@@ -120,34 +146,67 @@ export function areasFor(files) {
   return { ...Object.fromEntries(AREAS.map((area) => [area, on.has(area)])), code: on.size > 0 };
 }
 
-const SAMPLE_FILES = ['docs/a.md', 'scripts/x.mjs', 'internal/x.go', 'core/x.rs', 'packages/x.ts', 'e2e/x.ts', 'no-rule-names-this'];
+/** The files of the checkout, NUL-separated by git so that no name is split. */
+export function trackedFiles() {
+  return execFileSync('git', ['ls-files', '-z'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', maxBuffer: 64 << 20 }).split('\0').filter(Boolean);
+}
 
-/** Every distinct set of outputs some diff can produce, found by classifying each subset of one sample file per rule. */
-export function reachableOutputs() {
-  const seen = new Map();
-  for (let mask = 0; mask < 1 << SAMPLE_FILES.length; mask++) {
-    const files = SAMPLE_FILES.filter((_, i) => mask & (1 << i));
-    const outputs = areasFor(files);
-    seen.set(JSON.stringify(outputs), outputs);
+const OUTPUT_NAMES = [...AREAS, 'code'];
+const NONE = Object.fromEntries(OUTPUT_NAMES.map((name) => [name, false]));
+
+/**
+ * Every set of outputs a diff of tracked files can produce: the outputs of each file alone, every union of those,
+ * and the empty and the everything cases. Derived from the rules and the files, so a new rule is covered without
+ * touching a sample list. Falls back to one file per rule when git is unavailable.
+ */
+let reachableCache = null;
+export function reachableOutputs(files = null) {
+  if (files === null && reachableCache !== null) return reachableCache;
+  let list = files;
+  if (list === null) {
+    try {
+      list = trackedFiles();
+    } catch {
+      list = ['docs/a.md', 'scripts/x.mjs', 'internal/x.go', 'core/x.rs', 'packages/x.ts', 'e2e/x.ts', 'no-rule-names-this'];
+    }
   }
-  return [...seen.values()];
+  const singles = new Map();
+  for (const file of list) {
+    const outputs = areasFor([file]);
+    singles.set(JSON.stringify(outputs), outputs);
+  }
+  singles.set(JSON.stringify(NONE), NONE);
+  let sets = new Map([[JSON.stringify(NONE), NONE]]);
+  for (const single of singles.values()) {
+    const next = new Map(sets);
+    for (const set of sets.values()) {
+      const union = Object.fromEntries(OUTPUT_NAMES.map((name) => [name, set[name] || single[name]]));
+      next.set(JSON.stringify(union), union);
+    }
+    sets = next;
+  }
+  const all = areasFor(null);
+  sets.set(JSON.stringify(all), all);
+  const result = [...sets.values()];
+  if (files === null) reachableCache = result;
+  return result;
 }
 
 /**
  * The outputs for an event. Only a pull request is narrowed; a push (main) runs everything. `diff` returns the
- * newline-separated changed paths and may throw.
+ * changed paths as an array and may throw.
  */
 export function computeAreas({ eventName, baseSha, diff }) {
   if (eventName !== 'pull_request' || !baseSha) return everything();
   try {
-    return areasFor(diff(baseSha).split('\n').filter((line) => line !== ''));
+    return areasFor(diff(baseSha));
   } catch {
     return everything();
   }
 }
 
 // --no-renames lists both paths of a rename, so moving code into docs/ is still a code change.
-const gitDiff = (base, head) => execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, head], { encoding: 'utf8', maxBuffer: 64 << 20 }).split('\0').join('\n');
+const gitDiff = (base, head) => execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, head], { encoding: 'utf8', maxBuffer: 64 << 20 }).split('\0').filter(Boolean);
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { EVENT_NAME, BASE_SHA, HEAD_SHA = 'HEAD', GITHUB_OUTPUT } = process.env;
