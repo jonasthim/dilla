@@ -52,6 +52,24 @@ describe('ProfileCard content', () => {
     expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
   });
 
+  it('makes the scrolling bio reachable by keyboard: focusable, named, with a visible focus ring', () => {
+    render(<ProfileCard {...props({ bio: 'x '.repeat(200) })} />);
+    const about = screen.getByRole('group', { name: 'about' });
+    expect(about).toHaveAttribute('tabindex', '0');
+    expect(css).toMatch(/\.d-profile-card__about:focus-visible[^}]*outline: [^;}]*var\(--accent\)/);
+    expect(css).toMatch(/\.d-profile-card__bio[^}]*overflow-y: auto/);
+    about.focus();
+    expect(about).toHaveFocus();
+  });
+
+  it('isolates the direction of the status message and the bio from their surroundings', () => {
+    render(<ProfileCard {...props({ status: 'in a meeting', bio: 'hello' })} />);
+    const status = screen.getByText('in a meeting');
+    expect(status.tagName).toBe('BDI');
+    expect(status).toHaveAttribute('dir', 'auto');
+    expect(screen.getByRole('group', { name: 'about' }).querySelector('.d-profile-card__bio')).toHaveAttribute('dir', 'auto');
+  });
+
   it('labels the bio "about" by default', () => {
     render(<ProfileCard {...props({ bio: 'hello' })} />);
     expect(screen.getByRole('group', { name: 'about' })).toHaveTextContent('hello');

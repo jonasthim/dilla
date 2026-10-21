@@ -157,12 +157,12 @@ export function ProfileCard({
           <h2 id={titleId} className="d-profile-card__name">{name}</h2>
           {username === '' ? null : <p className="d-profile-card__username">@{username}</p>}
           {presence !== undefined || status ? (
-            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <span>{status}</span> : null}</p>
+            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <bdi dir="auto">{status}</bdi> : null}</p>
           ) : null}
         </div>
         <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>
       </div>
-      {bio ? <div className="d-profile-card__about" role="group" aria-label={bioLabel}><p className="d-profile-card__bio">{bio}</p></div> : null}
+      {bio ? <div className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={0}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
       {isOwner || isYou ? (
         <p className="d-profile-card__marks">
           {isOwner ? <span className="d-profile-card__mark"><Icon name="crown" size={14} />{ownerLabel}</span> : null}
