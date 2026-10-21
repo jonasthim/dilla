@@ -80,6 +80,10 @@ type sessionReader interface {
 	GetSessionByHash(ctx context.Context, tokenHash []byte, now int64) (store.SessionRow, error)
 }
 
+type botSessionValidator interface {
+	ValidateSessionHash(ctx context.Context, tokenHash []byte) error
+}
+
 // sweepSessions is the other half of protocol/02 §2.2 point 6. `dillad admin` is a separate process
 // from `dillad serve`: disabling a user or revoking a device there deletes the session rows and
 // cannot close a socket, because it holds no handle on this registry. What makes the socket end is
@@ -102,11 +106,20 @@ func (g *Gateway) sweepSessions(ctx context.Context) {
 		c.mu.Lock()
 		ready := c.state == stateReady
 		hash := c.tokenHash
+		isBot := c.isBot
 		c.mu.Unlock()
 		if !ready || len(hash) == 0 {
 			continue
 		}
 		row, err := sessions.GetSessionByHash(ctx, hash, now)
+		if err == nil && isBot {
+			validator, ok := g.opts.Auth.(botSessionValidator)
+			if !ok {
+				err = store.ErrNotFound
+			} else {
+				err = validator.ValidateSessionHash(ctx, hash)
+			}
+		}
 		if err == nil && row.FactorOwed {
 			// The account owes a second factor now (the operator's reset keeps the session, web3.6
 			// D5): the socket ends 4003, the code a re-identify would meet, and is not resumable.

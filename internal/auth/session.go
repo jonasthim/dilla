@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -191,7 +192,15 @@ type Session struct {
 	WireVersion  uint64
 	E2EEVersion  uint64
 	MediaVersion uint64
+	// Bot is non-nil only for a repository-validated session bound to a live
+	// managed installation. It is not inferred from users.kind.
+	Bot *BotSessionBinding
 }
+
+// BotSessionBinding is the managed installation context carried by an
+// authenticated bot session. Capabilities remain installation constraints;
+// API permission checks continue to use their existing vocabulary.
+type BotSessionBinding = botaccess.Binding
 
 // InPairingGroup reports whether this session may act on a group. An enrolled or admin session is
 // unrestricted; a provisional session may act only inside the one group it was paired for, and a
@@ -408,6 +417,34 @@ func (s *Sessions) NewDeviceSession(ctx context.Context, tx store.Repository, us
 	return s.mint(ctx, tx, userID, deviceID, tier, ScopeEnrolled)
 }
 
+// mintBotSession is called only after Establish has consumed a nonce and
+// verified the registered native device's purpose-0/1 signature. It creates
+// the session and exact token-hash binding in one transaction.
+func (s *Sessions) mintBotSession(ctx context.Context, userID, deviceID id.ID) (Token, error) {
+	var tok Token
+	err := s.repo.Tx(ctx, func(tx store.Repository) error {
+		binding, isBot, err := botaccess.ForUserDevice(ctx, tx, userID, deviceID)
+		if err != nil {
+			return err
+		}
+		if !isBot || binding.State != store.BotInstallationEnrolling && binding.State != store.BotInstallationJoining && binding.State != store.BotInstallationReady {
+			return server.Errorf(server.CodeForbidden, "managed bot installation is not active")
+		}
+		tok, err = s.mintSession(ctx, tx, userID, deviceID, 0, ScopeEnrolled, true)
+		if err != nil {
+			return err
+		}
+		return tx.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{
+			TokenHash: TokenHash(tok.Token), InstallationID: binding.InstallationID,
+			UserID: userID, DeviceID: deviceID, Created: s.clk.Now().Unix(),
+		})
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	return tok, nil
+}
+
 func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if len(r.Nonce) != nonceBytes || len(r.Sig) != ed25519.SignatureSize {
@@ -442,6 +479,15 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	user, err := s.repo.GetUser(ctx, device.UserID)
 	if err != nil {
 		return Token{}, unauth
+	}
+	if user.Kind == 1 {
+		// Bot sessions use only the ordinary device challenge and exact purpose
+		// 0/1 proof. Assertions, registration, and provisional purpose 2 never
+		// mint bot authority.
+		if len(r.Login) != 0 || r.Registration != nil || r.Purpose == PurposeProvisional || r.Purpose > PurposeRenew {
+			return Token{}, unauth
+		}
+		return s.mintBotSession(ctx, device.UserID, device.ID)
 	}
 	if user.DisabledAt != nil || user.DeletedAt != nil {
 		return Token{}, server.Errorf(server.CodeForbidden, "account disabled")
@@ -767,6 +813,17 @@ func rateWait(creations []int64, rate int, now int64) int64 {
 // the single place a session's token, lifetime and idle window are decided, so
 // the registration carve-out and the ordinary challenge path cannot drift.
 func (s *Sessions) mint(ctx context.Context, tx store.Repository, userID, deviceID id.ID, tier uint8, scope Scope) (Token, error) {
+	return s.mintSession(ctx, tx, userID, deviceID, tier, scope, false)
+}
+
+func (s *Sessions) mintSession(ctx context.Context, tx store.Repository, userID, deviceID id.ID, tier uint8, scope Scope, managedBot bool) (Token, error) {
+	user, err := tx.GetUser(ctx, userID)
+	if err != nil {
+		return Token{}, err
+	}
+	if user.Kind == 1 && !managedBot || user.Kind != 1 && managedBot {
+		return Token{}, server.Errorf(server.CodeForbidden, "managed bot sessions require an installation binding")
+	}
 	raw := make([]byte, tokenBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return Token{}, err
@@ -827,6 +884,13 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if subtle.ConstantTimeCompare(row.TokenHash, sum) != 1 {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
+	botBinding, botBound, err := s.currentBotBinding(ctx, row, sum)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+		}
+		return Session{}, server.Unavailable(1000, "session authorization could not be checked")
+	}
 	if Scope(row.Scope) == ScopePending && s.DeviceLists != nil {
 		device, err := s.repo.GetDevice(ctx, row.DeviceID)
 		if err != nil || device.RevokedAt != nil {
@@ -866,12 +930,68 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	} else {
 		idleExpires = row.IdleExpires
 	}
-	return Session{
+	session := Session{
 		UserID: row.UserID, DeviceID: row.DeviceID, Scope: Scope(row.Scope),
 		TokenHash: row.TokenHash, Expires: row.Expires, IdleExpires: idleExpires,
 		FactorOwed:  row.FactorOwed,
 		WireVersion: row.WireVersion, E2EEVersion: row.E2EEVersion, MediaVersion: row.MediaVersion,
-	}, nil
+	}
+	if botBound {
+		session.Bot = &botBinding
+	}
+	return session, nil
+}
+
+// ValidateSessionHash is the gateway's heartbeat-time revocation check for a
+// bound bot connection. It uses the stored opaque token hash and reads current
+// account/device/installation/runtime state without accepting client headers.
+func (s *Sessions) ValidateSessionHash(ctx context.Context, tokenHash []byte) error {
+	if len(tokenHash) != 32 {
+		return store.ErrNotFound
+	}
+	row, err := s.repo.GetSessionByHash(ctx, tokenHash, s.clk.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare(row.TokenHash, tokenHash) != 1 {
+		return store.ErrNotFound
+	}
+	_, bound, err := s.currentBotBinding(ctx, row, tokenHash)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) {
+			return store.ErrNotFound
+		}
+		return err
+	}
+	if !bound || Scope(row.Scope) != ScopeEnrolled {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// currentBotBinding treats the DB binding as a claim to verify, not authority:
+// every account/device/installation/runtime condition is read again per request.
+func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionRow, tokenHash []byte) (BotSessionBinding, bool, error) {
+	stored, storedErr := s.repo.GetBotSessionBinding(ctx, tokenHash)
+	if storedErr != nil && !errors.Is(storedErr, store.ErrNotFound) {
+		return BotSessionBinding{}, false, storedErr
+	}
+	binding, isBot, eligibilityErr := botaccess.ForUserDevice(ctx, s.repo, session.UserID, session.DeviceID)
+	if eligibilityErr != nil {
+		return BotSessionBinding{}, false, eligibilityErr
+	}
+	if !isBot {
+		if storedErr == nil {
+			return BotSessionBinding{}, false, botaccess.ErrIneligible
+		}
+		return BotSessionBinding{}, false, nil
+	}
+	if errors.Is(storedErr, store.ErrNotFound) || stored.InstallationID != binding.InstallationID ||
+		stored.UserID != session.UserID || stored.DeviceID != session.DeviceID ||
+		!bytes.Equal(stored.TokenHash, tokenHash) || Scope(session.Scope) != ScopeEnrolled {
+		return BotSessionBinding{}, false, botaccess.ErrIneligible
+	}
+	return binding, true, nil
 }
 
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
@@ -967,6 +1087,10 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 			server.WriteError(w, err)
 			return
 		}
+		if sess.Bot != nil && !s.botRouteAllowed(r.Context(), r, *sess.Bot, sess) {
+			server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
+			return
+		}
 		if sess.Scope != want && sess.Scope != ScopeEnrolled {
 			server.WriteError(w, scopeRefusal(sess.Scope))
 			return
@@ -987,6 +1111,166 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))
 	})
+}
+
+// botRouteAllowed is the explicit HTTP surface for bound bot sessions. Every
+// resource path is resolved against the current repository before it is allowed.
+func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot BotSessionBinding, session Session) bool {
+	pattern := r.Pattern
+	if pattern == "" || session.WireVersion < 3 && pattern != "POST /v1/sessions/negotiate" {
+		return false
+	}
+	phase := bot.State
+	joining := phase == store.BotInstallationJoining || phase == store.BotInstallationReady
+	ready := phase == store.BotInstallationReady
+	communityPath := func(name string) bool { return pathIDEquals(r, name, bot.CommunityID) }
+	groupPath := func(name string) bool {
+		if !communityPathForBot(ctx, s.repo, bot) {
+			return false
+		}
+		groupID, ok := pathID(r, name)
+		if !ok {
+			return false
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		return err == nil && group.CommunityID != nil && *group.CommunityID == bot.CommunityID &&
+			group.ClosedAt == nil && group.Kind <= 1
+	}
+	channelPath := func(name string) bool {
+		if !communityPathForBot(ctx, s.repo, bot) {
+			return false
+		}
+		channelID, ok := pathID(r, name)
+		if !ok {
+			return false
+		}
+		channel, err := s.repo.GetChannel(ctx, channelID)
+		return err == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID && channel.DeletedAt == nil
+	}
+	callPath := func() bool {
+		if !communityPathForBot(ctx, s.repo, bot) {
+			return false
+		}
+		callID, ok := pathID(r, "call_id")
+		if !ok {
+			return false
+		}
+		call, err := s.repo.GetVoiceSession(ctx, callID)
+		if err != nil || call.Ended != nil {
+			return false
+		}
+		channel, err := s.repo.GetChannel(ctx, call.ChannelID)
+		return err == nil && channel.DeletedAt == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID
+	}
+	switch pattern {
+	case "POST /v1/sessions/negotiate":
+		return phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady
+	case "DELETE /v1/devices/{device_id}/sessions":
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "device_id", session.DeviceID)
+	case "PUT /v1/bot-runtime/installations/{installation}/credential":
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID)
+	case "POST /v1/bot-runtime/installations/{installation}/ready":
+		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID)
+	case "PUT /v1/users/{user_id}/device-list":
+		return joining && pathIDEquals(r, "user_id", session.UserID)
+	case "GET /v1/users/{user_id}/device-list":
+		if !joining {
+			return false
+		}
+		userID, ok := pathID(r, "user_id")
+		return ok && botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, userID) == nil
+	case "GET /v1/devices/{device_id}/keypackage":
+		if !joining {
+			return false
+		}
+		deviceID, ok := pathID(r, "device_id")
+		if !ok {
+			return false
+		}
+		device, err := s.repo.GetDevice(ctx, deviceID)
+		return err == nil && device.RevokedAt == nil && device.QuarantinedAt == nil &&
+			botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, device.UserID) == nil
+	case "POST /v1/keypackages", "GET /v1/welcomes", "DELETE /v1/welcomes/{welcome_id}":
+		// These resources are device-scoped by the delivery service. In particular,
+		// KeyPackage publication is for session.DeviceID and Welcome acknowledgement
+		// checks that the welcome belongs to that same device.
+		return joining && communityPathForBot(ctx, s.repo, bot)
+	case "POST /v1/groups":
+		// The typed binding is in the request body; StructureChannels.MayRegister
+		// validates its target and current community eligibility inside the DS.
+		return (joining || ready) && communityPathForBot(ctx, s.repo, bot)
+	case "GET /v1/groups/{id}/info", "GET /v1/groups/{id}/tree", "GET /v1/groups/{id}/handshakes",
+		"GET /v1/groups/{id}/proposals", "POST /v1/groups/{id}/commit", "POST /v1/groups/{id}/proposal",
+		"POST /v1/groups/{id}/resync", "POST /v1/groups/{id}/fork-report",
+		"GET /v1/groups/{id}/messages", "POST /v1/groups/{id}/cursor",
+		"GET /v1/groups/{id}/heal", "POST /v1/groups/{id}/heal":
+		return joining && groupPath("id")
+	case "POST /v1/groups/{id}/message":
+		return ready && groupPath("id")
+	case "DELETE /v1/groups/{id}/messages/{seq}":
+		return ready && groupPath("id")
+	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members",
+		"GET /v1/communities/{id}/permissions", "GET /v1/communities/{id}/channels":
+		return joining && communityPath("id") && communityPathForBot(ctx, s.repo, bot)
+	case "GET /v1/channels/{id}", "GET /v1/channels/{id}/members", "GET /v1/channels/{id}/messages":
+		return joining && channelPath("id")
+	case "POST /v1/channels/{id}/messages":
+		return ready && channelPath("id")
+	case "POST /v1/channels/{id}/calls", "GET /v1/channels/{id}/call":
+		return ready && channelPath("id")
+	case "GET /v1/communities/{id}/calls":
+		return ready && communityPath("id") && communityPathForBot(ctx, s.repo, bot)
+	case "DELETE /v1/calls/{call_id}", "POST /v1/calls/{call_id}/share",
+		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline":
+		return ready && callPath()
+	case "POST /v1/gateway/ticket":
+		return joining && communityPathForBot(ctx, s.repo, bot)
+	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
+		"GET /v1/communities/{community}/bot/receipts/{operation}",
+		"POST /v1/groups/{group}/bot/messages", "POST /v1/groups/{group}/moderation/removals",
+		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
+		if !ready || !communityPathForBot(ctx, s.repo, bot) {
+			return false
+		}
+		if strings.Contains(pattern, "/groups/{group}/") {
+			return groupPath("group")
+		}
+		return communityPath("community")
+	default:
+		return false
+	}
+}
+
+func communityPathForBot(ctx context.Context, repo store.Repository, bot BotSessionBinding) bool {
+	binding, isBot, err := botaccess.ForUserCommunity(ctx, repo, mustBotUserID(ctx, repo, bot), bot.CommunityID)
+	return err == nil && isBot && binding.InstallationID == bot.InstallationID && binding.State == bot.State
+}
+
+func mustBotUserID(ctx context.Context, repo store.Repository, bot BotSessionBinding) id.ID {
+	// Resolve the installation on the indexed community key; no global scan.
+	row, err := repo.GetActiveBotInstallationByCommunity(ctx, bot.CommunityID)
+	if err != nil || row.UserID == nil || row.ID != bot.InstallationID {
+		return id.ID{}
+	}
+	return *row.UserID
+}
+
+func pathID(r *http.Request, name string) (id.ID, bool) {
+	value := r.PathValue(name)
+	if value == "" {
+		return id.ID{}, false
+	}
+	got, err := id.Parse(value)
+	return got, err == nil
+}
+
+func pathIDEquals(r *http.Request, name string, want id.ID) bool {
+	value := r.PathValue(name)
+	if value == "" {
+		return false
+	}
+	got, err := id.Parse(value)
+	return err == nil && got == want
 }
 
 // FromContext returns the session a Middleware put there. Parts 1b and 2 read

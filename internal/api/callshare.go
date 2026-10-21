@@ -400,6 +400,9 @@ func (h *Calls) callOf(r *http.Request) (auth.Session, store.VoiceSessionRow, st
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
+	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
+	}
 	if !bits.Has(PermViewChannel) {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, server.Errorf(server.CodeNotFound, "no such object")
 	}

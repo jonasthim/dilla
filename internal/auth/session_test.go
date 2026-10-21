@@ -192,6 +192,266 @@ func TestPreimageIsEightyOneBytesAndMatchesTheVector(t *testing.T) {
 	}
 }
 
+func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
+	s, repo, clk := newSessions(t)
+	ctx := context.Background()
+	owner, _, _ := seedDevice(t, repo)
+	community := store.CommunityRow{ID: id.New(), Owner: owner, Name: "bot session",
+		PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateCommunity(ctx, community); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: owner, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	communityID := community.ID
+	voiceChannel := store.ChannelRow{ID: id.New(), CommunityID: &communityID, Kind: 1, Mode: 0, Visibility: 0,
+		Name: "voice", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateChannel(ctx, voiceChannel); err != nil {
+		t.Fatal(err)
+	}
+	callID := id.New()
+	if err := repo.PutVoiceSession(ctx, store.VoiceSessionRow{CallID: callID, ChannelID: voiceChannel.ID,
+		LivekitRoom: "bot-session-test", Started: clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	botUser := store.UserRow{ID: id.New(), Username: "bot_" + id.New().String()[:8], Kind: 1,
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: 1}
+	if err := repo.CreateUser(ctx, botUser); err != nil {
+		t.Fatal(err)
+	}
+	deviceID := id.New()
+	dskPub, dskPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateDevice(ctx, store.DeviceRow{ID: deviceID, UserID: botUser.ID, DSKPub: dskPub,
+		CredentialBlob: []byte{1}, Tier: 0, SignerTier: 0, Created: 1, LastSeen: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: botUser.ID, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: bytes.Repeat([]byte{0x44}, 32), Created: 1, Rotated: 1}
+	if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
+		t.Fatal(err)
+	}
+	uid, did, rid := botUser.ID, deviceID, runtime.ID
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: community.ID, RuntimeID: &rid,
+		UserID: &uid, DeviceID: &did, State: store.BotInstallationEnrolling, Revision: 1,
+		ApprovedBy: owner, ApprovedAt: 1, Created: 1, Updated: 1}
+	if err := repo.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	nonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, nonce, auth.PurposeSession))
+	tok, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: nonce, Purpose: auth.PurposeSession, Sig: sig})
+	if err != nil {
+		t.Fatalf("proof-based bot Establish: %v", err)
+	}
+	bound, err := repo.GetBotSessionBinding(ctx, auth.TokenHash(tok.Token))
+	if err != nil || bound.InstallationID != installation.ID || bound.UserID != botUser.ID || bound.DeviceID != deviceID {
+		t.Fatalf("binding = %+v, %v", bound, err)
+	}
+	got, err := s.Resolve(ctx, tok.Token)
+	if err != nil || got.Bot == nil || got.Bot.InstallationID != installation.ID || got.Bot.State != store.BotInstallationEnrolling {
+		t.Fatalf("Resolve = %+v, %v", got, err)
+	}
+	renewNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, renewNonce, auth.PurposeRenew))
+	renewed, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: renewNonce, Purpose: auth.PurposeRenew, Sig: renewSig})
+	if err != nil {
+		t.Fatalf("proof-based bot Renew: %v", err)
+	}
+	renewBinding, err := repo.GetBotSessionBinding(ctx, auth.TokenHash(renewed.Token))
+	if err != nil || renewBinding.InstallationID != installation.ID || renewed.Scope != auth.ScopeEnrolled {
+		t.Fatalf("renewed binding = %+v, token=%+v, err=%v", renewBinding, renewed, err)
+	}
+	orphanBearer := "orphaned-seeded-bot-session"
+	orphanHash := auth.TokenHash(orphanBearer)
+	now := clk.Now().Unix()
+	if err := repo.CreateSession(ctx, store.SessionRow{TokenHash: orphanHash, DeviceID: deviceID, UserID: botUser.ID,
+		Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, orphanBearer); err == nil {
+		t.Fatal("Resolve accepted a seeded bot session without exact token-hash binding")
+	}
+	provisionalNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisionalSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, provisionalNonce, auth.PurposeProvisional))
+	if _, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: provisionalNonce, Purpose: auth.PurposeProvisional, Sig: provisionalSig}); err == nil {
+		t.Fatal("bot account received a provisional session")
+	}
+	loginNonce, _, err := s.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginSig := ed25519.Sign(dskPriv, auth.SessionPreimage(s.InstanceID(), deviceID, loginNonce, auth.PurposeSession))
+	if _, err := s.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: loginNonce, Purpose: auth.PurposeSession,
+		Sig: loginSig, Login: []byte("assertion")}); err == nil {
+		t.Fatal("bot account received an assertion/login session")
+	}
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathValue string
+		wantNext                         bool
+	}{
+		{name: "negotiate while enrolling", pattern: "POST /v1/sessions/negotiate", method: http.MethodPost, wantNext: true},
+		{name: "credential finalization for same installation", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathValue: installation.ID.String(), wantNext: true},
+		{name: "credential finalization for another installation", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathValue: id.New().String(), wantNext: false},
+		{name: "account settings denied", pattern: "GET /v1/accounts/me", method: http.MethodGet, wantNext: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequest(tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			if tc.pathValue != "" {
+				r.SetPathValue("installation", tc.pathValue)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.wantNext {
+				t.Fatalf("next called=%v, want %v; response=%d %s", called, tc.wantNext, w.Code, w.Body.String())
+			}
+		})
+	}
+	joiningRow, err := repo.GetBotInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedAt := clk.Now().Unix()
+	joiningRow.State = store.BotInstallationJoining
+	joiningRow.CredentialVerifiedAt = &verifiedAt
+	joiningRow.Revision++
+	joiningRow.Updated = verifiedAt
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, joiningRow.Revision-1, joiningRow); err != nil {
+		t.Fatalf("advance seeded installation to joining: %v", err)
+	}
+	foreignCommunity := store.CommunityRow{ID: id.New(), Owner: owner, Name: "foreign",
+		PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateCommunity(ctx, foreignCommunity); err != nil {
+		t.Fatal(err)
+	}
+	group := func(communityID *id.ID) id.ID {
+		t.Helper()
+		row := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 0, CommunityID: communityID,
+			TargetID: id.New(), Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1,
+			PolicyVersion: 1, Created: clk.Now().Unix()}
+		if err := repo.CreateGroup(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		return row.GroupID
+	}
+	ownGroup := group(&community.ID)
+	foreignGroup := group(&foreignCommunity.ID)
+	dmGroup := group(nil)
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+		wantNext                                   bool
+	}{
+		{name: "joining can publish own signed device list", pattern: "PUT /v1/users/{user_id}/device-list", method: http.MethodPut, pathName: "user_id", pathValue: botUser.ID.String(), wantNext: true},
+		{name: "joining can read eligible same-community device list", pattern: "GET /v1/users/{user_id}/device-list", method: http.MethodGet, pathName: "user_id", pathValue: owner.String(), wantNext: true},
+		{name: "joining can retry credential receipt", pattern: "PUT /v1/bot-runtime/installations/{installation}/credential", method: http.MethodPut, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can request ready", pattern: "POST /v1/bot-runtime/installations/{installation}/ready", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can publish own key packages", pattern: "POST /v1/keypackages", method: http.MethodPost, wantNext: true},
+		{name: "joining can list its device-scoped welcomes", pattern: "GET /v1/welcomes", method: http.MethodGet, wantNext: true},
+		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
+		{name: "joining can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost, wantNext: true},
+		{name: "joining can sync own community group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: ownGroup.String(), wantNext: true},
+		{name: "joining cannot sync foreign group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: foreignGroup.String(), wantNext: false},
+		{name: "joining cannot sync DM group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: dmGroup.String(), wantNext: false},
+		{name: "joining cannot upload application message", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequest(tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			if tc.pathName != "" {
+				r.SetPathValue(tc.pathName, tc.pathValue)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.wantNext {
+				t.Fatalf("next called=%v, want %v; response=%d %s", called, tc.wantNext, w.Code, w.Body.String())
+			}
+		})
+	}
+	readyRow, err := repo.GetBotInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyRow.State = store.BotInstallationReady
+	readyRow.Revision++
+	readyRow.Updated = clk.Now().Unix()
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, readyRow.Revision-1, readyRow); err != nil {
+		t.Fatalf("advance seeded installation to ready: %v", err)
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+	}{
+		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
+		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own channel call", pattern: "GET /v1/channels/{id}/call", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
+		{name: "ready bot can read own community calls", pattern: "GET /v1/communities/{id}/calls", method: http.MethodGet, pathName: "id", pathValue: community.ID.String()},
+		{name: "ready bot can end own community call", pattern: "DELETE /v1/calls/{call_id}", method: http.MethodDelete, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequest(tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = tc.pattern
+			r.SetPathValue(tc.pathName, tc.pathValue)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if !called {
+				t.Fatalf("route refused; response=%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if err := repo.PutBan(ctx, store.BanRow{CommunityID: community.ID, UserID: botUser.ID, ByUser: owner, Created: clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after the bot member was banned")
+	}
+	if err := repo.DeleteBan(ctx, community.ID, botUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteMember(ctx, community.ID, botUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after community membership was removed")
+	}
+	if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community.ID, UserID: botUser.ID, Joined: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RevokeBotRuntime(ctx, runtime.ID, clk.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(ctx, tok.Token); err == nil {
+		t.Fatal("Resolve accepted a session after runtime revocation")
+	}
+}
+
 func TestPurposeIsBoundIntoTheSignature(t *testing.T) {
 	instance := id.New()
 	device := id.New()

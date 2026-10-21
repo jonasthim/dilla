@@ -19,6 +19,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // connState is where a connection is in the handshake.
@@ -38,6 +39,7 @@ type conn struct {
 	userID       id.ID
 	deviceID     id.ID
 	scope        auth.Scope
+	isBot        bool
 	pairingGroup *id.ID // ScopeProvisional only; see interfaces §2.2 point 4
 	tokenHash    []byte
 	resume       []byte // 32 CSPRNG bytes, rotated on every resumed
@@ -191,6 +193,9 @@ func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, err
 	// enrolled session whose account owes a second factor (web3.6 S1, protocol/02 § Device
 	// sessions item 8): it reaches only protocol/09's `F` and `P` routes, and the socket is none.
 	if session.Scope != auth.ScopeEnrolled || session.FactorOwed {
+		return auth.Session{}, errNotEnrolledSession
+	}
+	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || session.WireVersion < 3) {
 		return auth.Session{}, errNotEnrolledSession
 	}
 	return session, nil

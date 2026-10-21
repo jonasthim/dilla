@@ -13,6 +13,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -389,6 +390,91 @@ func TestAPrunedPostKeepsItsSlowModeMark(t *testing.T) {
 				t.Fatal("after the prune a post 60 s into a 3600 s slow mode is admitted")
 			}
 			wantPolicyNil(t, "control: at the end of the window", f.check(f.group, 0, policyT0+3600))
+		})
+	}
+}
+
+func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			f := newPolicyFixture(t, repo, viewSend, 0)
+			ctx := context.Background()
+			botID, deviceID := id.New(), id.New()
+			botUser := newAPITestUser(botID, "bot_"+botID.String()[:8], policyT0)
+			botUser.Kind = 1
+			if err := repo.CreateUser(ctx, botUser); err != nil {
+				t.Fatalf("CreateUser bot: %v", err)
+			}
+			device := newAPITestDevice(deviceID, botID, policyT0)
+			device.Tier, device.SignerTier = 0, 0
+			if err := repo.CreateDevice(ctx, device); err != nil {
+				t.Fatalf("CreateDevice bot: %v", err)
+			}
+			if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: f.cid, UserID: botID, Joined: policyT0}); err != nil {
+				t.Fatalf("PutMember bot: %v", err)
+			}
+			runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: make([]byte, 32), Created: policyT0, Rotated: policyT0}
+			runtime.TokenHash[0] = 1
+			if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
+				t.Fatalf("CreateBotRuntime: %v", err)
+			}
+			uid, did, rid := botID, deviceID, runtime.ID
+			verified := policyT0
+			installation := store.BotInstallationRow{ID: id.New(), CommunityID: f.cid, RuntimeID: &rid,
+				UserID: &uid, DeviceID: &did, State: store.BotInstallationJoining, Revision: 1,
+				ApprovedBy: f.user, ApprovedAt: policyT0, CredentialVerifiedAt: &verified, Created: policyT0, Updated: policyT0}
+			if err := repo.CreateBotInstallation(ctx, installation); err != nil {
+				t.Fatalf("CreateBotInstallation: %v", err)
+			}
+			acl := api.ResolverACL{Repo: repo}
+			if ok, err := acl.Eligible(ctx, f.group.GroupID, botID); err != nil || !ok {
+				t.Fatalf("joining bot own-community ACL = %v, %v; want eligible", ok, err)
+			}
+			registration := api.StructureChannels{Repo: repo}
+			foreignCommunity := store.CommunityRow{ID: id.New(), Owner: f.user, Name: "foreign",
+				PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: policyT0}
+			if err := repo.CreateCommunity(ctx, foreignCommunity); err != nil {
+				t.Fatalf("CreateCommunity foreign: %v", err)
+			}
+			checkRegistration := func(phase string) {
+				t.Helper()
+				if err := registration.MayRegister(ctx, botID, binding(&f.cid, f.channel.ID, api.GroupText)); err != nil {
+					t.Errorf("%s own-community text registration: %v", phase, err)
+				}
+				for _, b := range []ds.Binding{
+					binding(&foreignCommunity.ID, f.channel.ID, api.GroupText),
+					binding(nil, f.channel.ID, api.GroupText),
+					binding(nil, id.New(), 3),
+				} {
+					if err := registration.MayRegister(ctx, botID, b); !errors.Is(err, ds.ErrNotEligible) {
+						t.Errorf("%s foreign/DM/interaction registration = %v, want ds.ErrNotEligible", phase, err)
+					}
+				}
+			}
+			checkRegistration("joining")
+			policy := api.PostPolicy{Repo: repo, Resolver: api.NewResolver(repo)}
+			for _, class := range []uint8{0, 1} {
+				if err := policy.Check(ctx, f.group, botID, class, policyT0); err == nil {
+					t.Fatalf("joining bot class-%d upload was admitted", class)
+				}
+			}
+			dm := f.newGroup(0, nil)
+			if ok, err := acl.Eligible(ctx, dm.GroupID, botID); err != nil || ok {
+				t.Fatalf("bot DM ACL = %v, %v; want denied", ok, err)
+			}
+			if err := policy.Check(ctx, dm, botID, 0, policyT0); err == nil {
+				t.Fatal("bot DM upload was admitted")
+			}
+			installation.State = store.BotInstallationReady // ready after final credential, list and package gates
+			installation.Revision++
+			installation.Updated++
+			if err := repo.UpdateBotInstallation(ctx, installation.ID, installation.Revision-1, installation); err != nil {
+				t.Fatalf("UpdateBotInstallation ready: %v", err)
+			}
+			checkRegistration("ready")
+			if err := policy.Check(ctx, f.group, botID, 0, policyT0); err != nil {
+				t.Fatalf("ready bot own-community class-0 upload: %v", err)
+			}
 		})
 	}
 }

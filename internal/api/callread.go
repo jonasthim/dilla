@@ -64,6 +64,9 @@ func (h *Calls) viewableCallChannel(r *http.Request) (store.ChannelRow, error) {
 	if err != nil {
 		return store.ChannelRow{}, notFound(err)
 	}
+	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+		return store.ChannelRow{}, err
+	}
 	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
 	if err != nil {
 		return store.ChannelRow{}, err

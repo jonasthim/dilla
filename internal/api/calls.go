@@ -15,6 +15,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -843,6 +844,9 @@ func (h *Calls) channel(r *http.Request) (auth.Session, store.ChannelRow, Bits, 
 	if err != nil {
 		return s, store.ChannelRow{}, 0, notFound(err)
 	}
+	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+		return s, store.ChannelRow{}, 0, err
+	}
 	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
 	if err != nil {
 		return s, store.ChannelRow{}, 0, err
@@ -963,6 +967,9 @@ func (h *Calls) iceServers(dev id.ID, begun time.Time) (servers []iceServer, min
 // device not barred, a current leaf of the call's group, view_channel and connect. It answers the
 // refusal the first check would have.
 func (h *Calls) stillEntitled(ctx context.Context, s auth.Session, ch store.ChannelRow, groupID id.ID) error {
+	if err := h.botCanUseSession(ctx, s, ch); err != nil {
+		return err
+	}
 	if err := h.refuseBarred(ctx, h.repo, s.DeviceID); err != nil {
 		return err
 	}
@@ -982,6 +989,64 @@ func (h *Calls) stillEntitled(ctx context.Context, s auth.Session, ch store.Chan
 	}
 	if !bits.Has(PermConnect) {
 		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	return nil
+}
+
+// botCanUseChannel re-reads the installation/runtime for every call gate and
+// room sweep. A bot can use calls only in its own ready community; humans keep
+// the existing permission path unchanged.
+func (h *Calls) botCanUseChannel(ctx context.Context, userID id.ID, ch store.ChannelRow) error {
+	if ch.CommunityID == nil {
+		bot, err := botaccess.IsBotUser(ctx, h.repo, userID)
+		if err != nil {
+			return err
+		}
+		if bot {
+			return server.Errorf(server.CodeForbidden, "managed bots cannot join direct-message calls")
+		}
+		return nil
+	}
+	binding, bot, err := botaccess.ForUserCommunity(ctx, h.repo, userID, *ch.CommunityID)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) {
+			return server.Errorf(server.CodeForbidden, "managed bot installation is not eligible for this call")
+		}
+		return err
+	}
+	if bot && (binding.State != store.BotInstallationReady || binding.CommunityID != *ch.CommunityID) {
+		return server.Errorf(server.CodeForbidden, "managed bot installation is not ready for this call")
+	}
+	return nil
+}
+
+func (h *Calls) botCanUseSession(ctx context.Context, session auth.Session, ch store.ChannelRow) error {
+	if ch.CommunityID == nil {
+		bot, err := botaccess.IsBotUser(ctx, h.repo, session.UserID)
+		if err != nil {
+			return err
+		}
+		if bot || session.Bot != nil {
+			return server.Errorf(server.CodeForbidden, "managed bots cannot join direct-message calls")
+		}
+		return nil
+	}
+	binding, bot, err := botaccess.ForUserCommunity(ctx, h.repo, session.UserID, *ch.CommunityID)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) {
+			return server.Errorf(server.CodeForbidden, "managed bot installation is not eligible for this call")
+		}
+		return err
+	}
+	if !bot {
+		if session.Bot != nil {
+			return server.Errorf(server.CodeForbidden, "bot session binding is no longer valid")
+		}
+		return nil
+	}
+	if session.Bot == nil || binding.State != store.BotInstallationReady || binding.InstallationID != session.Bot.InstallationID ||
+		binding.CommunityID != session.Bot.CommunityID || binding.CommunityID != *ch.CommunityID {
+		return server.Errorf(server.CodeForbidden, "managed bot installation is not ready for this call")
 	}
 	return nil
 }
@@ -1160,6 +1225,9 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 		return nil, notLeaf
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := h.botCanUseChannel(ctx, dev.UserID, ch); err != nil {
 		return nil, err
 	}
 	bits, err := h.res.Resolve(ctx, dev.UserID, ch)

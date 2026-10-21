@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -29,6 +30,26 @@ type PostPolicy struct {
 // for every class (fail closed). The wait is read from the user's durable mark, which Upload
 // raises on every accepted class-0 post, so a pruned post still holds it.
 func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error {
+	if g.CommunityID == nil {
+		bot, err := botaccess.IsBotUser(ctx, p.Repo, userID)
+		if err != nil {
+			return err
+		}
+		if bot {
+			return server.Errorf(server.CodeForbidden, "managed bots cannot post outside their community")
+		}
+	} else {
+		binding, bot, err := botaccess.ForUserCommunity(ctx, p.Repo, userID, *g.CommunityID)
+		if err != nil {
+			if errors.Is(err, botaccess.ErrIneligible) {
+				return server.Errorf(server.CodeForbidden, "managed bot installation is not eligible for this community")
+			}
+			return err
+		}
+		if bot && (binding.State != store.BotInstallationReady || binding.CommunityID != *g.CommunityID) {
+			return server.Errorf(server.CodeForbidden, "managed bot installation is not ready for sends")
+		}
+	}
 	if g.Kind != GroupText || g.CommunityID == nil {
 		return nil
 	}

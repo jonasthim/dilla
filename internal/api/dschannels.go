@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -74,6 +75,13 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.Binding) error {
 	switch b.Kind {
 	case groupPairing, groupInteraction:
+		bot, err := botaccess.IsBotUser(ctx, c.Repo, userID)
+		if err != nil {
+			return err
+		}
+		if bot {
+			return fmt.Errorf("%w: managed bots cannot bind pairing or interaction groups", ds.ErrNotEligible)
+		}
 		return nil
 	case groupText, groupCall:
 	default:
@@ -86,6 +94,26 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 		return mayRegisterWithoutChannel(b)
 	case err != nil:
 		return err
+	}
+	if b.CommunityID == nil {
+		bot, err := botaccess.IsBotUser(ctx, c.Repo, userID)
+		if err != nil {
+			return err
+		}
+		if bot {
+			return fmt.Errorf("%w: managed bots cannot bind DMs", ds.ErrNotEligible)
+		}
+	} else {
+		binding, bot, err := botaccess.ForUserCommunity(ctx, c.Repo, userID, *b.CommunityID)
+		if err != nil {
+			if errors.Is(err, botaccess.ErrIneligible) {
+				return fmt.Errorf("%w: bot is not eligible for this community", ds.ErrNotEligible)
+			}
+			return err
+		}
+		if bot && (binding.State != store.BotInstallationJoining && binding.State != store.BotInstallationReady || binding.CommunityID != *b.CommunityID) {
+			return fmt.Errorf("%w: bot is not eligible for this community", ds.ErrNotEligible)
+		}
 	}
 
 	switch {
