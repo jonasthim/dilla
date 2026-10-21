@@ -389,6 +389,49 @@ Runtime provisioning credentials are a separate scope, never a device session or
 instance-admin bearer. Bot runtime claims and enrollment require the wire-3 body
 contract directly; enrolled bot actions require the normal negotiated session.
 
+For this gate, a community is bot-enabled while its current installation has no
+removal timestamp and is not disabled. Pending, enrolling, joining, ready and
+error installations all count. Ordinary community, channel, member, role,
+permission, invite and ban metadata snapshots remain readable under their normal
+authorization, so an older client can discover the community and explain its
+upgrade requirement. The gate covers community structural mutations, group
+registration and synchronization, message history and readable-channel message
+operations (including reactions, pins, search and read state), channel attachment
+operations, and community call admission/control/synchronization. DM, pairing,
+account and instance operations with no community binding remain available.
+Publishing one's account KeyPackages is unscoped; a group-bound KeyPackage fetch
+or Welcome is checked against that group's community. Bot interaction groups
+retain their existing null-community binding but require wire 3 for registration,
+synchronization and delivery independently, as do bot application endpoints.
+
+Resolve and authorize the actual resource before reporting an upgrade refusal.
+Unknown or hidden resources keep their existing refusal, including reader-ACL
+group access and the signed body binding on group registration. A request checks
+the current committed installation state at its authorization boundary before
+performing the protected operation; an operation already admitted may finish if
+enablement commits concurrently. This is a compatibility gate and does not
+replace the operation's current permission, membership or transaction checks.
+Store failures refuse the affected operation with an availability error, rather
+than treating the community as disabled.
+
+Gateway compatibility is per resource, not per user. A wire-2 connection may
+identify and receive unaffected groups, DMs and account traffic. Its ready digest,
+subscriptions, group notifications, channel content and community call traffic
+exclude enabled communities. Group committer eligibility applies the same gate.
+Ordinary community metadata-change notifications may still prompt a metadata
+refresh. Each scoped delivery checks committed state before entering the writer
+queue; a frame already queued before enablement may finish. Every gateway uses
+the shared authoritative state, without a stale process-local enablement cache.
+Replay entries retain internal resource scope, including all groups in a ready
+digest. If an entry to be replayed is now disallowed, resume is refused as
+nonresumable and the client identifies again for a filtered digest; entries must
+not be silently skipped within the sequence. A live connection retains its
+identify-time version until it closes; HTTP uses its bearer's latest negotiated
+selection. Resume revalidates the bearer and current resource eligibility before
+restoring the original connection versions. Managed bot connections additionally
+retain the requirement that both the bearer and original connection selected
+wire 3.
+
 ## Installation and enrollment API
 
 Auth labels E and A here mean enrolled human and instance-admin sessions. B means
