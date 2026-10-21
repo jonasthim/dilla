@@ -1562,6 +1562,31 @@ describe('direct messages', () => {
       { m: 'openChannel', channelId: GEN }, { m: 'closeChannel', channelId: GEN }, { m: 'openChannel', channelId: RAND },
     ]);
   });
+  describe('the profile card in a DM (EOD E3)', () => {
+    const open = async (body: string, how: 'author' | 'pill') => {
+      const { fake, user } = setup(`/dm/${DM}`, { before: withDms });
+      act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body })] })));
+      const log = screen.getByRole('log', { name: 'messages with bob' });
+      await user.click(await within(log).findByRole('button', { name: how === 'author' ? 'bob' : '@bob' }));
+      return { fake, user, card: await screen.findByRole('dialog', { name: 'bob' }) };
+    };
+    it('opens from the author name with message and compare safety numbers only, outside inert scopes', async () => {
+      const { card } = await open('hi', 'author');
+      expect(card.closest('[inert]')).toBeNull();
+      expect(within(card).getByText('bob')).toBeInTheDocument();
+      expect(within(card).queryByText('owner')).toBeNull();
+      expect(within(card).queryByRole('list')).toBeNull();
+      expect(within(card).getAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent)).toEqual(['message', 'compare safety numbers']);
+    });
+    it('opens from a mention pill', async () => {
+      await open(`hello <@${PEER}>`, 'pill');
+    });
+    it('compare opens the safety numbers for that person', async () => {
+      const { user, card } = await open('hi', 'author');
+      await user.click(within(card).getByRole('button', { name: 'compare safety numbers' }));
+      expect(path()).toBe('/settings/privacy');
+    });
+  });
   it('leaves a DM it does not know for the first server', () => {
     setup(`/dm/${'7b'.repeat(16)}`, { before: withDms });
     expect(path()).toBe(`/c/${A}/${GEN}`);
