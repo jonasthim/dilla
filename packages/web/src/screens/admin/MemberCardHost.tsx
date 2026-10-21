@@ -32,7 +32,7 @@ export interface MemberCardHostProps {
   /** The server the card belongs to; null in a DM, where the card has no roles or moderation (`dm` then names the people). */
   communityId: string | null;
   /** A DM's context: everyone the shell knows by id, and the name to show for a person none of them lists. */
-  dm?: { members: readonly MemberSummary[]; fallbackName: string };
+  dm?: { members: readonly MemberSummary[]; /** The other person of a 1:1 DM (null in a group); only they are named by `peerName` when no server lists them. */ peerId: string | null; peerName: string };
   selfId: string;
   card: OpenCard | null;
   onCard: (next: OpenCard | null) => void;
@@ -97,7 +97,7 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
   });
 
   const member = card === null ? undefined : byId.get(card.id);
-  const dmName = card === null ? '' : card.name !== undefined && card.name !== '' ? card.name : props.dm?.fallbackName ?? '';
+  const dmName = card === null ? '' : card.id === props.dm?.peerId ? props.dm.peerName : card.name !== undefined && card.name !== '' ? card.name : t('layout.profile.formerMember');
   const data = inDm ? (card === null ? null : dmCardData(card.id, member, { selfId, fallbackName: dmName }))
     : member === undefined ? null : memberCardData(member, { selfId, ownerId, roles: roles ?? [], access });
 

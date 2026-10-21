@@ -1738,7 +1738,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       {/* The message card sits beside the shell, not inside it: main, the rail and the aside go inert while an overlay (the thread sheet) is open, and the card must stay live above it. */}
       {self !== null && (dm !== null || community !== null) ? (
         <MemberCardHost communityId={dm !== null ? null : community?.id ?? null}
-          {...(dm !== null ? { dm: { members: allMembers, fallbackName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
+          {...(dm !== null ? { dm: { members: allMembers, peerId: dm.kind === 3 ? dm.members.find(id => id !== self.id) ?? null : null, peerName: dm.name } } : {})} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
           onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
       ) : null}
       <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
