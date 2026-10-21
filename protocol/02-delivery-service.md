@@ -270,6 +270,21 @@ does.
 | 11 | `unsubscribe` | C→S | `[group_ids([bstr 16])]` |
 | 12 | `commit_ack` | C→S | `[round(uint)]`, `group_id` set — the acknowledgement invariant 7 counts lost rounds against |
 
+On a successful resume, the server sends the new `resumed` frame before the
+replayed frames. If the requested durable acknowledgement is `last_n`, its range
+is `replayed_from = last_n + 1` through `replayed_to`, inclusive, and the new
+`resumed` has `n = replayed_to + 1`. An empty replay range has
+`replayed_from = replayed_to + 1`. The client treats this initial `resumed` as a
+barrier: it records the rotated token but does not acknowledge that frame's `n`
+until every preceding replay entry has been durably handled. Replay entries
+arrive in increasing, contiguous order within the announced range; live entries
+start after the barrier. A missing entry or inconsistent range requires fresh
+identification and authoritative catch-up, not an acknowledgement across the gap.
+An older `ready` or `resumed` encountered inside the replay range is a historical
+control entry: it does not replace the newly rotated token or begin another replay
+window. This ordering also permits a connection interrupted during replay to use
+the new token with its last durable acknowledgement.
+
 ### Delivery service (16–31) — `group_id` set
 
 | op | label | `n` | payload |
