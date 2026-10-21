@@ -1,7 +1,9 @@
 use dilla_core::bot::{Event, HelperRequest, HelperResponse, Receipt, RemovalProof, Response};
 use dilla_core::bot::{Request, RequestArgs};
+use dilla_core::cbor::Encoder;
 use dilla_core::ids::{CommunityId, DeviceId, MsgId, UserId};
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 #[test]
 fn overview_request_body_round_trips_canonically() {
@@ -43,6 +45,53 @@ fn application_context_is_checked_explicitly() {
 }
 
 #[test]
+fn request_encoders_enforce_document_byte_limits() {
+    for (limit, operation) in [(2400, 2), (2200, 51)] {
+        let exact = document_of_encoded_len(limit);
+        let over = document_of_encoded_len(limit + 1);
+        let exact_request = document_request(operation, exact);
+        let over_request = document_request(operation, over);
+        assert!(
+            exact_request.encode_cbor().is_ok(),
+            "operation {operation} at limit"
+        );
+        assert!(
+            over_request.encode_cbor().is_err(),
+            "operation {operation} over limit"
+        );
+    }
+}
+
+fn document_of_encoded_len(size: usize) -> Vec<u8> {
+    // One definite array containing a bstr; the bstr head is 3 bytes at these lengths.
+    let mut e = Encoder::new();
+    e.array(1).bytes(&vec![0; size - 4]);
+    e.into_vec()
+}
+
+fn document_request(operation: u64, document: Vec<u8>) -> Request {
+    Request {
+        request_id: MsgId::from_bytes([1; 16]),
+        community_id: CommunityId::from_bytes([2; 16]),
+        channel_id: None,
+        operation,
+        revision: Some(1),
+        expires: Some(120),
+        args: if operation == 2 {
+            RequestArgs::SettingsPut {
+                section: 0,
+                document,
+            }
+        } else {
+            RequestArgs::AnnouncementPut {
+                schedule: None,
+                document,
+            }
+        },
+    }
+}
+
+#[test]
 fn shared_bot_corpus_round_trips_and_rejects() {
     let corpus: Value = serde_json::from_str(include_str!("../../../protocol/vectors/bot.json"))
         .expect("shared bot corpus parses");
@@ -50,6 +99,14 @@ fn shared_bot_corpus_round_trips_and_rejects() {
     let rejects = corpus["rejects"].as_array().unwrap();
     assert!(!cases.is_empty());
     assert!(!rejects.is_empty());
+    let mut operations = BTreeSet::new();
+    let mut event_kinds = BTreeSet::new();
+    let reject_names: BTreeSet<&str> = rejects
+        .iter()
+        .filter_map(|case| case["name"].as_str())
+        .collect();
+    assert!(reject_names.contains("removal actor user mismatch"));
+    assert!(reject_names.contains("removal actor device mismatch"));
 
     for case in cases {
         let kind = case["kind"].as_str().unwrap();
@@ -57,6 +114,7 @@ fn shared_bot_corpus_round_trips_and_rejects() {
         match kind {
             "request" => {
                 let value = Request::decode_cbor(&raw).unwrap();
+                operations.insert(value.operation);
                 assert_eq!(value.encode_cbor().unwrap(), raw, "{}", case["name"]);
                 if let Some(body) = case["body"].as_str() {
                     assert!(Request::decode_body(body.as_bytes()).unwrap() == value);
@@ -95,6 +153,7 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             }
             "event" => {
                 let value = Event::decode(&raw).unwrap();
+                event_kinds.insert(value.kind);
                 assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
                 context(case, |c, _now, _g, _u, _d| {
                     value.validate_context(c).is_ok()
@@ -135,6 +194,17 @@ fn shared_bot_corpus_round_trips_and_rejects() {
         }
     }
 
+    assert_eq!(
+        operations,
+        [
+            0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 30, 40, 50, 51, 52,
+            60, 61
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(event_kinds, [1, 2, 3, 4, 5, 6, 7].into_iter().collect());
+
     for case in rejects {
         let kind = case["kind"].as_str().unwrap();
         let raw = case["hex"].as_str().map(hex::decode).transpose().unwrap();
@@ -151,14 +221,34 @@ fn shared_bot_corpus_round_trips_and_rejects() {
                     }),
                 }
             }
-            "response" => raw
-                .as_ref()
-                .is_some_and(|r| Response::decode_cbor(r).is_ok()),
-            "removal" => raw
-                .as_ref()
-                .is_some_and(|r| RemovalProof::decode(r).is_ok()),
-            "event" => raw.as_ref().is_some_and(|r| Event::decode(r).is_ok()),
-            "receipt" => raw.as_ref().is_some_and(|r| Receipt::decode(r).is_ok()),
+            "response" => raw.as_ref().is_some_and(|r| {
+                Response::decode_cbor(r).is_ok_and(|value| {
+                    context_result(case, |c, _now, _g, _u, _d| {
+                        value.validate_context(c).is_ok()
+                    })
+                })
+            }),
+            "removal" => raw.as_ref().is_some_and(|r| {
+                RemovalProof::decode(r).is_ok_and(|value| {
+                    context_result(case, |c, now, g, u, d| {
+                        value.validate_context(c, g, u, d, now).is_ok()
+                    })
+                })
+            }),
+            "event" => raw.as_ref().is_some_and(|r| {
+                Event::decode(r).is_ok_and(|value| {
+                    context_result(case, |c, _now, _g, _u, _d| {
+                        value.validate_context(c).is_ok()
+                    })
+                })
+            }),
+            "receipt" => raw.as_ref().is_some_and(|r| {
+                Receipt::decode(r).is_ok_and(|value| {
+                    context_result(case, |c, _now, g, _u, _d| {
+                        value.validate_context(c, g).is_ok()
+                    })
+                })
+            }),
             "helper_request" if case["name"].as_str() == Some("helper malformed length prefix") => {
                 raw.as_ref()
                     .is_some_and(|r| dilla_core::bot::parse_frame(r).is_ok())

@@ -262,8 +262,16 @@ impl Request {
             return Err(CodecError::Value);
         }
         match &self.args {
-            RequestArgs::SettingsPut { document, .. } => check_root_array(document)?,
+            RequestArgs::SettingsPut { document, .. } => {
+                if document.is_empty() || document.len() > 2400 {
+                    return Err(CodecError::Limit);
+                }
+                check_root_array(document)?;
+            }
             RequestArgs::AnnouncementPut { schedule, document } => {
+                if document.is_empty() || document.len() > 2200 {
+                    return Err(CodecError::Limit);
+                }
                 check_root_array(document)?;
                 if let Some(id) = schedule {
                     check_id16(id.as_bytes())?;
