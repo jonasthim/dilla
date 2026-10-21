@@ -383,3 +383,77 @@ func TestWithTheSFUUnreachableAtBootNothingIsReaped(t *testing.T) {
 		t.Fatal("the room resync ended the call")
 	}
 }
+
+// adoptingEnv is a leaseEnv whose call is left adopting after a boot reconcile that could not list
+// the SFU's rooms (the marker stays until a whole-room reconcile completes).
+func adoptingEnv(t *testing.T) *leaseEnv {
+	t.Helper()
+	l := newLeaseEnv(t, 2, 3)
+	l.stub.mu.Lock()
+	l.stub.roomsFail = errors.New("sfu unreachable")
+	l.stub.mu.Unlock()
+	l.calls.BootReconcile(t.Context())
+	l.stub.mu.Lock()
+	l.stub.roomsFail = nil
+	l.stub.mu.Unlock()
+	if !l.calls.AdoptingForTest(l.callID, l.room) {
+		t.Fatal("the boot reconcile left the call not adopting")
+	}
+	return l
+}
+
+// UP2 fix round 1: only a device's own lease decision ends the adoption. A share refused at its
+// gates (here, from a barred device) and a DELETE …/share from a device that holds no slot and
+// publishes no camera or screen (any viewer may send one) leave it; a sharer's DELETE and a share
+// that passes its gates end it.
+func TestOnlyAnOwnLeaseDecisionEndsTheAdoption(t *testing.T) {
+	l := adoptingEnv(t)
+	l.stub.setPresent(l.room, publishing(l.devs[1], 1, livekit.TrackSource_MICROPHONE),
+		publishing(l.devs[2], 2, livekit.TrackSource_CAMERA))
+	if err := l.e.Repo.RevokeDevice(t.Context(), l.devs[0], l.e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if status := l.share(0); status != http.StatusForbidden {
+		t.Fatalf("a share from a barred device = %d, want 403", status)
+	}
+	if !l.calls.AdoptingForTest(l.callID, l.room) {
+		t.Fatal("a share refused at its gates ended the adoption")
+	}
+	if status := l.unshare(1); status != http.StatusNoContent {
+		t.Fatalf("a DELETE from a viewer = %d, want 204", status)
+	}
+	if !l.calls.AdoptingForTest(l.callID, l.room) {
+		t.Fatal("a DELETE from a device with no slot and no camera ended the adoption")
+	}
+	if status := l.unshare(2); status != http.StatusNoContent {
+		t.Fatalf("a DELETE from the camera publisher = %d, want 204", status)
+	}
+	if l.calls.AdoptingForTest(l.callID, l.room) {
+		t.Fatal("the camera publisher's own DELETE left the adoption on")
+	}
+
+	l = adoptingEnv(t)
+	if status := l.share(1); status != http.StatusNoContent {
+		t.Fatalf("a share that passes its gates = %d, want 204", status)
+	}
+	if l.calls.AdoptingForTest(l.callID, l.room) {
+		t.Fatal("a share that passed its gates left the adoption on")
+	}
+}
+
+// UP2 fix round 1: a share from a device whose repair is pending is R-UP7's transient refusal, 503
+// E_UNAVAILABLE with retry_after_ms 2000, and promotes nothing.
+func TestAShareUnderAPendingRepairIs503(t *testing.T) {
+	l := newLeaseEnv(t, 2, 2)
+	l.calls.MarkPending(l.callID, l.devs[0], l.room)
+	l.stub.mu.Lock()
+	l.stub.failUpdates = 1000
+	l.stub.mu.Unlock()
+	status, body := l.e.Do(http.MethodPost, l.sharePath(), "dev0", []any{})
+	if status != http.StatusServiceUnavailable || l.e.ErrCode(body) != "E_UNAVAILABLE" || retryAfterOf(t, body) != 2000 {
+		t.Fatalf("a share under a pending repair = %d %s, want 503 E_UNAVAILABLE with retry_after_ms 2000", status, l.e.ErrCode(body))
+	}
+	if len(l.calls.SharersOf(l.callID)) != 0 || hasCamera(l.stub.lastPerms()[l.devs[0].String()]) {
+		t.Fatal("a share under a pending repair took a slot or was promoted")
+	}
+}

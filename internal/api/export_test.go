@@ -145,3 +145,6 @@ func (h *Calls) AFKAdmissionStateForTest(user, dev id.ID) (pending, admitSeq uin
 	defer h.afkMu.Unlock()
 	return h.afkPending[dev].reason, h.afkAdmits[user][dev].seq
 }
+
+// AdoptingForTest reports whether call's room still adopts its publishers' slots (F1).
+func (h *Calls) AdoptingForTest(call id.ID, room string) bool { return h.leases.adopting(call, room) }

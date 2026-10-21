@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -527,13 +528,11 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
-	// The lease map is the devices' own from the first share after boot on (F1): no slot is adopted
-	// past it.
-	h.leases.endAdopt(cur.CallID)
 	// A request drives only its own device's repair; every other one is the retry loop's.
 	h.drainPending(ctx, h.deps(), ch, cur, 1, s.DeviceID.String())
 	if h.leases.isPending(cur.CallID, s.DeviceID) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device's access to this call is being revoked"))
+		// R-UP7, as at the start and the /rtc gate: a refusal, but a transient one.
+		server.WriteError(w, errRepairPending())
 		return
 	}
 	if err := h.refuseBarred(ctx, h.repo, s.DeviceID); err != nil {
@@ -563,6 +562,10 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
+	// The lease map is the devices' own from the first share after boot on (F1): no slot is adopted
+	// past it. Only a share that passed every gate above ends the adoption, so a barred, leafless or
+	// penalised device cannot end it for the call's real publishers.
+	h.leases.endAdopt(cur.CallID)
 	limit := h.maxPublishers()
 	taken, already := h.leases.take(cur.CallID, cur.LivekitRoom, s.DeviceID, limit, h.clk.Now().Unix())
 	if !taken {
@@ -627,9 +630,14 @@ func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store
 	if !live {
 		return nil
 	}
-	// An unshare after boot is a device's own lease decision: no slot is adopted past it (F1), so a
-	// camera the SFU still lists while it unpublishes is never adopted back.
-	h.leases.endAdopt(cur.CallID)
+	// An unshare after boot by a device that holds a slot or publishes a camera or screen is its own
+	// lease decision: no slot is adopted past it (F1), so a camera the SFU still lists while it
+	// unpublishes is never adopted back. A DELETE needs only view_channel, so one from any other
+	// device leaves the adoption alone.
+	if h.leases.adopting(cur.CallID, cur.LivekitRoom) &&
+		(h.leases.held(cur.CallID, cur.LivekitRoom, dev) || h.publishesShare(ctx, cur, dev)) {
+		h.leases.endAdopt(cur.CallID)
+	}
 	d := h.deps()
 	h.drainPending(ctx, d, ch, cur, 1, dev.String())
 	if !h.leases.held(cur.CallID, cur.LivekitRoom, dev) {
@@ -645,4 +653,29 @@ func (h *Calls) releaseShare(ctx context.Context, ch store.ChannelRow, row store
 		return server.Errorf(server.CodeInternal, "the SFU could not update the permission")
 	}
 	return nil
+}
+
+// publishesShare reports whether row's room lists dev publishing a camera or screen track. A listing
+// the SFU fails answers false. The caller holds the call's lock.
+func (h *Calls) publishesShare(ctx context.Context, row store.VoiceSessionRow, dev id.ID) bool {
+	if h.sfu == nil {
+		return false
+	}
+	lctx, cancel := sfuCtx(ctx)
+	parts, err := h.sfu.Participants(lctx, row.LivekitRoom)
+	cancel()
+	if err != nil {
+		return false
+	}
+	for _, p := range parts {
+		if p.GetIdentity() != dev.String() {
+			continue
+		}
+		for _, t := range p.GetTracks() {
+			if s := t.GetSource(); s == livekit.TrackSource_CAMERA || s == livekit.TrackSource_SCREEN_SHARE {
+				return true
+			}
+		}
+	}
+	return false
 }
