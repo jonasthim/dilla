@@ -9,7 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { CallState, CoreClient } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
-import { shareAudioAdvice } from '../../call/devices.ts';
+import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
 import type { PageCall, PageCallState } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
