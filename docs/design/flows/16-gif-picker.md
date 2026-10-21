@@ -13,7 +13,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | the composer is blocked (read-only, no permission) | the `gif` button is disabled with the rest of the composer |
 | picker open, nothing typed | trending results; the search box (`gif.search`, placeholder `gif.search.placeholder`) is focused; `aria-expanded="true"` on the button |
 | searching | `gif.loading` in the status line; results of the last search stay until the new ones arrive |
-| results | a grid of three columns, one button per GIF named by its title (`gif.untitled` when it has none); a preview that is still downloading is a plain block, and the previews fill in as they arrive |
+| results | a masonry grid of three columns (two on a phone), one button per GIF named by its title (`gif.untitled` when it has none), in reading order (left to right, then down); each tile is as tall as its own GIF's width and height make it and is never cropped; a preview that is still downloading is a plain block of that same size, so the grid does not jump as the previews fill in; a size the instance did not give is a square |
 | the instance is busy | a preview that was refused as busy is asked for again after a short pause (three tries); the others show meanwhile |
 | more results | the `gif.more` button under the grid |
 | no results | `gif.empty` in the status line |
@@ -38,7 +38,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 
 - `gif` button: Enter or Space toggles the picker; `aria-haspopup="dialog"`, `aria-expanded` follows, `aria-controls` names the picker while it is open
 - Search box: ArrowDown enters the grid
-- The grid is one tab stop that follows focus: Arrows move in two dimensions without wrapping, Home and End go to the ends, ArrowUp from the first row goes back to the search box
+- The grid is one tab stop that follows focus: ArrowLeft and ArrowRight move in reading order, ArrowUp and ArrowDown to the tile above or below in the same column, without wrapping; Home and End go to the ends; ArrowUp from a tile with none above goes back to the search box
 - A result: Enter, Space or a click picks it
 - Escape closes the picker and returns focus to the `gif` button; it goes no further
 - The settings row: Tab reaches the field or the dots' buttons in order; Enter in the field saves; Escape in the replace field cancels

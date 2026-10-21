@@ -94,6 +94,13 @@ describe('GET …/gifs/search', () => {
     expect(http.requests[0].bucket).toBe('read');
   });
 
+  it('keeps a preview size only as small positive integers: a size out of range or half a size reads as 0 by 0', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [[['a1', '', 200, 113, 'x'], ['a2', '', 0, 113, 'x'], ['a3', '', 200, 4001, 'x'], ['a4', '', 4000, 4000, 'x'], ['a5', '', 5_000_000, 1, 'x']], null]));
+    const page = await routes.gifSearch(COMMUNITY, '', 0);
+    expect(page.items.map(i => [i.id, i.width, i.height])).toEqual([['a1', 200, 113], ['a2', 0, 0], ['a3', 0, 0], ['a4', 4000, 4000], ['a5', 0, 0]]);
+  });
+
   it('reads a null next offset as the end, and ignores any URL in the answer', async () => {
     const { t, routes } = setup();
     t.replies.push(cborReply(200, [[['abc123', 't', 1, 1, 'https://media.giphy.com/x.gif']], null]));

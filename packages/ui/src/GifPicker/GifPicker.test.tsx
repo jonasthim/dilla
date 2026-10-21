@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
-import { GifPicker, type GifPickerProps } from './GifPicker.tsx';
+import { GifPicker, tileRatio, tileSpan, type GifPickerProps } from './GifPicker.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const ITEMS = [
@@ -123,5 +123,47 @@ describe('GifPicker', () => {
   it('has no serious axe violations', async () => {
     const { container } = picker({ hasMore: true });
     await expectNoAxeViolations(container);
+  });
+
+  describe('masonry tiles', () => {
+    const cell = (c: HTMLElement, id: string) => c.querySelector<HTMLElement>(`button[data-gif-id="${id}"]`)!;
+    it('sizes each tile from its own GIF: a tall and a wide result get different proportions and different heights', () => {
+      const { container } = picker({ items: [
+        { id: 'tall', title: 'tall', width: 100, height: 300, src: null }, { id: 'wide', title: 'wide', width: 300, height: 100, src: null },
+      ] });
+      expect(cell(container, 'tall').style.aspectRatio).toBe('100 / 300');
+      expect(cell(container, 'wide').style.aspectRatio).toBe('300 / 100');
+      const rows = (id: string) => Number(/span (\d+)/.exec(cell(container, id).style.gridRowEnd)![1]);
+      expect(rows('tall')).toBeGreaterThan(rows('wide'));
+      expect(rows('tall') - 4).toBeGreaterThan(8 * (rows('wide') - 4));
+    });
+    it('reserves the box before the preview loads: the placeholder tile has the same proportions and span as the loaded one', () => {
+      const a = { id: 'x', title: 'x', width: 200, height: 113 };
+      const { container, rerender } = picker({ items: [{ ...a, src: null }] });
+      const before = [cell(container, 'x').style.aspectRatio, cell(container, 'x').style.gridRowEnd];
+      expect(container.querySelector('img')).toBeNull();
+      rerender(<div><GifPicker label="gifs" searchLabel="search gifs" searchPlaceholder="search giphy" query="" onQuery={vi.fn()}
+        items={[{ ...a, src: 'blob:x' }]} status={null} poweredBy="Powered by GIPHY" untitled="gif" moreLabel="more" hasMore={false}
+        onMore={vi.fn()} pickingId={null} onPick={vi.fn()} onClose={vi.fn()} /></div>);
+      expect([cell(container, 'x').style.aspectRatio, cell(container, 'x').style.gridRowEnd]).toEqual(before);
+    });
+    it('never crops: the image is contained, and a size the instance did not give is a square, not a guess at a crop', () => {
+      expect(tileRatio({ width: 0, height: 0 })).toBe('1 / 1');
+      expect(tileRatio({ width: 200, height: 113 })).toBe('200 / 113');
+      expect(tileSpan({ width: 100, height: 200 }, 100)).toBe(204);
+      expect(tileSpan({ width: 0, height: 0 }, 100)).toBe(104);
+      expect(tileSpan({ width: 400, height: 20 }, 100, 44)).toBe(48);
+    });
+    it('keeps reading order: the DOM order is the item order and Right then Down walk it', async () => {
+      const user = userEvent.setup();
+      const { container } = picker();
+      await user.click(screen.getByRole('searchbox', { name: 'search gifs' }));
+      await user.keyboard('{ArrowDown}');
+      expect(cell(container, 'a1')).toHaveFocus();
+      await user.keyboard('{ArrowRight}{ArrowRight}');
+      expect(cell(container, 'c3')).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      expect(cell(container, 'c3')).toHaveFocus();
+    });
   });
 });

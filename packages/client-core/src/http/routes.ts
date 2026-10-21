@@ -137,7 +137,15 @@ const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
 export const GIF_RATINGS = ['g', 'pg', 'pg-13', 'r'] as const;
 export type GifRating = typeof GIF_RATINGS[number];
 export interface GifStatus { on: boolean; rating: GifRating }
+/** A search result. `width` and `height` are the preview's size in pixels: whole numbers of 1 to GIF_DIM_MAX, or both 0 when unknown. */
 export interface GifItem { id: string; title: string; width: number; height: number }
+/** The largest preview side the instance passes on. */
+export const GIF_DIM_MAX = 4000;
+/** A preview's width and height as small positive integers, or both 0: the instance is not trusted to have checked. */
+export function gifDims(w: number, h: number): [number, number] {
+  const ok = (n: number) => Number.isInteger(n) && n >= 1 && n <= GIF_DIM_MAX;
+  return ok(w) && ok(h) ? [w, h] : [0, 0];
+}
 export interface GifPage { items: GifItem[]; next: number | null }
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
@@ -808,7 +816,8 @@ export class Routes {
       const gifId = str(row[0]);
       // An id the instance should never send is dropped, not trusted into a path.
       if (!GIF_ID.test(gifId)) continue;
-      items.push({ id: gifId, title: str(row[1]), width: u53(row[2]), height: u53(row[3]) });
+      const [width, height] = gifDims(u53(row[2]), u53(row[3]));
+      items.push({ id: gifId, title: str(row[1]), width, height });
     }
     return { items, next: opt(a[1], u53) };
   }
