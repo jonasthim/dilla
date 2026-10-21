@@ -39,6 +39,14 @@ type Options struct {
 	// composition root can cut the device from its live calls. Nil does nothing.
 	OnFactorOwed func(device id.ID)
 
+	// OnUserOffline runs once a user's last live connection has left the registry (AW2, Q2: offline
+	// clears AFK at once). A second open connection, of any device of the user, keeps it from
+	// running. It runs on the goroutine that removed the connection. Nil does nothing.
+	OnUserOffline func(user id.ID)
+	// OnTyping runs after an accepted typing_set on (AW2, Q1: typing is activity), with the user and
+	// the channel. Nil does nothing.
+	OnTyping func(ctx context.Context, user, channel id.ID)
+
 	// Outstanding reports a group's non-void instance proposals, for ready's per-group digest.
 	// The delivery service sets it in task 21; nil reads as 0.
 	Outstanding func(ctx context.Context, groupID id.ID) uint64
@@ -362,7 +370,12 @@ func (g *Gateway) addLive(c *conn) {
 // removeLive takes a connection out of the live registry, decrementing the gauge only if this
 // call is the one that removed it.
 func (g *Gateway) removeLive(c *conn) {
-	if g.reg.remove(c) {
+	if removed, last := g.reg.remove(c); removed {
+		// A shutdown's closes are no user going offline: the stored away roster outlives a
+		// restart for the users who reconnect (AW2, R-AW5).
+		if last && g.opts.OnUserOffline != nil && !g.isDraining() {
+			g.opts.OnUserOffline(c.userID)
+		}
 		if len(g.reg.connsOfDevice(c.deviceID)) == 0 {
 			g.presence.clearActivity(c.deviceID)
 		}
@@ -573,6 +586,19 @@ func (g *Gateway) Online(deviceID id.ID) bool {
 		}
 	}
 	return false
+}
+
+// isDraining reports whether Shutdown has begun.
+func (g *Gateway) isDraining() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.draining
+}
+
+// UserConnected reports whether the user holds any live connection, ready or not, on any device.
+// A connection in the resume window is not live.
+func (g *Gateway) UserConnected(userID id.ID) bool {
+	return len(g.reg.connsOfUser(userID)) > 0
 }
 
 func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {

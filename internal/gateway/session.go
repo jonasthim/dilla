@@ -772,6 +772,10 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 	for _, user := range audience {
 		g.DeliverUser(user, Frame{Op: OpTyping, Payload: p})
 	}
+	// Typing is activity (AW2, Q1): it takes the user out of the community's AFK list.
+	if on == 1 && g.opts.OnTyping != nil {
+		g.opts.OnTyping(ctx, c.userID, channel)
+	}
 }
 
 func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
