@@ -334,8 +334,15 @@ var (
 	discardSink = slog.DiscardHandler
 )
 
-// installLiveKitLogger points LiveKit's and pion's logs at next. The first call installs the logger;
-// every later call only swaps the handler, so LiveKit's package-level logger is written exactly once.
+// init installs the logger before any goroutine can read it. LiveKit starts such goroutines outside
+// Start (prometheus.Init's hwstats sampler logs "high cpu load" while the host is busy), so a first
+// install made later, from Start, would write the package-level logger under a running reader.
+// Until a Start supplies a handler the bridge discards.
+func init() { installLiveKitLogger(nil) }
+
+// installLiveKitLogger points LiveKit's and pion's logs at next. The first call, at package init,
+// installs the logger; every later call only swaps the handler, so LiveKit's package-level logger is
+// written exactly once, before any reader exists.
 func installLiveKitLogger(next slog.Handler) {
 	if next == nil {
 		next = slog.DiscardHandler

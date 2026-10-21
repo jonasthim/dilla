@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-21 ("web-3.9"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-21 ("web3.10"): starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -207,18 +207,34 @@ again.
 ### Members
 
 The **members** button in the channel header opens the list of "members of {server}", grouped by role: one group
-for each role shown apart, highest first ("{name} — {count}"), then "members". A row can carry the tags `owner`,
-`you` and `bot`. Each row is two lines tall: the name and tags on the first, and the second kept for a status line
-(nothing fills it yet). On a wide window the list is a column beside the conversation. On a phone, or any window narrower
-than 64 rem, it is a panel over the screen: focus moves into it, and **close members**, Escape or a tap outside it
-closes it. Focus goes back to **members**.
+for each role shown apart, highest first ("{name} — {count}"), then "members". A row is the avatar with its status
+dot and the name, centred in the row; there are no "owner" or "you" tags in it, and a bot keeps a small "bot" tag after its name, as in Discord. A person's name is drawn in the colour of their highest
+coloured role (in the normal text colour when that colour would be hard to read in your theme), and the owner has a small
+crown after the name. A person who has set a status line shows it under the name, and then the row is two lines tall. On a
+wide window the list is a column beside the conversation. On a phone, or any window narrower than 64 rem, it is a panel
+over the screen: focus moves into it, and **close members**, Escape or a tap outside it closes it. Focus goes back to
+**members**.
 
-![The member list beside #general: Ada with the tag owner, Björn, and Mira with the tag you, each with a status dot](screenshots/members-desktop.png)
+![The member list beside #general with a profile card open: Ada with a crown, Björn and Mira, each with a status dot, and
+Björn's card with his roles and actions](screenshots/members-desktop.png)
 
-Each row has an **actions for {name}** button. Right-click on the row, or Shift+F10 or the ContextMenu key with the
-row focused, opens the same menu. In the menu, Down and Up move between the items, Home and End jump to the first and
-last, Enter runs one and Escape closes it. The items are **message**, **compare safety numbers**, and, if your roles
-allow it and the person's highest role is below yours, **kick** and **ban**.
+A whole row is one button. Click it, press Enter on it, right-click it, or press Shift+F10 or the ContextMenu key with the
+row focused, and it opens that person's **profile card**. On a wide window the card is a popover beside the row; on a phone
+it is a sheet from the bottom. The card shows a large avatar, the name, the @username, the status ("online", "idle", "do not
+disturb" or "offline", then the status line if there is one), "owner" and "you" where they apply (these two words are only in
+the card, never in the list), the person's roles as coloured chips, and the actions. Escape or **close** shuts the card and
+puts focus back on the row; Tab stays inside it. Only one card is open at a time.
+
+The actions are **message** and **compare safety numbers** (neither on your own card), **edit roles** if your roles let you
+manage roles, and **kick** and **ban**. Kick and ban follow rank: they are offered only if your roles allow kicking or
+banning and the person's highest role is below yours. The owner is never offered them, and you are not offered them on
+yourself. The server still checks every kick and ban.
+
+A mention of a person in a message, and a message's author name or avatar, open the same card, in channels and in threads
+(on a phone, inside the thread sheet). The card sits under the mention or the name. Tab reaches the mention and the author name
+inside the message, Enter opens the card and Escape closes it and returns to where you were. A mention of someone who has
+left the server opens a card with no roles and no actions, titled "former member" because the server no longer tells us their name, and only while one of their messages is still
+held in this browser. Role mentions and @everyone are not clickable. In direct messages a mention is plain text for now.
 
 **kick** asks "Kick {name} from {server}?": "{name} leaves every channel and call of {server} at once. They can
 join again with an invite. Messages they already received stay on their devices." Focus starts on **Cancel**. **Kick**
@@ -278,7 +294,7 @@ has no buttons. The screen announces "{name} moved." after a move.
 
 - "Role name": up to 100 characters (fewer for some letters). Everyone in the server, and the host, can read it.
 - "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
-  grey). The colour shows as a dot beside the names of people who hold the role in the member list. The arrow keys
+  grey). The colour shows on the names of people who hold the role in the member list, and on the role's chip in their profile card. The arrow keys
   move between swatches.
 - **show separately in the member list** gives the role its own group in the member list, highest first.
 - **anyone can mention this role** marks the role mentionable. Anyone can mention a role marked mentionable; other
@@ -314,7 +330,7 @@ you would trust with the whole server.
 
 ### Give roles to people
 
-Open the member list, open **actions for {name}** and choose **roles**. The dialog "Roles of {name}" says "Tick a
+Open the member list, open the person's profile card and press **edit roles**. The dialog "Roles of {name}" says "Tick a
 role to give it to {name}, untick it to take it away. Each change applies at once." A role at or above your highest
 role is switched off: "{role} is at or above your highest role." Each change is announced: "{role} given to
 {name}." or "{role} taken from {name}." If there is nothing you can give, it says "There are no roles you can give
@@ -719,8 +735,9 @@ From left to right:
   server can read ("Readable by this server") are listed, and selecting one shows "This channel does not open here
   yet". An unread channel has a badge, and mentions have their own count. Opening a channel marks it read.
 - **The conversation.** The channel's name at the top, with a row of icons at the right ([The header](#the-header)), the messages, and the message field
-  ("message #general") with **send**. Each message shows the author's display name, a small `web` tag when it
-  was sent from a browser, and the time. A message is at most 4000 bytes; in the last 400 the field shows
+  ("message #general") with **send**. Each message shows the author's display name, a small `web` tag whenever it
+  was sent from a browser (always shown, so pointing at a message never moves it), and the time. Click the author's name or
+  avatar to open their profile card ([Members](#members)). A message is at most 4000 bytes; in the last 400 the field shows
   how many are left. While a message is on its way it shows "sending…"; one that could not be sent shows "not sent" with
   **retry** and **discard**.
 - **The side panel.** The member list, a thread or the pins, in a column on the right while the window is wide.
@@ -775,7 +792,8 @@ conversation narrower](screenshots/panes-resized-desktop.png)
 Drag the borders between the channel list, the conversation and the side panel to give a pane more room. The same
 works with the keyboard: Tab to a border (it is named "resize the channel list" or "resize the side panel"), then
 press Arrow Left or Arrow Right (1 rem a press, 4 rem with Shift), Home or End for the smallest or largest width, or
-Enter to reset it. A double-click on a border resets it too. The conversation never gets narrower than 24 rem. The
+Enter to reset it. A double-click on a border resets it too. The border between the channel list and the conversation runs the full height of
+the window, beside the call panel and your user panel as well, and you can drag it from anywhere along that line. The conversation never gets narrower than 24 rem. The
 side panel has a border only while it is a column, which is when the window is at least 64 rem wide; narrower than
 that it opens over the conversation. The widths are kept in this browser only, not in your account.
 
@@ -789,7 +807,7 @@ a speaker icon. While people are in it, it shows how many, and the people in the
 small icons for what they are doing (muted, deafened, camera, screen share; point at an icon for its name) and a ring
 around the avatar of whoever is speaking. There is no separate "voice" section and no "active voice" list. On a computer,
 one click on a voice channel joins it; on a phone, tap it to see who is there, then join ([Voice, calls and media
-files](voice.md)). The server's "AFK" channel is in the list too ([AFK channels](voice.md#afk-channels)).
+files](voice.md)). The server's "AFK" channel is in the list too, always the very last row, below every category ([AFK channels](voice.md#afk-channels)).
 
 ### The user panel
 
@@ -801,10 +819,10 @@ The bottom left of the app is yours, across the rail and the channel list:
   ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
   press them, in a call or out of one;
 - **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
-- **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose Online, Idle, Do Not Disturb or Invisible; there is no status select in the sidebar. It follows your account to your other devices. Online
-  becomes Idle after ten minutes without activity on any of your connected devices (a status you chose yourself
-  stays). Do Not Disturb stops desktop notifications and the ring sound on every device; messages, badges and the
-  in-app banner for a call still show. Invisible hides your status from other members, though not that you are typing
+- **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose online, idle, do not disturb or invisible; there is no status select in the sidebar. It follows your account to your other devices. online
+  becomes idle after ten minutes without activity on any of your connected devices (a status you chose yourself
+  stays). do not disturb stops desktop notifications and the ring sound on every device; messages, badges and the
+  in-app banner for a call still show. invisible hides your status from other members, though not that you are typing
   or in a call. The member list groups people by role and shows who is online; offline and invisible people sit
   together at the bottom, and the headings of roles shown apart carry the role's colour.
 
@@ -1152,6 +1170,24 @@ reduced motion, an outline instead of the animation). When the original is furth
 cannot read it: "the original message cannot be shown here". When it was deleted: "the original message was
 deleted".
 
+### Formatting a message
+
+A message can use a few markdown marks. They are shown when you read the message; the box where you write, and
+the editor, always show what you typed.
+
+- `**bold**`, `*italic*` or `_italic_`, and `~~struck through~~`.
+- `` `code` `` inside a line, and a block between two lines of three backticks.
+- `> ` at the start of a line makes a quote.
+- A web address that starts with `http://` or `https://`, or an email address written `mailto:name@example.com`, becomes
+  a link. It shows the address it opens (a name with letters outside a to z is shown in its `xn--` form, so a lookalike
+  cannot pass for the real site) and opens in a new tab. dilla never loads the page by itself. A `mailto:` link is the
+  bare address; anything after a `?` is not linked.
+- A backslash before a mark (`\*`) shows the mark as it is. A mark that is never closed is shown as typed.
+- Anything else stays as typed, including raw HTML and `[text](address)`. Other kinds of address, such as
+  `javascript:`, are never links.
+
+Mentions still work inside bold or a quote, and not inside code.
+
 ### Reactions
 
 **react**, or **add a reaction** under a message that already has reactions, opens "pick a reaction": 32 emoji in
@@ -1181,7 +1217,8 @@ the text you typed, so it always shows their current name. A message that mentio
 mention badge and notifies you as your notification settings say (section 8). `@everyone` mentions everyone in the
 channel; typing `@here` does the same (the client does not know who is online, so it offers no separate entry);
 direct messages offer neither. A mention of a role shows as the role's name and counts as a mention of you once this browser has loaded the
-server's member list ([Role mentions](#role-mentions)).
+server's member list ([Role mentions](#role-mentions)). A mention of a person is a button: click it, or Tab to it and press Enter, to open
+their profile card ([Members](#members)); role mentions and @everyone are not.
 
 ### Images and files
 
@@ -1365,7 +1402,7 @@ and when the other tab closes it takes over by itself.
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
   content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
-- The web client has no profile screens. Invite links are made under server settings → invites, with the expiry and
+- The web client has a profile card for a member but no profile you can edit, and no card in direct messages (a mention there is plain text). A former member's mention opens a card only while one of their messages is held in this browser. Invite links are made under server settings → invites, with the expiry and
   uses you choose ([Run your server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or
   ban gives no way to tell the person why.
 - Roles and private channels: the host refuses posts from people without **send messages** and enforces slow mode, but
@@ -1378,7 +1415,7 @@ and when the other tab closes it takes over by itself.
   its own.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
-- No link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
+- No link previews, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
   plays only the listed audio and video types. Received link previews are not shown.
 - Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
@@ -1416,7 +1453,7 @@ The test peer has no display name of its own (the testkit driver cannot set one)
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
 identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.9 ada makes the categories Raids and Boats and sets the inactive timeout (server settings), mira opens Home, taps a
-message on the phone, goes AFK (the AFK row then lists her as away) and shoots the dock, the member list and a header tooltip. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
+message on the phone, goes AFK (the AFK row then lists her as away) and shoots the dock, the member list and a header tooltip. For web3.10 mira then opens Björn's profile card from the member list, and the dock and the member list are re-shot with the new rows. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
 common phone size, from the same session: the home tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and

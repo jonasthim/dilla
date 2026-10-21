@@ -70,6 +70,12 @@ export const MentionsMe: Story = {
   args: { author: 'mira', time: '21:05', mention: true,
     body: [{ kind: 'mention', label: '@ada', me: true, broadcast: false }, { kind: 'text', text: ' are you bringing the map?' }] },
 };
+/** MP7: a user mention and the author name are buttons that open a profile card; role and broadcast pills stay plain. */
+export const OpensProfile: Story = {
+  args: { author: 'mira', authorId: 'u-mira', time: '21:05', onOpenProfile: () => undefined,
+    body: [{ kind: 'mention', label: '@ada', me: false, broadcast: false, userId: 'u-ada' }, { kind: 'text', text: ' and ' },
+      { kind: 'mention', label: '@everyone', me: false, broadcast: true }, { kind: 'text', text: ' take a look' }] },
+};
 /** A role mention carries its role colour as a dot before the name; the text keeps its token colour. */
 export const RoleMention: Story = {
   args: { author: 'mira', time: '21:05',
@@ -105,9 +111,9 @@ export const ThreadChipActive: Story = {
     ]} /> },
 };
 
-// web3.9 (R29, G2, R30): a grouped row, a hover-only device tag, and a phone row that reveals its toolbar on a tap.
+// web3.9 (R29, G2, R30): a grouped row, an always-shown device tag, and a phone row that reveals its toolbar on a tap.
 export const Grouped: Story = { args: { grouped: true, time: '21:03', body: 'i have the map' } };
-export const DeviceTagOnHover: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web', deviceTag: 'hover' } };
+export const DeviceTagAlways: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web' } };
 const phoneToolbar = (
   <MessageToolbar label="actions for this message" tabbable items={[
     { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },

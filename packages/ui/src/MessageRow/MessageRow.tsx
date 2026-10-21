@@ -1,4 +1,4 @@
-import { useId, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
@@ -7,11 +7,26 @@ import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
-/** A piece of a message body: plain text, or a mention shown as a pill whose text is its `@` name. */
-export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null };
+/**
+ * A piece of a message body: plain text, a mention shown as a pill whose text is its `@` name, or markdown (E5). The
+ * formatting parts nest; code, code blocks and links carry only text. Nothing here is HTML: the row renders each as a React element.
+ */
+export type BodyPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null; /** A user mention's id: with `onOpenProfile` the pill is a button that opens that user's card. Role and broadcast pills have none. */ userId?: string }
+  | { kind: 'strong' | 'em' | 'strike' | 'quote'; children: readonly BodyPart[] }
+  | { kind: 'code'; text: string }
+  /** `lang` is the fence's language word, shown on the block. */
+  | { kind: 'codeblock'; text: string; lang?: string }
+  /** A link. The row shows the href itself as its text (never `text`), isolated left to right, and renders an anchor only for an `http:`, `https:` or bare `mailto:` href; any other is plain `text`. */
+  | { kind: 'link'; href: string; text: string };
 
 export interface MessageRowProps {
   author: string;
+  /** The author's id: with `onOpenProfile` the name and the avatar open the author's profile card. */
+  authorId?: string;
+  /** Opens a user's profile card, anchored to `anchor` (a mention pill, the author name or the avatar). */
+  onOpenProfile?(userId: string, anchor: HTMLElement, from: 'mention' | 'author'): void;
   time: string;
   body: string | readonly BodyPart[];
   own?: boolean;
@@ -44,8 +59,6 @@ export interface MessageRowProps {
   grouped?: boolean;
   /** The grouped row's gutter time, compact enough for the avatar column and its gap (the full `time` stays for screen readers). */
   gutterTime?: string;
-  /** `hover`: the device tag shows only while the row is hovered or holds focus. Default `always`. */
-  deviceTag?: 'always' | 'hover';
   /** Phone only: the toolbar is rendered only while revealed. Off a phone the toolbar is always rendered. */
   revealed?: boolean;
   /** Phone only: a tap on the row body or Enter on the row asks to reveal (true); Escape or a second tap asks to hide (false). */
@@ -53,17 +66,37 @@ export interface MessageRowProps {
 }
 
 /** A click that starts on one of these is that control's own, not a tap on the row body. */
-const INTERACTIVE = 'button, a, input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
+const INTERACTIVE = 'button, a, [data-profile="true"], input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 
-/** The body's parts as text children and mention pills: never HTML, never the raw token. */
-function bodyChildren(body: string | readonly BodyPart[]): ReactNode {
+const SAFE_HREF = /^(?:https?:\/\/[^\s/]\S*|mailto:[^\s?]+)$/i;
+
+/** The body's parts as text children and mention pills: never HTML, never the raw token. A user pill is a button when the caller can open a profile. */
+function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOpenProfile: MessageRowProps['onOpenProfile']): ReactNode {
   if (typeof body === 'string') return body;
-  return body.map((part, i) => (part.kind === 'text'
-    ? part.text
-    : <span key={i} className="d-mention" data-me={flag(part.me)} data-broadcast={flag(part.broadcast)}>
-      {part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</span>));
+  return body.map((part, i) => {
+    switch (part.kind) {
+      case 'text': return part.text;
+      case 'strong': return <strong key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</strong>;
+      case 'em': return <em key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</em>;
+      case 'strike': return <s key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</s>;
+      case 'quote': return <blockquote key={i} className="d-message-row__quote">{bodyChildren(part.children, tabIndex, onOpenProfile)}</blockquote>;
+      case 'code': return <code key={i} className="d-message-row__code">{part.text}</code>;
+      case 'codeblock': return <pre key={i} className="d-message-row__codeblock" data-lang={part.lang}><code>{part.text}</code></pre>;
+      case 'link':
+        // Defence in depth: the parser already refuses other schemes; an href that is not exactly http(s) or mailto is shown as the text it came with.
+        if (!SAFE_HREF.test(part.href)) return part.text;
+        return <a key={i} className="d-link" href={part.href} target="_blank" rel="noopener noreferrer nofollow" dir="ltr" tabIndex={tabIndex}>{part.href}</a>;
+      case 'mention': {
+        const inner = <>{part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</>;
+        const attrs = { className: 'd-mention', 'data-me': flag(part.me), 'data-broadcast': flag(part.broadcast) };
+        if (part.userId === undefined || onOpenProfile === undefined) return <span key={i} {...attrs}>{inner}</span>;
+        const userId = part.userId;
+        return <button key={i} type="button" {...attrs} tabIndex={tabIndex} onClick={e => onOpenProfile(userId, e.currentTarget, 'mention')}>{inner}</button>;
+      }
+    }
+  });
 }
 
 function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['reply']>; tabIndex: number }) {
@@ -106,16 +139,21 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, deviceTag, revealed, onReveal,
+  author, authorId, onOpenProfile, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
+  // The author name and the pills come after the row in the tab order but are stops only while focus is in the row, so a Shift+Tab from after the log lands on the row itself.
+  const [inside, setInside] = useState(false);
+  const profileTab = active === true && inside ? 0 : -1;
   const showBody = state === 'ok' || state === 'pending' || state === 'failed';
   const headState = (state === 'pending' || state === 'failed') && !!stateLabel;
   const note = (state === 'cannot-read' || state === 'deleted') && !!stateLabel;
   const showDetail = (state === 'cannot-read' || state === 'failed') && !!detail;
 
+  const authorEl = useRef<HTMLButtonElement>(null);
+  const opens = authorId !== undefined && onOpenProfile !== undefined;
   const phone = usePhoneLayout();
   const reveals = phone && onReveal !== undefined;
 
@@ -148,17 +186,23 @@ export function MessageRow({
 
   return (
     <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown} onClick={reveals ? onRowClick : undefined}
+      onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setInside(false); }}
       data-state={state} data-own={flag(own)} data-active={flag(active)}
       data-seq={seq ?? undefined} data-msg-id={msgId ?? undefined}
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
       {grouped === true
         ? <span className="d-message-row__gutter" aria-hidden="true">{gutterTime ?? time}</span>
-        : <span className="d-message-row__avatar" aria-hidden="true"><Avatar name={author} /></span>}
+        : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
+          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} /></span>}
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId}>
-          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>{author}</span>
-          {tag ? (deviceTag === 'hover' ? <span className="d-message-row__tag" data-reveal="hover"><Tag kind={tag} /></span> : <Tag kind={tag} />) : null}
+          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>
+            {opens && grouped !== true
+              ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={profileTab} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
+              : author}
+          </span>
+          {tag && grouped !== true ? <Tag kind={tag} /> : null}
           <span className={grouped === true ? 'd-message-row__time d-sr-only' : 'd-message-row__time'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}
           {pinnedLabel !== undefined ? <span className="d-message-row__pinned">{pinnedLabel}</span> : null}
@@ -166,7 +210,7 @@ export function MessageRow({
         </p>
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
-        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body)}</p> : null}
+        {editor !== undefined ? editor : showBody ? <div className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</div> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (

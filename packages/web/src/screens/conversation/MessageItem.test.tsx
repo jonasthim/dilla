@@ -94,6 +94,9 @@ describe('a message row on a phone (R30)', () => {
     expect(toolbar(rowOf(P1))).toBeNull();
     expect(toolbar(rowOf(P2))).not.toBeNull();
     await user.tab();
+    // MP7: the author name is the row's first inner stop, the toolbar follows.
+    expect(rowOf(P2).querySelector('.d-message-row__author-open')).toHaveFocus();
+    await user.tab();
     expect(within(toolbar(rowOf(P2))!).getAllByRole('button')[0]).toHaveFocus();
     // Enter on a row that focus already revealed keeps it; Escape hides it.
     act(() => rowOf(P2).focus());

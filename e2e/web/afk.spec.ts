@@ -11,10 +11,10 @@
 // (Shell.tsx), so noise suppression stays on until step 9.
 //
 // What it proves (Jonas's decisions, wave plan R1-R5, brief R33-R35; AW5/AW6, R-AW1-R-AW7: AFK means disconnected):
-// - every server has exactly one built-in "AFK" voice channel, listed last;
+// - every server has exactly one built-in "AFK" voice channel, listed as the very last row of the list (below every category, MP6);
 // - an administrator renames it and moves it into a category, but finds no delete and no permissions for it, and the
 //   instance refuses its delete (403 E_FORBIDDEN; an ordinary channel's delete passes); it has no reorder controls and
-//   stays last in its category at 2^30 when a sibling moves (R-AFK8);
+//   stays last at 2^30 in settings when a sibling moves (R-AFK8);
 // - the inactive timeout is 1, 5, 15, 30 or 60 minutes, 5 by default, with no off;
 // - the AFK channel never hosts a call: an idle desktop is cut by itself, `afk.moved` is said once and no removal line
 //   ever, on the cut person's screen reader and on that of the other person in the call he left, and it joins nothing;
@@ -233,15 +233,13 @@ async function listOrder(page: Page): Promise<string[]> {
   }));
 }
 /** The AFK row is the last of the list's rows that stand in no category (R42: the built-in position is below every channel a
- *  client makes), a voice row with the speaker glyph. With no category that is the list's last row. */
+ *  client makes), a voice row with the speaker glyph. It is always the list's very last row, below every category (MP6). */
 async function expectAfkLast(page: Page, name: string): Promise<void> {
   await expect(voiceRow(page, name)).toBeVisible({ timeout: WAIT });
   await expect(voiceRow(page, name).locator('[data-icon="volume-2"]')).toHaveCount(1);
   await expect.poll(async () => {
-    const order = await listOrder(page);
-    const firstCategory = order.findIndex((r) => r.startsWith('category '));
-    return (firstCategory < 0 ? order : order.slice(0, firstCategory)).at(-1);
-  }, { timeout: WAIT, message: `${name} is the last row outside a category` }).toBe(copy('voice.open', { name }));
+    return (await listOrder(page)).at(-1);
+  }, { timeout: WAIT, message: `${name} is the very last row of the list (MP6)` }).toBe(copy('voice.open', { name }));
 }
 /** A new voice channel `name` in Lounge, from that category's own "+" (with categories the list head has none, A1). */
 async function makeVoice(page: Page, name: string): Promise<void> {
@@ -420,7 +418,7 @@ test('3. no delete, no permissions and no reorder for AFK in server settings, th
   expect(await write(a, 'DELETE', `/v1/channels/${afkId}${overwrite}`), 'an overwrite delete on the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
   expect(await write(a, 'DELETE', `/v1/channels/${generalVoiceId}${overwrite}`), 'the control overwrite goes again').toEqual({ status: 204, code: null });
 
-  // R-AFK8: Idle has no reorder controls and stays last in Lounge at 2^30 when a sibling moves. Two ordinary voice channels
+  // R-AFK8: Idle has no reorder controls and stays last at 2^30 in Lounge's settings run when a sibling moves; the sidebar shows it as the very last row. Two ordinary voice channels
   // join it there; the last of them cannot move down past Idle, and the other moves up.
   await makeVoice(a.page, 'spare');
   await makeVoice(a.page, 'extra');
@@ -442,7 +440,7 @@ test('3. no delete, no permissions and no reorder for AFK in server settings, th
   await expect.poll(async () => {
     const rows = await listOrder(a.page);
     return rows.slice(rows.indexOf(`category ${CATEGORY}`) + 1);
-  }, { timeout: WAIT, message: 'the channel list: Idle last in Lounge' }).toEqual(['extra', 'spare', RENAMED].map((name) => copy('voice.open', { name })));
+  }, { timeout: WAIT, message: 'the channel list: Idle the very last row, after Lounge (the only category)' }).toEqual(['extra', 'spare', RENAMED].map((name) => copy('voice.open', { name })));
   const positions = new Map(arr(await read(a, `/v1/communities/${communityId}/channels`)).map((v) => [hex(arr(v)[0]), Number(arr(v)[7])]));
   expect(positions.get(afkId), 'Idle keeps the reserved position 2^30').toBe(2 ** 30);
   const made = (await channelsOf(a)).filter((c) => c.name === 'spare' || c.name === 'extra');

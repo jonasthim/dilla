@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { ChannelSummary, DeviceSummary, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { formatDay, formatTime } from '../strings/index.ts';
 import {
-  authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
+  authorName, knownName, badgeLabel, bodyParts, withSenders, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
   mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
   stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, selfName, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
@@ -25,6 +25,22 @@ const LIST = [
 describe('orderChannels', () => {
   it('lists top level first, then each category with its children, and never a category', () => {
     expect(orderChannels(LIST).map(c => c.name)).toEqual(['lounge', 'general', 'news', 'orphan', 'random', 'lobby']);
+  });
+});
+
+describe('orderChannels with an AFK channel (MP6)', () => {
+  const afk = ch(id('a'), 'AFK', { kind: 1, parentId: id('9'), position: 1 << 30 });
+  const list = [...LIST, afk, ch(id('b'), 'later', { kind: 2, position: 3 }), ch(id('c'), 'late', { parentId: id('b'), position: 0 })];
+  it('puts the AFK channel last, below every category, and Alt+Down reaches it as the last stop', () => {
+    const ordered = orderChannels(list, new Set([id('a')]));
+    expect(ordered.map(c => c.name)).toEqual(['lounge', 'general', 'news', 'orphan', 'random', 'lobby', 'late', 'AFK']);
+    expect(stepChannel(ordered, id('c'), 1)?.name).toBe('AFK');
+    expect(stepChannel(ordered, id('a'), 1)?.name).toBe('AFK');
+    expect(stepChannel(ordered, id('a'), -1)?.name).toBe('late');
+  });
+  it('is unchanged without an AFK set', () => {
+    expect(orderChannels(list).map(c => c.name).at(-1)).toBe('late');
+    expect(orderChannels(LIST, new Set()).map(c => c.name)).toEqual(['lounge', 'general', 'news', 'orphan', 'random', 'lobby']);
   });
 });
 
@@ -170,9 +186,9 @@ describe('names in bodies (L-TS-37)', () => {
     const body = `hi <@${BOB}> and <@${SELF.id}>, <@everyone> <@here> <@${ROLE}> <@${OTHER}> <@${UNKNOWN}> <@NOPE>`;
     expect(bodyParts(body, book, true)).toEqual([
       { kind: 'text', text: 'hi ' },
-      { kind: 'mention', label: '@bob', me: false, broadcast: false },
+      { kind: 'mention', label: '@bob', me: false, broadcast: false, userId: BOB },
       { kind: 'text', text: ' and ' },
-      { kind: 'mention', label: '@Ada L', me: true, broadcast: false },
+      { kind: 'mention', label: '@Ada L', me: true, broadcast: false, userId: SELF.id },
       { kind: 'text', text: ', ' },
       { kind: 'mention', label: '@everyone', me: true, broadcast: true },
       { kind: 'text', text: ' ' },
@@ -199,10 +215,21 @@ describe('names in bodies (L-TS-37)', () => {
       { kind: 'text', text: ' ' },
       { kind: 'mention', label: '@role', me: false, broadcast: false },
     ]);
-    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false, userId: SELF.id }]);
   });
   it('names the own user by username when no member row holds it', () => {
-    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false, userId: SELF.id }]);
+  });
+  it('MP7: an id is a user pill only when it is known to be a user: a member, self, or a sender we hold', () => {
+    expect(bodyParts(`<@${UNKNOWN}>`, book, false)).toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false }]);
+    expect(bodyParts(`<@${UNKNOWN}>`, withSenders(book, [{ senderUser: UNKNOWN }]), false))
+      .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false, userId: UNKNOWN }]);
+    expect(bodyParts(`<@${UNKNOWN}>`, withSenders(book, [{ senderUser: null }, { senderUser: BOB }]), false))
+      .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false }]);
+  });
+  it('L4: knownName gives a shown name only when it is not the 8-character id fallback', () => {
+    expect(knownName('eeeeeeee', UNKNOWN)).toBe('');
+    expect(knownName('Bob', UNKNOWN)).toBe('Bob');
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))

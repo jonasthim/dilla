@@ -36,8 +36,11 @@ const meta = {
   args: {
     phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
     labels: {
-      region: 'voice controls', connecting: 'connecting', connected: 'voice connected', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
+      region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
       paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
+      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+      stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+      quality: { good: 'good', poor: 'poor', bad: 'bad' },
       why: { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' },
     },
     camera: false, sharing: false, canCamera: true, canShare: true,
@@ -52,10 +55,49 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Connected: Story = { args: { announcement: 'You joined harbour.' } };
+/** MP5: line 2 is checked in the browser: the quality colours it (normal, warn, danger), it uses tabular numerals and stays on one line. */
+function expectStats(root: HTMLElement, story: string, quality: string, colour: string | null): void {
+  const stats = root.querySelector<HTMLElement>('.d-voice-dock__stats');
+  if (stats === null) throw new Error(`${story}: no stats on line 2`);
+  if (stats.dataset.quality !== quality) throw new Error(`${story}: quality ${String(stats.dataset.quality)}, not ${quality}`);
+  const style = getComputedStyle(stats);
+  if (!style.fontVariantNumeric.includes('tabular-nums')) throw new Error(`${story}: the stats do not use tabular numerals`);
+  const line2 = root.querySelector<HTMLElement>('.d-voice-dock__where')!;
+  if (line2.getBoundingClientRect().height > parseFloat(getComputedStyle(line2).lineHeight) * 1.5) throw new Error(`${story}: line 2 wraps`);
+  const probe = document.createElement('span');
+  probe.style.color = colour === null ? 'var(--fg-2)' : `var(${colour})`;
+  root.append(probe);
+  const want = getComputedStyle(probe).color;
+  probe.remove();
+  if (style.color !== want) throw new Error(`${story}: the stats are ${style.color}, not ${want}`);
+}
+const link = { rttMs: 24, upKbps: 48, downKbps: 96 } as const;
+export const Connected: Story = { args: { announcement: 'You joined harbour.', stats: { ...link, quality: 'good' } },
+  play: ({ canvasElement }) => { expectDock(canvasElement, 'VoiceDock'); expectStats(canvasElement, 'Connected', 'good', null); } };
+/** 150 to 300 ms: the stats turn warn. */
+export const PoorLink: Story = { args: { stats: { rttMs: 210, upKbps: 40, downKbps: 88, quality: 'poor' } },
+  play: ({ canvasElement }) => { expectDock(canvasElement, 'VoiceDock'); expectStats(canvasElement, 'PoorLink', 'poor', '--warn'); } };
+/** Over 300 ms or over 5 % loss: the stats turn danger. */
+export const BadLink: Story = { args: { stats: { rttMs: 412, upKbps: 3, downKbps: 12, quality: 'bad' } },
+  play: ({ canvasElement }) => { expectDock(canvasElement, 'VoiceDock'); expectStats(canvasElement, 'BadLink', 'bad', '--danger'); } };
+/** Before the first sample (the first two seconds, or no candidate pair): "— ms". */
+export const NoSampleYet: Story = {
+  play: ({ canvasElement }) => {
+    expectDock(canvasElement, 'VoiceDock');
+    if (canvasElement.querySelector('.d-voice-dock__where')?.textContent !== '— ms') throw new Error('NoSampleYet: line 2 is not "— ms"');
+  },
+};
 export const Connecting: Story = { args: { phase: 'connecting' } };
 export const Reconnecting: Story = { args: { phase: 'reconnecting' } };
 /** Camera on and sharing: both glyphs swap (video, monitor-x) and are pressed toggles. */
+/** V3: camera, share and leave sit together at the right end of the controls row. */
+export const ControlsOnTheRight: Story = {
+  play: ({ canvasElement }) => {
+    const dock = canvasElement.querySelector<HTMLElement>('.d-voice-dock')!.getBoundingClientRect();
+    const camera = canvasElement.querySelector<HTMLElement>('.d-voice-dock__controls .d-icon-button')!.getBoundingClientRect();
+    if (camera.left <= dock.left + dock.width / 2) throw new Error(`ControlsOnTheRight: the camera starts at ${String(camera.left)}, left of the dock's centre`);
+  },
+};
 export const CameraAndSharing: Story = { args: { camera: true, sharing: true } };
 /** Paused (RV-3): the dock says so, and camera and share are aria-disabled as on the stage; the banner with its action
  *  lives on the stage. */
@@ -96,7 +138,7 @@ export const StatusIsText: Story = {
     if (canvasElement.querySelector('button.d-voice-dock__line1') !== null) throw new Error('VoiceDock: line 1 is a button without onStatus');
   },
 };
-/** With a handler, "voice connected" is a button (it opens Diagnostics); it is at least 24px high (WCAG 2.5.8). */
+/** With a handler, the channel name is a button (it opens Diagnostics); it is at least 24px high (WCAG 2.5.8). */
 export const StatusIsButton: Story = {
   play: ({ canvasElement }) => {
     expectDock(canvasElement, 'VoiceDock');
@@ -107,13 +149,23 @@ export const StatusIsButton: Story = {
 };
 /** Before the web app wires camera and share, the dock keeps leave. */
 export const WithoutCameraAndShare: Story = { args: { onCamera: undefined, onShare: undefined } };
-/** A DM call: line 2 is the DM's name, and the outgoing ring is announced through the dock's status region. */
-export const DmRinging: Story = { args: { where: 'ada', announcement: 'ringing ada', labels: { ...meta.args.labels, where: 'ada' } } };
+/** A DM call: line 1 is the DM's name, and the outgoing ring is announced through the dock's status region. */
+export const DmRinging: Story = { args: { phase: 'connecting', where: 'ada', announcement: 'ringing ada', labels: { ...meta.args.labels, where: 'ada' } } };
 /** Rejoining: the dock stays at connecting while the join waits for its earlier Remove; the status region says so once. */
 export const Rejoining: Story = { args: { phase: 'connecting', announcement: 'Rejoining harbour. This can take up to 30 seconds.' } };
-/** A long channel and server name are cut with an ellipsis on line 2; nothing scrolls sideways. */
+/** A long channel name is cut with an ellipsis on line 1 (the server stays in the tooltip); line 2 and the controls hold; nothing scrolls sideways. */
 export const LongNames: Story = {
-  args: { labels: { ...meta.args.labels, where: 'planning-for-the-midsummer-weekend · Midgard Crew and the Night Owls Society' } },
+  args: {
+    where: 'planning-for-the-midsummer-weekend-and-the-night-owls-society', stats: { rttMs: 1234, upKbps: 12345, downKbps: 23456, quality: 'bad' },
+    labels: { ...meta.args.labels, where: 'planning-for-the-midsummer-weekend-and-the-night-owls-society · Midgard Crew' },
+  },
+  play: ({ canvasElement }) => {
+    expectDock(canvasElement, 'LongNames');
+    const text = canvasElement.querySelector<HTMLElement>('.d-voice-dock__text')!;
+    if (text.scrollWidth <= text.clientWidth) throw new Error('LongNames: the long name is not cut');
+    const line1 = canvasElement.querySelector<HTMLElement>('.d-voice-dock__line1')!;
+    if (line1.scrollWidth > line1.clientWidth + 1) throw new Error('LongNames: line 1 overflows');
+  },
 };
 
 const userPanel = (

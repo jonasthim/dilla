@@ -11,25 +11,87 @@ const css = readFileSync(`${process.cwd()}/src/VoiceDock/VoiceDock.css`, 'utf8')
 const dock: VoiceDockProps = {
   phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
   labels: {
-    region: 'voice controls', connecting: 'connecting', connected: 'voice connected', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
+    region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
     paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
+    ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+    stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+    quality: { good: 'good', poor: 'poor', bad: 'bad' },
   },
   onCamera: () => {}, onShare: () => {}, onLeave: () => {},
 };
+const link = { rttMs: 24, upKbps: 48, downKbps: 96, quality: 'good' } as const;
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
-describe('VoiceDock (R26)', () => {
-  it('line 1 is the status, line 2 is the caller-filled "{channel} · {server}"', () => {
-    const { container } = render(<VoiceDock {...dock} />);
-    expect(container.querySelector('.d-voice-dock__text')).toHaveTextContent('voice connected');
-    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('harbour · Midgard Crew');
+describe('VoiceDock (MP5)', () => {
+  it('line 1 is the state dot and the channel name; the server is its tooltip and part of its accessible name', () => {
+    const { container } = render(<VoiceDock {...dock} onStatus={() => {}} />);
+    expect(container.querySelector('.d-voice-dock__text')).toHaveTextContent(/^harbour$/);
+    expect(screen.queryByText(/voice connected/)).toBeNull();
+    const line1 = screen.getByRole('button', { name: 'harbour · Midgard Crew' });
+    expect(line1).toHaveAttribute('title', 'harbour · Midgard Crew');
+    expect(line1).not.toHaveAttribute('aria-label'); // its name comes from its content: the visible name is aria-hidden, the full one is sr-only
   });
 
-  it('without labels.where, line 2 is the where prop; and "{where}" in the status labels is still filled', () => {
-    const { container } = render(<VoiceDock {...dock} labels={{ ...dock.labels, where: undefined, connected: 'in {where}' }} />);
-    expect(container.querySelector('.d-voice-dock__text')).toHaveTextContent('in harbour');
-    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('harbour');
+  it('without labels.where the channel is the whole name; as plain text the server is still in the tooltip', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} labels={{ ...dock.labels, where: undefined }} onStatus={() => {}} />);
+    expect(screen.getByRole('button', { name: 'harbour' })).toBeInTheDocument();
+    rerender(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-dock__line1')).toHaveAttribute('title', 'harbour · Midgard Crew');
+  });
+
+  it('line 2 reads the ping and the rates, e.g. "24 ms · ↑48 ↓96 kb/s"', () => {
+    const { container } = render(<VoiceDock {...dock} stats={link} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s');
+  });
+
+  it('FD1: a ping that rounds to 0 reads "<1 ms", not "0 ms"', () => {
+    const { container } = render(<VoiceDock {...dock} stats={{ ...link, rttMs: 0 }} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑48 ↓96 kb/s');
+  });
+
+  it('L5: a direction that could not be read is a dash, never "null" or 0', () => {
+    const { container } = render(<VoiceDock {...dock} stats={{ ...link, upKbps: null }} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑— ↓96 kb/s');
+    expect(container.querySelector('.d-voice-dock__stats')).not.toHaveTextContent('null');
+  });
+
+  it('the stats name their quality for a screen reader and carry it as data, never as colour alone', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} stats={link} />);
+    const stats = container.querySelector('.d-voice-dock__stats')!;
+    expect(stats).toHaveAttribute('data-quality', 'good');
+    expect(stats).toHaveTextContent('Ping 24 milliseconds, good. Sending 48, receiving 96 kilobits per second.');
+    expect(stats.querySelector('.d-sr-only')).not.toBeNull();
+    rerender(<VoiceDock {...dock} stats={{ rttMs: 200, upKbps: 1, downKbps: 2, quality: 'poor' }} />);
+    expect(container.querySelector('.d-voice-dock__stats')).toHaveAttribute('data-quality', 'poor');
+    expect(container.querySelector('.d-voice-dock__stats')).toHaveTextContent('Ping 200 milliseconds, poor.');
+    rerender(<VoiceDock {...dock} stats={{ rttMs: 400, upKbps: 1, downKbps: 2, quality: 'bad' }} />);
+    expect(container.querySelector('.d-voice-dock__stats')).toHaveTextContent('Ping 400 milliseconds, bad.');
+  });
+
+  it('before the first sample line 2 reads "— ms"', () => {
+    const { container } = render(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent(/^— ms$/);
+    expect(container.querySelector('.d-voice-dock__stats')).toHaveAttribute('data-quality', 'none');
+  });
+
+  it('while not connected line 2 shows the phase words in place of the stats', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} phase="connecting" stats={link} />);
+    const line2 = () => container.querySelector('.d-voice-dock__where');
+    expect(line2()).toHaveTextContent(/^connecting$/);
+    rerender(<VoiceDock {...dock} phase="reconnecting" stats={link} />);
+    expect(line2()).toHaveTextContent(/^reconnecting$/);
+    rerender(<VoiceDock {...dock} phase="paused" stats={link} />);
+    expect(line2()).toHaveTextContent(/^paused$/);
+    expect(container.querySelector('.d-voice-dock__stats')).toBeNull();
+  });
+
+  it('the stats are never in the status region and use tabular numerals (CSS pin)', () => {
+    render(<VoiceDock {...dock} stats={link} announcement="" />);
+    expect(screen.getByRole('status')).toHaveTextContent(/^$/);
+    expect(css).toMatch(/\.d-voice-dock__stats \{[^}]*font-variant-numeric: tabular-nums/);
+    expect(css).toMatch(/\.d-voice-dock__stats\[data-quality="poor"\] \{[^}]*var\(--warn\)/);
+    expect(css).toMatch(/\.d-voice-dock__stats\[data-quality="bad"\] \{[^}]*var\(--danger\)/);
   });
 
   it('draws no meter (the legacy `meter` prop is gone, WEB-DOCK)', () => {
@@ -40,14 +102,15 @@ describe('VoiceDock (R26)', () => {
   it('the status is a button calling onStatus (it opens Diagnostics, R26)', async () => {
     const onStatus = vi.fn();
     render(<VoiceDock {...dock} onStatus={onStatus} />);
-    await userEvent.click(screen.getByRole('button', { name: 'voice connected' }));
+    await userEvent.click(screen.getByRole('button', { name: 'harbour · Midgard Crew' }));
     expect(onStatus).toHaveBeenCalledTimes(1);
   });
 
-  it('without onStatus the status is plain text, not a button', () => {
+  it('without onStatus the channel is plain text, not a button', () => {
     render(<VoiceDock {...dock} />);
-    expect(screen.queryByRole('button', { name: 'voice connected' })).toBeNull();
-    expect(screen.getByText('voice connected')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /harbour/ })).toBeNull();
+    expect(document.querySelector('.d-voice-dock__text')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('harbour · Midgard Crew')).toHaveClass('d-sr-only'); // the server is read in plain text too
   });
 
   it('camera, share and leave are 32px icon buttons in one toolbar, each with a tooltip anchor; there is no mute or deafen', () => {
@@ -139,18 +202,14 @@ describe('VoiceDock (R26)', () => {
     render(<VoiceDock {...dock} controls={false} announcement="Joined harbour." />);
     expect(screen.queryByRole('toolbar')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.getByText('voice connected')).toBeInTheDocument();
     expect(screen.getByText('harbour · Midgard Crew')).toBeInTheDocument();
+    expect(screen.getByText('— ms')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Joined harbour.');
   });
 
-  it('says the phase on line 1', () => {
-    const { rerender } = render(<VoiceDock {...dock} phase="paused" />);
-    expect(screen.getByText('paused')).toBeInTheDocument();
-    rerender(<VoiceDock {...dock} phase="connecting" />);
-    expect(screen.getByText('connecting')).toBeInTheDocument();
-    rerender(<VoiceDock {...dock} phase="reconnecting" />);
-    expect(screen.getByText('reconnecting')).toBeInTheDocument();
+  it('a "{where}" in the paused words is still filled', () => {
+    render(<VoiceDock {...dock} phase="paused" labels={{ ...dock.labels, paused: 'paused in {where}' }} />);
+    expect(screen.getByText('paused in harbour')).toBeInTheDocument();
   });
 
   it('camera, share and leave call their handlers', async () => {
@@ -218,6 +277,11 @@ describe('VoiceDock (R26)', () => {
 
   it('the controls are one flex row (CSS pin)', () => {
     expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*display: flex/);
+  });
+
+  it('V3: camera, share and leave sit together at the right end, with no auto margin on leave (CSS pin)', () => {
+    expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*justify-content: flex-end/);
+    expect(css).not.toMatch(/margin-left: auto/);
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {

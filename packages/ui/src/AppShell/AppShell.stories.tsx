@@ -13,11 +13,11 @@ export const Shell: Story = { render: () => <div style={{ ['--d-shell-h' as stri
 export const ShellNarrow: Story = { render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell /></div> };
 // web3.4: the aside open at 1280 (a fourth column), 900 and 360 (the overlay drawer).
 const members = (
-  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet." onAction={() => {}}
+  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
     groups={[
-      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [], presence: 'online' }] },
-      { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }], presence: 'online' }] },
-      { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u3', name: 'Cleo', tags: [], actionsLabel: 'actions for Cleo', actions: [], presence: 'offline' }] },
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', isOwner: true, presence: 'online' }] },
+      { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', presence: 'online' }] },
+      { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u3', name: 'Cleo', presence: 'offline' }] },
     ]} />
 );
 const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };
@@ -71,7 +71,9 @@ const userPanel = (
 );
 const dock = (
   <VoiceDock phase="connected" where="longhouse" muted={false} deafened={false} announcement="" onCamera={() => {}} onShare={() => {}} onLeave={() => {}}
-    labels={{ region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
+    labels={{ region: 'voice controls', connecting: 'connecting', reconnecting: 'reconnecting', paused: 'paused in {where}',
+      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s', stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+      quality: { good: 'good', poor: 'poor', bad: 'bad' },
       mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen' }} />
 );
 const bottomPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
@@ -86,6 +88,53 @@ const bottomPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
 export const BottomPanel: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
   globals: { theme: 'mesh' }, play: bottomPlay,
+};
+/** MP8: the sidebar splitter runs from the sidebar's top to the panel's bottom, and a drag from the panel's edge resizes the sidebar. */
+const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const q = (sel: string) => canvasElement.querySelector<HTMLElement>(sel);
+  const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
+  const sidebar = q('.d-app-shell__sidebar');
+  const panel = q('.d-app-shell__panel');
+  if (sep === null || sidebar === null || panel === null) throw new Error('the shell has no sidebar splitter, sidebar or panel');
+  const [s, sb, p] = [sep, sidebar, panel].map(e => e.getBoundingClientRect());
+  if (Math.abs(s.top - sb.top) > 1) throw new Error(`the splitter starts at ${s.top}, the sidebar at ${sb.top}`);
+  if (Math.abs(s.bottom - p.bottom) > 1) throw new Error(`the splitter ends at ${s.bottom}, the panel at ${p.bottom}`);
+  sep.scrollIntoView({ block: 'end' });
+  const pr = panel.getBoundingClientRect();
+  const x = pr.right - 1, y = pr.bottom - 10;
+  if (document.elementFromPoint(x, y) !== sep) throw new Error('the panel edge, 10px above its bottom, does not hit the splitter');
+  // The resting hairline is the splitter's own one line, drawn above the sidebar and the panel (what they paint under it cannot cut it).
+  const line = getComputedStyle(sep, '::before');
+  if (line.borderLeftColor === 'rgba(0, 0, 0, 0)' || line.borderLeftWidth !== '1px') throw new Error(`the splitter draws no 1px resting line (${line.borderLeftColor}, ${line.borderLeftWidth})`);
+  if (Math.abs(parseFloat(line.height) - s.height) > 1) throw new Error(`the resting line is ${line.height} high, the splitter ${s.height}px`);
+  if (getComputedStyle(panel).boxShadow !== 'none') throw new Error('the panel draws a second line');
+  const userRow = canvasElement.querySelector<HTMLElement>('.d-user-panel');
+  if (userRow === null) throw new Error('no user panel');
+  const u = userRow.getBoundingClientRect();
+  if (u.top < s.top || u.bottom > s.bottom + 1) throw new Error('the line does not cover the user panel rows');
+  const before = Number(sep.getAttribute('aria-valuenow'));
+  const ev = (type: string, dx: number) => sep.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x + dx, clientY: y }));
+  ev('pointerdown', 0); ev('pointermove', 40);
+  await new Promise(r => setTimeout(r, 50));
+  const after = Number(sep.getAttribute('aria-valuenow'));
+  ev('pointerup', 40);
+  if (after <= before) throw new Error(`a drag from the panel edge did not widen the sidebar (${before} -> ${after})`);
+};
+export const BottomPanelSplitter: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
+  globals: { theme: 'mesh' }, play: fullHeightPlay,
+};
+/** MP8: with a status bar the splitter stops above the status row. */
+export const BottomPanelSplitterStatus: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, statusBar: fixtureStatusBar, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
+  globals: { theme: 'mesh' },
+  play: async ({ canvasElement }) => {
+    await fullHeightPlay({ canvasElement });
+    const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
+    const status = canvasElement.querySelector<HTMLElement>('.d-app-shell__status');
+    if (sep === null || status === null) throw new Error('no splitter or status bar');
+    if (sep.getBoundingClientRect().bottom > status.getBoundingClientRect().top + 1) throw new Error('the splitter runs into the status bar');
+  },
 };
 export const BottomPanelLight: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,

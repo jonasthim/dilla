@@ -127,7 +127,7 @@ export function bobChanged(): TrustSummary {
 /** A PageCall double: the toggles change its state, and every call is recorded in order. */
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
-    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, noise: 'on', audioBlocked: false,
+    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, shareSource: null, noise: 'on', audioBlocked: false,
     audio: { attached: 0, expected: 0 } };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
@@ -145,6 +145,13 @@ export class FakeSession implements PageCall {
   readonly pushToTalk = vi.fn();
   readonly setVolume = vi.fn();
   readonly startAudio = vi.fn(() => { this.log.push('startAudio'); return Promise.resolve(); });
+  sharePool: { sources: Array<{ id: string; label: string; monitor: boolean }>; labeled: boolean } = { sources: [], labeled: true };
+  readonly shareSources = vi.fn(() => Promise.resolve(this.sharePool));
+  readonly setShareSource = vi.fn((id: string | null) => {
+    this.log.push(`shareSource:${id}`);
+    this.update({ shareSource: id, shareAudio: id === null ? 'none' : 'device' });
+    return Promise.resolve();
+  });
   readonly setOutput = vi.fn((id: string) => { this.log.push(`output:${id}`); return Promise.resolve(); });
   private readonly bridge: Pick<CoreClient, 'call'> | null;
   constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }
@@ -188,6 +195,8 @@ export interface VoiceHarnessOptions {
   withSettings?: boolean;
   /** The call module fails to load (a lost chunk). */
   loadFails?: boolean;
+  /** selectCommunity refuses with this code (a server whose channels did not load). */
+  refuseSelect?: string;
   /** The session starts with the browser holding call audio back (audioBlocked), or turns so in the tick it attaches. */
   audioBlocked?: 'at-start' | 'same-tick';
 }
@@ -233,12 +242,14 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1), unless a test holds it.
       if (!o.joinLeavesSlice) fake.set('call', callState({ phase: 'in', channelId: command.channelId, callId: command.channelId }));
     }
+    if (command.m === 'selectCommunity' && o.refuseSelect !== undefined) return Promise.reject(refusal({ code: o.refuseSelect }));
     return Promise.resolve(null);
   };
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
-  fake.set(`channels:${A}`, CHANNELS);
+  // A refused selectCommunity leaves the server's channels unloaded (the sidebar says so).
+  if (o.refuseSelect === undefined) fake.set(`channels:${A}`, CHANNELS);
   fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, pending: false });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);

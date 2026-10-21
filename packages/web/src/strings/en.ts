@@ -12,6 +12,7 @@ import { serverNotify } from './serverNotify.ts';
 import { factor } from './factor.ts';
 import { factorSignin } from './factorSignin.ts';
 import { factorSettings } from './factorSettings.ts';
+import { password } from './password.ts';
 import { nav } from './nav.ts';
 import { activity } from './activity.ts';
 import { you } from './you.ts';
@@ -42,6 +43,7 @@ export const en = {
   ...factor,
   ...factorSignin,
   ...factorSettings,
+  ...password,
   ...nav,
   ...activity,
   ...you,
@@ -458,6 +460,7 @@ export const en = {
   'voice.open': 'voice {name}',
   'voice.count': '{n} in voice',
   'voice.join': 'join voice',
+  'voice.row.joined': 'connected',
   'voice.afk.title': 'AFK channel',
   'voice.afk.loading': 'Loading voice channels…',
   'voice.afk.silent': 'This channel is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return.',
@@ -468,8 +471,15 @@ export const en = {
   'call.join': 'join call',
   'voice.dock.region': 'voice controls',
   'voice.dock.connecting': 'connecting',
-  'voice.dock.connected': 'in {where}',
   'voice.dock.reconnecting': 'reconnecting',
+  'voice.dock.ping': '{ms} ms',
+  'voice.dock.pingSub': '<1 ms',
+  'voice.dock.pingNone': '— ms',
+  'voice.dock.rate': '↑{up} ↓{down} kb/s',
+  'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
+  'voice.dock.quality.good': 'good',
+  'voice.dock.quality.poor': 'poor',
+  'voice.dock.quality.bad': 'bad',
   'voice.dock.ptt': 'hold {key} to talk',
   'voice.dock.pttNoKey': 'push to talk: no key set',
   'voice.dock.pttSetKey': 'set a key',
@@ -512,7 +522,16 @@ export const en = {
   'voice.volumeValue': '{n} %',
   'voice.streamVolume': 'stream volume for {name}',
   'voice.streamMute': 'mute stream',
-  'voice.shareAudio.none': 'Your screen is shared without sound. To share sound, share a browser tab, or on Windows tick "Also share system audio".',
+  'voice.shareAudio.from': 'sound from',
+  'voice.shareAudio.fromNone': 'none',
+  'voice.shareAudio.pickHint': 'You can also pick a sound source for the stream.',
+  'voice.shareAudio.pick': 'pick a sound source',
+  'voice.shareAudio.monitorWarn': 'This device carries all your computer’s sound, including this call: others will hear themselves. Route only the app you want to a separate device (see help).',
+  'voice.shareAudio.pickFailed': 'Couldn’t open that sound source.',
+  'voice.shareAudio.needsPermission': 'Allow the microphone to see sound sources.',
+  'voice.shareAudio.none.unsupported': 'Your screen is shared without sound. This browser can’t share sound; Chrome or Edge can share a browser tab with its sound.',
+  'voice.shareAudio.none.tabOnly': 'Your screen is shared without sound. Here only a browser tab can carry sound: share a tab and keep "Also share tab audio" ticked.',
+  'voice.shareAudio.none.tabOrSystem': 'Your screen is shared without sound. To share sound, share a browser tab, or tick "Also share system audio" when you pick a screen.',
   'voice.blocked': 'A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.',
   'voice.blockedJoin': 'A device in this voice failed the identity check. Joining is paused until it is removed.',
   'voice.blockedLeft': 'A device in this voice failed the identity check, so you left. You can try to join again.',

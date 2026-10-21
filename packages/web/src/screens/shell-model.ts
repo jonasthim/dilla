@@ -1,6 +1,7 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
 import { isMuted, roleHandle, splitMentions } from '@dilla/client-core';
+import { parseMarkdown } from './markdown.ts';
 import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, MentionRole, RoleSummary, TimelineItem, VoiceParticipant } from '@dilla/client-core';
 import type { BodyPart, VoiceParticipantView, VoiceStateLabels } from '@dilla/ui';
 import { baseRoute, type Route } from '../router.ts';
@@ -15,15 +16,17 @@ function byPosition(a: ChannelSummary, b: ChannelSummary): number {
 /**
  * The listed channels in sidebar order: categories (kind 2) are never listed; channels with no parent,
  * or whose parent is not a category of the list, come first by (position, id); then each category by
- * (position, id) is followed by its children by (position, id). Returns a new array.
+ * (position, id) is followed by its children by (position, id); the `afk` channels come last of all. Returns a new array.
  */
-export function orderChannels(channels: readonly ChannelSummary[]): ChannelSummary[] {
+export function orderChannels(channels: readonly ChannelSummary[], afk: ReadonlySet<string> = new Set()): ChannelSummary[] {
   const cats = channels.filter(c => c.kind === CATEGORY).sort(byPosition);
   const catIds = new Set(cats.map(c => c.id));
   const rows = channels.filter(c => c.kind !== CATEGORY);
   const top = rows.filter(c => c.parentId === null || !catIds.has(c.parentId)).sort(byPosition);
   const children = cats.flatMap(cat => rows.filter(c => c.parentId === cat.id).sort(byPosition));
-  return [...top, ...children];
+  // The server's AFK channel is the very last row of the list, as the sidebar shows it, so the keyboard steps follow.
+  const all = [...top, ...children];
+  return [...all.filter(c => !afk.has(c.id)), ...all.filter(c => afk.has(c.id))];
 }
 
 /** True for what web-1 cannot open: a voice or other non-text channel, a readable channel, or a group the worker marked so. */
@@ -156,6 +159,14 @@ export interface NameBook {
   ownRoles: ReadonlySet<string>;
   /** The roles whose name and colour are known (the `roles:` slice); absent where only member rows were read. */
   roleInfo?: ReadonlyMap<string, { name: string; color: number }>;
+  /** Ids known to be users beyond the members: the senders of the messages held (a person who has since left). Only these (and members and self) get a profile button. */
+  knownUsers?: ReadonlySet<string>;
+}
+
+/** The book with the senders of `items` as known users. */
+export function withSenders(book: NameBook, items: readonly { senderUser: string | null }[]): NameBook {
+  const ids = items.flatMap(i => (i.senderUser === null ? [] : [i.senderUser]));
+  return ids.length === 0 ? book : { ...book, knownUsers: new Set(ids) };
 }
 
 export function nameBook(self: NameBook['self'], members: readonly MemberSummary[], roles: readonly RoleSummary[] = []): NameBook {
@@ -222,25 +233,36 @@ export function selfName(self: { id: string; username: string; display?: string 
   return self.display !== undefined && self.display !== '' ? self.display : self.username;
 }
 
+/** The name to show on a former member's card: the label when it is a name, '' when it is only the 8-character id fallback of `authorName` or a mention pill. */
+export function knownName(label: string, userId: string): string {
+  return label === userId.slice(0, 8) ? '' : label;
+}
+
 /**
  * A body as text and mention pills. `mentionsMe` is the row's mention flag from the core, which alone decides whether an
  * @everyone, @here or a token of one of my roles counted (the sender's right, the role's "anyone can mention"). Such a pill
  * is tinted as naming me only when it is set; otherwise it is a plain broadcast or role pill (W2a review 10). The core
  * flags the row, not each token, so a row that counts for any reason tints all of them.
  */
-export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): BodyPart[] {
-  return splitMentions(body).map(part => {
-    if (part.kind === 'text') return part;
-    const id = part.target;
-    if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
-    const member = book.members.find(m => m.userId === id);
-    if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
-    if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
-    const known = book.roleInfo?.get(id);
-    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
-    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
-    return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
-  });
+export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): Extract<BodyPart, { kind: 'text' | 'mention' }>[] {
+  return splitMentions(body).map(part => part.kind === 'text' ? part : mentionPill(part.target, book, mentionsMe));
+}
+
+/** A message body as shown (E5): markdown parsed into nested parts, mentions still pills. Editing and search keep the raw text. */
+export function markdownParts(body: string, book: NameBook, mentionsMe: boolean): BodyPart[] {
+  return parseMarkdown(body, target => mentionPill(target, book, mentionsMe));
+}
+
+function mentionPill(id: string, book: NameBook, mentionsMe: boolean): Extract<BodyPart, { kind: 'mention' }> {
+  if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
+  const member = book.members.find(m => m.userId === id);
+  if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false, userId: id };
+  if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false, userId: id };
+  const known = book.roleInfo?.get(id);
+  if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
+  if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
+  // Not a member, the viewer or a known role: a user pill (a name-only card) only when we hold a message from that user, else it stays plain.
+  return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false, ...(book.knownUsers?.has(id) === true ? { userId: id } : {}) };
 }
 
 export function plainBody(body: string, book: NameBook): string {

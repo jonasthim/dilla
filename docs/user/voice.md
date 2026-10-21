@@ -2,7 +2,7 @@
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
 camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-21, web-3.11).
+2026-10-21, web3.11).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -21,8 +21,8 @@ added "harbour". While people are in one, it shows how many are in it, and the p
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the page are shown by name too.
 
-On a computer, one click on a voice channel joins it. The call panel above your user panel says "connecting", then
-"voice connected", and the screen announces "You joined {where}." Each person in the call has a tile with their name and
+On a computer, one click on a voice channel joins it. The row of the channel you are in has no join icon and no coloured speaker: its name turns bold and the screen reader adds "connected". The call panel above your user panel shows the channel name over "connecting", then your ping,
+and the screen announces "You joined {where}." Each person in the call has a tile with their name and
 their state. On a phone, tap the voice channel to see who is there, then press **join voice**.
 
 **leave**, in the call panel or on the stage's controls, leaves the call ("You left {where}."). If you were the only
@@ -36,7 +36,7 @@ On a tile, and on a person's line under the channel in the list, what they are d
 line after the name, in this order: muted (a crossed-out microphone), deafened (crossed-out headphones), camera,
 screen and speaking (a green dot). None has a visible word: each has its name, such as "muted", "deafened", "camera on",
 "sharing screen" or "speaking", as a tooltip when you point at it and for a screen reader. A person with none of them
-is quiet and unmuted.
+is quiet and unmuted. Under a channel in the list, a person's icons sit at the right, with a small gap between two and their right edge in line with the channel row's count.
 
 Three states keep their words, because they are about trust and what you can hear:
 
@@ -61,16 +61,16 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 
 ### The call panel
 
-At the bottom left, above your user panel, the call panel shows "voice connected" (or "connecting", "reconnecting" or "paused
-in {where}" when that is so), under it where you are ("{channel} · {server}"), and then three icon buttons: **camera**,
-**share screen** and **leave**. Press "voice connected" to open Settings → Diagnostics, which shows the connection. The
+At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
+in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel are three icon buttons, in this order: **camera**,
+**share screen** and **leave**. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
 those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
 stays on screen while you read other channels, so you can turn your camera or a share on and off, or leave, from
 anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
 again.
 
-![The call panel and the user panel up close: "voice connected", harbour · Midgard Crew, then camera, share screen and
+![The call panel and the user panel up close: the channel, its ping and rates, then camera, share screen and
 leave, and under it Mira's name with mute, deafen and the gear](screenshots/dock-desktop.png)
 
 ![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
@@ -192,9 +192,43 @@ beside the person's own tile, so with the camera and a share both on, a person h
 - A browser tab in Chrome or Edge (all platforms).
 - A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
 - A browser tab on Linux (no screen or window audio).
-- No sound from Firefox or Safari.
+- No sound from Firefox or Safari by themselves; there you can pick an audio input as the stream's sound (see [Share sound from Firefox or Linux](#share-sound-from-firefox-or-linux)).
 
-A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing how to get sound, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+A game or app's own sound without a virtual device needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+
+The notice to the person sharing depends on the browser:
+
+- In Firefox (and browsers built on it) and Safari: "This browser can’t share sound; Chrome or Edge can share a browser tab with its sound."
+- In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
+- In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
+
+When the browser lists an audio input you can pick, the notice also says "You can also pick a sound source for the stream." and offers a **pick a sound source** button.
+
+### Share sound from Firefox or Linux
+
+A browser cannot capture your computer's sound by itself on Linux, and Firefox cannot at all. dilla lets you choose any
+audio input as the stream's sound instead. While you share and the share has no sound of its own, a **sound from** list
+appears under the call controls: **none**, then every audio input the browser lists, except the microphone the call uses.
+Pick one and it is sent as the stream's sound, encrypted like the rest; everyone watching can set its volume or mute it.
+Choose **none** or stop sharing and it goes. A tab's or a screen's sound from the browser always wins, and then the list is not shown.
+If the list says "Allow the microphone to see sound sources.", the browser hides device names until the microphone is allowed.
+
+- **A monitor** ("Monitor of …") carries everything your computer plays, including this call, so the others will hear
+  themselves. Firefox lists these devices directly, and dilla warns when you pick one. Chrome and Edge on Linux do not list
+  monitors at all; use the recipe below there.
+- **One app only, and you still hear it** (Chrome, Edge and Firefox): give that app its own output, send a copy of it to
+  your speakers, and turn the output's monitor into an ordinary input. Each `pactl load-module` prints a number: note it,
+  because it is how you undo the step.
+  1. The output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
+  2. A copy to your speakers, so you still hear the app: `pactl load-module module-loopback source=dilla-share.monitor`
+  3. An input made from the output's monitor: `pactl load-module module-remap-source master=dilla-share.monitor source_name=dilla-share-input source_properties=device.description=dilla-share-input`
+  4. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
+  5. Start the share, and in **sound from** pick "dilla-share-input". The call keeps playing on your normal speakers and is not in the stream.
+
+  On PipeWire, `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'`
+  replaces steps 1 and 2 in one command (leave it running; Ctrl+C stops it); steps 3 to 5 stay the same.
+  To undo, run `pactl unload-module <number>` for each number you noted, last one first. Do not unload by module name: that
+  would also remove loopbacks and sinks you made for something else.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
@@ -240,7 +274,7 @@ with each person (Settings → privacy) is still how you know who they are.
 ## AFK channels
 
 Every server has a channel called "AFK". It is made with the server, and a server's owner or anyone who manages
-channels can rename it and move it into a category (it always stays last in its list), but nobody can delete it.
+channels can rename it and move it into a category (it always stays the very last row of the whole channel list, below every category, and folding a category never hides it), but nobody can delete it.
 
 Being in the AFK channel means having no voice connection. Nobody joins a call there: it uses no microphone, no
 camera and no media server, and nobody hears anything. The channel instead lists the people who are **away**.

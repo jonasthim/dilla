@@ -180,12 +180,12 @@ const menu = <Button variant="ghost" aria-label="members"><Icon name="ellipsis-v
 const header = <ChannelHeader name="general" phone={{ backLabel: 'back to channels', onBack: noop, menu }} />;
 
 const members = (
-  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet." onAction={noop}
+  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
     groups={[
-      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [] }] },
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', isOwner: true }] },
       { id: 'members', kind: 'online', title: 'online', members: [
-        { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }] },
-        { id: 'u3', name: 'Mira', tags: [], actionsLabel: 'actions for Mira', actions: [] },
+        { id: 'u2', name: 'Bjorn' },
+        { id: 'u3', name: 'Mira' },
       ] },
     ]} />
 );

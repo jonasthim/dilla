@@ -4,7 +4,7 @@ import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-c
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
 import { formatGutterTime, t, type StringKey } from '../../strings/index.ts';
-import { authorName, bodyParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
+import { authorName, knownName, markdownParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
 
@@ -28,6 +28,8 @@ export type RowEvent =
   | { kind: 'toggle'; emoji: string; on: boolean } | { kind: 'jump'; msgId: string }
   | { kind: 'retry'; msgId: string } | { kind: 'discard'; msgId: string };
 
+export type ProfileOpener = (userId: string, anchor: HTMLElement, source: 'mention' | 'author', name: string) => void;
+
 export interface MessageItemProps { item: TimelineItem; channelId: string; book: NameBook; now: number; active: boolean; flash: boolean;
   /** What I may do in this channel; null while unknown, which shows every item as before. */
   bits?: number | null;
@@ -37,6 +39,8 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   onOpenImage(index: number, opener: HTMLElement): void; onError(e: unknown): void;
   /** Opens this message's thread (web3.7): the toolbar item and the summary chip. Absent where no thread can be opened (the thread pane's own rows). */
   onOpenThread?: (msgId: string) => void;
+  /** Opens a profile card for a mentioned user or the author (MP7), anchored to the pill or the author name; `name` is shown when the person is no longer a member. Absent: neither is a button. */
+  onOpenProfile?: ProfileOpener;
   /** True: a row of the thread pane. Its toolbar takes react, and edit and delete on own messages; reply, pin and thread stay in the channel. */
   inThread?: boolean;
   /** The row continues the author's run above it (R29): its head is hidden and its time stands in the gutter. */
@@ -102,8 +106,12 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
-  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
-    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal} deviceTag={item.web && !item.bot ? 'hover' : 'always'}
+  const openProfile = p.onOpenProfile;
+  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time}
+    authorId={item.senderUser ?? undefined}
+    onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
+      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? markdownParts(item.body, p.book, item.mention) : ''}
+    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

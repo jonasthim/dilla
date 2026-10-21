@@ -12,7 +12,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   video: false, screen: false, web: true, bot: false, ...more,
 });
 const labels: VoiceChannelRowProps['labels'] = {
-  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
+  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
@@ -55,7 +55,7 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour');
   });
 
-  it('the trailing slot holds the join icon button or, when joined, the connected glyph, never both', async () => {
+  it('the trailing slot holds the join icon button; when joined (in the call) the row has no phone glyph and no join icon', async () => {
     const onJoin = vi.fn();
     const { container, rerender } = render(<VoiceChannelRow {...base} onJoin={onJoin} />);
     const join = screen.getByRole('button', { name: 'join voice' });
@@ -66,8 +66,9 @@ describe('VoiceChannelRow', () => {
     rerender(<VoiceChannelRow {...base} joined onJoin={onJoin} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
     const slot = container.querySelector('.d-voice-row > .d-slot') as HTMLElement;
-    expect(slot.children).toHaveLength(1);
-    expect(slot.querySelector('.d-voice-row__connected svg')).toHaveAttribute('data-icon', 'phone');
+    expect(slot.children).toHaveLength(0);
+    expect(container.querySelector('.d-voice-row__connected')).toBeNull();
+    expect(container.querySelector('.d-voice-row')).toHaveAttribute('data-joined', 'true');
     rerender(<VoiceChannelRow {...base} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });
@@ -112,11 +113,19 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row')).toHaveAttribute('data-live', 'true');
   });
 
+  it('the row you are connected to says "connected" in its description, after the count; its name stays "voice harbour"', () => {
+    const { rerender } = render(<VoiceChannelRow {...base} />);
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
+    rerender(<VoiceChannelRow {...base} joined />);
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice, connected');
+    rerender(<VoiceChannelRow {...base} joined participants={[]} />);
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('connected');
+  });
   it('with nobody in voice shows no count and no sub-rows; current and joined are marked', () => {
     const { rerender } = render(<VoiceChannelRow {...base} participants={[]} />);
     expect(screen.queryByRole('list')).toBeNull();
     expect(screen.getByRole('button', { name: 'voice harbour' })).not.toHaveAccessibleDescription();
-    rerender(<VoiceChannelRow {...base} current joined />);
+    rerender(<VoiceChannelRow {...base} current joined participants={[]} />);
     const row = screen.getByRole('button', { name: 'voice harbour' });
     expect(row).toHaveAttribute('aria-current', 'page');
     expect(row).toHaveAttribute('data-joined', 'true');
@@ -138,7 +147,7 @@ describe('VoiceChannelRow', () => {
         { id: 'v2', name: 'workshop', kind: 'voice', readable: false }]}
       voice={{ labels, rooms: { v1: { joined: true, participants: base.participants } } }} />);
     const harbour = screen.getByRole('button', { name: 'voice harbour' });
-    expect(harbour).toHaveAccessibleDescription('2 in voice');
+    expect(harbour).toHaveAccessibleDescription('2 in voice, connected');
     expect(harbour).toHaveAttribute('data-joined', 'true');
     expect(screen.getByRole('button', { name: 'voice workshop' })).toBeInTheDocument();
     expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(1);

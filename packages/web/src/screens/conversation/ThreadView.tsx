@@ -10,11 +10,11 @@ import { useSlice } from '../../core/use-slice.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useRoute } from '../../router.ts';
 import { t } from '../../strings/index.ts';
-import { editableText, editRoles, mentionCandidates, mentionMembers, mentionRoles, nameBook } from '../shell-model.ts';
+import { editableText, editRoles, mentionCandidates, mentionMembers, mentionRoles, nameBook, withSenders } from '../shell-model.ts';
 import { AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { conversationReducer, INITIAL_UI } from './Conversation.tsx';
-import { MessageItem, type RowEvent } from './MessageItem.tsx';
+import { MessageItem, type ProfileOpener, type RowEvent } from './MessageItem.tsx';
 
 const NO_ITEMS: readonly TimelineItem[] = [];
 
@@ -26,6 +26,8 @@ export function ThreadView(p: {
   initialDraft?: string;
   onDraftChange?: (text: string) => void;
   onEditingChange?: (editing: boolean) => void;
+  /** Opens a profile card for a mentioned user or a row's author (MP7); without it neither is a button. */
+  onOpenProfile?: ProfileOpener;
 }): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
@@ -79,13 +81,13 @@ export function ThreadView(p: {
     });
   }, [opener, p.rootMsgId]);
 
-  const book = useMemo(() => nameBook(self, members ?? [], roles ?? []), [self, members, roles]);
   const encodeWith = useMemo(() => mentionMembers(members ?? []), [members]);
   const candidates = useMemo(() => mentionCandidates(members ?? [], self?.id ?? null), [members, self]);
   const current = thread !== undefined && thread !== null && thread.rootMsgId === p.rootMsgId ? thread : null;
   const items = current?.items ?? NO_ITEMS;
   // The root and the replies are one roving order: the last row is the tab stop until another takes focus.
   const rootItem = current?.root ?? null;
+  const book = useMemo(() => withSenders(nameBook(self, members ?? [], roles ?? []), rootItem === null ? items : [rootItem, ...items]), [self, members, roles, items, rootItem]);
   const ordered = rootItem === null ? items : [rootItem, ...items];
   const active = ordered.some(i => i.key === activeKey) ? activeKey : ordered.at(-1)?.key ?? null;
   const now = Date.now();
@@ -137,7 +139,7 @@ export function ThreadView(p: {
     if (next !== undefined) { e.preventDefault(); rowEls.current.get(next.key)?.focus(); }
   };
   const row = (item: TimelineItem, key: string, isActive: boolean) => (
-    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false}
+    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false} onOpenProfile={p.onOpenProfile}
       editing={ui.editing?.msgId === item.msgId ? ui.editing.value : null}
       editMeasure={v => new TextEncoder().encode(encodeMentions(v, encodeWith, broadcast, roleMentionsFor(item.body))).length} rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
       onJumpPointerDown={e => e.preventDefault()} onEvent={onRow} onEditChange={value => dispatch({ type: 'editChange', value })}

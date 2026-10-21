@@ -18,13 +18,17 @@ import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
-import { callStatsReport, connectionOf, mediaTotals, STATS_EVERY_MS, type MediaTotals } from './stats.ts';
+import {
+  callStatsReport, connectionOf, EMPTY_REPORT, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
+} from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
 export { bindPushToTalk } from './ptt.ts';
 export { streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
+/** FX2: one audio input offered as a share's sound; `monitor` when its label says it carries the computer's own sound. */
+export interface ShareSource { id: string; label: string; monitor: boolean }
 export type TileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
 export interface PageCallTile {
   deviceId: string;
@@ -60,7 +64,10 @@ export interface PageCallState {
   localScreen: MediaStream | null;
   /** #37: the sound this device's share carries: a tab's, the system's, or none (the browser gave no audio, or the grant
    *  did not allow it). null while not sharing. */
-  shareAudio: ShareAudioKind | null;
+  shareAudio: ShareAudioKind | 'device' | null;
+  /** FX2: where the share's sound comes from: 'browser' (the tab's or the system's, from getDisplayMedia), the id of an
+   *  audio input the person picked ('device' above), or null (no sound, or not sharing). */
+  shareSource: string | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
   noise: NoisePreference | 'on';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
@@ -68,6 +75,9 @@ export interface PageCallState {
   /** web3.4 V2: the remote audio tracks this device is subscribed to (expected: pending and attached) and those
    *  attached, so playing (attached stays the same while deafened or paused holds a new track back). */
   audio: { attached: number; expected: number };
+  /** MP5: the latest local link read (every 2 s while connected): the ping and what this device sends and receives. Absent
+   *  before the first read, while not connected, and after leave. */
+  link?: LinkSample | undefined;
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -84,6 +94,12 @@ export interface PageCall {
   setDeafened(on: boolean): void;
   setCamera(on: boolean): Promise<void>;
   setSharing(on: boolean): Promise<void>;
+  /** FX2: the audio inputs a running share can take its sound from (the call's own microphone left out), and whether the
+   *  browser gave them labels. */
+  shareSources(): Promise<{ sources: ShareSource[]; labeled: boolean }>;
+  /** FX2: publishes audio input `id` as the share's sound (replacing an earlier pick), or unpublishes it with null. Refused
+   *  (E_UNAVAILABLE) while no share runs and while the browser's own sound is the share's. */
+  setShareSource(id: string | null): Promise<void>;
   /** 0..200 in steps of 10: the person's voice (default) or, with `'stream'`, their shared screen's sound (T5). */
   setVolume(userId: string, volume: number, source?: 'voice' | 'stream'): void;
   /** RV-3: driven by the call slice’s phase 'paused'. */
@@ -544,7 +560,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      shareAudio: null, noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      shareAudio: null, shareSource: null, noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
       audioBlocked: false, audio: { attached: 0, expected: 0 },
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
@@ -970,7 +986,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
     let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
-    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void } | null = null;
+    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void;
+      /** FX2: the audio input the person picked as the share's sound, while one is published. */
+      device: { track: MediaStreamTrack; pub: LocalPub | null; onEnded: () => void } | null } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
       const p = local.permissions;
       if (!p || p.canPublish === false) return false;
@@ -1018,8 +1036,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const s = screen;
       if (s === null) return;
       screen = null;
-      set({ sharing: false, localScreen: null, shareAudio: null });
+      set({ sharing: false, localScreen: null, shareAudio: null, shareSource: null });
       s.video.removeEventListener('ended', s.onEnded);
+      if (s.device !== null) {
+        s.device.track.removeEventListener('ended', s.device.onEnded);
+        await local.unpublishTrack(s.device.track).catch(() => undefined);
+        s.device.track.stop();
+      }
       s.audio?.removeEventListener('ended', s.onAudioEnded);
       await local.unpublishTrack(s.video).catch(() => undefined);
       if (s.audio) await local.unpublishTrack(s.audio).catch(() => undefined);
@@ -1116,13 +1139,118 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const onAudioEnded = (): void => {
         if (ended || screen === null || screen.audio !== audioTrack || audioTrack === null) return;
         audioTrack.removeEventListener('ended', onAudioEnded);
-        set({ shareAudio: 'none' });
+        set({ shareAudio: 'none', shareSource: null });
         void local.unpublishTrack(audioTrack).catch(() => undefined).then(() => { if (!ended) refresh(); });
       };
       audioTrack?.addEventListener('ended', onAudioEnded);
-      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded };
-      set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio });
+      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null };
+      set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio, shareSource: shareAudio === 'none' ? null : 'browser' });
     });
+
+    // FX2: the share's sound from an audio input the person picked (a PipeWire/Pulse monitor, a virtual source).
+    const clearDevice = async (s: NonNullable<typeof screen>): Promise<void> => {
+      const d = s.device;
+      if (d === null) return;
+      s.device = null;
+      d.track.removeEventListener('ended', d.onEnded);
+      await local.unpublishTrack(d.track).catch(() => undefined);
+      d.track.stop();
+    };
+    const setShareSource = (id: string | null): Promise<void> => inLane(async () => {
+      sendable();
+      usable();
+      const s = screen;
+      if (s === null || (s.audio !== null && state.shareSource === 'browser')) throw new PageCallError('E_UNAVAILABLE');
+      if (id === null) {
+        await clearDevice(s);
+        set({ shareAudio: 'none', shareSource: null });
+        return;
+      }
+      if (!permitted('screenAudio')) throw new PageCallError('E_FORBIDDEN');
+      let track: MediaStreamTrack;
+      try {
+        const stream = await deps.media.getUserMedia({ audio: { deviceId: { exact: id }, echoCancellation: false, noiseSuppression: false,
+          autoGainControl: false, channelCount: 2 } });
+        const got = stream.getAudioTracks()[0];
+        if (got === undefined) { for (const t of stream.getTracks()) t.stop(); throw new PageCallError('E_UNAVAILABLE'); }
+        track = got;
+      } catch (err) {
+        throw pageCallError(err);
+      }
+      // M4: a device switch hands the new capture to the existing publication (replaceTrack), so there is never a second
+      // sound track; without that (or when it refuses), the new one is published and the old one withdrawn after.
+      const prior = s.device;
+      let pub: LocalPub | null = null;
+      let replaced = false;
+      try {
+        usable();
+        if (screen !== s) throw new PageCallError('E_UNAVAILABLE');
+        const priorTrack = prior?.pub?.track;
+        if (prior !== null && prior.pub !== null && priorTrack?.replaceTrack !== undefined) {
+          try { await priorTrack.replaceTrack(track, true); replaced = true; } catch {
+            // N-N2: a throw after the sender took the new capture still counts as replaced (as the mic hand-over reads it).
+            replaced = prior.pub.track?.mediaStreamTrack === track;
+          }
+          if (replaced) pub = prior.pub;
+        }
+        if (!replaced) pub = await local.publishTrack(track, screenAudioOptions(caps));
+      } catch (err) {
+        if (!replaced) await local.unpublishTrack(track).catch(() => undefined);
+        track.stop();
+        throw pageCallError(err);
+      }
+      if (ended || state.paused || screen !== s) {
+        if (replaced && prior !== null) {
+          // N-M2: the publication carries the new capture now, enabled by LiveKit; stopping it at once makes it send silence,
+          // and the share's own stop (the pause or the end queues one) still finds the publication by it and withdraws it.
+          prior.track.removeEventListener('ended', prior.onEnded);
+          prior.track.stop();
+          track.stop();
+          s.device = screen === s ? { track, pub, onEnded: () => undefined } : null;
+        } else {
+          await local.unpublishTrack(track).catch(() => undefined);
+          track.stop();
+        }
+        throw new PageCallError('E_UNAVAILABLE');
+      }
+      if (replaced && prior !== null) {
+        s.device = null;
+        prior.track.removeEventListener('ended', prior.onEnded);
+        prior.track.stop();
+      } else await clearDevice(s);
+      const onEnded = (): void => {
+        if (ended || screen !== s || s.device?.track !== track) return;
+        track.removeEventListener('ended', onEnded);
+        s.device = null;
+        set({ shareAudio: 'none', shareSource: null });
+        void local.unpublishTrack(track).catch(() => undefined).then(() => { if (!ended) refresh(); });
+      };
+      track.addEventListener('ended', onEnded);
+      s.device = { track, pub, onEnded };
+      set({ shareAudio: 'device', shareSource: id });
+    });
+    const shareSources = async (): Promise<{ sources: ShareSource[]; labeled: boolean }> => {
+      let all: MediaDeviceInfo[] = [];
+      try { all = await deps.media.enumerateDevices(); } catch { all = []; }
+      const raw = all.filter((d) => d.kind === 'audioinput');
+      const settings = micTrack?.getSettings?.();
+      const own = settings?.deviceId;
+      // I1: with the default input the track says 'default' and its real entry has another id but the same group. A monitor
+      // can share the card's group, so only the entries that are not monitors go with the microphone.
+      const isMonitor = (label: string): boolean => /monitor/i.test(label);
+      const isAlias = (id: string | undefined): boolean => id === 'default' || id === 'communications';
+      // N-M1: a real id hides only itself. Behind an alias the entry whose label is the alias's without its "Default - " /
+      // "Communications - " prefix goes; only when none matches, the non-monitor entries of the mic's group go.
+      const group = settings?.groupId ?? raw.find((d) => d.deviceId === own)?.groupId;
+      const aliasLabel = isAlias(own) ? (raw.find((d) => d.deviceId === own)?.label ?? '').replace(/^(Default|Communications) - /, '') : '';
+      const byLabel = aliasLabel === '' ? [] : raw.filter((d) => !isAlias(d.deviceId) && d.deviceId !== '' && d.label === aliasLabel);
+      const byGroup = (d: MediaDeviceInfo): boolean => isAlias(own) && byLabel.length === 0 && group !== undefined && group !== ''
+        && d.groupId === group && !isMonitor(d.label);
+      const inputs = raw.filter((d) => !isAlias(d.deviceId) && d.deviceId !== '' && d.deviceId !== own && !byLabel.includes(d) && !byGroup(d));
+      // M1: Chromium without permission lists one input with an empty id and label; labels are judged before ids are filtered.
+      return { labeled: raw.every((d) => d.label !== ''),
+        sources: inputs.map((d) => ({ id: d.deviceId, label: d.label, monitor: isMonitor(d.label) && !/dilla-share/i.test(d.label) })) };
+    };
 
     // ---- self flags, sent only after callJoin (the PageCall exists only once it answered)
     const sendSelf = (): void => {
@@ -1156,6 +1284,59 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.phase === 'connected') void reportStats().catch(() => undefined); // a 429 or a 404 is not the person’s problem
       later(statsTick, STATS_EVERY_MS);
     };
+    // MP5: the dock’s own link read, every LINK_EVERY_MS while connected; it never goes to the server.
+    let linkTotals: LinkTotals | null = null;
+    let linkAt = 0;
+    let linkBusy = false;
+    const carried = { up: false, down: false };
+    let linkStartedAt = 0;
+    const sameLink = (a: LinkSample | undefined, b: LinkSample | undefined): boolean =>
+      a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
+    const readLink = async (): Promise<void> => {
+      const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
+      // No subscriber connection (LiveKit's default single-peer-connection mode never makes one) means nothing to read there:
+      // an empty report, so down is 0. Only a getStats that rejects is "no read" (undefined), which the dock shows as a dash.
+      const getSub = pcs?.subscriber?.getStats;
+      const [pub, sub] = await Promise.all([
+        Promise.resolve(pcs?.publisher?.getStats?.()).catch(() => undefined),
+        getSub === undefined ? EMPTY_REPORT : Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
+      ]);
+      if (ended || state.phase !== 'connected' || state.paused) return;
+      const at = deps.now();
+      const next = linkSample(linkTotals, pub, sub, at - linkAt);
+      linkTotals = next.totals;
+      linkAt = at;
+      // No sample (no RTT on the selected pair, or nothing readable) clears the link: the dock says "— ms", not the last numbers.
+      // A direction that could not be read keeps its previous value for one tick, then is null.
+      let link = next.sample ?? undefined;
+      if (link !== undefined) {
+        const prev = state.link;
+        const keep = (now: number | null, was: number | null | undefined, side: 'up' | 'down'): number | null => {
+          if (now !== null) { carried[side] = false; return now; }
+          if (was == null || carried[side]) return null;
+          carried[side] = true;
+          return was;
+        };
+        link = { ...link, upKbps: keep(link.upKbps, prev?.upKbps, 'up'), downKbps: keep(link.downKbps, prev?.downKbps, 'down') };
+      } else { carried.up = false; carried.down = false; }
+      if (!sameLink(link, state.link)) set({ link });
+    };
+    // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not
+    // settle within LINK_STALL_MS takes the stats away (the dock falls back to its no-sample text) and no second read starts meanwhile.
+    const linkTick = (): void => {
+      if (ended) return;
+      if (state.phase !== 'connected' || state.paused) {
+        linkTotals = null;
+        if (state.link !== undefined) set({ link: undefined });
+      } else if (!linkBusy) {
+        linkBusy = true;
+        linkStartedAt = deps.now();
+        void readLink().catch(() => undefined).finally(() => { linkBusy = false; });
+      } else if (deps.now() - linkStartedAt >= LINK_STALL_MS && state.link !== undefined) {
+        set({ link: undefined });
+      }
+      later(linkTick, LINK_EVERY_MS);
+    };
     const scheduleIce = (list: IceServerTuple[], retry = false): void => {
       if (ended) return;
       const expiry = iceExpiryMs(list);
@@ -1178,7 +1359,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const onPeople = (): void => { applyGains(); refresh(); };
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
-    onRoomReconnecting = () => { if (!ended) set({ phase: 'reconnecting' }); };
+    onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
     onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
     onRoomEnd = (reason) => {
       if (ended) return;
@@ -1239,6 +1420,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       camera?.track.stop();
       screen?.video.stop();
       screen?.audio?.stop();
+      screen?.device?.track.stop();
       camera = null;
       screen = null;
     };
@@ -1261,7 +1443,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         leaving = releaseAll().then(() => posted);
       }
       set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null,
-        shareAudio: null });
+        shareAudio: null, shareSource: null, link: undefined });
       return leaving;
     };
 
@@ -1325,6 +1507,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     sampling = true;
     armSample();
     later(statsTick, STATS_EVERY_MS);
+    linkAt = deps.now();
+    later(linkTick, LINK_EVERY_MS);
     scheduleIce(firstIce);
 
     return {
@@ -1362,6 +1546,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setCamera,
       setSharing,
+      shareSources,
+      setShareSource,
       setVolume(userId, volume, source = 'voice') {
         if (!isVolume(volume)) throw new PageCallError('E_INVALID_REQUEST');
         (source === 'stream' ? streamVolumes : volumes)[userId] = volume;
@@ -1371,7 +1557,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || on === state.paused) return;
         // WB client I2: a camera or screen goes quiet at once, before any queued camera or share operation (the lane may
         // be held by the screen picker or a permission prompt); the lane then unpublishes and stops them.
-        if (on) for (const track of [camera?.track, screen?.video, screen?.audio]) if (track) track.enabled = false;
+        if (on) for (const track of [camera?.track, screen?.video, screen?.audio, screen?.device?.track]) if (track) track.enabled = false;
         relay.setPaused(on);
         set({ paused: on });
         applyMic();

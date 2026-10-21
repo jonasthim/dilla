@@ -710,13 +710,40 @@ describe('#37: a share without sound, and the stream mute', () => {
     await h.joined(GENV);
     expect(h.v.notice).toBeNull();
     act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.none' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.none.tabOnly' }));
     act(() => h.sessions[0].update({ shareAudio: 'tab' }));
     await waitFor(() => expect(h.v.notice).toBeNull());
     act(() => h.sessions[0].update({ shareAudio: 'none' }));
-    await waitFor(() => expect(h.v.notice?.key).toBe('voice.shareAudio.none'));
+    await waitFor(() => expect(h.v.notice?.key).toBe('voice.shareAudio.none.tabOnly'));
     act(() => h.sessions[0].update({ sharing: false, shareAudio: null }));
     await waitFor(() => expect(h.v.notice).toBeNull());
+  });
+
+  it.each([
+    ['Firefox', 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0', 'voice.shareAudio.none.unsupported'],
+    ['Chrome on Linux', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOnly'],
+    ['Chrome on Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOrSystem'],
+  ] as const)('the notice for a silent share on %s uses %s', async (_name, ua, key) => {
+    const spy = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(ua);
+    try {
+      const h = harness();
+      await h.joined(GENV);
+      act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+      await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key }));
+    } finally { spy.mockRestore(); }
+  });
+
+  it('FX2: a silent share lists the sound sources; a failed pick says so, and the next good pick clears it', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    h.sessions[0].sharePool = { labeled: true, sources: [{ id: 'd1', label: 'Monitor of x', monitor: true }] };
+    act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+    await waitFor(() => expect(h.v.sharePool?.sources.map(d => d.id)).toEqual(['d1']));
+    h.sessions[0].setShareSource.mockRejectedValueOnce(new Error('E_UNAVAILABLE'));
+    act(() => h.v.setShareSource('d1'));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.pickFailed' }));
+    act(() => h.v.setShareSource('d1'));
+    await waitFor(() => expect(h.v.notice?.key).not.toBe('voice.shareAudio.pickFailed'));
   });
 
   it('a share with sound raises no notice', async () => {

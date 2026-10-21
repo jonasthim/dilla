@@ -48,6 +48,17 @@
 .d-message-row__pending[data-tone="failed"] .d-message-row__pending-label::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
 /* Mention pills: mine in the mention colour, a broadcast outlined (bold when it reaches me), anyone else quiet. */
 .d-mention { padding: 0 0.25rem; border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); }
+/* MP7: a user pill is a button that opens the profile card. It keeps the pill look; the cursor and an underline on hover and focus-visible show it acts. */
+button.d-mention { font: inherit; border: 0; cursor: pointer; }
+button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underline; }
+.d-message-row__author-open { position: relative; min-width: 1.5rem; min-height: 1.5rem; padding: 0; font: inherit; font-weight: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.d-message-row__author-open:hover, .d-message-row__author-open:focus-visible { text-decoration: underline; }
+/* A phone's target is 44 high without taking line room: the pill and the author name reach out by a pseudo-element. */
+[data-layout="phone"] .d-message-row__author-open::after { content: ""; position: absolute; inset: -0.75rem -0.25rem; }
+[data-layout="phone"] button.d-mention::after { content: ""; position: absolute; inset: -0.75rem -0.25rem; }
+[data-layout="phone"] button.d-mention { position: relative; }
+.d-message-row__avatar[data-profile="true"] { position: relative; cursor: pointer; }
+[data-layout="phone"] .d-message-row__avatar[data-profile="true"]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.75rem; height: 2.75rem; transform: translate(-50%, -50%); }
 .d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }
 .d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
 .d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
@@ -69,8 +80,16 @@
 .d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--avatar-size) + 0.75rem); margin-right: -0.75rem; padding-top: 0.125rem; text-align: center; font-size: 0.6875rem; font-variant-numeric: tabular-nums; line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
 .d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
 .d-message-row[data-grouped="true"] { margin-top: 0; }
-/* The device tag on a web client shows only while the row is hovered or holds focus. Hidden, it is out of flow (no gap after the author) and visibility:hidden. */
-.d-message-row__tag[data-reveal="hover"] { display: inline-flex; position: absolute; visibility: hidden; }
-.d-message-row:hover .d-message-row__tag[data-reveal="hover"], .d-message-row:focus-within .d-message-row__tag[data-reveal="hover"], .d-message-row[data-revealed="true"] .d-message-row__tag[data-reveal="hover"] { position: static; visibility: visible; }
 /* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
 [data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }
+
+/* E5 markdown. Links stay the text colour and are underlined, so they never rely on colour alone. */
+.d-message-row__body .d-link { unicode-bidi: isolate; direction: ltr; color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+.d-message-row__body .d-link:hover { text-decoration-thickness: 2px; }
+/* A code span is outlined, with no fill and square corners: a mention pill is filled and rounded, and code must never pass for one. */
+.d-message-row__code { font-family: var(--font-mono); font-size: 0.9em; background: transparent; border: 1px solid var(--hairline-2); border-radius: 0; padding: 0 0.25rem; }
+.d-message-row__codeblock { font-family: var(--font-mono); font-size: 0.9em; background: var(--surface-hi); border-radius: var(--r-sm); }
+.d-message-row__codeblock[data-lang]::before { content: attr(data-lang); display: block; color: var(--fg-2); font-size: 0.85em; }
+.d-message-row__codeblock { margin: 0.25rem 0; padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre; }
+.d-message-row__codeblock code { font: inherit; }
+.d-message-row__quote { margin: 0.125rem 0; padding: 0 0 0 0.75rem; border-left: 2px solid var(--fg-2); color: var(--fg-2); }

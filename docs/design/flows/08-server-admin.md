@@ -9,8 +9,8 @@
 | members open, overlay (below 64rem) | a drawer from the right, `min(20rem, 100%)` wide; focus moves into it; a backdrop covers the rest and a click on it closes the drawer; the rail, sidebar, main and status bar are inert (and so is the banner) while it is open; `members.close` closes it and Escape does the same from anywhere; on close the composer is reachable again | `members.region`, `members.close` | none |
 | members loading | the pane says it is loading | `members.loading` | none |
 | members empty | no one but this account | `members.empty` | none |
-| members grouped | one group per hoisted role, highest first, then the rest; tags on the rows | `members.group`, `members.groupMembers`, `members.owner`, `members.you`, `members.bot` | none |
-| menu open (button, right-click, Shift+F10) | the row's action menu: from its `members.actions` button, at the pointer for a right-click, at the button for Shift+F10 or the ContextMenu key; items depend on the viewer's permissions and the target's rank | `members.actions`, `members.menu.message`, `members.menu.compare`, `members.menu.kick`, `members.menu.ban` | none |
+| members grouped | one group per hoisted role, highest first, then the rest; a crown after the owner and a small bot tag, no other tags | `members.group`, `members.groupMembers` | none |
+| card open (click, Enter, right-click, Shift+F10) | the member's profile card (flow 14): a popover beside the row, a sheet on a phone; the actions depend on the viewer's permissions and the target's rank | `members.menu.message`, `members.menu.compare`, `members.menu.kick`, `members.menu.ban` | none |
 | kick: idle | confirm dialog; focus on Cancel; the destructive button is not focused | `mod.kick.title`, `mod.kick.body`, `mod.kick.confirm`, `mod.cancel` | dialog title |
 | kick: busy | the confirm says its busy label and is disabled | `mod.kick.busy` | none |
 | kick: done | the dialog closes; focus returns to the opener | `mod.kick.done` | `mod.kick.done` through the shell announcer |
@@ -54,15 +54,10 @@
 
 | starting focus | action | destination |
 |---|---|---|
-| a member row | Shift+F10 or the ContextMenu key | opens that row's action menu at its `members.actions` button, on the first item |
-| a member row | right-click | opens the menu at the pointer, clamped to the viewport |
-| the `members.actions` button | Enter, Space or Down | opens the menu on the first item |
-| the `members.actions` button | Up | opens the menu on the last item |
-| an open menu | Down/Up | moves between items and wraps |
-| an open menu | Home/End | first/last item |
-| an open menu | Enter or Space | runs the item and closes the menu |
-| an open menu | Escape | closes it; focus returns to the button |
-| an open menu | Tab, or a pointer press outside | closes it |
+| a member row | Enter, click, Shift+F10 or the ContextMenu key | opens that member's profile card beside the row |
+| a member row | right-click | opens the same card beside the row |
+| an open card | Escape | closes it; focus returns to the row |
+| an open card | Tab | moves through the card's buttons |
 | the `members` toggle | Enter/Space | opens or closes the member aside |
 | the member drawer (below 64rem) | Escape, from anywhere while the drawer is open | closes the drawer; focus returns to the toggle |
 | a settings tab list | Tab | one stop for the whole list (roving focus: ArrowUp, ArrowDown, Home and End move between tabs), then the pane |
@@ -76,8 +71,8 @@
 | a kick, unban, leave or channel-delete confirm opens | Cancel, never the destructive button | dialog title |
 | a dialog with fields opens (ban, new category, edit channel, delete server or hand over with a typed name) | its first field | dialog title |
 | a dialog closes (Cancel, Escape or success) | back to what opened it | none |
-| a menu closes with Escape | the `members.actions` button | none |
-| a menu item is run | its dialog takes focus as above; with no dialog, back to the button | none |
+| a card closes with Escape | the member row | none |
+| a card action is run | its dialog takes focus as above; with no dialog, back to the row | none |
 | the member drawer opens (below 64rem) | into the drawer | none |
 | the member drawer closes with Escape or `members.close` | the `members` toggle | none |
 | the sidebar tab order | the server actions first, each its own stop: for a member `invite link`, `server settings`, `leave server`; for an owner `+ channel`, `invite link`, `server settings`; then the tabs, then the rows (a member gets five stops in all). `edit channel` and the `members` toggle live in the channel header actions | none |
@@ -99,8 +94,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Members:*
 - `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
-- `members.groupMembers='members'`, `members.groupOffline='Offline'`, `members.owner='owner'`, `members.you='you'`, `members.bot='bot'`
-- `members.actions='actions for {name}'`, `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
+- `members.groupMembers='members'`, `members.groupOffline='Offline'`
+- `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
 

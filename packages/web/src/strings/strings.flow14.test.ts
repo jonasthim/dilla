@@ -12,7 +12,7 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(36);
+    expect(pairs.length).toBe(47);
     // M2 (Jonas): a call cut because AFK was chosen on another device says so, calmly.
     expect(table['afk.elsewhere']).toBe('You went AFK on another device.');
     // AW5/AW6 fix round 1: the AFK page's button, its away line, its empty roster, and a refused away mark.
@@ -60,7 +60,6 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const LOWER: readonly string[] = [
     'afk.timeout.label',
     'afk.away',
-    'layout.dock.connected',
     'layout.members.online',
     'layout.members.offline',
     'layout.log.jump',
@@ -80,9 +79,25 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
     expect(table['layout.members.offline']).toBe('offline');
     expect(pairs.find(([key]) => key === 'layout.members.online')?.[1]).toBe('online');
   });
+  it('the profile card words are lower case and match the flow', () => {
+    const table = en as Readonly<Record<string, string>>;
+    const want = { owner: 'owner', you: 'you', roles: 'roles', close: 'close', bot: 'bot', manageRoles: 'edit roles', formerMember: 'former member' };
+    for (const [k, v] of Object.entries(want)) {
+      expect(table[`layout.profile.${k}`]).toBe(v);
+      expect(pairs.find(([key]) => key === `layout.profile.${k}`)?.[1]).toBe(v);
+    }
+  });
+  it('the presence words of the member list and the card are lower case and match the flow', () => {
+    const table = en as Readonly<Record<string, string>>;
+    const want = { online: 'online', idle: 'idle', dnd: 'do not disturb', offline: 'offline', invisible: 'invisible' };
+    for (const [k, v] of Object.entries(want)) {
+      expect(table[`presence.${k}`]).toBe(v);
+      expect(pairs.find(([key]) => key === `presence.${k}`)?.[1]).toBe(v);
+    }
+  });
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(15);
+    expect(LOWER.length).toBe(14);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

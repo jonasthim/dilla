@@ -56,7 +56,7 @@ const grouped = [
   <MessageRow key="2" author="ada" time="21:03" body="i have the map" state="ok" grouped />,
   <MessageRow key="3" author="ada" time="21:05" body="and the lantern" state="ok" grouped />,
   <DateDivider key="d2" label="Today" />,
-  <MessageRow key="4" author="björn" time="09:10" body="after nine, still on the boat" state="ok" tag="web" deviceTag="hover" />,
+  <MessageRow key="4" author="björn" time="09:10" body="after nine, still on the boat" state="ok" tag="web" />,
   <MessageRow key="5" author="björn" time="09:11" body="bring the rope" state="ok" grouped />,
 ];
 export const GroupedWithDivider: Story = { args: { children: grouped } };
