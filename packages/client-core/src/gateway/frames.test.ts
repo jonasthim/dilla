@@ -36,6 +36,9 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'community_changed with 2 elements': 'E_FRAME_SHAPE',
   // The instance answers E_FRAME_TYPE (op 19 is S->C); this client decodes op 19 and refuses eight elements (web3.7).
   'message.ct with 8 elements': 'E_FRAME_SHAPE',
+  // The instance answers E_FRAME_TYPE (op 55 is S->C, AW3). Until AW4 teaches this decoder op 55, it is an
+  // unknown opcode here and accepted with any payload; AW4 moves this to E_FRAME_SHAPE.
+  'afk_away with 4 elements': null,
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -50,9 +53,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 32 cases and 19 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(32);
-    expect(vectors.rejects).toHaveLength(19);
+  it('holds the 34 cases and 20 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(34);
+    expect(vectors.rejects).toHaveLength(20);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 

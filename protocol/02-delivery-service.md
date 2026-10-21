@@ -320,6 +320,7 @@ dense on every device of its audience; `group_id` is null.
 | 52 | `voice_self` | C→S | `[call_id(bstr 16), flags(uint 0..3)]` |
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 | 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
+| 55 | `afk_away` | S→C | `[community_id(bstr 16), user_id(bstr 16), since_ts(uint)]` |
 
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
 Invisible is an account choice, exposed to other members as Offline. The frame is sent only to
@@ -409,6 +410,20 @@ changes costs one read. It is never persisted or replayed, so a client also read
 `ready`. A client's decoder refuses a `community_changed` of any other shape as `E_FRAME_SHAPE`
 and drops it without disconnecting; it ignores one for a community it does not list. Sent by a
 client, any op 54 is `E_FRAME_TYPE` at the instance.
+
+`afk_away` keeps a community's away roster current (`09` § Voice, the AFK channel). A member who
+is away is listed under the community's AFK channel and has no voice connection: no device of that
+user is in any call. `since_ts` is the unix second the member became away in that community, or `0`
+when the member is no longer away there. The instance sends it, after the stored roster changed, to
+every live connection of every user who may view the community's AFK channel, and only when a row
+was actually set or cleared: marking a member who is already away, or clearing one who is not,
+sends nothing. It is never persisted or replayed, so a client reads the roster from
+`GET /v1/communities/{id}/afk` (its fifth element) on `ready` and whenever it reads the community
+again, and keeps an `afk_away` only once that read has landed; a read that lands later wins. A
+client's decoder refuses an `afk_away` of any other shape as `E_FRAME_SHAPE` and drops it without
+disconnecting; it ignores one for a community it does not list. A client that predates op 55
+ignores it as an unknown server-to-client opcode in this range. Sent by a client, any op 55 is
+`E_FRAME_TYPE` at the instance.
 
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of

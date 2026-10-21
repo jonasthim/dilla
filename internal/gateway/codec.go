@@ -124,6 +124,12 @@ func CommunityChangedPayload(communityID id.ID) (cbor.RawMessage, error) {
 	return payload(communityID)
 }
 
+// AFKAwayPayload is op 55 afk_away's `[community_id, user_id, since_ts]` (AW3): the member is away
+// in the community's AFK channel since sinceTS (unix seconds), or no longer away when it is 0.
+func AFKAwayPayload(communityID, userID id.ID, sinceTS uint64) (cbor.RawMessage, error) {
+	return payload(communityID, userID, sinceTS)
+}
+
 // The deterministic-CBOR subset has no boolean; flags travel as uint 0 or 1.
 func boolUint(b bool) uint64 {
 	if b {
