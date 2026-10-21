@@ -99,7 +99,8 @@ export interface TrayItem { id: string; name: string; size: number; mime: string
   phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
 export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
-export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
+export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean;
+  /** The owner's name for the device, or null when unnamed (the server holds it readable; it is not in the signed device list). */ label: string | null; }
 /**
  * L-TS-40's trust row. Ruling (c) of 2026-10-13 adds two worker-derived Privacy states, present only while they hold:
  * `unlisted` (one of the contact's leaves failed its signed list, or Flow 05's "history pending": the list read has not

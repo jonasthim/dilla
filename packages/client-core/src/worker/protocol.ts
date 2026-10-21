@@ -60,6 +60,7 @@ export type Command =
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
   | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices
   | { m: 'revokeDevice'; deviceId: string; recoveryKey: string | null } // ready: another device; the key is required for a listed device, ignored (null) for an unlisted live row
+  | { m: 'renameDevice'; deviceId: string; label: string | null }  // ready: PATCH /v1/devices/{id}; the label is trimmed, 1..64 characters, no control character; null clears → slice devices
   | { m: 'signOutRevoke'; recoveryKey: string }                  // ready: this device → store wiped → cleared
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready

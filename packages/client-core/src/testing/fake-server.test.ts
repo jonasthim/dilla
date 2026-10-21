@@ -358,6 +358,20 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     expect(server.listHistory.get(toHex(user))?.map((r) => r.version)).toEqual([1n, 2n]);
   });
 
+  it('PATCH /v1/devices/{id} names an own device, null clears it, and another user\'s device is 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual([null]);
+    await c.routes.patchDevice(DEV_A, 'work laptop');
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual(['work laptop']);
+    await c.routes.patchDevice(DEV_A, null);
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual([null]);
+    server.register('bea', new Uint8Array(16).fill(0xbe));
+    expect((await refusalOf(c.routes.patchDevice(new Uint8Array(16).fill(0xbe), 'mine'))).status).toBe(404);
+    expect((await refusalOf(c.routes.patchDevice(DEV_A, ''))).status).toBe(400);
+    expect((await refusalOf(c.routes.patchDevice(DEV_A, 'x'.repeat(65)))).status).toBe(400);
+  });
+
   it('DELETE /v1/devices/{id} revokes an own unlisted row and drops its tokens', async () => {
     const server = new FakeServer();
     const { c, user } = await ada(server);

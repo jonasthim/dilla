@@ -149,6 +149,7 @@ type Devices struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+	Label            sql.NullString
 }
 
 type ForkReports struct {

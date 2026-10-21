@@ -50,7 +50,7 @@ describe('the copy rules', () => {
   // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
   // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
   it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
-    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.refresh',
+    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.rename', 'devices.refresh',
       'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
       'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
     for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
@@ -58,12 +58,15 @@ describe('the copy rules', () => {
     expect(en['notify.title.channel']).toBe('#{channel} · {server}');
     expect(en['devices.cap.other']).toBe('{n} devices');
     expect(en['devices.cap.one']).toBe('one device');
+    // EOD E7: a device can be named; the body says who can read the name.
+    expect(en['devices.renameBody']).toBe('A name you will recognise. The server can read and change it, so check a device by its id before you remove it.');
+    expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(143); // flow 17 adds settings.nav.profile
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(149); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });

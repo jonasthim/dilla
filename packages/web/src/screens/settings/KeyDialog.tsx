@@ -15,7 +15,7 @@ const KEY_LENGTH = 52;
  * refusal is the danger banner by its code. While the command runs nothing closes the dialog.
  */
 export function KeyDialog(props: {
-  open: boolean; id: string; title: string; body: string; confirmLabel: string;
+  open: boolean; id: string; title: string; body: string; subject?: React.ReactNode; confirmLabel: string;
   onConfirm(recoveryKey: string): Promise<unknown>; onClose(): void;
 }): React.JSX.Element {
   const { open, id } = props;
@@ -88,6 +88,7 @@ export function KeyDialog(props: {
           aria-describedby={short ? lengthId : undefined}>{busy ? t('devices.working') : props.confirmLabel}</Button>
       }>
       <form id={formId} noValidate onSubmit={e => { void submit(e); }}>
+        {props.subject === undefined ? null : <p className="dw-device-subject">{props.subject}</p>}
         <p>{props.body}</p>
         {banner === null ? null : <Banner tone="danger">{t('settings.error.other', { code: banner.code })}</Banner>}
         <RecoveryKeyField id={fieldId} label={t('devices.keyLabel')} value={value} onChange={change}

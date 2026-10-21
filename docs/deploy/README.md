@@ -899,6 +899,16 @@ the extra elements as absent and keeps working; ask people to reload their tabs 
 
 To go back run the rollback by hand above with `--to=21`. Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
 
+### Device names (schema 23)
+
+Migration `00023_device_labels` adds a nullable `label` column to `devices`, empty for every existing device. A person
+names a device in Settings → Devices (`PATCH /v1/devices/{device_id}`). The name is not part of the signed device list: the
+server stores it readable and could read or change it, so a client always shows the first characters of the device id
+beside it. It follows the same text rule as a display name (at most 64 characters, one line, no control or invisible
+character).
+
+To go back run the rollback by hand above with `--to=22`. Going down from 23 drops `devices.label` and discards every device name; the devices are kept.
+
 ## Capacity
 
 Every figure in this section is a measured cell from `docs/spikes/2026-10-capacity.md` (SP-29), on the

@@ -226,6 +226,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
+  'renameDevice',
   'signOutRevoke',
   'forgetBrowser',
   'markRead',
@@ -361,6 +362,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   retrySend: ['msgId'],
   discardSend: ['msgId'],
   revokeDevice: ['deviceId'],
+  renameDevice: ['deviceId'],
   markRead: ['channelId'],
   openDm: ['userId'],
   editMessage: ['channelId', 'msgId'],
@@ -436,6 +438,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'discardSend',
     'refreshDevices',
     'revokeDevice',
+    'renameDevice',
     'signOutRevoke',
     'forgetBrowser',
     'refreshFactors',
@@ -520,6 +523,15 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+/** A device name's length limit, in characters; the server applies the same shared text rule as to a display name. */
+const DEVICE_LABEL_MAX_CHARS = 64;
+/** A device name as the server stores it (NormalizeUserText, one line): null when the value is not a valid one. Empty is not
+ *  a name; clearing is null. */
+const deviceLabel = (value: unknown): string | null => {
+  if (typeof value !== 'string' || profileTextProblem(value, DEVICE_LABEL_MAX_CHARS, false) !== null) return null;
+  const label = profileTextValue(value);
+  return label === '' ? null : label;
+};
 
 /** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
@@ -660,6 +672,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
   }
+  if (m === 'renameDevice' && command.label !== null && deviceLabel(command.label) === null) return 'label is not 1..64 characters without control or invisible characters';
   if (m === 'updateProfile') {
     for (const [field, max, multiline] of [['display', DISPLAY_MAX_CHARS, false], ['statusMsg', STATUS_MAX_CHARS, false], ['bio', BIO_MAX_CHARS, true]] as const) {
       const value = command[field];
@@ -1133,6 +1146,7 @@ export class Controller {
       case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
       case 'revokeDevice': return this.revokeDevice(command.deviceId, command.recoveryKey);
+      case 'renameDevice': return this.renameDevice(command.deviceId, command.label);
       case 'signOutRevoke': return this.signOutRevoke(command.recoveryKey);
       case 'forgetBrowser': return this.forgetBrowser();
       case 'markRead': return this.markRead(command.channelId);
@@ -3157,7 +3171,7 @@ export class Controller {
     const devices: DeviceSummary[] = rows.map((r) => {
       const id = toHex(r.id);
       return {
-        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen),
+        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen), label: r.label,
         revokedAt: r.revokedAt === null ? null : Number(r.revokedAt),
         listed: entries.some((e) => toHex(e.deviceId) === id && e.revokedAt === null),
         own: id === ownHex,
@@ -3268,6 +3282,15 @@ export class Controller {
       await this.routes.putBackup(1, signed.stateSealed);
       core.stateSealedUploaded();
     } catch { /* the next ready uploads it */ }
+    await this.refreshDevices();
+    return null;
+  }
+
+  /** Names (or, with null, unnames) one of the account's devices. The name is not in the signed device list, so no key
+   *  and no list change: the server stores it, and the list is read again so the slice shows what it holds. */
+  private async renameDevice(deviceId: string, label: string | null): Promise<null> {
+    this.requireCore();
+    await this.routes.patchDevice(fromHex(deviceId), label === null ? null : deviceLabel(label));
     await this.refreshDevices();
     return null;
   }

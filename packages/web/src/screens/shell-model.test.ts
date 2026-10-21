@@ -137,7 +137,7 @@ describe('badges', () => {
 
 describe('devicesChunk', () => {
   const dev = (revokedAt: number | null): DeviceSummary =>
-    ({ id: id('c'), tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false });
+    ({ id: id('c'), tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false, label: null });
   it('counts the devices not removed, and is unknown until loaded', () => {
     expect(devicesChunk(undefined)).toBe('–');
     expect(devicesChunk([])).toBe('0');

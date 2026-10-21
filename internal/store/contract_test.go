@@ -44,7 +44,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
-			"RevokeDevice", "TouchDevice",
+			"RevokeDevice", "SetDeviceLabel", "TouchDevice",
 			// dilla-web-2a task 5 (L-SQL-21): the device-list history read (L-HTTP-56) and the
 			// per-user device cap and enrolment rate (L-HTTP-54, Q04).
 			"CountLiveDevicesByUser", "ListDeviceCreationsSince", "ListDeviceListsAfter",

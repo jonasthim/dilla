@@ -397,6 +397,23 @@ func (r *Repo) ListDevicesByUser(ctx context.Context, userID id.ID) ([]store.Dev
 	return out, nil
 }
 
+// SetDeviceLabel names (or, with nil, unnames) a device of userID. It is ErrNotFound unless the
+// device exists and is the user's: the owner is part of the UPDATE's WHERE, not a second read.
+func (r *Repo) SetDeviceLabel(ctx context.Context, userID, deviceID id.ID, label *string) error {
+	var v sql.NullString
+	if label != nil {
+		v = sql.NullString{String: *label, Valid: true}
+	}
+	n, err := r.w.SetDeviceLabel(ctx, sqlitedb.SetDeviceLabelParams{Label: v, ID: deviceID, UserID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (r *Repo) TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error {
 	return wrap(r.w.TouchDevice(ctx, sqlitedb.TouchDeviceParams{LastSeen: lastSeen, ID: deviceID}))
 }
@@ -520,7 +537,16 @@ func deviceRow(row sqlitedb.Devices) store.DeviceRow {
 		QuarantineReason: row.QuarantineReason,
 		LastSeen:         row.LastSeen,
 		Created:          row.Created,
+		Label:            ptrString(row.Label),
 	}
+}
+
+// ptrString is a nullable TEXT column as a pointer.
+func ptrString(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	return &v.String
 }
 
 // ---------------------------------------------------------------- Sessions

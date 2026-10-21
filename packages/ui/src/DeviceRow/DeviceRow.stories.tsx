@@ -15,3 +15,5 @@ export const App: Story = { args: { name: 'b2d4e6f8', tier: 'native', tierLabel:
 // An unlisted live row is removed without the recovery key (ruling 30), so it carries the action too.
 export const Unlisted: Story = { args: { name: '0a1b2c3d', state: 'not yet in the device list', lastSeen: 'last seen 20:40', action: { label: 'remove', onAction: () => {} } } };
 export const Removed: Story = { args: { name: '99ee0f11', state: 'removed', lastSeen: 'last seen 1 Oct 2026' } };
+// A named device (EOD E7): the owner's own word, with rename beside remove.
+export const Named: Story = { args: { name: 'work laptop', lastSeen: 'last seen 21:02', extraAction: { label: 'rename', onAction: () => {} }, action: { label: 'remove', onAction: () => {} } } };

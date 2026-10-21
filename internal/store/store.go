@@ -113,6 +113,8 @@ type Devices interface {
 	GetDevice(ctx context.Context, deviceID id.ID) (DeviceRow, error)
 	ListDevicesByUser(ctx context.Context, userID id.ID) ([]DeviceRow, error)
 	TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error
+	// SetDeviceLabel names a device of userID (nil clears it); ErrNotFound unless the device is the user's.
+	SetDeviceLabel(ctx context.Context, userID, deviceID id.ID, label *string) error
 	RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error
 	PutDeviceList(ctx context.Context, l DeviceListRow) error
 	GetDeviceList(ctx context.Context, userID id.ID) (DeviceListRow, error)
