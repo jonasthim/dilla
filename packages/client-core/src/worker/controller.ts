@@ -23,7 +23,7 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
+  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
   type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -243,6 +243,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'checkpointFiles',
   'discardAttachment',
   'openAttachment',
+  'gifSearch',
+  'gifFetch',
   'refreshTrust',
   'verifyContact',
   'safetyNumber',
@@ -289,11 +291,12 @@ const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2), gifs: instance.gifs,
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
+const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
@@ -419,6 +422,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'checkpointFiles',
     'discardAttachment',
     'openAttachment',
+    'gifSearch',
+    'gifFetch',
     'refreshTrust',
     'verifyContact',
     'safetyNumber',
@@ -549,6 +554,15 @@ function invalid(command: Record<string, unknown>): string | null {
     if (!Array.isArray(files) || files.length === 0 || !files.every((f) => typeof File !== 'undefined' && f instanceof File)) {
       return 'files is not a non-empty list of files';
     }
+  }
+  if (m === 'gifSearch') {
+    const { q, offset } = command;
+    if (typeof q !== 'string' || UTF8.encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) return `q is not at most ${String(GIF_QUERY_MAX_BYTES)} bytes of text`;
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) return `offset is not an integer 0..${String(GIF_OFFSET_MAX)}`;
+  }
+  if (m === 'gifFetch') {
+    if (typeof command.gifId !== 'string' || !GIF_ID.test(command.gifId)) return 'gifId is not 1..64 letters and digits';
+    if (command.variant !== 'preview' && command.variant !== 'full') return 'variant is not preview or full';
   }
   if (m === 'discardAttachment' && (typeof command.trayId !== 'string' || command.trayId === '')) return 'trayId is empty';
   if (m === 'openAttachment') {
@@ -1067,6 +1081,9 @@ export class Controller {
       case 'checkpointFiles': return Promise.resolve(this.trays.get(command.channelId)?.files() ?? []);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
+      case 'gifSearch': return this.routes.gifSearch(command.q, command.offset);
+      case 'gifFetch': return this.routes.gifMedia(command.gifId, command.variant)
+        .then(bytes => ({ blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' }) }));
       case 'refreshTrust': return this.refreshTrust();
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);
       case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId, command.umk));

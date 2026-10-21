@@ -9,7 +9,7 @@ import { CHANNEL, COMMUNITY, FakeGateway, ModelCore, PEER, idOf, settle, type Ma
 
 export const INSTANCE: Instance = {
   instanceId: idOf(0xa0, 1), generation: 1n, name: 'model', registrationMode: 0, authMethods: [0], policyVersion: 1n,
-  externalSenderPub: new Uint8Array(32).fill(7),
+  externalSenderPub: new Uint8Array(32).fill(7), gifs: false,
 };
 
 export interface Device {

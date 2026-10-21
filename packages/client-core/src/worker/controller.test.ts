@@ -311,7 +311,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(h.account()?.phase).toBe('other-tab'), { timeout: LEADER.otherTabGraceMs + 3_000 });
     expect(h.ret(1)).toEqual({ t: 'ret', id: 1, ok: true, value: null });
     expect(h.account()?.instance).toEqual({ id: INSTANCE_HEX, name: 'dilla.test', registrationMode: 0, passwordSignup: true, totp: false,
-      passkeys: false });
+      passkeys: false, gifs: false });
     expect(h.connection()).toEqual({ status: 'offline', generation: null });
     release();
     await vi.waitFor(() => expect(h.account()?.phase).toBe('unsupported'));

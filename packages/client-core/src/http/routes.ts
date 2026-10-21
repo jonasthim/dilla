@@ -14,7 +14,9 @@ export const WELCOMES_PAGE = 64;
 const BACKUP_TIMEOUT_MS = 120_000;
 
 export interface Instance { instanceId: Uint8Array; generation: bigint; name: string; registrationMode: 0 | 1 | 2;
-  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array; }
+  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array;
+  /** E8: the instance has a Giphy key, so the composer shows a GIF button (element 11; absent from an older instance). */
+  gifs: boolean; }
 export interface InviteInfo { communityId: Uint8Array | null; communityName: string | null; expires: bigint; }
 export interface AccountCreated { userId: Uint8Array; deviceId: Uint8Array; token: string; expires: bigint; }
 export interface Challenge { nonce: Uint8Array; expires: bigint; }
@@ -119,6 +121,14 @@ export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
 export interface PasskeyLogin { assertion: string; needs: 0 | 1 }
 export interface StepUpToken { token: string; expires: bigint }
 
+/** E8 (internal/api/gifs.go): the query, offset and id bounds, and the size caps of a preview and a full GIF. */
+export const GIF_QUERY_MAX_BYTES = 100;
+export const GIF_OFFSET_MAX = 4999;
+export const GIF_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+export const GIF_FULL_MAX_BYTES = 25 * 1024 * 1024;
+const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
+export interface GifItem { id: string; title: string; width: number; height: number }
+export interface GifPage { items: GifItem[]; next: number | null }
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
@@ -307,7 +317,8 @@ export class Routes {
   async getInstance(): Promise<Instance> {
     const a = atLeast(decode(await this.body('GET', '/v1/instance', 'read', true)), 11);
     return { instanceId: bin(a[3], 16), generation: u64(a[4]), name: str(a[5]), registrationMode: oneOf(a[6], [0, 1, 2]),
-      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32) };
+      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32),
+      gifs: a.length > 11 && oneOf(a[11], [0, 1]) === 1 };
   }
   async getInvite(code: string): Promise<InviteInfo> {
     const a = atLeast(decode(await this.body('GET', '/i/' + encodeURIComponent(code), 'none', true,
@@ -719,6 +730,41 @@ export class Routes {
     const response = await this.http.request({ method: 'GET', path: blobPath(channelId, blobId),
       bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes, timeoutMs: null });
     return response.status === 404 ? null : response.body;
+  }
+  // ---- E8: the GIF picker (protocol/09 § GIFs). The instance searches and fetches; no Giphy URL is ever built or read here. ----
+
+  /** GET /v1/gifs/search?q=&offset=: 24 results a page; an empty q is trending. 404 E_NOT_FOUND while the instance has no key. */
+  async gifSearch(q: string, offset: number): Promise<GifPage> {
+    if (new TextEncoder().encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) {
+      throw new RangeError('E_ROUTE_INPUT: q must be at most ' + GIF_QUERY_MAX_BYTES + ' bytes with no control character');
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) {
+      throw new RangeError('E_ROUTE_INPUT: offset must be 0..' + GIF_OFFSET_MAX);
+    }
+    const path = `/v1/gifs/search?q=${encodeURIComponent(q)}&offset=${offset}`;
+    const a = atLeast(decode(await this.body('GET', path, 'read', true, { maxBodyBytes: 1_048_576 })), 2);
+    const items: GifItem[] = [];
+    for (const value of arr(a[0])) {
+      const row = atLeast(value, 4);
+      const gifId = str(row[0]);
+      // An id the instance should never send is dropped, not trusted into a path.
+      if (!GIF_ID.test(gifId)) continue;
+      items.push({ id: gifId, title: str(row[1]), width: u53(row[2]), height: u53(row[3]) });
+    }
+    return { items, next: opt(a[1], u53) };
+  }
+  /** GET /v1/gifs/media/{id}?r=preview|full: the GIF's bytes through the instance, so this browser never contacts Giphy. */
+  async gifMedia(gifId: string, variant: 'preview' | 'full', signal?: AbortSignal): Promise<Uint8Array> {
+    if (!GIF_ID.test(gifId)) throw new RangeError('E_ROUTE_INPUT: a gif id is 1..64 letters and digits');
+    if (variant !== 'preview' && variant !== 'full') throw new RangeError('E_ROUTE_INPUT: r must be preview or full');
+    const bytes = await this.body('GET', `/v1/gifs/media/${gifId}?r=${variant}`, 'read', true,
+      { maxBodyBytes: variant === 'preview' ? GIF_PREVIEW_MAX_BYTES : GIF_FULL_MAX_BYTES, signal });
+    if (!(bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38
+      && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61)) {
+      throw new DillaHttpError({ status: 503, code: 'E_UNAVAILABLE', detail: 'the gif service sent something that is not a gif',
+        retryAfterMs: null, extra: [] });
+    }
+    return bytes;
   }
   async deleteBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {
     await this.body('DELETE', blobPath(channelId, blobId), 'write', true, { ok: [204, 404] });
