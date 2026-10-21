@@ -28,6 +28,22 @@ describe('orderChannels', () => {
   });
 });
 
+describe('orderChannels with an AFK channel (MP6)', () => {
+  const afk = ch(id('a'), 'AFK', { kind: 1, parentId: id('9'), position: 1 << 30 });
+  const list = [...LIST, afk, ch(id('b'), 'later', { kind: 2, position: 3 }), ch(id('c'), 'late', { parentId: id('b'), position: 0 })];
+  it('puts the AFK channel last, below every category, and Alt+Down reaches it as the last stop', () => {
+    const ordered = orderChannels(list, new Set([id('a')]));
+    expect(ordered.map(c => c.name)).toEqual(['lounge', 'general', 'news', 'orphan', 'random', 'lobby', 'late', 'AFK']);
+    expect(stepChannel(ordered, id('c'), 1)?.name).toBe('AFK');
+    expect(stepChannel(ordered, id('a'), 1)?.name).toBe('AFK');
+    expect(stepChannel(ordered, id('a'), -1)?.name).toBe('late');
+  });
+  it('is unchanged without an AFK set', () => {
+    expect(orderChannels(list).map(c => c.name).at(-1)).toBe('late');
+    expect(orderChannels(LIST, new Set()).map(c => c.name)).toEqual(['lounge', 'general', 'news', 'orphan', 'random', 'lobby']);
+  });
+});
+
 describe('defaultChannel and stepChannel', () => {
   const ordered = orderChannels(LIST);
   it('prefers the first readable text channel', () => {

@@ -218,7 +218,7 @@ describe('one-click voice join on desktop (web3.9)', () => {
     await app.user.click(await within(list()).findByRole('button', { name: 'voice studio' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     await app.user.click(within(list()).getByRole('button', { name: /^alpha/ }));
-    await app.user.click(within(list()).getByRole('button', { name: 'voice studio, connected' }));
+    await app.user.click(within(list()).getByRole('button', { name: 'voice studio' }));
     expect(app.log.filter(l => l === `callJoin:${VW}`)).toHaveLength(1);
   });
 });

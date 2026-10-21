@@ -96,18 +96,20 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row')).toHaveAttribute('data-live', 'true');
   });
 
-  it('the row you are connected to says "connected" in its accessible name; the others do not', () => {
+  it('the row you are connected to says "connected" in its description, after the count; its name stays "voice harbour"', () => {
     const { rerender } = render(<VoiceChannelRow {...base} />);
-    expect(screen.getByRole('button', { name: 'voice harbour' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
     rerender(<VoiceChannelRow {...base} joined />);
-    expect(screen.getByRole('button', { name: 'voice harbour, connected' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice, connected');
+    rerender(<VoiceChannelRow {...base} joined participants={[]} />);
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('connected');
   });
   it('with nobody in voice shows no count and no sub-rows; current and joined are marked', () => {
     const { rerender } = render(<VoiceChannelRow {...base} participants={[]} />);
     expect(screen.queryByRole('list')).toBeNull();
     expect(screen.getByRole('button', { name: 'voice harbour' })).not.toHaveAccessibleDescription();
-    rerender(<VoiceChannelRow {...base} current joined />);
-    const row = screen.getByRole('button', { name: 'voice harbour, connected' });
+    rerender(<VoiceChannelRow {...base} current joined participants={[]} />);
+    const row = screen.getByRole('button', { name: 'voice harbour' });
     expect(row).toHaveAttribute('aria-current', 'page');
     expect(row).toHaveAttribute('data-joined', 'true');
   });
@@ -118,8 +120,8 @@ describe('VoiceChannelRow', () => {
       channels={[{ id: 't1', name: 'general', kind: 'text', readable: false }, { id: 'v1', name: 'harbour', kind: 'voice', readable: false },
         { id: 'v2', name: 'workshop', kind: 'voice', readable: false }]}
       voice={{ labels, rooms: { v1: { joined: true, participants: base.participants } } }} />);
-    const harbour = screen.getByRole('button', { name: 'voice harbour, connected' });
-    expect(harbour).toHaveAccessibleDescription('2 in voice');
+    const harbour = screen.getByRole('button', { name: 'voice harbour' });
+    expect(harbour).toHaveAccessibleDescription('2 in voice, connected');
     expect(harbour).toHaveAttribute('data-joined', 'true');
     expect(screen.getByRole('button', { name: 'voice workshop' })).toBeInTheDocument();
     expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(1);

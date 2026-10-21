@@ -18,7 +18,7 @@ export interface VoiceChannelRowProps {
   readable?: boolean;
   /**
    * `open` is `voice.open` ('voice {name}'), `count` is `voice.count` ('{n} in voice'), both filled here;
-   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the name of the row this device is in.
+   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button; `joined` is `voice.row.joined` ('connected'), added to the description (after the count) of the row this device is in; the name stays 'voice {name}'.
    */
   labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string; joined: string };
   /** Opens the voice in the main pane (the row's own click). */
@@ -64,15 +64,15 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
   const n = participants.length;
   return (
     <>
-      <button type="button" className="d-voice-row" data-row aria-label={`${labels.open.replaceAll('{name}', name)}${joined ? `, ${labels.joined}` : ''}`}
-        aria-describedby={n > 0 ? countId : undefined} aria-current={current ? 'page' : undefined}
+      <button type="button" className="d-voice-row" data-row aria-label={labels.open.replaceAll('{name}', name)}
+        aria-describedby={n > 0 || joined ? countId : undefined} aria-current={current ? 'page' : undefined}
         data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} onClick={() => onOpen()}>
         <span className="d-voice-row__glyph" aria-hidden="true"><Icon name="volume-2" size={14} /></span>
         <span className="d-voice-row__title">
           <span className="d-voice-row__name">{name}</span>
           {n > 0 ? <span className="d-voice-row__count" aria-hidden="true">{` · ${String(n)}`}</span> : null}
         </span>
-        {n > 0 ? <span id={countId} className="d-sr-only">{labels.count.replaceAll('{n}', String(n))}</span> : null}
+        {n > 0 || joined ? <span id={countId} className="d-sr-only">{[...(n > 0 ? [labels.count.replaceAll('{n}', String(n))] : []), ...(joined ? [labels.joined] : [])].join(', ')}</span> : null}
         {readable === true ? <Tag kind="readable" /> : null}
         <TrailingSlot />
       </button>

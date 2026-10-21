@@ -325,7 +325,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<UiError | null>(null);
 
-  const ordered = useMemo(() => orderChannels(channels ?? []), [channels]);
+  const ordered = useMemo(() => orderChannels(channels ?? [], afkChannels), [channels, afkChannels]);
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;

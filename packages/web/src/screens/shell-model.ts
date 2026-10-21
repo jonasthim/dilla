@@ -15,15 +15,17 @@ function byPosition(a: ChannelSummary, b: ChannelSummary): number {
 /**
  * The listed channels in sidebar order: categories (kind 2) are never listed; channels with no parent,
  * or whose parent is not a category of the list, come first by (position, id); then each category by
- * (position, id) is followed by its children by (position, id). Returns a new array.
+ * (position, id) is followed by its children by (position, id); the `afk` channels come last of all. Returns a new array.
  */
-export function orderChannels(channels: readonly ChannelSummary[]): ChannelSummary[] {
+export function orderChannels(channels: readonly ChannelSummary[], afk: ReadonlySet<string> = new Set()): ChannelSummary[] {
   const cats = channels.filter(c => c.kind === CATEGORY).sort(byPosition);
   const catIds = new Set(cats.map(c => c.id));
   const rows = channels.filter(c => c.kind !== CATEGORY);
   const top = rows.filter(c => c.parentId === null || !catIds.has(c.parentId)).sort(byPosition);
   const children = cats.flatMap(cat => rows.filter(c => c.parentId === cat.id).sort(byPosition));
-  return [...top, ...children];
+  // The server's AFK channel is the very last row of the list, as the sidebar shows it, so the keyboard steps follow.
+  const all = [...top, ...children];
+  return [...all.filter(c => !afk.has(c.id)), ...all.filter(c => afk.has(c.id))];
 }
 
 /** True for what web-1 cannot open: a voice or other non-text channel, a readable channel, or a group the worker marked so. */
