@@ -216,20 +216,28 @@ function useStageFocus(ref: RefObject<HTMLDivElement | null>, call: CallView, jo
  */
 function useFocusRescue(roots: readonly RefObject<HTMLElement | null>[], mode: string, pick: () => HTMLElement | null | undefined) {
   const inside = useRef(false);
+  /** AW5 fix round 3: the element this rescue last put focus on; a later swap may move it again while it is still there
+   *  (a held removal notice arrives after the cut put focus on the join button). */
+  const placed = useRef<Element | null>(null);
   const live = useRef({ roots, pick });
   live.current = { roots, pick };
   useEffect(() => {
     const onIn = (e: FocusEvent) => {
       const target = e.target;
       inside.current = target instanceof Node && live.current.roots.some(r => r.current?.contains(target) === true);
+      if (target !== placed.current) placed.current = null;
     };
     document.addEventListener('focusin', onIn);
     return () => document.removeEventListener('focusin', onIn);
   }, []);
   useLayoutEffect(() => {
     const active = document.activeElement;
-    if (!inside.current || (active !== null && active !== document.body && active.isConnected)) return;
-    live.current.pick()?.focus();
+    if (!inside.current) return;
+    if (active !== null && active !== document.body && active.isConnected && active !== placed.current) return;
+    const next = live.current.pick();
+    if (next == null || next === active) return;
+    placed.current = next;
+    next.focus();
   }, [mode]);
 }
 
@@ -332,8 +340,10 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   const phone = usePhoneLayout();
   const joined = v.call.channelId === channelId;
   useStageFocus(ref, v.call, joined);
-  useFocusRescue([ref], joined ? 'joined' : 'idle', () => stageTarget(ref.current, joined));
   const notice = stageNotice(v, channelId);
+  // AW5 fix round 3: a removal's notice may come after the cut (it waits for the pending reason), so its arrival is a
+  // swap of its own: focus that fell with the controls goes to it then.
+  useFocusRescue([ref], joined ? 'joined' : notice !== null ? 'notice' : 'idle', () => stageTarget(ref.current, joined));
   const mine = v.slice?.channelId === channelId;
   const paused = joined && mine && v.slice?.phase === 'paused';
   const code = joined && mine && v.slice?.phase === 'in' ? v.slice.code : null;

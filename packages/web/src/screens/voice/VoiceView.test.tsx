@@ -5,6 +5,7 @@ import {
   A, BOB, BOB_DEV, CAROL, CAROL_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
+import { REMOVED_HOLD_MS } from './useCall.tsx';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
@@ -414,7 +415,8 @@ describe('review round 1', () => {
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
     expect(app.session.setPaused).not.toHaveBeenCalled();
-    expect(await main().findByText(t('voice.removed'))).toBeInTheDocument();
+    // AW5 fix round 3: the notice waits (at most REMOVED_HOLD_MS) for the read that may give the cut a pending reason.
+    expect(await main().findByText(t('voice.removed'), undefined, { timeout: REMOVED_HOLD_MS + 1_500 })).toBeInTheDocument();
     expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
   });
 
@@ -494,7 +496,7 @@ describe('review round 1', () => {
     const app = await inVoice();
     await toLobby(app);
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
-    await waitFor(() => expect(lasting()).toHaveTextContent(t('voice.removed')));
+    await waitFor(() => expect(lasting()).toHaveTextContent(t('voice.removed')), { timeout: REMOVED_HOLD_MS + 1_500 });
   });
 
   it('"You left {where}." is announced in a status region that outlives the dock', async () => {
@@ -715,7 +717,8 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     const app = await inVoice();
     app.client.publish(`afk:${A}`, afkSlice([]));
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
-    app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }]));
+    // Round 3: the instance's read gives this device's pending reason 2 (AFK chosen on another device or tab).
+    app.client.publish(`afk:${A}`, { ...afkSlice([{ userId: ME.id, since }]), pending: true, pendingReason: 2, seq: 2 });
     const line = await main().findByText(t('afk.elsewhere'));
     expect(line.closest('[data-kind]')).toHaveAttribute('data-kind', 'info');
     expect(main().queryByText(t('voice.removed'))).toBeNull();

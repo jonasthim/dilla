@@ -15,6 +15,7 @@ const AFK_CH = 'af'.repeat(16);
 const B = 'b7'.repeat(16);
 const B_GEN = 'b8'.repeat(16);
 const B_AFK = 'bf'.repeat(16);
+const DM_ID = '9d'.repeat(16);
 const AFK_SET: ReadonlySet<string> = new Set([AFK_CH, B_AFK]);
 const MOVED = t('afk.moved', { channel: 'AFK' });
 const voice = (id: string, communityId: string, name: string, position = 1): ChannelSummary => ({
@@ -50,7 +51,7 @@ function loadSlices(client: FakeClient): void {
 }
 
 /** `lagging`: nothing of the servers is loaded yet, as right after an update reload. */
-function harness(o: { lagging?: boolean } = {}) {
+function harness(o: { lagging?: boolean; recoverEnded?: (id: string) => boolean } = {}) {
   const client = new FakeClient();
   client.set('account', account());
   client.set('settings', {});
@@ -88,7 +89,7 @@ function harness(o: { lagging?: boolean } = {}) {
     const v = useCall({
       client, call: client.get('call'), settings: client.get('settings') ?? {},
       whereOf: (id) => (id === AFK_CH || id === B_AFK ? 'AFK' : 'general'), onLeft: (id) => { lefts.push(id); }, stageShown: () => false,
-      afk: p.afk,
+      afk: p.afk, ...(o.recoverEnded !== undefined ? { recoverEnded: o.recoverEnded } : {}),
     });
     if (said.at(-1) !== v.announcement) said.push(v.announcement);
     return v;
@@ -255,59 +256,102 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
     await waitFor(() => expect(g.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED }));
   });
 
-  it('M2: a second tab chooses AFK, so this tab’s call ends with afk.elsewhere, never removed', async () => {
-    const h = harness();
-    await h.joined(GENV);
-    // The PUT from the other tab cuts this device; its op 55 (this user away, since now) lands within the hold.
-    h.cut();
-    await flush();
-    expect(h.v.notice).toBeNull();
-    h.awayMe(A);
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' }));
-    expect(h.v.lasting).toBe(t('afk.elsewhere'));
-    await wait(REMOVED_HOLD_MS + 300);
-    expect(h.said).not.toContain(t('voice.removed'));
-    expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' });
-    expect(h.started).toHaveLength(1);
-  });
-
-  it('M2: the sweep’s own away mark can land before its pending read; a fresh read decides, and it says afk.moved', async () => {
-    const h = harness();
-    await h.joined(GENV);
+  /** As the instance answers a fresh read after a cut: this device's pending reason, in every community (device-scoped). */
+  const reasonOnRead = (h: ReturnType<typeof harness>, reason: 1 | 2, delayMs = 0) => {
     const base = h.client.handler;
     let reads = 0;
     h.client.handler = (c) => {
       if (c.m !== 'afkRead') return base(c);
       reads += 1;
-      // The read the page asks for lands what the server holds: the sweep's pending for this device.
       return new Promise((resolve) => setTimeout(() => {
-        act(() => { h.client.set(`afk:${A}`, { ...afkOf(AFK_CH), pending: true, seq: 7, away: [{ userId: ME.id, since: nowSec() }] }); });
+        act(() => {
+          for (const [cid, afkId] of [[A, AFK_CH], [B, B_AFK]] as const) {
+            h.client.set(`afk:${cid}`, { ...(h.client.get(`afk:${cid}`) ?? afkOf(afkId)), pending: true, pendingReason: reason, seq: 50 + reads });
+          }
+        });
         resolve(null);
-      }, 300));
+      }, delayMs));
     };
+    return { get reads() { return reads; } };
+  };
+
+  it('M2, round 3: a second tab chooses AFK; the cut’s read says reason 2, so this tab says afk.elsewhere, never removed', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    const reads = reasonOnRead(h, 2, 300);
+    h.cut();
+    await flush();
+    expect(h.v.notice).toBeNull();
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' }));
+    expect(reads.reads).toBeGreaterThan(0);
+    expect(h.v.lasting).toBe(t('afk.elsewhere'));
+    await wait(REMOVED_HOLD_MS + 300);
+    expect(h.said).not.toContain(t('voice.removed'));
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('round 3 (B2-M3): a cut in community Y after AFK was chosen in X says afk.elsewhere, with no recovery', async () => {
+    const h = harness();
+    await h.joined(B_GEN);
+    // AFK was chosen in A: only A lists the person away; B's read gives the device-scoped reason 2.
+    h.awayMe(A);
+    reasonOnRead(h, 2);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: B_GEN, key: 'afk.elsewhere' }));
+    expect(h.v.recoveryChannelId).toBeNull();
+    await wait(1_200);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('round 3 (B2-M3): a DM call cut by AFK chosen elsewhere says afk.elsewhere, read through a listed community', async () => {
+    const h = harness();
+    act(() => { h.client.set('dms', [{ id: DM_ID, kind: 3, members: [ME.id], name: 'bob', group: 'active' }]); });
+    await h.joined(DM_ID);
+    reasonOnRead(h, 2);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: DM_ID, key: 'afk.elsewhere' }));
+    expect(h.client.callsOf('afkRead')[0]).toMatchObject({ communityId: A });
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('round 3 (B2-M2): a DM call lost while AFK was chosen elsewhere is not recovered', async () => {
+    const h = harness();
+    act(() => { h.client.set('dms', [{ id: DM_ID, kind: 3, members: [ME.id], name: 'bob', group: 'active' }]); });
+    await h.joined(DM_ID);
+    reasonOnRead(h, 2);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    expect(h.v.recoveryChannelId).toBe(DM_ID);
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: DM_ID, key: 'afk.elsewhere' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('round 3: the sweep’s reason 1 says afk.moved, also when its away mark lands first', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    reasonOnRead(h, 1, 300);
     h.cut();
     h.awayMe(A);
     await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED }));
-    expect(reads).toBeGreaterThan(0);
     expect(h.said).not.toContain(t('afk.elsewhere'));
     expect(h.v.lasting).toBe(MOVED);
   });
 
-  it('M2: the away mark already there when the cut lands says afk.elsewhere at once; the sweep’s pending says afk.moved', async () => {
+  it('round 3 (B2-n1): an away mark with no reason and a failed read is not guessed: it says removed', async () => {
     const h = harness();
-    const general = await h.joined(GENV);
+    await h.joined(GENV);
+    const base = h.client.handler;
+    h.client.handler = (c) => (c.m === 'afkRead' ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' })) : base(c));
+    h.cut();
     h.awayMe(A);
-    act(() => general.update({ phase: 'ended', error: 'E_REMOVED' }));
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' }));
-    // Control: with the sweep's pending for this device the cut is the sweep's.
-    const g = harness();
-    const call = await g.joined(GENV);
-    g.setAfk(A, { pending: true, seq: 4, away: [{ userId: ME.id, since: nowSec() }] });
-    act(() => call.update({ phase: 'ended', error: 'E_REMOVED' }));
-    expect(g.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED });
-    // Control: an away row the call started under is not newer, so a removal says removed.
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    expect(h.said).not.toContain(t('afk.elsewhere'));
+  });
+
+  it('a pending reason the call started under is stale: a later removal says removed', async () => {
     const r = harness();
-    r.awayMe(A, nowSec() - 60);
+    r.setAfk(A, { pending: true, pendingReason: 2, seq: 4 });
     await r.joined(GENV);
     r.cut();
     await waitFor(() => expect(r.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
@@ -364,27 +408,27 @@ describe('AW5: a restore or a recovery never rejoins where the person is away (R
     await wait(1_500);
     expect(h.started).toHaveLength(1);
     expect(h.v.recoveryChannelId).toBeNull();
-    // M2: the away row is this user choosing AFK elsewhere while this device was cut off.
-    expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.elsewhere' });
+    // Round 3: an away row is a guard, not a reason; with no pending reason the notice says the call was lost.
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
   });
 
   it('reload while away: the restore starts no call', async () => {
     const h = harness();
     h.awayMe(A);
     act(() => h.v.restore(GENV, false, false));
-    await wait(1_200);
+    await wait(1_800);
     expect(h.started).toEqual([]);
     expect(h.v.channelId).toBeNull();
     expect(h.v.recoveryChannelId).toBeNull();
     // Control: a restore in another community joins.
     act(() => h.v.restore(B_GEN, false, false));
-    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([B_GEN]));
+    await waitFor(() => expect(h.started.map((s) => s.channelId)).toEqual([B_GEN]), { timeout: 3_000 });
   });
 
   it('a restore of the AFK channel (a web3.9 call) starts nothing and marks nothing', async () => {
     const h = harness();
     act(() => h.v.restore(AFK_CH, false, false));
-    await wait(1_200);
+    await wait(1_800);
     expect(h.started).toEqual([]);
     expect(h.client.callsOf('afkAway')).toEqual([]);
     expect(h.v.recoveryChannelId).toBeNull();
@@ -583,6 +627,60 @@ describe('AW5 fix round 1: fail closed, cancel and sequence', () => {
     act(() => h.v.leave());
     await waitFor(() => expect(h.lefts).toEqual([GENV]));
   });
+});
+
+describe('AW5 fix round 3: gone channels, the restore banner, the upgrade window', () => {
+  it('B2-M1: a recovery whose channel is gone ends with voice.disconnected', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    // The channel was deleted while the call was lost: every list is loaded and none holds it.
+    act(() => { h.client.set(`channels:${A}`, CHANNELS.filter((c) => c.id !== GENV)); });
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('B2-M1: a recovery whose community is no longer listed (afkRead E_BAD_INPUT) ends with voice.disconnected', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    const base = h.client.handler;
+    h.client.handler = (c) => (c.m === 'afkRead' ? Promise.reject(Object.assign(new Error('E_BAD_INPUT'), { code: 'E_BAD_INPUT' })) : base(c));
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('B2-M4: a waiting restore shows the rejoining state at once, and Leave ends it before it joins', async () => {
+    const h = harness({ lagging: true });
+    act(() => h.v.restore(GENV, false, false));
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    await wait(500);
+    act(() => h.v.leave());
+    expect(h.v.recoveryChannelId).toBeNull();
+    act(() => { loadSlices(h.client); });
+    await wait(2_500);
+    expect(h.started).toEqual([]);
+  });
+
+  it('B2-n2: an upgrade recovery that outlives its window ends with voice.disconnected', async () => {
+    let open = true;
+    const h = harness({ recoverEnded: () => open });
+    const general = await h.joined(GENV);
+    // The read keeps failing while the instance restarts, so no attempt joins.
+    const base = h.client.handler;
+    h.client.handler = (c) => (c.m === 'afkRead' ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' })) : base(c));
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV, error: { code: 'E_CALL_ENDED', detail: '' } } as never)); });
+    act(() => general.update({ phase: 'ended', error: 'E_CALL_ENDED' }));
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    await wait(1_300);
+    expect(h.v.recoveryChannelId).toBe(GENV);
+    open = false;
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 4_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.disconnected' });
+    expect(h.started).toHaveLength(1);
+  }, 10_000);
 });
 
 describe('#37: a share without sound, and the stream mute', () => {

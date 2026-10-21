@@ -136,7 +136,7 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
     const app = await inVoice();
     main().getByRole('button', { name: 'deafen' }).focus();
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
-    await waitFor(() => expect(document.activeElement).toHaveTextContent(t('voice.removed')));
+    await waitFor(() => expect(document.activeElement).toHaveTextContent(t('voice.removed')), { timeout: 3_500 });
     expect(document.activeElement).not.toBe(document.body);
   });
 
