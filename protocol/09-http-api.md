@@ -787,8 +787,8 @@ picker. There are no GIFs in direct messages: the routes belong to a community. 
 | `PUT /v1/communities/{id}/gifs/key` | `[key(tstr)]`, 8 to 64 letters and digits | `204` | `403 E_FORBIDDEN` without Manage Server (the owner holds it), `400 E_INVALID_REQUEST` |
 | `DELETE /v1/communities/{id}/gifs/key` | — | `204` | `403 E_FORBIDDEN` |
 | `PUT /v1/communities/{id}/gifs/rating` | `[rating(tstr)]` | `204` | `403 E_FORBIDDEN`, `400 E_INVALID_REQUEST` |
-| `GET /v1/communities/{id}/gifs/search?q=&offset=` | `q` is at most 100 bytes of text and may be empty (trending); `offset` is `0..4999` | `[[[gif_id(tstr), title(tstr), width(uint), height(uint), path(tstr)]], next_offset(uint or null)]`; 24 results a page, `path` is this server's own media path | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member, 10 then 1 a second), `503 E_UNAVAILABLE` with `Retry-After` |
-| `GET /v1/communities/{id}/gifs/media/{gif_id}?r=preview` | `gif_id` is a Giphy id (letters and digits, at most 64); `r` is `preview` or `full` | `200` the GIF, `Content-Type: image/gif` (a preview is at most 5 MiB, a full GIF at most 25 MiB) | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member, 60 then 20 a second), `503 E_UNAVAILABLE` with `Retry-After` |
+| `GET /v1/communities/{id}/gifs/search?q=&offset=` | `q` is at most 100 bytes of text and may be empty (trending); `offset` is `0..4999` | `[[[gif_id(tstr), title(tstr), width(uint), height(uint), path(tstr)]], next_offset(uint or null)]`; 24 results a page, `path` is this server's own media path | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member across all servers, 10 then 1 a second), `503 E_UNAVAILABLE` with `Retry-After` |
+| `GET /v1/communities/{id}/gifs/media/{gif_id}?r=preview` | `gif_id` is a Giphy id (letters and digits, at most 64); `r` is `preview` or `full` | `200` the GIF, `Content-Type: image/gif` (a preview is at most 5 MiB, a full GIF at most 25 MiB) | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member across all servers, 60 then 20 a second), `503 E_UNAVAILABLE` with `Retry-After` |
 
 - **The key is write-only.** It is stored in the instance's settings table, never read back out by any route, and is in
   no reply, header, log line, audit detail or diagnostics line. Setting, replacing and removing it, and changing the
@@ -802,7 +802,7 @@ picker. There are no GIFs in direct messages: the routes belong to a community. 
   fixed allow-list of Giphy's own hosts, over HTTPS; a redirect off the list, a non-GIF content type or magic, a body
   over the cap (counted on the bytes, not the header), a timeout, a connection to a non-public address, or no free
   fetch slot is `503 E_UNAVAILABLE`.
-- **Fetch slots.** A media or search request holds one of eight instance-wide slots (at most three per member) from
+- **Fetch slots.** A media or search request holds one of eight instance-wide slots (at most three per member and four per server) from
   before the upstream request until its reply is written; a request waits briefly for a slot before the `503`. The
   rating filters search; a media route fetches any Giphy id a member asks for.
 

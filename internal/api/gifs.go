@@ -76,6 +76,9 @@ type Gifs struct {
 	perUser int
 	mu      sync.Mutex
 	held    map[id.ID]int
+	// perServer is how many slots one server's members may hold together; heldServer counts them.
+	perServer  int
+	heldServer map[id.ID]int
 }
 
 // The production allow-list: Giphy's API host and its media hosts. Nothing else is ever dialled.
@@ -102,8 +105,10 @@ const (
 
 	// gifSlots bounds the fetches in flight on the instance, each held until its reply is written:
 	// 8 slots of at most 25 MiB. gifPerUser bounds one member's share so a single member cannot starve the rest.
-	gifSlots     = 8
-	gifPerUser   = 3
+	gifSlots   = 8
+	gifPerUser = 3
+	// gifPerServer keeps one server from taking the whole instance's capacity.
+	gifPerServer = 4
 	gifTimeout   = 15 * time.Second
 	gifWriteWait = 30 * time.Second
 	// gifSlotWait is how long a request waits for a free slot before it is told to retry.
@@ -131,6 +136,7 @@ func NewGifs(repo store.Repository, limiter *server.RateLimiter, clk clock.Clock
 		timeout: gifTimeout, writeTimeout: gifWriteWait, slotWait: gifSlotWait,
 		maxPreview: gifMaxPreview, maxFull: gifMaxFull,
 		slots: make(chan struct{}, gifSlots), perUser: gifPerUser, held: map[id.ID]int{},
+		perServer: gifPerServer, heldServer: map[id.ID]int{},
 	}
 	g.client = &http.Client{
 		Transport: &http.Transport{
@@ -472,18 +478,22 @@ func (g *Gifs) describe(err error, key string) string {
 
 // acquire takes one of the instance's slots and one of the member's shares, waiting briefly for the slot.
 // The returned release must run once the reply is written or the client is gone.
-func (g *Gifs) acquire(ctx context.Context, user id.ID) (func(), error) {
+func (g *Gifs) acquire(ctx context.Context, user, server id.ID) (func(), error) {
 	g.mu.Lock()
-	if g.held[user] >= g.perUser {
+	if g.held[user] >= g.perUser || g.heldServer[server] >= g.perServer {
 		g.mu.Unlock()
 		return nil, errGifBusy
 	}
 	g.held[user]++
+	g.heldServer[server]++
 	g.mu.Unlock()
 	giveBack := func() {
 		g.mu.Lock()
 		if g.held[user]--; g.held[user] <= 0 {
 			delete(g.held, user)
+		}
+		if g.heldServer[server]--; g.heldServer[server] <= 0 {
+			delete(g.heldServer, server)
 		}
 		g.mu.Unlock()
 	}
@@ -580,24 +590,25 @@ func (g *Gifs) fail503(w http.ResponseWriter, err error) {
 
 // gate is what search and media start with: a member of the community, the community's key (404 without
 // one), then the caller's bucket.
-func (g *Gifs) gate(r *http.Request, class server.Class) (auth.Session, gifSettings, error) {
+func (g *Gifs) gate(r *http.Request, class server.Class) (auth.Session, id.ID, gifSettings, error) {
 	s, cid, err := g.member(r)
 	if err != nil {
-		return s, gifSettings{}, err
+		return s, cid, gifSettings{}, err
 	}
 	cfg, err := loadGifSettings(r.Context(), g.repo, cid)
 	if err != nil {
-		return s, cfg, err
+		return s, cid, cfg, err
 	}
 	if !cfg.on() {
-		return s, cfg, server.Errorf(server.CodeNotFound, "no such object")
+		return s, cid, cfg, server.Errorf(server.CodeNotFound, "no such object")
 	}
 	if g.limiter != nil {
-		if ok, wait := g.limiter.Allow(class, cid.String()+"/"+s.UserID.String()); !ok {
-			return s, cfg, server.RateLimitedAfter(wait)
+		// One bucket per member, not per server and member: the rate must not grow with the servers someone is in.
+		if ok, wait := g.limiter.Allow(class, s.UserID.String()); !ok {
+			return s, cid, cfg, server.RateLimitedAfter(wait)
 		}
 	}
-	return s, cfg, nil
+	return s, cid, cfg, nil
 }
 
 func cleanTitle(s string) string {
@@ -656,7 +667,7 @@ func dim(raw json.RawMessage) uint64 {
 }
 
 func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
-	s, cfg, err := g.gate(r, gifSearchClass)
+	s, cid, cfg, err := g.gate(r, gifSearchClass)
 	if err != nil {
 		g.fail(w, r, "gifs search", err)
 		return
@@ -687,7 +698,7 @@ func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
 		params.Set("q", q)
 		params.Set("lang", "en")
 	}
-	release, err := g.acquire(r.Context(), s.UserID)
+	release, err := g.acquire(r.Context(), s.UserID, cid)
 	if err != nil {
 		g.fail503(w, err)
 		return
@@ -705,14 +716,13 @@ func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]any, 0, len(list.Data))
-	cid := r.PathValue("id")
 	for _, d := range list.Data {
 		if !validGifID(d.ID) {
 			continue // never echo an id a client would put in a path
 		}
 		items = append(items, []any{
 			d.ID, cleanTitle(d.Title), dim(d.Images.FixedWidth.Width), dim(d.Images.FixedWidth.Height),
-			"/v1/communities/" + cid + "/gifs/media/" + d.ID + "?r=preview",
+			"/v1/communities/" + cid.String() + "/gifs/media/" + d.ID + "?r=preview",
 		})
 	}
 	var next *uint64
@@ -734,7 +744,7 @@ func (g *Gifs) setWriteDeadline(w http.ResponseWriter) {
 }
 
 func (g *Gifs) media(w http.ResponseWriter, r *http.Request) {
-	s, cfg, err := g.gate(r, gifMediaClass)
+	s, cid, cfg, err := g.gate(r, gifMediaClass)
 	if err != nil {
 		g.fail(w, r, "gifs media", err)
 		return
@@ -757,7 +767,7 @@ func (g *Gifs) media(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The slot is held until the reply is written: the buffer below is alive that long.
-	release, err := g.acquire(r.Context(), s.UserID)
+	release, err := g.acquire(r.Context(), s.UserID, cid)
 	if err != nil {
 		g.fail503(w, err)
 		return

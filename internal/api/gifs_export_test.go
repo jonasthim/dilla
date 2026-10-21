@@ -72,3 +72,6 @@ func GiphyAllowedForTest(raw string) bool {
 	}
 	return NewGifs(nil, nil, nil, nil).allowed(u)
 }
+
+// SetGiphyServerShareForTest sets how many slots one server may hold.
+func SetGiphyServerShareForTest(g *Gifs, n int) { g.perServer = n }

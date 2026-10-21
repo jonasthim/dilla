@@ -95,15 +95,16 @@ func (f *fakeGiphy) lastSearch() map[string]string {
 
 type gifEnv struct {
 	*env
-	g       *api.Gifs
-	fake    *fakeGiphy
-	cid     id.ID
-	base    string // /v1/communities/{cid}
-	owner   string
-	member  string
-	member2 string
-	outside string // not in the community
-	logs    *bytes.Buffer
+	g        *api.Gifs
+	fake     *fakeGiphy
+	cid      id.ID
+	memberID id.ID
+	base     string // /v1/communities/{cid}
+	owner    string
+	member   string
+	member2  string
+	outside  string // not in the community
+	logs     *bytes.Buffer
 }
 
 // newGifEnv is a community with an owner and two ordinary members; withKey has the owner save the key through
@@ -115,18 +116,19 @@ func newGifEnv(t *testing.T, withKey bool) *gifEnv {
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	api.NewCommunities(e.Repo, e.DS, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
 	limiter := server.NewRateLimiter(config.Default().Limits.Rate, e.Clk)
 	g := api.NewGifs(e.Repo, limiter, e.Clk, log)
 	api.UseFakeGiphyForTest(g, fake.srv)
 	g.Register(e.Mux)
 	_, owner := e.NewUser("owner")
 	cid := createCommunity(t, e, owner)
-	_, member := e.NewUser("member")
+	memberID, member := e.NewUser("member")
 	_, member2 := e.NewUser("member2")
 	_, outside := e.NewUser("outside")
 	joinCommunity(t, e, cid, member)
 	joinCommunity(t, e, cid, member2)
-	ge := &gifEnv{env: e, g: g, fake: fake, cid: cid, base: "/v1/communities/" + cid.String(),
+	ge := &gifEnv{env: e, g: g, fake: fake, cid: cid, memberID: memberID, base: "/v1/communities/" + cid.String(),
 		owner: owner, member: member, member2: member2, outside: outside, logs: logs}
 	if withKey {
 		ge.setKey(t, testGiphyKey)
@@ -259,12 +261,39 @@ func decodeStatusOf(t *testing.T, ge *gifEnv) (uint64, string) {
 	return decodeStatus(t, body)
 }
 
-func TestAGrantedManagerRoleMayEnterTheKey(t *testing.T) {
+func TestAMemberHoldingAManageServerRoleMayEnterTheKeyUntilTheyLoseIt(t *testing.T) {
 	ge := newGifEnv(t, false)
-	// The owner holds Manage Server; a plain member does not (above). The permission is the community-wide
-	// one the PATCH /v1/communities/{id} route checks, so a role carrying it works the same.
-	if status, body := ge.Do(http.MethodPut, ge.base+"/gifs/key", ge.owner, []any{testGiphyKey}); status != http.StatusNoContent {
-		t.Fatalf("owner PUT key = %d %x", status, body)
+	put := func() int {
+		status, _ := ge.Do(http.MethodPut, ge.base+"/gifs/key", ge.member, []any{testGiphyKey})
+		return status
+	}
+	if status := put(); status != http.StatusForbidden {
+		t.Fatalf("a plain member's PUT = %d, want 403", status)
+	}
+	role := createRole(t, ge.env, ge.cid, ge.owner, "keepers", 10, api.PermViewChannel|api.PermManageCommunity)
+	grant(t, ge.env, ge.cid, ge.owner, ge.memberID, role, http.StatusNoContent)
+	if status := put(); status != http.StatusNoContent {
+		t.Fatalf("a non-owner with Manage Server: PUT = %d, want 204", status)
+	}
+	if on, _ := decodeStatusOf(t, ge); on != 1 {
+		t.Fatal("the manager's key was not stored")
+	}
+	// The role is taken away: the very next change is refused, though the key stays (it belongs to the server).
+	path := ge.base + "/members/" + ge.memberID.String() + "/roles/" + role.String()
+	if status, body := ge.Do(http.MethodDelete, path, ge.owner, nil); status != http.StatusNoContent {
+		t.Fatalf("revoke role = %d %x", status, body)
+	}
+	if status := put(); status != http.StatusForbidden {
+		t.Fatalf("after losing the role: PUT = %d, want 403", status)
+	}
+	if status, _ := ge.Do(http.MethodDelete, ge.base+"/gifs/key", ge.member, nil); status != http.StatusForbidden {
+		t.Fatalf("after losing the role: DELETE = %d, want 403", status)
+	}
+	if status, _ := ge.Do(http.MethodPut, ge.base+"/gifs/rating", ge.member, []any{"g"}); status != http.StatusForbidden {
+		t.Fatalf("after losing the role: rating = %d, want 403", status)
+	}
+	if on, _ := decodeStatusOf(t, ge); on != 1 {
+		t.Fatal("losing the role removed the server's key")
 	}
 }
 
@@ -917,5 +946,73 @@ func TestTheProductionClientTalksOnlyToTheGiphyHosts(t *testing.T) {
 		if got := api.GiphyAllowedForTest(u); got != ok {
 			t.Fatalf("allowed(%s) = %v, want %v", u, got, ok)
 		}
+	}
+}
+
+// ---- N1: capacity is shared fairly across servers ----
+
+// secondServer is another server of the same owner, with a key and the ordinary member in it.
+func (ge *gifEnv) secondServer(t *testing.T) string {
+	t.Helper()
+	other := createCommunity(t, ge.env, ge.owner)
+	joinCommunity(t, ge.env, other, ge.member)
+	base := "/v1/communities/" + other.String()
+	if status, body := ge.Do(http.MethodPut, base+"/gifs/key", ge.owner, []any{"secondSERVERkey99"}); status != http.StatusNoContent {
+		t.Fatalf("PUT = %d %x", status, body)
+	}
+	return base
+}
+
+func TestTheGifRateIsPerMemberNotPerServerAndMember(t *testing.T) {
+	ge := newGifEnv(t, true)
+	other := ge.secondServer(t)
+	for i := 0; i < 10; i++ {
+		if status, _, _ := ge.get("/search?q=cat"); status != http.StatusOK {
+			t.Fatalf("search %d = %d", i, status)
+		}
+	}
+	// The same member in a second server shares the one bucket, so joining servers does not multiply the rate.
+	if status, _, _ := ge.getAs(ge.member, other+"/gifs/search?q=cat"); status != http.StatusTooManyRequests {
+		t.Fatalf("the 11th search, in another server = %d, want 429", status)
+	}
+	var limited bool
+	for i := 0; i < 80 && !limited; i++ {
+		status, _, _ := ge.getAs(ge.member, other+"/gifs/media/abc123XYZ?r=preview")
+		limited = status == http.StatusTooManyRequests
+	}
+	if !limited {
+		t.Fatal("media fetches across two servers were never limited by one member bucket")
+	}
+}
+
+func TestOneServerCannotTakeMoreThanItsShareOfTheSlots(t *testing.T) {
+	ge := newGifEnv(t, true)
+	other := ge.secondServer(t)
+	api.SetGiphyCapsForTest(ge.g, 64<<20, 64<<20)
+	api.SetGiphySlotsForTest(ge.g, 8, 2, 50*time.Millisecond)
+	api.SetGiphyServerShareForTest(ge.g, 3)
+	ge.fake.media = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/gif")
+		if strings.Contains(r.URL.Path, "/big") {
+			_, _ = w.Write(bigGIF)
+			return
+		}
+		_, _ = w.Write(tinyGIF)
+	}
+	// Three slots of the first server held by readers that never read: two by one member, one by another.
+	ge.stuckGet(ge.member, "/media/big1?r=full")
+	ge.stuckGet(ge.member, "/media/big2?r=full")
+	ge.stuckGet(ge.member2, "/media/big3?r=full")
+	if !ge.waitHeld(3, 10*time.Second) {
+		t.Fatal("the fetches never took their slots")
+	}
+	// A fourth in the same server is refused although five slots are free and this member holds none...
+	status, body, hdr := ge.getAs(ge.owner, ge.base+"/gifs/media/small?r=preview")
+	if status != http.StatusServiceUnavailable || ge.ErrCode(body) != "E_UNAVAILABLE" || hdr.Get("Retry-After") == "" {
+		t.Fatalf("a fourth fetch in a server at its share = %d %x; want 503 with Retry-After", status, body)
+	}
+	// ...and another server is not starved.
+	if status, _, _ := ge.getAs(ge.owner, other+"/gifs/media/small?r=preview"); status != http.StatusOK {
+		t.Fatalf("a fetch in another server = %d; one server's readers must not starve the rest", status)
 	}
 }

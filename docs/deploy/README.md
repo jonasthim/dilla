@@ -924,12 +924,12 @@ What this means for privacy:
   proxy: the host needs outbound HTTPS to `*.giphy.com`. An outage at Giphy shows people "could not reach the gif
   service" and nothing else.
 - A GIF is capped at 25 MB (a preview at 5 MB) counted on the bytes received; a fetch times out after 15 seconds. Each
-  fetch holds one of **eight** instance-wide slots (at most **three** per person) from before the request to Giphy until
+  fetch holds one of **eight** instance-wide slots (at most **three** per person and **four** per server) from before the request to Giphy until
   the reply has been written to the person's browser, and a reply that cannot be written within 30 seconds is dropped, so
   the memory a slow or silent client can pin is bounded by eight GIFs. A request waits up to two seconds for a slot, then
   gets `503` with `Retry-After`.
-- Search is limited per person and server (10 at once, then 1 a second) and so is the media route (60 at once, then 20 a
-  second).
+- Search is limited per person, across all the servers they are in (10 at once, then 1 a second), and so is the media route
+  (60 at once, then 20 a second).
 - The rating (g, pg, pg-13 by default, r) filters **search**; the media route fetches any Giphy id a member asks for, so
   the rating is not a hard limit on what a member can attach (they can attach any file anyway).
 
