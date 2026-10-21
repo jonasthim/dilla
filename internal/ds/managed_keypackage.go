@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -21,6 +22,15 @@ type BotKeyPackageReceipt struct {
 	Generation uint64
 	UploadHash [32]byte
 	Count      uint64
+}
+
+// BotKeyPackageInventory is a read-only, generation-fenced snapshot of a managed Bot's current
+// KeyPackage directory. HasCurrentFallback is encoded as 0 or 1 by the HTTP layer.
+type BotKeyPackageInventory struct {
+	Generation          uint64
+	ServerTime          uint64
+	OrdinaryActiveCount uint64
+	HasCurrentFallback  uint64
 }
 
 // PublishBotKeyPackages accepts one canonical human-directory upload under a managed operation
@@ -315,6 +325,51 @@ func (d *DS) BotKeyPackagePublicationReceipt(ctx context.Context, s Session, ins
 	if errors.Is(err, store.ErrNotFound) {
 		return BotKeyPackageReceipt{}, errNotFound("key package publication receipt")
 	}
+	return out, err
+}
+
+// ManagedBotKeyPackageInventory returns the current directory state under the same generation,
+// runtime, community, installation, user, and device fences as publication. All reads and the
+// injected clock sample occur while those locks remain held, so the tuple describes one snapshot.
+func (d *DS) ManagedBotKeyPackageInventory(ctx context.Context, s Session, installation id.ID) (BotKeyPackageInventory, error) {
+	if s.Bot == nil || s.Bot.InstallationID != installation || s.Scope != auth.ScopeEnrolled {
+		return BotKeyPackageInventory{}, errForbidden("managed KeyPackage inventory requires the current installation session")
+	}
+	var out BotKeyPackageInventory
+	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		_, _, err := d.lockManagedKeyPackageAuthority(ctx, tx, s, installation)
+		if err != nil {
+			return err
+		}
+		instance, err := tx.GetInstance(ctx)
+		if err != nil {
+			return err
+		}
+		now := d.now()
+		if now < 0 || instance.Generation > math.MaxInt64 {
+			return errForbidden("the directory snapshot cannot be represented by the wire format")
+		}
+		count, err := tx.CountKeyPackages(ctx, s.DeviceID, now)
+		if err != nil {
+			return err
+		}
+		if count < 0 || count > math.MaxInt64 {
+			return errForbidden("the directory count cannot be represented by the wire format")
+		}
+		fallback, err := tx.HasCurrentLastResortKeyPackage(ctx, s.DeviceID, now)
+		if err != nil {
+			return err
+		}
+		out = BotKeyPackageInventory{
+			Generation:          instance.Generation,
+			ServerTime:          uint64(now),
+			OrdinaryActiveCount: uint64(count),
+		}
+		if fallback {
+			out.HasCurrentFallback = 1
+		}
+		return nil
+	})
 	return out, err
 }
 

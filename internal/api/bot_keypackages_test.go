@@ -72,6 +72,15 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 		t.Fatal(err)
 	}
 	path := "/v1/bot-runtime/installations/" + installation.ID.String() + "/keypackages"
+	inventoryPath := path
+	inventoryReq := httptest.NewRequestWithContext(ctx, http.MethodGet, inventoryPath, nil)
+	inventoryReq.Header.Set("Authorization", "Bearer "+token)
+	inventoryRec := httptest.NewRecorder()
+	h.mux.ServeHTTP(inventoryRec, inventoryReq)
+	if inventoryRec.Code != http.StatusBadRequest || refusalCode(t, inventoryRec) != "E_VERSION" {
+		t.Fatalf("authorized wire-2 inventory with forged wire header absent = %d (%x), want 400 E_VERSION", inventoryRec.Code, inventoryRec.Body.Bytes())
+	}
+	assertNegotiationVersionError(t, inventoryRec, [][]uint64{{3}, {1}, {1}})
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(publication))
 	req.Header.Set("Content-Type", "application/cbor")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -86,6 +95,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	unknown := id.New()
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/bot-runtime/installations/" + unknown.String() + "/keypackages"},
+		{http.MethodGet, "/v1/bot-runtime/installations/" + unknown.String() + "/keypackages"},
 		{http.MethodGet, "/v1/bot-runtime/installations/" + unknown.String() + "/keypackages/" + id.New().String()},
 	} {
 		req := httptest.NewRequestWithContext(ctx, tc.method, tc.path, nil)
@@ -95,5 +105,42 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 		if rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FORBIDDEN" {
 			t.Fatalf("%s %s unknown installation = %d (%x), want authority refusal before E_VERSION", tc.method, tc.path, rec.Code, rec.Body.Bytes())
 		}
+	}
+
+	// A newly negotiated, current Bot session gets the empty inventory tuple only after its
+	// installation authority is established. This checks the mounted GET with a real session
+	// token and the cache policy, independent of the publication body refusal above.
+	nonce, _, err = deps.Sessions.Challenge(ctx, deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSession, err := deps.Sessions.Establish(ctx, auth.EstablishRequest{DeviceID: deviceID, Nonce: nonce, Purpose: auth.PurposeSession, Sig: ed25519.Sign(private, auth.SessionPreimage(deps.Sessions.InstanceID(), deviceID, nonce, auth.PurposeSession))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := postCBORAuth(h.mux, "/v1/sessions/negotiate", mustCBOR(t, []any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}}), newSession.Token); rec.Code != http.StatusOK {
+		t.Fatalf("managed Bot wire-3 negotiation = %d (%x)", rec.Code, rec.Body.Bytes())
+	}
+	get := httptest.NewRequestWithContext(ctx, http.MethodGet, inventoryPath, nil)
+	get.Header.Set("Authorization", "Bearer "+newSession.Token)
+	got := httptest.NewRecorder()
+	h.mux.ServeHTTP(got, get)
+	if got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("current managed inventory = %d cache=%q body=%x", got.Code, got.Header().Get("Cache-Control"), got.Body.Bytes())
+	}
+	var tuple []any
+	if err := cborx.Unmarshal(got.Body.Bytes(), &tuple); err != nil || len(tuple) != 4 {
+		t.Fatalf("inventory tuple=%v err=%v, want four fields", tuple, err)
+	}
+	instance, err := deps.Repo.GetInstance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen, genOK := tuple[0].(uint64)
+	serverTime, timeOK := tuple[1].(uint64)
+	ordinary, ordinaryOK := tuple[2].(uint64)
+	fallback, fallbackOK := tuple[3].(uint64)
+	if !genOK || gen != instance.Generation || !timeOK || serverTime != uint64(h.clk.Now().Unix()) || !ordinaryOK || ordinary != 0 || !fallbackOK || fallback != 0 {
+		t.Fatalf("empty inventory tuple=%v", tuple)
 	}
 }

@@ -534,6 +534,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/ready` | B, joining; completed retry while ready | `[request_id, expected_revision]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
+| `GET /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | — | `[generation, server_time, ordinary_active_count, has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
@@ -611,7 +612,7 @@ current human authorization so emergency shutdown requires no bot availability.
 
 Managed Bots publish only through the installation-scoped route above; their
 generic `POST /v1/keypackages` is refused. The existing human publication API is
-unchanged. Both new routes require wire 3, a current credential-verified Bot
+unchanged. All three routes require wire 3, a current credential-verified Bot
 session bound to this exact installation/account/device, and joining or ready
 state. Runtime credentials cannot use them. `upload_body` is a bstr containing
 the existing strict deterministic `[packages,last_resort]` upload. Operation ids
@@ -628,10 +629,24 @@ This remains true after a generation change, consumption or expiry. Retrying
 accepted fallback A after B cannot replace B. A receipt proves historical
 acceptance only; current inventory and readiness use active package counts.
 
+The collection GET returns a read-only inventory snapshot under the same
+generation, runtime, community, installation, user and device fences. Sample one
+server Unix timestamp in seconds after acquiring the locks. Count ordinary
+unconsumed packages whose expiry is strictly later than that timestamp, and set
+the fallback flag to 1 only when the current last-resort package is unexpired.
+Never use a consuming directory operation to obtain this snapshot. Generation,
+timestamp and ordinary count are uint at most signed-int64 max; the flag is uint
+0 or 1. This authenticated response body, rather than the caller's wall clock or
+an intermediary's HTTP Date header, can establish expiry for native obsolete
+resolution. The snapshot does not reserve packages: subsequent consumption may
+change availability. Responses must not be cached.
+
 First acceptance serializes publication for the installation/device using
-database locks. Under that lock it checks the current server generation, validates
-every package against the registered credential with WASI, deduplicates refs,
-rechecks expiry, and enforces capacity counting only newly active ordinary rows.
+database locks. A locked preflight checks authority, receipts and generation;
+WASI then validates every package against the registered credential outside the
+database transaction. The final transaction reacquires all fences and repeats
+authority, receipt, generation, credential and expiry checks. It deduplicates
+refs and enforces capacity counting only newly active ordinary rows.
 All package writes, fallback replacement and the receipt commit atomically.
 Human publication shares device serialization and atomic capacity enforcement,
 without Bot receipts. Consumed ordinary refs are never revived by a replay.

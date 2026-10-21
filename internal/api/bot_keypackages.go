@@ -21,11 +21,46 @@ type botKeyPackageReceiptResponse struct {
 	Count      uint64
 }
 
+type botKeyPackageInventoryResponse struct {
+	_                   struct{} `cbor:",toarray"`
+	Generation          uint64
+	ServerTime          uint64
+	OrdinaryActiveCount uint64
+	HasCurrentFallback  uint64
+}
+
 // RegisterBotDirectory mounts the only KeyPackage publication surface available to managed Bots.
 func (h *Groups) RegisterBotDirectory(mux *server.Mux, sessions *auth.Sessions) {
 	enrolled := func(f http.HandlerFunc) http.Handler { return sessions.Middleware(f, auth.ScopeEnrolled) }
 	mux.Handle("POST /v1/bot-runtime/installations/{installation}/keypackages", enrolled(dsMeter(h.Limiter, dsClassWrite, h.publishBotKeyPackages)))
+	mux.Handle("GET /v1/bot-runtime/installations/{installation}/keypackages", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotKeyPackageInventory)))
 	mux.Handle("GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotKeyPackageReceipt)))
+}
+
+func (h *Groups) getBotKeyPackageInventory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	installation, err := server.PathID(r, "installation")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	inventory, err := h.DS.ManagedBotKeyPackageInventory(r.Context(), session, installation)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	response := botKeyPackageInventoryResponse{
+		Generation: inventory.Generation, ServerTime: inventory.ServerTime,
+		OrdinaryActiveCount: inventory.OrdinaryActiveCount, HasCurrentFallback: inventory.HasCurrentFallback,
+	}
+	if err := server.EncodeBody(w, http.StatusOK, response); err != nil {
+		server.WriteError(w, err)
+	}
 }
 
 func (h *Groups) publishBotKeyPackages(w http.ResponseWriter, r *http.Request) {

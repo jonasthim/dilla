@@ -307,6 +307,7 @@ type MLS interface {
 	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
 	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
 	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)
+	HasCurrentLastResortKeyPackage(ctx context.Context, deviceID id.ID, now int64) (bool, error)
 	// DeleteKeyPackage removes one package from a device's directory, consumed or not, last
 	// resort or not. Deleting a package that is not there is not an error.
 	DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error

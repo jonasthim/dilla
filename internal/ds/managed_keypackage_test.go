@@ -285,6 +285,18 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled}
 	session.WireVersion = 3
 	session.Bot = &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationJoining}
+	empty, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
+	if err != nil || empty.Generation != 1 || empty.ServerTime != uint64(clk.Now().Unix()) || empty.OrdinaryActiveCount != 0 || empty.HasCurrentFallback != 0 {
+		t.Fatalf("fresh managed KeyPackage inventory=%+v err=%v", empty, err)
+	}
+	if _, err := delivery.ManagedBotKeyPackageInventory(ctx, session, id.New()); err == nil {
+		t.Fatal("managed Bot session read a foreign installation inventory")
+	}
+	humanSession := session
+	humanSession.Bot = nil
+	if _, err := delivery.ManagedBotKeyPackageInventory(ctx, humanSession, installation.ID); err == nil {
+		t.Fatal("human session read managed Bot KeyPackage inventory")
+	}
 	// Repeated refs within a batch are deduped. Distinct native Bot batches also cover the
 	// A/B/A retry rule: retrying A must return its receipt without restoring fallback A.
 	upload, err := cborx.Marshal([]any{[]any{blob, blob}, fallbackA.blob(t)})
@@ -342,6 +354,27 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	}
 	if row, err := repo.GetKeyPackage(ctx, device, fallbackBInfo.KPRef); err != nil || !bytes.Equal(row.Blob, fallbackB.blob(t)) || row.LastResort != 1 {
 		t.Fatalf("historical A replay replaced fallback B: row=%+v err=%v", row, err)
+	}
+	before, err := repo.CountKeyPackages(ctx, device, clk.Now().Unix())
+	if err != nil || before != 2 {
+		t.Fatalf("ordinary count before inventory=%d err=%v", before, err)
+	}
+	receiptBefore, err := repo.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, operation)
+	if err != nil {
+		t.Fatalf("read publication receipt before inventory: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		inventory, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
+		if err != nil || inventory.Generation != 1 || inventory.ServerTime != uint64(clk.Now().Unix()) || inventory.OrdinaryActiveCount != 2 || inventory.HasCurrentFallback != 1 {
+			t.Fatalf("published inventory pass %d = %+v err=%v", i, inventory, err)
+		}
+	}
+	if after, err := repo.CountKeyPackages(ctx, device, clk.Now().Unix()); err != nil || after != before {
+		t.Fatalf("inventory changed ordinary inventory count %d -> %d (err=%v)", before, after, err)
+	}
+	receiptAfter, err := repo.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, operation)
+	if err != nil || receiptAfter.Generation != receiptBefore.Generation || receiptAfter.Count != receiptBefore.Count || !bytes.Equal(receiptAfter.UploadSHA256, receiptBefore.UploadSHA256) || receiptAfter.AcceptedAt != receiptBefore.AcceptedAt {
+		t.Fatalf("inventory changed publication receipt: before=%+v after=%+v err=%v", receiptBefore, receiptAfter, err)
 	}
 	// Fill the ordinary directory to its cap with distinct stored refs, then publish the same real
 	// package under a new operation. Its existing ref consumes no capacity and remains a no-op.
@@ -440,14 +473,25 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	if got, err := repo.CountKeyPackages(ctx, device, clk.Now().Unix()); err != nil || got != 0 {
 		t.Fatalf("active ordinary count=%d, err=%v, want 0", got, err)
 	}
-	if restoreRepo != nil {
-		// Hold the restore fence through generation bump and purge on a second PG repository. A
-		// publisher that started against generation 1 must wait, then reject after this commits.
+	postConsume, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
+	if err != nil || postConsume.OrdinaryActiveCount != 0 || postConsume.HasCurrentFallback != 1 {
+		t.Fatalf("post-consumption inventory=%+v err=%v", postConsume, err)
+	}
+	if fallback, err := delivery.TakeKeyPackage(ctx, session, device); err != nil || !fallback.LastResort || !bytes.Equal(fallback.Blob, fallbackB.blob(t)) {
+		t.Fatalf("inventory consumed or changed the current fallback: %+v err=%v", fallback, err)
+	}
+	{
+		// Hold the restore fence through generation bump and purge. A concurrent inventory must
+		// wait and then report one coherent post-restore generation/directory snapshot.
+		fenceRepo := restoreRepo
+		if fenceRepo == nil {
+			fenceRepo = repo
+		}
 		locked := make(chan struct{})
 		release := make(chan struct{})
 		restoreDone := make(chan error, 1)
 		go func() {
-			restoreDone <- restoreRepo.Tx(ctx, func(tx store.Repository) error {
+			restoreDone <- fenceRepo.Tx(ctx, func(tx store.Repository) error {
 				if err := tx.LockInstanceGeneration(ctx); err != nil {
 					return err
 				}
@@ -466,6 +510,13 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 			_, _, err := delivery.PublishBotKeyPackages(ctx, session, installation.ID, id.New(), 1, upload)
 			staleDone <- err
 		}()
+		inventoryDone := make(chan ds.BotKeyPackageInventory, 1)
+		inventoryErr := make(chan error, 1)
+		go func() {
+			inventory, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
+			inventoryDone <- inventory
+			inventoryErr <- err
+		}()
 		if monitorDB != nil {
 			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			waitForPostgresLockWait(t, waitCtx, monitorDB)
@@ -474,6 +525,8 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 			select {
 			case err := <-staleDone:
 				t.Fatalf("stale publication escaped held restore fence: %v", err)
+			case inventory := <-inventoryDone:
+				t.Fatalf("inventory escaped held restore fence: %+v", inventory)
 			case <-time.After(75 * time.Millisecond):
 			}
 		}
@@ -484,8 +537,13 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 		if err := <-staleDone; err == nil {
 			t.Fatal("publication with stale generation was accepted after restore")
 		}
-	} else if err := repo.SetGeneration(ctx, 2); err != nil {
-		t.Fatal(err)
+		inventory := <-inventoryDone
+		if err := <-inventoryErr; err != nil || inventory.Generation != 2 {
+			t.Fatalf("inventory after restore = %+v err=%v, want generation 2", inventory, err)
+		}
+		if inventory.ServerTime != uint64(clk.Now().Unix()) {
+			t.Fatalf("post-restore inventory server time=%d now=%d", inventory.ServerTime, clk.Now().Unix())
+		}
 	}
 	count, accepted, err = delivery.PublishBotKeyPackages(ctx, session, installation.ID, operation, 1, upload)
 	if err != nil || accepted || count != 2 {
@@ -566,12 +624,18 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	if _, _, err := delivery.PublishBotKeyPackages(ctx, wrongScope, installation.ID, id.New(), 2, upload); err == nil {
 		t.Fatal("provisional session published a managed Bot KeyPackage")
 	}
+	if _, err := delivery.ManagedBotKeyPackageInventory(ctx, wrongScope, installation.ID); err == nil {
+		t.Fatal("provisional session read managed Bot KeyPackage inventory")
+	}
 	disabledAt := clk.Now().Unix()
 	if err := repo.SetUserDisabled(ctx, user, &disabledAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := delivery.BotKeyPackagePublicationReceipt(ctx, session, installation.ID, operation); err == nil {
 		t.Fatal("disabled Bot retained receipt authority")
+	}
+	if _, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID); err == nil {
+		t.Fatal("disabled Bot retained inventory authority")
 	}
 	if err := repo.SetUserDisabled(ctx, user, nil); err != nil {
 		t.Fatal(err)
@@ -598,6 +662,10 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	if _, _, err := expiringDS.PublishBotKeyPackages(ctx, session, installation.ID, delayedOperation, 2, upload); err == nil || !strings.Contains(err.Error(), "expired while publication was waiting") {
 		t.Fatalf("delayed publication error=%v, want locked expiry refusal", err)
 	}
+	expiredInventory, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
+	if err != nil || expiredInventory.OrdinaryActiveCount != 0 || expiredInventory.HasCurrentFallback != 0 {
+		t.Fatalf("expired package inventory=%+v err=%v", expiredInventory, err)
+	}
 	if _, err := repo.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, delayedOperation); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expired delayed publication left receipt: %v", err)
 	}
@@ -606,6 +674,9 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 	}
 	if _, err := delivery.BotKeyPackagePublicationReceipt(ctx, session, installation.ID, operation); err == nil {
 		t.Fatal("revoked device retained historical receipt authority")
+	}
+	if _, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID); err == nil {
+		t.Fatal("revoked device retained inventory authority")
 	}
 }
 

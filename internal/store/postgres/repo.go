@@ -1762,6 +1762,19 @@ func (r *Repo) CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) 
 	return n, wrap(err)
 }
 
+// HasCurrentLastResortKeyPackage reports whether a live reusable fallback exists without
+// consuming it. It is used by the managed directory inventory snapshot.
+func (r *Repo) HasCurrentLastResortKeyPackage(ctx context.Context, deviceID id.ID, now int64) (bool, error) {
+	_, err := r.r.GetLastResortKeyPackage(ctx, pgdb.GetLastResortKeyPackageParams{DeviceID: deviceID, Expires: now})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, wrap(err)
+	}
+	return true, nil
+}
+
 func (r *Repo) DeleteKeyPackage(ctx context.Context, deviceID id.ID, kpRef []byte) error {
 	return wrap(r.w.DeleteKeyPackage(ctx, pgdb.DeleteKeyPackageParams{DeviceID: deviceID, KpRef: kpRef}))
 }
