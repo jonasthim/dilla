@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, mkdtemp, open, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,10 +11,14 @@ import type { DillaHarness, DillaHarness21, DillaRemoteStats } from '../../packa
 
 type W = { harness: DillaHarness & DillaHarness21 };
 type BotReport = { published: Record<string, string>; decrypted: number; decrypted_by_kind: Record<string, number> };
+type BotProcess = { result: Promise<BotReport>; stop: () => Promise<void> };
 const HARNESS = 'http://127.0.0.1:5179/';
 const MAX_INPUT_BYTES = 1 << 20;
+const MAX_BOT_OUTPUT_BYTES = 16_384;
 const sourcePath = process.env.DILLA_PROVIDER_OPUS_FILE;
 const providerName = process.env.DILLA_PROVIDER_NAME;
+
+test.use({ trace: 'off' });
 
 async function stageInput(path: string, scratch: string): Promise<{ bytes: number; sha256: string }> {
   if (!isAbsolute(path)) throw new Error('provider input must be an absolute regular file');
@@ -42,43 +46,128 @@ async function stageInput(path: string, scratch: string): Promise<{ bytes: numbe
   }
 }
 
-function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): Promise<BotReport> {
+function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): BotProcess {
   const bin = process.env.DILLA_MEDIABOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'target', 'dilla-mediabot');
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let output = '';
-    let finished = false;
-    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+  const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '';
+  let outputBytes = 0;
+  let outputTooLarge = false;
+  let timedOut = false;
+  let spawnFailed = false;
+  let closed = false;
+  let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let resolveClosed!: () => void;
+  const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  const requestStop = () => {
+    if (closed) return;
+    child.kill('SIGTERM');
+    if (!hardKillTimer) {
+      hardKillTimer = setTimeout(() => {
+        if (!closed) child.kill('SIGKILL');
+      }, 1_000);
+    }
+  };
+
+  const result = new Promise<BotReport>((resolve, reject) => {
+    deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      requestStop();
+    }, timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      if (output.length > 16_384) child.kill('SIGTERM');
+      const remaining = MAX_BOT_OUTPUT_BYTES - outputBytes;
+      if (remaining > 0) {
+        const kept = chunk.subarray(0, remaining);
+        output += kept.toString();
+        outputBytes += kept.length;
+      }
+      if (chunk.length > remaining) {
+        outputTooLarge = true;
+        requestStop();
+      }
     });
     // Do not forward child diagnostics: the room token and provider input must stay out of logs.
     child.stderr.on('data', () => {});
     child.once('error', () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      reject(new Error('dilla-mediabot could not be started'));
+      spawnFailed = true;
     });
     child.once('close', (code) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      if (code !== 0 || output.length > 16_384) {
+      closed = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(hardKillTimer);
+      resolveClosed();
+      if (spawnFailed) {
+        reject(new Error('dilla-mediabot could not be started'));
+        return;
+      }
+      if (timedOut) {
+        reject(new Error('dilla-mediabot timed out'));
+        return;
+      }
+      if (outputTooLarge || code !== 0) {
         reject(new Error('dilla-mediabot did not complete successfully'));
         return;
       }
       try { resolve(JSON.parse(output.trim()) as BotReport); }
       catch { reject(new Error('dilla-mediabot returned an invalid report')); }
     });
+    child.stdin.on('error', () => requestStop());
     child.stdin.end(`${baseKey}\n`);
   });
+  // The caller may be awaiting browser observations before it awaits the bot report.
+  void result.catch(() => {});
+  return {
+    result,
+    async stop() {
+      requestStop();
+      await closedPromise;
+    },
+  };
 }
 
 const remoteAudio = async (page: import('@playwright/test').Page, identity: string) =>
   (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
     .filter((row) => row.participantIdentity === identity && row.kind === 'audio' && row.source === 'microphone');
+
+test('mediabot timeout sends TERM, escalates to KILL, and reaps the process', async () => {
+  const scratch = await mkdtemp(join(tmpdir(), 'dilla-mediabot-timeout-'));
+  const fake = join(scratch, 'mediabot');
+  await writeFile(fake, '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n', { mode: 0o700 });
+  await chmod(fake, 0o700);
+  const previous = process.env.DILLA_MEDIABOT;
+  process.env.DILLA_MEDIABOT = fake;
+  const run = runEncryptedBot([], '0a'.repeat(16), 50);
+  const started = Date.now();
+  try {
+    await expect(run.result).rejects.toThrow('dilla-mediabot timed out');
+    expect(Date.now() - started).toBeLessThan(4_000);
+  } finally {
+    await run.stop();
+    if (previous === undefined) delete process.env.DILLA_MEDIABOT;
+    else process.env.DILLA_MEDIABOT = previous;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test('mediabot output overflow is capped, terminated, and reaped', async () => {
+  const scratch = await mkdtemp(join(tmpdir(), 'dilla-mediabot-output-'));
+  const fake = join(scratch, 'mediabot');
+  await writeFile(fake, '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {}); process.stdout.write("x".repeat(131072)); setInterval(() => {}, 1000);\n', { mode: 0o700 });
+  await chmod(fake, 0o700);
+  const previous = process.env.DILLA_MEDIABOT;
+  process.env.DILLA_MEDIABOT = fake;
+  const run = runEncryptedBot([], '0a'.repeat(16), 10_000);
+  const started = Date.now();
+  try {
+    await expect(run.result).rejects.toThrow('dilla-mediabot did not complete successfully');
+    expect(Date.now() - started).toBeLessThan(4_000);
+  } finally {
+    await run.stop();
+    if (previous === undefined) delete process.env.DILLA_MEDIABOT;
+    else process.env.DILLA_MEDIABOT = previous;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefox', async ({ browser, browserName }, info) => {
   test.setTimeout(120_000);
@@ -92,7 +181,7 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
   await chmod(scratch, 0o700);
   const tokenPath = join(scratch, 'room-token');
   let driver: MediaDriver | undefined;
-  let bot: Promise<BotReport> | undefined;
+  let bot: BotProcess | undefined;
   try {
     const input = await stageInput(sourcePath!, scratch);
     driver = await MediaDriver.start(DS_URL, testkitEnv());
@@ -122,10 +211,13 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
       '-roster', publisherKey.roster.map((r) => `${r.leaf}:${r.deviceId}`).join(','),
       '-publish', 'opus', '-duration', '15s', '-media', scratch,
     ], publisherKey.baseKey, 40_000);
+    let botFailed = false;
+    void bot.result.catch(() => { botFailed = true; });
     const kid = kidHex(publisherKey.selfLeaf, publisherKey.epoch);
 
     let matched: DillaRemoteStats | undefined;
     await expect.poll(async () => {
+      if (botFailed) throw new Error('dilla-mediabot exited before its track reached the receiver');
       const tracks = await remoteAudio(page, publisher.deviceId);
       if (tracks.length === 1) matched = tracks[0];
       return tracks.length === 1 && tracks[0].packetsReceived > 0;
@@ -148,13 +240,15 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
       .filter((row) => row.participantIdentity === publisher.deviceId && row.kind === 'audio');
     expect(probes).toHaveLength(1);
     expect(probes[0].rms).toBeGreaterThan(0.001);
-    const botReport = await bot;
-    expect(botReport.published.opus).toMatch(/^TR_/);
-    expect(botReport.decrypted).toBe(0);
-    expect((await authenticated())).toBeGreaterThan(first);
-
     const finalTracks = await remoteAudio(page, publisher.deviceId);
     expect(finalTracks).toHaveLength(1);
+    const finalDecrypted = await authenticated();
+    expect(finalDecrypted).toBeGreaterThan(first);
+
+    const botReport = await bot.result;
+    expect(botReport.published.opus).toMatch(/^TR_/);
+    expect(botReport.decrypted).toBe(0);
+
     const evidence = {
       provider: providerName,
       qualification: providerName === 'synthetic' ? 'harness-smoke-only' : 'provider-evidence',
@@ -162,14 +256,15 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
       sha256: input.sha256,
       input_bytes: input.bytes,
       audio_tracks: 1,
-      authenticated_frames: await authenticated(),
+      authenticated_frames: finalDecrypted,
       samples_received: finalTracks[0].totalSamplesReceived,
       rms: probes[0].rms,
     };
     await info.attach('provider-opus-evidence.json', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
     console.log(`PROVIDER_OPUS ${JSON.stringify(evidence)}`);
   } finally {
-    await bot?.catch(() => undefined);
+    await bot?.stop();
+    await bot?.result.catch(() => undefined);
     await driver?.close();
     await rm(scratch, { recursive: true, force: true });
   }
