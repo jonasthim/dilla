@@ -779,6 +779,25 @@ writes a `user.factors_reset` audit row, all in one transaction. A bot account a
   closes no socket itself; the serving process notices the owed account on its next liveness tick and closes the
   connection. The heartbeat interval is `gateway.heartbeat_interval` (30 s by default).
 
+### A person has lost every device: `dillad admin device revoke --all`
+
+```sh
+sudo -u dillad dillad admin device revoke --all --config=/etc/dilla/dilla.toml mira
+```
+
+It takes the person's username, or their id (32 hex) in place of it. It revokes every device that is not yet revoked,
+deletes every session of the person and writes a `device.revoke_all` audit row, all in one transaction under the user
+lock. A device revoked before keeps its first revoke time. It prints each device it revoked and says what the person
+loses.
+
+- **Encrypted history is lost** unless another device still holds it. After this command none of the person's devices
+  is active, so the history those devices held is gone for good. The person signs in again to use dilla.
+- **The signed device list is not changed.** The server cannot sign it, so the list clients read still names the
+  revoked devices (marked revoked) until the person's own device removes them.
+- **Live connections close within one heartbeat**, as with `device revoke --id`: the serving process notices that the
+  sessions are gone on its next liveness tick.
+- **Use `--id` for one device.** `device revoke --id=ID` revokes a single device and leaves the others signed in.
+
 ### Changing the instance domain
 
 Moving an instance to a new address is a configuration change with consequences for people. Read them before you start.
