@@ -461,6 +461,17 @@ func WebAuthnLeg(cfg config.Config) Leg {
 	return Leg{Name: name, Status: Green, Detail: fmt.Sprintf("rp_id %s, %d %s", rpID, len(cfg.Auth.WebAuthn.RPOrigins), plural(len(cfg.Auth.WebAuthn.RPOrigins), "origin", "origins"))}
 }
 
+// GiphyLeg says whether the GIF picker is on (E8) and contacts nothing. It never prints the key:
+// doctor output is pasted into issues. Off is the default and is healthy.
+func GiphyLeg(cfg config.Config) Leg {
+	const name = "giphy"
+	if !cfg.Giphy.Enabled() {
+		return Leg{Name: name, Status: Green, Detail: "off: giphy.api_key is empty, so the web client shows no GIF button"}
+	}
+	return Leg{Name: name, Status: Green,
+		Detail: fmt.Sprintf("on, rating %s: search and the media proxy run in dillad, readers' browsers never contact giphy.com", cfg.Giphy.Rating)}
+}
+
 // blobLegPage is how many blob rows one ListBlobs call returns.
 const blobLegPage = 256
 

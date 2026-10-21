@@ -89,6 +89,7 @@ func Default() *Config {
 	c.Log = Log{Level: "info", Format: "json"}
 	c.Metrics = Metrics{Enabled: true, Path: "/metrics", RequireAdmin: true}
 	c.Doctor = Doctor{ClockSkewMax: "60s", TURNProbe: true, UDPProbe: true}
+	c.Giphy = Giphy{Rating: "pg-13"}
 	return c
 }
 

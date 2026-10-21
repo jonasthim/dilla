@@ -369,6 +369,12 @@ func (c *Config) Validate() error {
 	if !slices.Contains([]string{"public", "session"}, c.Instance.Discovery) {
 		add("instance.discovery is %q; the values are public and session", c.Instance.Discovery)
 	}
+	if !slices.Contains([]string{"g", "pg", "pg-13", "r"}, c.Giphy.Rating) {
+		add("giphy.rating is %q; the values are g, pg, pg-13 and r", c.Giphy.Rating)
+	}
+	if strings.ContainsAny(c.Giphy.APIKey, " \t\r\n&=?#/") {
+		add("giphy.api_key contains whitespace or URL syntax; paste the key exactly as Giphy shows it")
+	}
 	if c.Doctor.ClockSkewMax.Value() < 2*time.Second {
 		add("doctor.clock_skew_max is %s; HTTP-date has one-second granularity, so anything under 2s is noise", c.Doctor.ClockSkewMax.Value())
 	}

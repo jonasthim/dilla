@@ -39,6 +39,7 @@ func (c *Config) Redacted() slog.Value {
 		slog.Bool("turn_enabled", c.TURN.Enabled),
 		slog.Bool("livekit_enabled", c.LiveKit.Enabled),
 		slog.Bool("metrics_enabled", c.Metrics.Enabled),
+		slog.Bool("giphy_enabled", c.Giphy.Enabled()),
 		slog.Int64("max_ciphertext_bytes", c.Limits.MaxCiphertextBytes),
 		slog.Int("handshake_retention_days", c.Retention.HandshakeDays),
 		slog.Int("ciphertext_retention_days", c.Retention.CiphertextDays),
