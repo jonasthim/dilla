@@ -199,8 +199,8 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
-/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: the sweep moved
- *  this device and it has not joined yet. */
+/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: AFK cut this
+ *  device from its call (the sweep, or AFK chosen on another device; web3.11 joins nothing on it). */
 export interface AFKState {
   channelId: string | null; timeoutSeconds: number; pending: boolean;
   /** web3.9 R-AFK4: rises with every landed read (one counter for the worker's life), so each read that says `pending`

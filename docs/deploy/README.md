@@ -774,6 +774,8 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 | web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
 | web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
+| web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
+| web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

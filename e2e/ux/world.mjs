@@ -239,7 +239,8 @@ for (const who of ['bjorn', 'mira']) {
 // The voice view's path, so the shots can open it without a click that joins.
 state.voicePath = new URL(pages.bjorn.url()).pathname;
 for (const who of ['bjorn', 'mira']) { try { await openChannel(pages[who], 'general'); } catch { /* the voice view stays */ } }
-// The built-in AFK channel: Ada opens it once (a desktop click joins, listen-only) to learn its path, leaves, and is back in #general.
+// The built-in AFK channel: Ada opens it once to learn its path and is back in #general. Since web3.11 the desktop click
+// marks her away (no call); a later post of hers in this server takes her off the away list.
 try {
   await ada.getByRole('button', { name: t('voice.open', { name: 'AFK' }), exact: true }).first().click();
   await ada.waitForURL((u) => u.pathname !== new URL(state.voicePath, publicUrl).pathname && /\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/.test(u.pathname), { timeout: 10_000 });
