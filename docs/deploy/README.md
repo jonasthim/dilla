@@ -899,35 +899,41 @@ Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treat
 Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
 channel's rules until it reloads.
 
-### The optional GIF picker: `giphy.api_key`
+### The optional GIF picker: a Giphy key per server
 
-GIFs are off until you give `dillad` a Giphy API key. Add it to `dilla.toml` and restart:
+GIFs need no configuration in `dilla.toml`. A person who manages a server enters that server's own Giphy API key in
+server settings → overview ("GIFs (Giphy)"; get a key at developers.giphy.com), and that server gets a **gif** button in
+its channels. A server without a key has none; there are no GIFs in direct messages (a known limit). The key is
+**write-only**: the page shows dots afterwards, with **replace** and **remove**, and no route, log line, audit row or
+`dillad doctor` line ever contains it. There is no migration: the key is kept in the instance's settings table
+(`instance_settings`, key `community_gifs:{server id}`) as plain text, like the TOTP secrets, so a database backup holds
+it and should be protected as it is. Deleting a server forgets its key. Setting, replacing or removing a key, and
+changing the rating, are audited (`community.gifs.key_set`, `community.gifs.key_remove`, `community.gifs.rating`) without
+the key.
 
-```toml
-[giphy]
-api_key = "…"      # empty (the default) turns GIFs off
-rating  = "pg-13"  # the most mature rating search returns: g, pg, pg-13 or r
-```
+What this means for privacy:
 
-With a key, the web client shows a **gif** button in the composer, and `dillad` serves two routes behind the signed-in
-session: `GET /v1/gifs/search` and `GET /v1/gifs/media/{id}`. Without one both answer `404` and `GET /v1/instance`
-reports GIFs off (element 11, `0`). What this means for privacy:
-
-- Search and the picked GIF go through `dillad`, so **Giphy sees your server, never the people on it**, and your server
-  sees what people search for. The key is in `dilla.toml` only: it is in no reply, header or log line, and `dillad
-  doctor` prints whether GIFs are on and never the key.
+- Search and the picked GIF go through `dillad`, so **Giphy sees your server, never the people on it**. `dillad` sees what
+  people search for, which GIF they picked and when, and can probably link a pick to the attachment that follows by its
+  timing and size; it cannot read the message.
 - A picked GIF is downloaded by `dillad` and sent as an ordinary encrypted attachment, so **no reader's browser
   contacts giphy.com**. The server's content-security policy needs no Giphy host.
 - `dillad` fetches only from Giphy's own hosts (`api.giphy.com` and `media*.giphy.com`) over HTTPS, builds each URL
-  itself from a checked Giphy id, refuses redirects off that list and refuses to connect to a private address. A
-  GIF is capped at 25 MB (a preview at 5 MB) on the bytes received, and a fetch times out after 15 seconds, with at most
-  eight in flight.
-- Search is limited per person (10 at once, then 1 a second) and so is the media route (60 at once, then 20 a second).
-- `dillad` runs no proxy for this traffic: it connects directly, so the host needs outbound HTTPS to `*.giphy.com`.
-  An outage at Giphy shows people "could not reach the gif service" and nothing else.
+  itself from a checked Giphy id, refuses redirects off that list and refuses to connect to a non-public address
+  (including private, loopback, link-local, carrier-grade NAT, documentation, 6to4, Teredo and NAT64 ranges). It uses no
+  proxy: the host needs outbound HTTPS to `*.giphy.com`. An outage at Giphy shows people "could not reach the gif
+  service" and nothing else.
+- A GIF is capped at 25 MB (a preview at 5 MB) counted on the bytes received; a fetch times out after 15 seconds. Each
+  fetch holds one of **eight** instance-wide slots (at most **three** per person) from before the request to Giphy until
+  the reply has been written to the person's browser, and a reply that cannot be written within 30 seconds is dropped, so
+  the memory a slow or silent client can pin is bounded by eight GIFs. A request waits up to two seconds for a slot, then
+  gets `503` with `Retry-After`.
+- Search is limited per person and server (10 at once, then 1 a second) and so is the media route (60 at once, then 20 a
+  second).
+- The rating (g, pg, pg-13 by default, r) filters **search**; the media route fetches any Giphy id a member asks for, so
+  the rating is not a hard limit on what a member can attach (they can attach any file anyway).
 
-Rolling back to an earlier release leaves `[giphy]` in `dilla.toml`, which an earlier `dillad` refuses (unknown table):
-remove the table first.
+Rolling back to a release without GIFs leaves the `community_gifs:*` settings rows in the table, which nothing reads.
 
 ## Capacity
 

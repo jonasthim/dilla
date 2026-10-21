@@ -43,11 +43,23 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const id = useId().replace(/:/g, '-');
   const bits = p.bits ?? null;
   const sliceSlow = useSlice(`slow:${p.channelId}`);
-  // E8: the GIF button exists only when the instance has a Giphy key (account.instance.gifs).
-  const gifsOn = useSlice('account')?.instance?.gifs === true;
+  const [route] = useRoute();
+  // E8: the GIF button exists only in a channel of a server that has a Giphy key; a direct message has none, and
+  // asks nothing, and a thread's composer has none. The key is a per-server setting, so the status is read per server (a failed read means no button).
+  const gifCommunity = route.name === 'channel' && p.threadId === undefined ? route.communityId : null;
+  const [gifStatus, setGifStatus] = useState<{ communityId: string; on: boolean } | null>(null);
   const [gifOpen, setGifOpen] = useState(false);
   const gifButton = useRef<HTMLButtonElement>(null);
-  const [route] = useRoute();
+  useEffect(() => {
+    if (gifCommunity === null) return;
+    let cancelled = false;
+    void client.call({ m: 'gifStatus', communityId: gifCommunity }).then(value => {
+      const on = typeof value === 'object' && value !== null && (value as Record<string, unknown>).on === true;
+      if (!cancelled) setGifStatus({ communityId: gifCommunity, on });
+    }, () => { if (!cancelled) setGifStatus({ communityId: gifCommunity, on: false }); });
+    return () => { cancelled = true; };
+  }, [client, gifCommunity]);
+  const gifsOn = gifCommunity !== null && gifStatus?.communityId === gifCommunity && gifStatus.on;
   const channels = useSlice(`channels:${route.name === 'channel' ? route.communityId : ''}`);
   const announcement = p.announcement ?? channels?.find(c => c.id === p.channelId)?.announcement === true;
   const bypass = p.bypass ?? (bits !== null && (bits & PERM.bypassSlowmode) !== 0);
@@ -167,7 +179,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
           onCancel={() => { p.dispatch({ type: 'reply', reply: null }); textareaRef.current?.focus(); }} /> : null}
         <TrayList channelId={p.channelId} items={tray} onError={e => p.onError(e)} />
         {p.ui.trayError !== null ? <p className="dw-tray-error" role="alert">{p.ui.trayError}</p> : null}
-        {gifsOn && gifOpen && blocked === null ? <GifPickerPanel id={`${id}-gifs`} channelId={p.channelId} dispatch={a => { p.dispatch(a); }}
+        {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} dispatch={a => { p.dispatch(a); }}
           {...(p.announce !== undefined ? { announce: p.announce } : {})}
           onClose={reason => {
             setGifOpen(false);
