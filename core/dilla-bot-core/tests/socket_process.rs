@@ -3,7 +3,7 @@
 
 use dilla_core::{
     bot::{HelperRequest, HelperResponse},
-    cbor::Encoder,
+    cbor::{Encoder, decode_strict},
     ids::MsgId,
 };
 use std::{
@@ -208,6 +208,196 @@ fn oversized_prefix_closes_without_reading_an_announced_body() {
     let _ = client.shutdown(std::net::Shutdown::Write);
     let mut byte = [0];
     assert_eq!(client.read(&mut byte).unwrap(), 0);
+    assert!(child.wait().unwrap().success());
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn real_process_transfer_is_bounded_busy_until_drop_and_keeps_group_unavailable() {
+    use sha2::{Digest, Sha256};
+    let path = temp_dir();
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let mut child = spawn(&path, &server);
+    drop(server);
+    let key = [0x31; 32];
+    write_request(
+        &mut client,
+        [9; 16],
+        1,
+        open_payload(([1; 16], [2; 16], [3; 16]), key),
+    );
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+
+    let sentinel = b"transfer-group-info-secret";
+    let mut target = Encoder::new();
+    target
+        .array(8)
+        .uint(5)
+        .bytes(&[4; 16])
+        .bytes(&[5; 16])
+        .bytes(&[6; 16])
+        .text("text")
+        .uint(0)
+        .bytes(sentinel)
+        .bytes(&[0x80]);
+    let input = target.into_vec();
+    let digest: [u8; 32] = Sha256::digest(&input).into();
+    let mut begin = Encoder::new();
+    begin
+        .array(4)
+        .uint(0)
+        .uint(6)
+        .uint(input.len() as u64)
+        .bytes(&digest);
+    write_request(&mut client, [10; 16], 16, begin.into_vec());
+    let started = read_response(&mut client, &mut child);
+    assert_eq!(started.status, 0);
+    let id = decode_strict(&started.payload, |d| {
+        d.array(1)?;
+        d.bytes_exact::<16>()
+    })
+    .unwrap();
+
+    write_request(&mut client, [11; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(4).uint(1).bytes(&id).uint(0).bytes(&input);
+        e.into_vec()
+    });
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+
+    write_request(&mut client, [12; 16], 6, {
+        let mut e = Encoder::new();
+        e.array(0);
+        e.into_vec()
+    });
+    assert_eq!(
+        read_response(&mut client, &mut child).status,
+        6,
+        "unrelated op6 must report Busy while transfer owns the mutation slot"
+    );
+
+    write_request(&mut client, [13; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(2).uint(2).bytes(&id);
+        e.into_vec()
+    });
+    let executed = read_response(&mut client, &mut child);
+    assert_eq!(executed.status, 0);
+    let descriptor = decode_strict(&executed.payload, |d| {
+        d.array(3)?;
+        Ok((d.uint()?, d.uint()?, d.bytes_exact::<32>()?))
+    })
+    .unwrap();
+    assert_eq!(
+        descriptor.0, 5,
+        "production group adapters remain unavailable until Task5B"
+    );
+    assert_eq!(descriptor.1, 1);
+    assert_eq!(descriptor.2, Sha256::digest([0x80]).as_slice());
+    write_request(&mut client, [14; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(2).uint(2).bytes(&id);
+        e.into_vec()
+    });
+    assert_eq!(
+        read_response(&mut client, &mut child).payload,
+        executed.payload,
+        "repeat execute returns the cached descriptor"
+    );
+
+    write_request(&mut client, [15; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(4).uint(3).bytes(&id).uint(0).uint(1);
+        e.into_vec()
+    });
+    let read = read_response(&mut client, &mut child);
+    assert_eq!(
+        decode_strict(&read.payload, |d| {
+            d.array(1)?;
+            Ok(d.bytes()?.to_vec())
+        })
+        .unwrap(),
+        [0x80]
+    );
+    write_request(&mut client, [16; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(2).uint(4).bytes(&id);
+        e.into_vec()
+    });
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+
+    // An invalid declared length is rejected before allocating and leaves no active transfer.
+    let mut oversized = Encoder::new();
+    oversized
+        .array(4)
+        .uint(0)
+        .uint(6)
+        .uint(32 * 1024 * 1024 + 1)
+        .bytes(&digest);
+    write_request(&mut client, [17; 16], 16, oversized.into_vec());
+    assert_eq!(read_response(&mut client, &mut child).status, 1);
+    write_request(&mut client, [18; 16], 15, {
+        let mut e = Encoder::new();
+        e.array(0);
+        e.into_vec()
+    });
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let sentinel = std::str::from_utf8(sentinel).unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(sentinel));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(sentinel));
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn real_process_disconnect_and_restart_invalidate_transfer_id() {
+    let path = temp_dir();
+    let key = [0x42; 32];
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let mut child = spawn(&path, &server);
+    drop(server);
+    write_request(
+        &mut client,
+        [9; 16],
+        1,
+        open_payload(([1; 16], [2; 16], [3; 16]), key),
+    );
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+    let mut begin = Encoder::new();
+    begin.array(4).uint(0).uint(6).uint(1).bytes(&[0; 32]);
+    write_request(&mut client, [10; 16], 16, begin.into_vec());
+    let started = read_response(&mut client, &mut child);
+    let id = decode_strict(&started.payload, |d| {
+        d.array(1)?;
+        d.bytes_exact::<16>()
+    })
+    .unwrap();
+    drop(client);
+    assert!(child.wait().unwrap().success());
+
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let mut child = spawn(&path, &server);
+    drop(server);
+    write_request(
+        &mut client,
+        [11; 16],
+        1,
+        open_payload(([1; 16], [2; 16], [3; 16]), key),
+    );
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
+    write_request(&mut client, [12; 16], 16, {
+        let mut e = Encoder::new();
+        e.array(2).uint(4).bytes(&id);
+        e.into_vec()
+    });
+    assert_eq!(read_response(&mut client, &mut child).status, 1);
+    write_request(&mut client, [13; 16], 15, {
+        let mut e = Encoder::new();
+        e.array(0);
+        e.into_vec()
+    });
+    assert_eq!(read_response(&mut client, &mut child).status, 0);
     assert!(child.wait().unwrap().success());
     let _ = fs::remove_dir_all(path);
 }

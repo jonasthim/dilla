@@ -408,7 +408,7 @@ function helperValue(
   const operation = isResponse
     ? (envelope as HelperResponse).status
     : (envelope as HelperEnvelope).operation;
-  uint(operation, isResponse ? 0n : 1n, isResponse ? 9n : 15n);
+  uint(operation, isResponse ? 0n : 1n, isResponse ? 9n : 16n);
   if (!Number.isInteger(operation)) fail('E_BOT_RANGE');
 
   const payload = bytes(envelope.payload);

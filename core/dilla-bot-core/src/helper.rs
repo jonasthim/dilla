@@ -1,3 +1,4 @@
+use crate::transfer::{self, Command as TransferCommand, Transfer};
 use crate::{
     state::{self, StateError},
     store::{Store, StoreError},
@@ -8,7 +9,10 @@ use dilla_core::{
     client::ClientCore,
     ids::MsgId,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +29,7 @@ pub struct Helper {
     state_dir: PathBuf,
     store: Option<Store>,
     core: Option<ClientCore>,
+    transfer: Option<Transfer>,
 }
 
 impl Helper {
@@ -33,6 +38,7 @@ impl Helper {
             state_dir: state_dir.as_ref().to_path_buf(),
             store: None,
             core: None,
+            transfer: None,
         }
     }
 
@@ -41,7 +47,10 @@ impl Helper {
         input: &[u8],
     ) -> Result<(u64, Zeroizing<Vec<u8>>, bool), HelperError> {
         let (id, operation, payload) = decode_request(input).map_err(|_| HelperError::Invalid)?;
-        let result = self.dispatch_operation(operation, &payload);
+        let result = self.dispatch_operation(operation, &payload, *id.as_bytes());
+        if operation == 16 && matches!(result, Err(DispatchError::Invalid)) {
+            self.transfer = None;
+        }
         let (status, payload, shutdown) = match result {
             Ok((body, stop)) => (0, body, stop),
             Err(DispatchError::Invalid) => (1, empty(), false),
@@ -71,7 +80,15 @@ impl Helper {
         &mut self,
         op: u64,
         payload: &[u8],
+        request_id: [u8; 16],
     ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        if self.transfer.is_some()
+            && op != 15
+            && op != 16
+            && !(op == 6 && self.transfer.as_ref().is_some_and(Transfer::is_running))
+        {
+            return Err(DispatchError::Busy);
+        }
         if op == 1 {
             return self.open(payload).map(|b| (b, false));
         }
@@ -102,8 +119,104 @@ impl Helper {
                 .map(|v| (Zeroizing::new(v), false))
                 .map_err(Into::into),
             6 | 7 | 8 | 9 | 13 | 14 => Err(DispatchError::Unavailable),
+            16 => self.group_transfer(payload, request_id),
             _ => Err(DispatchError::Invalid),
         }
+    }
+
+    fn group_transfer(
+        &mut self,
+        payload: &[u8],
+        request_id: [u8; 16],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let command = transfer::decode_command(payload).map_err(|_| DispatchError::Invalid)?;
+        let now = Instant::now();
+        if self.transfer.as_ref().is_some_and(|t| t.expired(now)) {
+            self.transfer = None;
+        }
+        match command {
+            TransferCommand::Begin { len, digest } => {
+                if self.transfer.is_some() {
+                    return Err(DispatchError::Busy);
+                }
+                let (transfer, id) = Transfer::begin(request_id, len, digest, now)
+                    .map_err(|_| DispatchError::Invalid)?;
+                self.transfer = Some(transfer);
+                Ok((transfer::enc_id(&id), false))
+            }
+            TransferCommand::Chunk { id, offset, bytes } => {
+                let transfer = self.transfer.as_mut().ok_or(DispatchError::Invalid)?;
+                let next = transfer
+                    .append(id, offset, &bytes, now)
+                    .map_err(|_| DispatchError::Invalid)?;
+                Ok((transfer::enc_next(next), false))
+            }
+            TransferCommand::Execute { id } => {
+                let mut transfer = self.transfer.take().ok_or(DispatchError::Invalid)?;
+                let descriptor = transfer.execute_with(id, now, |input| {
+                    match self.dispatch_operation(6, input, request_id) {
+                        Ok((body, _)) => (0, body),
+                        Err(error) => (dispatch_status(error), empty()),
+                    }
+                });
+                self.transfer = Some(transfer);
+                let (target_status, len, digest) =
+                    descriptor.map_err(|_| DispatchError::Invalid)?;
+                Ok((transfer::enc_descriptor(target_status, len, &digest), false))
+            }
+            TransferCommand::Read { id, offset, len } => {
+                let transfer = self.transfer.as_mut().ok_or(DispatchError::Invalid)?;
+                let bytes = transfer
+                    .read(id, offset, len, now)
+                    .map_err(|_| DispatchError::Invalid)?;
+                Ok((transfer::enc_chunk(&bytes), false))
+            }
+            TransferCommand::Drop { id } => {
+                if !self.transfer.as_ref().is_some_and(|t| t.drop_id(&id)) {
+                    return Err(DispatchError::Invalid);
+                }
+                self.transfer = None;
+                Ok((transfer::enc_empty(), false))
+            }
+        }
+    }
+
+    pub(crate) fn expire_transfer(&mut self) {
+        if self
+            .transfer
+            .as_ref()
+            .is_some_and(|t| t.expired(Instant::now()))
+        {
+            self.transfer = None;
+        }
+    }
+
+    pub(crate) fn transfer_timeout(&self) -> Option<std::time::Duration> {
+        self.transfer
+            .as_ref()
+            .and_then(|t| t.time_left(Instant::now()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transfer_deadline(&mut self, deadline: Instant) {
+        let digest = [0; 32];
+        let (mut transfer, _) = Transfer::begin([1; 16], 1, digest, Instant::now()).unwrap();
+        transfer.test_expire_at(deadline);
+        self.transfer = Some(transfer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_completed_transfer_deadline(&mut self, deadline: Instant) {
+        let now = Instant::now();
+        let input = [0x81, 0x11];
+        let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(input).into();
+        let (mut transfer, id) = Transfer::begin([1; 16], input.len(), digest, now).unwrap();
+        transfer.append(id, 0, &input, now).unwrap();
+        transfer
+            .execute_with(id, now, |_| (0, Zeroizing::new(vec![0x80])))
+            .unwrap();
+        transfer.test_expire_at(deadline);
+        self.transfer = Some(transfer);
     }
 
     fn open(&mut self, payload: &[u8]) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
@@ -280,7 +393,7 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
         Ok((raw_id, operation, Zeroizing::new(payload.to_vec())))
     })
     .map_err(|_| ())?;
-    if (1..=15).contains(&operation) {
+    if (1..=16).contains(&operation) {
         let request = HelperRequest::decode(input).map_err(|_| ())?;
         Ok((
             request.request_id,
@@ -302,6 +415,16 @@ fn empty() -> Zeroizing<Vec<u8>> {
     let mut e = Encoder::new();
     e.array(0);
     Zeroizing::new(e.into_vec())
+}
+fn dispatch_status(error: DispatchError) -> u64 {
+    match error {
+        DispatchError::Invalid => 1,
+        DispatchError::Conflict => 4,
+        DispatchError::Unavailable => 5,
+        DispatchError::Busy => 6,
+        DispatchError::Upgrade => 8,
+        DispatchError::Internal => 9,
+    }
 }
 #[derive(Debug)]
 pub(crate) enum DispatchError {

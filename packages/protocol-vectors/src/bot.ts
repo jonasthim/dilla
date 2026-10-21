@@ -37,7 +37,7 @@ export function botVectors() {
   const v=[1n,id(9),comm,group,new Uint8Array(32).fill(0x88),status,seq,epoch];cases.push({name:`send receipt ${name}`,kind:'receipt',hex:cbor(v),context:{...context,group:hex(group)}});
  }
  for(const [kind,name,v] of [
-  ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_response','helper response',[1n,id(10),0n,encode([])]],
+  ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
  const rejects:any[]=[];
  const rej=(name:string,kind:string,v:unknown,extra:any={})=>rejects.push({name,kind,hex:cbor(v),...extra});
@@ -74,7 +74,7 @@ export function botVectors() {
  rej('receipt pending with sequence','receipt',[1n,id(1),comm,group,new Uint8Array(32),0n,1n,null]);
  rej('receipt accepted without epoch','receipt',[1n,id(1),comm,group,new Uint8Array(32),1n,1n,null]);
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
- rej('helper unknown operation','helper_request',[1n,id(1),16n,encode([])]);
+ rej('helper operation 17 is unknown','helper_request',[1n,id(1),17n,encode([])]);
  const oversizedPayload=encode([new Uint8Array(1_048_475)]);
  if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
  rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});

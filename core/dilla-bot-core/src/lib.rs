@@ -4,6 +4,7 @@ mod helper;
 mod socket;
 mod state;
 mod store;
+mod transfer;
 
 pub use helper::{Helper, HelperError};
 pub use socket::serve_fd3;

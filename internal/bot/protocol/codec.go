@@ -683,6 +683,7 @@ const (
 	HelperCursorAck
 	HelperKeyPackagesUploaded
 	HelperShutdown
+	HelperGroupTransfer
 )
 
 type HelperRequest struct {
@@ -706,7 +707,7 @@ func encodeHelper(req bool, request id.ID, code uint64, payload []any) ([]byte, 
 	if !isID(request) {
 		return nil, invalid()
 	}
-	if req && (code < 1 || code > 15) || !req && code > 9 {
+	if req && (code < 1 || code > 16) || !req && code > 9 {
 		return nil, invalid()
 	}
 	if payload == nil {
@@ -761,7 +762,7 @@ func DecodeHelperRequestFrame(frame []byte) (HelperRequest, error) {
 		return z, invalid()
 	}
 	r := HelperRequest{RequestID: nodeID(a[1]), Operation: HelperOperation(a[2].u), Payload: nodesToAny(payload.a)}
-	if !isID(r.RequestID) || r.Operation < 1 || r.Operation > 15 || len(b) > MaxHelperBytes || len(frame)-4 > MaxHelperBytes {
+	if !isID(r.RequestID) || r.Operation < 1 || r.Operation > 16 || len(b) > MaxHelperBytes || len(frame)-4 > MaxHelperBytes {
 		return z, invalid()
 	}
 	return r, nil

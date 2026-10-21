@@ -353,6 +353,11 @@
       "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a014180"
     },
     {
+      "name": "helper group_transfer operation 16",
+      "kind": "helper_request",
+      "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a104180"
+    },
+    {
       "name": "helper response",
       "kind": "helper_response",
       "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a004180"
@@ -527,9 +532,9 @@
       "hex": "8601500101010101010101010101010101010150222222222222222222222222222222220af640"
     },
     {
-      "name": "helper unknown operation",
+      "name": "helper operation 17 is unknown",
       "kind": "helper_request",
-      "hex": "84015001010101010101010101010101010101104180"
+      "hex": "84015001010101010101010101010101010101114180"
     },
     {
       "name": "helper payload one byte over bound",
