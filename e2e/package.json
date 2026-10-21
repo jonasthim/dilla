@@ -16,6 +16,7 @@
     "test:e2e:web:chromium": "playwright test --config playwright.web.config.ts --project=chromium-web",
     "test:e2e:web:firefox": "playwright test --config playwright.web.config.ts --project=firefox-web",
     "test:e2e:web:webkit": "playwright test --config playwright.web.config.ts --project=webkit-web",
+    "test:e2e:host": "playwright test --config playwright.host.config.ts",
     "test:e2e:voice:chromium": "playwright test --config playwright.voice.config.ts --project=chromium-voice",
     "test:e2e:voice:firefox": "playwright test --config playwright.voice.config.ts --project=firefox-voice",
     "demo:web": "playwright test --config playwright.demo.config.ts",

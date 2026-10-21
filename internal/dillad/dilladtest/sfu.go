@@ -10,6 +10,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
+	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/sfu"
 )
 
@@ -107,7 +108,7 @@ func (d *debugRooms) has(room string) bool {
 // debug room — raw debug tokens, connected straight to LiveKit (plan MD-13) — is never swept or cut,
 // while every room the call routes open is swept exactly as in production.
 type harnessSFU struct {
-	*sfu.Server
+	dillad.SFU
 	debug *debugRooms
 }
 
@@ -118,11 +119,11 @@ func (s harnessSFU) Participants(ctx context.Context, room string) ([]*livekit.P
 	if ok {
 		return participants, nil
 	}
-	return s.Server.Participants(ctx, room)
+	return s.SFU.Participants(ctx, room)
 }
 
 func (s harnessSFU) Rooms(ctx context.Context) ([]string, error) {
-	rooms, err := s.Server.Rooms(ctx)
+	rooms, err := s.SFU.Rooms(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -160,18 +161,18 @@ func (h *Host) setWithheld(event string, on bool) {
 // produce (plan MD-13).
 func (h *Host) mountSFU(mux *http.ServeMux) {
 	mux.HandleFunc("GET /debug/sfu", func(w http.ResponseWriter, _ *http.Request) {
-		if h.sfu == nil {
+		if h.control == nil {
 			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, map[string]string{"url": h.sfu.URL(), "http_url": h.sfu.HTTPURL()})
+		writeJSON(w, map[string]string{"url": h.sfuURL, "http_url": h.sfuHTTPURL})
 	})
 	// POST /debug/sfu/withhold {"event":"participant_left","on":true} drops that webhook event before
 	// it reaches the instance (so a test can hold a departure back, as a lost webhook would); on:false
 	// restores delivery. A withheld event is dropped, not queued: it is never delivered later and turning
 	// the hold off does not replay it. Only participant_left is accepted; any other name is 400.
 	mux.HandleFunc("POST /debug/sfu/withhold", func(w http.ResponseWriter, r *http.Request) {
-		if h.sfu == nil {
+		if h.control == nil {
 			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
 			return
 		}
@@ -190,7 +191,7 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /debug/sfu/token", func(w http.ResponseWriter, r *http.Request) {
-		if h.sfu == nil {
+		if h.control == nil {
 			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
 			return
 		}
@@ -210,7 +211,7 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 			return
 		}
 		if body.Create {
-			if err := h.sfu.CreateRoom(r.Context(), body.Room); err != nil {
+			if err := h.control.CreateRoom(r.Context(), body.Room); err != nil {
 				http.Error(w, "create room: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -218,13 +219,13 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 		}
 		// A raw debug token carries every grant, data included (MD-13: the canary and the harness
 		// smoke connect straight to LiveKit, never through the /rtc gate).
-		token, err := h.sfu.Token(body.Room, body.Identity, &livekit.ParticipantPermission{
+		token, err := h.control.Token(body.Room, body.Identity, &livekit.ParticipantPermission{
 			CanSubscribe: true, CanPublish: true, CanPublishData: true,
 		}, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]string{"url": h.sfu.URL(), "http_url": h.sfu.HTTPURL(), "token": token})
+		writeJSON(w, map[string]string{"url": h.sfuURL, "http_url": h.sfuHTTPURL, "token": token})
 	})
 }

@@ -86,6 +86,18 @@ type HostOptions struct {
 	// SFUUDPPort are its signalling and media ports; 0 means 7880 and 7882.
 	SFU                 bool
 	SFUPort, SFUUDPPort int
+	// SFUSidecar (UP5) points the host at an SFU another process owns, as the API sees `dillad media`
+	// in production (sfu.NewRemote): SFUPort and SFUUDPPort name that SFU, SFUSecretFile is the
+	// livekit.api_secret_file it reads (its key is the instance's own livekit.api_key), and
+	// SFUWebhookListen is the loopback address the host serves the webhook receiver on, the one
+	// that process was told to post to. Closing the host stops the receiver and leaves the SFU
+	// running, so a second host on the same data directory is an API restart. Exclusive with SFU.
+	SFUSidecar       bool
+	SFUSecretFile    string
+	SFUWebhookListen string
+	// StateDir is the directory the host's process state lives in (the config's instance.data_dir:
+	// snapshots now, UP9's sockets later). "" means DataDir. It is never a fixed path.
+	StateDir string
 	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
 	SFUNoInternalIP bool
@@ -201,6 +213,10 @@ type Host struct {
 	// sfu is the in-process LiveKit when HostOptions.SFU; it outlives a Restore, as the SFU
 	// outlives a database restore inside one dillad process.
 	sfu *sfu.Server
+	// control is the SFU the instance and the debug routes use: the in-process one, or the sidecar
+	// (sfu.Remote); nil without an SFU. sfuURL and sfuHTTPURL are its signalling origins.
+	control            dillad.SFU
+	sfuURL, sfuHTTPURL string
 	// debugRooms are the rooms the control listener's POST /debug/sfu/token opened, hidden from
 	// the room sweep (harnessSFU).
 	debugRooms debugRooms
@@ -258,8 +274,16 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 		}
 		h.owns = true
 	}
-	if o.SFU {
-		if err := h.startSFU(ctx); err != nil {
+	if o.SFU && o.SFUSidecar {
+		h.closeWasm(ctx)
+		return nil, errors.New("dilladtest: HostOptions.SFU and SFUSidecar are exclusive")
+	}
+	if o.SFU || o.SFUSidecar {
+		start := h.startSFU
+		if o.SFUSidecar {
+			start = h.startSidecar
+		}
+		if err := start(ctx); err != nil {
 			h.closeWasm(ctx)
 			return nil, err
 		}
@@ -281,7 +305,7 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 func hostConfig(o HostOptions) *config.Config {
 	c := config.Default()
 	c.Instance.Domain = "dilla.test"
-	c.Instance.DataDir = o.DataDir
+	c.Instance.DataDir = o.stateDir()
 	c.DB.Path = filepath.Join(o.DataDir, "dilla.db")
 	c.Blobs.Dir = filepath.Join(o.DataDir, "blobs")
 	c.TLS.Agreed = true
@@ -302,11 +326,21 @@ func hostConfig(o HostOptions) *config.Config {
 	return c
 }
 
+// stateDir is the config's instance.data_dir: StateDir, or the data directory.
+func (o HostOptions) stateDir() string {
+	if o.StateDir != "" {
+		return o.StateDir
+	}
+	return o.DataDir
+}
+
 // bootstrap migrates the database and inserts the instance row and Invites invites, as `dillad init`
 // does, except that each invite admits InviteUses accounts and none expires within a scenario.
 func bootstrap(ctx context.Context, c *config.Config, now time.Time) ([]string, error) {
-	if err := os.MkdirAll(c.Instance.DataDir, 0o700); err != nil {
-		return nil, err
+	for _, dir := range []string{c.Instance.DataDir, filepath.Dir(c.DB.Path)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	write, err := sqlite.OpenWrite(c.DB.Path)
 	if err != nil {
@@ -397,8 +431,8 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 	}
 	// Set only when there is one: an interface holding a nil *sfu.Server is not a nil interface.
 	// The instance sees it without the debug rooms, which its room sweep would otherwise delete.
-	if h.sfu != nil {
-		o.SFU = harnessSFU{Server: h.sfu, debug: &h.debugRooms}
+	if h.control != nil {
+		o.SFU = harnessSFU{SFU: h.control, debug: &h.debugRooms}
 	}
 	return dillad.New(ctx, o)
 }
@@ -430,9 +464,50 @@ func (h *Host) startSFU(ctx context.Context) error {
 		_ = ln.Close()
 		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
 	}
-	h.sfu = s
-	h.webhookURL = cfg.WebhookURL
-	h.hookHandler = sfu.NewWebhookHandler(cfg.APIKey, secret, func(ctx context.Context, ev *livekit.WebhookEvent) {
+	h.sfu, h.control = s, s
+	h.sfuURL, h.sfuHTTPURL = s.URL(), s.HTTPURL()
+	h.serveWebhook(ln, cfg.WebhookURL, cfg.APIKey, secret)
+	return nil
+}
+
+// startSidecar connects the host to the SFU HostOptions.SFUSidecar names (UP5): it reads that SFU's
+// secret file, serves the webhook receiver on the address that SFU was told, and controls it
+// through sfu.NewRemote. It starts nothing and stops nothing of the SFU's.
+func (h *Host) startSidecar(ctx context.Context) error {
+	if h.o.SFUSecretFile == "" || h.o.SFUWebhookListen == "" {
+		return errors.New("dilladtest: a sidecar SFU needs HostOptions.SFUSecretFile and SFUWebhookListen")
+	}
+	raw, err := os.ReadFile(h.o.SFUSecretFile)
+	if err != nil {
+		return fmt.Errorf("dilladtest: read the sidecar SFU's secret: %w", err)
+	}
+	secret := strings.TrimSpace(string(raw))
+	port, udp := h.o.SFUPort, h.o.SFUUDPPort
+	if port == 0 {
+		port = DefaultSFUPort
+	}
+	if udp == 0 {
+		udp = DefaultSFUUDPPort
+	}
+	cfg := h.o.sfuConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", h.o.SFUWebhookListen)
+	if err != nil {
+		return fmt.Errorf("dilladtest: listen for the sidecar SFU's webhooks on %s: %w", h.o.SFUWebhookListen, err)
+	}
+	cfg.WebhookURL = "http://" + ln.Addr().String() + sfu.WebhookPath
+	remote := sfu.NewRemote(cfg)
+	h.control = remote
+	h.sfuURL = "ws://" + net.JoinHostPort(cfg.BindAddress, fmt.Sprint(port))
+	h.sfuHTTPURL = remote.HTTPURL()
+	h.serveWebhook(ln, cfg.WebhookURL, cfg.APIKey, secret)
+	return nil
+}
+
+// serveWebhook serves the SFU's webhook receiver on ln; each verified event goes to the instance
+// current then.
+func (h *Host) serveWebhook(ln net.Listener, url, apiKey, secret string) {
+	h.webhookURL = url
+	h.hookHandler = sfu.NewWebhookHandler(apiKey, secret, func(ctx context.Context, ev *livekit.WebhookEvent) {
 		if h.withheld(ev.GetEvent()) {
 			return
 		}
@@ -444,7 +519,6 @@ func (h *Host) startSFU(ctx context.Context) error {
 	mux.Handle("POST "+sfu.WebhookPath, h.hookHandler)
 	h.hook = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = h.hook.Serve(ln) }()
-	return nil
 }
 
 // stopSFU stops the SFU first, so nothing posts to the receiver as it shuts down and drains.
@@ -453,6 +527,7 @@ func (h *Host) stopSFU(ctx context.Context) {
 		_ = h.sfu.Stop(ctx)
 		h.sfu = nil
 	}
+	h.control = nil
 	if h.hook != nil {
 		_ = h.hook.Shutdown(ctx)
 		if c, ok := h.hookHandler.(io.Closer); ok {
