@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"io"
 	"log/slog"
@@ -26,9 +27,11 @@ import (
 	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
 	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -68,12 +71,29 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	}
 	t.Cleanup(func() { _ = deviceListRuntime.Close(context.Background()) })
 	var diagnostics bytes.Buffer
-	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
+	var afterKeyPackages = make(chan [2]id.ID, 1)
+	var delivery *ds.DS
+	h, deps := newTestAPIFullWithRepoAndMount(t, repo, nil, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
 		d.DeviceLists = ds.NewDeviceLists(d.Repo, deviceListRuntime)
 		d.Log = slog.New(slog.NewTextHandler(&diagnostics, nil))
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
+	}, func(mux *server.Mux, d api.Deps) {
+		var keys ds.InstanceKeys
+		keys.InstanceID = d.Instance.InstanceID
+		keys.ExternalSenderPriv[0] = 1
+		var err error
+		delivery, err = ds.New(ds.Options{Store: d.Repo, Wasm: deviceListRuntime, Clock: clock.System(), Keys: keys, Policy: ds.DefaultPolicy()})
+		if err != nil {
+			t.Fatalf("construct delivery service for managed routes: %v", err)
+		}
+		t.Cleanup(func() { _ = delivery.Shutdown(context.Background()) })
+		groups := &api.Groups{
+			DS: delivery, MaxBody: 1 << 21,
+			AfterKeyPackages: func(_ context.Context, userID, deviceID id.ID) { afterKeyPackages <- [2]id.ID{userID, deviceID} },
+		}
+		groups.RegisterBotDirectory(mux, d.Sessions)
 	})
 	owner, _, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID) // no accessible text channels are required here
@@ -233,36 +253,108 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	if rec := putCBORAuth(h, listPath, listBody, botToken); rec.Code != http.StatusNoContent {
 		t.Fatalf("publish helper-signed own device list = %d (%x)", rec.Code, rec.Body.Bytes())
 	}
-	packages := helper.call(t, botprotocol.HelperKeyPackages, []any{uint64(1), uint64(0)})
-	if len(packages) != 1 {
-		t.Fatalf("key package response has %d fields", len(packages))
+	instance, err := deps.Repo.GetInstance(context.Background())
+	if err != nil {
+		t.Fatalf("read current generation for helper KeyPackage intent: %v", err)
 	}
-	packageBody, ok := packages[0].([]byte)
-	if !ok || len(packageBody) == 0 {
-		t.Fatalf("key package upload body = %T", packages[0])
+	operationID := id.New()
+	intentRaw, err := botprotocol.EncodeKeyPackageIntent(botprotocol.KeyPackageIntent{
+		OperationID: operationID, Count: 1, ExpectedGeneration: uint64(instance.Generation),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	var packageUpload struct {
-		_          struct{} `cbor:",toarray"`
-		Packages   [][]byte
-		LastResort []byte
+	var intentPayload []any
+	if err := cborx.Unmarshal(intentRaw, &intentPayload); err != nil {
+		t.Fatal(err)
 	}
-	if err := cborx.Unmarshal(packageBody, &packageUpload); err != nil || len(packageUpload.Packages) != 1 || packageUpload.LastResort != nil {
-		t.Fatalf("decode actual helper package upload: err=%v packages=%d last_resort=%t", err, len(packageUpload.Packages), packageUpload.LastResort != nil)
+	packages := helper.call(t, botprotocol.HelperKeyPackages, intentPayload)
+	encodedIntentResult, err := cborx.Marshal(packages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentResult, err := botprotocol.DecodeKeyPackageIntentResult(encodedIntentResult)
+	if err != nil {
+		t.Fatalf("decode native KeyPackage intent result: %v", err)
 	}
 	inst, err := deviceListRuntime.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire WASI KeyPackage verifier: %v", err)
 	}
-	packageInfo, err := inst.ValidateKeyPackage(context.Background(), packageUpload.Packages[0])
+	var packageInfo mlswasi.KeyPackageInfo
+	var verifiedPackageCount int
+	for _, keyPackage := range func() [][]byte {
+		var upload struct {
+			_          struct{} `cbor:",toarray"`
+			Packages   [][]byte
+			LastResort []byte
+		}
+		if err := cborx.Unmarshal(intentResult.UploadBody, &upload); err != nil {
+			inst.Release()
+			t.Fatalf("decode actual helper package upload: %v", err)
+		}
+		if len(upload.Packages) != 1 || upload.LastResort != nil {
+			inst.Release()
+			t.Fatalf("native helper upload has packages=%d last_resort=%t", len(upload.Packages), upload.LastResort != nil)
+		}
+		return upload.Packages
+	}() {
+		packageInfo, err = inst.ValidateKeyPackage(context.Background(), keyPackage)
+		if err != nil {
+			break
+		}
+		verifiedPackageCount++
+	}
 	inst.Release()
-	if err != nil || !bytes.Equal(packageInfo.DeviceID, deviceID[:]) || !bytes.Equal(packageInfo.UserID, userID[:]) {
+	if err != nil || verifiedPackageCount != 1 || !bytes.Equal(packageInfo.DeviceID, deviceID[:]) || !bytes.Equal(packageInfo.UserID, userID[:]) || !bytes.Equal(packageInfo.Credential, credential) {
 		t.Fatalf("native helper KeyPackage binding: info=%+v err=%v", packageInfo, err)
 	}
-	if err := deps.Repo.PutKeyPackages(context.Background(), deviceID, []store.KeyPackageRow{{
-		DeviceID: deviceID, KPRef: packageInfo.KPRef, Blob: packageUpload.Packages[0],
-		Expires: int64(packageInfo.NotAfter), Created: deps.Clock.Now().Unix(),
-	}}); err != nil {
-		t.Fatalf("store verified actual helper KeyPackage: %v", err)
+	if !bytes.Equal(packageInfo.SignatureKey, deviceRow.DSKPub) {
+		t.Fatalf("native helper KeyPackage signature key does not match registered DSK (signature=%x registered=%x)", packageInfo.SignatureKey, deviceRow.DSKPub)
+	}
+	if int64(packageInfo.NotAfter)-time.Now().Unix() > int64(ds.DefaultPolicy().MaxKeyPackageLifetime.Seconds()) {
+		t.Fatalf("native helper KeyPackage expiry is outside delivery lifetime: not_after=%d now=%d delta=%s", packageInfo.NotAfter, time.Now().Unix(), time.Duration(int64(packageInfo.NotAfter)-time.Now().Unix())*time.Second)
+	}
+	publicationBody, err := botprotocol.EncodeKeyPackagePublication(botprotocol.KeyPackagePublication{
+		OperationID: operationID, ExpectedGeneration: uint64(instance.Generation), UploadBody: intentResult.UploadBody,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPackagePath := "/v1/bot-runtime/installations/" + installationID.String() + "/keypackages"
+	if published := postCBORAuth(h, keyPackagePath, publicationBody, botToken); published.Code != http.StatusCreated {
+		t.Fatalf("publish native helper KeyPackage intent: %d (%x); diagnostics=%s", published.Code, published.Body.Bytes(), diagnostics.String())
+	}
+	select {
+	case accepted := <-afterKeyPackages:
+		if accepted != [2]id.ID{userID, deviceID} {
+			t.Fatalf("managed publication reconciliation hook received %v, want (%s,%s)", accepted, userID, deviceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("accepted managed publication did not trigger membership reconciliation")
+	}
+	receiptPath := keyPackagePath + "/" + operationID.String()
+	receiptResponse := doBotCBOR(h, http.MethodGet, receiptPath, nil, "Bearer "+botToken)
+	if receiptResponse.Code != http.StatusOK {
+		t.Fatalf("read native helper publication receipt: %d (%x)", receiptResponse.Code, receiptResponse.Body.Bytes())
+	}
+	receipt, err := botprotocol.DecodeKeyPackagePublicationReceipt(receiptResponse.Body.Bytes())
+	if err != nil || receipt.ExpectedGeneration != uint64(instance.Generation) || receipt.UploadSHA256 != sha256.Sum256(intentResult.UploadBody) || receipt.Count != 1 {
+		t.Fatalf("native helper publication receipt=%+v err=%v", receipt, err)
+	}
+	resolutionRaw, err := botprotocol.EncodeKeyPackageResolution(botprotocol.KeyPackageResolution{
+		OperationID: operationID, PackageRefs: intentResult.PackageRefs, Outcome: 0,
+		Now: uint64(deps.Clock.Now().Unix()), CurrentGeneration: uint64(instance.Generation),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resolutionPayload []any
+	if err := cborx.Unmarshal(resolutionRaw, &resolutionPayload); err != nil {
+		t.Fatal(err)
+	}
+	if resolved := helper.call(t, botprotocol.HelperKeyPackagesUploaded, resolutionPayload); len(resolved) != 0 {
+		t.Fatalf("native helper resolution returned %d fields", len(resolved))
 	}
 	readyRequestID := id.New()
 	readyBody, _ := cborx.Marshal([]any{readyRequestID, uint64(5)})

@@ -466,11 +466,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
-	groups.Register(mux, sessions)          // rows 1-3
-	groups.RegisterSequencer(mux, sessions) // rows 4-7, 19
-	groups.RegisterRecovery(mux, sessions)  // rows 8-9
-	groups.RegisterDirectory(mux, sessions) // rows 10, 12, 15-16
-	groups.RegisterHeal(mux, sessions)      // rows 13-14
+	groups.Register(mux, sessions)             // rows 1-3
+	groups.RegisterSequencer(mux, sessions)    // rows 4-7, 19
+	groups.RegisterRecovery(mux, sessions)     // rows 8-9
+	groups.RegisterDirectory(mux, sessions)    // rows 10, 12, 15-16
+	groups.RegisterBotDirectory(mux, sessions) // managed Bot KeyPackage publication and receipts
+	groups.RegisterHeal(mux, sessions)         // rows 13-14
 	(&api.Messages{
 		DS:                 delivery,
 		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,

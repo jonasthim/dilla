@@ -401,6 +401,7 @@ type failingRepo struct {
 	// deletedProposals records that this transaction's repository reached DeleteProposals, so the
 	// "TxCommit" fault fails only the transaction of a commit that ran all the way through.
 	deletedProposals bool
+	deviceLockHook   func()
 }
 
 // breakGroup makes the store's GetGroup of groupID fail.
@@ -581,7 +582,7 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
 		sub := &failingRepo{
 			Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut(),
-			welcomeReads: r.welcomeReads, calls: r.calls,
+			welcomeReads: r.welcomeReads, calls: r.calls, deviceLockHook: r.deviceLockHook,
 		}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it
@@ -596,6 +597,20 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 		}
 		return err
 	})
+}
+
+func (r *failingRepo) CreateBotKeyPackagePublicationReceipt(ctx context.Context, row store.KeyPackagePublicationReceipt) error {
+	if r.take("CreateBotKeyPackagePublicationReceipt") {
+		return errInjected
+	}
+	return r.Repository.CreateBotKeyPackagePublicationReceipt(ctx, row)
+}
+
+func (r *failingRepo) LockKeyPackageDevice(ctx context.Context, deviceID id.ID) error {
+	if r.deviceLockHook != nil {
+		r.deviceLockHook()
+	}
+	return r.Repository.LockKeyPackageDevice(ctx, deviceID)
 }
 
 func (r *failingRepo) snapshotFailOn() string {

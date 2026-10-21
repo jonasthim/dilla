@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -426,6 +427,61 @@ func (s *Session) FinalizeCredential(ctx context.Context, installation, request 
 func (s *Session) MarkReady(ctx context.Context, installation, request id.ID, revision uint64) (Installation, error) {
 	return s.installationMutation(ctx, installation, "ready", request, revision, nil, false)
 }
+
+// PublishKeyPackages sends the exact canonical upload body with a caller-owned operation ID. It
+// does not retry uncertain mutations; callers resolve that same ID through
+// KeyPackagePublicationReceipt before deciding what to do next.
+func (s *Session) PublishKeyPackages(ctx context.Context, installation, operation id.ID, generation uint64, upload []byte) (uint64, error) {
+	var count uint64
+	request, err := botprotocol.EncodeKeyPackagePublication(botprotocol.KeyPackagePublication{
+		OperationID: operation, ExpectedGeneration: generation, UploadBody: upload,
+	})
+	if err != nil {
+		return 0, ErrInvalidConfig
+	}
+	inst, err := pathID(installation)
+	if err != nil {
+		return 0, err
+	}
+	if operation.IsZero() {
+		return 0, ErrInvalidConfig
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "bot-runtime/installations/"+inst+"/keypackages", nil, request, MaxDSBody, true)
+	if err != nil {
+		return 0, err
+	}
+	a, err := decode(raw, 1)
+	if err != nil {
+		return 0, unknown()
+	}
+	if count, _ = asUint(a[0]); count < 1 || count > 33 {
+		return 0, unknown()
+	}
+	return count, nil
+}
+
+func (s *Session) KeyPackagePublicationReceipt(ctx context.Context, installation, operation id.ID) (KeyPackagePublicationReceipt, error) {
+	var out KeyPackagePublicationReceipt
+	inst, err := pathID(installation)
+	if err != nil {
+		return out, err
+	}
+	op, err := pathID(operation)
+	if err != nil {
+		return out, err
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/keypackages/"+op, nil, nil, MaxSmallBody, false)
+	if err != nil {
+		return out, err
+	}
+	receipt, err := botprotocol.DecodeKeyPackagePublicationReceipt(raw)
+	if err != nil {
+		return out, ErrProtocol
+	}
+	out.Generation, out.Count, out.UploadSHA256 = receipt.ExpectedGeneration, receipt.Count, receipt.UploadSHA256
+	return out, nil
+}
+
 func (s *Session) installationMutation(ctx context.Context, installation id.ID, action string, request id.ID, revision uint64, credential []byte, put bool) (Installation, error) {
 	var out Installation
 	i, e := pathID(installation)
@@ -556,28 +612,6 @@ func (s *Session) DeviceListHistory(ctx context.Context, user id.ID, after uint6
 	return rows, nil
 }
 
-func (s *Session) PublishKeyPackages(ctx context.Context, packages [][]byte, lastResort []byte) (uint64, error) {
-	if len(packages) == 0 {
-		return 0, ErrInvalidConfig
-	}
-	b, e := encode([]any{packages, lastResort})
-	if e != nil {
-		return 0, e
-	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "keypackages", nil, b, MaxDSBody, true)
-	if e != nil {
-		return 0, e
-	}
-	a, e := decode(raw, 1)
-	if e != nil {
-		return 0, unknown()
-	}
-	n, ok := asUint(a[0])
-	if !ok || n > uint64(len(packages)) {
-		return 0, unknown()
-	}
-	return n, nil
-}
 func (s *Session) KeyPackage(ctx context.Context, device id.ID) ([]byte, error) {
 	d, e := pathID(device)
 	if e != nil {

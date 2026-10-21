@@ -177,6 +177,12 @@ func newTestAPIWithRepository(t *testing.T, repo store.Repository, wire func(*ap
 }
 
 func newTestAPIFullWithRepo(t *testing.T, repo store.Repository, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
+	return newTestAPIFullWithRepoAndMount(t, repo, tune, wire, nil)
+}
+
+// newTestAPIFullWithRepoAndMount adds a narrow composition seam for integration tests whose
+// routes are mounted by the delivery-service composition root rather than api.Register.
+func newTestAPIFullWithRepoAndMount(t *testing.T, repo store.Repository, tune func(*config.Config), wire func(*api.Deps), mount func(*server.Mux, api.Deps)) (http.Handler, api.Deps) {
 	t.Helper()
 	bs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), "fs")
 	if err != nil {
@@ -222,6 +228,9 @@ func newTestAPIFullWithRepo(t *testing.T, repo store.Repository, tune func(*conf
 	}
 	m := server.NewMux()
 	api.Register(m, deps)
+	if mount != nil {
+		mount(m, deps)
+	}
 	return m, deps
 }
 

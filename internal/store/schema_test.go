@@ -268,9 +268,9 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups; Plan 2
 // task 16 added 006f_voice.sql's voice_sessions; dilla-web-3.1 added 014_invite_signups.sql's
 // invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks; Task4B adds the
-// runtime, installation, claim, receipt and session-binding tables in 00022_bot_installations.sql.
+// runtime, installation, claim and session-binding tables, and task 5B4B adds publication receipts.
 var wantTables = []string{
-	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_installations", "bot_operations", "bot_runtimes", "bot_session_bindings", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_installations", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_session_bindings", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

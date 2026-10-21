@@ -49,25 +49,35 @@ type HealRequest struct {
 // own generation cannot walk the number backwards and revive the resume tokens an earlier restore
 // already killed.
 func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
-	if generation != 0 {
-		if err := d.opts.Store.SetGeneration(ctx, generation); err != nil {
+	deadline := d.opts.Clock.Now().Add(d.opts.Policy.HealWindow).Unix()
+	var restored store.InstanceRow
+	// Generation fencing, group invalidation, voice shutdown and package purge share one database
+	// transaction with managed publication. A publication can therefore land wholly before restore
+	// (and be purged) or wholly after it (and see the new generation), never between those steps.
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockInstanceGeneration(ctx); err != nil {
 			return err
 		}
-	} else if _, err := d.opts.Store.BumpGeneration(ctx); err != nil {
+		if generation != 0 {
+			if err := tx.SetGeneration(ctx, generation); err != nil {
+				return err
+			}
+		} else if _, err := tx.BumpGeneration(ctx); err != nil {
+			return err
+		}
+		if err := tx.MarkAllGroupsEpochUnknown(ctx, deadline); err != nil {
+			return err
+		}
+		if err := tx.EndAllVoiceSessions(ctx, d.now()); err != nil {
+			return err
+		}
+		if _, err := tx.PurgeKeyPackages(ctx, true); err != nil {
+			return err
+		}
+		var err error
+		restored, err = tx.GetInstance(ctx)
 		return err
-	}
-	deadline := d.opts.Clock.Now().Add(d.opts.Policy.HealWindow).Unix()
-
-	// Both bulk writes are single statements, not a per-group loop: OnRestore runs once and
-	// correctness, not latency, governs it, and a paged loop that stopped at a fixed batch would
-	// leave every group past the batch serving state the restored database no longer matches.
-	// `MarkAllGroupsEpochUnknown` and `EndAllVoiceSessions` are the shapes Plan 2 records as
-	// P2-D19 for the same invariant-11 work; part 1b uses them and adds them to `store.MLS`
-	// (deviation B13) so the two plans declare one surface instead of two.
-	if err := d.opts.Store.MarkAllGroupsEpochUnknown(ctx, deadline); err != nil {
-		return err
-	}
-	if err := d.opts.Store.EndAllVoiceSessions(ctx, d.now()); err != nil {
+	}); err != nil {
 		return err
 	}
 
@@ -76,12 +86,6 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 	if err := d.states.closeAll(ctx); err != nil {
 		return err
 	}
-	// All non-last-resort KeyPackages are purged: whatever was published before the restore may
-	// already have been consumed by a client the backup does not know about.
-	if _, err := d.opts.Store.PurgeKeyPackages(ctx, true); err != nil {
-		return err
-	}
-
 	// "every response carries the new generation" reaches the WEBSOCKET only through this call.
 	// `gateway.Options.Generation` is read once at construction, so without it a restored instance
 	// would keep greeting clients with the old number and — worse — keep ACCEPTING resume tokens
@@ -89,11 +93,7 @@ func (d *DS) OnRestore(ctx context.Context, generation uint64) error {
 	// client that never learned the database changed underneath it. The SQL read below is what
 	// makes the published number the one that actually landed, monotone clamp included.
 	if d.opts.Gateway != nil {
-		inst, err := d.opts.Store.GetInstance(ctx)
-		if err != nil {
-			return err
-		}
-		d.opts.Gateway.SetGeneration(inst.Generation)
+		d.opts.Gateway.SetGeneration(restored.Generation)
 	}
 	return nil
 }

@@ -231,6 +231,9 @@ func (d *DS) checkRegisteredLeaf(ctx context.Context, v DeviceListVerifier, s Se
 	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
 		return errInvalid("the registered leaf's key is not the device's registered key")
 	}
+	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, leaf.CredentialIdentity, true); err != nil {
+		return errInvalid("the registered leaf does not carry the current verified Bot credential")
+	}
 	entries, err := d.opts.DeviceLists.Entries(ctx, v, userID)
 	if err != nil {
 		return errInvalid("no verifiable signed device list for the registering user: " + err.Error())
@@ -467,6 +470,25 @@ func (d *DS) replaceMembersTx(ctx context.Context, tx store.Repository, groupID 
 		deviceID, userID, err := decodeCredentialIdentity(m.CredentialIdentity)
 		if err != nil {
 			return memberView{}, errCommitInvalid("credential_identity", err.Error())
+		}
+		// Member rewrites have historically carried human rows directly from MLS state without
+		// requiring their user/device rows to remain registered. Keep that behavior, and apply the
+		// verified-device credential fence only when the account is still a managed Bot.
+		memberUser, userErr := tx.GetUser(ctx, userID)
+		if userErr != nil && !errors.Is(userErr, store.ErrNotFound) {
+			return memberView{}, userErr
+		}
+		if userErr == nil && memberUser.Kind == 1 {
+			device, err := tx.GetDevice(ctx, deviceID)
+			if err != nil {
+				return memberView{}, errCommitInvalid("credential_identity", "the Bot member credential names an unknown device")
+			}
+			if device.UserID != userID {
+				return memberView{}, errCommitInvalid("credential_identity", "the Bot member credential names a device owned by another account")
+			}
+			if _, err := checkManagedBotCredential(ctx, tx, userID, device, m.CredentialIdentity, false); err != nil {
+				return memberView{}, errCommitInvalid("credential_identity", "a managed Bot member differs from its verified device credential")
+			}
 		}
 		added := state.Epoch
 		if prev, ok := since[m.LeafIndex]; ok && prev.DeviceID == deviceID && prev.AddedEpoch <= state.Epoch &&

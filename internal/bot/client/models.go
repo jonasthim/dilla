@@ -20,6 +20,14 @@ type Installation struct {
 	BotUser, BotDevice      *id.ID
 	Capabilities, UpdatedAt uint64
 }
+
+// KeyPackagePublicationReceipt is the installation's historical acceptance result. It does not
+// claim that any of its packages remain active in the directory.
+type KeyPackagePublicationReceipt struct {
+	Generation   uint64
+	UploadSHA256 [32]byte
+	Count        uint64
+}
 type Claim struct {
 	InstallationID, ClaimID id.ID
 	Expires                 uint64

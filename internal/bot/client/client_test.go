@@ -470,8 +470,10 @@ func TestRepresentativeTypedRoutesMatchWireStatusesAndShapes(t *testing.T) {
 			reply(w, 200, []any{uint64(1), []byte("list"), make([]byte, 64), make([]byte, 32)})
 		case strings.HasSuffix(r.URL.Path, "/device-list") && r.Method == http.MethodPut:
 			w.WriteHeader(204)
-		case r.URL.Path == "/v1/keypackages":
+		case strings.HasSuffix(r.URL.Path, "/keypackages") && r.Method == http.MethodPost:
 			reply(w, 201, []any{uint64(1)})
+		case strings.Contains(r.URL.Path, "/keypackages/") && r.Method == http.MethodGet:
+			reply(w, 200, []any{uint64(2), make([]byte, 32), uint64(1)})
 		case strings.HasSuffix(r.URL.Path, "/keypackage"):
 			reply(w, 200, []any{[]byte("kp"), uint64(0), []byte("ref")})
 		case r.URL.Path == "/v1/welcomes":
@@ -495,8 +497,12 @@ func TestRepresentativeTypedRoutesMatchWireStatusesAndShapes(t *testing.T) {
 	if err := s.PublishDeviceList(context.Background(), testID(2), 2, []byte("list"), make([]byte, 64), make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.PublishKeyPackages(context.Background(), [][]byte{[]byte("kp")}, nil); err != nil || n != 1 {
+	upload, _ := encode([]any{[]any{[]byte("kp")}, nil})
+	if n, err := s.PublishKeyPackages(context.Background(), testID(9), testID(10), 2, upload); err != nil || n != 1 {
 		t.Fatalf("published=%d err=%v", n, err)
+	}
+	if receipt, err := s.KeyPackagePublicationReceipt(context.Background(), testID(9), testID(10)); err != nil || receipt.Generation != 2 || receipt.Count != 1 {
+		t.Fatalf("publication receipt=%+v err=%v", receipt, err)
 	}
 	if _, err := s.KeyPackage(context.Background(), testID(2)); err != nil {
 		t.Fatal(err)

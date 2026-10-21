@@ -203,6 +203,9 @@ func (r *Repo) UpdateBotInstallation(ctx context.Context, installationID id.ID, 
 	if expected == 0 || expected >= math.MaxInt64 || next.Revision != expected+1 || next.ID != installationID {
 		return store.ErrConflict
 	}
+	if next.RemovedAt != nil && !r.inTx {
+		return store.ErrConflict
+	}
 	if err := checkBotInstallation(next); err != nil {
 		return err
 	}
@@ -220,6 +223,11 @@ func (r *Repo) UpdateBotInstallation(ctx context.Context, installationID id.ID, 
 	}
 	if n != 1 {
 		return store.ErrConflict
+	}
+	if next.RemovedAt != nil {
+		if err := r.DeleteBotKeyPackagePublicationReceipts(ctx, installationID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

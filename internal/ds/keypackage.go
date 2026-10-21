@@ -84,6 +84,9 @@ func checkKeyPackageLifetime(now int64, notAfter uint64, maxLifetime time.Durati
 // kp_ref. It returns how many rows the publish covers; republishing a package the directory
 // already holds is not an error and writes no second row.
 func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byte, lastResort []byte) (int, error) {
+	if s.Bot != nil {
+		return 0, errForbidden("managed Bots must use their installation-scoped KeyPackage publication route")
+	}
 	// A provisional session exists to bring ONE device into ONE pairing group, so it may publish
 	// the single KeyPackage that group's Welcome will consume and nothing more. The route accepts
 	// a provisional session (interfaces §5.1 row 10); this is what makes that safe. It is checked
@@ -98,44 +101,15 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 				"a provisional session may publish exactly one pairing KeyPackage and no last-resort package")
 		}
 	}
-	// The cap is checked BEFORE the guest is asked for anything. A caller that cannot exceed it
-	// can still make the instance run one RFC 9420 validation per submitted blob by trying, and
-	// validation is the expensive half of this route.
+	// The per-request cap is checked BEFORE the guest is asked for anything. Directory capacity is
+	// enforced atomically after validation under the device publication lock, where refs can be
+	// deduplicated accurately.
 	if len(packages) > d.maxKeyPackagesPerDevice() {
 		return 0, errTooManyKeyPackages(len(packages), d.maxKeyPackagesPerDevice())
 	}
 	if len(packages) == 0 && lastResort == nil {
 		return 0, nil
 	}
-	// And the cap is a bound on the DIRECTORY, not on one request. A per-request bound is no bound:
-	// nothing consumes an ordinary package except an Add, so a device that publishes the cap in a
-	// loop grows `key_packages` without end, each row a full KeyPackage blob held for its 90-day
-	// lifetime — and a provisional session, limited to one package per call, stocks the same
-	// directory one call at a time. `CountKeyPackages` is the same count `ready` reports: the
-	// UNCONSUMED, UNEXPIRED ordinary rows, so a consumed or expired package makes room again.
-	//
-	// The count is deliberately taken before validation and before any dedupe: a republish of a
-	// package the directory already holds writes no row, but the delivery service cannot know that
-	// without validating the blob first, and the conservative refusal costs a full client only a
-	// take away from the boundary.
-	//
-	// It covers the ORDINARY half only, and that is the whole of what it must cover: a last-resort
-	// publish writes no ordinary row, and the last-resort half is bounded at ONE row per device by
-	// the store, which drops the previous fallback package when a new one is written (protocol/01
-	// § Joining: "32 ordinary KeyPackages plus 1 last-resort KeyPackage"; the adapters' comment on
-	// `PutKeyPackages` and internal/store's TestANewLastResortKeyPackageReplacesTheOldOne). Without
-	// that rule this `len(packages) > 0` gate would be a hole in the bound, since a publish shaped
-	// `{packages: [], last_resort: <fresh blob>}` reaches SQL without ever being counted.
-	if len(packages) > 0 {
-		held, err := d.opts.Store.CountKeyPackages(ctx, s.DeviceID, d.now())
-		if err != nil {
-			return 0, err
-		}
-		if held+int64(len(packages)) > int64(d.maxKeyPackagesPerDevice()) {
-			return 0, errKeyPackageDirectoryFull(held, len(packages), d.maxKeyPackagesPerDevice())
-		}
-	}
-
 	// The device's registered key: the dsk_pub the session was established under (or registered
 	// with, for the session POST /v1/accounts mints). Read once, before the guest is asked for
 	// anything; every package below is bound to it.
@@ -144,6 +118,52 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		return 0, errForbidden("the session's device is unknown to this instance")
 	}
 	if err != nil {
+		return 0, err
+	}
+	publicationInstance, err := d.opts.Store.GetInstance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// Preserve the human publication route's cheap full-directory refusal before WASI work. This
+	// preflight follows the same generation → user → device lock order as final admission; capacity
+	// is checked again in the write transaction because concurrent publishers may race after it.
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockInstanceGeneration(ctx); err != nil {
+			return err
+		}
+		current, err := tx.GetInstance(ctx)
+		if err != nil {
+			return err
+		}
+		if current.Generation != publicationInstance.Generation {
+			return &Error{Code: "E_CONFLICT", Detail: "the instance generation changed during publication", Status: http.StatusConflict}
+		}
+		if err := tx.LockUserForDeviceRegistration(ctx, s.UserID); err != nil {
+			return err
+		}
+		if err := tx.LockKeyPackageDevice(ctx, s.DeviceID); err != nil {
+			return err
+		}
+		user, err := tx.GetUser(ctx, s.UserID)
+		if err != nil {
+			return err
+		}
+		if user.DisabledAt != nil || user.DeletedAt != nil || user.Flags != 0 {
+			return errForbidden("the publishing account is disabled or deleted")
+		}
+		currentDevice, err := tx.GetDevice(ctx, s.DeviceID)
+		if err != nil || currentDevice.UserID != s.UserID || currentDevice.RevokedAt != nil || currentDevice.QuarantinedAt != nil || string(currentDevice.DSKPub) != string(device.DSKPub) {
+			return errForbidden("the publishing device authority changed")
+		}
+		held, err := tx.CountKeyPackages(ctx, s.DeviceID, d.now())
+		if err != nil {
+			return err
+		}
+		if held+int64(len(packages)) > int64(d.maxKeyPackagesPerDevice()) {
+			return errKeyPackageDirectoryFull(held, len(packages), d.maxKeyPackagesPerDevice())
+		}
+		return nil
+	}); err != nil {
 		return 0, err
 	}
 
@@ -211,7 +231,67 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 			return 0, err
 		}
 	}
-	if err := d.opts.Store.PutKeyPackages(ctx, s.DeviceID, rows); err != nil {
+	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockInstanceGeneration(ctx); err != nil {
+			return err
+		}
+		currentInstance, err := tx.GetInstance(ctx)
+		if err != nil {
+			return err
+		}
+		if currentInstance.Generation != publicationInstance.Generation {
+			return &Error{Code: "E_CONFLICT", Detail: "the instance generation changed during publication", Status: http.StatusConflict}
+		}
+		if err := tx.LockUserForDeviceRegistration(ctx, s.UserID); err != nil {
+			return err
+		}
+		if err := tx.LockKeyPackageDevice(ctx, s.DeviceID); err != nil {
+			return err
+		}
+		currentUser, err := tx.GetUser(ctx, s.UserID)
+		if err != nil {
+			return err
+		}
+		if currentUser.DisabledAt != nil || currentUser.DeletedAt != nil || currentUser.Flags != 0 {
+			return errForbidden("the publishing account is disabled or deleted")
+		}
+		currentDevice, err := tx.GetDevice(ctx, s.DeviceID)
+		if err != nil {
+			return errForbidden("the publishing device is no longer registered")
+		}
+		if currentDevice.UserID != s.UserID || currentDevice.RevokedAt != nil || currentDevice.QuarantinedAt != nil || string(currentDevice.DSKPub) != string(device.DSKPub) {
+			return errForbidden("the publishing device authority changed")
+		}
+		held, err := tx.CountKeyPackages(ctx, s.DeviceID, d.now())
+		if err != nil {
+			return err
+		}
+		adding := 0
+		seen := map[string]struct{}{}
+		for _, row := range rows {
+			if row.LastResort != 0 {
+				continue
+			}
+			if _, ok := seen[string(row.KPRef)]; ok {
+				continue
+			}
+			seen[string(row.KPRef)] = struct{}{}
+			if _, err := tx.GetKeyPackage(ctx, s.DeviceID, row.KPRef); errors.Is(err, store.ErrNotFound) {
+				adding++
+			} else if err != nil {
+				return err
+			}
+		}
+		if held+int64(adding) > int64(d.maxKeyPackagesPerDevice()) {
+			return errKeyPackageDirectoryFull(held, adding, d.maxKeyPackagesPerDevice())
+		}
+		for _, row := range rows {
+			if row.Expires <= d.now() {
+				return errCommitInvalid("key_package", "the package expired before publication was admitted")
+			}
+		}
+		return tx.PutKeyPackages(ctx, s.DeviceID, rows)
+	}); err != nil {
 		return 0, err
 	}
 	return len(rows), nil

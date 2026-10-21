@@ -849,6 +849,12 @@ func (r *restorer) armHeal(ctx context.Context, repo store.Repository) error {
 // plus the two settings only a restore owns. tx must be a transaction: the
 // statements move together or not at all.
 func (r *restorer) heal(ctx context.Context, tx store.Repository) error {
+	// Share the same instance-generation row fence as publishers and the in-process OnRestore path.
+	// This is the first row lock in this transaction; the remaining restore writes all happen while
+	// it is held, so accepted uploads are either purged by this restore or observe its generation.
+	if err := tx.LockInstanceGeneration(ctx); err != nil {
+		return fmt.Errorf("lock the instance generation: %w", err)
+	}
 	gen := r.plan.GenerationNew
 	if err := tx.SetGeneration(ctx, gen); err != nil {
 		return fmt.Errorf("set the generation: %w", err)

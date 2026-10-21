@@ -1213,6 +1213,9 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/ready":
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "POST /v1/bot-runtime/installations/{installation}/keypackages",
+		"GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}":
+		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":
@@ -1251,7 +1254,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 			return false, nil
 		}
 		return err == nil, err
-	case "POST /v1/keypackages", "GET /v1/welcomes", "DELETE /v1/welcomes/{welcome_id}":
+	case "GET /v1/welcomes", "DELETE /v1/welcomes/{welcome_id}":
 		// These resources are device-scoped by the delivery service. In particular,
 		// KeyPackage publication is for session.DeviceID and Welcome acknowledgement
 		// checks that the welcome belongs to that same device.

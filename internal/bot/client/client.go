@@ -421,6 +421,12 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "ready" && method == http.MethodPost {
 			return 200, true
 		}
+		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodPost {
+			return 201, true
+		}
+		if len(parts) == 5 && parts[3] == "keypackages" && method == http.MethodGet {
+			return 200, true
+		}
 	}
 	if len(parts) >= 2 && parts[0] == "devices" {
 		if len(parts) == 4 && parts[2] == "sessions" && parts[3] == "challenge" && method == http.MethodPost {

@@ -28,7 +28,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		methods []string
 	}{
 		{"Instance", reflect.TypeOf((*store.Instance)(nil)).Elem(), []string{
-			"BumpGeneration", "CreateInstance", "GetInstance", "GetSetting", "PutSetting",
+			"BumpGeneration", "CreateInstance", "GetInstance", "GetSetting", "LockInstanceGeneration", "PutSetting",
 			// SetGeneration is §4.1 plus one (deviation ID1, task 27): invariant 11's
 			// `dillad restore` names the generation it read out of the backup's
 			// manifest, and a blind `BumpGeneration` would silently disregard it.
@@ -328,6 +328,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotClaims)(nil)).Elem(),
 		reflect.TypeOf((*store.BotOperations)(nil)).Elem(),
 		reflect.TypeOf((*store.BotSessionBindings)(nil)).Elem(),
+		// Task 5B4B: managed Bot KeyPackage publication receipts.
+		reflect.TypeOf((*store.BotKeyPackagePublications)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

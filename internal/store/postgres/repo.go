@@ -142,6 +142,19 @@ func (r *Repo) GetInstance(ctx context.Context) (store.InstanceRow, error) {
 	}, nil
 }
 
+// LockInstanceGeneration takes the shared publication/restore fence. It must be the first
+// database row lock in both managed publication and restore transactions.
+func (r *Repo) LockInstanceGeneration(ctx context.Context) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	var generation int64
+	if err := r.tx.QueryRowContext(ctx, `SELECT generation FROM instances LIMIT 1 FOR UPDATE`).Scan(&generation); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
 func (r *Repo) BumpGeneration(ctx context.Context) (uint64, error) {
 	gen, err := r.w.BumpGeneration(ctx)
 	if err != nil {
@@ -281,6 +294,11 @@ func (r *Repo) ListUsers(ctx context.Context, after id.ID, limit int32) ([]store
 }
 
 func (r *Repo) SetUserDisabled(ctx context.Context, userID id.ID, at *int64) error {
+	if r.inTx {
+		if err := r.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.SetUserDisabled(ctx, pgdb.SetUserDisabledParams{
 		DisabledAt: nullInt64(at),
 		ID:         userID,
@@ -288,6 +306,11 @@ func (r *Repo) SetUserDisabled(ctx context.Context, userID id.ID, at *int64) err
 }
 
 func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error {
+	if r.inTx {
+		if err := r.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.TombstoneUser(ctx, pgdb.TombstoneUserParams{
 		DeletedAt: nullInt64(&at),
 		ID:        userID,
@@ -446,6 +469,11 @@ func (r *Repo) TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) 
 }
 
 func (r *Repo) RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error {
+	if r.inTx {
+		if err := r.LockKeyPackageDevice(ctx, deviceID); err != nil {
+			return err
+		}
+	}
 	return wrap(r.w.RevokeDevice(ctx, pgdb.RevokeDeviceParams{
 		RevokedAt: nullInt64(&at),
 		ID:        deviceID,
@@ -1745,6 +1773,70 @@ func (r *Repo) PurgeKeyPackages(ctx context.Context, keepLastResort bool) (int64
 	}
 	n, err := r.w.PurgeAllKeyPackages(ctx)
 	return n, wrap(err)
+}
+
+func (r *Repo) LockKeyPackageDevice(ctx context.Context, deviceID id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	// Lock the actual device row so this fence also serializes with plain UPDATE writers such as
+	// QuarantineDevice and non-transactional RevokeDevice. A repository-only advisory lock would
+	// coordinate publishers while allowing those authority changes to pass it unnoticed.
+	var locked id.ID
+	if err := r.tx.QueryRowContext(ctx, `SELECT id FROM devices WHERE id=$1 FOR UPDATE`, deviceID).Scan(&locked); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) GetBotKeyPackagePublicationReceipt(ctx context.Context, installation, operation id.ID) (store.KeyPackagePublicationReceipt, error) {
+	queryer := interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	}(r.rawRead)
+	if r.tx != nil {
+		queryer = r.tx
+	}
+	var out store.KeyPackagePublicationReceipt
+	var generation, count int64
+	err := queryer.QueryRowContext(ctx, `SELECT installation_id,user_id,device_id,operation_id,generation,upload_sha256,package_count,accepted_at FROM bot_keypackage_publication_receipts WHERE installation_id=$1 AND operation_id=$2`, installation, operation).Scan(&out.InstallationID, &out.UserID, &out.DeviceID, &out.OperationID, &generation, &out.UploadSHA256, &count, &out.AcceptedAt)
+	if err != nil {
+		return store.KeyPackagePublicationReceipt{}, wrap(err)
+	}
+	out.Generation, out.Count = uint64(generation), uint64(count)
+	return out, nil
+}
+
+func (r *Repo) CreateBotKeyPackagePublicationReceipt(ctx context.Context, v store.KeyPackagePublicationReceipt) error {
+	if !r.inTx || len(v.UploadSHA256) != 32 || v.Count < 1 || v.Count > 33 {
+		return store.ErrConflict
+	}
+	_, err := r.tx.ExecContext(ctx, `INSERT INTO bot_keypackage_publication_receipts(installation_id,user_id,device_id,operation_id,generation,upload_sha256,package_count,accepted_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.InstallationID, v.UserID, v.DeviceID, v.OperationID, int64(v.Generation), v.UploadSHA256, int64(v.Count), v.AcceptedAt)
+	return wrap(err)
+}
+
+func (r *Repo) DeleteBotKeyPackagePublicationReceipts(ctx context.Context, installation id.ID) error {
+	if !r.inTx {
+		return sql.ErrTxDone
+	}
+	_, err := r.tx.ExecContext(ctx, `DELETE FROM bot_keypackage_publication_receipts WHERE installation_id=$1`, installation)
+	return wrap(err)
+}
+
+func (r *Repo) GetKeyPackage(ctx context.Context, deviceID id.ID, ref []byte) (store.KeyPackageRow, error) {
+	queryer := interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	}(r.rawRead)
+	if r.tx != nil {
+		queryer = r.tx
+	}
+	var row store.KeyPackageRow
+	var last int64
+	err := queryer.QueryRowContext(ctx, `SELECT device_id,kp_ref,blob,last_resort,expires,created,consumed_at FROM key_packages WHERE device_id=$1 AND kp_ref=$2`, deviceID, ref).Scan(&row.DeviceID, &row.KPRef, &row.Blob, &last, &row.Expires, &row.Created, &row.ConsumedAt)
+	if err != nil {
+		return store.KeyPackageRow{}, wrap(err)
+	}
+	row.LastResort = uint8(last)
+	return row, nil
 }
 
 func (r *Repo) PutWelcomePayload(ctx context.Context, w store.WelcomePayloadRow) error {

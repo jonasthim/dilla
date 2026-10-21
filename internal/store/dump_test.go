@@ -259,6 +259,10 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	if err := src.CreateBotSessionBinding(ctx, binding); err != nil {
 		t.Fatalf("CreateBotSessionBinding: %v", err)
 	}
+	publication := store.KeyPackagePublicationReceipt{InstallationID: installation.ID, UserID: owner.ID, DeviceID: device.ID, OperationID: id.New(), Generation: 2, UploadSHA256: bytes.Repeat([]byte{0x72}, 32), Count: 3, AcceptedAt: 3}
+	if err := src.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotKeyPackagePublicationReceipt(ctx, publication) }); err != nil {
+		t.Fatalf("CreateBotKeyPackagePublicationReceipt: %v", err)
+	}
 	g := seedGroup(ctx, t, src, 1)
 	zero := uint8(0)
 	for seq, class := range map[uint64]*uint8{1: &zero, 2: nil} {
@@ -292,6 +296,9 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	if got, err := dst.GetBotSessionBinding(ctx, tokenHash); err != nil || got.InstallationID != installation.ID {
 		t.Fatalf("restored session binding: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, publication.OperationID); err != nil || got.Count != publication.Count || !bytes.Equal(got.UploadSHA256, publication.UploadSHA256) {
+		t.Fatalf("restored KeyPackage receipt: %+v %v", got, err)
 	}
 	post, err := dst.GetAppMessage(ctx, g.GroupID, 1)
 	if err != nil || post.Class == nil || *post.Class != 0 {

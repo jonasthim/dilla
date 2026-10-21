@@ -61,10 +61,13 @@ type Repository interface {
 	BotClaims
 	BotOperations
 	BotSessionBindings
+	BotKeyPackagePublications
 }
 
 type Instance interface {
 	GetInstance(ctx context.Context) (InstanceRow, error)
+	// LockInstanceGeneration serializes publishers with restore while their transaction is open.
+	LockInstanceGeneration(ctx context.Context) error
 	CreateInstance(ctx context.Context, in InstanceRow) error
 	BumpGeneration(ctx context.Context) (uint64, error)
 	// SetGeneration is invariant 11's restore half (deviation B13). `dillad
@@ -81,6 +84,28 @@ type Instance interface {
 	// NOT NULL, and a repository with no clock has nothing to write there
 	// (deviation ID11).
 	PutSetting(ctx context.Context, key string, value []byte, updated int64) error
+}
+
+// KeyPackagePublicationReceipt is the compact accepted-operation record for a managed Bot. It
+// deliberately stores no upload or package bytes.
+type KeyPackagePublicationReceipt struct {
+	InstallationID id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	OperationID    id.ID
+	Generation     uint64
+	UploadSHA256   []byte
+	Count          uint64
+	AcceptedAt     int64
+}
+
+// BotKeyPackagePublications provides transaction-scoped serialization and compact receipts.
+type BotKeyPackagePublications interface {
+	LockKeyPackageDevice(context.Context, id.ID) error
+	GetBotKeyPackagePublicationReceipt(context.Context, id.ID, id.ID) (KeyPackagePublicationReceipt, error)
+	CreateBotKeyPackagePublicationReceipt(context.Context, KeyPackagePublicationReceipt) error
+	DeleteBotKeyPackagePublicationReceipts(context.Context, id.ID) error
+	GetKeyPackage(context.Context, id.ID, []byte) (KeyPackageRow, error)
 }
 
 type Accounts interface {
