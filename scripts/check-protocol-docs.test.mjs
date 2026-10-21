@@ -25,6 +25,7 @@ test('passes when every required document exists with its required headings and 
     '07-versioning.md': '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n',
     '08-threat-model.md': '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n',
     '09-http-api.md': '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n',
+    '10-community-bot.md': '# Community bot\n\n## Scope\n\n## Encoding\n\n## Application requests\n\n## Signed moderation removal\n\n## Durable structural event\n\n## Send receipt\n\n## Helper transport envelope\n\n## Session capability and compatibility\n\n## Vectors\n',
   });
   assert.deepEqual(checkDocs(dir), []);
 });

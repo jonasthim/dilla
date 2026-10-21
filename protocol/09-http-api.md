@@ -7,6 +7,9 @@ freezes with "DS API v1" at the end of W5; this document does **not** freeze the
 instance document and limits, accounts, devices, sessions, invites, auth ceremonies, communities and
 content, rate limits and the `users.flags` bit layout, all of which stay editable as dillad grows.
 
+The built-in community bot's wire-3 installation, event, role, moderation and
+provider-setup endpoints are specified in [10-community-bot.md](10-community-bot.md).
+
 ## Encoding
 
 One body encoding: deterministic CBOR, fixed-position arrays, served and accepted as
@@ -22,6 +25,15 @@ hex. Both are validated before the database or the filesystem is touched. A synt
 identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_NOT_FOUND`.
 
 ## Sessions
+
+Wire-3 session capability negotiation uses authenticated
+`POST /v1/sessions/negotiate`, with request `[[wire_versions], [e2ee_versions],
+[media_versions]]` and response `[wire,e2ee,media]`. Each offered list contains
+1..8 distinct positive uints. The highest common versions are bound to this
+bearer session; a missing intersection is `400 E_VERSION` and changes nothing.
+Gateway identify/resume records its selected versions with the same binding.
+See `10`'s Session capability and compatibility section for bot upgrade gates;
+request headers never establish negotiated capability.
 
 Every endpoint in this document except the ones marked `—` requires a device session exactly as
 `02-delivery-service.md`'s `§ Device sessions` defines: `Authorization: Bearer <token>` resolved to

@@ -6,7 +6,7 @@ Three independent unsigned integers:
 
 | version | covers | current |
 |---|---|---|
-| `wire_version` | HTTP API paths under `/v1`, gateway frame layouts | 2 |
+| `wire_version` | HTTP API paths under `/v1`, gateway frame layouts | 3 |
 | `e2ee_version` | `01-groups.md`, `02`, `03`, `04`, `06` | 1 |
 | `media_version` | `05-media-frames.md` | 1 |
 
@@ -24,6 +24,12 @@ supports. Both sides MUST support the current version and the two before it (**N
 version** published with each release and refuse instances below it, showing the advisory that
 explains why.
 
+Wire 3 advertises `[3,2]`. Wire 2 remains supported for functionality outside
+bot-enabled communities. The pre-release wire-1 exception recorded on 2026-10-17
+remains in force: wire 1 is not re-enabled. HTTP negotiation and gateway identify
+bind accepted versions to the authenticated bearer session, as specified in `10`.
+Encrypted envelopes and media stay at version1; no existing MLS group migrates.
+
 ## Change process
 
 1. Open a pull request that changes the document and bumps the affected version in this file.
@@ -36,6 +42,7 @@ explains why.
 
 | date | version | change |
 |---|---|---|
+| 2026-10-21 | e2ee 1, media 1, wire 3 | Built-in community bot contract in `10`: private native helper, `dilla.bot/1` type-0 application bodies, native bot enrollment, durable structural events and send receipts, constrained role delegation, signed moderation removal and recovery feed, encrypted evidence and installation-wide Spotify setup. Advertise `[3,2]`; `POST /v1/sessions/negotiate` and gateway identify/resume persist accepted capability on the bearer session. Bot functionality requires wire3 and ignores free-form version headers; unrelated wire2 functionality remains supported. `vectors/bot.json` adds shared Go/Rust/TypeScript accepted and rejected encodings. E2EE/media versions and the `/v1` route prefix are unchanged. Feature completion and release qualification are tracked separately in the implementation plan. |
 | 2026-09-23 | e2ee 1, media 1, wire 1 | initial |
 | 2026-09-23 | e2ee 1, media 1, wire 1 | `identity.json` gains real Ed25519 credential signatures and the seeds that reproduce them; no format change, so no version bump |
 | 2026-09-24 | e2ee 1, media 1, wire 1 | `body` limit stated as 0 for envelope types 2/5/6 (delete, pin, unpin), matching the "empty for 2/5/6" already in the array comment; `envelope.json` gains a `rejects` array with that case. The envelope format is unfrozen until the end of W4 and no field, order or length changed, so no version bump |
