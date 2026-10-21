@@ -56,6 +56,14 @@ export const Connected: Story = { args: { announcement: 'You joined harbour.' } 
 export const Connecting: Story = { args: { phase: 'connecting' } };
 export const Reconnecting: Story = { args: { phase: 'reconnecting' } };
 /** Camera on and sharing: both glyphs swap (video, monitor-x) and are pressed toggles. */
+/** V3: camera, share and leave sit together at the right end of the controls row. */
+export const ControlsOnTheRight: Story = {
+  play: ({ canvasElement }) => {
+    const dock = canvasElement.querySelector<HTMLElement>('.d-voice-dock')!.getBoundingClientRect();
+    const camera = canvasElement.querySelector<HTMLElement>('.d-voice-dock__controls .d-icon-button')!.getBoundingClientRect();
+    if (camera.left <= dock.left + dock.width / 2) throw new Error(`ControlsOnTheRight: the camera starts at ${String(camera.left)}, left of the dock's centre`);
+  },
+};
 export const CameraAndSharing: Story = { args: { camera: true, sharing: true } };
 /** Paused (RV-3): the dock says so, and camera and share are aria-disabled as on the stage; the banner with its action
  *  lives on the stage. */

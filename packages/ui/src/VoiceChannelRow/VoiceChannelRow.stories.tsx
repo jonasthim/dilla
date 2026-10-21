@@ -96,13 +96,30 @@ export const Live: Story = {};
 /** No one in voice: no count and no sub-rows. */
 export const Empty: Story = { args: { participants: [] } };
 /** This device is in it, and the main pane shows it. */
-/** The join icon shows on focus or hover (here: focused); joined shows the connected glyph instead, never both. */
+/** The join icon shows on focus or hover (here: focused); a joined row has neither the join icon nor a connected glyph. */
 export const JoinFocused: Story = {
   globals: { theme: 'mesh' },
   play: async ({ canvasElement }) => { await expectJoinRing(canvasElement, 'JoinFocused'); },
 };
 export const JoinFocusedLight: Story = { ...JoinFocused, globals: { theme: 'light' } };
 export const JoinFocusedHighContrast: Story = { ...JoinFocused, globals: { theme: 'high-contrast' } };
+/** V2: a participant's mute and deafen glyphs are 0.25rem apart and end 8px inside the list's right edge, one glyph or two. */
+export const GlyphInset: Story = {
+  args: { current: true, joined: true, participants: [person('ada', { muted: true, deafened: true }), person('bo', { muted: true }), person('cy')] },
+  play: ({ canvasElement }) => {
+    const list = canvasElement.querySelector<HTMLElement>('.d-voice-row__people');
+    if (list === null) throw new Error('GlyphInset: no people list');
+    const edge = list.getBoundingClientRect().right - 8;
+    for (const person of Array.from(list.querySelectorAll<HTMLElement>('.d-voice-row__person'))) {
+      const glyphs = Array.from(person.querySelectorAll<HTMLElement>('.d-slot .d-voice-row__state')).map(g => g.getBoundingClientRect());
+      for (const [i, r] of glyphs.entries()) {
+        if (r.right > edge + 1) throw new Error(`GlyphInset: a glyph ends at ${String(r.right)}, past the inset edge ${String(edge)}`);
+        if (i > 0 && r.left < glyphs[i - 1].right - 0.5) throw new Error('GlyphInset: two glyphs overlap');
+      }
+      if (glyphs.length > 0 && Math.abs(glyphs[glyphs.length - 1].right - edge) > 1) throw new Error(`GlyphInset: the right edge is ${String(glyphs[glyphs.length - 1].right)}, not ${String(edge)}`);
+    }
+  },
+};
 export const JoinedCurrent: Story = {
   args: { current: true, joined: true, participants: [person('ada', { speaking: true }), person('bo', { muted: true }), person('you')] },
 };

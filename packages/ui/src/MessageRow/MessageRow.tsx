@@ -44,8 +44,6 @@ export interface MessageRowProps {
   grouped?: boolean;
   /** The grouped row's gutter time, compact enough for the avatar column and its gap (the full `time` stays for screen readers). */
   gutterTime?: string;
-  /** `hover`: the device tag shows only while the row is hovered or holds focus. Default `always`. */
-  deviceTag?: 'always' | 'hover';
   /** Phone only: the toolbar is rendered only while revealed. Off a phone the toolbar is always rendered. */
   revealed?: boolean;
   /** Phone only: a tap on the row body or Enter on the row asks to reveal (true); Escape or a second tap asks to hide (false). */
@@ -107,7 +105,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  */
 export function MessageRow({
   author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, deviceTag, revealed, onReveal,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -158,7 +156,7 @@ export function MessageRow({
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId}>
           <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>{author}</span>
-          {tag ? (deviceTag === 'hover' ? <span className="d-message-row__tag" data-reveal="hover"><Tag kind={tag} /></span> : <Tag kind={tag} />) : null}
+          {tag && grouped !== true ? <Tag kind={tag} /> : null}
           <span className={grouped === true ? 'd-message-row__time d-sr-only' : 'd-message-row__time'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}
           {pinnedLabel !== undefined ? <span className="d-message-row__pinned">{pinnedLabel}</span> : null}

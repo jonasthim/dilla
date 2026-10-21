@@ -51,9 +51,9 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
 
 /**
  * A voice channel in the sidebar, on the same grammar as ChannelRow (R10-R13): the volume-2 glyph, the name with its
- * count after it (`harbour · 3`), then one trailing slot that holds the connected glyph when this device is in it. The
+ * count after it (`harbour · 3`), then one trailing slot (empty when this device is in the call: the joined row shows no phone and no accent, only a bold full-strength name, as Discord's). The
  * join icon is a sibling drawn over that slot (a button cannot sit inside the row's button), shown while the row is
- * hovered or focused and always on a device without hover; never both it and the connected glyph. Under the row, one
+ * hovered or focused and always on a device without hover; never on the channel you are in. Under the row, one
  * sub-row per person (R25, A7) at `--row-h-sub`, indented so the avatar starts at the name's x, with the speaking ring on
  * the avatar (the only visible speaking mark, WEB-DOCK; the word stays for assistive technology) and the mute and deafen glyphs in the slot. The row and its parts are siblings, so the button stays the first
  * element of a list item (the roving lists find it there); a caller outside ChannelList wraps them in `.d-voice-item`.
@@ -74,9 +74,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
         </span>
         {n > 0 ? <span id={countId} className="d-sr-only">{labels.count.replaceAll('{n}', String(n))}</span> : null}
         {readable === true ? <Tag kind="readable" /> : null}
-        <TrailingSlot>
-          {joined ? <span className="d-voice-row__connected" aria-hidden="true"><Icon name="phone" size={14} /></span> : null}
-        </TrailingSlot>
+        <TrailingSlot />
       </button>
       {onJoin !== undefined && !joined ? (
         <span className="d-voice-row__join">

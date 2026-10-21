@@ -55,7 +55,7 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour');
   });
 
-  it('the trailing slot holds the join icon button or, when joined, the connected glyph, never both', async () => {
+  it('the trailing slot holds the join icon button; when joined (in the call) the row has no phone glyph and no join icon', async () => {
     const onJoin = vi.fn();
     const { container, rerender } = render(<VoiceChannelRow {...base} onJoin={onJoin} />);
     const join = screen.getByRole('button', { name: 'join voice' });
@@ -66,8 +66,9 @@ describe('VoiceChannelRow', () => {
     rerender(<VoiceChannelRow {...base} joined onJoin={onJoin} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
     const slot = container.querySelector('.d-voice-row > .d-slot') as HTMLElement;
-    expect(slot.children).toHaveLength(1);
-    expect(slot.querySelector('.d-voice-row__connected svg')).toHaveAttribute('data-icon', 'phone');
+    expect(slot.children).toHaveLength(0);
+    expect(container.querySelector('.d-voice-row__connected')).toBeNull();
+    expect(container.querySelector('.d-voice-row')).toHaveAttribute('data-joined', 'true');
     rerender(<VoiceChannelRow {...base} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });

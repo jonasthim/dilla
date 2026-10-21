@@ -322,15 +322,15 @@ describe('MessageRow mention colour dot', () => {
     });
   });
 
-  describe('deviceTag (G2)', () => {
-    it('marks the web tag hover-only', () => {
-      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" deviceTag="hover" />);
-      expect(screen.getByText('web').closest('.d-message-row__tag')).toHaveAttribute('data-reveal', 'hover');
-      expect(container.querySelector('article')).not.toBeNull();
-    });
-    it('keeps the tag always shown by default', () => {
-      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" />);
+  describe('device tag (V4)', () => {
+    it('shows the web tag always, with no hover wrapper', () => {
+      const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" />);
       expect(screen.getByText('web').closest('.d-message-row__tag')).toBeNull();
+      expect(container.querySelector('[data-reveal]')).toBeNull();
+    });
+    it('shows no tag on a grouped row', () => {
+      render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" tag="web" grouped />);
+      expect(screen.queryByText('web')).toBeNull();
     });
   });
 

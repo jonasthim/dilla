@@ -220,6 +220,11 @@ describe('VoiceDock (R26)', () => {
     expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*display: flex/);
   });
 
+  it('V3: camera, share and leave sit together at the right end, with no auto margin on leave (CSS pin)', () => {
+    expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*justify-content: flex-end/);
+    expect(css).not.toMatch(/margin-left: auto/);
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...dock} onStatus={() => {}} camera canShare={false} /></div>);

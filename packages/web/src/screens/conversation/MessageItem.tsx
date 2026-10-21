@@ -103,7 +103,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
-    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal} deviceTag={item.web && !item.bot ? 'hover' : 'always'}
+    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
