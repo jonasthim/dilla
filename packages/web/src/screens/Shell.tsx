@@ -359,9 +359,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       setSearchRequest(search.requestId);
     }
   }, [searchOpen, search]);
-  const startSearch = (scope: 'channel' | 'all') => {
+  // A button that opens search passes itself as `from`, so focus returns to it on close whatever a tap did to focus (iOS does not focus a tapped button).
+  const startSearch = (scope: 'channel' | 'all', from?: HTMLElement) => {
     const active = document.activeElement;
-    searchOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    searchOpener.current = from ?? (active instanceof HTMLElement && active !== document.body ? active : null);
     setSearchScope(scope);
     setSearchQuery('');
     setSearchOpen(true);
@@ -1047,17 +1048,28 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       setPickerOpen(true);
     };
     // H2, N2: the DM list's one action lives in its 48 head (a square-pen) on every layout, not in a footer row of its own.
-    const headerAction = onDms ? <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} /> : !voiceHere ? undefined : (
+    // E2: a touch device has no Control+K, so its list heads carry search, Home's too: the phone layout, and a desktop window
+    // whose pointer is coarse (a touch tablet). A fine pointer keeps the desktop heads as they were (the gear alone on a server).
+    // The "+" and the gear stay a server's.
+    const touchHere = phone || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+    const headerAction = onDms ? (
       <>
-        {canManageChannels && categoryRows.length === 0 ? (
+        {touchHere ? <IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} /> : null}
+        <IconButton icon="square-pen" {...(phone ? {} : { size: 28 })} label={t('shell.dms.new')} onClick={openDmPicker} />
+      </>
+    ) : !voiceHere && !touchHere ? undefined : (
+      <>
+        {voiceHere && canManageChannels && categoryRows.length === 0 ? (
           <IconButton icon="plus" size={28} label={t('create.channel.open')} onClick={() => { setChannelParent(null); setChannelOpen(true); }} />
         ) : null}
-        {phone ? (
-          <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={() => startSearch('all')}>
+        {touchHere ? (
+          <Button variant="ghost" className="d-channel-list__head-btn" aria-label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)}>
             <Icon name={SEARCH} size={18} /></Button>
         ) : null}
-        <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
-          <Icon name={SETTINGS} size={18} /></Button>
+        {voiceHere ? (
+          <Button variant="ghost" className="d-channel-list__head-btn" data-admin-open="" aria-label={t('admin.open')} onClick={() => openAdmin('overview')}>
+            <Icon name={SETTINGS} size={18} /></Button>
+        ) : null}
       </>
     );
     sidebar = (<div className="dw-sidebar">
@@ -1221,7 +1233,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     ? { label: t('nav.call.open', { where: callWhere(call.channelId) }), onOpen: () => { if (callTarget !== null) navigate(callTarget); } } : undefined;
   const dotProp = dot === undefined ? {} : { dot };
   const dmCall = dm !== null ? dmCallStart(voiceCtx, dm.id) : null;
-  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot} /> : null) : channel !== null
+  // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
+  const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} dot={dot}
+    actions={<IconButton icon="search" label={t('search.open')} onClick={e => startSearch('all', e.currentTarget)} />} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
