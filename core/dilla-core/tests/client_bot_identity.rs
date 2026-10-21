@@ -334,3 +334,191 @@ fn opening_refuses_bot_pending_metadata_mixed_with_human_enrolment() {
     };
     assert_eq!(error.code, "E_CORE_STATE");
 }
+
+#[test]
+fn corrupted_pending_bot_signature_refuses_retry_and_reopen_without_mutating_state() {
+    let connection = conn();
+    let mut core = ClientCore::open(connection.clone()).expect("open");
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .expect("bot begin");
+
+    let original = {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .query_row("SELECT v FROM app_meta WHERE k='bot_pending'", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("pending row")
+    };
+    let mut d = Decoder::new(&original);
+    d.array(12).expect("pending record");
+    assert_eq!(d.uint().expect("version"), 1);
+    let instance = d.bytes_exact::<16>().expect("instance");
+    let community = d.bytes_exact::<16>().expect("community");
+    let installation = d.bytes_exact::<16>().expect("installation");
+    let device_id = d.bytes_exact::<16>().expect("device id");
+    let dsk = d.bytes_exact::<32>().expect("dsk");
+    let umk = d.bytes_exact::<32>().expect("umk");
+    let ssk = d.bytes_exact::<32>().expect("ssk");
+    let umk_signature = d.bytes_exact::<64>().expect("umk signature");
+    let mut device_signature = d.bytes_exact::<64>().expect("device signature");
+    device_signature[0] ^= 1;
+    let ssk_private = d.bytes_exact::<32>().expect("ssk private");
+    let backup_key = d.bytes_exact::<32>().expect("backup key");
+    d.finish().expect("pending record end");
+    let mut e = Encoder::new();
+    e.array(12)
+        .uint(1)
+        .bytes(&instance)
+        .bytes(&community)
+        .bytes(&installation)
+        .bytes(&device_id)
+        .bytes(&dsk)
+        .bytes(&umk)
+        .bytes(&ssk)
+        .bytes(&umk_signature)
+        .bytes(&device_signature)
+        .bytes(&ssk_private)
+        .bytes(&backup_key);
+    let corrupted = e.into_vec();
+    {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='bot_pending'",
+                [&corrupted],
+            )
+            .expect("corrupt pending signature");
+    }
+
+    let retry_error = match core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION) {
+        Err(error) => error,
+        Ok(body) => panic!("retry unexpectedly returned {} bytes", body.len()),
+    };
+    assert_eq!(retry_error.code, "E_CORE_STATE");
+    let error = match ClientCore::open(connection.clone()) {
+        Ok(_) => panic!("reopen rejects bad signature"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "E_CORE_STATE");
+    let persisted = {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .query_row("SELECT v FROM app_meta WHERE k='bot_pending'", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("pending row remains")
+    };
+    assert_eq!(persisted, corrupted);
+
+    let mut d = Decoder::new(&original);
+    d.array(12).expect("pending record");
+    let mut e = Encoder::new();
+    e.array(12).uint(d.uint().expect("version"));
+    for _ in 0..9 {
+        e.bytes(d.bytes().expect("public pending field"));
+    }
+    let mut bad_ssk_private = d.bytes_exact::<32>().expect("ssk private");
+    bad_ssk_private[0] ^= 1;
+    e.bytes(&bad_ssk_private)
+        .bytes(d.bytes().expect("backup key"));
+    d.finish().expect("pending record end");
+    let corrupted_private_key = e.into_vec();
+    {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .execute(
+                "UPDATE app_meta SET v=?1 WHERE k='bot_pending'",
+                [&corrupted_private_key],
+            )
+            .expect("corrupt pending private key");
+    }
+    let error = match ClientCore::open(connection.clone()) {
+        Ok(_) => panic!("reopen rejects mismatched SSK key pair"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "E_CORE_STATE");
+    let persisted = {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .query_row("SELECT v FROM app_meta WHERE k='bot_pending'", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("pending row remains")
+    };
+    assert_eq!(persisted, corrupted_private_key);
+}
+
+#[test]
+fn reopening_rejects_ready_bot_umk_mismatch_without_mutating_state() {
+    let connection = conn();
+    let mut core = ClientCore::open(connection.clone()).expect("open");
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .expect("bot begin");
+    core.bot_bootstrap_complete(&USER, "music-bot", 1)
+        .expect("bot complete");
+    drop(core);
+
+    let original = {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .query_row("SELECT v FROM app_meta WHERE k='identity'", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("identity row")
+    };
+    let mut d = Decoder::new(&original);
+    d.array(13).expect("ready identity");
+    assert_eq!(d.uint().expect("version"), 2);
+    let instance = d.bytes_exact::<16>().expect("instance");
+    let user = d.bytes_exact::<16>().expect("user");
+    let device = d.bytes_exact::<16>().expect("device");
+    let dsk = d.bytes_exact::<32>().expect("dsk");
+    let mut umk = d.bytes_exact::<32>().expect("umk");
+    umk[0] ^= 1;
+    let ssk = d.bytes_exact::<32>().expect("ssk");
+    let username = d.text().expect("username").to_owned();
+    let credential = d.bytes().expect("credential").to_vec();
+    let list_body = d.bytes().expect("list body").to_vec();
+    let list_published = d.uint().expect("published flag");
+    let device_list = d.bytes().expect("device list").to_vec();
+    let state_uploaded = d.uint().expect("uploaded flag");
+    d.finish().expect("identity end");
+    let mut e = Encoder::new();
+    e.array(13)
+        .uint(2)
+        .bytes(&instance)
+        .bytes(&user)
+        .bytes(&device)
+        .bytes(&dsk)
+        .bytes(&umk)
+        .bytes(&ssk)
+        .text(&username)
+        .bytes(&credential)
+        .bytes(&list_body)
+        .uint(list_published)
+        .bytes(&device_list)
+        .uint(state_uploaded);
+    let corrupted = e.into_vec();
+    {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .execute("UPDATE app_meta SET v=?1 WHERE k='identity'", [&corrupted])
+            .expect("corrupt outer UMK");
+    }
+
+    let error = match ClientCore::open(connection.clone()) {
+        Ok(_) => panic!("reopen rejects mismatched ready UMK"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "E_CORE_STORAGE");
+    let persisted = {
+        let guard = connection.lock().expect("connection lock");
+        guard
+            .query_row("SELECT v FROM app_meta WHERE k='identity'", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("identity row remains")
+    };
+    assert_eq!(persisted, corrupted);
+}

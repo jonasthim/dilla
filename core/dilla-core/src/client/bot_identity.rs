@@ -58,7 +58,7 @@ impl PendingBot {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ClientError> {
-        decode_strict(bytes, |d| {
+        let record = decode_strict(bytes, |d| {
             d.array(12)?;
             if d.uint()? != 1 {
                 return Err(shape());
@@ -79,7 +79,22 @@ impl PendingBot {
                 k_backup: Zeroizing::new(d.bytes_exact()?),
             })
         })
-        .map_err(|_| malformed(schema::BOT_PENDING))
+        .map_err(|_| malformed(schema::BOT_PENDING))?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    fn validate(&self) -> Result<(), ClientError> {
+        let invalid = || ClientError::new(E_CORE_STATE, "pending bot identity does not verify");
+        if !nonzero_ids(&self.binding) || self.device_id == [0; 16] {
+            return Err(invalid());
+        }
+        if SskSigner::from_bytes(&self.ssk_priv).public() != self.ssk_pub {
+            return Err(invalid());
+        }
+        self.placeholder_credential()
+            .verify_signatures(&self.dsk_pub)
+            .map_err(|_| invalid())
     }
 
     fn placeholder_credential(&self) -> CredentialIdentity {
@@ -260,7 +275,8 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
     let credential =
         CredentialIdentity::decode(&rec.credential).map_err(|_| malformed(schema::IDENTITY))?;
     validate_bot_credential(&credential, &rec.dsk_pub, &rec.ssk_pub)?;
-    if credential.user_id.as_bytes() != &rec.user_id
+    if credential.umk_pub != rec.umk_pub
+        || credential.user_id.as_bytes() != &rec.user_id
         || credential.device_id.as_bytes() != &rec.device_id
     {
         return Err(malformed(schema::IDENTITY));
@@ -269,7 +285,11 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
         .map_err(|_| malformed(schema::IDENTITY))?;
     let list = DeviceList::decode(&body.blob).map_err(|_| malformed(schema::IDENTITY))?;
     list.verify(&rec.ssk_pub)?;
-    if list.unsigned.user_id.as_bytes() != &rec.user_id
+    if body.version != list.unsigned.version
+        || body.ssk_signature != list.sig_ssk
+        || body.prev_hash != list.unsigned.prev_hash
+        || rec.device_list != list.encode()
+        || list.unsigned.user_id.as_bytes() != &rec.user_id
         || list.unsigned.entries.len() != 1
         || list.unsigned.entries[0].device_id.as_bytes() != &rec.device_id
         || list.unsigned.entries[0].dsk_pub != rec.dsk_pub
@@ -364,9 +384,7 @@ impl ClientCore {
                         ssk_priv: ssk_seed,
                         k_backup: random::<32>(ctx.provider)?,
                     };
-                    pending
-                        .placeholder_credential()
-                        .verify_signatures(&dsk_pub)?;
+                    pending.validate()?;
                     let body = pending.registration();
                     let encoded = pending.encode();
                     u.with_conn(|c| schema::meta_put(c, schema::BOT_PENDING, &encoded))?;
