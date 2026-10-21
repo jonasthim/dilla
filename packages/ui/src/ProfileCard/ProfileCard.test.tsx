@@ -39,6 +39,24 @@ describe('ProfileCard content', () => {
     expect(screen.getByText('in a meeting')).toBeInTheDocument();
   });
 
+  it('shows the bio under the head, labelled, keeping its line breaks, and nothing when there is none', () => {
+    const { rerender } = render(<ProfileCard {...props({ bio: 'line one\nline two', bioLabel: 'about' })} />);
+    const card = screen.getByRole('dialog');
+    const about = within(card).getByRole('group', { name: 'about' });
+    expect(about).toHaveTextContent('line one line two');
+    expect(about.querySelector('.d-profile-card__bio')?.textContent).toBe('line one\nline two');
+    expect(css).toMatch(/\.d-profile-card__bio[^}]*white-space: pre-wrap/);
+    rerender(<ProfileCard {...props()} />);
+    expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
+    rerender(<ProfileCard {...props({ bio: '' })} />);
+    expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
+  });
+
+  it('labels the bio "about" by default', () => {
+    render(<ProfileCard {...props({ bio: 'hello' })} />);
+    expect(screen.getByRole('group', { name: 'about' })).toHaveTextContent('hello');
+  });
+
   it('shows owner and you when they apply, and neither when they do not', () => {
     const { rerender } = render(<ProfileCard {...props()} />);
     const card = screen.getByRole('dialog');
@@ -262,7 +280,7 @@ describe('ProfileCard accessibility', () => {
   it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, as popover and as sheet', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const layout of ['popover', 'sheet'] as const) {
-      const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting' })} /></div>);
+      const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting', bio: 'line one\nline two' })} /></div>);
       await expectNoAxeViolations(container);
       unmount();
     }

@@ -99,3 +99,31 @@ describe('TextField initial focus', () => {
     expect(screen.getByRole('textbox', { name: 'role name' })).not.toHaveAttribute('data-autofocus');
   });
 });
+
+describe('TextField multiline', () => {
+  it('renders a textarea with the label, description, row count and length cap, and reports edits', async () => {
+    const user = userEvent.setup();
+    const onValue = vi.fn();
+    const { container } = render(<Controlled id="bio" label="Bio" multiline rows={4} maxLength={500} hint="Shown on your card." onValue={onValue} />);
+    const area = screen.getByRole('textbox', { name: 'Bio' });
+    expect(area.tagName).toBe('TEXTAREA');
+    expect(area).toHaveAttribute('rows', '4');
+    expect(area).toHaveAttribute('maxlength', '500');
+    expect(area).toHaveAccessibleDescription('Shown on your card.');
+    expect(area).toHaveClass('d-text-field__input');
+    expect(container.querySelector('input')).toBeNull();
+    await user.type(area, 'one{Enter}two');
+    expect(area).toHaveValue('one\ntwo');
+    expect(onValue).toHaveBeenLastCalledWith('one\ntwo');
+  });
+
+  it('is an input when multiline is not set', () => {
+    render(<TextField id="n" label="Name" value="" onChange={() => {}} />);
+    expect(screen.getByRole('textbox', { name: 'Name' }).tagName).toBe('INPUT');
+  });
+
+  it('has no serious axe violations as a textarea with an error', async () => {
+    const { container } = render(<div className="d-root"><TextField id="bio" label="Bio" value="x" onChange={() => {}} multiline error="Too long." /></div>);
+    await expectNoAxeViolations(container);
+  });
+});

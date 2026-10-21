@@ -16,17 +16,20 @@ export interface TextFieldProps {
   inputMode?: 'text' | 'numeric';
   maxLength?: number;
   spellCheck?: boolean;
+  /** A several-line field: a `textarea` of `rows` rows (default 3) in place of the input. Line breaks are kept. */
+  multiline?: boolean;
+  rows?: number;
   /** Marks the input `data-autofocus`: a Dialog around it opens on this field. */
   initialFocus?: boolean;
 }
 
 /**
- * A labelled single-line field. The hint and the error are the input's
+ * A labelled single-line field (several lines with `multiline`). The hint and the error are the input's
  * description, in that order; an error marks the field invalid and is
  * announced as an alert. Paste, copy and cut are never intercepted (WCAG 3.3.8).
  */
 export function TextField({
-  id, label, value, onChange, type, hint, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, initialFocus,
+  id, label, value, onChange, type, hint, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, multiline, rows, initialFocus,
 }: TextFieldProps) {
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -35,11 +38,19 @@ export function TextField({
   return (
     <div className="d-text-field" data-invalid={error ? 'true' : undefined}>
       <label className="d-text-field__label" htmlFor={id}>{label}</label>
-      <input id={id} className="d-text-field__input" type={type ?? 'text'} value={value}
-        onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
-        aria-invalid={error ? true : undefined} required={required} disabled={disabled} readOnly={readOnly}
-        autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck}
-        data-autofocus={initialFocus ? '' : undefined} />
+      {multiline ? (
+        <textarea id={id} className="d-text-field__input" value={value} rows={rows ?? 3}
+          onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
+          aria-invalid={error ? true : undefined} required={required} disabled={disabled} readOnly={readOnly}
+          autoComplete={autoComplete} maxLength={maxLength} spellCheck={spellCheck}
+          data-autofocus={initialFocus ? '' : undefined} />
+      ) : (
+        <input id={id} className="d-text-field__input" type={type ?? 'text'} value={value}
+          onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
+          aria-invalid={error ? true : undefined} required={required} disabled={disabled} readOnly={readOnly}
+          autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck}
+          data-autofocus={initialFocus ? '' : undefined} />
+      )}
       {hint ? <p id={hintId} className="d-text-field__hint">{hint}</p> : null}
       {error ? <p id={errorId} className="d-text-field__error" role="alert">{error}</p> : null}
     </div>

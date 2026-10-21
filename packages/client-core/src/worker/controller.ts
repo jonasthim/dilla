@@ -284,8 +284,10 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
 ]);
 /** The account's user entry with its profile read from `me`: the status message and bio only when set. */
 function profileOf(user: NonNullable<AccountState['user']>, me: { display: string; statusMsg?: string; bio?: string }): NonNullable<AccountState['user']> {
-  const { statusMsg: _status, bio: _bio, ...rest } = user;
-  return { ...rest, display: me.display, ...(me.statusMsg ? { statusMsg: me.statusMsg } : {}), ...(me.bio ? { bio: me.bio } : {}) };
+  const next = { ...user, display: me.display };
+  if (me.statusMsg) next.statusMsg = me.statusMsg; else delete next.statusMsg;
+  if (me.bio) next.bio = me.bio; else delete next.bio;
+  return next;
 }
 
 const ID = /^[0-9a-f]{32}$/;

@@ -17,6 +17,8 @@ export interface ProfileCardProps {
   presence?: Presence;
   /** A custom status, drawn after the presence word. */
   status?: string;
+  /** The member's bio, drawn under the head with its line breaks; nothing when empty. */
+  bio?: string;
   isOwner?: boolean;
   isYou?: boolean;
   roles: readonly ProfileCardRole[];
@@ -30,6 +32,8 @@ export interface ProfileCardProps {
   layout?: 'popover' | 'sheet';
   /** A popover's side: `side` (default) beside a member row, `below` under a mention or an author name (above when there is no room below). */
   placement?: 'side' | 'below';
+  /** The bio's name for assistive technology. */
+  bioLabel?: string;
   ownerLabel?: string;
   youLabel?: string;
   rolesLabel?: string;
@@ -51,8 +55,8 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  * room, else right); on a phone it is a modal sheet from the bottom over a scrim.
  */
 export function ProfileCard({
-  name, username, presence, status, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
-  ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
+  name, username, presence, status, bio, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
+  bioLabel = 'about', ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
@@ -158,6 +162,7 @@ export function ProfileCard({
         </div>
         <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>
       </div>
+      {bio ? <div className="d-profile-card__about" role="group" aria-label={bioLabel}><p className="d-profile-card__bio">{bio}</p></div> : null}
       {isOwner || isYou ? (
         <p className="d-profile-card__marks">
           {isOwner ? <span className="d-profile-card__mark"><Icon name="crown" size={14} />{ownerLabel}</span> : null}
