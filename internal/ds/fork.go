@@ -48,7 +48,7 @@ func (d *DS) ForkReport(ctx context.Context, s Session, groupID id.ID, epoch, se
 	// its one refusal, and `requireMember` is what answers it: a device that is not in the group
 	// learns nothing about it, and cannot spend the instance's fork_reports rows on a group it
 	// was never in.
-	if err := d.requireMember(ctx, groupID, s); err != nil {
+	if err := d.requireMemberOnly(ctx, groupID, s); err != nil {
 		return err
 	}
 	// `seq` is bounded by the group's own log BEFORE anything is written. A client cannot have
@@ -72,6 +72,9 @@ func (d *DS) ForkReport(ctx context.Context, s Session, groupID id.ID, epoch, se
 	}
 	if seq == 0 || seq > row.Seq {
 		return errNotFound("handshake")
+	}
+	if err := d.requireGroupCapability(ctx, s, row); err != nil {
+		return err
 	}
 	if err := d.opts.Store.PutForkReport(ctx, store.ForkReportRow{
 		GroupID:        groupID,

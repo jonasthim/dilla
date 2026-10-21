@@ -199,13 +199,13 @@ func (d *DS) Messages(ctx context.Context, groupID id.ID, session Session, from 
 // before anything else is read (L-HTTP-80, requireMember's reasoning), so the route says nothing
 // about a group to a device outside it.
 func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq uint64) error {
+	if err := d.requireMemberOnly(ctx, groupID, s); err != nil {
+		return err
+	}
 	// A seq no group can have reached is no message. Left alone it wraps negative in the store
 	// adapters, which is a lookup that happens to miss today and a wrong row the day it does not.
 	if seq > math.MaxInt64 {
 		return errNotFound("message")
-	}
-	if err := d.requireMember(ctx, groupID, s); err != nil {
-		return err
 	}
 	row, err := d.opts.Store.GetAppMessage(ctx, groupID, seq)
 	if errors.Is(err, store.ErrNotFound) {
@@ -220,6 +220,16 @@ func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq ui
 	}
 	if uploader.UserID != s.UserID {
 		return errNotUploader()
+	}
+	group, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errNotFound("group")
+	}
+	if err != nil {
+		return err
+	}
+	if err := d.requireGroupCapability(ctx, s, group); err != nil {
+		return err
 	}
 	at := d.now()
 	if err := d.opts.Store.TombstoneAppMessage(ctx, groupID, seq, at); err != nil {

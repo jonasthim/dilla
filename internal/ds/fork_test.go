@@ -23,12 +23,14 @@ package ds_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -251,6 +253,48 @@ func TestAForkReportOfSeqZeroIsRefusedOnTheFirstReport(t *testing.T) {
 	}
 	if n := h.countForkReporters(t, g, 0); n != 0 {
 		t.Fatalf("fork reporters = %d, want 0", n)
+	}
+}
+
+func TestForkReportPreservesSequenceRefusalsBeforeCapabilityGate(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 4)
+	seq := h.seedHandshake(t, g, &g.members[0], &g.leaves[0])
+	h.repo.markInteraction(g.id)
+	ctx := context.Background()
+
+	for _, wireVersion := range []uint64{0, 2} {
+		t.Run(fmt.Sprintf("wire_%d", wireVersion), func(t *testing.T) {
+			session := g.sessionOf(1)
+			session.WireVersion = wireVersion
+			for _, invalidSeq := range []uint64{0, seq + 1} {
+				err := h.ds.ForkReport(ctx, session, g.id, g.epoch(t), invalidSeq, "cannot process")
+				var dsErr *ds.Error
+				if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" {
+					t.Fatalf("invalid seq %d report = %v, want E_NOT_FOUND", invalidSeq, err)
+				}
+				if n := h.countForkReporters(t, g, invalidSeq); n != 0 {
+					t.Fatalf("invalid seq %d wrote %d fork reports", invalidSeq, n)
+				}
+			}
+			err := h.ds.ForkReport(ctx, session, g.id, g.epoch(t), seq, "cannot process")
+			var upgrade *capability.UpgradeRequired
+			if !errors.As(err, &upgrade) {
+				t.Fatalf("valid target report = %v, want typed upgrade refusal", err)
+			}
+			if n := h.countForkReporters(t, g, seq); n != 0 {
+				t.Fatalf("wire %d refusal wrote %d fork reports", wireVersion, n)
+			}
+		})
+	}
+
+	wireThree := g.sessionOf(1)
+	wireThree.WireVersion = 3
+	if err := h.ds.ForkReport(ctx, wireThree, g.id, g.epoch(t), seq, "cannot process"); err != nil {
+		t.Fatalf("wire 3 report: %v", err)
+	}
+	if n := h.countForkReporters(t, g, seq); n != 1 {
+		t.Fatalf("wire 3 reports = %d, want 1", n)
 	}
 }
 
