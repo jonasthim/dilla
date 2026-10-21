@@ -3,6 +3,7 @@ package server
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -77,8 +78,12 @@ const (
 //     socket created for an Allocate that passed the auth handler just before a cut is refused
 //     when it is tracked (track), so a cut leaves no socket of an earlier credential open.
 //   - The floor starts at the process start (re-review N3): the cuts are held in memory only, so
-//     every credential minted before this process started is refused. A restart drops every call
-//     anyway (the SFU is in-process); clients re-POST the calls route for a fresh credential.
+//     every credential minted before this process started is refused, and a cut forgotten with the
+//     process can never be bypassed. The relay's process is the one that also runs the SFU — the
+//     in-process SFU in `dillad serve`, or `dillad media` beside it (R-UP11) — so a relay restart
+//     has ended the calls it carried; clients that rejoin re-POST the calls route for a fresh
+//     credential. An API-only restart does not restart a relay in `dillad media`: its cuts and its
+//     floor stay, and the API replays its own cuts into it (MergeCuts).
 //   - Mint chooses a credential's issue time under the lock Revoke takes, so every cut is ordered
 //     before or after it. It refuses — no credential, and the call route answers a transient 429 —
 //     when the device has a live cut in the current millisecond or since the request began, which
@@ -630,6 +635,12 @@ func (r *RelayRevocations) track(dev string, c *countingConn) bool {
 	if at, cut := r.liveCutLocked(dev); cut && (!havePending || p.minIssued <= at) {
 		return false
 	}
+	// The issue time a later merged cut judges this socket by (MergeCuts): the oldest of the
+	// pending Allocates', or 0 — covered by every cut — when there is none to tell.
+	c.issued = 0
+	if havePending {
+		c.issued = p.minIssued
+	}
 	set := r.socks[dev]
 	if set == nil {
 		set = map[*countingConn]struct{}{}
@@ -697,4 +708,110 @@ func (c *barredCache) put(dev string, bar bool, until time.Time) {
 			delete(c.m, ent.dev)
 		}
 	}
+}
+
+// RelayCut is one cut as the control sockets carry it (R-UP11): a device and the unix millisecond
+// every credential of it issued at or before is refused from.
+type RelayCut struct {
+	Device string `json:"device"`
+	At     int64  `json:"at"`
+}
+
+// MergeCuts folds cuts into the cut map (R-UP11): the union of both, keeping the later cut time per
+// device. It never removes an entry and never lowers a time; only the relay's own expiry
+// (turn.max_allocation_age after a cut) drops one. A cut time ahead of the clock is taken as now,
+// as Revoke takes it, and a cut that has already expired adds nothing. A merged cut closes the
+// device's relay sockets its time covers — those of a credential issued at or before it — and
+// leaves the ones of a newer credential, so a replay of an old set never ends a rejoined device's
+// relay. A cut that finds the map full raises the floor instead, as Revoke does: fail closed.
+//
+// Every cut is recorded, whatever the mint record says: in `dillad media` the mints happen in
+// another process, so the relay cannot tell which devices hold a credential. The cuts come only
+// from the API over media.sock (the dillad uid) and are bounded by maxRelayCuts like any other.
+// A malformed cut refuses the whole merge before anything is applied.
+func (r *RelayRevocations) MergeCuts(cuts []RelayCut) error {
+	for _, c := range cuts {
+		if _, err := id.Parse(c.Device); err != nil {
+			return fmt.Errorf("relay cut: device %q: %w", c.Device, err)
+		}
+		if c.At <= 0 {
+			return fmt.Errorf("relay cut: device %s: cut time %d is not a unix millisecond", c.Device, c.At)
+		}
+	}
+	now := r.clk.Now().UnixMilli()
+	var closing []*countingConn
+	overflowed := 0
+	r.mu.Lock()
+	for _, c := range cuts {
+		at := min(c.At, now)
+		if now > at+r.keep {
+			continue
+		}
+		prev, had := r.cuts[c.Device]
+		if had && prev >= at {
+			continue
+		}
+		if !had && len(r.cuts) >= min(relayCutsWarn, r.maxCuts) {
+			r.dropExpiredCutsLocked()
+		}
+		if !had && len(r.cuts) >= r.maxCuts {
+			r.floor = max(r.floor, at)
+			r.overflows++
+			overflowed++
+		} else {
+			r.cuts[c.Device] = at
+			if r.scanned {
+				r.nextExpiry = min(r.nextExpiry, at+r.keep)
+			}
+		}
+		for conn := range r.socks[c.Device] {
+			if conn.issued <= at {
+				closing = append(closing, conn)
+			}
+		}
+	}
+	size := len(r.cuts)
+	count := r.overflowed
+	r.mu.Unlock()
+	for _, conn := range closing {
+		_ = conn.Close() // untracks itself
+	}
+	switch {
+	case overflowed > 0:
+		if count != nil {
+			for range overflowed {
+				count()
+			}
+		}
+		r.warn("the relay's cut map is full; every credential issued up to this cut is refused for every device, which re-fetch theirs",
+			"cuts", size)
+	case size > relayCutsWarn:
+		r.warn("the relay holds more cuts than expected within one turn.max_allocation_age", "cuts", size)
+	}
+	return nil
+}
+
+// CutOf is device's own live cut time (unix milliseconds) and whether it has one; the floor is not
+// counted.
+func (r *RelayRevocations) CutOf(device string) (int64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.cuts[device]
+	if ok && r.clk.Now().UnixMilli() > at+r.keep {
+		return 0, false
+	}
+	return at, ok
+}
+
+// RelayRevocationsState is what GET /relay/state reports of the cut map.
+type RelayRevocationsState struct {
+	Cuts  int   `json:"cuts"`
+	Floor int64 `json:"floor"`
+}
+
+// State is the cut map's size and the floor (unix milliseconds; 0: none).
+func (r *RelayRevocations) State() RelayRevocationsState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return RelayRevocationsState{Cuts: len(r.cuts), Floor: r.floor}
 }

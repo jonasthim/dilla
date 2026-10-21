@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -285,13 +286,39 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 	defer stopSFU()
 
+	// Who serves TURN (R-UP11), decided once the SFU answers: dilla-media when its media.json lists
+	// "turn", else this process. When dilla-media does, every cut is applied to relayRev first — Mint
+	// stays ordered against it under that one lock — and forwarded to the media relay over
+	// media.sock, and a cut device stays pending (503) until the relay acknowledges its cut.
+	plan := planTURN(ctx, cfg, log)
+	fd.turn = &plan
+	var relayStarted atomic.Pointer[server.TURN]
+	fd.started = &relayStarted
+	var callRelay api.RelayRevoker = relayRev
+	if plan.media {
+		fwd := server.NewRelayRevoker(relayRev,
+			server.ControlClient(server.ControlSocketPath(cfg.Instance.DataDir, server.MediaSocketName)),
+			max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value()), clock.System(), log)
+		fwdCtx, stopFwd := context.WithCancel(context.Background())
+		fwdDone := make(chan struct{})
+		go func() {
+			defer close(fwdDone)
+			fwd.Run(fwdCtx)
+		}()
+		defer func() {
+			stopFwd()
+			<-fwdDone
+		}()
+		callRelay = fwd
+	}
+
 	// The composition root mounts every route of both plans. It shares serve's blob store, the one
 	// the sweeper above collects from, and the SFU when there is one: a nil *sfu.Server must not
 	// become a non-nil dillad.SFU.
 	opts := dillad.Options{
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
-		Blobs: blobStore, Relay: relayRev,
+		Blobs: blobStore, Relay: callRelay,
 	}
 	if callSFU != nil {
 		opts.SFU = callSFU
@@ -308,6 +335,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 	webhookServed = true
 	defer stopWebhook()
+	// api.sock (R-UP11): dilla-media's barred lookup and `dillad media --idle`'s recent mints.
+	if cfg.LiveKit.Enabled && cfg.LiveKit.Mode == "sidecar" {
+		defer serveAPISocket(ctx, cfg, srv, relayRev, &relayStarted, log)()
+	}
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

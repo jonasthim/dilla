@@ -336,10 +336,15 @@ func (g *countingRelay) dropPending(user string) {
 // revocation state; Close forgets the socket in both.
 type countingConn struct {
 	net.PacketConn
-	m         TURNMetrics
-	peers     *relayPeers
-	dev       string
-	rev       *RelayRevocations
+	m     TURNMetrics
+	peers *relayPeers
+	dev   string
+	rev   *RelayRevocations
+	// issued is the issue time (unix milliseconds) of the credential the socket was allocated with,
+	// as conservatively as track knows it (0: unknown, covered by every cut); a merged cut closes the
+	// socket only when it covers this (MergeCuts). Written under rev's lock before the socket is
+	// tracked, and read under it.
+	issued    int64
 	closeOnce sync.Once
 }
 

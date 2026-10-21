@@ -162,8 +162,14 @@ func (c *Config) Validate() error {
 	if c.TLS.Mode == TLSModeACMEIP && c.TLS.Profile != "" && c.TLS.Profile != "shortlived" {
 		add("tls.profile must be \"\" or \"shortlived\" in acme_ip mode: only shortlived permits IP SANs")
 	}
-	if c.TLS.Mode != TLSModeBehindProxy && c.TURN.Listen != "" {
-		add("turn.listen is only read in behind_proxy mode; elsewhere TURN shares 443 through the demux")
+	// R-UP11: outside behind_proxy, turn.listen is the opt-in that moves `turns:` off the 443 demux
+	// to a port of its own, served by `dillad media` so a relayed call survives an API restart. It
+	// needs that process: with the SFU in dillad serve there is nothing to gain and no second relay.
+	if c.TLS.Mode != TLSModeBehindProxy && c.TURN.Listen != "" && (!c.LiveKit.Enabled || c.LiveKit.Mode != "sidecar") {
+		add("turn.listen outside behind_proxy is the opt-in for TURN in dilla-media and needs livekit.mode = \"sidecar\"; without it TURN shares 443 through the demux")
+	}
+	if c.TLS.Mode != TLSModeBehindProxy && c.TURN.ProxyProtocol {
+		add("turn.proxy_protocol is only read in behind_proxy mode")
 	}
 	if c.BehindProxy() && c.TURN.Enabled && c.TURN.Listen == "" {
 		add("turn.listen is required when turn.enabled is true in behind_proxy mode")

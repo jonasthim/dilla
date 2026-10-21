@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -73,7 +74,7 @@ func TestMediaIdle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			err := mediaIdle(t.Context(), tc.remote, now, &stdout, &stderr, time.Second)
+			err := mediaIdle(t.Context(), tc.remote, noMints, now, &stdout, &stderr, time.Second)
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("err = %v, want idle", err)
@@ -118,7 +119,7 @@ func TestMediaIdleExitsUnavailableWhenNothingListens(t *testing.T) {
 	fd := sfuDeps(t, func(lk *config.LiveKit) { lk.Mode = "sidecar" })
 	// Nothing listens on the freed port sfuDeps picked.
 	remote := sfu.NewRemote(sfuConfig(fd.cfg.LiveKit, strings.Repeat("s", 40)))
-	err := mediaIdle(t.Context(), remote, time.Now(), &bytes.Buffer{}, &bytes.Buffer{}, 2*time.Second)
+	err := mediaIdle(t.Context(), remote, noMints, time.Now(), &bytes.Buffer{}, &bytes.Buffer{}, 2*time.Second)
 	if code, ok := exitCode(err); !ok || code != exit.Unavailable {
 		t.Fatalf("err = %v, want exit.Unavailable (69)", err)
 	}
@@ -265,12 +266,24 @@ func TestTheMediaBinaryLegHasThreeColours(t *testing.T) {
 	if leg = doctorMediaBinaryLeg(t.Context(), cfg); leg.Status != ops.Green {
 		t.Errorf("same version: %v %q", leg.Status, leg.Detail)
 	}
-	// Yellow: an older version that is still compatible.
+	// Yellow: an older level that is still compatible.
 	write("0.1.0-web3.11", sfu.MinSFUMediaLevel, 7)
 	leg = doctorMediaBinaryLeg(t.Context(), cfg)
-	want := "dilla-media runs v0.1.0-web3.11 (older); it restarts onto this binary when its calls end (dilla-media-refresh.timer)"
+	want := fmt.Sprintf("dilla-media runs v0.1.0-web3.11, an older media level (%d) than this binary's (%d); "+
+		"it restarts onto this binary when its calls end (dilla-media-refresh.timer)", sfu.MinSFUMediaLevel, sfu.MediaLevel)
 	if leg.Status != ops.Yellow || leg.Detail != want {
 		t.Errorf("older: %v %q, want yellow %q", leg.Status, leg.Detail, want)
+	}
+	// Yellow: after a rollback the SFU may run a newer build; it is never called older.
+	write("0.1.0-web3.99", sfu.MediaLevel+1, 7)
+	if leg = doctorMediaBinaryLeg(t.Context(), cfg); leg.Status != ops.Yellow || strings.Contains(leg.Detail, "older") ||
+		!strings.Contains(leg.Detail, "a newer media level") {
+		t.Errorf("newer: %v %q", leg.Status, leg.Detail)
+	}
+	// Yellow: another build at this level differs, and says so.
+	write("0.1.0-web3.12-rc1", sfu.MediaLevel, 7)
+	if leg = doctorMediaBinaryLeg(t.Context(), cfg); leg.Status != ops.Yellow || !strings.Contains(leg.Detail, "differs from this binary's v"+Version) {
+		t.Errorf("same level, other build: %v %q", leg.Status, leg.Detail)
 	}
 	// Red: below the oldest level this API works with.
 	write("0.1.0-web3.10", sfu.MinSFUMediaLevel-1, 7)

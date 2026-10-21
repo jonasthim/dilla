@@ -530,7 +530,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 	}
 	// A request drives only its own device's repair; every other one is the retry loop's.
 	h.drainPending(ctx, h.deps(), ch, cur, 1, s.DeviceID.String())
-	if h.leases.isPending(cur.CallID, s.DeviceID) {
+	if h.leases.isPending(cur.CallID, s.DeviceID) || h.relayPending(s.DeviceID) {
 		// R-UP7, as at the start and the /rtc gate: a refusal, but a transient one.
 		server.WriteError(w, errRepairPending())
 		return

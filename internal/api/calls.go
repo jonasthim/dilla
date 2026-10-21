@@ -222,6 +222,8 @@ type Calls struct {
 	// relay is the TURN relay's revocation state (task 13 review I1): a cut device's relay
 	// allocations end with its call session. nil when the instance runs no relay.
 	relay RelayRevoker
+	// mints records when the start routes minted call tokens, for GET /media/recent-mints (R-UP4).
+	mints mintLog
 
 	// memMu guards the call-group membership state (callmembers.go): the memberships devices were
 	// admitted to rooms with, the absences the sweep tracks, the Removes it decided and when it last
@@ -605,7 +607,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if h.leases.isPending(callID, s.DeviceID) {
+	if h.leases.isPending(callID, s.DeviceID) || h.relayPending(s.DeviceID) {
 		server.WriteError(w, errRepairPending())
 		return
 	}
@@ -617,6 +619,8 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
+	// R-UP4: a token on its way to the SFU keeps `dillad media --idle` busy for 60 s.
+	h.mints.note(h.clk.Now())
 	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
@@ -1208,7 +1212,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if err := h.retryOwn(ctx, callID, device); err != nil {
 		return nil, err
 	}
-	if h.leases.isPending(callID, device) {
+	if h.leases.isPending(callID, device) || h.relayPending(device) {
 		return nil, errRepairPending()
 	}
 	dev, err := h.repo.GetDevice(ctx, device)
@@ -1310,7 +1314,8 @@ func errBarred() error {
 const transientRetryAfterMS = 2_000
 
 // errRepairPending is R-UP7's answer at the start and at the /rtc gate to a device whose cut or
-// demotion in the call has not landed in the SFU: 503 E_UNAVAILABLE with retry_after_ms. It is a
+// demotion in the call has not landed in the SFU, or whose relay cut the media relay has not
+// acknowledged (relayPending, R-UP11): 503 E_UNAVAILABLE with retry_after_ms. It is a
 // refusal like the 403 it replaces — nothing is minted or admitted — but a transient one: once the
 // repair lands, every other check runs again, so a barred device then gets its 403.
 func errRepairPending() error {

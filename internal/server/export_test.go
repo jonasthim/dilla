@@ -252,3 +252,18 @@ func ReservationRefusalsForTest(dev string) (sockets int, freed bool, probeErr, 
 func ChooseRelayIPForTest(probed net.IP, addrs []net.Addr, prefer netip.Addr) (net.IP, error) {
 	return chooseRelayIP(probed, addrs, prefer)
 }
+
+// SetPeerUIDForTest makes the control sockets read every connection's peer uid from f.
+func SetPeerUIDForTest(f func(net.Conn) (uint32, error)) (restore func()) {
+	old := peerUIDOf
+	peerUIDOf = f
+	return func() { peerUIDOf = old }
+}
+
+// SetPacingForTest makes the revoker resend and probe every d.
+func (r *RelayRevoker) SetPacingForTest(d time.Duration) {
+	r.retryEvery, r.probeEvery = d, d
+}
+
+// MaxControlBodyForTest is the control sockets' request body bound.
+const MaxControlBodyForTest = maxControlBody

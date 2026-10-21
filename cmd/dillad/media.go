@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -17,6 +20,7 @@ import (
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
 )
 
@@ -62,7 +66,7 @@ func runMedia(args []string, stdout, stderr io.Writer) error {
 		}
 		remote := sfu.NewRemote(sfuConfig(cfg.LiveKit, string(secret)))
 		if *idle {
-			return mediaIdle(ctx, remote, time.Now(), stdout, stderr, 10*time.Second)
+			return mediaIdle(ctx, remote, apiRecentMints(cfg.Instance.DataDir), time.Now(), stdout, stderr, 10*time.Second)
 		}
 		if *rooms {
 			return mediaRooms(ctx, remote, stdout, 20*time.Second)
@@ -144,9 +148,10 @@ func roomCreated(r *livekit.Room) time.Time {
 // mediaIdle answers "may the SFU be restarted now": nil when it may, exit.Fail when a room is in
 // use (each listed on stderr), exit.Unavailable when the SFU cannot be asked. A room is in use
 // while it has participants or is younger than idleMinRoomAge; a room whose age is unknown counts
-// as young. One attempt, no retry: the refresh timer asks again a minute later, and an SFU that
+// as young; so does any call token the API minted within the last 60 s, or an API that does not
+// say (mints). One attempt, no retry: the refresh timer asks again a minute later, and an SFU that
 // does not answer must never be restarted on a guess.
-func mediaIdle(ctx context.Context, remote roomInfoLister, now time.Time, stdout, stderr io.Writer, deadline time.Duration) error {
+func mediaIdle(ctx context.Context, remote roomInfoLister, mints recentMints, now time.Time, stdout, stderr io.Writer, deadline time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	rooms, err := remote.RoomInfos(ctx)
@@ -171,8 +176,52 @@ func mediaIdle(ctx context.Context, remote roomInfoLister, now time.Time, stdout
 	if busy > 0 {
 		return fmt.Errorf("media idle: %d of %d rooms in use: %w", busy, len(rooms), exit.Fail)
 	}
-	_, err = fmt.Fprintf(stdout, "media idle: %d rooms, none in use\n", len(rooms))
+	// R-UP4: a call token minted within the last 60 s may be on its way to the SFU. The API is
+	// asked over api.sock; an API that does not answer counts as busy, so a start in flight never
+	// races the restart.
+	n, err := mints(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "the API did not answer GET /media/recent-mints on api.sock: %v\n", err)
+		return fmt.Errorf("media idle: the API cannot say whether a call is starting: %w", exit.Fail)
+	}
+	if n > 0 {
+		fmt.Fprintf(stderr, "%d call tokens minted within the last 60 s\n", n)
+		return fmt.Errorf("media idle: %d call tokens minted within 60 s: %w", n, exit.Fail)
+	}
+	_, err = fmt.Fprintf(stdout, "media idle: %d rooms, none in use, no call token minted within 60 s\n", len(rooms))
 	return err
+}
+
+// recentMints asks how many call tokens the API minted within the last 60 s.
+type recentMints func(ctx context.Context) (int, error)
+
+// apiRecentMints is recentMints over GET /media/recent-mints on the api.sock in dataDir.
+func apiRecentMints(dataDir string) recentMints {
+	client := server.ControlClient(server.ControlSocketPath(dataDir, server.APISocketName))
+	return func(ctx context.Context) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://dillad/media/recent-mints", nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("GET /media/recent-mints: %s", resp.Status)
+		}
+		var out struct {
+			Count *int `json:"count"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out); err != nil {
+			return 0, err
+		}
+		if out.Count == nil {
+			return 0, errors.New("GET /media/recent-mints: the answer has no count")
+		}
+		return *out.Count, nil
+	}
 }
 
 func waitRemoteSFU(ctx context.Context, remote roomLister, deadline time.Duration) error {
@@ -235,17 +284,52 @@ func serveMedia(ctx context.Context, cfg *config.Config, stdout, stderr io.Write
 		}
 		return fmt.Errorf("media: %w: %w", err, exit.Unavailable)
 	}
-	if err := writeMediaState(cfg.Instance.DataDir, mediaState{
-		Version:      Version,
-		MediaLevel:   sfu.MediaLevel,
-		Capabilities: []string{}, // "turn" is listed by UP8 once a TURN listener is bound
-		PID:          os.Getpid(),
-		Started:      time.Now().UTC(),
-	}); err != nil {
+	// TURN (R-UP11): served here whenever turn.listen is configured. It is bound before READY when
+	// the port is free (a fresh start, a reboot), so media.json lists "turn" from the first write
+	// and the API, started after READY, binds nothing there. When the API still holds the port (the
+	// handoff from a web3.11 SFU), READY means "media ready; TURN bind pending": the bind is retried
+	// every mediaTURNRetry, and media.json is rewritten with "turn" once it succeeds — never before.
+	var relay *mediaTURN
+	if cfg.TURN.Enabled && cfg.TURN.Listen != "" {
+		if relay, err = newMediaTURN(ctx, cfg, fd.log); err != nil {
+			fd.log.Error("dilla-media serves no TURN; the API keeps serving it", "err", err)
+			relay = nil
+		} else {
+			defer relay.close()
+			if err := relay.bind(ctx); err != nil && errors.Is(err, errTURNConfig) {
+				fd.log.Error("dilla-media serves no TURN: its configuration is refused", "err", err)
+				relay.close()
+				relay = nil
+			}
+		}
+	}
+	started := time.Now().UTC()
+	writeState := func() error {
+		caps := []string{}
+		if relay != nil && relay.bound() {
+			caps = append(caps, turnCapability)
+		}
+		return writeMediaState(cfg.Instance.DataDir, mediaState{
+			Version: Version, MediaLevel: sfu.MediaLevel, Capabilities: caps, PID: os.Getpid(), Started: started,
+		})
+	}
+	if err := writeState(); err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(mediaStatePath(cfg.Instance.DataDir)) }() // a clean stop; a crash leaves a stale file the pid check catches
 	notifyReady()
+	if relay != nil && !relay.bound() {
+		go relay.keepBinding(ctx, func() {
+			if ctx.Err() != nil {
+				return // stopping: media.json is being removed
+			}
+			if err := writeState(); err != nil {
+				fd.log.Error("media.json could not be rewritten with turn; the API keeps treating TURN as unserved here", "err", err)
+				return
+			}
+			fd.log.Info("TURN bound on turn.listen; media.json lists turn")
+		})
+	}
 	select {
 	case <-ctx.Done():
 		return nil

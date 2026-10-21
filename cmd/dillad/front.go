@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/livekit/protocol/livekit"
@@ -56,6 +58,11 @@ type frontDeps struct {
 	stdout  io.Writer
 	// relay is the revocation state the relay shares with the call routes (dillad.Options.Relay).
 	relay *server.RelayRevocations
+	// turn is who serves TURN (planTURN, which serve runs); nil plans as though the SFU were in this
+	// process (staticTURNPlan).
+	turn *turnPlan
+	// started receives the relay this process starts, if any (api.sock's GET /relay/state).
+	started *atomic.Pointer[server.TURN]
 }
 
 // openFront binds the listeners tls.mode chooses and starts what sits behind
@@ -76,6 +83,10 @@ type frontDeps struct {
 // what the composition root set.
 func openFront(ctx, runCtx context.Context, d frontDeps) (*front, error) {
 	f := &front{}
+	if d.turn == nil {
+		p := staticTURNPlan(d.cfg)
+		d.turn = &p
+	}
 	var err error
 	if d.cfg.BehindProxy() {
 		err = openBehindProxy(ctx, d, f)
@@ -111,7 +122,8 @@ func openBehindProxy(ctx context.Context, d frontDeps, f *front) error {
 	}
 	f.http = ln
 	f.closers = append(f.closers, func() { _ = ln.Close() })
-	if !d.cfg.TURN.Enabled {
+	if !d.turn.listen {
+		// No relay here: turn.enabled is false, or dilla-media holds turn.listen (R-UP11).
 		return nil
 	}
 	tln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", d.cfg.TURN.Listen)
@@ -176,13 +188,28 @@ func openDirectTLS(ctx, runCtx context.Context, d frontDeps, f *front) error {
 	go dm.Serve()
 	f.closers = append(f.closers, func() { _ = dm.Close() })
 	f.http = dm.HTTP()
-	if d.cfg.TURN.Enabled {
+	if d.turn.demux {
 		if err := startTURN(d, f, dm.TURN()); err != nil {
 			return err
 		}
 	} else {
-		// No relay: the demux closes every STUN connection it would route here.
+		// No relay on 443 — turn.enabled is false, or the public-mode opt-in turn.listen carries
+		// TURN instead (R-UP11): the demux closes every STUN connection it would route here, so
+		// there are never two relays.
 		_ = dm.TURN().Close()
+	}
+	if d.turn.listen {
+		// The opt-in turn.listen while dilla-media does not serve it (a web3.11 SFU): `turns:` on
+		// that port, with this process's own certificate.
+		tln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", d.cfg.TURN.Listen)
+		if err != nil {
+			return fmt.Errorf("serve: listen turn.listen %s: %w: %w", d.cfg.TURN.Listen, err, exit.Unavailable)
+		}
+		relayTLS := tlsCfg.Clone()
+		relayTLS.NextProtos = nil
+		if err := startTURN(d, f, tls.NewListener(tln, relayTLS)); err != nil {
+			return err
+		}
 	}
 
 	gate := d.health.Gate("tls")
@@ -510,6 +537,9 @@ func startTURN(d frontDeps, f *front, ln net.Listener) error {
 		return turnStartError(err)
 	}
 	f.closers = append(f.closers, func() { _ = t.Close() })
+	if d.started != nil {
+		d.started.Store(t)
+	}
 	return nil
 }
 

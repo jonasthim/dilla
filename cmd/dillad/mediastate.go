@@ -73,7 +73,17 @@ func writeMediaState(dataDir string, st mediaState) error {
 		cleanup()
 		return fmt.Errorf("media: %w", err)
 	}
-	return nil
+	// The rename is durable only once the directory entry is: a power loss right after READY must
+	// not bring back the previous file (or none).
+	dir, err := os.Open(dataDir) //nolint:gosec // G304: the state directory derived from dilla.toml
+	if err != nil {
+		return fmt.Errorf("media: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("media: sync %s: %w", dataDir, err)
+	}
+	return dir.Close()
 }
 
 // errNoMediaState means there is no usable media.json: absent, unreadable, malformed, or written by
@@ -117,6 +127,11 @@ var mediaMainPID = func(ctx context.Context) (int, error) {
 func mediaPIDIsCurrent(ctx context.Context, pid int) bool {
 	main, err := mediaMainPID(ctx)
 	if err != nil {
+		// The fallback is weaker than the MainPID check: after a reboot or a crash the kernel may
+		// have handed the file's pid to an unrelated process, which makes a stale file look
+		// current. It is used only where there is no systemd to ask, which runs no refresh timer
+		// and no installer upgrade either; there it can only mislabel the doctor's media_binary leg
+		// or serve's TURN plan, and the latter then binds nothing until dilla-media is restarted.
 		_, statErr := os.Stat("/proc/" + strconv.Itoa(pid))
 		return statErr == nil
 	}
