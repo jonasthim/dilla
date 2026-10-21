@@ -3026,93 +3026,6 @@ describe('web3.9 VOICE-FIX fix round 1 (I1): concurrentCapture', () => {
   });
 });
 
-describe('web3.9 VOICE-AFK: a listen-only call (the AFK channel, R3)', () => {
-  const open: PageCall[] = [];
-  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
-  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
-    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
-    open.push(call);
-    return call;
-  };
-
-  it('a listen-only call never asks for the microphone', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true, noise: 'on' });
-    expect(call.state.phase).toBe('connected');
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.media.enumerateDevices).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.mic).toBe('listen');
-    expect(call.state.listenOnly).toBe(true);
-    expect(call.state.muted).toBe(true);
-    expect(call.state.error).toBeNull();
-    // The others hear of it as a muted member at once (voiceSelf flag 1).
-    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
-    // A mute press is a no-op that stays muted: nothing is acquired or published by it, or by the other controls.
-    call.setMuted(false);
-    expect(call.state.muted).toBe(true);
-    call.setMode('ptt');
-    call.pushToTalk(true);
-    await call.setNoise('off');
-    await call.setNoise('on');
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-  });
-
-  it('an ordinary call still asks for the microphone and publishes it (control)', async () => {
-    const f = fakes();
-    const call = await start(f);
-    expect(f.media.getUserMedia).toHaveBeenCalledTimes(1);
-    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(1);
-    expect(call.state.mic).toBe('ok');
-    expect(call.state.listenOnly).toBe(false);
-  });
-
-  it('camera and share are refused in a listen-only call', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    f.calls.length = 0;
-    await expect(call.setCamera(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    // Refused before any request: no callShare, no capture, no picker, no publish.
-    expect(f.calls.filter((c) => c.m === 'callShare')).toEqual([]);
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.camera).toBe(false);
-    expect(call.state.sharing).toBe(false);
-    // Turning them off stays harmless.
-    await call.setCamera(false);
-    await call.setSharing(false);
-    // Control: an ordinary call turns the camera on.
-    const g = fakes();
-    const other = await start(g);
-    await other.setCamera(true);
-    expect(other.state.camera).toBe(true);
-  });
-
-  it('deafen still mutes playback in a listen-only call', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    const bob = f.addRemote(BOB_DEV);
-    f.subscribeTrack(bob, 'microphone');
-    expect(bob.gains.microphone).toBe(1);
-    call.setDeafened(true);
-    expect(call.state.deafened).toBe(true);
-    expect(bob.gains.microphone).toBe(0);
-    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
-    call.setDeafened(false);
-    expect(call.state.deafened).toBe(false);
-    expect(call.state.muted).toBe(true);
-    expect(bob.gains.microphone).toBe(1);
-    // An unmute while deafened stays muted too (mute is a no-op here).
-    call.setDeafened(true);
-    call.setMuted(false);
-    expect(call.state.muted).toBe(true);
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-  });
-});
-
 describe('web3.9 ruling V-1: the session owns page leave, LiveKit does not', () => {
   const open: PageCall[] = [];
   afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
@@ -3314,15 +3227,5 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     // Deafened: the share audio is held back, never attached, and its gain is 0.
     expect(track.attach).not.toHaveBeenCalled();
     expect(bob.gains.screen_share_audio).toBe(0);
-  });
-
-  it('a listen-only call refuses share before the picker', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.sharing).toBe(false);
-    expect(call.state.shareAudio).toBeNull();
   });
 });

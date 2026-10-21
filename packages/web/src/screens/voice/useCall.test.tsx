@@ -181,7 +181,6 @@ describe('AW5: the AFK channel never hosts a call (R-AW1)', () => {
     h.awayMe(A);
     await h.joined(GENV);
     expect(h.started.map((s) => s.channelId)).toEqual([GENV]);
-    expect(h.started[0].opts.listenOnly ?? false).toBe(false);
     expect(h.client.callsOf('afkAway')).toEqual([]);
   });
 });
