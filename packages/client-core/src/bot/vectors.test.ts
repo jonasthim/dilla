@@ -7,7 +7,15 @@ type Vectors = { cases: { name:string;kind:string;hex:string;body?:string;preima
   rejects:{ name:string;kind:string;hex?:string;body?:string;context?:Context }[] };
 type Context = {community:string;group?:string;actor_user?:string;actor_device?:string;now:string};
 const vectors=JSON.parse(readFileSync(new URL('../../../../protocol/vectors/bot.json',import.meta.url),'utf8')) as Vectors;
-const ctx=(c:Context)=>({community:fromHex(c.community),group:c.group?fromHex(c.group):undefined,now:BigInt(c.now)});
+const ctx=(c:Context)=>({community:fromHex(c.community),group:c.group?fromHex(c.group):undefined,
+  actorUser:c.actor_user?fromHex(c.actor_user):undefined,actorDevice:c.actor_device?fromHex(c.actor_device):undefined,now:BigInt(c.now)});
+function bodyPayload(body:string):Uint8Array {
+ expect(body.startsWith('dilla.bot/1:')).toBe(true);
+ const encoded=body.slice('dilla.bot/1:'.length);
+ expect(/^[A-Za-z0-9_-]+$/u.test(encoded)).toBe(true);
+ const binary=atob(encoded.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-encoded.length%4)%4));
+ return Uint8Array.from(binary,c=>c.charCodeAt(0));
+}
 function decode(kind:string,hex:string,body?:string):any {
  switch(kind){
   case 'request': return body!==undefined?bot.decodeBotRequest(body):bot.decodeBotRequest('dilla.bot/1:'+btoa(String.fromCharCode(...fromHex(hex))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,''));
@@ -34,9 +42,14 @@ describe('shared bot protocol vectors',()=>{
   const kinds=new Set(vectors.cases.map(c=>c.kind));
   expect([...kinds].sort()).toEqual(['event','helper_request','helper_response','receipt','removal','request','response']);
   for(const c of vectors.cases){
-   const x=decode(c.kind,c.hex,c.body);const out=encode(c.kind,x);
+   const x=decode(c.kind,c.hex);const out=encode(c.kind,x);
    expect(typeof out==='string'?toHex(fromHex(c.hex)):toHex(out),c.name).toBe(c.hex);
-   if(c.body!==undefined&&typeof out==='string')expect(out,c.name).toBe(c.body);
+   if(c.body!==undefined&&typeof out==='string'){
+    expect(toHex(bodyPayload(c.body)),c.name).toBe(c.hex);
+    const fromBody=decode(c.kind,'',c.body);
+    expect(encode(c.kind,fromBody),c.name).toBe(c.body);
+    expect(toHex(bodyPayload(out)),c.name).toBe(c.hex);
+   }
    if(c.context)checkContext(c.kind,x,c.context);
    if(c.preimage_hex)expect(toHex(bot.removalPreimage(x)),c.name).toBe(c.preimage_hex);
   }

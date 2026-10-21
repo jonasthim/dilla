@@ -64,12 +64,20 @@ export function botVectors() {
  rejects.push({name:'CBOR map',kind:'request',hex:'a0'});
  rejects.push({name:'CBOR nesting over limit',kind:'request',hex:'8181818181818181818100'});
  rej('removal sequence zero','removal',[1n,id(3),id(4),id(5),comm,group,0n,120n]);
+ const validProof=[1n,id(3),id(4),id(5),comm,group,7n,120n];
+ rejects.push({name:'removal actor user mismatch',kind:'removal',hex:cbor(validProof),
+  context:{...context,group:hex(group),actor_user:hex(id(9)),actor_device:hex(id(5))}});
+ rejects.push({name:'removal actor device mismatch',kind:'removal',hex:cbor(validProof),
+  context:{...context,group:hex(group),actor_user:hex(id(4)),actor_device:hex(id(9))}});
  rej('event metadata invalid','event',[1n,id(1),1n,comm,1n,3n,[id(2),6n,7n]]);
  rej('timeout event missing expiry','event',[1n,id(1),1n,comm,10n,6n,[id(2),id(3),id(4),id(5),id(6),null,null,1n,null]]);
  rej('receipt pending with sequence','receipt',[1n,id(1),comm,group,new Uint8Array(32),0n,1n,null]);
  rej('receipt accepted without epoch','receipt',[1n,id(1),comm,group,new Uint8Array(32),1n,1n,null]);
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
  rej('helper unknown operation','helper_request',[1n,id(1),16n,encode([])]);
+ const oversizedPayload=encode([new Uint8Array(1_048_475)]);
+ if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
+ rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});
  rejects.push({name:'helper malformed length prefix',kind:'helper_request',hex:'0000000580'});
  return {version:1,cases,rejects};
 }

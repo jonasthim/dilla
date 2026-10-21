@@ -1,8 +1,7 @@
-import { arr, bin, decode, encode, str, u64, type CborInput, type CborValue } from '../cbor/index.ts';
+import { arr, decode, encode, u64, type CborInput, type CborValue } from '../cbor/index.ts';
 
 const MAX = (1n << 64n) - 1n;
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 const PREFIX = 'dilla.bot/1:';
 const HELPER_MAX = 1_048_576;
 
@@ -58,7 +57,13 @@ function bodyDecode(body: string, max = 4000): CborValue {
 }
 
 export interface BotRequest { requestId: Uint8Array; communityId: Uint8Array; channelId: Uint8Array | null; operation: number; revision: bigint | null; expires: bigint | null; args: CborInput[] }
-export interface BotContext { community: Uint8Array; group?: Uint8Array; now: bigint }
+export interface BotContext {
+  community: Uint8Array;
+  group?: Uint8Array;
+  actorUser?: Uint8Array;
+  actorDevice?: Uint8Array;
+  now: bigint;
+}
 const ops: Record<number, { channel: boolean; mutation: boolean; count: number }> = {
   0:{channel:false,mutation:false,count:0},1:{channel:false,mutation:false,count:1},2:{channel:false,mutation:true,count:2},
   10:{channel:true,mutation:false,count:0},11:{channel:true,mutation:false,count:1},12:{channel:true,mutation:true,count:1},
@@ -111,52 +116,351 @@ export function validateBotContext(request: BotRequest, context: BotContext): vo
 }
 function equalId(a:Uint8Array,b:Uint8Array):boolean { return a.length===b.length && a.every((v,i)=>v===b[i]); }
 
-export interface BotResponse { requestId:Uint8Array; communityId:Uint8Array; status:number; revision:bigint|null; data:Uint8Array }
-function responseValue(x:BotResponse):CborInput[] { id(x.requestId);id(x.communityId);uint(x.status,0n,9n); if(!Number.isInteger(x.status))fail('E_BOT_RANGE'); if(x.revision!==null)uint(x.revision); const data=bytes(x.data);if(data.length>2400)fail('E_BOT_RANGE');if(data.length && !Array.isArray(decode(data)))fail('E_BOT_SHAPE');return [1n,x.requestId,x.communityId,BigInt(x.status),x.revision,data]; }
-function readResponse(v:CborValue):BotResponse { const a=arr(v,6);if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');const status=Number(u64(a[3]!));const out={requestId:readId(a[1]!),communityId:readId(a[2]!),status,revision:readOptU(a[4]!),data:bytes(a[5]!)};responseValue(out);return out; }
-export const encodeBotResponse=(x:BotResponse)=>guarded(()=>bodyEncode(responseValue(x)));
-export const decodeBotResponse=(body:string)=>guarded(()=>readResponse(bodyDecode(body)));
-export function validateBotResponseContext(x:BotResponse,community:Uint8Array):void { if(!equalId(x.communityId,community))fail('E_BOT_COMMUNITY'); }
-
-export interface RemovalProof { requestId:Uint8Array; actorUser:Uint8Array; actorDevice:Uint8Array; communityId:Uint8Array; groupId:Uint8Array; targetSeq:bigint; expires:bigint }
-function removalValue(x:RemovalProof):CborInput[] { id(x.requestId);id(x.actorUser);id(x.actorDevice);id(x.communityId);id(x.groupId);uint(x.targetSeq,1n);uint(x.expires,1n);return [1n,x.requestId,x.actorUser,x.actorDevice,x.communityId,x.groupId,x.targetSeq,x.expires]; }
-function readRemoval(v:CborValue):RemovalProof { const a=arr(v,8);if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');const x={requestId:readId(a[1]!),actorUser:readId(a[2]!),actorDevice:readId(a[3]!),communityId:readId(a[4]!),groupId:readId(a[5]!),targetSeq:u64(a[6]!),expires:u64(a[7]!)};removalValue(x);return x; }
-export const encodeRemovalProof=(x:RemovalProof)=>guarded(()=>encode(removalValue(x)));
-export const decodeRemovalProof=(b:Uint8Array)=>guarded(()=>readRemoval(decode(b)));
-export const removalPreimage=(x:RemovalProof)=>{const p=enc.encode('dilla moderation removal v1'),b=encodeRemovalProof(x),o=new Uint8Array(p.length+b.length);o.set(p);o.set(b,p.length);return o;};
-export function validateRemovalContext(x:RemovalProof,c:BotContext):void { if(!equalId(x.communityId,c.community)||!equalId(x.groupId,c.group??new Uint8Array()))fail('E_BOT_COMMUNITY');const now=uint(c.now);if(x.expires<=now||now>MAX-30n||x.expires>now+30n)fail('E_BOT_EXPIRED'); }
-
-export interface DurableEvent { eventId:Uint8Array;sequence:bigint;communityId:Uint8Array;timestamp:bigint;kind:number;data:CborInput[] }
-function eventData(kind:number,d:unknown[]):void {
- const ident=(i:number)=>{d[i]=id(d[i]);},u=(i:number,min=0n,max=MAX)=>{d[i]=uint(d[i],min,max);};
- const shape:Record<number,number>={1:2,2:2,3:3,4:3,5:3,6:9,7:3}; if(!shape[kind])fail('E_BOT_OPERATION');if(d.length!==shape[kind])fail('E_BOT_SHAPE');
- switch(kind){case 1:case 2:ident(0);ident(1);break;case 3:ident(0);u(1,0n,5n);u(2);break;case 4:u(0,0n,3n);ident(1);u(2);break;case 5:ident(0);u(1,0n,2n);u(2);break;
- case 6:ident(0);ident(1);ident(2);ident(3);d[4]=nullable(d[4],id);d[5]=nullable(d[5],id);d[6]=nullable(d[6],v=>uint(v,1n));u(7,0n,6n);d[8]=nullable(d[8],v=>uint(v,1n));
-   if(d[7]===4n){if(d[5]===null||d[6]===null)fail('E_BOT_SHAPE');}else if(d[4]===null||d[5]!==null||d[6]!==null)fail('E_BOT_SHAPE');
-   break;
- case 7:ident(0);u(1);u(2,0n,1n);break; }
+export interface BotResponse {
+  requestId: Uint8Array;
+  communityId: Uint8Array;
+  status: number;
+  revision: bigint | null;
+  data: Uint8Array;
 }
-function eventValue(x:DurableEvent):CborInput[]{id(x.eventId);uint(x.sequence,1n);id(x.communityId);uint(x.timestamp);uint(x.kind,1n,7n);if(!Number.isInteger(x.kind))fail('E_BOT_RANGE');if(!Array.isArray(x.data))fail('E_BOT_SHAPE');const d=[...x.data];eventData(x.kind,d);if(x.kind===6){const action=d[7] as bigint,expires=d[8] as bigint|null;if(action===1n&&(expires===null||expires<=x.timestamp))fail('E_BOT_RANGE');if(action===3n&&expires!==null&&expires<=x.timestamp)fail('E_BOT_RANGE');if(action!==1n&&action!==3n&&expires!==null)fail('E_BOT_SHAPE');}return [1n,x.eventId,x.sequence,x.communityId,x.timestamp,BigInt(x.kind),d];}
-function readEvent(v:CborValue):DurableEvent{const a=arr(v,7);if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');const kind=Number(u64(a[5]!));const x={eventId:readId(a[1]!),sequence:u64(a[2]!),communityId:readId(a[3]!),timestamp:u64(a[4]!),kind,data:arr(a[6]!) as CborInput[]};eventValue(x);return x;}
-export const encodeDurableEvent=(x:DurableEvent)=>guarded(()=>{const b=encode(eventValue(x));if(b.length>4096)fail('E_BOT_SIZE');return b;});
-export const decodeDurableEvent=(b:Uint8Array)=>guarded(()=>{if(b.length>4096)fail('E_BOT_SIZE');return readEvent(decode(b));});
-export function validateEventContext(x:DurableEvent,community:Uint8Array):void{if(!equalId(x.communityId,community))fail('E_BOT_COMMUNITY');}
 
-export interface SendReceipt { operationId:Uint8Array;communityId:Uint8Array;groupId:Uint8Array;ciphertextSha256:Uint8Array;status:number;sequence:bigint|null;epoch:bigint|null }
-function receiptValue(x:SendReceipt):CborInput[]{id(x.operationId);id(x.communityId);id(x.groupId);bytes(x.ciphertextSha256,32);uint(x.status,0n,1n);if(!Number.isInteger(x.status))fail('E_BOT_RANGE');if(x.status===0?(x.sequence!==null||x.epoch!==null):(x.sequence===null||x.epoch===null))fail('E_BOT_SHAPE');if(x.sequence!==null)uint(x.sequence,1n);if(x.epoch!==null)uint(x.epoch);return [1n,x.operationId,x.communityId,x.groupId,x.ciphertextSha256,BigInt(x.status),x.sequence,x.epoch];}
-function readReceipt(v:CborValue):SendReceipt{const a=arr(v,8);if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');const x={operationId:readId(a[1]!),communityId:readId(a[2]!),groupId:readId(a[3]!),ciphertextSha256:bytes(a[4]!,32),status:Number(u64(a[5]!)),sequence:readOptU(a[6]!),epoch:readOptU(a[7]!)};receiptValue(x);return x;}
-export const encodeSendReceipt=(x:SendReceipt)=>guarded(()=>{const b=encode(receiptValue(x));if(b.length>512)fail('E_BOT_SIZE');return b;});
-export const decodeSendReceipt=(b:Uint8Array)=>guarded(()=>{if(b.length>512)fail('E_BOT_SIZE');return readReceipt(decode(b));});
-export function validateReceiptContext(x:SendReceipt,community:Uint8Array,group:Uint8Array):void{if(!equalId(x.communityId,community)||!equalId(x.groupId,group))fail('E_BOT_COMMUNITY');}
+function responseValue(response: BotResponse): CborInput[] {
+  id(response.requestId);
+  id(response.communityId);
+  uint(response.status, 0n, 9n);
+  if (!Number.isInteger(response.status)) fail('E_BOT_RANGE');
+  if (response.revision !== null) uint(response.revision);
 
-export interface HelperEnvelope { requestId:Uint8Array;operation:number;payload:Uint8Array }
-export interface HelperResponse { requestId:Uint8Array;status:number;payload:Uint8Array }
-function helperVal(x:HelperEnvelope|HelperResponse,response:boolean):CborInput[]{id(x.requestId);const op=response?(x as HelperResponse).status:(x as HelperEnvelope).operation;uint(op,response?0n:1n,response?9n:15n);if(!Number.isInteger(op))fail('E_BOT_RANGE');const p=bytes(x.payload);if(!p.length||p.length>1_048_480||!Array.isArray(decode(p)))fail('E_BOT_SHAPE');return [1n,x.requestId,BigInt(op),p];}
-function readHelper(v:CborValue,response:boolean):HelperEnvelope|HelperResponse{const a=arr(v,4);if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');const out=response?{requestId:readId(a[1]!),status:Number(u64(a[2]!)),payload:bytes(a[3]!)}:{requestId:readId(a[1]!),operation:Number(u64(a[2]!)),payload:bytes(a[3]!)};helperVal(out,response);return out;}
-const helperBody=(v:CborInput[])=>{const b=encode(v);if(b.length>HELPER_MAX)fail('E_BOT_SIZE');return b;};
-export const encodeHelperRequest=(x:HelperEnvelope)=>guarded(()=>helperBody(helperVal(x,false)));
-export const decodeHelperRequest=(b:Uint8Array)=>guarded(()=>{if(b.length>HELPER_MAX)fail('E_BOT_SIZE');return readHelper(decode(b),false) as HelperEnvelope;});
-export const encodeHelperResponse=(x:HelperResponse)=>guarded(()=>helperBody(helperVal(x,true)));
-export const decodeHelperResponse=(b:Uint8Array)=>guarded(()=>{if(b.length>HELPER_MAX)fail('E_BOT_SIZE');return readHelper(decode(b),true) as HelperResponse;});
-export function frameHelper(b:Uint8Array):Uint8Array {if(b.length<1||b.length>HELPER_MAX)fail('E_BOT_SIZE');const out=new Uint8Array(b.length+4);new DataView(out.buffer).setUint32(0,b.length,false);out.set(b,4);return out;}
-export function parseHelperFrame(b:Uint8Array):Uint8Array {if(b.length<4)fail('E_BOT_FRAME');const n=new DataView(b.buffer,b.byteOffset,b.byteLength).getUint32(0,false);if(n<1||n>HELPER_MAX||n!==b.length-4)fail('E_BOT_FRAME');return b.slice(4);}
+  const data = bytes(response.data);
+  if (data.length > 2400) fail('E_BOT_RANGE');
+  if (data.length > 0 && !Array.isArray(decode(data))) fail('E_BOT_SHAPE');
+  return [1n, response.requestId, response.communityId, BigInt(response.status), response.revision, data];
+}
+
+function readResponse(value: CborValue): BotResponse {
+  const fields = arr(value, 6);
+  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+
+  const response: BotResponse = {
+    requestId: readId(fields[1]!),
+    communityId: readId(fields[2]!),
+    status: Number(u64(fields[3]!)),
+    revision: readOptU(fields[4]!),
+    data: bytes(fields[5]!),
+  };
+  responseValue(response);
+  return response;
+}
+
+export const encodeBotResponse = (response: BotResponse) =>
+  guarded(() => bodyEncode(responseValue(response)));
+export const decodeBotResponse = (body: string) =>
+  guarded(() => readResponse(bodyDecode(body)));
+
+export function validateBotResponseContext(response: BotResponse, community: Uint8Array): void {
+  if (!equalId(response.communityId, community)) fail('E_BOT_COMMUNITY');
+}
+
+export interface RemovalProof {
+  requestId: Uint8Array;
+  actorUser: Uint8Array;
+  actorDevice: Uint8Array;
+  communityId: Uint8Array;
+  groupId: Uint8Array;
+  targetSeq: bigint;
+  expires: bigint;
+}
+
+function removalValue(proof: RemovalProof): CborInput[] {
+  id(proof.requestId);
+  id(proof.actorUser);
+  id(proof.actorDevice);
+  id(proof.communityId);
+  id(proof.groupId);
+  uint(proof.targetSeq, 1n);
+  uint(proof.expires, 1n);
+  return [1n, proof.requestId, proof.actorUser, proof.actorDevice, proof.communityId,
+    proof.groupId, proof.targetSeq, proof.expires];
+}
+
+function readRemoval(value: CborValue): RemovalProof {
+  const fields = arr(value, 8);
+  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  const proof: RemovalProof = {
+    requestId: readId(fields[1]!), actorUser: readId(fields[2]!), actorDevice: readId(fields[3]!),
+    communityId: readId(fields[4]!), groupId: readId(fields[5]!), targetSeq: u64(fields[6]!),
+    expires: u64(fields[7]!),
+  };
+  removalValue(proof);
+  return proof;
+}
+
+export const encodeRemovalProof = (proof: RemovalProof) =>
+  guarded(() => encode(removalValue(proof)));
+export const decodeRemovalProof = (bytes: Uint8Array) =>
+  guarded(() => readRemoval(decode(bytes)));
+
+export function removalPreimage(proof: RemovalProof): Uint8Array {
+  const domain = enc.encode('dilla moderation removal v1');
+  const encodedProof = encodeRemovalProof(proof);
+  const preimage = new Uint8Array(domain.length + encodedProof.length);
+  preimage.set(domain);
+  preimage.set(encodedProof, domain.length);
+  return preimage;
+}
+
+export function validateRemovalContext(proof: RemovalProof, context: BotContext): void {
+  if (!equalId(proof.communityId, context.community) ||
+      !equalId(proof.groupId, context.group ?? new Uint8Array())) {
+    fail('E_BOT_COMMUNITY');
+  }
+  if (context.actorUser !== undefined && !equalId(proof.actorUser, context.actorUser)) fail('E_BOT_ACTOR');
+  if (context.actorDevice !== undefined && !equalId(proof.actorDevice, context.actorDevice)) fail('E_BOT_ACTOR');
+
+  const now = uint(context.now);
+  if (proof.expires <= now || now > MAX - 30n || proof.expires > now + 30n) fail('E_BOT_EXPIRED');
+}
+
+export interface DurableEvent {
+  eventId: Uint8Array;
+  sequence: bigint;
+  communityId: Uint8Array;
+  timestamp: bigint;
+  kind: number;
+  data: CborInput[];
+}
+
+function eventData(kind: number, data: unknown[]): void {
+  const ident = (index: number) => { data[index] = id(data[index]); };
+  const uintAt = (index: number, min = 0n, max = MAX) => { data[index] = uint(data[index], min, max); };
+  const lengths: Record<number, number> = { 1: 2, 2: 2, 3: 3, 4: 3, 5: 3, 6: 9, 7: 3 };
+  const expectedLength = lengths[kind];
+  if (expectedLength === undefined) fail('E_BOT_OPERATION');
+  if (data.length !== expectedLength) fail('E_BOT_SHAPE');
+
+  switch (kind) {
+    case 1:
+    case 2:
+      ident(0);
+      ident(1);
+      break;
+    case 3:
+      ident(0);
+      uintAt(1, 0n, 5n);
+      uintAt(2);
+      break;
+    case 4:
+      uintAt(0, 0n, 3n);
+      ident(1);
+      uintAt(2);
+      break;
+    case 5:
+      ident(0);
+      uintAt(1, 0n, 2n);
+      uintAt(2);
+      break;
+    case 6:
+      ident(0);
+      ident(1);
+      ident(2);
+      ident(3);
+      data[4] = nullable(data[4], id);
+      data[5] = nullable(data[5], id);
+      data[6] = nullable(data[6], value => uint(value, 1n));
+      uintAt(7, 0n, 6n);
+      data[8] = nullable(data[8], value => uint(value, 1n));
+      if (data[7] === 4n) {
+        if (data[5] === null || data[6] === null) fail('E_BOT_SHAPE');
+      } else if (data[4] === null || data[5] !== null || data[6] !== null) {
+        fail('E_BOT_SHAPE');
+      }
+      break;
+    case 7:
+      ident(0);
+      uintAt(1);
+      uintAt(2, 0n, 1n);
+      break;
+  }
+}
+
+function eventValue(event: DurableEvent): CborInput[] {
+  id(event.eventId);
+  uint(event.sequence, 1n);
+  id(event.communityId);
+  uint(event.timestamp);
+  uint(event.kind, 1n, 7n);
+  if (!Number.isInteger(event.kind)) fail('E_BOT_RANGE');
+  if (!Array.isArray(event.data)) fail('E_BOT_SHAPE');
+
+  const data = [...event.data];
+  eventData(event.kind, data);
+  if (event.kind === 6) {
+    const action = data[7] as bigint;
+    const expires = data[8] as bigint | null;
+    if (action === 1n && (expires === null || expires <= event.timestamp)) fail('E_BOT_RANGE');
+    if (action === 3n && expires !== null && expires <= event.timestamp) fail('E_BOT_RANGE');
+    if (action !== 1n && action !== 3n && expires !== null) fail('E_BOT_SHAPE');
+  }
+  return [1n, event.eventId, event.sequence, event.communityId, event.timestamp, BigInt(event.kind), data];
+}
+
+function readEvent(value: CborValue): DurableEvent {
+  const fields = arr(value, 7);
+  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  const event: DurableEvent = {
+    eventId: readId(fields[1]!),
+    sequence: u64(fields[2]!),
+    communityId: readId(fields[3]!),
+    timestamp: u64(fields[4]!),
+    kind: Number(u64(fields[5]!)),
+    data: arr(fields[6]!) as CborInput[],
+  };
+  eventValue(event);
+  return event;
+}
+
+export const encodeDurableEvent = (event: DurableEvent) => guarded(() => {
+  const encoded = encode(eventValue(event));
+  if (encoded.length > 4096) fail('E_BOT_SIZE');
+  return encoded;
+});
+export const decodeDurableEvent = (bytes: Uint8Array) => guarded(() => {
+  if (bytes.length > 4096) fail('E_BOT_SIZE');
+  return readEvent(decode(bytes));
+});
+
+export function validateEventContext(event: DurableEvent, community: Uint8Array): void {
+  if (!equalId(event.communityId, community)) fail('E_BOT_COMMUNITY');
+}
+
+export interface SendReceipt {
+  operationId: Uint8Array;
+  communityId: Uint8Array;
+  groupId: Uint8Array;
+  ciphertextSha256: Uint8Array;
+  status: number;
+  sequence: bigint | null;
+  epoch: bigint | null;
+}
+
+function receiptValue(receipt: SendReceipt): CborInput[] {
+  id(receipt.operationId);
+  id(receipt.communityId);
+  id(receipt.groupId);
+  bytes(receipt.ciphertextSha256, 32);
+  uint(receipt.status, 0n, 1n);
+  if (!Number.isInteger(receipt.status)) fail('E_BOT_RANGE');
+  if (receipt.status === 0
+      ? receipt.sequence !== null || receipt.epoch !== null
+      : receipt.sequence === null || receipt.epoch === null) {
+    fail('E_BOT_SHAPE');
+  }
+  if (receipt.sequence !== null) uint(receipt.sequence, 1n);
+  if (receipt.epoch !== null) uint(receipt.epoch);
+  return [1n, receipt.operationId, receipt.communityId, receipt.groupId,
+    receipt.ciphertextSha256, BigInt(receipt.status), receipt.sequence, receipt.epoch];
+}
+
+function readReceipt(value: CborValue): SendReceipt {
+  const fields = arr(value, 8);
+  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  const receipt: SendReceipt = {
+    operationId: readId(fields[1]!),
+    communityId: readId(fields[2]!),
+    groupId: readId(fields[3]!),
+    ciphertextSha256: bytes(fields[4]!, 32),
+    status: Number(u64(fields[5]!)),
+    sequence: readOptU(fields[6]!),
+    epoch: readOptU(fields[7]!),
+  };
+  receiptValue(receipt);
+  return receipt;
+}
+
+export const encodeSendReceipt = (receipt: SendReceipt) => guarded(() => {
+  const encoded = encode(receiptValue(receipt));
+  if (encoded.length > 512) fail('E_BOT_SIZE');
+  return encoded;
+});
+export const decodeSendReceipt = (bytes: Uint8Array) => guarded(() => {
+  if (bytes.length > 512) fail('E_BOT_SIZE');
+  return readReceipt(decode(bytes));
+});
+
+export function validateReceiptContext(
+  receipt: SendReceipt,
+  community: Uint8Array,
+  group: Uint8Array,
+): void {
+  if (!equalId(receipt.communityId, community) || !equalId(receipt.groupId, group)) {
+    fail('E_BOT_COMMUNITY');
+  }
+}
+
+export interface HelperEnvelope { requestId: Uint8Array; operation: number; payload: Uint8Array }
+export interface HelperResponse { requestId: Uint8Array; status: number; payload: Uint8Array }
+
+function helperValue(
+  envelope: HelperEnvelope | HelperResponse,
+  isResponse: boolean,
+): CborInput[] {
+  id(envelope.requestId);
+  const operation = isResponse
+    ? (envelope as HelperResponse).status
+    : (envelope as HelperEnvelope).operation;
+  uint(operation, isResponse ? 0n : 1n, isResponse ? 9n : 15n);
+  if (!Number.isInteger(operation)) fail('E_BOT_RANGE');
+
+  const payload = bytes(envelope.payload);
+  if (payload.length === 0 || payload.length > 1_048_480 || !Array.isArray(decode(payload))) {
+    fail('E_BOT_SHAPE');
+  }
+  return [1n, envelope.requestId, BigInt(operation), payload];
+}
+
+function readHelper(value: CborValue, isResponse: boolean): HelperEnvelope | HelperResponse {
+  const fields = arr(value, 4);
+  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  const requestId = readId(fields[1]!);
+  const operation = Number(u64(fields[2]!));
+  const payload = bytes(fields[3]!);
+  const envelope = isResponse
+    ? { requestId, status: operation, payload }
+    : { requestId, operation, payload };
+  helperValue(envelope, isResponse);
+  return envelope;
+}
+
+function helperBody(value: CborInput[]): Uint8Array {
+  const encoded = encode(value);
+  if (encoded.length > HELPER_MAX) fail('E_BOT_SIZE');
+  return encoded;
+}
+
+export const encodeHelperRequest = (envelope: HelperEnvelope) =>
+  guarded(() => helperBody(helperValue(envelope, false)));
+export const decodeHelperRequest = (bytes: Uint8Array) => guarded(() => {
+  if (bytes.length > HELPER_MAX) fail('E_BOT_SIZE');
+  return readHelper(decode(bytes), false) as HelperEnvelope;
+});
+export const encodeHelperResponse = (response: HelperResponse) =>
+  guarded(() => helperBody(helperValue(response, true)));
+export const decodeHelperResponse = (bytes: Uint8Array) => guarded(() => {
+  if (bytes.length > HELPER_MAX) fail('E_BOT_SIZE');
+  return readHelper(decode(bytes), true) as HelperResponse;
+});
+
+export function frameHelper(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 1 || bytes.length > HELPER_MAX) fail('E_BOT_SIZE');
+  const framed = new Uint8Array(bytes.length + 4);
+  new DataView(framed.buffer).setUint32(0, bytes.length, false);
+  framed.set(bytes, 4);
+  return framed;
+}
+
+export function parseHelperFrame(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 4) fail('E_BOT_FRAME');
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, false);
+  if (length < 1 || length > HELPER_MAX || length !== bytes.length - 4) fail('E_BOT_FRAME');
+  return bytes.slice(4);
+}
