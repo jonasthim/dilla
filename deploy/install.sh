@@ -629,6 +629,10 @@ live_calls_preflight() {
 	_rooms=""
 	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
 		_why="livekit.mode is $LIVEKIT_MODE_BEFORE, so the SFU runs inside dilla and its rooms cannot be listed; this upgrade restarts it and ends every live call"
+	elif ! systemctl is-active --quiet dilla-media; then
+		# A stopped SFU holds no rooms (a rollback stops dilla first, and dilla-media with it through PartOf).
+		log "dilla-media is not running, so there are no live calls"
+		return 0
 	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
 		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
 		if [ -z "$_busy" ]; then

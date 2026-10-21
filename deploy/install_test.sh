@@ -58,7 +58,7 @@ stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
+stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "$1" = is-active ] && [ -n "${STUB_MEDIA_INACTIVE:-}" ]; then exit 3; fi; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
 # With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
 # the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
 # STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
@@ -527,7 +527,8 @@ cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
 untouched() { # prints a problem list, empty when nothing was touched
 	cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight" || printf '|the binary was replaced'
 	cmp -s "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight" || printf '|dilla.toml changed'
-	has "$(cat "$LOG")" "systemctl" && printf '|systemctl ran: %s' "$(grep systemctl "$LOG" | tr '\n' ';')"
+	# Asking whether dilla-media runs (systemctl is-active) changes nothing; any other systemctl call does.
+	grep systemctl "$LOG" | grep -vq '^systemctl is-active' && printf '|systemctl ran: %s' "$(grep systemctl "$LOG" | tr '\n' ';')"
 	has "$(cat "$LOG")" "migrate down" && printf '|migrate ran'
 	return 0
 }
@@ -569,6 +570,25 @@ if [ -z "$problems" ]; then pass "--upgrade --yes proceeds when the live-room ch
 	IFS='|'
 	# shellcheck disable=SC2086
 	fail "--upgrade --yes proceeds when the live-room check fails, with a warning" $problems
+	IFS='
+'
+fi
+
+# Final review I1: the rollback stops dilla first, which stops dilla-media (PartOf), so `media --rooms` cannot answer.
+# A stopped media service has no rooms, so there are no live calls: the upgrade says so and proceeds without --yes.
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+STUB_MEDIA_INACTIVE=1 FAKE_ROOMS_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$(cat "$LOG")" "systemctl is-active --quiet dilla-media" || problems="$problems|dilla-media's state was not asked: $(cat "$LOG")"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|media --rooms ran although dilla-media is stopped"
+has "$ERR" "dilla-media is not running" || problems="$problems|the reason is not said: $ERR"
+has "$ERR" "warning" && problems="$problems|a warning although nothing was overridden"
+cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
+if [ -z "$problems" ]; then pass "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)" $problems
 	IFS='
 '
 fi
