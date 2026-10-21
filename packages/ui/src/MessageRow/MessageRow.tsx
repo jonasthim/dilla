@@ -7,8 +7,17 @@ import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
-/** A piece of a message body: plain text, or a mention shown as a pill whose text is its `@` name. */
-export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null; /** A user mention's id: with `onOpenProfile` the pill is a button that opens that user's card. Role and broadcast pills have none. */ userId?: string };
+/**
+ * A piece of a message body: plain text, a mention shown as a pill whose text is its `@` name, or markdown (E5). The
+ * formatting parts nest; code, code blocks and links carry only text. Nothing here is HTML: the row renders each as a React element.
+ */
+export type BodyPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null; /** A user mention's id: with `onOpenProfile` the pill is a button that opens that user's card. Role and broadcast pills have none. */ userId?: string }
+  | { kind: 'strong' | 'em' | 'strike' | 'quote'; children: readonly BodyPart[] }
+  | { kind: 'code' | 'codeblock'; text: string }
+  /** A link shown as its own text. The row renders an anchor only for an `http:`, `https:` or `mailto:` href; any other is plain text. */
+  | { kind: 'link'; href: string; text: string };
 
 export interface MessageRowProps {
   author: string;
@@ -59,16 +68,32 @@ const INTERACTIVE = 'button, a, [data-profile="true"], input, textarea, select, 
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
 
+const SAFE_HREF = /^(?:https?:\/\/[^\s/]|mailto:[^\s])/i;
+
 /** The body's parts as text children and mention pills: never HTML, never the raw token. A user pill is a button when the caller can open a profile. */
 function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOpenProfile: MessageRowProps['onOpenProfile']): ReactNode {
   if (typeof body === 'string') return body;
   return body.map((part, i) => {
-    if (part.kind === 'text') return part.text;
-    const inner = <>{part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</>;
-    const attrs = { className: 'd-mention', 'data-me': flag(part.me), 'data-broadcast': flag(part.broadcast) };
-    if (part.userId === undefined || onOpenProfile === undefined) return <span key={i} {...attrs}>{inner}</span>;
-    const userId = part.userId;
-    return <button key={i} type="button" {...attrs} tabIndex={tabIndex} onClick={e => onOpenProfile(userId, e.currentTarget, 'mention')}>{inner}</button>;
+    switch (part.kind) {
+      case 'text': return part.text;
+      case 'strong': return <strong key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</strong>;
+      case 'em': return <em key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</em>;
+      case 'strike': return <s key={i}>{bodyChildren(part.children, tabIndex, onOpenProfile)}</s>;
+      case 'quote': return <blockquote key={i} className="d-message-row__quote">{bodyChildren(part.children, tabIndex, onOpenProfile)}</blockquote>;
+      case 'code': return <code key={i} className="d-message-row__code">{part.text}</code>;
+      case 'codeblock': return <pre key={i} className="d-message-row__codeblock"><code>{part.text}</code></pre>;
+      case 'link':
+        // Defence in depth: the parser already refuses other schemes; an href that is not exactly http(s) or mailto is shown as the text it came with.
+        if (!SAFE_HREF.test(part.href)) return part.text;
+        return <a key={i} className="d-link" href={part.href} target="_blank" rel="noopener noreferrer nofollow" tabIndex={tabIndex}>{part.text}</a>;
+      case 'mention': {
+        const inner = <>{part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</>;
+        const attrs = { className: 'd-mention', 'data-me': flag(part.me), 'data-broadcast': flag(part.broadcast) };
+        if (part.userId === undefined || onOpenProfile === undefined) return <span key={i} {...attrs}>{inner}</span>;
+        const userId = part.userId;
+        return <button key={i} type="button" {...attrs} tabIndex={tabIndex} onClick={e => onOpenProfile(userId, e.currentTarget, 'mention')}>{inner}</button>;
+      }
+    }
   });
 }
 
@@ -183,7 +208,7 @@ export function MessageRow({
         </p>
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
-        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</p> : null}
+        {editor !== undefined ? editor : showBody ? <div className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</div> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (
