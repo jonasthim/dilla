@@ -156,12 +156,12 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 17 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
   // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
   // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
-  for (let i = 0; i < 17; i++) {
+  for (let i = 0; i < 16; i++) {
     await press('Tab');
     if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());

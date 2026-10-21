@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { MessageRow } from './MessageRow.tsx';
@@ -419,10 +419,19 @@ describe('MessageRow profile opens (MP7)', () => {
     render(<MessageRow author="ada" time="21:02" state="ok" active body={body} onOpenProfile={onOpenProfile} />);
     const user = userEvent.setup();
     const pill = screen.getByRole('button', { name: '@bob' });
-    expect(pill).toHaveAttribute('tabindex', '0');
     pill.focus();
     await user.keyboard('{Enter}');
     expect(onOpenProfile).toHaveBeenCalledWith('u-bob', pill, 'mention');
+  });
+  it('CI: the pill and the author name are tab stops only once focus is in the row, so Shift+Tab from after the log lands on the row itself', () => {
+    const { container } = render(<MessageRow author="ada" authorId="u-ada" time="21:02" state="ok" active body={body} onOpenProfile={vi.fn()} />);
+    const row = container.querySelector('article') as HTMLElement;
+    const stops = () => [screen.getByRole('button', { name: '@bob' }), screen.getByRole('button', { name: 'ada' })].map(b => b.getAttribute('tabindex'));
+    expect(stops()).toEqual(['-1', '-1']);
+    act(() => row.focus());
+    expect(stops()).toEqual(['0', '0']);
+    act(() => row.blur());
+    expect(stops()).toEqual(['-1', '-1']);
   });
   it('takes the pill out of the tab order while the row is not active', () => {
     render(<MessageRow author="ada" time="21:02" state="ok" body={body} onOpenProfile={vi.fn()} />);

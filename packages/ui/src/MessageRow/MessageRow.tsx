@@ -1,4 +1,4 @@
-import { useId, useRef, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
@@ -117,6 +117,9 @@ export function MessageRow({
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
+  // The author name and the pills come after the row in the tab order but are stops only while focus is in the row, so a Shift+Tab from after the log lands on the row itself.
+  const [inside, setInside] = useState(false);
+  const profileTab = active === true && inside ? 0 : -1;
   const showBody = state === 'ok' || state === 'pending' || state === 'failed';
   const headState = (state === 'pending' || state === 'failed') && !!stateLabel;
   const note = (state === 'cannot-read' || state === 'deleted') && !!stateLabel;
@@ -156,6 +159,7 @@ export function MessageRow({
 
   return (
     <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown} onClick={reveals ? onRowClick : undefined}
+      onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setInside(false); }}
       data-state={state} data-own={flag(own)} data-active={flag(active)}
       data-seq={seq ?? undefined} data-msg-id={msgId ?? undefined}
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
@@ -168,7 +172,7 @@ export function MessageRow({
         <p className="d-message-row__head" id={headId}>
           <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>
             {opens && grouped !== true
-              ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={tabIndex} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
+              ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={profileTab} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
               : author}
           </span>
           {tag && grouped !== true ? <Tag kind={tag} /> : null}
@@ -179,7 +183,7 @@ export function MessageRow({
         </p>
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
-        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body, tabIndex, onOpenProfile)}</p> : null}
+        {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</p> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (
