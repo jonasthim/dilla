@@ -11,11 +11,15 @@ import (
 )
 
 type Querier interface {
+	AFKAwayExists(ctx context.Context, arg AFKAwayExistsParams) (int64, error)
+	AFKAwayExistsUser(ctx context.Context, arg AFKAwayExistsUserParams) (int64, error)
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	ClearAFKAway(ctx context.Context, arg ClearAFKAwayParams) (int64, error)
+	ClearAFKAwayUser(ctx context.Context, arg ClearAFKAwayUserParams) ([]id.ID, error)
 	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
 	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
 	// healed group that kept its deadline would be one restart away from looking overdue again.
@@ -160,6 +164,8 @@ type Querier interface {
 	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
+	ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error)
+	ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
@@ -383,6 +389,7 @@ type Querier interface {
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error

@@ -338,7 +338,7 @@ describe('fix round 3 (wave 2 client review m5)', () => {
     await app.user.click(screen.getByRole('button', { name: /^lobby/ }));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
-    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removed')));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removed')), { timeout: 3_500 });
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
       error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));

@@ -78,6 +78,10 @@ export function frameVectors() {
     // op 54 community_changed (S->C, dilla-web-3.1): [community_id]. A member re-reads the
     // community's channels and settings.
     frame('community_changed', 54, 0, null, [COMMUNITY]),
+    // op 55 afk_away (S->C, AW3): [community_id, user_id, since_ts]. since_ts is the unix second
+    // the member became away in the community; 0 says the member is no longer away.
+    frame('afk_away', 55, 0, null, [COMMUNITY, USER, 1758659040]),
+    frame('afk_away cleared', 55, 0, null, [COMMUNITY, USER, 0]),
   ];
 
   const rejects = [
@@ -117,6 +121,9 @@ export function frameVectors() {
     // op 19 is server-to-client as op 53 is: the instance's code is E_FRAME_TYPE at the opcode
     // check, and a client decoder refuses eight elements, not six or seven, as E_FRAME_SHAPE.
     { name: 'message.ct with 8 elements', frame: hex(encode([19, 9, GROUP, [4130, 42, DEVICE, new Uint8Array([1, 2, 3]), TAG, 1758659700, 0, 0]])), code: 'E_FRAME_TYPE' },
+    // op 55 is server-to-client as op 54 is: the instance's code is E_FRAME_TYPE, and a client
+    // decoder refuses four elements, not three, as E_FRAME_SHAPE.
+    { name: 'afk_away with 4 elements', frame: hex(encode([55, 0, null, [COMMUNITY, USER, 1758659040, 1]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

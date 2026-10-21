@@ -9,7 +9,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | state | shown | worker fact | announcement |
 |---|---|---|---|
 | idle | voice rows with `voice.join` on focus or hover; no dock | `call.phase` idle | none |
-| AFK (since v0.1.0-web3.9) | the AFK channel is an ordinary voice call, joined listen-only (see flow 14); every grant is listen-only, no share; a device idle in voice joins it muted and shows `mic-off` everywhere | `call.phase` in, listen-only (no publish grant) | none; the join is automatic or announced by the AFK move (flow 14) |
+| AFK (since v0.1.0-web3.9) | replaced in v0.1.0-web3.11: the AFK channel hosts no call and lists who is away (flow 14). Until then: the AFK channel is an ordinary voice call, joined listen-only (see flow 14); every grant is listen-only, no share; a device idle in voice joins it muted and shows `mic-off` everywhere | `call.phase` in, listen-only (no publish grant) | none; the join is automatic or announced by the AFK move (flow 14) |
 | no one in voice | the row shows no sub-rows and no count; the stage says `voice.empty` | `voice[channel]` absent | none |
 | live, not joined | the row shows `voice.count` and one sub-row per person with their state words; `voice.join` / `call.join` | `voice[channel]` has participants, `call.phase` idle | none |
 | joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining | none |
@@ -86,6 +86,8 @@ Removed in v0.1.0-web3.8: the `ACTIVE VOICE` heading (`voice.heading.active`, sh
 │  │ web · online         │                                                                               │
 └──┴──────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Amended 2026-10-21 (web3.11, flow 14): **AFK means disconnected.** The AFK channel hosts no call: its page lists who is away, with **go AFK**, and the listen-only call described in the next paragraph is gone.
 
 Amended 2026-10-20 (web3.9, flow 14): **the AFK page is gone; the AFK channel is a built-in, listen-only voice channel.** Every server has a voice channel called "AFK" in the one channel list. It is joined like any voice channel (one click on a computer; on a phone, tap it and then join), and every grant in it is listen-only, so every tile and row shows `mic-off` and the stage header reads `afk.stage.muted`. There is no AFK picker in server settings, no "Move to AFK" or "Leave AFK", and no `afkMove` or `afkLeave` command: the server moves a device that was idle in another voice channel, and a person leaves by joining another voice channel. A phone is never moved. See `docs/afk-architecture.md`. In the same wave **the dock lost its microphone meter** (the meter is in Settings → Voice): it shows `layout.dock.connected`, where you are (`layout.dock.where`), then camera, share and leave; with push to talk on, the mute button carries the `layout.ptt.tag` tag. One click on a voice row joins it on a computer, and the speaking person's avatar has a ring.
 
@@ -360,7 +362,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `call.outgoing.notRung='{names} not rung: called too recently.'` (the participants the instance did not ring, its pair bound of 15 s and 20 an hour; added 2026-10-14, product walk I6)
 
 *AFK:*
-- `voice.afk.*` (`voice.afk.title`, `voice.afk.loading`, `voice.afk.silent`, `voice.afk.count`, `voice.afk.move`, `voice.afk.leave`) — unused since v0.1.0-web3.9 (the AFK channel is now an ordinary voice call; see flow 14)
+- `voice.afk.count` ('{n} in AFK') counts the away roster on the AFK row since v0.1.0-web3.11 (flow 14). `voice.afk.title`, `voice.afk.loading`, `voice.afk.silent`, `voice.afk.move` and `voice.afk.leave` were unused since v0.1.0-web3.9 and are removed in v0.1.0-web3.11.
 
 *Media players:*
 - `media.play='play {name}'`, `media.loading='loading'`

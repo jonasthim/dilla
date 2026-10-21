@@ -33,8 +33,15 @@ export interface DmOpened { channelId: Uint8Array; created: boolean; }
 export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
-/** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet. */
-export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }
+/** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet.
+ *  AW4: `away` is the community's away roster, each member and the unix second it became away; empty from a web3.9 host. */
+/** `pending`: this device has a pending cut. AW5 fix round 3: `reason` says why (device-scoped, any community's read):
+ *  1 the idle sweep moved it, 2 this user chose AFK on another device or tab; 0 none. A fixture may leave `reason` out
+ *  (then 1 when pending). */
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; reason?: 0 | 1 | 2; away: AFKAwayRow[] }
+export interface AFKAwayRow { userId: Uint8Array; since: number }
+/** 09 § GET /v1/communities/{id}/afk: the away roster holds at most 1024 entries. */
+const AFK_AWAY_MAX = 1024;
 export interface AFKSettings { channelId: Uint8Array | null; timeoutSeconds: number }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
@@ -247,6 +254,13 @@ function checkedText(field: string, v: string, maxBytes: number): string {
   for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
   return v;
 }
+/** AW5 fix round 3: GET …/afk's pending reason (protocol/07): 0 none, 1 the idle sweep, 2 AFK chosen elsewhere. Round 3b:
+ *  any non-zero value is pending, and one this client does not know (3 or more) reads as 2, the calm reason; never an
+ *  error. */
+function pendingReason(v: CborValue): 0 | 1 | 2 {
+  const n = u53(v);
+  return n === 0 ? 0 : n === 1 ? 1 : 2;
+}
 function flag(v: CborValue): boolean {
   const n = u53(v);
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
@@ -368,11 +382,32 @@ export class Routes {
       return { id: bin(a[0], 16), name: str(a[1]), owner: bin(a[2], 16), policyVersion: u64(a[3]) };
     });
   }
-  /** GET /v1/communities/{id}/afk: [id|null, timeout, [] (the retired occupant list, ignored), pending?]; the dilla CBOR has no booleans, so pending and exempt are uint 0 or 1; a 3-element answer is not pending. */
+  /** GET /v1/communities/{id}/afk: [id|null, timeout, [] (the retired occupant list, ignored), pending?, away?]; the dilla
+   *  CBOR has no booleans, so pending and exempt are uint 0 or 1; a 3-element answer is not pending, and an answer of
+   *  fewer than five elements (web3.9) has no one away (AW4). */
   async getAFK(communityId: Uint8Array): Promise<AFKSnapshot> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk`, 'read', true)), 3);
     bounded(a[2], 1024, 'AFK occupants');
-    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: a.length > 3 ? flag(a[3]) : false };
+    // Fix round 1 (N3): a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+    const away: AFKAwayRow[] = [];
+    const seen = new Set<string>();
+    for (const value of a.length > 4 ? bounded(a[4], AFK_AWAY_MAX, 'AFK away') : []) {
+      const row = atLeast(value, 2);
+      const userId = bin(row[0], 16);
+      const since = u53(row[1]);
+      const key = toHex(userId);
+      if (since === 0 || seen.has(key)) continue;
+      seen.add(key);
+      away.push({ userId, since });
+    }
+    const reason = a.length > 3 ? pendingReason(a[3]) : 0;
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: reason !== 0, reason, away };
+  }
+  /** PUT /v1/communities/{id}/afk/away: [] (AW4, R-AW3). The caller's user goes to the AFK channel: the instance cuts every
+   *  device of the user from its call, then marks the user away. There is no route that clears away (Q3). */
+  async putAFKAway(communityId: Uint8Array): Promise<void> {
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/afk/away`, 'write', true,
+      { body: encode([]), ok: [204] });
   }
   async getAFKSettings(communityId: Uint8Array): Promise<AFKSettings> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'read', true)), 2);

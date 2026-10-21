@@ -370,6 +370,13 @@ type CommunityRow struct {
 	DeletedAt            *int64
 }
 
+// AFKAway is one row of a community's away roster: the member is in the AFK channel and has
+// no voice connection, since a unix time.
+type AFKAway struct {
+	UserID id.ID
+	Since  int64
+}
+
 // CommunityAFK configures the optional silent destination for idle voice devices.
 type CommunityAFK struct {
 	ChannelID      *id.ID

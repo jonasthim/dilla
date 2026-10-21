@@ -114,14 +114,16 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
 }
 
 const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgoing?: string; title?: string; joined?: boolean; paused?: boolean; dm?: boolean;
-  empty?: boolean; header?: ReactNode }) => (
+  empty?: boolean; header?: ReactNode; afk?: boolean }) => (
   <div className="dw-voice-stage" data-doc-state={p.notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage'}
     data-call-phase={p.joined === false ? 'idle' : undefined}>
     <CallStage title={p.title ?? t('voice.open', { name: 'harbour' })} header={p.header}
       tiles={p.empty === true ? p.joined === false ? [] : [tile(person('you'), true)]
         : p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
       code={p.code ?? null} notice={p.notice ?? null} outgoing={p.outgoing !== undefined ? { text: p.outgoing } : null}
-      controls={p.joined === false ? <Button variant="accent" className="dw-voice-join">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })} labels={STAGE_LABELS} />
+      controls={p.afk === true ? <div className="dw-afk-page"><Button variant="accent" className="dw-voice-join">{t('afk.go')}</Button></div>
+        : p.joined === false ? <Button variant="accent" className="dw-voice-join">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })}
+      labels={p.afk === true ? { ...STAGE_LABELS, empty: t('afk.empty') } : STAGE_LABELS} />
   </div>
 );
 
@@ -218,7 +220,7 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   if (!main || !text || !join) throw new Error(`${story}: the main area, the empty text or the join button is missing`);
   const m = centreOf(main.getBoundingClientRect());
   const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
-  // The AFK preview's line leads the group, above the message.
+  // An outgoing line, when a stage has one, leads the group, above the message.
   const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
   if (lead && Math.abs(centreOf(lead).x - m.x) > 2) throw new Error(`${story}: the lead line is not centred across (main ${String(m.x)}, line ${String(centreOf(lead).x)})`);
   const top = lead?.top ?? tr.top;
@@ -235,9 +237,9 @@ export const EmptyNotJoined: Story = {
   render: () => <Screen header={null} main={stage({ joined: false, empty: true, header: <ChannelHeader kind="voice" name="harbour" /> })} />,
   play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoined', false); },
 };
-/** The AFK preview: the 'everyone is muted' line, the message and the join are one centred group. */
+/** The AFK page with nobody away (web3.11: it hosts no call): 'Nobody is away.' and go AFK are one centred group. */
 export const EmptyNotJoinedAfk: Story = {
-  render: () => <Screen header={null} main={stage({ joined: false, empty: true, outgoing: t('afk.stage.muted', { channel: 'AFK' }), header: <ChannelHeader kind="voice" name="AFK" /> })} />,
+  render: () => <Screen header={null} main={stage({ joined: false, empty: true, afk: true, header: <ChannelHeader kind="voice" name="AFK" /> })} />,
   play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoinedAfk', false); },
 };
 /** The same on a phone, the pushed view (the test runner visits it at 360 x 740). */

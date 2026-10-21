@@ -459,6 +459,20 @@ describe('Gateway input checks', () => {
     expect(h.events.slice(before)).toEqual([]);
     expect(s.closedWith).toBeNull();
   });
+
+  // AW4: afk_away reaches the worker once ready; a malformed one is dropped without closing the socket.
+  it('emits afk_away (op 55) once ready and drops a malformed one', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const away = encodeFrame(Op.afkAway, 0, null, [GROUP, USER, 1758659040]);
+    s.receive(away);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(away)]);
+    const before = h.events.length;
+    s.receive(encodeFrame(Op.afkAway, 0, null, [GROUP, USER, 1758659040, 1]));
+    s.receive(encodeFrame(Op.afkAway, 0, null, [GROUP, USER.slice(1), 0]));
+    expect(h.events.slice(before)).toEqual([]);
+    expect(s.closedWith).toBeNull();
+  });
 });
 
 describe('Gateway reconnect', () => {
