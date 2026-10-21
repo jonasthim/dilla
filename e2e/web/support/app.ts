@@ -40,7 +40,9 @@ export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server res
  */
 export const ABORTED_FONT_LINE = /^\[JavaScript Error: "downloadable font: download failed \(.*\): status=2152398850 source: /;
 /** Firefox's Playwright juggler worker can log this when a test closes its second browser context. */
-export const ABORTED_JUGGLER_LINE = /^\[JavaScript Error: "NS_BINDING_ABORTED: " \{file: "chrome:\/\/juggler\/content\/content\/WorkerMain\.js" line: 6\}\]$/;
+/** Firefox's own line when a reload closes the open LiveKit signal socket (port-free; the query is a token). */
+export const FIREFOX_SOCKET_INTERRUPTED = /^\[JavaScript Error: "The connection to wss?:\/\/[^/"]+\/rtc\/v1\?[^"]* was interrupted while the page was loading\."/;
+export const ABORTED_JUGGLER_LINE =/^\[JavaScript Error: "NS_BINDING_ABORTED: " \{file: "chrome:\/\/juggler\/content\/content\/WorkerMain\.js" line: 6\}\]$/;
 
 // The copy keys the e2e drives: L-COPY-01 (onboarding) and the keys tasks 22 and 24 add to en.ts. The
 // values always come from the app's own strings, so a reworded text never breaks the suite.
@@ -343,7 +345,9 @@ function newGuard(projectName: string): Guard {
         // session's pagehide leave runs, and LiveKit logs this one line; the leave is then seen through the socket close.
         const firefoxBrowserAbort = projectName.startsWith('firefox') &&
           (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()) ||
-            m.text() === 'cannot send signal request before connected, type: leave JSHandle@object');
+            m.text() === 'cannot send signal request before connected, type: leave JSHandle@object' ||
+            // and Firefox's own line for the same reload closing the open signal socket (as the voice suite allows)
+            FIREFOX_SOCKET_INTERRUPTED.test(m.text()));
         if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
           consoleErrors.push(m.text());
         }
