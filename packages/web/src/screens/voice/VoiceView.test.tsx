@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, BOB_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, CAROL, CAROL_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -35,7 +35,7 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
-  it('shows the AFK channel as an ordinary voice view with a join button and the muted stage line', async () => {
+  it('shows the AFK channel as an ordinary voice view with a join button', async () => {
     renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [
       { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
     const app = screen.getByRole('main');
@@ -49,9 +49,8 @@ describe('voice in the shell', () => {
     expect(dock.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('an ordinary voice call keeps its controls live and shows no muted-for-everyone line (control)', async () => {
+  it('an ordinary voice call keeps its controls live and asks for the microphone', async () => {
     const app = await inVoice();
-    expect(main().queryByText(t('afk.stage.muted', { channel: 'general' }))).toBeNull();
     for (const name of ['mute', 'camera']) expect(main().getByRole('button', { name })).not.toHaveAttribute('aria-disabled', 'true');
     expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBeFalsy();
   });
@@ -643,6 +642,39 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
     expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toEqual([]);
     expect(document.querySelector('.d-banner')).toBeNull();
+  });
+});
+
+describe('AW6: the AFK row lists the away roster', () => {
+  const since = 1_900_000_000;
+  const afkSlice = (away: { userId: string; since: number }[]) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away });
+  const afkRow = async () => (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+  const people = (row: HTMLElement) => [...row.querySelectorAll<HTMLElement>('.d-voice-row__person')]
+    .map(p => `${p.querySelector('.d-voice-row__person-name')?.textContent ?? ''}:${p.querySelector('[data-state="away"]')?.textContent ?? ''}`);
+  it('lists an away person who is in no call, counted, and never the voice book’s people', async () => {
+    // The voice book still names someone in the AFK channel (a web3.9 client): the row ignores it.
+    const app = renderVoiceShell({ voice: { [MUSIC]: { callId: MUSIC, participants: [
+      { userId: CAROL, deviceId: CAROL_DEV, name: 'carol', flags: 0, own: false, web: false, bot: false }] } } });
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }]));
+    const row = await afkRow();
+    await waitFor(() => expect(people(row)).toEqual([`bob:${t('afk.away')}`]));
+    expect(within(row).getByRole('button', { name: 'voice music' })).toHaveAccessibleDescription(t('voice.count', { n: 1 }));
+    expect(row.querySelector('[data-state="muted"]')).toBeNull();
+  });
+
+  it('updates on op 55, and when that person sends a message their row leaves the list', async () => {
+    const app = renderVoiceShell();
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }]));
+    const row = await afkRow();
+    await waitFor(() => expect(people(row)).toEqual([`bob:${t('afk.away')}`]));
+    // Op 55: carol is marked away (the worker patches the slice).
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }, { userId: CAROL, since: since + 1 }]));
+    await waitFor(() => expect(people(row)).toEqual([`bob:${t('afk.away')}`, `carol:${t('afk.away')}`]));
+    // Bob sends a message in this community: the server clears his away row and op 55 (since 0) removes it.
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: CAROL, since: since + 1 }]));
+    await waitFor(() => expect(people(row)).toEqual([`carol:${t('afk.away')}`]));
+    app.client.publish(`afk:${A}`, afkSlice([]));
+    await waitFor(() => expect(row.querySelector('.d-voice-row__people')).toBeNull());
   });
 });
 

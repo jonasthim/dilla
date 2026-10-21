@@ -85,6 +85,23 @@ describe('VoiceChannelRow', () => {
     expect(ada.querySelector('.d-slot')?.children).toHaveLength(0);
   });
 
+  it('AW6: an away person (the AFK channel) is listed and counted, with the away word and no voice glyphs', () => {
+    const { container } = render(<VoiceChannelRow {...base} labels={{ ...labels, away: 'away' }}
+      participants={[person('ada', { away: true, web: false }), person('bo', { away: true, web: false })]} />);
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
+    expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour · 2');
+    const people = within(screen.getByRole('list')).getAllByRole('listitem');
+    expect(people.map(spoken)).toEqual(['ada away', 'bo away']);
+    for (const p of people) {
+      expect(p).toHaveAttribute('data-away', 'true');
+      expect(p.querySelector('[data-state="away"]')).toHaveTextContent('away');
+      expect(p.querySelector('.d-slot')?.children).toHaveLength(0);
+    }
+    // A person in voice is not away.
+    render(<VoiceChannelRow {...base} labels={{ ...labels, away: 'away' }} participants={[person('cy')]} />);
+    expect(document.querySelectorAll('[data-away]')).toHaveLength(2);
+  });
+
   it('the row marker is the volume-2 icon, live or not; live and joined are data attributes', () => {
     const { container, rerender } = render(<VoiceChannelRow {...base} participants={[]} />);
     expect(container.querySelector('.d-voice-row__glyph svg')).toHaveAttribute('data-icon', 'volume-2');

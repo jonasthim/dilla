@@ -6,8 +6,8 @@
 |---|---|
 | a new server | the channel list shows `AFK` last, with the voice glyph |
 | the AFK channel renamed and moved into a category | |
-| idle in voice on desktop | the device leaves its call and joins the AFK call listen-only; every tile and row shows `mic-off`; the stage header reads `afk.stage.muted` |
-| the AFK join failed | the dock line `afk.moved` with `afk.moved.join` |
+| idle in voice on desktop | the sweep cuts the call; the stage or the region that outlives the dock says `afk.moved`, and nothing joins (no AFK call, no microphone, no dock) |
+| the AFK row | its away roster: each person away there, with no voice connection, listed under the row with `afk.away` and counted; a click leaves the current call and marks the person away |
 | a phone in voice | never moved |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
@@ -38,14 +38,13 @@
 ## Focus rules
 
 - Joining from the trailing icon keeps focus on it
-- The AFK move does not move focus
+- The sweep’s cut does not move focus
 - Collapsing a category keeps focus on its header
 - The `@` tile keeps focus when the sidebar swaps to DMs
 
 ## Announcements
 
-- The AFK move announces "Moved to {channel}" with the channel's name, once
-- A failed AFK join announces the same line
+- The sweep's cut announces "Moved to {channel}" with the channel's name, once, and joins nothing
 - Nothing else new
 
 ## Copy
@@ -58,9 +57,8 @@
 `afk.timeout.3600='1 hour'`
 `afk.timeout.hint='Members idle in voice this long move to {channel} and are muted. Phones are not moved.'`
 `afk.channel.note='This is the server’s AFK channel. Everyone in it is muted.'`
-`afk.stage.muted='Everyone is muted in {channel}'`
 `afk.moved='Moved to {channel} for inactivity'`
-`afk.moved.join='join'`
+`afk.away='away'`
 `layout.dock.connected='voice connected'`
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`

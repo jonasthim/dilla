@@ -23,7 +23,7 @@ import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
-  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody,
+  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody, userName,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
 import { callPhase, DmCall, dmCallStart, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
@@ -917,7 +917,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
-    afkChannels,
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -972,13 +971,16 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // A voice channel this client cannot join (a readable one, `kind` voice but not `isVoice`) has no join and nobody under it.
   const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[] }> = {};
   for (const r of channelRows) if (r.kind === 'voice') voiceRooms[r.id] = { joined: false, held: true, participants: [] };
+  // AW6: the AFK channel hosts no call (R-AW1). Its people are this server's away roster, named from its members and shown
+  // as away, never the voice book's.
+  const afkHere = afkLists[(communities ?? []).findIndex(c => c.id === communityId)];
+  const awayPeople = (afkHere?.away ?? []).map(row => ({
+    deviceId: `away:${row.userId}`, userId: row.userId, name: userName(row.userId, members ?? [], trust), state: 'ok' as const,
+    speaking: false, muted: false, deafened: false, video: false, screen: false, web: false, bot: false, away: true,
+  }));
   for (const r of voiceRows) {
     voiceRooms[r.id] = { joined: r.joined, held: r.held,
-      participants: (r.room?.participants ?? []).map(p => {
-        const view = participantView(p, 'ok', r.speaking.has(p.deviceId));
-        // Nobody speaks in the AFK channel: every person there shows muted.
-        return afkChannels.has(r.id) ? { ...view, muted: true } : view;
-      }) };
+      participants: afkChannels.has(r.id) ? awayPeople : (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
   }
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {

@@ -12,7 +12,11 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(32);
+    expect(pairs.length).toBe(31);
+    // AW6: the AFK channel hosts no call, so its muted line and the failed move's join are gone; `afk.away` is new.
+    expect(table['afk.away']).toBe('away');
+    expect(table['afk.stage.muted']).toBeUndefined();
+    expect(table['afk.moved.join']).toBeUndefined();
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
     expect(table['afk.channel.note'].codePointAt(18)).toBe(0x2019);
@@ -40,14 +44,15 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
     expect(keyboard).toContain('`aria-expanded`');
     expect(keyboard).toContain('Ctrl+End');
     const states = body('States');
-    expect(states).toContain('listen-only');
+    expect(states).not.toContain('listen-only');
+    expect(states).toContain('`afk.away`');
     expect(body('Announcements')).toContain('Moved to');
     const rows = states.split('\n').filter(l => l.startsWith('|') && !/^\|[-| ]+\|$/.test(l));
     expect(rows.length - 1).toBeGreaterThanOrEqual(20);
   });
   const LOWER: readonly string[] = [
     'afk.timeout.label',
-    'afk.moved.join',
+    'afk.away',
     'layout.dock.connected',
     'layout.members.online',
     'layout.members.offline',

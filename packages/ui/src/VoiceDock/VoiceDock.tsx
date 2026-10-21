@@ -27,8 +27,8 @@ export interface VoiceDockProps {
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
    *  `!canCamera` stands for it. */
   paused?: boolean;
-  /** A listen-only call (the AFK channel), as CallControls' `listenReason`: camera and share are aria-disabled and give
-   *  this reason (`afk.stage.muted`) in place of `labels.why`. */
+  /** A listen-only call, as CallControls' `listenReason`: camera and share are aria-disabled and give this reason in place
+   *  of `labels.why`. The web client passes none since AW6 (the AFK channel hosts no call). */
   listenReason?: string;
   /** Not drawn since web3.9 (R26). */
   shortcuts?: { mute: string; deafen: string };

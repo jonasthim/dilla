@@ -18,9 +18,10 @@ export interface VoiceChannelRowProps {
   readable?: boolean;
   /**
    * `open` is `voice.open` ('voice {name}'), `count` is `voice.count` ('{n} in voice'), both filled here;
-   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button.
+   * `canHear` is `voice.bot.canHear` ('can hear'), shown with the bot tag; `join` is `voice.join`, the slot's icon button;
+   * `away` is `afk.away` ('away'), the word beside a person of the AFK channel's away roster (AW6).
    */
-  labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string };
+  labels: { open: string; count: string; canHear: string; state: VoiceStateLabels; join: string; away?: string };
   /** Opens the voice in the main pane (the row's own click). */
   onOpen(): void;
   /** The trailing join icon; without it, or when `joined`, the row has none. Its own click never opens the row (Shell decides, R24). */
@@ -46,6 +47,7 @@ export function groupPeople(devices: readonly VoiceParticipantView[]): VoicePart
     speaking: group.some(d => d.speaking), video: group.some(d => d.video), screen: group.some(d => d.screen),
     state: WORST.find(w => group.some(d => d.state === w)) ?? 'ok', web: group.some(d => d.web), bot: group.some(d => d.bot),
     muted: group.every(d => d.muted), deafened: group.every(d => d.deafened),
+    ...(group.some(d => d.away === true) ? { away: true } : {}),
   }));
 }
 
@@ -90,7 +92,8 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
           {participants.map(p => {
             const words = voiceStateWords(p, labels.state);
             return (
-              <li key={p.userId} className="d-voice-row__person" data-row data-speaking={p.speaking ? 'true' : undefined}>
+              <li key={p.userId} className="d-voice-row__person" data-row data-speaking={p.speaking ? 'true' : undefined}
+                data-away={p.away === true ? 'true' : undefined}>
                 <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="xs" /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
                 <span className="d-voice-row__states">
@@ -100,6 +103,7 @@ export function VoiceChannelRow({ name, current, joined, participants: devices, 
                       {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
                     </>
                   ) : null}
+                  {p.away === true && labels.away !== undefined ? <>{' '}<span className="d-voice-row__state" data-state="away">{labels.away}</span></> : null}
                   <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key) && w.key !== 'speaking')} prefix="d-voice-row" />
                   {p.speaking ? <>{' '}<span className="d-sr-only">{labels.state.speaking}</span></> : null}
                 </span>

@@ -125,5 +125,11 @@ export const LongNameWithGlyphs: Story = {
 /** The same list in each theme. */
 /** The mute and deafen glyphs sit in the person's trailing slot; a speaking person's avatar has the accent ring. */
 export const SpeakingAndMuted: Story = { args: { participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] } };
+/** AW6: the AFK channel lists its away roster: people with no voice connection, counted, each with the `away` word. */
+export const AwayRoster: Story = {
+  play: ({ canvasElement }) => { expectGlyphLine(canvasElement, 'AwayRoster'); expectPeopleColumns(canvasElement, 'AwayRoster'); },
+  args: { name: 'AFK', labels: { ...meta.args.labels, away: 'away' },
+    participants: [person('ada', { away: true, web: false }), person('bo', { away: true, web: false })] },
+};
 export const EveryStateLight: Story = { ...EveryState, globals: { theme: 'light' } };
 export const EveryStateHighContrast: Story = { ...EveryState, globals: { theme: 'high-contrast' } };

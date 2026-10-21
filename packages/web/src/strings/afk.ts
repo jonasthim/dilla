@@ -7,7 +7,6 @@ export const afk = {
   'afk.timeout.3600': '1 hour',
   'afk.timeout.hint': 'Members idle in voice this long move to {channel} and are muted. Phones are not moved.',
   'afk.channel.note': 'This is the server’s AFK channel. Everyone in it is muted.',
-  'afk.stage.muted': 'Everyone is muted in {channel}',
   'afk.moved': 'Moved to {channel} for inactivity',
-  'afk.moved.join': 'join',
+  'afk.away': 'away',
 };
