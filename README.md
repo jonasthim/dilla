@@ -60,7 +60,7 @@ As of 2026-10-21, in the web client:
 - Voice from the desktop app (there is no desktop app yet), and voice in Safari.
 - On Windows, Chrome and Edge before version 141 may send the call's own sound back through a shared screen or window (an echo); update the browser.
 - Ringing with no open dilla tab, and answering from the notification itself.
-- Threads, link previews, markdown and custom emoji; files over 25 MB from a browser.
+- Link previews and custom emoji; files over 25 MB from a browser.
 - Desktop notifications stop when every tab is closed.
 - Search on a touch device without a keyboard: search opens only with Control/⌘+K or Control+/ for now.
 - Comparing safety numbers by QR code, or with someone you share no conversation with ("Open a conversation with
