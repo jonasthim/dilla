@@ -41,7 +41,7 @@ describe('voice in the shell', () => {
       { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } } });
     const app = screen.getByRole('main');
     expect(await within(app).findByRole('button', { name: 'join voice' })).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: t('voice.afk.title') })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'AFK channel' })).toBeNull();
   });
 
   it('final review I-2 control: in an ordinary call the dock\u2019s camera is live', async () => {
@@ -599,13 +599,16 @@ describe('review round 1', () => {
 describe('AW5: the AFK channel in the shell never hosts a call', () => {
   const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [], ...over });
   const order = (app: ReturnType<typeof renderVoiceShell>) => app.client.calls.map(c => c.m).filter(m => m === 'callLeave' || m === 'afkAway' || m === 'callJoin');
-  it('the AFK row is a plain voice row; its join starts no call and marks the person away', async () => {
+  it('the AFK row is a voice row with no join icon; its desktop click starts no call and marks the person away', async () => {
     const app = renderVoiceShell();
     app.client.publish(`afk:${A}`, afkSlice());
-    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    const rowButton = await screen.findByRole('button', { name: 'voice music' });
+    const row = rowButton.closest('li') as HTMLElement;
     expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
-    await app.user.click(within(row).getByRole('button', { name: /join/i }));
+    // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK, and a desktop click goes AFK.
+    expect(within(row).queryByRole('button', { name: /join/i })).toBeNull();
+    await app.user.click(rowButton);
     await waitFor(() => expect(app.client.callsOf('afkAway')).toEqual([{ m: 'afkAway', communityId: A }]));
     expect(app.module.startPageCall).not.toHaveBeenCalled();
     expect(order(app)).toEqual(['afkAway']);

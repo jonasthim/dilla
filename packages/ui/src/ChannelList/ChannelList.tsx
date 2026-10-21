@@ -119,7 +119,8 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
     if (c.kind === 'voice' && voice !== undefined) {
       const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
       const joined = room?.joined ?? false;
-      const canJoin = voice.onJoin !== undefined && !joined && room?.held !== true;
+      // Final review M4: the AFK row hosts no call, so it offers no join icon (its page has go AFK; a desktop click goes AFK).
+      const canJoin = voice.onJoin !== undefined && !joined && room?.held !== true && c.afk !== true;
       return (
         <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined}>
           <VoiceChannelRow name={c.name} current={c.id === activeId} joined={joined} participants={room?.participants ?? []}
