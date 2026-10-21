@@ -2,7 +2,7 @@
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
 camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-21, web-3.9).
+2026-10-21, web-3.11).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -239,20 +239,28 @@ with each person (Settings → privacy) is still how you know who they are.
 
 ## AFK channels
 
-Every server has a voice channel called "AFK". It is made with the server, and a server's owner or anyone who manages
+Every server has a channel called "AFK". It is made with the server, and a server's owner or anyone who manages
 channels can rename it and move it into a category (it always stays last in its list), but nobody can delete it.
 
-![Mira in the AFK channel of Midgard Crew: the stage says "Everyone is muted in AFK"](screenshots/afk-call-desktop.png)
+Being in the AFK channel means having no voice connection. Nobody joins a call there: it uses no microphone, no
+camera and no media server, and nobody hears anything. The channel instead lists the people who are **away**.
 
-- **Anyone can join it**, like any voice channel. Everyone in it is muted: you can hear the others, but you cannot
-  speak, share your screen or turn on a camera, and nobody else can either.
+![Mira's view of Midgard Crew: the AFK row lists the people who are away, with the word "away" after each name](screenshots/afk-call-desktop.png)
+
+- **The away list.** Each person who is away is listed under the AFK row with the word "away", and counted ("2 in AFK").
+  Opening the AFK channel shows the same list, or "Nobody is away."
+- **Go AFK.** Click the AFK row, or press **go AFK** on its page. You leave any call you are in, and you are listed as
+  away. Once you are away the page says "You’re away. Join a voice channel, send a message or type to come back."
 - **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
-  speech is moved to the AFK channel, and the screen announces "Moved to AFK for inactivity". If the join fails, the dock
-  shows that line with a **join** button. Quiet listening counts as idle, and activity on another of your devices does not
-  count. The owner or a manager sets the timeout (1, 5, 15, 30 minutes or 1 hour) in server settings → overview
+  speech is disconnected from the call and listed as away, and the screen announces "Moved to AFK for inactivity".
+  Quiet listening counts as idle, and activity on another of your devices does not count. The owner or a manager sets
+  the timeout (1, 5, 15, 30 minutes or 1 hour) in server settings → overview
   ([Run your server](getting-started.md#run-your-server)).
-- **A phone is never moved.**
-- **To leave**, join another voice channel, or press **leave**.
+- **A phone is never disconnected** for being idle.
+- **On another device.** If you choose AFK on one device, your other devices leave their calls and say "You went AFK
+  on another device."
+- **To come back**, join a voice channel, send a message or start typing in that server. Closing every tab and device
+  also removes you from the list. There is no separate "leave AFK" button.
 
 ## Sounds
 

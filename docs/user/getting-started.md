@@ -162,8 +162,8 @@ cannot rename this server." or "Could not save ({code}). Try again." If "Someone
 time. Check the name and save again.
 
 Under the name, **Overview** holds the "inactive timeout": how long someone can sit idle in a voice channel on a computer
-before the server moves them to the server's AFK channel ("Members idle in voice this long move to AFK and are muted.
-Phones are not moved."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
+before the server disconnects them and lists them as away in the server's AFK channel ("Members idle in voice this long
+are disconnected and listed as away in AFK. Phones are not disconnected."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
@@ -182,7 +182,7 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
-  channel. Everyone in it is muted."), and no **delete** and no move up or down: it can be renamed and moved to another
+  channel. Nobody is connected here; people who are away are listed."), and no **delete** and no move up or down: it can be renamed and moved to another
   category, but it always stays last in its list.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
@@ -1416,7 +1416,7 @@ The test peer has no display name of its own (the testkit driver cannot set one)
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
 identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the call panel on the desktop only: a phone has the call bar instead). For web-3.9 ada makes the categories Raids and Boats and sets the inactive timeout (server settings), mira opens Home, taps a
-message on the phone, joins the AFK channel and shoots the dock, the member list and a header tooltip. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
+message on the phone, goes AFK (the AFK row then lists her as away) and shoots the dock, the member list and a header tooltip. For web-3.8 ada also shares her screen, and mira's stage is shot with it large and as a grid at 1440×900; the channel list is dragged wider and reset, and the browser goes offline for a moment to show the link line, both at 1280×800. The images of [On your phone](#on-your-phone) are shot at 390×844, a
 common phone size, from the same session: the home tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and

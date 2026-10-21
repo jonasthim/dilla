@@ -83,6 +83,8 @@ with no media port to reach. Run it after every change.
 | `acme_ip` | The instance has no domain of its own and clients connect to an address. | A public IP the certificate authority can reach on 443/tcp (validation is TLS-ALPN-01). dillad forces the `shortlived` profile, the only one that permits IP names, so certificates are renewed far more often; `tls.renewal_window_ratio` sets when. |
 | `behind_proxy` | A reverse proxy you already run terminates TLS. | dillad listens on `server.plain_listen` (`127.0.0.1:8080` by default) and trusts `X-Forwarded-For` only from `server.trusted_proxy_cidrs`, which must be non-empty. `instance.public_ip` and `tls.agreed` are not required. |
 
+**Probing health.** `/healthz` (liveness) and `/readyz` (readiness) are served on `server.plain_listen` only. dillad does not also listen on the loopback address, so probe the address configured there, for example `curl -fsS http://10.0.0.5:8080/readyz` for `plain_listen = '10.0.0.5:8080'`. A `curl` to `127.0.0.1` prints `000` unless `plain_listen` is a loopback address. The installer's `--listen` sets it.
+
 In every mode except `behind_proxy`, TURN shares 443 with the web server: a demultiplexer in front
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
 7882/udp (LiveKit's media port) need to be open.
@@ -314,7 +316,7 @@ replaced. After pinning the next image version or digest in `compose.yaml`, upgr
 ```sh
 docker compose pull
 docker compose up -d --no-deps dillad
-# Wait for /readyz and check the API log before moving active rooms.
+# Wait for /readyz (on the address in server.plain_listen) and check the API log before moving active rooms.
 docker compose up -d --no-deps media
 ```
 

@@ -421,12 +421,14 @@ sends nothing. It is never persisted or replayed, so a client reads the roster f
 `GET /v1/communities/{id}/afk` (its fifth element) on `ready` and whenever it reads the community
 again. The instance may serve that read before a change it announces while the read is in flight,
 so a client keeps each `afk_away` it receives during the read and applies them, in the order
-received, to the read's roster once it lands (a set no newer than the `since` held for that member
-is stale and ignored); with no read in flight and no roster yet, it drops the frame, since its next
-read is served later. A client's decoder refuses an `afk_away` of any other shape as
-`E_FRAME_SHAPE` and drops it without disconnecting; it ignores one for a community it does not list. A client that predates op 55
-ignores it as an unknown server-to-client opcode in this range. Sent by a client, any op 55 is
-`E_FRAME_TYPE` at the instance.
+received, to the roster of the NEWEST read once that read lands (a set no newer than the `since`
+held for that member is stale and ignored). When no read is in flight and the client already holds
+a roster, a frame applies straight to that roster. With no read in flight and no roster yet, it
+drops the frame, since its next read is served later. A client's decoder refuses an `afk_away` of
+any other shape as `E_FRAME_SHAPE` and drops it without disconnecting; it ignores one for a
+community it does not list. A client that predates op 55 ignores it as an unknown
+server-to-client opcode in this range. Sent by a client, any op 55 is `E_FRAME_TYPE` at the
+instance.
 
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
