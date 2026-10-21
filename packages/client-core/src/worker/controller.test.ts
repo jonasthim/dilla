@@ -425,6 +425,69 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
+  it('updateProfile sends only the changed fields and shows the saved (trimmed) profile on the account and the own member row, without reading the lists again', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const listReads = w.routes.listMembers.mock.calls.length;
+    const meReads = w.routes.getAccountMe.mock.calls.length;
+    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: ' on a call ', bio: 'hi' });
+    await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: true }));
+    expect(w.routes.patchMe).toHaveBeenCalledWith({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.routes.listMembers.mock.calls.length).toBe(listReads);
+    expect(w.routes.getAccountMe.mock.calls.length).toBe(meReads);
+    // Clearing a field drops it from the slices.
+    w.call(1005, { m: 'updateProfile', statusMsg: '' });
+    await vi.waitFor(() => expect(w.ret(1005)).toMatchObject({ ok: true }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+    expect(w.account()?.user?.bio).toBe('hi');
+  });
+  it('an account read that began before a save does not undo it', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice: number }>();
+    w.routes.getAccountMe.mockReturnValueOnce(stale.promise);
+    const refresh = (w.controller as unknown as { refreshPresenceChoice(): Promise<void> }).refreshPresenceChoice();
+    w.call(1010, { m: 'updateProfile', display: 'Ada', statusMsg: 'saved status' });
+    await vi.waitFor(() => expect(w.ret(1010)).toMatchObject({ ok: true }));
+    stale.resolve({ userId: USER, username: 'web', display: 'Old name', kind: 0, flags: 0n, presenceChoice: 3 });
+    await refresh;
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'saved status' });
+    // the read still brings what it is for: the presence choice
+    expect(w.account()?.presenceChoice).toBe('dnd');
+  });
+  it('a member list read that began before a save does not undo it on the own row', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: 0; nick: string; roleIds: Uint8Array[] }[]>();
+    w.routes.listMembers.mockReturnValueOnce(stale.promise);
+    const reload = (w.controller as unknown as { reloadMembers(id: string): Promise<void> }).reloadMembers(toHex(COMMUNITY));
+    w.call(1011, { m: 'updateProfile', display: 'Ada', bio: 'saved bio' });
+    await vi.waitFor(() => expect(w.ret(1011)).toMatchObject({ ok: true }));
+    stale.resolve([{ userId: USER, username: 'web', display: 'Old name', kind: 0, nick: '', roleIds: [] }]);
+    await reload;
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', bio: 'saved bio' });
+  });
+  it('updateProfile with nothing to change makes no request, and a field of the wrong type is E_BAD_INPUT', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(1002, { m: 'updateProfile' });
+    await vi.waitFor(() => expect(w.ret(1002)).toMatchObject({ ok: true }));
+    w.call(1003, { m: 'updateProfile', bio: 5 as unknown as string });
+    await vi.waitFor(() => expect(w.ret(1003)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.patchMe).not.toHaveBeenCalled();
+  });
+  it('updateProfile reports a refusal and leaves the account as it was', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.patchMe.mockRejectedValueOnce(new Error('refused'));
+    w.call(1004, { m: 'updateProfile', statusMsg: 'x' });
+    await vi.waitFor(() => expect(w.ret(1004)).toMatchObject({ ok: false }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+  });
   it('carries the account display name on the user, for a person who has joined no server yet', async () => {
     const w = world();
     w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Alice', kind: 0, flags: 0n, presenceChoice: 1 });

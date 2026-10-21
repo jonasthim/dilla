@@ -286,6 +286,18 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
+// UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+	n, err := r.w.UpdateProfile(ctx, sqlitedb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.
 func (r *Repo) SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error {
 	n, err := r.w.SetFactorOwed(ctx, sqlitedb.SetFactorOwedParams{FactorOwed: boolInt(owed), ID: userID})
@@ -311,6 +323,14 @@ func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int6
 }
 
 // boolInt is a 0/1 flag column's value.
+// nullString is a nullable text argument: nil is SQL NULL.
+func nullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
 func boolInt(b bool) int64 {
 	if b {
 		return 1
@@ -333,6 +353,8 @@ func userRow(row sqlitedb.Users) store.UserRow {
 		DisabledAt: ptrInt64(row.DisabledAt),
 		DeletedAt:  ptrInt64(row.DeletedAt),
 		FactorOwed: row.FactorOwed == 1,
+		StatusMsg:  row.StatusMsg,
+		Bio:        row.Bio,
 	}
 }
 

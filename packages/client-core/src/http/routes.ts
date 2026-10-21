@@ -4,6 +4,9 @@ import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
+import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '../profile-text';
+export { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue };
+export type { ProfileTextProblem };
 
 export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
@@ -45,12 +48,18 @@ const AFK_AWAY_MAX = 1024;
 export interface AFKSettings { channelId: Uint8Array | null; timeoutSeconds: number }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
-export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
+export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[];
+  /** The account's status message and bio (EOD E6); '' from an instance that predates them. */
+  statusMsg?: string; bio?: string; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
-export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number; }
+export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number;
+  /** EOD E6: '' from an instance that predates them. */
+  statusMsg?: string; bio?: string; }
+/** PATCH /v1/accounts/me: a field left out is left alone, '' clears it. */
+export interface ProfilePatch { display?: string; statusMsg?: string; bio?: string; }
 export interface Limits { maxCiphertextBytes: number; keypackagesPerDevice: number; keypackageRefillThreshold: number;
   heartbeatMs: number; maxFrameBytes: number; }
 // ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
@@ -210,6 +219,13 @@ export function nameProblem(v: unknown, maxBytes: number): string | null {
   if (CONTROL.test(v)) return 'contains a control character';
   return null;
 }
+const PROFILE_PROBLEM_TEXT: Record<ProfileTextProblem, string> = { long: 'is too long', chars: 'has characters that cannot be shown', blank: 'is only whitespace' };
+function checkedProfile(field: string, v: string | undefined, maxChars: number, multiline = false): string | null {
+  if (v === undefined) return null;
+  const problem = profileTextProblem(v, maxChars, multiline);
+  if (problem !== null) throw new RangeError(`E_ROUTE_INPUT: ${field} ${PROFILE_PROBLEM_TEXT[problem]}`);
+  return profileTextValue(v, multiline);
+}
 function checkedName(field: string, v: string, maxBytes: number): string {
   const problem = nameProblem(v, maxBytes);
   if (problem !== null) throw new RangeError(`E_ROUTE_INPUT: ${field} ${problem}`);
@@ -243,7 +259,8 @@ function callPath(callId: Uint8Array, rest = ''): string {
 function memberRow(value: CborValue): MemberRow {
   const row = atLeast(value, 7);
   return { userId: bin(row[0], 16), nick: str(row[2]), roleIds: row[3] === null ? [] : arr(row[3]).map((v) => bin(v, 16)),
-    username: str(row[4]), display: str(row[5]), kind: oneOf(row[6], [0, 1]) };
+    username: str(row[4]), display: str(row[5]), kind: oneOf(row[6], [0, 1]),
+    statusMsg: row.length > 7 ? str(row[7]) : '', bio: row.length > 8 ? str(row[8]) : '' };
 }
 
 /** Free text as the instance checks it (validChannelText, multiline): at most `maxBytes` UTF-8 bytes; newline and tab pass,
@@ -651,7 +668,13 @@ export class Routes {
   async getAccountMe(): Promise<AccountMe> {
     const a = atLeast(decode(await this.body('GET', '/v1/accounts/me', 'read', true)), 5);
     return { userId: bin(a[0], 16), username: str(a[1]), display: str(a[2]), kind: u53(a[3]), flags: u64(a[4]),
-      presenceChoice: a.length > 6 ? u53(a[6]) : 1 };
+      presenceChoice: a.length > 6 ? u53(a[6]) : 1, statusMsg: a.length > 7 ? str(a[7]) : '', bio: a.length > 8 ? str(a[8]) : '' };
+  }
+  /** PATCH /v1/accounts/me (EOD E6): [display|null, status_msg|null, bio|null] → 204. The text is stored readable by the instance. */
+  async patchMe(patch: ProfilePatch): Promise<void> {
+    const body = encode([checkedProfile('display', patch.display, DISPLAY_MAX_CHARS), checkedProfile('statusMsg', patch.statusMsg, STATUS_MAX_CHARS),
+      checkedProfile('bio', patch.bio, BIO_MAX_CHARS, true)]);
+    await this.body('PATCH', '/v1/accounts/me', 'write', true, { body, ok: [204] });
   }
   async setPresenceChoice(choice: number): Promise<void> {
     await this.body('PATCH', '/v1/accounts/me/presence', 'write', true, { body: encode([choice]), ok: [204] });

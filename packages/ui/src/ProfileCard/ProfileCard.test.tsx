@@ -39,6 +39,56 @@ describe('ProfileCard content', () => {
     expect(screen.getByText('in a meeting')).toBeInTheDocument();
   });
 
+  it('shows the bio under the head, labelled, keeping its line breaks, and nothing when there is none', () => {
+    const { rerender } = render(<ProfileCard {...props({ bio: 'line one\nline two', bioLabel: 'about' })} />);
+    const card = screen.getByRole('dialog');
+    const about = within(card).getByRole('group', { name: 'about' });
+    expect(about).toHaveTextContent('line one line two');
+    expect(about.querySelector('.d-profile-card__bio')?.textContent).toBe('line one\nline two');
+    expect(css).toMatch(/\.d-profile-card__bio[^}]*white-space: pre-wrap/);
+    rerender(<ProfileCard {...props()} />);
+    expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
+    rerender(<ProfileCard {...props({ bio: '' })} />);
+    expect(within(card).queryByRole('group', { name: 'about' })).toBeNull();
+  });
+
+  // jsdom has no layout, so the box's measures are set by hand.
+  function measure(scrollHeight: number, clientHeight: number) {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+  }
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('makes a bio that overflows reachable by keyboard: focusable, named, with a visible focus ring', () => {
+    measure(300, 128);
+    render(<ProfileCard {...props({ bio: 'x '.repeat(200) })} />);
+    const about = screen.getByRole('group', { name: 'about' });
+    expect(about).toHaveAttribute('tabindex', '0');
+    expect(css).toMatch(/\.d-profile-card__about:focus-visible[^}]*outline: [^;}]*var\(--accent\)/);
+    expect(css).toMatch(/\.d-profile-card__about[^}]*overflow-y: auto/);
+    about.focus();
+    expect(about).toHaveFocus();
+  });
+
+  it('is not a tab stop when the bio fits', () => {
+    measure(60, 128);
+    render(<ProfileCard {...props({ bio: 'short' })} />);
+    expect(screen.getByRole('group', { name: 'about' })).not.toHaveAttribute('tabindex');
+  });
+
+  it('isolates the direction of the status message and the bio from their surroundings', () => {
+    render(<ProfileCard {...props({ status: 'in a meeting', bio: 'hello' })} />);
+    const status = screen.getByText('in a meeting');
+    expect(status.tagName).toBe('BDI');
+    expect(status).toHaveAttribute('dir', 'auto');
+    expect(screen.getByRole('group', { name: 'about' }).querySelector('.d-profile-card__bio')).toHaveAttribute('dir', 'auto');
+  });
+
+  it('labels the bio "about" by default', () => {
+    render(<ProfileCard {...props({ bio: 'hello' })} />);
+    expect(screen.getByRole('group', { name: 'about' })).toHaveTextContent('hello');
+  });
+
   it('shows owner and you when they apply, and neither when they do not', () => {
     const { rerender } = render(<ProfileCard {...props()} />);
     const card = screen.getByRole('dialog');
@@ -262,7 +312,7 @@ describe('ProfileCard accessibility', () => {
   it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, as popover and as sheet', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const layout of ['popover', 'sheet'] as const) {
-      const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting' })} /></div>);
+      const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting', bio: 'line one\nline two' })} /></div>);
       await expectNoAxeViolations(container);
       unmount();
     }

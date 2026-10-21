@@ -64,6 +64,7 @@ export type Command =
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready
   | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
+  | { m: 'updateProfile'; display?: string; statusMsg?: string; bio?: string }   // ready: a field left out is left alone, '' clears it → null
   | { m: 'presenceActivity' }
   | { m: 'getAFKSettings'; communityId: string }
   | { m: 'setAFK'; communityId: string; timeoutSeconds: number }

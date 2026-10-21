@@ -247,7 +247,7 @@ func (d Deps) registrationError(r *http.Request, err error) error {
 	return server.Errorf(server.CodeInternal, "")
 }
 
-// GetMe answers [user_id, username, display, kind, flags, created, presence_choice].
+// GetMe answers [user_id, username, display, kind, flags, created, presence_choice, status_msg, bio].
 func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -265,42 +265,67 @@ func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{
-		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), choice, //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
+		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), choice, u.StatusMsg, u.Bio, //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
 	})
 }
 
-// PatchMe is [display|null, status_msg|null] → 204.
-//
-// It answers 501 and writes nothing. The body is validated, so a client learns
-// immediately that its display name is too long or carries a bidi control, but
-// there is nowhere to put the result: interfaces.md §4.1 declares no profile
-// update on store.Accounts (CreateUser, GetUser, GetUserByUsername, ListUsers,
-// SetUserDisabled, TombstoneUser — and internal/store/contract_test.go asserts
-// exactly that list), and `users` has no status column at all. Inventing a
-// store method here would rename a contract another task owns; answering 204
-// and discarding the change would be worse than refusing. The route lands when
-// the store gains the method.
-//
-// protocol/09-http-api.md § Accounts and devices records the same refusal, so
-// the document and this binary say one thing; that paragraph goes when the 204
-// lands.
+// PatchMe is [display|null, status_msg|null, bio|null] -> 204 (EOD E6). A null leaves the field as it
+// is and an empty string clears it; every given field is validated before anything is written, so a
+// refusal changes nothing. The three are stored readable by the server (R4).
 func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
 	var req struct {
 		_         struct{} `cbor:",toarray"`
 		Display   *string
 		StatusMsg *string
+		Bio       *string
 	}
 	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	if req.Display != nil {
-		if _, err := auth.NormalizeDisplay(*req.Display); err != nil {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "display: %v", err))
-			return
-		}
+	display, err := normalizeProfileField("display", req.Display, func(v string) (string, error) { return auth.NormalizeDisplay(v) })
+	if err != nil {
+		server.WriteError(w, err)
+		return
 	}
-	server.WriteError(w, notImplemented("profile updates need a store method interfaces.md §4.1 does not declare"))
+	status, err := normalizeProfileField("status_msg", req.StatusMsg, func(v string) (string, error) {
+		return auth.NormalizeUserText(v, auth.StatusMaxRunes, false)
+	})
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	bio, err := normalizeProfileField("bio", req.Bio, func(v string) (string, error) {
+		return auth.NormalizeUserText(v, auth.BioMaxRunes, true)
+	})
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// One UPDATE that names only the given fields, so two devices changing different fields never
+	// overwrite each other (a null leaves the column as it is).
+	if err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.noContent(w, r)
+}
+
+// normalizeProfileField validates one optional profile field; a nil field stays nil.
+func normalizeProfileField(name string, v *string, normalize func(string) (string, error)) (*string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	out, err := normalize(*v)
+	if err != nil {
+		return nil, server.Errorf(server.CodeInvalidRequest, "%s: %v", name, err)
+	}
+	return &out, nil
 }
 
 // DeleteMe tombstones the account: the row keeps its username so it can never

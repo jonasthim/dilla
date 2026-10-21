@@ -221,7 +221,7 @@ Björn's card with his roles and actions](screenshots/members-desktop.png)
 A whole row is one button. Click it, press Enter on it, right-click it, or press Shift+F10 or the ContextMenu key with the
 row focused, and it opens that person's **profile card**. On a wide window the card is a popover beside the row; on a phone
 it is a sheet from the bottom. The card shows a large avatar, the name, the @username, the status ("online", "idle", "do not
-disturb" or "offline", then the status line if there is one), "owner" and "you" where they apply (these two words are only in
+disturb" or "offline", then the person's status message if they set one), their bio under it, "owner" and "you" where they apply (these two words are only in
 the card, never in the list), the person's roles as coloured chips, and the actions. Escape or **close** shuts the card and
 puts focus back on the row; Tab stays inside it. Only one card is open at a time.
 
@@ -1284,6 +1284,22 @@ read it never contact giphy.com.
 | Enter, Shift+Enter, Escape | While editing: save, new line, cancel |
 
 ## 10. Privacy, search and settings
+
+### Profile
+
+Settings → **profile** is the first section. It has three fields: **display name** (up to 64 characters, and never empty),
+**status message** (one line, up to 190 characters) and **bio** (up to 500 characters, with line breaks). **save** is
+disabled until something changes, and it sends only what you changed; emptying the status message or the bio and saving
+clears it, and spaces at either end are dropped. Text the server would refuse is named under its field as you type or paste:
+"That has characters dilla can’t show." (a tab, an invisible or direction-changing character, or a line break in the status
+message), "Too long.", or "Write something, or leave it empty." for only spaces; **save** stays disabled until it is fixed,
+and again after a save until you change something. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
+profile card. If the save fails, "Could not save your profile. Try again." shows and what you typed stays.
+
+The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
+breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
+and are not end-to-end encrypted: do not put anything in them that the host should not read. There is no picture yet.
+Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers
 

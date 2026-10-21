@@ -90,6 +90,14 @@ jobs:
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.text != 'false'
+        with:
+          path: \${{ runner.temp }}/ucd
+          key: ucd-\${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
+      - name: profile-text tables are current
+        if: needs.changes.outputs.text != 'false'
+        run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -493,6 +501,7 @@ const CHANGES_JOB = `  changes:
       core: \${{ steps.areas.outputs.core }}
       web: \${{ steps.areas.outputs.web }}
       e2e: \${{ steps.areas.outputs.e2e }}
+      text: \${{ steps.areas.outputs.text }}
       code: \${{ steps.areas.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

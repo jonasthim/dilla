@@ -28,6 +28,7 @@ import { stage } from './stage.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
+import { profile } from './profile.ts';
 import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
@@ -61,6 +62,7 @@ export const en = {
   ...afk,
   ...layout,
   ...home,
+  ...profile,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',

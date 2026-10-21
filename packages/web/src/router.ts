@@ -3,6 +3,7 @@ import { errorOf, type UiError } from './core/errors.ts';
 import type { PhoneTab } from './layout.ts';
 
 export type SettingsSection =
+  | 'profile'
   | 'devices'
   | 'signin'
   | 'notifications'
@@ -32,7 +33,7 @@ export const PHONE_BACK = 'phoneBack';
 const PHONE_FROM = 'phoneFrom';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
+const SETTINGS_SECTION = /^\/settings\/(profile|devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 /**

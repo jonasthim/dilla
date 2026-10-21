@@ -885,6 +885,20 @@ What this means for privacy:
 
 Rolling back to a release without GIFs leaves the `community_gifs:*` settings rows in the table, which nothing reads.
 
+### Upgrading with profile text: migration 00022
+
+**Release note.** New display names, status messages and bios refuse control, bidi, zero-width and other invisible characters
+(a joiner is kept where Persian, Sinhala, Devanagari and similar scripts, and emoji, need it); existing display names are kept
+as they are, and sign-up, rename and `PATCH /v1/accounts/me` apply the rule only to a new or changed name.
+
+Migration `00022_profile` adds two columns to `users`, `status_msg` (at most 190 characters) and `bio` (at most 500), both
+empty for every existing account. The server stores them readable, like the display name: they are not end-to-end
+encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes them (it answered 501 before), and
+`GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
+the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
+
+To go back run the rollback by hand above with `--to=21`. Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
+
 ## Capacity
 
 Every figure in this section is a measured cell from `docs/spikes/2026-10-capacity.md` (SP-29), on the

@@ -11,7 +11,7 @@ import { PresencePicker } from './PresencePicker.tsx';
 
 const CHEVRON = 'chevron-right';
 const SECTION_ICON: Record<SettingsSection, IconName> = {
-  devices: 'monitor-smartphone', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'shield', keyboard: 'keyboard', diagnostics: 'activity',
+  profile: 'at-sign', devices: 'monitor-smartphone', signin: 'user', notifications: 'megaphone', appearance: 'eye', voice: 'volume-2', privacy: 'shield', keyboard: 'keyboard', diagnostics: 'activity',
 };
 
 /**
