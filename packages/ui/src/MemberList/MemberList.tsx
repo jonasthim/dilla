@@ -1,5 +1,4 @@
 import { useId, useRef, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
-import type { ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { hex } from '../internal/hex.ts';
@@ -15,12 +14,6 @@ export interface MemberListMember {
   isBot?: boolean;
   /** A custom status, drawn as line 2. Without one the row has a single line and the name is centred in it. */
   status?: string;
-  /** @deprecated The row draws no tags any more: the owner has a crown and "you" lives in the profile card. Ignored. */
-  tags?: readonly string[];
-  /** @deprecated The row has no action menu any more: the actions live in the profile card. Ignored. */
-  actionsLabel?: string;
-  /** @deprecated See `actionsLabel`. Ignored. */
-  actions?: readonly ActionMenuItem[];
   /** The colour of the member's top coloured role, 0xRRGGBB. Null or 0: none. The name takes it when it keeps 4.5:1 in the current theme, else the text token. */
   color?: number | null;
   presence?: 'online' | 'idle' | 'dnd' | 'offline';
@@ -52,10 +45,18 @@ export interface MemberListProps {
   /** `via` is `click` for a primary pointer click and `menu` for Enter, a right-click, Shift+F10 and the ContextMenu key: a caller that toggles closes only on `click`.
    * A click or Enter on a row, a right-click and Shift+F10 or the ContextMenu key: open that member's profile card beside `anchor`, the row's button. */
   onOpen?(memberId: string, anchor: HTMLElement, via: 'click' | 'menu'): void;
-  /** @deprecated The row has no action menu any more; the profile card reports its actions. Ignored. */
-  onAction?(memberId: string, actionId: string): void;
 }
 
+
+/** The row button's name: the visible name first (WCAG 2.5.3), then owner, bot, the presence word and the status line, as "Astrid, owner, online". */
+function rowName(m: MemberListMember, ownerLabel: string, botLabel: string, presenceLabels: MemberListProps['presenceLabels']): string {
+  const parts = [m.name];
+  if (m.isOwner) parts.push(ownerLabel);
+  if (m.isBot) parts.push(botLabel);
+  if (m.presence) parts.push(presenceLabels?.[m.presence] ?? PRESENCE_WORD[m.presence]);
+  if (m.status) parts.push(m.status);
+  return parts.join(', ');
+}
 
 /**
  * The members of a server, one section per group (an `h3` and a list of rows). Each row is one button, so Enter and a
@@ -104,14 +105,13 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
               const tint = roleNameColor(m.color, theme, group.kind === 'offline' ? 0.8 : 1);
               return (
                 <li key={m.id} className="d-member-list__row" data-row="" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
-                  <button type="button" className="d-member-list__open" data-focus-key={`member:${m.id}`} aria-haspopup="dialog" aria-expanded={openId === m.id} onClick={e => onOpen?.(m.id, e.currentTarget, e.detail > 0 ? 'click' : 'menu')}>
-                    {/* The name is the button's own text, so the avatar is decorative; the presence is read as a word. */}
+                  <button type="button" className="d-member-list__open" data-focus-key={`member:${m.id}`} aria-label={rowName(m, ownerLabel, botLabel, presenceLabels)} aria-haspopup="dialog" aria-expanded={openId === m.id} onClick={e => onOpen?.(m.id, e.currentTarget, e.detail > 0 ? 'click' : 'menu')}>
+                    {/* The name is the button's own text, so the avatar is decorative; `aria-label` repeats it with the owner word and the presence word after it. */}
                     <span className="d-member-list__avatar" aria-hidden="true"><Avatar name={m.name} size="row" presence={m.presence} /></span>
-                    {m.presence ? <span className="d-sr-only">{presenceLabels?.[m.presence] ?? PRESENCE_WORD[m.presence]}</span> : null}
                     <span className="d-member-list__text">
                       <span className="d-member-list__line1">
                         <span className="d-member-list__name" style={tint === null ? undefined : { color: tint }}>{m.name}</span>
-                        {m.isOwner ? <><span className="d-member-list__crown"><Icon name="crown" size={14} /></span><span className="d-sr-only">{ownerLabel}</span></> : null}
+                        {m.isOwner ? <><span className="d-member-list__crown"><Icon name="crown" size={14} /></span></> : null}
                         {m.isBot ? <span className="d-member-list__bot">{botLabel}</span> : null}
                       </span>
                       {m.status ? <span className="d-member-list__line2">{m.status}</span> : null}

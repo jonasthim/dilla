@@ -13,11 +13,11 @@ export const Shell: Story = { render: () => <div style={{ ['--d-shell-h' as stri
 export const ShellNarrow: Story = { render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell /></div> };
 // web3.4: the aside open at 1280 (a fourth column), 900 and 360 (the overlay drawer).
 const members = (
-  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet." onAction={() => {}}
+  <MemberList label="members" loading={false} loadingLabel="Loading members…" emptyLabel="No members yet."
     groups={[
-      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [], presence: 'online' }] },
-      { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }], presence: 'online' }] },
-      { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u3', name: 'Cleo', tags: [], actionsLabel: 'actions for Cleo', actions: [], presence: 'offline' }] },
+      { id: 'mods', kind: 'role', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', isOwner: true, presence: 'online' }] },
+      { id: 'online', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', presence: 'online' }] },
+      { id: 'offline', kind: 'offline', title: 'offline', members: [{ id: 'u3', name: 'Cleo', presence: 'offline' }] },
     ]} />
 );
 const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };

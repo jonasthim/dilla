@@ -54,12 +54,6 @@ describe('MemberList', () => {
     expect(row).toHaveAttribute('data-row');
   });
 
-  it('draws no tag even for a member that still carries the deprecated tags', () => {
-    render(<MemberList {...props({ groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid', tags: ['owner', 'you'], actionsLabel: 'a', actions: [] }] }] })} />);
-    expect(screen.getByRole('listitem').querySelector('.d-member-list__tag')).toBeNull();
-    expect(screen.getByRole('listitem')).not.toHaveTextContent('you');
-  });
-
   it('a row is one button that opens the card: a click reports the member and the button as the anchor', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
@@ -94,25 +88,18 @@ describe('MemberList', () => {
     expect(onOpen).toHaveBeenCalledTimes(3);
   });
 
-  it('has no "…" action trigger and no menu, even for a member that still carries deprecated actions', () => {
-    render(<MemberList {...props({ groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid', tags: [], actionsLabel: 'actions for Astrid', actions: [{ id: 'kick', label: 'kick' }] }] }] })} />);
-    expect(screen.queryByRole('button', { name: /actions for/ })).toBeNull();
-    expect(document.body.textContent).not.toContain('⋯');
-    expect(screen.queryByRole('menu')).toBeNull();
-  });
-
   it('the owner has a crown icon and the word owner for screen readers; no other row has one', () => {
     const { container } = render(<MemberList {...props()} />);
     const rows = screen.getAllByRole('listitem');
     expect(rows[0]!.querySelector('[data-icon="crown"]')).not.toBeNull();
-    expect(within(rows[0]!).getByText('owner')).toHaveClass('d-sr-only');
+    expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAccessibleName('Astrid, owner');
     expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAccessibleName(/owner/);
     expect(container.querySelectorAll('[data-icon="crown"]')).toHaveLength(1);
   });
 
   it('the owner word is the caller\'s ownerLabel', () => {
     render(<MemberList {...props({ ownerLabel: 'ägare' })} />);
-    expect(screen.getByText('ägare')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAccessibleName('Astrid, ägare');
   });
 
   it('while loading it says so in a status region and lists nothing', () => {
@@ -169,7 +156,7 @@ describe('MemberList sections and rows (R28, F1)', () => {
     const avatar = row.querySelector('.d-avatar')!;
     expect(avatar).toHaveAttribute('data-size', 'row');
     expect(avatar.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'online');
-    expect(within(row).getByText('Online')).toHaveClass('d-sr-only');
+    expect(within(row).getByRole('button')).toHaveAccessibleName('Bjorn, online');
     expect(row.querySelector('.d-member-list__line1')).toContainElement(screen.getByText('Bjorn'));
     expect(container.querySelectorAll('[data-row]')).toHaveLength(4);
   });
@@ -290,7 +277,7 @@ describe('MemberList fix round 1', () => {
   });
 
   it('M1: a bot keeps a small bot tag after the name, from botLabel; no other tag', () => {
-    const p = props({ botLabel: 'bott', groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Dag', isBot: true, tags: ['bot', 'you'] }, { id: 'b', name: 'Eva' }] }] });
+    const p = props({ botLabel: 'bott', groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Dag', isBot: true }, { id: 'b', name: 'Eva' }] }] });
     render(<MemberList {...p} />);
     const [a, b] = screen.getAllByRole('listitem');
     expect(within(a!).getByText('bott')).toHaveClass('d-member-list__bot');
@@ -313,10 +300,22 @@ describe('MemberList vertical alignment (P4)', () => {
     expect(css).toMatch(/\.d-member-list__open \{[^}]*align-items: center/);
     expect(css).not.toMatch(/d-member-list__tag/);
   });
+  it('L3: the accessible name starts with the name, then owner, then the status word', () => {
+    render(<MemberList {...props({ groups: [{ id: 'g', kind: 'online', title: 'online', members: [
+      { id: 'a', name: 'Astrid', isOwner: true, presence: 'online' }, { id: 'b', name: 'Bjorn', presence: 'idle' }] }] })} />);
+    expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAccessibleName('Astrid, owner, online');
+    expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAccessibleName('Bjorn, idle');
+  });
+  it('N1: the fallback status words are lower case', () => {
+    render(<MemberList {...props({ groups: [{ id: 'g', kind: 'online', title: 'online', members: [
+      { id: 'a', name: 'Astrid', presence: 'dnd' }, { id: 'b', name: 'Bjorn', presence: 'offline' }] }] })} />);
+    expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAccessibleName('Astrid, do not disturb');
+    expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAccessibleName('Bjorn, offline');
+  });
   it('reads the presence word from presenceLabels (M2)', () => {
     render(<MemberList {...props({ presenceLabels: { online: 'på nätet' }, groups: [
       { id: 'o', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', presence: 'online' }] }] })} />);
-    expect(screen.getByText('på nätet')).toHaveClass('d-sr-only');
-    expect(screen.queryByText('Online')).toBeNull();
+    expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAccessibleName('Bjorn, på nätet');
+    expect(screen.getByRole('button', { name: /Bjorn/ })).not.toHaveAccessibleName(/Online/);
   });
 });

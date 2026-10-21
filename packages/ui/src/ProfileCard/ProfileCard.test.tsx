@@ -30,7 +30,7 @@ describe('ProfileCard content', () => {
     const card = screen.getByRole('dialog', { name: 'Astrid' });
     expect(within(card).getByRole('heading', { name: 'Astrid' })).toBeInTheDocument();
     expect(within(card).getByText('@astrid')).toBeInTheDocument();
-    expect(within(card).getByText('Online')).toBeInTheDocument();
+    expect(within(card).getByText('online')).toBeInTheDocument();
     expect(card.querySelector('.d-avatar')).toHaveAttribute('data-size', 'lg');
   });
 
