@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot, parseViewport, splitViewportArg } from './shoot-stories.mjs';
+import { THEMES, VIEWPORT, selectStories, storyUrl, outFile, contentType, resolveInRoot, parseViewport, splitViewportArg, PHONE_VIEWPORT, declaredViewport, shootsAt } from './shoot-stories.mjs';
 
 const index = {
   v: 5,
@@ -61,4 +61,17 @@ test('the final CLI argument selects an actual 360 by 740 context', () => {
   assert.throws(() => parseViewport('--viewport=360x0'), /viewport/);
   assert.deepEqual(splitViewportArg(['trust-safetycompare--', '--viewport=360x740']), { prefixes: ['trust-safetycompare--'], viewport: { width: 360, height: 740 } });
   assert.throws(() => splitViewportArg(['--viewport=360x740', 'trust-safetycompare--']), /final/);
+});
+
+test('a story declaring phoneViewport is shot only at 360 by 740, as the test runner visits it', () => {
+  assert.deepEqual(PHONE_VIEWPORT, { width: 360, height: 740 });
+  assert.deepEqual(declaredViewport({ phoneViewport: true }), { width: 360, height: 740 });
+  assert.equal(declaredViewport({}), null);
+  assert.equal(declaredViewport(undefined), null);
+  assert.equal(declaredViewport({ phoneViewport: 'yes' }), null);
+  assert.equal(shootsAt({ phoneViewport: true }, VIEWPORT), false);
+  assert.equal(shootsAt({ phoneViewport: true }, { width: 360, height: 740 }), true);
+  assert.equal(shootsAt({ phoneViewport: true }, { width: 360, height: 800 }), false);
+  assert.equal(shootsAt({}, VIEWPORT), true);
+  assert.equal(shootsAt(undefined, { width: 360, height: 740 }), true);
 });

@@ -1,10 +1,15 @@
-import type { TestRunnerConfig } from '@storybook/test-runner';
+import { getStoryContext, type TestRunnerConfig } from '@storybook/test-runner';
 import { injectAxe, checkA11y } from 'axe-playwright';
 
 const STRICT_TARGET_TITLES = ['Form/', 'Ceremony/', 'Shell/', 'Conversation/', 'Settings/', 'Search/', 'Voice/', 'Media/'];
 
 const config: TestRunnerConfig = {
-  async preVisit(page) { await injectAxe(page); },
+  async preVisit(page, context) {
+    // A story that says `phoneViewport` is visited at 360 × 740, so its media queries and its play run as on a phone.
+    const story = await getStoryContext(page, context);
+    if ((story.parameters as { phoneViewport?: boolean }).phoneViewport === true) await page.setViewportSize({ width: 360, height: 740 });
+    await injectAxe(page);
+  },
   async postVisit(page, context) {
     const strict = STRICT_TARGET_TITLES.some(prefix => context.title.startsWith(prefix));
     await checkA11y(page, '#storybook-root', {

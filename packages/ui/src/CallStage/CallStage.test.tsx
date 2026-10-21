@@ -13,7 +13,7 @@ if (typeof globalThis.MediaStream === 'undefined') {
 
 const stateLabels: CallTileProps['labels']['state'] = {
   speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
-  connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
+  connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
 };
 function tile(name: string, media: MediaStream | null): CallTileProps {
   return {

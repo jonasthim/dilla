@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { userEvent } from 'storybook/test';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
@@ -10,7 +11,7 @@ import { IconButton } from '../IconButton/IconButton.tsx';
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const STATE: CallTileProps['labels']['state'] = {
   speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
-  connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
+  connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
 };
 const CONTROL_LABELS: CallControlsProps['labels'] = {
   region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera',
@@ -321,6 +322,49 @@ export const Focused9: Story = focusedNineStory('mesh');
 export const Focused9Light: Story = focusedNineStory('light');
 export const Focused9HighContrast: Story = focusedNineStory('high-contrast');
 
+
+// #37: remote screens on the stage: one without sound (the mark in its caption), one with sound (its own range and mute), one muted.
+function silentScreen(name: string): StageTile { return { ...shared(name), silent: true }; }
+function soundScreen(name: string, volume: number): StageTile {
+  return { ...shared(name), stream: { volume, labels: { volume: `stream volume for ${name}`, mute: 'mute stream' }, onVolume: noop, onMute: noop } };
+}
+const screensStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+  args: { tiles: [person('you', { video: true }, true), silentScreen('ada'), soundScreen('bo', 100), soundScreen('cy', 0)], code: null },
+  globals: { theme }, decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    expectGrid(canvasElement, 'Screens', 4);
+    const marks = canvasElement.querySelectorAll('[data-state="no-sound"]').length;
+    if (marks !== 1) throw new Error(`Screens: ${String(marks)} no-sound marks, expected 1 (only the silent screen; a muted stream is not silent)`);
+  },
+});
+export const ScreensSound: Story = screensStory('mesh');
+/** Phone (visited at 360 × 740): a real tap on the volume button inside the stage opens the popover, and the range is wide enough. */
+export const ScreensPhonePopover: Story = {
+  ...screensStory('mesh'),
+  parameters: { phoneViewport: true },
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    if (window.innerWidth >= 768) throw new Error('ScreensPhonePopover: not visited at the phone viewport');
+    const button = canvasElement.querySelector<HTMLElement>('.d-call-tile__streamvol');
+    if (button === null) throw new Error('ScreensPhonePopover: no volume button');
+    // elementFromPoint at its centre is the button itself: a tile or a parent with pointer-events none would answer instead.
+    const r = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (hit === null || !button.contains(hit)) throw new Error('ScreensPhonePopover: a tap on the volume button hits ' + (hit?.className ?? 'nothing'));
+    await userEvent.click(button);
+    const range = canvasElement.querySelector<HTMLInputElement>('.d-call-tile__popover input[type="range"]');
+    if (range === null) throw new Error('ScreensPhonePopover: the tap opened no popover');
+    if (range.getBoundingClientRect().width < 120) throw new Error(`ScreensPhonePopover: the range is ${String(range.getBoundingClientRect().width)} px, under 120`);
+    const pop = range.closest<HTMLElement>('.d-call-tile__popover')!.getBoundingClientRect();
+    const tileBox = range.closest<HTMLElement>('.d-call-tile')!.getBoundingClientRect();
+    if (pop.left < tileBox.left - 1 || pop.right > tileBox.right + 1) throw new Error('ScreensPhonePopover: the popover leaves its tile');
+  },
+};
+
+export const ScreensSoundLight: Story = screensStory('light');
+export const ScreensSoundHighContrast: Story = screensStory('high-contrast');
 
 // D1: a partial last row is centred in the area, not left under the first column.
 function expectOrphanCentred(root: HTMLElement, story: string, expected: boolean): void {

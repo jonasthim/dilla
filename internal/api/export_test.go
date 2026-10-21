@@ -5,8 +5,24 @@ import (
 	"slices"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/webhook"
+
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
+
+// HandleReadLiveForTest is Handle's work for a participant_joined or a track_published whose call
+// Handle read live as row: a test ends the call between that read and this work (#37 CI).
+func (c *CallEvents) HandleReadLiveForTest(ctx context.Context, ev *livekit.WebhookEvent, row store.VoiceSessionRow) {
+	p := ev.GetParticipant()
+	switch ev.GetEvent() {
+	case webhook.EventParticipantJoined:
+		c.joined(ctx, row, p.GetIdentity(), p.GetSid(), joinedAt(p))
+	case webhook.EventTrackPublished:
+		c.trackPublished(ctx, row, p.GetIdentity(), ev.GetTrack())
+	}
+}
 
 // SetStartHookForTest makes start call f at its named points ("mint", "respond").
 func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }

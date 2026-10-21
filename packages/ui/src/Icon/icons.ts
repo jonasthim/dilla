@@ -29,6 +29,8 @@
  *   icons/ellipsis-vertical.svg  655ee2104d9540cc9377c83f3b9fea628d78d9f4e1cdca7c1b36e952599944d7
  *   icons/hash.svg  cd94af917b739ef26146d724613f6830ba3d702317fa4e60d92efea6133a1019
  *   icons/volume-2.svg  fb404f9c128a0579de67b399177631e5edb3502fdc247ceb30e8b15754b46071
+ *   icons/volume-x.svg  f382e421b7aae01172989f2b749ee87e44c0c82c16970b13a9ad5a323b613be0
+ *   icons/volume-off.svg  7b5fc9f2181e9f0cc13a989bf979d725830e8c23aedeaacb672d33eed3aae17c
  *   icons/megaphone.svg  279096a06626ec84f76a6358cf25b919d77d6fa53e82892397c0f2a907602850
  *   icons/messages-square.svg  97733c58b74f8beddd569927f8453c86bca4afa394e6aad606db1acff4bd8355
  *   icons/file.svg  499039795d7412d67664ff79d2eb6b7412e746b24c18c8fd8aba383c24ddada0
@@ -211,6 +213,18 @@ export const ICONS = {
     ['path', { d: 'M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z' }],
     ['path', { d: 'M16 9a5 5 0 0 1 0 6' }],
     ['path', { d: 'M19.364 18.364a9 9 0 0 0 0-12.728' }],
+  ],
+  'volume-x': [
+    ['path', { d: 'M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z' }],
+    ['path', { d: 'm16.5 14.5 5-5' }],
+    ['path', { d: 'm16.5 9.5 5 5' }],
+  ],
+  'volume-off': [
+    ['path', { d: 'M16 9a5 5 0 0 1 .95 2.293' }],
+    ['path', { d: 'M19.364 5.636a9 9 0 0 1 1.889 9.96' }],
+    ['path', { d: 'm2 2 20 20' }],
+    ['path', { d: 'm7 7-.587.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298V11' }],
+    ['path', { d: 'M9.828 4.172A.686.686 0 0 1 11 4.657v.686' }],
   ],
   'megaphone': [
     ['path', { d: 'M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z' }],

@@ -89,7 +89,7 @@ function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptio
       return s;
     }),
     bindPushToTalk: () => () => undefined,
-    volumesFromSettings: () => ({}),
+    volumesFromSettings: () => ({}), streamVolumesFromSettings: () => ({}),
   };
   const deps: VoiceDeps = {
     load: () => loadGate.then(() => module),
@@ -567,7 +567,7 @@ describe('web3.9 VOICE-AFK fix round 1 (I-1): a failed move is heard in the docu
       browserDeps: (bridge) => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
       startPageCall: vi.fn<VoiceModule['startPageCall']>(() => Promise.reject(Object.assign(new Error('E_CALL_FULL'), { code: 'E_CALL_FULL' }))),
       bindPushToTalk: () => () => undefined,
-      volumesFromSettings: () => ({}),
+      volumesFromSettings: () => ({}), streamVolumesFromSettings: () => ({}),
     };
     const deps: VoiceDeps = { load: () => Promise.resolve(module), createCallContext: () => null,
       createSounds: () => ({ play: () => undefined, startRing: () => undefined, stopRing: () => undefined, dispose: () => undefined }) };
@@ -585,5 +585,67 @@ describe('web3.9 VOICE-AFK fix round 1 (I-1): a failed move is heard in the docu
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(`${MOVED}. ${t('voice.full')}`));
     expect(document.querySelector('.d-voice-dock')).toBeNull();
     expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(MOVED);
+  });
+});
+
+describe('#37: a share without sound, and the stream mute', () => {
+  const BOB_USER = 'e1'.repeat(16);
+  it('a share that goes out without sound is noticed; sound again or stopping the share clears the notice', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    expect(h.v.notice).toBeNull();
+    act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.none.tabOnly' }));
+    act(() => h.sessions[0].update({ shareAudio: 'tab' }));
+    await waitFor(() => expect(h.v.notice).toBeNull());
+    act(() => h.sessions[0].update({ shareAudio: 'none' }));
+    await waitFor(() => expect(h.v.notice?.key).toBe('voice.shareAudio.none.tabOnly'));
+    act(() => h.sessions[0].update({ sharing: false, shareAudio: null }));
+    await waitFor(() => expect(h.v.notice).toBeNull());
+  });
+
+  it.each([
+    ['Firefox', 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0', 'voice.shareAudio.none.unsupported'],
+    ['Chrome on Linux', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOnly'],
+    ['Chrome on Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', 'voice.shareAudio.none.tabOrSystem'],
+  ] as const)('the notice for a silent share on %s uses %s', async (_name, ua, key) => {
+    const spy = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(ua);
+    try {
+      const h = harness();
+      await h.joined(GENV);
+      act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+      await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key }));
+    } finally { spy.mockRestore(); }
+  });
+
+  it('FX2: a silent share lists the sound sources; a failed pick says so, and the next good pick clears it', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    h.sessions[0].sharePool = { labeled: true, sources: [{ id: 'd1', label: 'Monitor of x', monitor: true }] };
+    act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
+    await waitFor(() => expect(h.v.sharePool?.sources.map(d => d.id)).toEqual(['d1']));
+    h.sessions[0].setShareSource.mockRejectedValueOnce(new Error('E_UNAVAILABLE'));
+    act(() => h.v.setShareSource('d1'));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.pickFailed' }));
+    act(() => h.v.setShareSource('d1'));
+    await waitFor(() => expect(h.v.notice?.key).not.toBe('voice.shareAudio.pickFailed'));
+  });
+
+  it('a share with sound raises no notice', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    act(() => h.sessions[0].update({ sharing: true, shareAudio: 'tab' }));
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('the stream mute writes the stream volume key at 0 and the last volume back; the voice key is never written', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    act(() => h.v.toggleStreamMute(BOB_USER, 70));
+    expect(h.sessions[0].setVolume).toHaveBeenCalledWith(BOB_USER, 0, 'stream');
+    act(() => h.v.toggleStreamMute(BOB_USER, 0));
+    expect(h.sessions[0].setVolume).toHaveBeenLastCalledWith(BOB_USER, 70, 'stream');
+    const writes = h.client.callsOf('setSetting').map((c) => [c.key, c.value]);
+    expect(writes).toEqual([[`voice.streamVolume.${BOB_USER}`, '0'], [`voice.streamVolume.${BOB_USER}`, '70']]);
   });
 });

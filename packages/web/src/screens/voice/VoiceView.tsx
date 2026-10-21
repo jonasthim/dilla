@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
+  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, Select, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { linkQuality } from '../../call/stats.ts';
@@ -41,6 +41,11 @@ function volumeOf(settings: Readonly<Record<string, string>>, userId: string): n
   return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
 }
 
+function streamVolumeOf(settings: Readonly<Record<string, string>>, userId: string): number {
+  const v = settings[SETTINGS.voiceStreamVolume(userId)];
+  return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
+}
+
 function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
@@ -58,6 +63,8 @@ type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fulls
  */
 function deviceTiles(base: TileBase, o: {
   camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
+  /** #37: a remote screen: whether it carries sound (the mark when not) and, when it does, its own volume and mute. */
+  remoteScreen?: { screenAudio: boolean; stream: NonNullable<CallTileProps['stream']> };
 }): CallTileProps[] {
   const { view } = base;
   const fullscreenLabel = t('stage.fullscreen');
@@ -68,7 +75,8 @@ function deviceTiles(base: TileBase, o: {
   }];
   if (o.screen !== null || o.sharing) {
     out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
-      fullscreenLabel, mirror: false });
+      fullscreenLabel, mirror: false,
+      ...(o.remoteScreen !== undefined ? { silent: !o.remoteScreen.screenAudio, ...(o.remoteScreen.screenAudio ? { stream: o.remoteScreen.stream } : {}) } : {}) });
   }
   return out;
 }
@@ -101,7 +109,10 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
     const view = listen ? { ...seen, muted: true } : seen;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) },
-    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name,
+      remoteScreen: { screenAudio: tile.screenAudio, stream: {
+        volume: streamVolumeOf(v.settings, tile.userId), labels: { volume: t('voice.streamVolume', { name }), mute: en['voice.streamMute'] },
+        onVolume: (n: number) => call.setStreamVolume(tile.userId, n), onMute: () => call.toggleStreamMute(tile.userId, streamVolumeOf(v.settings, tile.userId)) } } });
   });
   return [...own, ...others];
 }
@@ -146,7 +157,14 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     // Product walk I8: removed, and the channel is gone for this device (the membership is): the removal says so.
     if (removedFromServer(v, channelId)) return { kind: 'info', text: t('voice.removedNotMember'), action: null, focusOnce: false };
   }
-  if (v.call.notice?.channelId === channelId) return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: null, focusOnce: false };
+  if (v.call.notice?.channelId === channelId) {
+    // FX2: a silent share's notice offers the sound-source select (it takes the focus; the select shows with the notice).
+    const pool = v.call.sharePool;
+    const pick = v.call.notice.key.startsWith('voice.shareAudio.none') && pool !== null && pool.labeled && pool.sources.length > 0
+      ? { label: t('voice.shareAudio.pick'), onAction: () => document.querySelector<HTMLElement>('[data-share-sound] select')?.focus() } : null;
+    const text = v.call.notice.text ?? t(v.call.notice.key);
+    return { kind: 'info', text: pick !== null ? `${text} ${t('voice.shareAudio.pickHint')}` : text, action: pick, focusOnce: false };
+  }
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;
 }
@@ -257,6 +275,31 @@ function StageLines({ v }: { v: VoiceContext }) {
   );
 }
 
+/**
+ * FX2: the "sound from" select of a share. It shows while the share has no sound of the browser's own (a tab's or the
+ * system's always wins) and lists the audio inputs the session offers, the call's own microphone left out. A device whose
+ * label says monitor warns that others will hear themselves; picking it stays allowed.
+ */
+function ShareSound({ v }: { v: VoiceContext }) {
+  const s = v.call.state;
+  const pool = v.call.sharePool;
+  if (pool === null || s?.sharing !== true) return null;
+  // M1: unlabeled inputs, in any browser, ask for the microphone before they can be told apart.
+  if (!pool.labeled) {
+    return <div className="dw-voice-stage__sound" data-share-sound><p className="dw-voice-stage__sound-note">{t('voice.shareAudio.needsPermission')}</p></div>;
+  }
+  if (pool.sources.length === 0) return null;
+  const value = s.shareSource ?? '';
+  const picked = pool.sources.find(d => d.id === value);
+  return (
+    <div className="dw-voice-stage__sound" data-share-sound>
+      <Select label={t('voice.shareAudio.from')} value={value} {...(picked?.monitor === true ? { hint: t('voice.shareAudio.monitorWarn') } : {})}
+        options={[{ value: '', label: t('voice.shareAudio.fromNone') }, ...pool.sources.map(d => ({ value: d.id, label: d.label }))]}
+        onChange={id => v.call.setShareSource(id === '' ? null : id)} />
+    </div>
+  );
+}
+
 function Controls({ v, paused, dm, afkName }: { v: VoiceContext; paused: boolean; dm: boolean; afkName: string }) {
   const s = v.call.state;
   const canShare = canCapture();
@@ -346,7 +389,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
       <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={afk ? { text: t('afk.stage.muted', { channel: name ?? title }) } : joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><StageLines v={v} /></>
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><ShareSound v={v} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>

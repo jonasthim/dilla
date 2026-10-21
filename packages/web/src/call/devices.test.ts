@@ -1,7 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await -- the doubles answer as the async functions they stand for do */
 import { describe, expect, it, vi } from 'vitest';
-import { acquireMic, acquireCamera, acquireScreen } from './devices.ts';
+import { acquireMic, acquireCamera, acquireScreen, shareAudioAdvice } from './devices.ts';
 
+const vtrack = (surface: string) => ({ kind: 'video', stop: vi.fn(), getSettings: () => ({ displaySurface: surface }) }) as unknown as MediaStreamTrack;
+const atrack = (restrict?: boolean) => ({ kind: 'audio', stop: vi.fn(), getSettings: () => (restrict === undefined ? {} : { restrictOwnAudio: restrict }) }) as unknown as MediaStreamTrack;
 const track = (kind: string) => ({ kind, stop: vi.fn(), id: `${kind}-1` }) as unknown as MediaStreamTrack;
 const stream = (...tracks: MediaStreamTrack[]) => ({
   getTracks: () => tracks,
@@ -63,21 +65,39 @@ describe('camera and screen', () => {
     expect(m.getUserMedia).toHaveBeenCalledWith({ audio: false, video: true });
   });
 
-  it('the screen asks for tab audio and returns both tracks', async () => {
-    const v = track('video');
-    const a = track('audio');
-    const getDisplayMedia = vi.fn(async () => stream(v, a));
-    expect(await acquireScreen({ getDisplayMedia })).toEqual({ video: v, audio: a });
-    expect(getDisplayMedia).toHaveBeenCalledWith({ video: true, audio: SCREEN_AUDIO_EXPECTED });
+  it('the share asks the browser to leave out the call\'s own sound, and for every audio it offers', async () => {
+    const getDisplayMedia = vi.fn(async () => stream(vtrack('browser'), atrack(true)));
+    await acquireScreen({ getDisplayMedia });
+    expect(getDisplayMedia).toHaveBeenCalledWith({
+      video: true,
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
+      systemAudio: 'include', windowAudio: 'system', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
+    });
   });
 
-  it('a screen without audio returns audio null', async () => {
-    const v = track('video');
-    expect(await acquireScreen({ getDisplayMedia: async () => stream(v) })).toEqual({ video: v, audio: null });
+  it('a tab share with sound is tab audio', async () => {
+    const a = atrack();
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('browser'), a) })).toMatchObject({ audio: a, audioKind: 'tab' });
+  });
+
+  it('a restricted screen share with sound is system audio', async () => {
+    const a = atrack(true);
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor'), a) })).toMatchObject({ audio: a, audioKind: 'system' });
+  });
+
+  it('a system share is published whatever the browser did with restrictOwnAudio', async () => {
+    // D5: no detection for browsers that ignore the constraint (Chrome/Edge < 141); the echo there is a documented limit.
+    const a = atrack(); // getSettings() has no restrictOwnAudio
+    const v = vtrack('window');
+    const r = await acquireScreen({ getDisplayMedia: async () => stream(v, a) });
+    expect(r).toEqual({ video: v, audio: a, audioKind: 'system' });
+    expect((a as unknown as { stop: ReturnType<typeof vi.fn> }).stop).not.toHaveBeenCalled();
+  });
+
+  it('a screen without audio is none', async () => {
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor')) })).toMatchObject({ audio: null, audioKind: 'none' });
   });
 });
-
-const SCREEN_AUDIO_EXPECTED = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 };
 
 // Privacy preference must reach capture, not only the neural processor.
 it('Off disables browser suppression at acquisition while retaining echo cancellation', async () => {
@@ -86,4 +106,24 @@ it('Off disables browser suppression at acquisition while retaining echo cancell
   const media = { enumerateDevices: async () => [{kind:'audioinput'} as MediaDeviceInfo], getUserMedia: async (c:MediaStreamConstraints) => {calls.push(c); return {getAudioTracks:()=>[track],getTracks:()=>[track]} as MediaStream;} };
   await acquireMic(media, '', false);
   expect(calls[0]).toMatchObject({audio:{noiseSuppression:false,echoCancellation:true,autoGainControl:true}});
+});
+
+describe('shareAudioAdvice (#37): what sound a share can carry on this browser', () => {
+  const cases: Array<[string, { ua: string; uaPlatform?: string; brands?: string[] }, 'unsupported' | 'tab-only' | 'tab-or-system']> = [
+    ['Firefox on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0' }, 'unsupported'],
+    ['Zen (Firefox-based) on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0 Zen/1.0' }, 'unsupported'],
+    ['Safari on macOS', { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15' }, 'unsupported'],
+    ['Chrome on Linux', { ua: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Linux', brands: ['Chromium', 'Google Chrome'] }, 'tab-only'],
+    ['Chrome on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Windows', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Edge on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0' }, 'tab-or-system'],
+    ['Chrome on macOS', { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'macOS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Chrome on Chrome OS', { ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Chrome OS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Chromium OS platform string', { ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Chromium OS', brands: ['Chromium'] }, 'tab-or-system'],
+    ['brands alone name Chromium (no Chrome/ in the UA), on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0)', brands: ['Chromium'] }, 'tab-or-system'],
+    ['Chrome on iOS (CriOS)', { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Mobile/15E148 Safari/604.1' }, 'unsupported'],
+    ['Chrome on Android', { ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36', uaPlatform: 'Android', brands: ['Chromium', 'Google Chrome'] }, 'tab-only'],
+  ];
+  it.each(cases)('%s', (_name, env, want) => {
+    expect(shareAudioAdvice(env)).toBe(want);
+  });
 });

@@ -6,6 +6,10 @@
 // index.json whose id starts with one of the prefixes in each theme with
 // Playwright Chromium at 1280×800, and writes <out-dir>/<story id>.<theme>.png.
 // Exits 1 when a prefix matched no story or a story page logged an error.
+//
+// A story whose parameters say `phoneViewport: true` is visited at 360×740 by the
+// test runner (.storybook/test-runner.ts), and its play asserts that: such a story
+// is shot only in a pass at that viewport and skipped, by name, in any other.
 import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -14,6 +18,19 @@ import { fileURLToPath } from 'node:url';
 
 export const THEMES = ['mesh', 'light', 'high-contrast'];
 export const VIEWPORT = { width: 1280, height: 800 };
+/** The viewport a story declaring `phoneViewport: true` is visited at, as in .storybook/test-runner.ts. */
+export const PHONE_VIEWPORT = { width: 360, height: 740 };
+
+/** The viewport a story's parameters declare, or null when it runs at whatever viewport the pass uses. */
+export function declaredViewport(parameters) {
+  return parameters?.phoneViewport === true ? PHONE_VIEWPORT : null;
+}
+
+/** Whether a story with these parameters is shot in a pass at this viewport. */
+export function shootsAt(parameters, viewport) {
+  const declared = declaredViewport(parameters);
+  return declared === null || (declared.width === viewport.width && declared.height === viewport.height);
+}
 
 export function parseViewport(arg) {
   if (arg === undefined) return VIEWPORT;
@@ -129,6 +146,7 @@ export async function shoot({ port, outDir, prefixes, root, viewport = VIEWPORT 
   const index = JSON.parse(await fsp.readFile(indexPath, 'utf8'));
   const { ids, unmatched } = selectStories(index, prefixes);
   const consoleErrors = [];
+  const skipped = [];
   let written = 0;
   const server = await startServer(root, port);
   let browser;
@@ -137,8 +155,10 @@ export async function shoot({ port, outDir, prefixes, root, viewport = VIEWPORT 
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
     try {
+      const parameters = await storyParameters(context, port, ids);
       fs.mkdirSync(outDir, { recursive: true });
       for (const id of ids) {
+        if (!shootsAt(parameters.get(id), viewport)) { skipped.push(id); continue; }
         for (const theme of THEMES) {
           const page = await context.newPage();
           try {
@@ -161,7 +181,28 @@ export async function shoot({ port, outDir, prefixes, root, viewport = VIEWPORT 
     if (browser) await browser.close();
     await new Promise(resolve => server.close(() => resolve()));
   }
-  return { written, consoleErrors, unmatched };
+  return { written, consoleErrors, unmatched, skipped };
+}
+
+/** Each story's parameters, read from the Storybook preview the way the test runner's getStoryContext does. */
+async function storyParameters(context, port, ids) {
+  const page = await context.newPage();
+  try {
+    await page.goto(`http://127.0.0.1:${port}/iframe.html`, { waitUntil: 'load', timeout: 60_000 });
+    await page.waitForFunction(() => globalThis.__STORYBOOK_PREVIEW__?.storyStoreValue !== undefined, null, { timeout: 60_000 });
+    const entries = await page.evaluate(async storyIds => {
+      const store = globalThis.__STORYBOOK_PREVIEW__.storyStoreValue;
+      const out = [];
+      for (const storyId of storyIds) {
+        const story = await store.loadStory({ storyId });
+        out.push([storyId, { phoneViewport: story.parameters?.phoneViewport }]);
+      }
+      return out;
+    }, ids);
+    return new Map(entries);
+  } finally {
+    await page.close();
+  }
 }
 
 async function main(argv) {
@@ -174,8 +215,11 @@ async function main(argv) {
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'storybook-static');
   const outDir = path.resolve(process.cwd(), outArg);
-  const { written, consoleErrors, unmatched } = await shoot({ port, outDir, prefixes, root, viewport });
+  const { written, consoleErrors, unmatched, skipped } = await shoot({ port, outDir, prefixes, root, viewport });
   for (const p of unmatched) process.stderr.write(`shoot-stories: no story matches "${p}"\n`);
+  for (const id of skipped) {
+    process.stdout.write(`shoot-stories: skipped ${id}: it declares phoneViewport, shot only at ${PHONE_VIEWPORT.width}x${PHONE_VIEWPORT.height}\n`);
+  }
   for (const line of consoleErrors) process.stderr.write(line + '\n');
   process.stdout.write(`shoot-stories: wrote ${written} screenshots to ${outDir}\n`);
   return unmatched.length > 0 || consoleErrors.length > 0 ? 1 : 0;

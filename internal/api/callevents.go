@@ -55,9 +55,12 @@ type CallEvents struct {
 	log   *slog.Logger
 	gauge LiveGauge
 
-	mu       sync.Mutex
-	rooms    map[string]*callRoom
-	proposed map[string]time.Time // room + "/" + device + "/" + session → the last Remove proposed for a leave
+	mu    sync.Mutex
+	rooms map[string]*callRoom
+	// endedRooms is every room whose call ended within endedRoomMemory, with when: a webhook Handle
+	// read live before the end and handled after it records nobody in such a room (#37).
+	endedRooms map[string]time.Time
+	proposed   map[string]time.Time // room + "/" + device + "/" + session → the last Remove proposed for a leave
 	// self is the client-reported self-mute and self-deafen bits (voice_self's bits 0 and 1) per
 	// (call, device), stored by SetSelf for the voice snapshot (L-HTTP-100) and cleared when the
 	// device leaves the call, is evicted from it, or the call ends.
@@ -323,6 +326,32 @@ func (c *CallEvents) liveRow(ctx context.Context, room string) (store.VoiceSessi
 	return row, row.Ended == nil && row.LivekitRoom == room, nil
 }
 
+// endedRoomMemory is how long an ended call's room is remembered as ended: well past the ~45 s a
+// webhook can arrive late (SP-21 row 8). A room name is never reused — a call's next room is a new
+// "<call>-…" incarnation — so forgetting it later only bounds the map.
+const endedRoomMemory = 5 * time.Minute
+
+// markEndedLocked records room as ended now and forgets the rooms ended longer ago than
+// endedRoomMemory. c.mu is held.
+func (c *CallEvents) markEndedLocked(room string) {
+	now := c.clk.Now()
+	if c.endedRooms == nil {
+		c.endedRooms = map[string]time.Time{}
+	}
+	for name, at := range c.endedRooms {
+		if now.Sub(at) >= endedRoomMemory {
+			delete(c.endedRooms, name)
+		}
+	}
+	c.endedRooms[room] = now
+}
+
+// endedLocked reports whether room's call ended (within endedRoomMemory). c.mu is held.
+func (c *CallEvents) endedLocked(room string) bool {
+	_, ok := c.endedRooms[room]
+	return ok
+}
+
 func (c *CallEvents) roomLocked(room string) *callRoom {
 	r := c.rooms[room]
 	if r == nil {
@@ -410,15 +439,23 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 		member = &a
 	}
 	c.mu.Lock()
+	// #37: the call can have ended since Handle read it live (a page's boot sweep ends the call it
+	// left behind while this join is reconciled). Its end already announced who it saw in the room;
+	// this join must not put the device back, or nothing would ever announce it out.
+	if c.endedLocked(row.LivekitRoom) {
+		c.mu.Unlock()
+		return
+	}
 	r := c.roomLocked(row.LivekitRoom)
 	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}, member: member}
 	delete(c.deferred, announceKey{call: row.CallID, dev: dev}) // the newer session came: no leave is pending
 	flags := VoiceInCall | c.selfLocked(row.CallID, dev)
 	c.setGauge(c.liveLocked())
+	// Queued under c.mu, so an end that comes after this check queues its flags 0 after this frame.
+	c.announce(ctx, ch, row.CallID, d.UserID, dev, flags)
 	c.mu.Unlock()
 	// A device of a rung user is in the room: that user's ring stops on every device (L-GW-33).
 	c.calls.ringer.Answered(row.CallID, d.UserID)
-	c.announce(ctx, ch, row.CallID, d.UserID, dev, flags)
 }
 
 // joinedAt is the time LiveKit reports p joined at, or zero.
@@ -677,7 +714,17 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 		c.log.WarnContext(ctx, "a publishing participant's device is unknown", "device_id", dev.String(), "err", err)
 		return false
 	}
+	ch, chErr := c.repo.GetChannel(ctx, row.ChannelID)
+	if chErr != nil {
+		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", chErr)
+	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	// #37: a track event Handle read live for a call that has ended since puts nobody back in its
+	// room (see joined).
+	if c.endedLocked(row.LivekitRoom) {
+		return false
+	}
 	r := c.roomLocked(row.LivekitRoom)
 	d := r.devices[dev]
 	if d == nil {
@@ -688,13 +735,10 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 	change(d)
 	flags, stopped := d.flags()|c.selfLocked(row.CallID, dev), was && !d.sharing()
 	c.setGauge(c.liveLocked())
-	c.mu.Unlock()
-	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
-	if err != nil {
-		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)
-		return stopped
+	if chErr == nil {
+		// Queued under c.mu, as joined's frame is: an end after this queues its flags 0 after it.
+		c.announce(ctx, ch, row.CallID, user, dev, flags)
 	}
-	c.announce(ctx, ch, row.CallID, user, dev, flags)
 	return stopped
 }
 
@@ -757,6 +801,7 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 // state dropped.
 func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 	c.mu.Lock()
+	c.markEndedLocked(row.LivekitRoom)
 	r := c.rooms[row.LivekitRoom]
 	delete(c.rooms, row.LivekitRoom)
 	for k := range c.self {
