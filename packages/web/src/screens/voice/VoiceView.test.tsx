@@ -1357,6 +1357,8 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s'));
     expect(stats()).toHaveAttribute('data-quality', 'good');
     expect(stats()).toHaveTextContent('Ping 24 milliseconds, good. Sending 48, receiving 96 kilobits per second.');
+    act(() => app.session.update({ link: { rttMs: 0, upKbps: 1, downKbps: 0, lossPct: 0 } }));
+    await waitFor(() => expect(dockEl().querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑1 ↓0 kb/s'));
     act(() => app.session.update({ link: { rttMs: 210, upKbps: 5, downKbps: 6, lossPct: 0 } }));
     await waitFor(() => expect(stats()).toHaveAttribute('data-quality', 'poor'));
     act(() => app.session.update({ link: { rttMs: 40, upKbps: 5, downKbps: 6, lossPct: 6 } }));

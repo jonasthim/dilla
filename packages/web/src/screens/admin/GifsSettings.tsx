@@ -1,4 +1,4 @@
-// Server settings → overview: the server's Giphy key (E8, flow 15). The key is write-only. It is typed here, sent to the
+// Server settings → overview: the server's Giphy key (E8, flow 16). The key is write-only. It is typed here, sent to the
 // worker and forgotten: nothing keeps it, shows it again or puts it in a message, and the instance never sends it back.
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button, Select, SettingsRow, TextField } from '@dilla/ui';

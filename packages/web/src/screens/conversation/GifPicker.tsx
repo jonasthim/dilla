@@ -1,4 +1,4 @@
-// The GIF picker over the worker (E8, flow 15). The page never holds the session and never contacts Giphy: it asks the
+// The GIF picker over the worker (E8, flow 16). The page never holds the session and never contacts Giphy: it asks the
 // worker to search and to fetch for this server, shows the previews from page-minted blob URLs, and a pick becomes an
 // ordinary file in the tray (attachFiles), so it is encrypted like any file.
 import { useCallback, useEffect, useRef, useState } from 'react';

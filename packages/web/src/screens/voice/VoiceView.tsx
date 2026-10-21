@@ -578,7 +578,7 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
         {...(link === undefined ? {} : { stats: { rttMs: link.rttMs, upKbps: link.upKbps, downKbps: link.downKbps, quality: linkQuality(link.rttMs, link.lossPct) } })}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
-          ping: en['voice.dock.ping'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
+          ping: en['voice.dock.ping'], pingSub: en['voice.dock.pingSub'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
           quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
           where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),

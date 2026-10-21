@@ -1,4 +1,4 @@
-// Flow 15 (E8): the GIF picker and the server's Giphy setting. Lower case Mesh style; the attribution is Giphy's own wording.
+// Flow 16 (E8): the GIF picker and the server's Giphy setting. Lower case Mesh style; the attribution is Giphy's own wording.
 export const gif = {
   'gif.button': 'add a gif',
   'gif.picker': 'gifs',

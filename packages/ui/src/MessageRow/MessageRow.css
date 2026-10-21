@@ -82,3 +82,14 @@ button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underl
 .d-message-row[data-grouped="true"] { margin-top: 0; }
 /* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
 [data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }
+
+/* E5 markdown. Links stay the text colour and are underlined, so they never rely on colour alone. */
+.d-message-row__body .d-link { unicode-bidi: isolate; direction: ltr; color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+.d-message-row__body .d-link:hover { text-decoration-thickness: 2px; }
+/* A code span is outlined, with no fill and square corners: a mention pill is filled and rounded, and code must never pass for one. */
+.d-message-row__code { font-family: var(--font-mono); font-size: 0.9em; background: transparent; border: 1px solid var(--hairline-2); border-radius: 0; padding: 0 0.25rem; }
+.d-message-row__codeblock { font-family: var(--font-mono); font-size: 0.9em; background: var(--surface-hi); border-radius: var(--r-sm); }
+.d-message-row__codeblock[data-lang]::before { content: attr(data-lang); display: block; color: var(--fg-2); font-size: 0.85em; }
+.d-message-row__codeblock { margin: 0.25rem 0; padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre; }
+.d-message-row__codeblock code { font: inherit; }
+.d-message-row__quote { margin: 0.125rem 0; padding: 0 0 0 0.75rem; border-left: 2px solid var(--fg-2); color: var(--fg-2); }

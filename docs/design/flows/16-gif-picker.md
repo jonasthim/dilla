@@ -1,4 +1,4 @@
-# Flow 15: the GIF picker and the server's Giphy setting (E8)
+# Flow 16: the GIF picker and the server's Giphy setting (E8)
 
 GIFs are a per-server setting. A person who manages a server enters that server's Giphy key in its settings; the key is write-only and shown as dots afterwards. A server without a key has no GIF button. Search and the preview and full downloads go through the instance, so Giphy sees the instance and never a person. The picked GIF is attached like any file: it is encrypted like any file, and a reader's browser never contacts giphy.com. There are no GIFs in direct messages.
 

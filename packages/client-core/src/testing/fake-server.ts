@@ -85,12 +85,17 @@ function refuse(status: number, code: string, detail = '', retryAfterMs: number 
 const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** An in-memory model of the account routes of dillad, answering through fetch. */
+/** dillad's default auth.session.reauth_window. */
+const REAUTH_WINDOW_S = 300;
+
 export class FakeServer {
   readonly log: LoggedRequest[] = [];
   readonly invites = new Set<string>(['INVITE']);
   readonly accounts = new Map<string, Account>();
   readonly devices = new Map<string, string>();
   readonly tokens = new Map<string, string>();
+  /** When each session token was minted: a first password wants one younger than REAUTH_WINDOW_S (dillad auth.session.reauth_window). */
+  private readonly tokenCreated = new Map<string, number>();
   readonly deviceLists = new Map<string, { version: bigint; blob: Uint8Array }>();
   readonly keyPackages: { device: string; count: number; lastResort: boolean }[] = [];
   scope: 0 | 1 | null = null;
@@ -819,8 +824,8 @@ export class FakeServer {
       }
       case 'POST /v1/auth/password': {
         // [old|null, new, stepup?] (E). The old password is this route's step-up: guesses go on the step-up ledgers,
-        // never on the login ledger, and a stepup element is then ignored. A first password (no old one) needs a fresh
-        // session in dillad, which the fake does not model, and on an account holding a factor a step-up token, spent.
+        // never on the login ledger, and a stepup element is then ignored. A first password (no old one) needs a session
+        // younger than the reauth window (modelled: 403 E_FORBIDDEN, checked before the step-up), and on an account holding a factor a step-up token, spent.
         const old = body[0] ?? null;
         const next = body[1];
         const stepup = body[2] ?? null;
@@ -835,6 +840,8 @@ export class FakeServer {
             return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_FORBIDDEN', 'the old password is wrong');
           }
           this.stepUpPass(username);
+        } else if (session !== null && this.nowS - (this.tokenCreated.get(session) ?? this.nowS) > REAUTH_WINDOW_S) {
+          return refuse(403, 'E_FORBIDDEN', 'setting a first password needs a session established in the last 300 seconds');
         } else if (held && !this.spendStepUp(stepup, username, session)) {
           return refuse(403, 'E_STEP_UP');
         }
@@ -881,6 +888,7 @@ export class FakeServer {
     this.sessions += 1;
     const token = `tok-${this.sessions}`;
     this.tokens.set(token, deviceHex);
+    this.tokenCreated.set(token, this.nowS);
     this.tokenScope.set(token, scope);
     return token;
   }
