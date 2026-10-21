@@ -463,31 +463,6 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  image:
-    runs-on: ubuntu-latest
-    needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]
-    permissions: { contents: read, packages: write }
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - run: rm -rf internal/web/dist
-      - name: Fetch the web client into the image's build context
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: internal/web/dist
-      - name: The image embeds the real client, not the placeholder
-        run: |
-          test -f internal/web/dist/index.html
-          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - name: Log in to GHCR for a main-branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - run: bash scripts/build-ci-image.sh
 `;
 
 // The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
@@ -846,11 +821,6 @@ test('a go-ds job without needs: rust-wasi is reported', () => {
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('rust-wasi')), problems.join('\n'));
 });
 
-test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
-});
-
 for (const [job, needle] of [
   ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm'],
   ['rust-wasm-node', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg'],
@@ -947,48 +917,20 @@ test('the CLI reports problems in a workflow at the given root, run from elsewhe
   assert.match(result.stderr, /deny/);
 });
 
-// Task 18: the image job.
-test('a workflow without the image job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/  image:[\s\S]*$/, '')));
-  assert.ok(problems.some((p) => p.includes('missing job "image"')), problems.join('\n'));
+// Jonas, 2026-10-21: the container image is dropped.
+test('a workflow that builds or pushes a container image is reported', () => {
+  for (const addition of [
+    '      - run: docker login ghcr.io -u me\n',
+    '      - uses: docker/setup-buildx-action@v4\n',
+    '      - run: bash scripts/build-ci-image.sh\n',
+  ]) {
+    const problems = checkWorkflow(fixture(GOOD.replace('  ci-ok:', () => `  image:\n    runs-on: ubuntu-latest\n    steps:\n${addition}  ci-ok:`)));
+    assert.ok(problems.some((p) => p.includes('container image was dropped')), `${addition}: ${problems.join('\n')}`);
+  }
 });
 
-for (const needle of [
-  'docker login ghcr.io',
-  "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-  'bash scripts/build-ci-image.sh',
-  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
-  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
-  'path: internal/mlswasi/testdata',
-  'timeout-minutes: 30',
-]) {
-  test(`an image job that lost "${needle}" is reported`, () => {
-    const start = GOOD.indexOf('  image:\n');
-    const body = GOOD.slice(start);
-    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
-    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
-    assert.ok(problems.some((p) => p.includes('"image"') && p.includes(needle)), problems.join('\n'));
-  });
-}
-
-test('setup-qemu-action anywhere in the workflow is reported', () => {
-  const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: bash scripts/build-ci-image.sh\n', '      - uses: docker/setup-qemu-action@v4\n      - run: bash scripts/build-ci-image.sh\n')),
-  );
-  assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
-});
-
-// `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
-// reported as not waiting for go.
-test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go-ds, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
-});
-
-test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-ds, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
+test('the real workflow has no image job', () => {
+  assert.doesNotMatch(REAL_CI, /^ {2}image:/m);
 });
 
 // The rule that covers a job added tomorrow: no job is named in REQUIRED_STEPS, yet its upload-artifact
@@ -1175,7 +1117,7 @@ test('a wasm-pack build with no profile at all is reported', () => {
   assert.ok(problems.some((p) => p.endsWith('wasm-pack build must use --profile wasm-release, not --release (C16)')), problems.join('\n'));
 });
 
-// Task 26 (web-1): the web client's build, its browser suites, and its hand-off to release and image.
+// Task 26 (web-1): the web client's build, its browser suites, and its hand-off to release.
 
 /** One job of GOOD, from its key line to the line before the next job key. */
 function jobBody(job) {
@@ -1186,12 +1128,6 @@ function jobBody(job) {
   while (to < lines.length && !/^ {2}[A-Za-z0-9_-]+:\s*$/.test(lines[to])) to++;
   return lines.slice(from, to).join('\n');
 }
-
-const PLACEHOLDER_GUARD_IMAGE =
-  '      - name: The image embeds the real client, not the placeholder\n' +
-  '        run: |\n' +
-  '          test -f internal/web/dist/index.html\n' +
-  `          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi\n`;
 
 for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
   test(`a workflow without the ${job} job is reported`, () => {
@@ -1237,9 +1173,6 @@ for (const [job, needle] of [
   ['go-release', 'path: internal/web/dist'],
   ['go-release', 'content="placeholder"'],
   ['go-release', 'go test -tags webdist ./internal/web/...'],
-  ['image', 'name: dilla-web-dist'],
-  ['image', 'path: internal/web/dist'],
-  ['image', 'content="placeholder"'],
   ['node', 'npm run test:manifest-writer'],
   ['node', 'npm run test:install'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
@@ -1379,25 +1312,6 @@ test('a go-release job without needs: web-build is reported', () => {
   assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('needs: web-build')), problems.join('\n'));
 });
 
-test('an image job that does not wait for web-build is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [changes, go, go-ds, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
-});
-
-// The plan's named mutation for this task: the whole download step, not one line of it.
-test('an image job without the dilla-web-dist download step is reported by name', () => {
-  const step =
-    '      - name: Fetch the web client into the image\'s build context\n' +
-    '        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\n' +
-    '        with:\n' +
-    '          name: dilla-web-dist\n' +
-    '          path: internal/web/dist\n';
-  const body = jobBody('image');
-  assert.ok(body.includes(step), 'fixture sanity: the image download step');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step, ''))));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('name: dilla-web-dist')), problems.join('\n'));
-});
-
 test('a go-release job that builds before it fetches the web client is reported', () => {
   const build = '      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad\n';
   const body = jobBody('go-release');
@@ -1405,13 +1319,6 @@ test('a go-release job that builds before it fetches the web client is reported'
   const moved = body.replace(build, '').replace('    steps:\n', `    steps:\n${build}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => moved)));
   assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('before it builds')), problems.join('\n'));
-});
-
-test('an image job that checks for the placeholder only after the build is reported', () => {
-  assert.ok(GOOD.includes(PLACEHOLDER_GUARD_IMAGE), 'fixture sanity: the image guard');
-  // image is the last job of GOOD but ci-ok, so appending to it puts the guard after docker/build-push-action.
-  const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '').replace('  ci-ok:', () => `${PLACEHOLDER_GUARD_IMAGE}  ci-ok:`)));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('before it builds')), problems.join('\n'));
 });
 
 // web-2b task 11 (L-CI-20, L-CI-21): the screenshots of the web-2b stories and the re-derived browser budget.

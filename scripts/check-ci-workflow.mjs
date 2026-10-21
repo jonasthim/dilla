@@ -40,8 +40,6 @@ export const REQUIRED_JOBS = [
   'go-sqlc',
   'go-postgres',
   'go-release',
-  // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
-  'image',
   // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
   // job per Playwright engine (BROWSER_WEB_JOBS below).
   'web-build',
@@ -345,25 +343,6 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
-  // The image keeps the checked client and wasi core in its build context. The download of
-  // rust-wasi's artifact is load-bearing: dillad loads the wasi core from
-  // beside its binary and the Dockerfile copies it out of the build context, so without the download
-  // the build fails (fail-closed) rather than shipping an image that cannot start.
-  image: [
-    'runs-on: ubuntu-latest',
-    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
-    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
-    'name: dilla-core-wasi',
-    'path: internal/mlswasi/testdata',
-    // Task 26/C9: the image embeds the same checked client.
-    'name: dilla-web-dist',
-    'path: internal/web/dist',
-    'content="placeholder"',
-    'docker login ghcr.io',
-    "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-    'bash scripts/build-ci-image.sh',
-    'timeout-minutes: 30',
-  ],
 };
 
 /**
@@ -506,7 +485,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
  *
  * The compiler comes from a third-party apt archive and its output ships (web-build's dist is embedded by
- * go-release and image), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * go-release), so the step is pinned: the archive key is checked by fingerprint on the very keyring
  * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
  * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
  * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
@@ -783,20 +762,8 @@ export function checkWorkflow(root) {
   assertWasmPackUsesTheSizeProfile(text, problems);
   assertWasmJobsUseClang23(text, jobs, problems);
 
-  // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
-  // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.
-  if (text.includes('setup-qemu-action')) {
-    problems.push('ci.yml: setup-qemu-action is not needed: the image cross-compiles from $BUILDPLATFORM');
-  }
-  if ('image' in jobs) {
-    // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
-    // rust-wasi is named too, because the job downloads its artifact.
-    for (const need of ['go', 'go-ds', 'go-api', 'go-lint', 'rust-wasi', 'web-build']) {
-      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
-        problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
-      }
-    }
-  }
+  // Jonas, 2026-10-21: no container image is built or published; deploy/install.sh is the one install.
+  if (/docker\/|ghcr\.io|packages: write|build-ci-image|\bimage:\s*\$\{\{/.test(text)) problems.push('ci.yml: builds or pushes a container image; the container image was dropped, deploy/install.sh is the one install');
 
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
@@ -881,7 +848,7 @@ export function checkWorkflow(root) {
   }
 
   // Task 26: downloading and refusing the placeholder must precede each build.
-  for (const [job, build] of [['go-release', 'go build'], ['image', 'bash scripts/build-ci-image.sh']]) {
+  for (const [job, build] of [['go-release', 'go build']]) {
     if (!(job in jobs)) continue;
     const body = jobs[job];
     const fetchAt = body.indexOf('name: dilla-web-dist');

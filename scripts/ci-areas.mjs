@@ -36,7 +36,7 @@ export const DOC_RULES = [
 ];
 export const PATH_RULES = [
   { areas: ['ci'], patterns: ['.github/**', 'scripts/**'] },
-  { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', 'Dockerfile', '.dockerignore', '.golangci.yml'] },
+  { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', '.golangci.yml'] },
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
   { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
   { areas: ['e2e'], patterns: ['e2e/**'] },
@@ -60,7 +60,7 @@ export const FORCES = {
  * Because the areas imply each other (FORCES), `e2e` is in practice "any code" and `web` is "web or core".
  * - rust-native and rust-wasi run for any code: go-harness and the browser suites download the testkit binary and
  *   the WASI core they build. rust-native's lint and test steps are gated on core at step level.
- * - image needs the go jobs, so it cannot run without them; go-release builds the embedded client.
+ * - go-release builds the embedded client.
  */
 export const JOB_GATES = {
   node: ['code'],
@@ -87,7 +87,6 @@ export const JOB_GATES = {
   'go-sqlc': ['go'],
   'go-postgres': ['go'],
   'go-release': ['go', 'web'],
-  image: ['go'],
 };
 
 /**

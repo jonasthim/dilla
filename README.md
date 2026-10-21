@@ -79,7 +79,7 @@ figures yet.
 
 ## Run it
 
-The [operator guide](docs/deploy/README.md) covers the install script (`deploy/install.sh`, a native systemd install without Docker, attached to every release), the container image, the systemd unit and the Proxmox
+The [operator guide](docs/deploy/README.md) covers the install script (`deploy/install.sh`, a native systemd install and the one supported way to run dillad, attached to every release), the systemd units and the Proxmox
 helper, the TLS modes, the TURN relay and LiveKit settings, backup and restore, and operating the required
 second factor (resetting a person's factors, passkey settings behind a proxy).
 

@@ -406,7 +406,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
-    # C9: the web client is built once here and handed to chromium-web, firefox-web, webkit-web, go-release and image, so every
+    # C9: the web client is built once here and handed to chromium-web, firefox-web, webkit-web, and go-release, so every
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
     timeout-minutes: 15
@@ -925,46 +925,10 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  image:
-    needs: [changes, go, go-ds, go-api, go-lint, rust-wasi, web-build]
-    if: needs.changes.outputs.go != 'false'
-    runs-on: ubuntu-latest
-    # The wasi core is not built here: dillad loads it from beside its own binary
-    # and the Dockerfile copies it in, so the image job fetches rust-wasi's
-    # artifact into the build context first. `go`, `go-ds` and `go-lint` gate the push.
-    # The web client from web-build is fetched into internal/web/dist, where the builder's `go build` embeds it.
-    permissions: { contents: read, packages: write }
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - run: rm -rf internal/web/dist
-      - name: Fetch the web client into the image's build context
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: internal/web/dist
-      - name: The image embeds the real client, not the placeholder
-        run: |
-          test -f internal/web/dist/index.html
-          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      # A pull request only builds: the login is skipped there, so a fork's
-      # read-only token never reaches it.
-      - name: Log in to GHCR for a main-branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - name: Build both architectures and publish only from main
-        run: bash scripts/build-ci-image.sh
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, image]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

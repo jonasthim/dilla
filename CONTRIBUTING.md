@@ -73,7 +73,7 @@ table and has its own tests) reads the changed paths and sets one output per are
 | Area | Paths | Also forces |
 | --- | --- | --- |
 | docs | `docs/**`, any `*.md`, `LICENSE*`, `DCO` | nothing: only the `docs` job runs (the docs, brief and copy checks and their tests, and `check:ci`) |
-| go | `internal/**`, `cmd/**`, `go.mod`, `go.sum`, `sqlc*`, `deploy/**`, `Dockerfile`, `packages/design-tokens/**` (a Go test reads its CSS), `protocol/*.md` (a Go test parses the route tables) | e2e |
+| go | `internal/**`, `cmd/**`, `go.mod`, `go.sum`, `sqlc*`, `deploy/**`, `packages/design-tokens/**` (a Go test reads its CSS), `protocol/*.md` (a Go test parses the route tables) | e2e |
 | core | `core/**` (Markdown included: a vendored crate compiles its README), `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e |
 | web | `packages/**`, `package*.json`, `.nvmrc`, `docs/design/flows/**` (tests compare the copy tables with `en.ts`), `internal/sfu/testdata/**` (the LiveKit schema check) | e2e |
 | e2e | `e2e/**` | |
@@ -82,8 +82,7 @@ table and has its own tests) reads the changed paths and sets one output per are
 The browser suites always run all three engines. A push to main runs everything, and so does a pull request whose diff
 cannot be computed or touches a path no rule names. A gate tests `!= 'false'`, so a missing output runs the job.
 Skipped jobs count as passed for required checks. `ci-ok` needs every job and is red when any failed or was
-cancelled, so it can be the single required check. The image is built only when the Go jobs run: it waits for them, so a
-web-only pull request is covered by `go-release`, which builds the same embedded client. A new job in `ci.yml` needs
+cancelled, so it can be the single required check. No container image is built or published. A new job in `ci.yml` needs
 `needs: changes`, an `if:` and an entry in `JOB_GATES`, and a place in `ci-ok`'s needs; `npm run check:ci` enforces
 them. A new test or build that reads a file from another area needs a path rule: a guard test in
 `scripts/ci-areas.test.mjs` scans the sources for such reads.

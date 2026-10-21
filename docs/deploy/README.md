@@ -4,9 +4,9 @@ dillad is one static binary (`dillad`) plus one file beside it, `dilla_core_wasi
 core it runs inside wazero. Set `livekit.mode = 'sidecar'` and run `dillad media` as a second
 process: the API can restart while the SFU keeps existing rooms. The API owns the `/rtc` join
 gate, webhook receiver, TLS and TURN relay. Replacing the media process ends its rooms;
-the updated client reopens community voice during the upgrade window. This page covers Compose,
-systemd, the install script,
-and the Proxmox LXC helper.
+the updated client reopens community voice during the upgrade window. This page covers the install
+script (`deploy/install.sh`, the one supported install: a native systemd install), the systemd units it
+writes, and the Proxmox LXC helper. There is no container image.
 
 ### Open tabs during an upgrade
 
@@ -253,19 +253,6 @@ What it fixes, and the keys that change it:
   candidate at all and every call fails, and `dillad serve` refuses to start (exit 78) with a message
   saying so. Use it with host networking or systemd to keep addresses such as `docker0`, WireGuard or
   Tailscale out of the candidates, and never on the address `node_ip` is, or the only address left.
-- **Docker with a bridge network.** Do NOT exclude the bridge range: the container's `172.x`
-  address is its only address, and the socket on it is where Docker delivers the published 7882/udp.
-  Set `livekit.node_ip` to the public address and leave `ips_excludes` empty. With the default
-  `advertise_internal_ip = true` clients also see the `172.x` candidate, which they cannot reach and
-  skip after a failed check; the relay, inside the same container, pairs with it on the bridge. With
-  `advertise_internal_ip = false` only `node_ip` is offered; the relay then reaches the SFU through
-  the host's port mapping (a hairpin through `node_ip`), which works only if the host lets a
-  container reach its own published port on the public address. This recipe is derived from
-  LiveKit's source (mediatransportutil `rtcconfig/webrtc_config.go`, `transport/createmux.go`,
-  livekit/ice `gather.go`) and has not been measured on a real bridge network. Check it on yours:
-  open `chrome://webrtc-internals` during a call and confirm a remote `host` candidate on
-  `node_ip:7882` and a connected pair, then repeat with the browser forced to the relay
-  (`iceTransportPolicy: "relay"`, or UDP to 7882 blocked) and confirm the call still connects.
 - **Logs and metrics.** LiveKit's and pion's logs appear in the media process log (pion's only at
   ERROR) with a fixed set of fields — no SDP, no addresses, ids cut to eight characters — at most
   20 lines in a burst and 5 a second per message, with one "LiveKit log lines suppressed" line
@@ -277,66 +264,7 @@ What it fixes, and the keys that change it:
   `media` process returns. The API stays up. In the older `in_process` mode, dillad exits with
   status 69 (`EX_UNAVAILABLE`) and its supervisor restarts the whole process.
 
-## 2. Compose
-
-The image is `ghcr.io/jonasthim/dilla/dillad`, built for linux/amd64 and linux/arm64 on distroless
-`static-debian13:nonroot`. It runs as UID/GID 65532, has no shell and no package manager, and
-exposes exactly 443/tcp and 7882/udp. `deploy/compose.yaml` is the reference file.
-
-```sh
-mkdir dilla && cd dilla
-mkdir data
-# The data directory must be owned 65532:65532 on the host. distroless has no shell, so nothing
-# can chown it at start, and a root-owned directory makes the container exit with a permission error.
-sudo chown -R 65532:65532 ./data
-cp /path/to/deploy/compose.yaml .
-
-# One-shot init: creates the database, the instance keys, the TURN and LiveKit secrets and
-# the config file named by --config, then prints the bootstrap invite link. It is printed once and
-# stored nowhere. Without --config, init writes /etc/dilla/dilla.toml, which the image does not have.
-docker run --rm -v "$PWD/data:/var/lib/dilla" ghcr.io/jonasthim/dilla/dillad:latest \
-  init --config=/var/lib/dilla/dilla.toml --data-dir=/var/lib/dilla \
-  --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
-
-# compose.yaml mounts ./dilla.toml; init wrote it into the data directory, owned 65532.
-sudo mv ./data/dilla.toml ./dilla.toml
-# init defaults to the all-in-one mode. Compose runs media as a separate process.
-sudo sed -i "s/mode = 'in_process'/mode = 'sidecar'/" ./dilla.toml
-
-docker compose up -d
-docker compose ps
-docker compose logs -f dillad media
-```
-
-`netns` owns the published ports and stays running while the API and media containers are
-replaced. After pinning the next image version or digest in `compose.yaml`, upgrade in order:
-
-```sh
-docker compose pull
-docker compose up -d --no-deps dillad
-# Wait for /readyz and check the API log before moving active rooms.
-docker compose up -d --no-deps media
-```
-
-Keep `netns` on its existing container during this sequence. Recreating it tears down the shared
-network namespace, including current calls. `media` and `dillad` share only that namespace and
-the instance configuration; the media process does not open the database.
-
-The traps, in the order people meet them:
-
-- **Bind-mount ownership.** `sudo chown -R 65532:65532 ./data` before the first start, as above.
-  The same goes for a directory restored from a backup.
-- **`network_mode: host` cannot bind 443.** Docker sets `net.ipv4.ip_unprivileged_port_start`
-  only for private networks, so a host-networked container running as UID 65532 fails with
-  "permission denied" on 443. Keep the bridged network and the `ports:` mapping, or, if you must use
-  host networking, add `sysctls: { net.ipv4.ip_unprivileged_port_start: "0" }`.
-- **Only 443/tcp and 7882/udp are published.** A firewall in front of the host must allow both.
-- **Keep `turn.relay_ip = "auto"`.** init writes it, and serve binds the relay on the container's
-  own address. The public IP is not an address of a bridged container, so setting it there makes
-  every relay allocation fail; `dillad doctor` then shows the `turn` leg red with a fix naming
-  `turn.relay_ip`.
-- **Update deliberately.** The CA bundle in the image is fixed when the image is built; pin the
-  image by digest and pull a new build rather than floating `:latest`.
+## 2. Building from source
 
 ### Build dillad with the web client from source
 
@@ -678,10 +606,6 @@ its member-signed GroupInfo and handshake tail. The window for that is 24 hours 
 `dillad serve` start: a group that has heard from no member by then is closed, and the channel
 owner's device re-creates it. Start the instance promptly after a restore and expect clients to
 show a resync notice while they catch up.
-
-In Compose, run the same verbs with `docker compose run --rm dillad backup ...` or
-`docker compose run --rm dillad restore ...` against the stopped service. Mount a directory for
-`--out` and `--from`, and own it 65532:65532.
 
 ## 5. Operating a required second factor
 
