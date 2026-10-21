@@ -103,9 +103,11 @@ func TestSessionNegotiationRejectsUnsupportedWithoutReplacingSelection(t *testin
 		t.Fatalf("initial negotiation = %d, want 200", rec.Code)
 	}
 	unsupported, _ := cborx.Marshal([]any{[]any{uint64(1)}, []any{uint64(1)}, []any{uint64(1)}})
-	if rec := postCBORAuth(h, "/v1/sessions/negotiate", unsupported, token); rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
+	rec := postCBORAuth(h, "/v1/sessions/negotiate", unsupported, token)
+	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
 		t.Fatalf("wire 1 negotiation = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
 	}
+	assertNegotiationVersionError(t, rec, [][]uint64{{3, 2}, {1}, {1}})
 	s, err := deps.Sessions.Resolve(context.Background(), token)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +132,12 @@ func TestSessionNegotiationUsesTheConfiguredWireOffer(t *testing.T) {
 	if len(selected) != 3 || selected[0] != 2 {
 		t.Fatalf("selected = %v, want wire 2", selected)
 	}
+	unsupported, _ := cborx.Marshal([]any{[]uint64{3}, []uint64{1}, []uint64{1}})
+	refused := postCBORAuth(h, "/v1/sessions/negotiate", unsupported, token)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported configured offer = %d, want 400", refused.Code)
+	}
+	assertNegotiationVersionError(t, refused, [][]uint64{{2}, {1}, {1}})
 }
 
 func TestSessionNegotiationRequiresThreeNonemptyLists(t *testing.T) {
@@ -211,14 +219,40 @@ func TestBotSessionRouteRequiresEnrolledWireThree(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		return rec
 	}
-	if rec := call(); rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
+	rec := call()
+	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
 		t.Fatalf("unnegotiated bot guard = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
 	}
+	assertNegotiationVersionError(t, rec, [][]uint64{{3}, {1}, {1}})
 	body, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token); rec.Code != http.StatusOK {
 		t.Fatalf("negotiate wire 3 = %d, want 200", rec.Code)
 	}
 	if rec := call(); rec.Code != http.StatusNoContent {
 		t.Fatalf("negotiated bot guard = %d, want 204", rec.Code)
+	}
+}
+
+// E_VERSION has three supported-version lists after the ordinary refusal fields
+// (protocol/02). Clients must not have to parse the human-readable detail.
+func assertNegotiationVersionError(t *testing.T, rec *httptest.ResponseRecorder, want [][]uint64) {
+	t.Helper()
+	var fields []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 6 || fields[0] != "E_VERSION" || fields[2] != nil {
+		t.Fatalf("version refusal has %d fields, want code/detail/null and three version lists", len(fields))
+	}
+	got, err := cborx.Marshal(fields[3:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := cborx.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("supported version lists = %x, want %x", got, expected)
 	}
 }

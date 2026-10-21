@@ -68,8 +68,7 @@ func (d Deps) NegotiateSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if selected[i] == 0 {
-			server.WriteError(w, server.Errorf(server.CodeVersion,
-				"no common version; supported wire versions: %v", supported[0]))
+			server.WriteError(w, server.Version(supported[0], supported[1], supported[2]))
 			return
 		}
 	}
@@ -92,7 +91,9 @@ func BotSessionRoute(sessions *auth.Sessions, l *server.RateLimiter) func(patter
 		return sessions.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			session, ok := auth.FromContext(r.Context())
 			if !ok || session.WireVersion < 3 {
-				server.WriteError(w, server.Errorf(server.CodeVersion, "bot capability requires supported wire version [3]"))
+				refusal := server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+				refusal.Detail = "bot capability requires wire version 3"
+				server.WriteError(w, refusal)
 				return
 			}
 			dsMeter(l, routeClass(pattern), h.ServeHTTP).ServeHTTP(w, r)
