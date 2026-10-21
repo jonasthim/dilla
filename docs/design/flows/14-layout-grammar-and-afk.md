@@ -1,4 +1,4 @@
-# Flow 14: layout grammar, Discord layout and the built-in AFK channel (v0.1.0-web3.9)
+# Flow 14: layout grammar, Discord layout and the built-in AFK channel (v0.1.0-web3.9, AFK reworked in v0.1.0-web3.11)
 
 ## States
 
@@ -6,13 +6,14 @@
 |---|---|
 | a new server | the channel list shows `AFK` last, with the voice glyph |
 | the AFK channel renamed and moved into a category | |
-| idle in voice on desktop | the sweep cuts the call; the stage or the region that outlives the dock says `afk.moved`, and nothing joins (no AFK call, no microphone, no dock) |
-| the AFK row | its away roster: each person away there, with no voice connection, listed under the row with `afk.away` and counted; a click leaves the current call and marks the person away |
+| idle in voice on desktop (past the inactive timeout) | the sweep cuts the call; the stage or the region that outlives the dock says `afk.moved`, and nothing joins (no AFK call, no microphone, no dock) |
+| the AFK row | no call, no LiveKit room and no microphone; its away roster: each person away there, with no voice connection, listed under the row with `afk.away` and counted; a click leaves the current call and marks the person away |
 | the AFK channel's page | the away roster as on its row (`afk.away`), or `afk.empty`; the `afk.go` button, which leaves the current call and then marks the person away |
 | the AFK page while away | no button; the line `afk.youAway` |
 | going AFK failed | the line `afk.failed`; the call left stays left |
 | AFK chosen on another device | the call here is cut and its stage (or the region that outlives the dock) says `afk.elsewhere`, a calm notice, never a removal |
-| a phone in voice | never moved |
+| a phone in voice | never cut for inactivity |
+| coming back from away | joining any voice channel, sending a message or typing in that community, or closing the last connection; there is no leave-AFK action, and the person is dropped from the roster at once |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
 | the rail | the `@` tile (`home.tile`, `home.tileLabel`), a hairline, the servers, one dashed "+" tile (`layout.rail.add`) that opens one dialog (`layout.add.title`) with two choices (`layout.add.join`, `layout.add.create`) |
@@ -49,6 +50,7 @@
 ## Announcements
 
 - The sweep's cut announces "Moved to {channel}" with the channel's name, once, and joins nothing
+- `afk.elsewhere` is a calm info notice, never an error
 - Nothing else new
 
 ## Copy
@@ -59,8 +61,8 @@
 `afk.timeout.900='15 minutes'`
 `afk.timeout.1800='30 minutes'`
 `afk.timeout.3600='1 hour'`
-`afk.timeout.hint='Members idle in voice this long move to {channel} and are muted. Phones are not moved.'`
-`afk.channel.note='This is the server’s AFK channel. Everyone in it is muted.'`
+`afk.timeout.hint='Members idle in voice this long are disconnected and listed as away in {channel}. Phones are not disconnected.'`
+`afk.channel.note='This is the server’s AFK channel. Nobody is connected here; people who are away are listed.'`
 `afk.moved='Moved to {channel} for inactivity'`
 `afk.away='away'`
 `afk.go='go AFK'`

@@ -20,17 +20,17 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
     expect(table['afk.youAway']).toBe('You’re away. Join a voice channel, send a message or type to come back.');
     expect(table['afk.empty']).toBe('Nobody is away.');
     expect(table['afk.failed']).toBe('Could not go AFK. Try again.');
-    // AW6: the AFK channel hosts no call, so its muted line and the failed move's join are gone; `afk.away` is new.
+    // AW6: the AFK channel hosts no call, so its stage line and the failed move's join are gone; `afk.away` is new.
     expect(table['afk.away']).toBe('away');
     expect(table['afk.stage.muted']).toBeUndefined();
     expect(table['afk.moved.join']).toBeUndefined();
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
     expect(table['afk.channel.note'].codePointAt(18)).toBe(0x2019);
-    expect(table['afk.channel.note']).toBe('This is the server’s AFK channel. Everyone in it is muted.');
+    expect(table['afk.channel.note']).toBe('This is the server’s AFK channel. Nobody is connected here; people who are away are listed.');
     expect(pairs.find(([key]) => key === 'layout.ptt.tag')?.[1]).toBe('PTT');
     expect(en['layout.ptt.tag']).toBe('PTT');
-    expect(pairs.find(([key]) => key === 'afk.channel.note')?.[1]).toBe('This is the server’s AFK channel. Everyone in it is muted.');
+    expect(pairs.find(([key]) => key === 'afk.channel.note')?.[1]).toBe('This is the server’s AFK channel. Nobody is connected here; people who are away are listed.');
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
