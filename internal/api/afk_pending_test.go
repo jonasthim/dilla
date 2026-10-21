@@ -141,28 +141,15 @@ func TestAFKPendingClearsOnAnyJoin(t *testing.T) {
 	}
 }
 
-func TestAFKPendingExpires(t *testing.T) {
-	p := newPendingEnv(t)
-	p.idleMove(t)
-	p.e.Clk.Advance(9 * time.Minute)
-	p.calls.SweepAFK(t.Context())
-	if got := p.pending(t, p.memberTok); got != 1 {
-		t.Fatalf("pending inside the TTL = %d, want 1", got)
-	}
-	p.e.Clk.Advance(time.Minute + time.Second)
-	p.calls.SweepAFK(t.Context())
-	if got := p.pending(t, p.memberTok); got != 0 {
-		t.Fatalf("pending past the TTL = %d, want 0", got)
-	}
-}
-
-func TestAFKPendingNamesItsCommunity(t *testing.T) {
+// The pending cut is device-scoped (fix round 4): every community's snapshot reports it to the
+// moved device.
+func TestAFKPendingIsDeviceScoped(t *testing.T) {
 	p := newPendingEnv(t)
 	other := createCommunity(t, p.e, p.ownerTok)
 	joinCommunity(t, p.e, other, p.memberTok)
 	p.idleMove(t)
-	if _, _, _, pending := afkSnapshotOf(t, p.e, other, p.memberTok); pending != 0 {
-		t.Fatalf("another community's snapshot reports pending %d", pending)
+	if _, _, _, pending := afkSnapshotOf(t, p.e, other, p.memberTok); pending != 1 {
+		t.Fatalf("another community's snapshot reports pending %d, want 1", pending)
 	}
 }
 

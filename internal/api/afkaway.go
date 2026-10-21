@@ -145,6 +145,20 @@ func (h *Calls) idxKnows(user, cid id.ID) bool {
 	return h.awaySeeded && ok
 }
 
+// idxHas reports whether the index holds user (in cid, when it is set), seeded or not. Unseeded, it
+// holds the entries of the marks made since the start, an in-flight one's included: a mark notes its
+// entry before its checks (A-N1).
+func (h *Calls) idxHas(user id.ID, cid *id.ID) bool {
+	h.awayIdxMu.RLock()
+	defer h.awayIdxMu.RUnlock()
+	cs := h.awaySet[user]
+	if cid == nil {
+		return len(cs) > 0
+	}
+	_, ok := cs[*cid]
+	return ok
+}
+
 // mayBeAway is the lookup of the activity paths: a read lock, never awayMu.
 func (h *Calls) mayBeAway(user id.ID) bool { return h.idxMayBeAway(user, nil) }
 
@@ -406,9 +420,12 @@ func (h *Calls) clearAwayUser(ctx context.Context, user id.ID) {
 	}
 	ctx = context.WithoutCancel(ctx)
 	// Unseeded, every user may be away: a read-only lookup first, so only a user with a row takes
-	// the lock and runs the DELETE (N-B).
+	// the lock and runs the DELETE (N-B). The lookup runs outside awayMu, so a mark in flight (noted,
+	// its row not yet written) is seen through its index entry, read after the store: the clear then
+	// waits for it on awayMu and runs after its write (A-N1). A mark noted after this read was decided
+	// after the clear's own event, which its checks then see.
 	if !h.awaySeededNow() {
-		if has, err := h.repo.AFKAwayExistsUser(ctx, user); err == nil && !has {
+		if has, err := h.repo.AFKAwayExistsUser(ctx, user); err == nil && !has && !h.idxHas(user, nil) {
 			return
 		}
 	}
@@ -434,7 +451,8 @@ func (h *Calls) clearAwayIn(ctx context.Context, cid, user id.ID) {
 	}
 	ctx = context.WithoutCancel(ctx)
 	if !h.awaySeededNow() {
-		if has, err := h.repo.AFKAwayExists(ctx, cid, user); err == nil && !has {
+		// As in clearAwayUser: an in-flight mark's index entry keeps the clear (A-N1).
+		if has, err := h.repo.AFKAwayExists(ctx, cid, user); err == nil && !has && !h.idxHas(user, &cid) {
 			return
 		}
 	}
@@ -684,7 +702,7 @@ func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
 }
 
 // cutUserEverywhere removes every device of user, with its "#" shadows, from every SFU room it is
-// in, revokes its relay and stops its AFK timer.
+// in, revokes its relay, stops its AFK timer and records its pending cut (reason 2, chosen AFK).
 func (h *Calls) cutUserEverywhere(ctx context.Context, user id.ID) error {
 	if h.sfu == nil {
 		return nil
@@ -723,6 +741,9 @@ func (h *Calls) cutUserEverywhere(ctx context.Context, user id.ID) error {
 		h.revokeRelay(dev)
 		h.afkMu.Lock()
 		delete(h.afkTracked, dev)
+		// The cut device's client learns from any community's snapshot that it left because its
+		// user chose AFK (pending 2), wherever it was: a community call or a DM call.
+		h.setAFKPendingLocked(dev, afkPendingChose)
 		h.afkMu.Unlock()
 	}
 	return nil

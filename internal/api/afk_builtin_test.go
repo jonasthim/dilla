@@ -52,8 +52,8 @@ func afkSnapshotOf(t *testing.T, e *env, cid id.ID, tok string) (*id.ID, uint64,
 	mustUnmarshal(t, raw[1], &timeout)
 	mustUnmarshal(t, raw[2], &retired)
 	mustUnmarshal(t, raw[3], &pending)
-	if pending > 1 {
-		t.Fatalf("pending = %d, want 0 or 1", pending)
+	if pending > 2 {
+		t.Fatalf("pending = %d, want a reason 0, 1 or 2", pending)
 	}
 	return ch, timeout, len(retired), pending
 }
