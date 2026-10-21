@@ -72,6 +72,11 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await expect.poll(() => snapshotDevices(alice.page, call), { timeout: WAIT }).toEqual([a.device]);
       await leaveControl(alice.page).click();
       await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+      // The dock goes at once, but the stage keeps its in-call layout while the worker's leave runs (phase 'leaving'); when
+      // that ends the stage settles idle and its join button moves. A press during the move was lost (Firefox, PR #65 run
+      // 39671998576), so the press waits for the settled stage: idle, and the ended call gone from the room's snapshot.
+      await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'idle', { timeout: WAIT });
+      await expect.poll(() => snapshotDevices(alice.page, call), { timeout: WAIT }).toEqual([]);
       // Nobody can commit the Remove of the only leaf; the leave ended the call, so the rejoin registers a fresh group
       // at once: the room's departure timeout (90 s in this suite) plays no part.
       await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
