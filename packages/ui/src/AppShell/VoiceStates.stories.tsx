@@ -79,11 +79,11 @@ const ring = (busy: boolean) => (
 );
 
 function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paused?: boolean; tab?: 'channels' | 'dms'; composer?: ReactNode;
-  ring?: ReactNode; dock?: ReactNode }) {
+  ring?: ReactNode; dock?: ReactNode; phone?: boolean }) {
   const tab = p.tab ?? 'channels';
   return (
     <div style={{ ['--d-shell-h' as string]: 'calc(100dvh - 32px)' }}>
-      <AppShell skipLabel={t('shell.skip')} ring={p.ring}
+      <AppShell skipLabel={t('shell.skip')} ring={p.ring} {...(p.phone === true ? { layout: 'phone' as const, phonePane: 'view' as const } : {})}
         rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
           addLabel={t('layout.rail.add')} onAdd={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
@@ -113,12 +113,15 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
   );
 }
 
-const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgoing?: string; title?: string; joined?: boolean; paused?: boolean; dm?: boolean }) => (
-  <div className="dw-voice-stage" data-doc-state={p.notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage'}>
-    <CallStage title={p.title ?? t('voice.open', { name: 'harbour' })}
-      tiles={p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
+const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgoing?: string; title?: string; joined?: boolean; paused?: boolean; dm?: boolean;
+  empty?: boolean; header?: ReactNode }) => (
+  <div className="dw-voice-stage" data-doc-state={p.notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage'}
+    data-call-phase={p.joined === false ? 'idle' : undefined}>
+    <CallStage title={p.title ?? t('voice.open', { name: 'harbour' })} header={p.header}
+      tiles={p.empty === true ? p.joined === false ? [] : [tile(person('you'), true)]
+        : p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
       code={p.code ?? null} notice={p.notice ?? null} outgoing={p.outgoing !== undefined ? { text: p.outgoing } : null}
-      controls={p.joined === false ? <Button variant="accent">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })} labels={STAGE_LABELS} />
+      controls={p.joined === false ? <Button variant="accent" className="dw-voice-join">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })} labels={STAGE_LABELS} />
   </div>
 );
 
@@ -199,3 +202,47 @@ export const InfoPhone: Story = {
   render: () => <div style={{ width: 360 }}><Screen main={stage({ joined: false, notice: infoNotice('voice.full') })} /></div>,
 };
 
+
+const nextFrame = () => new Promise<void>(r => { requestAnimationFrame(() => { r(); }); });
+const centreOf = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+/**
+ * An empty voice channel is one group, the text above the join button, centred in the main area (Discord's layout): the
+ * group's centre is the main area's centre within 2 px, the text sits above the button, and the button is a 44 px target
+ * on a phone.
+ */
+async function expectEmptyCentred(root: HTMLElement, story: string, phone: boolean) {
+  await nextFrame(); await nextFrame();
+  const main = root.querySelector<HTMLElement>('.d-app-shell__content');
+  const text = root.querySelector<HTMLElement>('.d-call-stage__empty');
+  const join = root.querySelector<HTMLElement>('.d-call-stage__controls .d-btn');
+  if (!main || !text || !join) throw new Error(`${story}: the main area, the empty text or the join button is missing`);
+  const m = centreOf(main.getBoundingClientRect());
+  const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
+  // The AFK preview's line leads the group, above the message.
+  const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
+  if (lead && Math.abs(centreOf(lead).x - m.x) > 2) throw new Error(`${story}: the lead line is not centred across (main ${String(m.x)}, line ${String(centreOf(lead).x)})`);
+  const top = lead?.top ?? tr.top;
+  const group = centreOf(new DOMRect(Math.min(tr.left, jr.left), top, Math.max(tr.right, jr.right) - Math.min(tr.left, jr.left), jr.bottom - top));
+  if (Math.abs(centreOf(tr).x - m.x) > 2 || Math.abs(centreOf(jr).x - m.x) > 2) throw new Error(`${story}: not centred across (main ${String(m.x)}, text ${String(centreOf(tr).x)}, button ${String(centreOf(jr).x)})`);
+  if (Math.abs(group.y - m.y) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
+  if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
+  const label = document.createRange(); label.selectNodeContents(join);
+  if (Math.abs(centreOf(label.getBoundingClientRect()).x - m.x) > 2) throw new Error(`${story}: the join label is not centred (main ${String(m.x)}, label ${String(centreOf(label.getBoundingClientRect()).x)})`);
+  if (phone && jr.height < 44) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 44`);
+}
+/** Nobody is in the voice channel and this device has not joined: the text and the join button, centred. */
+export const EmptyNotJoined: Story = {
+  render: () => <Screen header={null} main={stage({ joined: false, empty: true, header: <ChannelHeader kind="voice" name="harbour" /> })} />,
+  play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoined', false); },
+};
+/** The AFK preview: the 'everyone is muted' line, the message and the join are one centred group. */
+export const EmptyNotJoinedAfk: Story = {
+  render: () => <Screen header={null} main={stage({ joined: false, empty: true, outgoing: t('afk.stage.muted', { channel: 'AFK' }), header: <ChannelHeader kind="voice" name="AFK" /> })} />,
+  play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoinedAfk', false); },
+};
+/** The same on a phone, the pushed view (the test runner visits it at 360 x 740). */
+export const EmptyNotJoinedPhone: Story = {
+  parameters: { phoneViewport: true },
+  render: () => <Screen phone main={stage({ joined: false, empty: true })} />,
+  play: async ({ canvasElement }) => { await expectEmptyCentred(canvasElement, 'EmptyNotJoinedPhone', true); },
+};
