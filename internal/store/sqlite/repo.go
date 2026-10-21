@@ -2076,6 +2076,11 @@ func (r *Repo) GetCommunityAFK(ctx context.Context, communityID id.ID) (store.Co
 
 func (r *Repo) SetAFKAway(ctx context.Context, communityID, userID id.ID, since int64) (bool, error) {
 	n, err := r.w.SetAFKAway(ctx, sqlitedb.SetAFKAwayParams{CommunityID: communityID, UserID: userID, Since: since})
+	// The only foreign key is onto members: a user who is no member (a kick that landed between a
+	// caller's check and this insert) is ErrNotFound, as the store answers a missing member.
+	if err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		return false, fmt.Errorf("%w: %w", store.ErrNotFound, err)
+	}
 	return n > 0, wrap(err)
 }
 

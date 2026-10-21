@@ -403,7 +403,8 @@ type Communities interface {
 	SetCommunityAFK(ctx context.Context, communityID id.ID, config CommunityAFK) error
 	// SetAFKAway marks a member away in the community (in its AFK channel, with no voice
 	// connection), since a unix time > 0. It answers false and keeps the stored since when the
-	// member is already away (R-AW7), and fails for a non-member (the row references members).
+	// member is already away (R-AW7), and answers ErrNotFound for a non-member (the row
+	// references members).
 	SetAFKAway(ctx context.Context, communityID, userID id.ID, since int64) (bool, error)
 	// ClearAFKAway clears one away row and answers whether there was one.
 	ClearAFKAway(ctx context.Context, communityID, userID id.ID) (bool, error)

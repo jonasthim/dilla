@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"slices"
 	"testing"
@@ -79,15 +80,22 @@ func TestAFKAwaySetIsIdempotentAndKeepsTheFirstSince(t *testing.T) {
 	}
 }
 
-// Only a member can be away: the composite foreign key onto members refuses anyone else.
+// Only a member can be away: the composite foreign key onto members refuses anyone else, and the
+// refusal is the typed ErrNotFound on both engines (AW1 review M1): a kick that lands between a
+// handler's membership check and the insert must answer as a non-member does, never as a 500.
 func TestAFKAwayRefusesANonMember(t *testing.T) {
 	for engine, repo := range engines(t) {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			stranger := seedUser(ctx, t, repo).ID
 			cid := seedAFKCommunity(ctx, t, repo)
-			if _, err := repo.SetAFKAway(ctx, cid, stranger, 1); err == nil {
-				t.Fatal("SetAFKAway for a non-member succeeded")
+			set, err := repo.SetAFKAway(ctx, cid, stranger, 1)
+			if set || !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("SetAFKAway for a non-member = %v, %v; want false, store.ErrNotFound", set, err)
+			}
+			// The same for a community that does not exist.
+			if _, err := repo.SetAFKAway(ctx, id.New(), stranger, 1); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("SetAFKAway in no community = %v; want store.ErrNotFound", err)
 			}
 		})
 	}
