@@ -8,11 +8,12 @@
 | nothing changed | `profile.save` is disabled |
 | something changed | `profile.save` is enabled; only the changed fields are sent, and an empty one clears the field |
 | the display name emptied | save shows `profile.error.display` under the field and sends nothing |
-| saving | `profile.save` is disabled until the answer |
+| text the server would refuse | the field shows its problem as it is typed or pasted and save is disabled: `profile.error.chars` (a tab, an invisible or direction-changing character, a line break in the status message), `profile.error.long`, `profile.error.blank` (only spaces); none says "try again", because trying again cannot help. A refusal that still comes back from the server (a 400) shows `profile.error.chars` in a banner |
+| saving | `profile.save` is disabled until the answer, and after it until something changes again |
 | saved | a polite status line `profile.saved`; the account, every member list and every open card show the new text |
 | the save refused or the network down | a danger banner `profile.error.save`; what was typed stays and save is enabled again |
 | changed on another device | the fields follow it while nothing here has been edited |
-| the profile card | the status message after the presence word; the bio under the head, a group named `profile.card.about`, with its line breaks and scrolling after eight rem |
+| the profile card | the status message after the presence word; the bio under the head, a focusable group named `profile.card.about` (Tab reaches it, a visible ring), with its line breaks and scrolling after eight rem; both set with `dir="auto"` so a right-to-left text does not reorder against its neighbours |
 | a member with no status message or bio | the card shows neither |
 | the phone | Settings → profile is the first row of the You tab's settings list |
 
@@ -46,5 +47,8 @@ Opening the section focuses its heading (as every settings section). A refused s
 `profile.save='save'`
 `profile.saved='Profile saved'`
 `profile.error.display='Enter a display name.'`
+`profile.error.chars='That has characters dilla can’t show.'`
+`profile.error.long='Too long.'`
+`profile.error.blank='Write something, or leave it empty.'`
 `profile.error.save='Could not save your profile. Try again.'`
 `profile.card.about='about'`

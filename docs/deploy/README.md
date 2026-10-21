@@ -907,14 +907,8 @@ encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes th
 `GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
 the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
 
-Migration number 00021 is held by a branch that is not released yet (AFK disconnect). A database that runs 00022 before
-00021 reports schema version 22 with 21 absent, and goose then refuses to apply 00021 later ("detected 1 missing
-(out-of-order) migration lower than database version"); dillad does not allow out-of-order runs. So release the build
-that carries 00021 first, or both together, and never run the 00022 build on a database that must later take a 00021 build
-that lacks 00022.
-
-To go back run the rollback by hand above with `--to=20` (or `--to=21` once 00021 exists). Going down from 22 drops `status_msg` and `bio` and
-discards every status message and bio; the accounts are kept.
+To go back run the rollback by hand above with `--to=20` (`--to=21` once this branch is rebased onto web3.11, which carries
+00021). Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
 
 ## Capacity
 

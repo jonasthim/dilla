@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
@@ -71,6 +71,61 @@ describe('Settings → Profile', () => {
     expect(status()).toHaveAttribute('maxlength', '190');
     expect(bio()).toHaveAttribute('maxlength', '500');
     expect(status().tagName).toBe('INPUT');
+  });
+
+  it('keeps save disabled after a save until something changes again', async () => {
+    const { u } = setup();
+    await u.type(status(), 'x');
+    await u.click(save());
+    expect(await screen.findByRole('status')).toHaveTextContent(t('profile.saved'));
+    expect(save()).toBeDisabled();
+    await u.type(status(), 'y');
+    expect(save()).toBeEnabled();
+    expect(screen.getByRole('status')).toHaveTextContent('');
+  });
+
+  it('sends the text trimmed', async () => {
+    const { fake, u } = setup();
+    await u.type(status(), '  hello  ');
+    await u.click(save());
+    expect(fake.calls).toEqual([{ m: 'updateProfile', statusMsg: 'hello' }]);
+  });
+
+  it('names the problem next to the field, without "try again", and does not send', async () => {
+    const { fake, u } = setup();
+    // a pasted tab or invisible character, a pasted text over the limit, and whitespace only
+    fireEvent.change(bio(), { target: { value: `a${String.fromCodePoint(0x09)}b` } });
+    expect(screen.getByRole('alert')).toHaveTextContent(t('profile.error.chars'));
+    expect(save()).toBeDisabled();
+    fireEvent.change(bio(), { target: { value: `a${String.fromCodePoint(0x202e)}b` } });
+    expect(screen.getByRole('alert')).toHaveTextContent(t('profile.error.chars'));
+    fireEvent.change(bio(), { target: { value: 'x'.repeat(501) } });
+    expect(screen.getByRole('alert')).toHaveTextContent(t('profile.error.long'));
+    fireEvent.change(bio(), { target: { value: '   ' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(t('profile.error.blank'));
+    expect(bio()).toHaveAccessibleDescription(expect.stringContaining(t('profile.error.blank')));
+    expect(bio()).toBeInvalid();
+    fireEvent.change(status(), { target: { value: 'y'.repeat(191) } });
+    expect(screen.getAllByRole('alert').map(a => a.textContent).join(' ')).not.toMatch(/try again/i);
+    await u.click(save());
+    expect(fake.calls).toEqual([]);
+    fireEvent.change(bio(), { target: { value: 'fine' } });
+    fireEvent.change(status(), { target: { value: 'fine' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(save()).toBeEnabled();
+  });
+
+  it('shows a refusal of the text by the server as a text problem, not as "try again"', async () => {
+    const { fake, u } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
+    await u.type(bio(), 'text');
+    await u.click(save());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(t('profile.error.chars'));
+    expect(alert.textContent).not.toMatch(/try again/i);
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT', status: 0 }));
+    await u.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('profile.error.chars'));
   });
 
   it('says so when the save is refused, keeps what was typed, and lets it be tried again', async () => {

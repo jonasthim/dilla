@@ -10,6 +10,9 @@ export const profile = {
   'profile.save': 'save',
   'profile.saved': 'Profile saved',
   'profile.error.display': 'Enter a display name.',
+  'profile.error.chars': 'That has characters dilla can’t show.',
+  'profile.error.long': 'Too long.',
+  'profile.error.blank': 'Write something, or leave it empty.',
   'profile.error.save': 'Could not save your profile. Try again.',
   'profile.card.about': 'about',
 };

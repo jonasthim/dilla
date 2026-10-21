@@ -1250,7 +1250,10 @@ with the message. When a message with files is deleted, its files are deleted fr
 Settings → **profile** is the first section. It has three fields: **display name** (up to 64 characters, and never empty),
 **status message** (one line, up to 190 characters) and **bio** (up to 500 characters, with line breaks). **save** is
 disabled until something changes, and it sends only what you changed; emptying the status message or the bio and saving
-clears it. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
+clears it, and spaces at either end are dropped. Text the server would refuse is named under its field as you type or paste:
+"That has characters dilla can’t show." (a tab, an invisible or direction-changing character, or a line break in the status
+message), "Too long.", or "Write something, or leave it empty." for only spaces; **save** stays disabled until it is fixed,
+and again after a save until you change something. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
 profile card. If the save fails, "Could not save your profile. Try again." shows and what you typed stays.
 
 The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
