@@ -557,10 +557,13 @@ func (h *Calls) afkSnapshot(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	away, err := h.awaySnapshot(r.Context(), cid)
-	if err != nil {
-		server.WriteError(w, err)
-		return
+	// The roster goes only with a channel the caller may reach, the audience op 55 goes to (M1).
+	away := []afkAwayEntry{}
+	if cfg.ChannelID != nil {
+		if away, err = h.awaySnapshot(r.Context(), cid); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 	}
 	out := afkSnapshot{ChannelID: cfg.ChannelID, TimeoutSeconds: cfg.TimeoutSeconds, Retired: []struct{}{}, Away: away}
 	h.afkMu.Lock()

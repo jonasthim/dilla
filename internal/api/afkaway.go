@@ -25,13 +25,22 @@ import (
 // that user. A row is set by the sweep's cut when no other device of the user is in a call (R-AW3)
 // and by PUT …/afk/away, which cuts every device of the user first. It is cleared by an admission,
 // by a message or a typing op in that community (Q1), by the user's last gateway connection closing
-// (Q2), and by leaving, a kick or a ban (the store's cascade). No client route clears it (Q3).
+// (Q2), and by leaving, a kick or a ban (the store's cascade, announced by AFKMemberRemoved). No
+// client route clears it (Q3).
 //
-// Every write of the roster happens under awayMu together with its op 55, so the frames go out in
-// the order the rows changed. The decision to mark is checked under afkMu against the admissions
-// recorded since it was taken (afkAdmitSeq), and an admission records itself under afkMu BEFORE it
-// takes awayMu to clear: so either the mark sees the admission and is skipped, or the admission's
-// clear runs after the mark's write. The admission wins either way (R-AW7).
+// Locks. awayMu guards the roster's writes and awaySet, the in-memory index of who may be away: a
+// user with no entry is never away, so typing, uploads, posts and admissions of everyone else are a
+// map lookup with no store call (fix round 1, I1). The set is a superset of the stored rows (a
+// cascade leaves a stale entry, which the next clear drops), exact while one process serves the
+// database, and seeded at boot; until it is seeded every user may be away. op 55 is sent with awayMu
+// released: a writer takes awaySendMu before it lets awayMu go and resolves the audience under
+// awaySendMu alone, so the frames still go out in the order the rows changed and nobody else's
+// activity waits on an O(members) audience read.
+//
+// The decision to mark is checked under afkMu against the admissions recorded since it was taken
+// (afkAdmitSeq), and an admission records itself under afkMu BEFORE it takes awayMu to clear: so
+// either the mark sees the admission and is skipped, or the admission's clear runs after the mark's
+// write. The admission wins either way (R-AW7). Lock order: awayMu, then afkMu or awaySendMu.
 
 const (
 	// afkAwaySnapshotMax caps the snapshot's away list (GET /v1/communities/{id}/afk, 5th element).
@@ -39,14 +48,13 @@ const (
 	// afkBootGrace is how long after a start the rows of users with no gateway connection are kept,
 	// so reconnecting clients keep theirs (R-AW5).
 	afkBootGrace = 60 * time.Second
-	// afkAdmitMemory is how long a user's latest admission is remembered for the mark's checks.
+	// afkAdmitMemory is how long a device's latest admission is remembered for the mark's checks.
 	afkAdmitMemory = 10 * time.Minute
 )
 
-// afkAdmit is a user's latest admission: its number, the device and when (the instance clock).
+// afkAdmit is a device's latest admission: its number and when (the instance clock).
 type afkAdmit struct {
 	seq uint64
-	dev id.ID
 	at  time.Time
 }
 
@@ -55,6 +63,12 @@ type afkAwayEntry struct {
 	_       struct{} `cbor:",toarray"`
 	UserID  id.ID
 	SinceTS uint64
+}
+
+// awayNote is one op 55 to send: [community, user, since].
+type awayNote struct {
+	community, user id.ID
+	since           uint64
 }
 
 // AFKActivity is what the message routes report a user's activity in a channel to (Q1).
@@ -82,19 +96,120 @@ func (h *Calls) connectedLocked(user id.ID) bool {
 	return h.awayConnected == nil || h.awayConnected(user)
 }
 
+// mayBeAwayLocked reports whether user may hold an away row (in cid, when it is set). Before the set
+// is seeded everyone may. The caller holds awayMu.
+func (h *Calls) mayBeAwayLocked(user id.ID, cid *id.ID) bool {
+	if !h.awaySeeded {
+		return true
+	}
+	cs := h.awaySet[user]
+	if cid == nil {
+		return len(cs) > 0
+	}
+	_, ok := cs[*cid]
+	return ok
+}
+
+// mayBeAway is mayBeAwayLocked for any community, taking awayMu for the lookup alone.
+func (h *Calls) mayBeAway(user id.ID) bool {
+	h.awayMu.Lock()
+	defer h.awayMu.Unlock()
+	return h.mayBeAwayLocked(user, nil)
+}
+
+func (h *Calls) noteAwayLocked(user, cid id.ID) {
+	if h.awaySet == nil {
+		h.awaySet = make(map[id.ID]map[id.ID]struct{})
+	}
+	if h.awaySet[user] == nil {
+		h.awaySet[user] = make(map[id.ID]struct{})
+	}
+	h.awaySet[user][cid] = struct{}{}
+}
+
+func (h *Calls) dropAwayLocked(user, cid id.ID) {
+	if cs := h.awaySet[user]; cs != nil {
+		delete(cs, cid)
+		if len(cs) == 0 {
+			delete(h.awaySet, user)
+		}
+	}
+}
+
+// releaseAway lets awayMu go and sends notes in order, with awayMu released (see the file comment).
+// The caller holds awayMu; it is released on return.
+func (h *Calls) releaseAway(ctx context.Context, notes []awayNote) {
+	if len(notes) == 0 || h.awayGW == nil {
+		h.awayMu.Unlock()
+		return
+	}
+	gw := h.awayGW
+	h.awaySendMu.Lock()
+	h.awayMu.Unlock()
+	defer h.awaySendMu.Unlock()
+	for _, n := range notes {
+		h.sendAway(ctx, gw, n)
+	}
+}
+
+// sendAway sends op 55 to every user who may view the community's AFK channel (its EligibleUsers,
+// the voice_state pattern). A community with no AFK channel, or a failure to read its audience,
+// sends nothing: the snapshot is the record.
+func (h *Calls) sendAway(ctx context.Context, gw VoiceGateway, n awayNote) {
+	cfg, err := h.repo.GetCommunityAFK(ctx, n.community)
+	if err != nil || cfg.ChannelID == nil {
+		return
+	}
+	ch, err := h.repo.GetChannel(ctx, *cfg.ChannelID)
+	if err != nil {
+		return
+	}
+	audience, err := EligibleUsers(ctx, h.repo, ch)
+	if err != nil {
+		h.log.WarnContext(ctx, "resolving the AFK channel's audience for afk_away failed", "community", n.community, "err", err)
+		return
+	}
+	payload, err := gateway.AFKAwayPayload(n.community, n.user, n.since)
+	if err != nil {
+		return
+	}
+	f := gateway.Frame{Op: gateway.OpAFKAway, Payload: payload}
+	for _, u := range audience {
+		gw.DeliverUser(u, f)
+	}
+}
+
 // noteAFKAdmissionLocked records an admission of dev of user. The caller holds afkMu.
 func (h *Calls) noteAFKAdmissionLocked(user, dev id.ID) {
 	h.afkAdmitSeq++
 	if h.afkAdmits == nil {
-		h.afkAdmits = make(map[id.ID]afkAdmit)
+		h.afkAdmits = make(map[id.ID]map[id.ID]afkAdmit)
 	}
-	h.afkAdmits[user] = afkAdmit{seq: h.afkAdmitSeq, dev: dev, at: h.clk.Now()}
+	if h.afkAdmits[user] == nil {
+		h.afkAdmits[user] = make(map[id.ID]afkAdmit)
+	}
+	h.afkAdmits[user][dev] = afkAdmit{seq: h.afkAdmitSeq, at: h.clk.Now()}
+}
+
+// latestAdmitSeqLocked is the number of the user's latest admission, 0 for none. The caller holds
+// afkMu.
+func (h *Calls) latestAdmitSeqLocked(user id.ID) uint64 {
+	var seq uint64
+	for _, a := range h.afkAdmits[user] {
+		seq = max(seq, a.seq)
+	}
+	return seq
 }
 
 // pruneAFKAdmitsLocked forgets admissions older than afkAdmitMemory. The caller holds afkMu.
 func (h *Calls) pruneAFKAdmitsLocked() {
-	for u, a := range h.afkAdmits {
-		if h.clk.Since(a.at) >= afkAdmitMemory {
+	for u, devs := range h.afkAdmits {
+		for d, a := range devs {
+			if h.clk.Since(a.at) >= afkAdmitMemory {
+				delete(devs, d)
+			}
+		}
+		if len(devs) == 0 {
 			delete(h.afkAdmits, u)
 		}
 	}
@@ -107,66 +222,57 @@ func (h *Calls) afkDecision() uint64 {
 	return h.afkAdmitSeq
 }
 
-// announceAway sends op 55 [community, user, since] to every user who may view the community's AFK
-// channel (its EligibleUsers, the voice_state pattern). A community with no AFK channel, or a
-// failure to read its audience, sends nothing: the snapshot is the record. The caller holds awayMu.
-func (h *Calls) announceAway(ctx context.Context, cid, user id.ID, since uint64) {
-	if h.awayGW == nil {
+// clearAwayUser clears every away row of user and announces each. A user not in the set is a map
+// lookup.
+func (h *Calls) clearAwayUser(ctx context.Context, user id.ID) {
+	ctx = context.WithoutCancel(ctx)
+	h.awayMu.Lock()
+	if !h.mayBeAwayLocked(user, nil) {
+		h.awayMu.Unlock()
 		return
 	}
-	cfg, err := h.repo.GetCommunityAFK(ctx, cid)
-	if err != nil || cfg.ChannelID == nil {
-		return
-	}
-	ch, err := h.repo.GetChannel(ctx, *cfg.ChannelID)
-	if err != nil {
-		return
-	}
-	audience, err := EligibleUsers(ctx, h.repo, ch)
-	if err != nil {
-		h.log.WarnContext(ctx, "resolving the AFK channel's audience for afk_away failed", "community", cid, "err", err)
-		return
-	}
-	payload, err := gateway.AFKAwayPayload(cid, user, since)
-	if err != nil {
-		return
-	}
-	f := gateway.Frame{Op: gateway.OpAFKAway, Payload: payload}
-	for _, u := range audience {
-		h.awayGW.DeliverUser(u, f)
-	}
-}
-
-// clearAwayUserLocked clears every away row of user and announces each. The caller holds awayMu.
-func (h *Calls) clearAwayUserLocked(ctx context.Context, user id.ID) {
 	cids, err := h.repo.ClearAFKAwayUser(ctx, user)
 	if err != nil {
+		h.awayMu.Unlock()
 		h.log.WarnContext(ctx, "clearing a user's away rows failed", "user", user, "err", err)
 		return
 	}
+	delete(h.awaySet, user)
+	notes := make([]awayNote, 0, len(cids))
 	for _, cid := range cids {
-		h.announceAway(ctx, cid, user, 0)
+		notes = append(notes, awayNote{community: cid, user: user})
 	}
+	h.releaseAway(ctx, notes)
 }
 
 // clearAwayIn clears user's away row in community cid, announcing it when there was one.
 func (h *Calls) clearAwayIn(ctx context.Context, cid, user id.ID) {
 	ctx = context.WithoutCancel(ctx)
 	h.awayMu.Lock()
-	defer h.awayMu.Unlock()
+	if !h.mayBeAwayLocked(user, &cid) {
+		h.awayMu.Unlock()
+		return
+	}
 	cleared, err := h.repo.ClearAFKAway(ctx, cid, user)
 	if err != nil {
+		h.awayMu.Unlock()
 		h.log.WarnContext(ctx, "clearing an away row failed", "community", cid, "user", user, "err", err)
 		return
 	}
+	h.dropAwayLocked(user, cid)
+	var notes []awayNote
 	if cleared {
-		h.announceAway(ctx, cid, user, 0)
+		notes = []awayNote{{community: cid, user: user}}
 	}
+	h.releaseAway(ctx, notes)
 }
 
 // AFKActiveInChannel is activity of user in channel (a readable post, a typing op, Q1): it clears the
-// user's away row in the channel's community.
+// user's away row in the channel's community. A user who is not away is a map lookup.
 func (h *Calls) AFKActiveInChannel(ctx context.Context, user, channel id.ID) {
+	if !h.mayBeAway(user) {
+		return
+	}
 	ch, err := h.repo.GetChannel(ctx, channel)
 	if err != nil || ch.CommunityID == nil {
 		return
@@ -176,8 +282,11 @@ func (h *Calls) AFKActiveInChannel(ctx context.Context, user, channel id.ID) {
 
 // AFKActiveInGroup is an end-to-end encrypted upload by user into group (Q1): an upload into a
 // community channel's text group clears the user's away row in that community; a DM's, a call
-// group's or any other group's clears nothing.
+// group's or any other group's clears nothing. A user who is not away is a map lookup.
 func (h *Calls) AFKActiveInGroup(ctx context.Context, user, group id.ID) {
+	if !h.mayBeAway(user) {
+		return
+	}
 	g, err := h.repo.GetGroup(ctx, group)
 	if err != nil || g.Kind != GroupText || g.CommunityID == nil {
 		return
@@ -188,28 +297,48 @@ func (h *Calls) AFKActiveInGroup(ctx context.Context, user, group id.ID) {
 // AFKOffline is the gateway's hook for a user's last live connection closing (Q2): every away row of
 // the user is cleared at once.
 func (h *Calls) AFKOffline(ctx context.Context, user id.ID) {
-	ctx = context.WithoutCancel(ctx)
-	h.awayMu.Lock()
-	defer h.awayMu.Unlock()
-	h.clearAwayUserLocked(ctx, user)
+	h.clearAwayUser(ctx, user)
 }
 
 // afkAdmissionClears is the admission's clear (R-AW2, R-AW4): Admitted records the admission under
 // afkMu first (noteAFKAdmissionLocked) and calls this after releasing it; every row of the user goes.
 func (h *Calls) afkAdmissionClears(ctx context.Context, user id.ID) {
+	h.clearAwayUser(ctx, user)
+}
+
+// AFKMemberRemoved runs after a leave, a kick or a ban (M6): the membership's cascade dropped the
+// user's away row in cid, and the remaining audience is told with op 55 since 0. A user who is still
+// a member (a ban of a non-member, a failed removal) or who was not away sends nothing.
+func (h *Calls) AFKMemberRemoved(ctx context.Context, cid, user id.ID) {
+	if h == nil {
+		return
+	}
 	ctx = context.WithoutCancel(ctx)
+	if _, err := h.repo.GetMember(ctx, cid, user); err == nil || !errors.Is(err, store.ErrNotFound) {
+		return
+	}
 	h.awayMu.Lock()
-	defer h.awayMu.Unlock()
-	h.clearAwayUserLocked(ctx, user)
+	if !h.mayBeAwayLocked(user, &cid) {
+		h.awayMu.Unlock()
+		return
+	}
+	h.dropAwayLocked(user, cid)
+	h.releaseAway(ctx, []awayNote{{community: cid, user: user}})
 }
 
 // otherDeviceInCall reports whether a device of user other than except is in a call: admitted
 // within the join window (the SFU may not list it yet), or listed by the SFU in any room.
 func (h *Calls) otherDeviceInCall(ctx context.Context, user, except id.ID) (bool, error) {
 	h.afkMu.Lock()
-	a, ok := h.afkAdmits[user]
+	joining := false
+	for dev, a := range h.afkAdmits[user] {
+		if dev != except && h.clk.Since(a.at) < admissionJoinWindow {
+			joining = true
+			break
+		}
+	}
 	h.afkMu.Unlock()
-	if ok && a.dev != except && h.clk.Since(a.at) < admissionJoinWindow {
+	if joining {
 		return true, nil
 	}
 	if h.sfu == nil {
@@ -265,25 +394,32 @@ func (h *Calls) eachUserParticipant(ctx context.Context, devices map[string]bool
 
 // markAway marks user away in community cid since now, unless an admission of the user came after
 // decided (R-AW7) or, with needConn, the user holds no gateway connection (Q2), and announces a row
-// it wrote. It answers whether a row was written; ErrNotFound when the user is no member (a racing
-// kick). Only the boot marks without needConn: nobody is connected yet, and the boot grace decides.
+// it wrote with the since it stored. It answers whether a row was written; ErrNotFound when the user
+// is no member (a racing kick). Only the boot marks without needConn: nobody is connected yet, and
+// the boot grace decides.
 func (h *Calls) markAway(ctx context.Context, cid, user id.ID, decided uint64, needConn bool) (bool, error) {
 	ctx = context.WithoutCancel(ctx)
 	h.awayMu.Lock()
-	defer h.awayMu.Unlock()
 	h.afkMu.Lock()
-	newer := h.afkAdmits[user].seq > decided
+	newer := h.latestAdmitSeqLocked(user) > decided
 	h.afkMu.Unlock()
 	if newer || (needConn && !h.connectedLocked(user)) {
+		h.awayMu.Unlock()
 		return false, nil
 	}
-	set, err := h.repo.SetAFKAway(ctx, cid, user, h.clk.Now().Unix())
+	h.afkStage("mark-checked")
+	now := h.clk.Now().Unix()
+	set, err := h.repo.SetAFKAway(ctx, cid, user, now)
 	if err != nil {
+		h.awayMu.Unlock()
 		return false, err
 	}
+	h.noteAwayLocked(user, cid)
+	var notes []awayNote
 	if set {
-		h.announceAway(ctx, cid, user, uint64(h.clk.Now().Unix())) //nolint:gosec // G115: the instance clock is after 1970
+		notes = []awayNote{{community: cid, user: user, since: uint64(now)}} //nolint:gosec // G115: the instance clock is after 1970
 	}
+	h.releaseAway(ctx, notes)
 	return set, nil
 }
 
@@ -409,29 +545,84 @@ func (h *Calls) eachCommunity(ctx context.Context, f func(store.CommunityRow)) e
 	}
 }
 
-// EndAFKCalls is the boot step after EnsureAFKChannels (release note, R-AW1): every live call in a
-// community's AFK channel ends, and every user with a device in its call group becomes away there,
-// since now. It also starts the boot grace (R-AW5) that ClearDisconnectedAway waits out. It answers
-// how many calls it ended. A failure for one call is logged and the others go on.
+// SeedAFKAway loads the in-memory away index from the stored roster (I1), one community at a time
+// and without holding awayMu across the walk. It merges into what marks wrote meanwhile; a clear
+// that raced it can leave a stale entry, which is safe (the index is a superset). Until it succeeds
+// every user may be away and the clears go to the store.
+func (h *Calls) SeedAFKAway(ctx context.Context) error {
+	seen := make(map[id.ID]map[id.ID]struct{})
+	var failed error
+	if err := h.eachCommunity(ctx, func(com store.CommunityRow) {
+		rows, err := h.repo.ListAFKAway(ctx, com.ID)
+		if err != nil {
+			failed = err
+			return
+		}
+		for _, r := range rows {
+			if seen[r.UserID] == nil {
+				seen[r.UserID] = make(map[id.ID]struct{})
+			}
+			seen[r.UserID][com.ID] = struct{}{}
+		}
+	}); err != nil {
+		return err
+	}
+	if failed != nil {
+		return failed
+	}
+	h.awayMu.Lock()
+	defer h.awayMu.Unlock()
+	for u, cs := range seen {
+		for cid := range cs {
+			h.noteAwayLocked(u, cid)
+		}
+	}
+	h.awaySeeded = true
+	return nil
+}
+
+// EndAFKCalls is the boot step after EnsureAFKChannels (release note, R-AW1): it seeds the away
+// index, ends every live call in a community's AFK channel, and marks every user with a device in its
+// call group away there, since now. It also starts the boot grace (R-AW5) that AFKMaintenance waits
+// out. It answers how many calls it ended. A call whose end fails is logged and left for
+// AFKMaintenance to retry on the next tick (M4); the others go on.
 func (h *Calls) EndAFKCalls(ctx context.Context) (int, error) {
 	h.awayMu.Lock()
 	h.awayGraceUntil, h.awayGraceDone = h.clk.Now().Add(afkBootGrace), false
 	h.awayMu.Unlock()
-	n := 0
+	if err := h.SeedAFKAway(ctx); err != nil {
+		h.log.ErrorContext(ctx, "loading the away roster failed; every clear reads the store", "err", err)
+	}
+	n, failed, err := h.endAFKCallsOnce(ctx)
+	h.awayEndPending.Store(failed > 0 || err != nil)
+	if n > 0 {
+		h.log.InfoContext(ctx, "ended the calls in AFK channels; their users are away", "calls", n)
+	}
+	return n, err
+}
+
+// endAFKCallsOnce is one walk of EndAFKCalls: the calls it ended and how many ends failed.
+func (h *Calls) endAFKCallsOnce(ctx context.Context) (int, int, error) {
+	n, failed := 0, 0
 	err := h.eachCommunity(ctx, func(com store.CommunityRow) {
 		cfg, err := h.repo.GetCommunityAFK(ctx, com.ID)
 		if err != nil || cfg.ChannelID == nil {
+			if err != nil {
+				failed++
+			}
 			return
 		}
 		live, err := h.repo.ListLiveVoiceSessions(ctx, *cfg.ChannelID)
 		if err != nil {
+			failed++
 			h.log.ErrorContext(ctx, "listing the AFK channel's calls failed", "community", com.ID, "err", err)
 			return
 		}
 		for _, row := range live {
 			users := h.callUsers(ctx, row)
 			if err := h.endCall(context.WithoutCancel(ctx), row.CallID, row.LivekitRoom, "afk_channel"); err != nil {
-				h.log.ErrorContext(ctx, "ending a call in the AFK channel failed", "call_id", row.CallID, "err", err)
+				failed++
+				h.log.ErrorContext(ctx, "ending a call in the AFK channel failed; retried on the next tick", "call_id", row.CallID, "err", err)
 				continue
 			}
 			n++
@@ -442,10 +633,7 @@ func (h *Calls) EndAFKCalls(ctx context.Context) (int, error) {
 			}
 		}
 	})
-	if n > 0 {
-		h.log.InfoContext(ctx, "ended the calls in AFK channels; their users are away", "calls", n)
-	}
-	return n, err
+	return n, failed, err
 }
 
 // callUsers is the users with a current leaf in row's call group, each once.
@@ -469,17 +657,30 @@ func (h *Calls) callUsers(ctx context.Context, row store.VoiceSessionRow) []id.I
 	return out
 }
 
-// ClearDisconnectedAway runs on the maintenance tick. Once the boot grace has passed (R-AW5), it
-// clears, once, the away rows of every user who holds no gateway connection, announcing each; before
-// that, and ever after, it does nothing.
-func (h *Calls) ClearDisconnectedAway(ctx context.Context) {
-	h.awayMu.Lock()
-	defer h.awayMu.Unlock()
-	if h.awayGraceUntil.IsZero() || h.awayGraceDone || h.clk.Now().Before(h.awayGraceUntil) {
+// AFKMaintenance runs on the maintenance tick, on its own goroutine in dillad (one pass at a time):
+// it retries the AFK-call ends the boot could not finish (M4), and once the boot grace has passed
+// (R-AW5) it clears, once, the away rows of every user who holds no gateway connection, announcing
+// each. The walk holds awayMu for one row at a time, never across it (M5).
+func (h *Calls) AFKMaintenance(ctx context.Context) {
+	if !h.awayMaintaining.CompareAndSwap(false, true) {
 		return
 	}
-	h.awayGraceDone = true
-	if h.awayConnected == nil {
+	defer h.awayMaintaining.Store(false)
+	if h.awayEndPending.Load() {
+		n, failed, err := h.endAFKCallsOnce(ctx)
+		h.awayEndPending.Store(failed > 0 || err != nil)
+		if n > 0 {
+			h.log.InfoContext(ctx, "ended the calls in AFK channels on a retry; their users are away", "calls", n)
+		}
+	}
+	h.awayMu.Lock()
+	due := !h.awayGraceUntil.IsZero() && !h.awayGraceDone && !h.clk.Now().Before(h.awayGraceUntil)
+	if due {
+		h.awayGraceDone = true
+	}
+	connected := h.awayConnected
+	h.awayMu.Unlock()
+	if !due || connected == nil {
 		return
 	}
 	if err := h.eachCommunity(ctx, func(com store.CommunityRow) {
@@ -489,11 +690,8 @@ func (h *Calls) ClearDisconnectedAway(ctx context.Context) {
 			return
 		}
 		for _, r := range rows {
-			if h.awayConnected(r.UserID) {
-				continue
-			}
-			if cleared, err := h.repo.ClearAFKAway(ctx, com.ID, r.UserID); err == nil && cleared {
-				h.announceAway(ctx, com.ID, r.UserID, 0)
+			if !connected(r.UserID) {
+				h.clearAwayIn(ctx, com.ID, r.UserID)
 			}
 		}
 	}); err != nil {
@@ -501,14 +699,12 @@ func (h *Calls) ClearDisconnectedAway(ctx context.Context) {
 	}
 }
 
-// awaySnapshot is the snapshot's away list of community cid, at most afkAwaySnapshotMax entries.
+// awaySnapshot is the snapshot's away list of community cid, at most afkAwaySnapshotMax entries,
+// bounded in the query (M3).
 func (h *Calls) awaySnapshot(ctx context.Context, cid id.ID) ([]afkAwayEntry, error) {
-	rows, err := h.repo.ListAFKAway(ctx, cid)
+	rows, err := h.repo.ListAFKAwayFirst(ctx, cid, afkAwaySnapshotMax)
 	if err != nil {
 		return nil, err
-	}
-	if len(rows) > afkAwaySnapshotMax {
-		rows = rows[:afkAwaySnapshotMax]
 	}
 	out := make([]afkAwayEntry, 0, len(rows))
 	for _, r := range rows {

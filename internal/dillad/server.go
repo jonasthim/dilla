@@ -596,9 +596,11 @@ func (s *Server) sweep(ctx context.Context) {
 	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
 		s.o.Log.Warn("pruning expired sessions failed", "err", err)
 	}
-	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go.
+	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a
+	// boot-time AFK-call end that failed is retried. It runs on its own goroutine (one pass at a time,
+	// AFKMaintenance's own guard), so a large walk never delays this tick's heartbeat enforcement.
 	if s.calls != nil {
-		s.calls.ClearDisconnectedAway(ctx)
+		go s.calls.AFKMaintenance(context.WithoutCancel(ctx))
 	}
 }
 

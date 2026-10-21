@@ -112,3 +112,13 @@ func SetMemberPageForTest(n int32) func() {
 // landed and the mark is not yet decided; "away-cut": PUT …/afk/away has cut the user's devices and
 // not yet marked them away).
 func (h *Calls) SetAFKHookForTest(f func(stage string)) { h.afkHook = f }
+
+// AwayLockFreeForTest reports whether awayMu is free right now (a clear must not hold it while it
+// resolves the op 55 audience).
+func (h *Calls) AwayLockFreeForTest() bool {
+	if h.awayMu.TryLock() {
+		h.awayMu.Unlock()
+		return true
+	}
+	return false
+}

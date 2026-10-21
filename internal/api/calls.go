@@ -252,20 +252,29 @@ type Calls struct {
 	afkPending map[id.ID]afkPendingEntry
 	afkExempt  map[id.ID]string
 	afkNotify  *StructureNotifier
-	// afkAdmitSeq numbers every admission (afkaway.go); afkAdmits is each user's latest one, which
-	// the away mark checks under afkMu so that an admission newer than the decision wins (R-AW7).
+	// afkAdmitSeq numbers every admission (afkaway.go); afkAdmits is each device's latest one per
+	// user, which the away mark checks under afkMu so that an admission newer than the decision
+	// wins (R-AW7) and a device still joining keeps its user busy (R-AW2).
 	afkAdmitSeq uint64
-	afkAdmits   map[id.ID]afkAdmit
+	afkAdmits   map[id.ID]map[id.ID]afkAdmit
 
-	// awayMu serialises every write of the stored away roster with its op 55 (afkaway.go): a mark,
-	// the clears, the boot work. It is taken before afkMu, never inside it.
+	// awayMu serialises every write of the stored away roster and guards awaySet, the in-memory
+	// index of who may be away (afkaway.go). It is taken before afkMu and awaySendMu, never inside
+	// them. awaySendMu orders the op 55 sends, which run with awayMu released.
 	awayMu        sync.Mutex
+	awaySendMu    sync.Mutex
 	awayGW        VoiceGateway
 	awayConnected func(id.ID) bool
+	awaySet       map[id.ID]map[id.ID]struct{}
+	awaySeeded    bool
 	// awayGraceUntil is when the boot grace ends (R-AW5); awayGraceDone is set once the rows of
 	// users with no connection were cleared after it. Both under awayMu.
 	awayGraceUntil time.Time
 	awayGraceDone  bool
+	// awayEndPending is set while a boot-time AFK-call end is unfinished (M4); awayMaintaining
+	// keeps AFKMaintenance to one pass at a time.
+	awayEndPending  atomic.Bool
+	awayMaintaining atomic.Bool
 	// afkHook, set by a test only, runs at named points of the AFK paths.
 	afkHook func(stage string)
 }

@@ -86,6 +86,9 @@ func newAwayEnv(t *testing.T) *awayEnv {
 	p := newPendingEnv(t)
 	a := &awayEnv{pendingEnv: p, away: &awayGW{}, owner: p.e.sess[p.ownerTok].UserID, offline: map[id.ID]bool{}}
 	p.calls.WithAFKAway(a.away, a.connected)
+	if err := p.calls.SeedAFKAway(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	return a
 }
 
@@ -120,6 +123,10 @@ func (a *awayEnv) isAway(t *testing.T, cid, user id.ID) bool {
 func (a *awayEnv) markAway(t *testing.T, cid, user id.ID, since int64) {
 	t.Helper()
 	if _, err := a.e.Repo.SetAFKAway(t.Context(), cid, user, since); err != nil {
+		t.Fatal(err)
+	}
+	// A row written behind the instance's back is known to it only after a seed, as at boot.
+	if err := a.calls.SeedAFKAway(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -456,12 +463,12 @@ func TestAFKRestartKeepsRowsForConnectedUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.e.Clk.Advance(59 * time.Second)
-	a.calls.ClearDisconnectedAway(t.Context())
+	a.calls.AFKMaintenance(t.Context())
 	if !a.isAway(t, a.cid, a.owner) || !a.isAway(t, a.cid, a.member) {
 		t.Fatalf("rows cleared inside the grace: %v", a.roster(t, a.cid))
 	}
 	a.e.Clk.Advance(2 * time.Second)
-	a.calls.ClearDisconnectedAway(t.Context())
+	a.calls.AFKMaintenance(t.Context())
 	if a.isAway(t, a.cid, a.owner) {
 		t.Fatal("the disconnected owner's row survived the grace")
 	}
@@ -472,7 +479,7 @@ func TestAFKRestartKeepsRowsForConnectedUsers(t *testing.T) {
 	// It runs once: a row written later for an offline user is the offline hook's, not the boot's.
 	a.markAway(t, a.cid, a.owner, 200)
 	a.e.Clk.Advance(time.Hour)
-	a.calls.ClearDisconnectedAway(t.Context())
+	a.calls.AFKMaintenance(t.Context())
 	if !a.isAway(t, a.cid, a.owner) {
 		t.Fatal("the boot clear ran a second time")
 	}
