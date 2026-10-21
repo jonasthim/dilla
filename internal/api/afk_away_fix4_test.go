@@ -29,7 +29,7 @@ func TestAFKUnseededClearHonoursAnInFlightMark(t *testing.T) {
 			a.e.Clk.Advance(31 * time.Second)
 			waitOffline(t, c)
 		},
-		"typing":    func(a *awayEnv, c *api.Calls) { c.AFKActiveInChannel(t.Context(), a.member, a.ch) },
+		"typing": func(a *awayEnv, c *api.Calls) { c.AFKActiveInChannel(t.Context(), a.member, a.ch) },
 	}
 	for name, clear := range clears {
 		t.Run(name, func(t *testing.T) {

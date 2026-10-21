@@ -134,9 +134,9 @@ func TestAFKDrainBatchResolvesOnceAndSendsTheFinalState(t *testing.T) {
 		t.Fatal("the drainer never resolved an audience")
 	}
 	c.AFKActiveInChannel(t.Context(), a.member, a.ch) // member: since 0
-	c.MarkAwayForTest(t.Context(), a.cid, a.member)    // member: since now
+	c.MarkAwayForTest(t.Context(), a.cid, a.member)   // member: since now
 	c.AFKActiveInChannel(t.Context(), a.member, a.ch) // member: since 0 again
-	c.MarkAwayForTest(t.Context(), a.cid, third)       // third: since now
+	c.MarkAwayForTest(t.Context(), a.cid, third)      // third: since now
 	mu.Lock()
 	readsBefore := reads
 	mu.Unlock()

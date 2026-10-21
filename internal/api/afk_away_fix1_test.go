@@ -242,7 +242,7 @@ type tickClock struct{ *clock.Fake }
 
 func (c tickClock) Now() time.Time {
 	now := c.Fake.Now()
-	c.Fake.Advance(time.Second)
+	c.Advance(time.Second)
 	return now
 }
 

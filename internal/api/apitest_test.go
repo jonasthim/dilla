@@ -401,8 +401,8 @@ type stubSFU struct {
 	// live is the permission the stub SFU holds per identity: set by an applied update, dropped by
 	// a removal.
 	live         map[string]*livekit.ParticipantPermission
-	failUpdates  int  // the next failUpdates pushes fail (and are not applied)
-	failRemovals int  // the next failRemovals RemoveParticipants calls fail
+	failUpdates  int // the next failUpdates pushes fail (and are not applied)
+	failRemovals int // the next failRemovals RemoveParticipants calls fail
 	// beforeRemove runs at the start of every RemoveParticipants, outside the lock: a test reads
 	// what a client would see while the cut is under way.
 	beforeRemove func(room string, device id.ID)
