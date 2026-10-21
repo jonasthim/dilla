@@ -448,6 +448,8 @@ describe('AW5: a restore or a recovery never rejoins where the person is away (R
   it('a restore of the AFK channel (a web3.9 call) starts nothing and marks nothing', async () => {
     const h = harness();
     act(() => h.v.restore(AFK_CH, false, false));
+    // Final review N2: a known AFK channel arms no recovery, so no rejoining banner flashes before the first retry.
+    expect(h.v.recoveryChannelId).toBeNull();
     await wait(1_800);
     expect(h.started).toEqual([]);
     expect(h.client.callsOf('afkAway')).toEqual([]);

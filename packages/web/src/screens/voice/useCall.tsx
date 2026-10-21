@@ -826,6 +826,9 @@ export function useCall(o: UseCallOptions): CallView {
     // AW5 (R-AW7), fix rounds 1-3: the restore is a recovery that may take until RESTORE_WAIT_MS (the upgrade's rejoin
     // window), with the rejoining banner and its Leave from the start (B2-M4). It joins only on a fresh clear read; the AFK
     // channel, a pending reason, an away row or a gone channel join nothing, and past the window it ends as lost.
+    // Final review N2: a channel already known to be AFK (a web3.9 or web3.10 call saved before the upgrade) arms nothing,
+    // so its rejoining banner never flashes; one whose slices are not read yet still ends as 'afk' on the first retry.
+    if (isAfk(id)) return;
     intent.current += 1;
     recoveryRef.current = id;
     recoveryMark.current = null;
@@ -834,7 +837,7 @@ export function useCall(o: UseCallOptions): CallView {
     setRecoveryChannelId(id);
     setRecoveryCamera(camera);
     setRecoverySharing(sharing);
-  }, []);
+  }, [isAfk]);
 
   /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
   const keepSelf = useCallback((s: PageCall) => {
