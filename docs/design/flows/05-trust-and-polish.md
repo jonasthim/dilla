@@ -100,6 +100,8 @@ The real dialog renders the **exact 64-hex-character public UMK**, in full, and 
 
 The browser-tier device depends on code served by its instance. Comparing the safety number outside that instance through this ceremony is the user's available check of the displayed identity; this flow makes no promise about the browser-served code. A malicious instance can freeze the first list seen here. A validated Remove unblocks only this group.
 
+Safety-number QR payload (the contract for a future scanner): `dilla-sn:1:<userId>:<12 blocks joined by "-">`, for example `dilla-sn:1:` + the 32-character user id + `:` + `00001-00002-...-00012`. `1` is the format version. It carries public material only (the user id and the displayed blocks); no key, no session data. It is drawn at 256 px (at least 4 px per module for the 53-module, version 7 symbol), shrinking only to the dialog's width on a phone.
+
 Use Mesh's mono/terminal hierarchy, `--bg`, `--surface`, `--fg`, `--fg-2`, `--edge` and `--accent` roles in `mesh`, `light` and `high-contrast`; the same structure and state text appear in all three themes. At 360 CSS pixels, dialog width is bounded by `max-width:min(100vw - 32px, …)`, the public key wraps, controls wrap inside the viewport, and the viewport has no horizontal scroll. Checkbox, buttons and every close control have targets at least 24×24 CSS pixels. At 200% zoom/reflow, no control or text is lost and every focus ring remains visible: `outline: var(--focus-ring)` with a 2px offset. Reduced motion suppresses transition effects without hiding or changing any state.
 
 ## Keyboard map
@@ -152,6 +154,9 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.verify | All 12 blocks match | dialog final button |
 | privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
 | privacy.keyDetails | public key | the closed disclosure the person's exact public key sits behind; the 12 blocks are the comparison (added 2026-10-14, product walk M11) |
+| privacy.showQr | show qr | dialog toggle that shows the safety number as a QR code (show only; nothing scans it) |
+| privacy.hideQr | hide qr | the same toggle while the QR is shown |
+| privacy.qrLabel | safety number as a qr code | the QR's text alternative; the 12 blocks stay the screen-reader path |
 | privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |
