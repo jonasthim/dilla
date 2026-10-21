@@ -187,9 +187,16 @@ call panel as well as on the stage's toolbar, and show in green while they are o
 your camera, mirrored as a mirror shows you (the others see it the right way round). **share screen** lets the browser
 ask which screen, window or tab to share, and pressed again ends it. A share is its own tile, "{name}’s screen",
 beside the person's own tile, so with the camera and a share both on, a person has two tiles
-([The stage](#the-stage)). The only sound a share carries is a tab's, when you share a browser tab in a
-Chromium-based browser; a whole screen or window is shared without sound. If too many people already show a camera or
-a screen: "Too many people are sharing. Try again when someone stops."
+([The stage](#the-stage)). A share carries sound from:
+
+- A browser tab in Chrome or Edge (all platforms).
+- A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
+- A browser tab on Linux (no screen or window audio).
+- No sound from Firefox or Safari.
+
+A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing how to get sound, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+
+If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
 ## Calls in direct messages
 
@@ -343,7 +350,7 @@ If you hear no one on any call, ask whoever runs your instance to update it to v
 ## Known limits
 
 - Voice only in a browser tab: no desktop app yet, and voice is not supported in Safari.
-- Screen sound only from a browser tab shared in a Chromium-based browser.
+- On Windows, Chrome and Edge before version 141 may send the call's own sound back through a shared screen or window (an echo); update the browser.
 - No ring without an open dilla tab, and no answering from the notification itself.
 - No preview frames and no captions for videos; only the listed types play.
 - You cannot block a person so that their calls never ring.
