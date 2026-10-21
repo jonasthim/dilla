@@ -166,14 +166,18 @@ func TestAFKPendingNamesItsCommunity(t *testing.T) {
 	}
 }
 
+// A call left live in the AFK channel by an earlier version (R-AW1 refuses any new one) is never
+// tracked: its devices are not swept out of it.
 func TestAFKCallIsNotTracked(t *testing.T) {
 	p := newPendingEnv(t)
 	group := seedCallGroup(t, p.e, p.afk, p.cid, callGroupEpoch)
 	seedLeaf(t, p.e, group, p.memberDev, 3, nil)
-	if status, body := p.e.Do(http.MethodPost, "/v1/channels/"+p.afk.String()+"/calls", p.memberTok, []any{}); status != http.StatusCreated {
-		t.Fatalf("join AFK = %d (%x)", status, body)
+	call := id.New()
+	room := call.String() + "-1-abcdef01"
+	if err := p.e.Repo.PutVoiceSession(t.Context(), store.VoiceSessionRow{CallID: call, ChannelID: p.afk, GroupID: &group,
+		LivekitRoom: room, Started: p.e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
 	}
-	room := p.stub.lastMint().Room
 	p.stub.setPresent(room, &livekit.ParticipantInfo{Identity: p.memberDev.String()})
 	p.calls.Admitted(t.Context(), room, p.memberDev, false)
 	p.e.Clk.Advance(2 * time.Hour)

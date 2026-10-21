@@ -32,7 +32,8 @@ func afkPointer(t *testing.T, e *env, cid id.ID) (id.ID, uint64) {
 }
 
 // afkSnapshotOf reads GET /v1/communities/{id}/afk as tok: the channel, the timeout, the length of the
-// retired third element and pending, which must be a uint (W-1: the subset has no booleans).
+// retired third element and pending, which must be a uint (W-1: the subset has no booleans). The
+// fifth element, the away roster (AW2), is read by afkAwayOf.
 func afkSnapshotOf(t *testing.T, e *env, cid id.ID, tok string) (*id.ID, uint64, int, uint64) {
 	t.Helper()
 	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/afk", tok, nil)
@@ -41,8 +42,8 @@ func afkSnapshotOf(t *testing.T, e *env, cid id.ID, tok string) (*id.ID, uint64,
 	}
 	var raw []cbor.RawMessage
 	mustUnmarshal(t, body, &raw)
-	if len(raw) != 4 {
-		t.Fatalf("AFK snapshot has %d elements, want 4 (%x)", len(raw), body)
+	if len(raw) != 5 {
+		t.Fatalf("AFK snapshot has %d elements, want 5 (%x)", len(raw), body)
 	}
 	var ch *id.ID
 	var timeout, pending uint64

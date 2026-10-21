@@ -129,25 +129,41 @@ func TestAFKViewAndConnectForEveryMember(t *testing.T) {
 	}
 }
 
-func TestAFKTokenIsListenOnly(t *testing.T) {
+// legacyCall writes a live call in ch on group, as a web3.10 instance left one before the AFK
+// channel stopped hosting calls (AW2, R-AW1), and answers its id and room. Only such a call can be
+// live in the AFK channel now; the listen-only grant stays the backstop for it.
+func (l *listenEnv) legacyCall(t *testing.T, ch, group id.ID) (id.ID, string) {
+	t.Helper()
+	call := id.New()
+	room := call.String() + "-1-abcdef01"
+	if err := l.e.Repo.PutVoiceSession(t.Context(), store.VoiceSessionRow{CallID: call, ChannelID: ch, GroupID: &group,
+		LivekitRoom: room, Started: l.e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	return call, room
+}
+
+// R-AW1: a start in the AFK channel mints no token at all; the lounge (control) mints the microphone.
+func TestAFKStartMintsNoToken(t *testing.T) {
 	l := newListenEnv(t, nil)
-	if _, m := l.join(t, l.afk, l.memberTok); !listenOnly(m.Perm) {
-		t.Fatalf("AFK token grant = %+v, want listen-only", m.Perm)
+	status, body := l.e.Do(http.MethodPost, "/v1/channels/"+l.afk.String()+"/calls", l.memberTok, []any{})
+	if status != http.StatusForbidden || l.e.ErrCode(body) != "E_FORBIDDEN" || len(l.stub.minted()) != 0 {
+		t.Fatalf("start in AFK = %d (%x), %d tokens; want 403 E_FORBIDDEN and none", status, body, len(l.stub.minted()))
 	}
 	if _, m := l.join(t, l.lounge, l.memberTok); !hasMic(m.Perm) {
 		t.Fatalf("lounge token grant = %+v, want the microphone (control)", m.Perm)
 	}
 }
 
-func TestAFKAdmitIsListenOnly(t *testing.T) {
+// R-AW1: the /rtc gate admits nobody to a call left live in the AFK channel.
+func TestAFKAdmitIsRefused(t *testing.T) {
 	l := newListenEnv(t, nil)
-	_, afkMint := l.join(t, l.afk, l.memberTok)
+	_, afkRoom := l.legacyCall(t, l.afk, l.afkGroup)
 	_, lgMint := l.join(t, l.lounge, l.memberTok)
-	perm, err := l.calls.AdmitRoom(t.Context(), afkMint.Room, l.memberDev)
-	if err != nil || !listenOnly(perm) {
-		t.Fatalf("AdmitRoom(AFK) = %+v, %v; want listen-only", perm, err)
+	if perm, err := l.calls.AdmitRoom(t.Context(), afkRoom, l.memberDev); codeOf(err) != "E_FORBIDDEN" {
+		t.Fatalf("AdmitRoom(AFK) = %+v, %v; want E_FORBIDDEN", perm, err)
 	}
-	perm, err = l.calls.AdmitRoom(t.Context(), lgMint.Room, l.memberDev)
+	perm, err := l.calls.AdmitRoom(t.Context(), lgMint.Room, l.memberDev)
 	if err != nil || !hasMic(perm) {
 		t.Fatalf("AdmitRoom(lounge) = %+v, %v; want the microphone (control)", perm, err)
 	}
@@ -156,16 +172,17 @@ func TestAFKAdmitIsListenOnly(t *testing.T) {
 func TestAFKRolePushStaysListenOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		ch     func(l *listenEnv) id.ID
+		room   func(t *testing.T, l *listenEnv) string
 		wantOK func(*livekit.ParticipantPermission) bool
 	}{
-		{"AFK", func(l *listenEnv) id.ID { return l.afk }, listenOnly},
-		{"lounge (control)", func(l *listenEnv) id.ID { return l.lounge }, hasMic},
+		// A call left live in the AFK channel (R-AW1): the re-push keeps the backstop's listen-only.
+		{"AFK", func(t *testing.T, l *listenEnv) string { _, room := l.legacyCall(t, l.afk, l.afkGroup); return room }, listenOnly},
+		{"lounge (control)", func(t *testing.T, l *listenEnv) string { _, m := l.join(t, l.lounge, l.memberTok); return m.Room }, hasMic},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newListenEnv(t, nil)
 			l.setEveryone(t, api.DefaultEveryoneAllow&^api.PermSpeak)
-			_, m := l.join(t, tc.ch(l), l.memberTok)
+			m := mint{Room: tc.room(t, l)}
 			l.stub.setPresent(m.Room, &livekit.ParticipantInfo{Identity: l.memberDev.String()})
 			speaker := createRole(t, l.e, l.cid, l.ownerTok, "speaker", 3, api.PermSpeak)
 			grant(t, l.e, l.cid, l.ownerTok, l.member, speaker, http.StatusNoContent)
@@ -185,7 +202,8 @@ func TestAFKRolePushStaysListenOnly(t *testing.T) {
 
 func TestAFKShareIsRefused(t *testing.T) {
 	l := newListenEnv(t, nil)
-	afkCall, afkMint := l.join(t, l.afk, l.memberTok)
+	afkCall, afkRoom := l.legacyCall(t, l.afk, l.afkGroup)
+	afkMint := mint{Room: afkRoom}
 	l.stub.setPresent(afkMint.Room, &livekit.ParticipantInfo{Identity: l.memberDev.String()})
 	status, body := l.e.Do(http.MethodPost, "/v1/calls/"+afkCall.String()+"/share", l.memberTok, []any{})
 	if status != http.StatusForbidden || l.e.ErrCode(body) != "E_FORBIDDEN" {

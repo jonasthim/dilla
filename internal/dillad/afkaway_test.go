@@ -1,0 +1,123 @@
+package dillad_test
+
+import (
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+// awayOf reads the next op 55 afk_away on c and answers its community and since_ts.
+func awayOf(t *testing.T, ctx context.Context, c *websocket.Conn) (id.ID, uint64) {
+	t.Helper()
+	payload, ok := nextOp(ctx, c, 55)
+	if !ok || len(payload) != 3 {
+		t.Fatalf("no afk_away arrived (%#v, %v)", payload, ok)
+	}
+	var cid id.ID
+	b, _ := payload[0].([]byte)
+	copy(cid[:], b)
+	since, _ := payload[2].(uint64)
+	return cid, since
+}
+
+// AW2 through the composition root: R-AW1 refuses a call in the AFK channel; PUT …/afk/away marks
+// the member away and the owner's open tab hears op 55; a readable post, a typing op and the
+// member's last connection closing each clear it again (Q1, Q2), each heard as op 55 since 0.
+func TestTheAwayRosterIsWiredThroughTheCompositionRoot(t *testing.T) {
+	cfg, code := testConfigInvite(t)
+	cfg.Log.Level = "warn"
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	h := srv.Handler()
+
+	owner := accountToken(t, srv, code)
+	member := namedAccount(t, srv, mintInvite(t, srv), "friend")
+	rec := call(t, h, http.MethodPost, "/v1/communities", owner, []any{"fika", []byte("{}"), uint64(0), uint64(0)})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/communities = %d %q", rec.Code, errorCode(rec))
+	}
+	cid := idOf(t, decodeArray(t, rec)[0])
+	if rec := call(t, h, http.MethodPost, "/v1/communities/"+cid.String()+"/join", member, []any{nil}); rec.Code != http.StatusOK {
+		t.Fatalf("join = %d %q", rec.Code, errorCode(rec))
+	}
+	rec = call(t, h, http.MethodGet, "/v1/communities/"+cid.String()+"/afk", member, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET afk = %d %q", rec.Code, errorCode(rec))
+	}
+	snap := decodeArray(t, rec)
+	if len(snap) != 5 {
+		t.Fatalf("AFK snapshot has %d elements, want 5", len(snap))
+	}
+	afk := idOf(t, snap[0])
+	if rec := call(t, h, http.MethodPost, "/v1/channels/"+afk.String()+"/calls", member, []any{}); rec.Code != http.StatusForbidden {
+		t.Fatalf("start in AFK = %d %q, want 403", rec.Code, errorCode(rec))
+	}
+	rec = call(t, h, http.MethodPost, "/v1/communities/"+cid.String()+"/channels", owner,
+		[]any{uint64(api.ChannelText), uint64(api.ModeReadable), uint64(api.VisDiscoverable), nil, "lobby", "", uint64(0), uint64(0)})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST channel = %d %q", rec.Code, errorCode(rec))
+	}
+	lobby := idOf(t, decodeArray(t, rec)[0])
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	oc := dialReady(t, ctx, ts, owner)
+	away := func(mc *websocket.Conn) {
+		t.Helper()
+		if rec := call(t, h, http.MethodPut, "/v1/communities/"+cid.String()+"/afk/away", member, []any{}); rec.Code != http.StatusNoContent {
+			t.Fatalf("PUT afk/away = %d %q", rec.Code, errorCode(rec))
+		}
+		if got, since := awayOf(t, ctx, oc); got != cid || since == 0 {
+			t.Fatalf("afk_away = %s since %d, want %s since > 0", got, since, cid)
+		}
+	}
+	cleared := func(what string) {
+		t.Helper()
+		if got, since := awayOf(t, ctx, oc); got != cid || since != 0 {
+			t.Fatalf("after %s: afk_away = %s since %d, want %s since 0", what, got, since, cid)
+		}
+	}
+
+	mc := dialReady(t, ctx, ts, member)
+	away(mc)
+	envelope, err := cborx.Marshal([]any{uint64(1), id.New(), uint64(0), nil, nil, "back", []any{}, []any{}, bytes.Repeat([]byte{0x06}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, h, http.MethodPost, "/v1/channels/"+lobby.String()+"/messages", member, []any{envelope}); rec.Code != http.StatusOK {
+		t.Fatalf("POST message = %d %q", rec.Code, errorCode(rec))
+	}
+	cleared("a post")
+
+	away(mc)
+	typing, err := cborx.Marshal([]any{uint64(51), uint64(0), nil, []any{lobby[:], uint64(1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mc.Write(ctx, websocket.MessageBinary, typing); err != nil {
+		t.Fatal(err)
+	}
+	cleared("typing")
+
+	away(mc)
+	_ = mc.CloseNow()
+	cleared("the last connection closing")
+}

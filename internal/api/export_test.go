@@ -107,3 +107,8 @@ func SetMemberPageForTest(n int32) func() {
 	memberPage = n
 	return func() { memberPage = old }
 }
+
+// SetAFKHookForTest makes the AFK paths call f at their named points ("cut": the sweep's cut has
+// landed and the mark is not yet decided; "away-cut": PUT …/afk/away has cut the user's devices and
+// not yet marked them away).
+func (h *Calls) SetAFKHookForTest(f func(stage string)) { h.afkHook = f }

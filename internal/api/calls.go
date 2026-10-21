@@ -252,6 +252,22 @@ type Calls struct {
 	afkPending map[id.ID]afkPendingEntry
 	afkExempt  map[id.ID]string
 	afkNotify  *StructureNotifier
+	// afkAdmitSeq numbers every admission (afkaway.go); afkAdmits is each user's latest one, which
+	// the away mark checks under afkMu so that an admission newer than the decision wins (R-AW7).
+	afkAdmitSeq uint64
+	afkAdmits   map[id.ID]afkAdmit
+
+	// awayMu serialises every write of the stored away roster with its op 55 (afkaway.go): a mark,
+	// the clears, the boot work. It is taken before afkMu, never inside it.
+	awayMu        sync.Mutex
+	awayGW        VoiceGateway
+	awayConnected func(id.ID) bool
+	// awayGraceUntil is when the boot grace ends (R-AW5); awayGraceDone is set once the rows of
+	// users with no connection were cleared after it. Both under awayMu.
+	awayGraceUntil time.Time
+	awayGraceDone  bool
+	// afkHook, set by a test only, runs at named points of the AFK paths.
+	afkHook func(stage string)
 }
 
 // WithRinger sets the DM call ring and returns h.
@@ -404,6 +420,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	s, ch, bits, err := h.channel(r)
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// R-AW1: the AFK channel never hosts a call; being there means having no voice connection.
+	if h.isAFKChannel(r.Context(), ch) {
+		server.WriteError(w, errAFKCall())
 		return
 	}
 	var body []cbor.RawMessage
@@ -1105,7 +1126,8 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 // so a token can never confer more at admission than the device holds now (a microphone after speak
 // was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
 // room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
-// that is barred, lost access or whose repair is pending. Anything else is a store failure.
+// that is barred, lost access or whose repair is pending, and for a room of the AFK channel (R-AW1).
+// Anything else is a store failure.
 func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
 	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
@@ -1169,6 +1191,10 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
+	// R-AW1: a token minted for the AFK channel before it stopped hosting calls admits nobody.
+	if h.isAFKChannel(ctx, ch) {
+		return nil, errAFKCall()
+	}
 	return h.admitGrant(ctx, bits, row, device), nil
 }
 
@@ -1194,11 +1220,20 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 		return
 	}
 	h.noteAdmission(ctx, row, device, resume)
-	// Any admission of the device answers a pending AFK move (R33): it joined somewhere.
+	dv, devErr := h.repo.GetDevice(ctx, device)
+	// Any admission of the device answers a pending AFK move (R33): it joined somewhere. It is also
+	// recorded for the away mark (R-AW7) before the user's away rows are cleared below.
 	h.afkMu.Lock()
 	delete(h.afkPending, device)
+	if devErr == nil {
+		h.noteAFKAdmissionLocked(dv.UserID, device)
+	}
 	h.afkMu.Unlock()
 	h.trackAFKAdmission(ctx, row, device, resume)
+	// R-AW2, R-AW4: an admission anywhere clears every away row of the user.
+	if devErr == nil {
+		h.afkAdmissionClears(ctx, dv.UserID)
+	}
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,
