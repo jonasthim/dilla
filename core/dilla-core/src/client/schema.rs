@@ -25,6 +25,10 @@ pub const APP_SCHEMA_SUPPORTED: u32 = 5;
 
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
+/// The separate native bot bootstrap phase; never interpreted as a human signup record.
+pub(crate) const BOT_PENDING: &str = "bot_pending";
+/// Installation binding retained after the bot identity is completed.
+pub(crate) const BOT_BINDING: &str = "bot_binding";
 pub(crate) const IDENTITY: &str = "identity";
 pub(crate) const ENROL: &str = "enrol";
 pub(crate) const SESSION: &str = "session";

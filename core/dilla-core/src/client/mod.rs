@@ -2,12 +2,14 @@
 //! Every structured value crossing the boundary is one deterministic CBOR item. Every state
 //! change runs inside exactly one `DillaStorage::unit`.
 
+mod bot_identity;
 mod calls;
 mod error;
 mod fold;
 mod groups;
 mod identity;
 mod messages;
+mod moderation;
 mod schema;
 mod search;
 mod settings;
@@ -210,12 +212,14 @@ impl ClientCore {
                 other => ClientError::new(E_CORE_STORAGE, other.to_string()),
             })?;
         let phase = identity::decode_phase(identity, signup, enrol)?;
+        let bot_pending_dsk = bot_identity::validate_open(&provider, &phase)?;
         let dsk_pub = match &phase {
             identity::Phase::None => None,
             identity::Phase::Pending(rec) => Some(rec.dsk_pub()),
             identity::Phase::Ready(rec) => Some(rec.dsk_pub),
             identity::Phase::Enrolling(rec) => Some(rec.dsk_pub),
-        };
+        }
+        .or(bot_pending_dsk);
         let signer = dsk_pub
             .map(|pubkey| {
                 SignatureKeyPair::read(
