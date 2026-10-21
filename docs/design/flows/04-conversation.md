@@ -205,6 +205,8 @@ active row (never over the row above); cards fill the width; the lightbox and th
 | a reply whose original was deleted | the reply line says `the original message was deleted`; it is not a button |
 | an attachment-only message | the cards with no body line |
 | an image card before its thumbnail is opened | a neutral box of the image's proportions |
+| a GIF card (`image/gif`, 8 MiB or less, not too large, sent) first at least half visible | `openAttachment` (`thumb` false) once; the full GIF replaces the thumbnail in the same `img` (same size and alt text) for five minutes from that first sighting, then the thumbnail is back and the blob is released; scrolling out and in, or a re-mount, keeps the first deadline and never fetches again; a failed open keeps the thumbnail with no error text |
+| a GIF card that is still (before it plays, after the five minutes, over 8 MiB, or with `prefers-reduced-motion: reduce`, which never plays one) | a small `shell.attachment.gif` badge on the card, visual only (`aria-hidden`); the card's name stays `shell.attachment.open`; activating it opens the lightbox with the full, animated file |
 | an image card whose open failed | the box or thumbnail and `could not open ({code})` |
 | an attachment over 25 MB received in a browser | the card with `too large to open in a browser` and no button |
 | a file picked over 25 MB | nothing is uploaded; an alert above the tray in the composer says `{name} is over 25 MB and cannot be sent from a browser.` |
@@ -376,6 +378,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.attachment.failed` | `could not open ({code})` | card state after a failed open |
 | `shell.attachment.tooLarge` | `too large to open in a browser` | card state over 25 MB |
 | `shell.attachment.unnamed` | `file` | the shown name of a file sent without one |
+| `shell.attachment.gif` | `GIF` | badge on a still GIF card |
 | `shell.message.attachmentGone` | `A file of this message is no longer on the server. Discard it and attach the file again.` | a sent message that failed with `E_ATTACHMENT_MISSING`; only discard is offered |
 | `shell.attachment.bytes` | `{n} B` | size under 1 KB |
 | `shell.attachment.kb` | `{n} KB` | size under 1 048 576 bytes, one decimal under 10 |

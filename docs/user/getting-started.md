@@ -1241,6 +1241,9 @@ video files of the common types play in the conversation with **play {name}** ([
 files](voice.md#audio-and-video-files)). Every other file, SVG included, shows as a card with its name, its size and
 **save**.
 
+A GIF plays in the conversation for five minutes after you first see it; open it to watch it again. With reduced
+motion, GIFs stay still until you open them. A GIF that is standing still carries a small "GIF" mark.
+
 ![saturday-map.png open full size, with Save and Close](screenshots/conversation-lightbox.png)
 
 Opening an image shows it full size: **previous image** and **next image** (Arrow Left and Arrow Right) move
@@ -1256,6 +1259,10 @@ When the server's managers have entered a Giphy key (server settings → overvie
 field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
 press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
 the picker and puts focus back on the **gif** button.
+
+The results are a grid of three columns (two on a phone), each GIF shown whole at its own proportions, so tall and wide ones sit
+side by side without being cropped. Arrow Left and Arrow Right go through them in reading order, Arrow Up and Arrow Down to
+the one above or below.
 
 Picking a GIF adds it to "files to send" like any file you attach, named `giphy-{id}.gif`, and puts focus in the message
 field; press Enter to send it, with or without text, or **remove** it. Nothing is sent until you do.

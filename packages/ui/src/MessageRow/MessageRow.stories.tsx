@@ -112,7 +112,7 @@ export const ThreadChipActive: Story = {
 };
 
 // web3.9 (R29, G2, R30): a grouped row, an always-shown device tag, and a phone row that reveals its toolbar on a tap.
-export const Grouped: Story = { args: { grouped: true, time: '21:03', body: 'i have the map' } };
+export const Grouped: Story = { args: { grouped: true, time: '10:06 PM', body: 'i have the map' } };
 export const DeviceTagAlways: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web' } };
 const phoneToolbar = (
   <MessageToolbar label="actions for this message" tabbable items={[

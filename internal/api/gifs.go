@@ -657,13 +657,26 @@ type giphyList struct {
 	} `json:"pagination"`
 }
 
-// dim reads a Giphy dimension, a number or a numeric string, clamped to a sane range.
+// gifMaxDim is the largest preview side the instance passes on, in pixels.
+const gifMaxDim = 4000
+
+// dim reads a Giphy dimension, a number or a numeric string: a whole number of 1 to gifMaxDim, else 0 (unknown).
 func dim(raw json.RawMessage) uint64 {
 	n, err := strconv.Atoi(strings.Trim(string(raw), `" `))
-	if err != nil || n < 0 || n > 4000 {
+	if err != nil || n < 1 || n > gifMaxDim {
 		return 0
 	}
 	return uint64(n)
+}
+
+// dims reads a preview's width and height together: both are small positive integers or both are 0, so a client sizing
+// a tile from them never sees half a ratio.
+func dims(w, h json.RawMessage) (uint64, uint64) {
+	cw, ch := dim(w), dim(h)
+	if cw == 0 || ch == 0 {
+		return 0, 0
+	}
+	return cw, ch
 }
 
 func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
@@ -720,8 +733,9 @@ func (g *Gifs) search(w http.ResponseWriter, r *http.Request) {
 		if !validGifID(d.ID) {
 			continue // never echo an id a client would put in a path
 		}
+		cw, ch := dims(d.Images.FixedWidth.Width, d.Images.FixedWidth.Height)
 		items = append(items, []any{
-			d.ID, cleanTitle(d.Title), dim(d.Images.FixedWidth.Width), dim(d.Images.FixedWidth.Height),
+			d.ID, cleanTitle(d.Title), cw, ch,
 			"/v1/communities/" + cid.String() + "/gifs/media/" + d.ID + "?r=preview",
 		})
 	}

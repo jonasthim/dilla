@@ -135,4 +135,14 @@ describe('AttachmentCard', () => {
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
+  it('a badge is visual only: it is inside the open button and leaves its name alone', () => {
+    render(<AttachmentCard {...BASE} badge="GIF" />);
+    const badge = screen.getByText('GIF');
+    expect(badge).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('button', { name: 'open drawn.png' })).toContainElement(badge);
+  });
+  it('shows no badge unless one is given', () => {
+    render(<AttachmentCard {...BASE} />);
+    expect(screen.queryByText('GIF')).toBeNull();
+  });
 });
