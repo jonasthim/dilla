@@ -761,7 +761,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
   await expectComposerReady(page, 'general');
   const link = await makeInviteLink(page, 'Ydalir');
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
-  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
+  const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions) as typeof launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const cy = second.pages()[0] ?? (await second.newPage());
     await cy.goto(new URL(link).pathname);
@@ -841,16 +841,19 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
     }
-    // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general: the phone's server list, a tap on
-    // its row (a phone's tap only opens the stage, R24), then its join.
-    await page.goto(afkPath.split('/').slice(0, 3).join('/'));
-    await nav(page).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
-    const phoneJoin = page.locator('.dw-voice-join');
+    // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general, joined with a microphone. Cy's browser
+    // has the fake one (Firefox's default page has none and would hold the join at the permission prompt): the phone's
+    // server list, a tap on its row (a phone's tap only opens the stage, R24), then its join.
+    await cy.setViewportSize({ width: 390, height: 844 });
+    await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
+    await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+    await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
+    const phoneJoin = cy.locator('.dw-voice-join');
     await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
-    await expect(page.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-    const tabs = (await boxes(page, '.d-tab-bar'))[0];
-    const controls = (await boxes(page, '.d-call-stage__controls'))[0];
+    await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
+    const tabs = (await boxes(cy, '.d-tab-bar'))[0];
+    const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the tab bar and the controls are on screen').toBe(true);
     if (tabs !== undefined && controls !== undefined) {
       expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
