@@ -80,12 +80,13 @@ const remoteAudio = async (page: import('@playwright/test').Page, identity: stri
   (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRemoteStats()))
     .filter((row) => row.participantIdentity === identity && row.kind === 'audio' && row.source === 'microphone');
 
-test('external Ogg Opus is encrypted by the Go peer and authenticated by Chromium and Firefox', async ({ browser, browserName }, info) => {
+test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefox', async ({ browser, browserName }, info) => {
   test.setTimeout(120_000);
   test.skip(!sourcePath, 'unqualified: set DILLA_PROVIDER_OPUS_FILE to a captured Ogg Opus file');
-  test.skip(!providerName, 'unqualified: set DILLA_PROVIDER_NAME to youtube or spotify');
-  test.skip(providerName === 'synthetic', 'synthetic Opus is a harness smoke only and cannot qualify a provider');
-  if (providerName !== 'youtube' && providerName !== 'spotify') throw new Error('DILLA_PROVIDER_NAME must be youtube or spotify');
+  test.skip(!providerName, 'unqualified: set DILLA_PROVIDER_NAME to youtube, spotify, or synthetic');
+  if (providerName !== 'youtube' && providerName !== 'spotify' && providerName !== 'synthetic') {
+    throw new Error('DILLA_PROVIDER_NAME must be youtube, spotify, or synthetic');
+  }
 
   const scratch = await mkdtemp(join(tmpdir(), 'dilla-provider-opus-'));
   await chmod(scratch, 0o700);
@@ -156,6 +157,7 @@ test('external Ogg Opus is encrypted by the Go peer and authenticated by Chromiu
     expect(finalTracks).toHaveLength(1);
     const evidence = {
       provider: providerName,
+      qualification: providerName === 'synthetic' ? 'harness-smoke-only' : 'provider-evidence',
       browser: browserName,
       sha256: input.sha256,
       input_bytes: input.bytes,
