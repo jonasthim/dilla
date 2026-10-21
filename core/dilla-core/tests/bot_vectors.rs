@@ -101,6 +101,24 @@ fn shared_bot_corpus_round_trips_and_rejects() {
     assert!(!rejects.is_empty());
     let mut operations = BTreeSet::new();
     let mut event_kinds = BTreeSet::new();
+    let format_kinds: BTreeSet<&str> = cases
+        .iter()
+        .map(|case| case["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        format_kinds,
+        [
+            "request",
+            "response",
+            "removal",
+            "event",
+            "receipt",
+            "helper_request",
+            "helper_response"
+        ]
+        .into_iter()
+        .collect()
+    );
     let reject_names: BTreeSet<&str> = rejects
         .iter()
         .filter_map(|case| case["name"].as_str())
