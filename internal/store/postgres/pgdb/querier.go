@@ -415,6 +415,7 @@ type Querier interface {
 	// number clients already hold. Zero rows is either an unknown community or a
 	// lost race; the adapter tells the two apart.
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
+	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
 	// The quota counts each distinct blob a user uploaded once, however many

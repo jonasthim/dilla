@@ -14,8 +14,11 @@ SELECT * FROM users WHERE id > ? ORDER BY id LIMIT sqlc.arg(max_rows);
 -- name: SetUserDisabled :exec
 UPDATE users SET disabled_at = ? WHERE id = ?;
 
+-- name: UpdateProfile :execrows
+UPDATE users SET display = ?, status_msg = ?, bio = ? WHERE id = ? AND deleted_at IS NULL;
+
 -- name: TombstoneUser :exec
-UPDATE users SET deleted_at = ?, display = '', umk_pub = zeroblob(32), ssk_pub = zeroblob(32),
+UPDATE users SET deleted_at = ?, display = '', status_msg = '', bio = '', umk_pub = zeroblob(32), ssk_pub = zeroblob(32),
                  sig_umk_ssk = zeroblob(64), flags = 0
 WHERE id = ?;
 

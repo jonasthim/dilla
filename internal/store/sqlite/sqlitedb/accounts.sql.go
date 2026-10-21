@@ -78,7 +78,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id = ?
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE id = ?
 `
 
 type GetUserParams struct {
@@ -102,12 +102,14 @@ func (q *Queries) GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 		&i.DisabledAt,
 		&i.DeletedAt,
 		&i.FactorOwed,
+		&i.StatusMsg,
+		&i.Bio,
 	)
 	return i, err
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE username = ?
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE username = ?
 `
 
 type GetUserByUsernameParams struct {
@@ -131,12 +133,14 @@ func (q *Queries) GetUserByUsername(ctx context.Context, arg GetUserByUsernamePa
 		&i.DisabledAt,
 		&i.DeletedAt,
 		&i.FactorOwed,
+		&i.StatusMsg,
+		&i.Bio,
 	)
 	return i, err
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id > ? ORDER BY id LIMIT ?2
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE id > ? ORDER BY id LIMIT ?2
 `
 
 type ListUsersParams struct {
@@ -167,6 +171,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, 
 			&i.DisabledAt,
 			&i.DeletedAt,
 			&i.FactorOwed,
+			&i.StatusMsg,
+			&i.Bio,
 		); err != nil {
 			return nil, err
 		}
@@ -264,7 +270,7 @@ func (q *Queries) SetUserDisabled(ctx context.Context, arg SetUserDisabledParams
 }
 
 const tombstoneUser = `-- name: TombstoneUser :exec
-UPDATE users SET deleted_at = ?, display = '', umk_pub = zeroblob(32), ssk_pub = zeroblob(32),
+UPDATE users SET deleted_at = ?, display = '', status_msg = '', bio = '', umk_pub = zeroblob(32), ssk_pub = zeroblob(32),
                  sig_umk_ssk = zeroblob(64), flags = 0
 WHERE id = ?
 `
@@ -277,4 +283,28 @@ type TombstoneUserParams struct {
 func (q *Queries) TombstoneUser(ctx context.Context, arg TombstoneUserParams) error {
 	_, err := q.db.ExecContext(ctx, tombstoneUser, arg.DeletedAt, arg.ID)
 	return err
+}
+
+const updateProfile = `-- name: UpdateProfile :execrows
+UPDATE users SET display = ?, status_msg = ?, bio = ? WHERE id = ? AND deleted_at IS NULL
+`
+
+type UpdateProfileParams struct {
+	Display   string
+	StatusMsg string
+	Bio       string
+	ID        id.ID
+}
+
+func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateProfile,
+		arg.Display,
+		arg.StatusMsg,
+		arg.Bio,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
