@@ -122,6 +122,15 @@ describe('VoiceChannelRow', () => {
     expect(row).toHaveAttribute('data-joined', 'true');
   });
 
+  it('AW6 fix round 1 (M4): a room may name its own count, as the AFK row does with {n} in AFK', () => {
+    render(<ChannelList label="channels" title="harbour club" activeId={null} onSelect={() => {}} emptyLabel="none"
+      channels={[{ id: 'v1', name: 'harbour', kind: 'voice', readable: false }, { id: 'afk', name: 'AFK', kind: 'voice', readable: false }]}
+      voice={{ labels, rooms: { v1: { joined: false, participants: base.participants },
+        afk: { joined: false, participants: [person('cy', { away: true })], count: '{n} in AFK' } } }} />);
+    expect(screen.getByRole('button', { name: 'voice AFK' })).toHaveAccessibleDescription('1 in AFK');
+    expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
+  });
+
   it('ChannelList renders voice channels as voice rows, still one roving tab stop', async () => {
     const onSelect = vi.fn();
     render(<ChannelList label="channels" title="harbour club" activeId="t1" onSelect={onSelect} emptyLabel="none"

@@ -53,7 +53,8 @@ export interface ChannelListProps {
    */
   voice?: {
     labels: VoiceChannelRowProps['labels'];
-    rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] }>>;
+    /** `count` (AW6 fix round 1): this room's own `labels.count`, as the AFK row's `voice.afk.count` ('{n} in AFK'). */
+    rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[]; count?: string }>>;
     onJoin?(id: string): void;
   };
 }
@@ -120,7 +121,7 @@ export function ChannelList({ label, title, channels, categories = [], onToggleC
       return (
         <li key={c.id} className="d-voice-item" data-joined={joined ? 'true' : undefined}>
           <VoiceChannelRow name={c.name} current={c.id === activeId} joined={joined} participants={room?.participants ?? []}
-            readable={c.readable} labels={voice.labels} onOpen={() => onSelect(c.id)} onJoin={canJoin ? () => voice.onJoin?.(c.id) : undefined} />
+            readable={c.readable} labels={room?.count === undefined ? voice.labels : { ...voice.labels, count: room.count }} onOpen={() => onSelect(c.id)} onJoin={canJoin ? () => voice.onJoin?.(c.id) : undefined} />
         </li>
       );
     }

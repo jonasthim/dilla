@@ -912,11 +912,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+  // AW6: the AFK channel hosts no call (R-AW1). Its people are this server's away roster, named from its members and shown
+  // as away, never the voice book's: under its row and on its page (fix round 1, Jonas's concern 2 ruling).
+  const afkHere = afkLists[(communities ?? []).findIndex(c => c.id === communityId)];
+  const awayPeople = (afkHere?.away ?? []).map(row => ({
+    deviceId: `away:${row.userId}`, userId: row.userId, name: userName(row.userId, members ?? [], trust), state: 'ok' as const,
+    speaking: false, muted: false, deafened: false, video: false, screen: false, web: false, bot: false, away: true,
+  }));
+  const selfAway = self !== null && (afkHere?.away ?? []).some(row => row.userId === self.id);
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
+    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway } : null),
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -969,18 +978,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
     held: removedFromServer({ slice: callSlice }, c.id) }));
   // A voice channel this client cannot join (a readable one, `kind` voice but not `isVoice`) has no join and nobody under it.
-  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[] }> = {};
+  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[]; count?: string }> = {};
   for (const r of channelRows) if (r.kind === 'voice') voiceRooms[r.id] = { joined: false, held: true, participants: [] };
-  // AW6: the AFK channel hosts no call (R-AW1). Its people are this server's away roster, named from its members and shown
-  // as away, never the voice book's.
-  const afkHere = afkLists[(communities ?? []).findIndex(c => c.id === communityId)];
-  const awayPeople = (afkHere?.away ?? []).map(row => ({
-    deviceId: `away:${row.userId}`, userId: row.userId, name: userName(row.userId, members ?? [], trust), state: 'ok' as const,
-    speaking: false, muted: false, deafened: false, video: false, screen: false, web: false, bot: false, away: true,
-  }));
   for (const r of voiceRows) {
-    voiceRooms[r.id] = { joined: r.joined, held: r.held,
-      participants: afkChannels.has(r.id) ? awayPeople : (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
+    // Fix round 1 (M4): nobody listed under AFK is in voice, so its count says '{n} in AFK'.
+    voiceRooms[r.id] = afkChannels.has(r.id) ? { joined: r.joined, held: r.held, participants: awayPeople, count: en['voice.afk.count'] }
+      : { joined: r.joined, held: r.held, participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
   }
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {

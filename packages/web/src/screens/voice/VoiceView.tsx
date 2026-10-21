@@ -5,8 +5,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
-  type CallStageNotice, type CallTileProps, type VoiceDockProps,
+  Avatar, Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
+  type CallStageNotice, type CallTileProps, type VoiceDockProps, type VoiceParticipantView,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
@@ -30,6 +30,11 @@ export interface VoiceContext {
   /** Opens Settings → Voice (product walk M7: the dock's push to talk with no key set leads there). */
   onVoiceSettings(): void;
   onJoinVoice?(channelId: string): void;
+  /**
+   * AW6 fix round 1 (Jonas, concern 2): for the built-in AFK channel, its page: the away roster (as its sidebar row lists
+   * it) and whether this user is away there; null for any other channel. `onJoinVoice` on it chooses AFK (useCall).
+   */
+  afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean } | null;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -355,8 +360,54 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   );
 }
 
+/**
+ * AW6 fix round 1 (Jonas, concern 2): the AFK channel's page. It hosts no call (R-AW1): it lists who is away, on the
+ * sidebar row's grammar (`afk.away`, or `afk.empty`), and offers `afk.go`, which runs the AFK row's path (leave the call,
+ * then mark away). Once this user is away the button goes and `afk.youAway` says how to come back (Q3: no leave action).
+ */
+function AfkPage({ v, channelId, name, people, away }: { v: VoiceContext; channelId: string; name: string; people: readonly VoiceParticipantView[];
+  away: boolean }) {
+  const phone = usePhoneLayout();
+  const notice = stageNotice(v, channelId);
+  // Fix round 1 (M6): the press that made this user away keeps focus here: the away line that replaces the button takes it.
+  const pressed = useRef(false);
+  const line = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!away || !pressed.current) return;
+    pressed.current = false;
+    line.current?.focus();
+  }, [away]);
+  return (
+    <div className="dw-voice-stage" data-doc-state="voice-stage" data-call-phase="idle" data-afk="true">
+      <CallStage title={t('voice.open', { name })} tiles={[]} {...(!phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})}
+        code={null} notice={notice} outgoing={null}
+        controls={<div className="dw-afk-page">
+          {people.length > 0 ? (
+            <ul className="d-voice-row__people dw-afk-roster" aria-label={t('voice.open', { name })}>
+              {people.map(p => (
+                <li key={p.userId} className="d-voice-row__person" data-away="true">
+                  <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="xs" /></span>
+                  <span className="d-voice-row__person-name">{p.name}</span>
+                  <span className="d-voice-row__states">{' '}<span className="d-voice-row__state" data-state="away">{t('afk.away')}</span></span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {away ? <p ref={line} className="dw-afk-away" tabIndex={-1}>{t('afk.youAway')}</p>
+            : <Button variant="accent" className="dw-voice-join" onClick={() => {
+              pressed.current = true;
+              if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId);
+            }}>{t('afk.go')}</Button>}
+        </div>}
+        labels={{ ...STAGE_LABELS(), empty: people.length === 0 ? t('afk.empty') : '' }} />
+    </div>
+  );
+}
+
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+  const afk = v.afkPage?.(channelId) ?? null;
+  if (afk !== null) return <AfkPage v={v} channelId={channelId} name={name} people={afk.people} away={afk.away} />;
   return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />;
 }
 
