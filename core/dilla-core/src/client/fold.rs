@@ -161,6 +161,7 @@ pub(super) fn refold(
                     .is_some();
                 if deleted {
                     c.execute("UPDATE app_messages SET body = '', envelope = NULL WHERE group_id = ?1 AND seq = ?2", params![g, tr.seq as i64])?;
+                    super::bot_events::suppress_source(c, group_id, tr.seq as i64)?;
                 }
             }
             (FoldScope::Delete { user }, Some(tr)) => {
@@ -171,6 +172,7 @@ pub(super) fn refold(
                     .optional()?;
                 if first == Some(tr.seq as i64) {
                     c.execute(BLANK_EDITS_OF, params![g, id, user.as_slice()])?;
+                    super::bot_events::suppress_edits_of(c, group_id, target, user, None)?;
                 }
             }
             // A type 0 that is no target (a repeat) leaves every parked row as it is: its insert
@@ -183,6 +185,7 @@ pub(super) fn refold(
                 };
                 for user in users {
                     c.execute(BLANK_EDITS_OF, params![g, id, user.as_slice()])?;
+                    super::bot_events::suppress_edits_of(c, group_id, id, &user, None)?;
                 }
             }
             _ => {}
@@ -209,6 +212,7 @@ pub(super) fn refold(
         if let Some(tr) = trigger {
             if tr.ty == 1 {
                 c.execute("UPDATE app_messages SET body = '', envelope = NULL WHERE group_id = ?1 AND seq = ?2", params![g, tr.seq as i64])?;
+                super::bot_events::suppress_source(c, group_id, tr.seq as i64)?;
             }
             return Ok(());
         }
@@ -260,8 +264,10 @@ pub(super) fn refold(
             )?;
         }
         c.execute("UPDATE app_messages SET status = 2, body = '', envelope = NULL, reason = '', edit_body = NULL, edit_seq = 0 WHERE group_id = ?1 AND seq = ?2", params![g, t.seq as i64])?;
+        super::bot_events::suppress_source(c, group_id, t.seq as i64)?;
         if let Some(user) = t.sender_user {
             c.execute(BLANK_EDITS, params![g, id, user.as_slice(), bound])?;
+            super::bot_events::suppress_edits_of(c, group_id, id, &user, Some(bound))?;
         }
         c.execute(
             "DELETE FROM app_reactions WHERE group_id = ?1 AND target = ?2",
@@ -582,6 +588,8 @@ mod tests {
             .expect("indexes");
         c.execute_batch(super::super::schema::APP_AUTHORITY)
             .expect("authority");
+        c.execute_batch(super::super::schema::APP_BOT_EVENTS)
+            .expect("Bot event journal");
         let g = [1u8; 16];
         let x = [2u8; 16];
         let alice = [3u8; 16];

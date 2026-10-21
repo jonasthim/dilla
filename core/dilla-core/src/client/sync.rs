@@ -203,6 +203,7 @@ fn apply_message(
             params![id.as_slice(), row.seq as i64],
         )?;
         if changed > 0 {
+            super::bot_events::suppress_source(c, id, row.seq as i64)?;
             c.execute(
                 "DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2",
                 params![id.as_slice(), row.seq as i64],
@@ -385,6 +386,13 @@ impl ClientCore {
                                 mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
                                     && mentions_me_gated(&envelope.body, &own.user_id, &roles, &mentionable, broadcast),
                             })?;
+                            super::bot_events::record_accepted(
+                                c, id, *seq, &own,
+                                &sender, *leaf, &member.signature_key, *epoch, *recv_ts,
+                                envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
+                                envelope.reply_to.as_ref().map(|v| v.as_bytes()),
+                                envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                            )?;
                             refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
                                 sender.device_id.as_bytes(), Some(&own))?;
                             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
@@ -622,6 +630,7 @@ impl ClientCore {
         let (changed, proposals): (usize, i64) = self.write(|_, u| Ok(u.with_conn(|c| {
             let stored = stored_kind(c, id, seq)?;
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
+            if changed > 0 { super::bot_events::suppress_source(c, id, seq_i)?; }
             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
             if changed == 1 { super::search::index_fold(c,id,seq)?; }
@@ -886,6 +895,18 @@ impl ClientCore {
                                                 && mentions_me_gated(&r.envelope.body, &own.user_id, &roles, &mentionable, broadcast),
                                         };
                                         insert_message(c, &msg)?;
+                                        if status == STATUS_OK
+                                            && let Some(member) = sender_member.as_ref()
+                                        {
+                                            super::bot_events::record_accepted(
+                                                c, id, m.seq, &own,
+                                                &r.sender, r.sender_leaf, &member.signature_key,
+                                                r.epoch, m.recv_ts, r.envelope.msg_id.as_bytes(),
+                                                r.envelope.kind.as_u8(), &r.envelope.body,
+                                                r.envelope.reply_to.as_ref().map(|v| v.as_bytes()),
+                                                r.envelope.thread_id.as_ref().map(|v| v.as_bytes()),
+                                            )?;
+                                        }
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;
                                     } else {
                                         let mut empty = empty_message(id, m, status, reason);

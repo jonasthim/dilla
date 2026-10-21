@@ -385,6 +385,7 @@ fn retract_matching(
         let full = rows.len() as i64 == RETRACT_PAGE;
         for (seq, own_id, reply_to) in rows {
             c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
+            super::bot_events::suppress_source(c, group_id, seq)?;
             c.execute(
                 "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
                 params![group_id.as_slice(), seq],

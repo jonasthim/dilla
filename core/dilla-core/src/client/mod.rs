@@ -2,6 +2,7 @@
 //! Every structured value crossing the boundary is one deterministic CBOR item. Every state
 //! change runs inside exactly one `DillaStorage::unit`.
 
+mod bot_events;
 mod bot_identity;
 mod calls;
 mod error;
@@ -196,7 +197,7 @@ impl ClientCore {
                 if found == 1 || found == 2 {
                     backfill_v3(u).map_err(schema_error)?;
                 }
-                if found <= 5 {
+                if found <= schema::APP_SCHEMA_SUPPORTED as u64 {
                     u.with_conn(trust::seed_own_pin).map_err(schema_error)?;
                 }
                 Ok(found)
