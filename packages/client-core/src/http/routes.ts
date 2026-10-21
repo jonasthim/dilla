@@ -365,10 +365,18 @@ export class Routes {
   async getAFK(communityId: Uint8Array): Promise<AFKSnapshot> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk`, 'read', true)), 3);
     bounded(a[2], 1024, 'AFK occupants');
-    const away = a.length > 4 ? bounded(a[4], AFK_AWAY_MAX, 'AFK away').map((value) => {
+    // Fix round 1 (N3): a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+    const away: AFKAwayRow[] = [];
+    const seen = new Set<string>();
+    for (const value of a.length > 4 ? bounded(a[4], AFK_AWAY_MAX, 'AFK away') : []) {
       const row = atLeast(value, 2);
-      return { userId: bin(row[0], 16), since: u53(row[1]) };
-    }) : [];
+      const userId = bin(row[0], 16);
+      const since = u53(row[1]);
+      const key = toHex(userId);
+      if (since === 0 || seen.has(key)) continue;
+      seen.add(key);
+      away.push({ userId, since });
+    }
     return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: a.length > 3 ? flag(a[3]) : false, away };
   }
   /** PUT /v1/communities/{id}/afk/away: [] (AW4, R-AW3). The caller's user goes to the AFK channel: the instance cuts every

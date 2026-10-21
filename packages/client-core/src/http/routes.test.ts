@@ -1643,8 +1643,15 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300, [], 1]));
     expect((await routes.getAFK(COMMUNITY)).away).toEqual([]);
   });
+  // Fix round 1, N3: a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+  it('an away roster skips since 0 and keeps the first row of a repeated user', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 0], [member(2), 50], [member(2), 70], [member(3), 90]]]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([{ userId: member(2), since: 50 }, { userId: member(3), since: 90 }]);
+  });
   it('an away roster over 1024 rows, a short user id, a missing since or a since past the safe integers is refused', async () => {
-    const rows = (n: number) => Array.from({ length: n }, (_, i) => [member(i % 256), 1]);
+    const uid = (i: number) => { const u = member(i % 256); u[14] = i >> 8; return u; };
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => [uid(i), 1]);
     const bad: [CborInput[], string][] = [
       [rows(1025), 'E_CBOR_SHAPE'],
       [[[member(1).slice(1), 1]], 'E_CBOR_SHAPE'],

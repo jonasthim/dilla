@@ -419,9 +419,12 @@ every live connection of every user who may view the community's AFK channel, an
 was actually set or cleared: marking a member who is already away, or clearing one who is not,
 sends nothing. It is never persisted or replayed, so a client reads the roster from
 `GET /v1/communities/{id}/afk` (its fifth element) on `ready` and whenever it reads the community
-again, and keeps an `afk_away` only once that read has landed; a read that lands later wins. A
-client's decoder refuses an `afk_away` of any other shape as `E_FRAME_SHAPE` and drops it without
-disconnecting; it ignores one for a community it does not list. A client that predates op 55
+again. The instance may serve that read before a change it announces while the read is in flight,
+so a client keeps each `afk_away` it receives during the read and applies them, in the order
+received, to the read's roster once it lands (a set no newer than the `since` held for that member
+is stale and ignored); with no read in flight and no roster yet, it drops the frame, since its next
+read is served later. A client's decoder refuses an `afk_away` of any other shape as
+`E_FRAME_SHAPE` and drops it without disconnecting; it ignores one for a community it does not list. A client that predates op 55
 ignores it as an unknown server-to-client opcode in this range. Sent by a client, any op 55 is
 `E_FRAME_TYPE` at the instance.
 
