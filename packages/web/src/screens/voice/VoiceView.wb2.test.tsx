@@ -49,7 +49,7 @@ describe('the outgoing ring says what the instance did (product walk I6)', () =>
   it('a call someone answered never ends by itself when they leave again', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const app = await calling({ ringing: ['bob'], declined: [], notRung: [] });
-    act(() => app.session.update({ tiles: [{ deviceId: 'b1', userId: 'bob', state: 'ok', speaking: false, video: null, screen: null }] }));
+    act(() => app.session.update({ tiles: [{ deviceId: 'b1', userId: 'bob', state: 'ok', speaking: false, video: null, screen: null, screenAudio: false }] }));
     app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: [], declined: [], notRung: [] } }));
     act(() => app.session.update({ tiles: [] }));
     await act(() => vi.advanceTimersByTimeAsync(RING_MS + UNANSWERED_LEAVE_MS + 1000));
@@ -83,7 +83,7 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     const app = await inHarbour();
     const screenStream = new MediaStream();
     const cam = new MediaStream();
-    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream }] }));
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream, screenAudio: false }] }));
     const video = (id: string) => document.querySelector<HTMLVideoElement>(`li[data-tile-id="${BOB_DEV}:${id}"] video`);
     await waitFor(() => { expect(video('screen')).not.toBeNull(); expect(video('person')).not.toBeNull(); });
     expect(video('screen')!.srcObject).toBe(screenStream);
@@ -113,7 +113,7 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
   it('web3.8 WS7: the DM call box stays a compact grid: no stage mode, and a share takes no focus (it would collapse to 2 px)', async () => {
     Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
     const app = await calling({ ringing: [], declined: [], notRung: [] });
-    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: new MediaStream() }] }));
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: new MediaStream(), screenAudio: false }] }));
     await waitFor(() => expect(document.querySelector(`li[data-tile-id="${BOB_DEV}:screen"]`)).not.toBeNull());
     expect(document.querySelector('[data-tiles="stage"]')).toBeNull();
     expect(document.querySelector('[data-focused-stage]')).toBeNull();
@@ -130,7 +130,7 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
 
   it('M13: no tile shows the client tag, yours included', async () => {
     const app = await inHarbour();
-    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: null }] }));
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: null, screenAudio: false }] }));
     await waitFor(() => expect(main().getAllByRole('listitem')).toHaveLength(2));
     expect(main().queryByText(t('voice.tag.web'), { exact: true })).toBeNull();
   });
@@ -149,7 +149,7 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     const app = await inHarbour();
     const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
     expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
-    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null, screenAudio: false }] }));
     // web3.9: the ring is the mark (no glyph); the word stays for assistive technology.
     await waitFor(() => expect(sidebar().getByText(t('voice.state.speaking'))).toBeInTheDocument());
     expect(document.querySelector('.dw-sidebar .d-voice-row__person[data-speaking="true"]')).not.toBeNull();

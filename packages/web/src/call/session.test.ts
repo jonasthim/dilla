@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await -- the doubles answer as the async functions they stand for do */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
-import type { EpochKeys, JoinCallOptions } from '@dilla/media';
+import { screenAudioOptions, type EpochKeys, type JoinCallOptions } from '@dilla/media';
 import { getBrowser } from 'livekit-client';
 import { concurrentCapture, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
@@ -570,8 +570,9 @@ describe('the page call session (L-WEB-50)', () => {
     await f.advance(1_000);
     call.setVolume(BOB, 50);
     expect(bob.gains.microphone).toBe(0.5);
-    expect(bob.gains.screen_share_audio).toBe(0.5);
+    expect(bob.gains.screen_share_audio).toBe(1); // T5: the voice volume does not move the stream
     expect(() => call.setVolume(BOB, 55)).toThrow(/E_INVALID/);
+    expect(() => call.setVolume(BOB, 55, 'stream')).toThrow(/E_INVALID/);
   });
 
   it('push to talk mutes the microphone unless the key is held', async () => {
@@ -2331,6 +2332,78 @@ describe('web3.3: remote call audio plays (attach, gains, autoplay, detach)', ()
     expect(elementsIn(f.audioHost)).toEqual([track.made[0]]);
   });
 
+  it('T5: the voice volume does not move the stream, and the stream volume does not move the voice', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'microphone');
+    f.subscribeTrack(bob, 'screen_share_audio');
+    call.setVolume(BOB, 40);
+    expect(bob.gains.microphone).toBe(0.4);
+    expect(bob.gains.screen_share_audio).toBe(1);
+    call.setVolume(BOB, 100);
+    call.setVolume(BOB, 150, 'stream');
+    expect(bob.gains.microphone).toBe(1);
+    expect(bob.gains.screen_share_audio).toBe(1.5);
+  });
+
+  it('T5: a stream volume of 0 holds the share audio back and leaves the voice playing; it attaches when it rises', async () => {
+    const f = fakes();
+    const call = await start(f, { streamVolumes: { [BOB]: 0 } });
+    const bob = f.addRemote(BOB_DEV);
+    const voice = f.subscribeTrack(bob, 'microphone');
+    const stream = f.subscribeTrack(bob, 'screen_share_audio');
+    expect(voice.track.attach).toHaveBeenCalledTimes(1);
+    expect(stream.track.attach).not.toHaveBeenCalled();
+    bob.setVolume.mockClear();
+    call.setVolume(BOB, 50, 'stream');
+    expect(stream.track.attach).toHaveBeenCalledTimes(1);
+    expect(setAfterAttach(bob, stream.track, 0.5, 'screen_share_audio')).toBe(true);
+    call.setVolume(BOB, 0, 'stream');
+    expect(bob.gains.screen_share_audio).toBe(0);
+    expect(bob.gains.microphone).toBe(1);
+  });
+
+  it('T5: deafen still silences the stream at any stream volume, and undeafen restores it', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'screen_share_audio');
+    call.setVolume(BOB, 200, 'stream');
+    call.setDeafened(true);
+    expect(bob.gains.screen_share_audio).toBe(0);
+    call.setVolume(BOB, 120, 'stream');
+    expect(bob.gains.screen_share_audio).toBe(0);
+    call.setDeafened(false);
+    expect(bob.gains.screen_share_audio).toBe(1.2);
+  });
+
+  it('T5: the stream mute is local and per person: only that person\'s share audio is held back, and nothing is sent', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const carol = f.addRemote(CAROL_DEV);
+    f.subscribeTrack(bob, 'screen_share_audio');
+    f.subscribeTrack(carol, 'screen_share_audio');
+    const sent = f.calls.length;
+    call.setVolume(BOB, 0, 'stream');
+    expect(bob.gains.screen_share_audio).toBe(0);
+    expect(carol.gains.screen_share_audio).toBe(1);
+    expect(f.calls.length).toBe(sent);
+  });
+
+  it('T5: a muted stream keeps the no-sound mark off (the mark is about the stream, not the viewer\'s choice)', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.verified.add(BOB_DEV);
+    f.subscribeTrack(bob, 'screen_share');
+    f.subscribeTrack(bob, 'screen_share_audio');
+    await f.advance(1_000);
+    call.setVolume(BOB, 0, 'stream');
+    expect(call.state.tiles.find((t) => t.deviceId === BOB_DEV)!.screenAudio).toBe(true);
+  });
+
   it('Review Focus 1: a track subscribed before the listeners existed is attached once at connect, never twice', async () => {
     const f = fakes();
     const bob = fakeRemote(BOB_DEV);
@@ -3067,5 +3140,189 @@ describe('web3.9 ruling V-1: the session owns page leave, LiveKit does not', () 
     expect(call.state.phase).toBe('ended');
     expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'pagehide' }]);
     expect(f.manager.dispose).toHaveBeenCalled();
+  });
+});
+
+describe('#37: a call knows whether a share carries sound, on both sides', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  /** What getDisplayMedia hands back for a surface: its video track (displaySurface) and, when `withAudio`, one audio track. */
+  const picked = (surface: 'browser' | 'monitor' | 'window', withAudio: boolean) => {
+    const video = { kind: 'video', stop: vi.fn(), addEventListener: () => undefined, removeEventListener: () => undefined,
+      getSettings: () => ({ displaySurface: surface }) } as unknown as MediaStreamTrack;
+    const audioStop = vi.fn();
+    const endedFns = new Set<() => void>();
+    const audio = withAudio ? { kind: 'audio', stop: audioStop, getSettings: () => ({}),
+      addEventListener: (_t: string, fn: () => void) => { endedFns.add(fn); },
+      removeEventListener: (_t: string, fn: () => void) => { endedFns.delete(fn); } } as unknown as MediaStreamTrack : null;
+    const tracks = audio === null ? [video] : [video, audio];
+    const stream = { getTracks: () => tracks, getAudioTracks: () => tracks.filter((t) => t.kind === 'audio'),
+      getVideoTracks: () => [video] } as unknown as MediaStream;
+    return { video, audio, audioStop, stream, endAudio: () => { for (const fn of [...endedFns]) fn(); } };
+  };
+  const sources = (f: ReturnType<typeof fakes>) => f.room.localParticipant.publishTrack.mock.calls.map((c) => c[1].source);
+
+  it('a share without sound says so', async () => {
+    const f = fakes();
+    const call = await start(f);
+    expect(call.state.shareAudio).toBeNull();
+    f.deps.media.getDisplayMedia = vi.fn(async () => picked('monitor', false).stream);
+    f.room.localParticipant.publishTrack.mockClear();
+    await call.setSharing(true);
+    expect(call.state.sharing).toBe(true);
+    expect(call.state.shareAudio).toBe('none');
+    expect(sources(f)).toEqual(['screen_share']);
+  });
+
+  it('a tab share with sound publishes it as screen_share_audio', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const s = picked('browser', true);
+    f.deps.media.getDisplayMedia = vi.fn(async () => s.stream);
+    f.room.localParticipant.publishTrack.mockClear();
+    await call.setSharing(true);
+    expect(call.state.shareAudio).toBe('tab');
+    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(2);
+    expect(f.room.localParticipant.publishTrack.mock.calls[1][0]).toBe(s.audio);
+    // The fixture's caps are [64 000, 2 500 000, 0]: screenAudioOptions(caps) holds F2's 96 kbit/s to the instance's 64.
+    expect(f.room.localParticipant.publishTrack.mock.calls[1][1])
+      .toEqual(screenAudioOptions({ maxAudioBitrateBps: 64_000, maxShareBitrateBps: 2_500_000, vp9: false }));
+  });
+
+  it('m1: a share whose audio track ends while the video goes on turns to none, and the audio is unpublished', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const s = picked('browser', true);
+    f.deps.media.getDisplayMedia = vi.fn(async () => s.stream);
+    await call.setSharing(true);
+    expect(call.state.shareAudio).toBe('tab');
+    const seen = vi.fn();
+    call.subscribe(seen);
+    s.endAudio();
+    await f.advance(0);
+    expect(call.state.shareAudio).toBe('none');
+    expect(call.state.sharing).toBe(true);
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(s.audio);
+    expect(seen).toHaveBeenCalled();
+    await call.setSharing(false);
+    expect(call.state.shareAudio).toBeNull();
+  });
+
+  it('a system share with sound is published as is', async () => {
+    // D5: no restrictOwnAudio check; whatever audio the browser returned is published.
+    const f = fakes();
+    const call = await start(f);
+    const s = picked('window', true);
+    f.deps.media.getDisplayMedia = vi.fn(async () => s.stream);
+    f.room.localParticipant.publishTrack.mockClear();
+    await call.setSharing(true);
+    expect(call.state.shareAudio).toBe('system');
+    expect(sources(f)).toEqual(['screen_share', 'screen_share_audio']);
+    expect(s.audioStop).not.toHaveBeenCalled();
+  });
+
+  it('a share whose audio the grant does not allow is a share without sound', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const s = picked('browser', true);
+    f.deps.media.getDisplayMedia = vi.fn(async () => s.stream);
+    const answer = f.deps.bridge.call.bind(f.deps.bridge);
+    f.deps.bridge.call = vi.fn(async (cmd: Command) => {
+      if (cmd.m !== 'callShare' || !cmd.on) return answer(cmd);
+      f.room.localParticipant.permissions = { canPublish: true, canPublishSources: [1, 2, 3] };
+      f.room.emit('participantPermissionsChanged', undefined, f.room.localParticipant);
+      return null;
+    });
+    f.room.localParticipant.publishTrack.mockClear();
+    await call.setSharing(true);
+    expect(sources(f)).toEqual(['screen_share']);
+    expect(call.state.shareAudio).toBe('none');
+    expect(s.audioStop).toHaveBeenCalled();
+  });
+
+  it('stopping the share clears shareAudio, and so does the leave', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.deps.media.getDisplayMedia = vi.fn(async () => picked('browser', true).stream);
+    await call.setSharing(true);
+    expect(call.state.shareAudio).toBe('tab');
+    await call.setSharing(false);
+    expect(call.state.sharing).toBe(false);
+    expect(call.state.shareAudio).toBeNull();
+    await call.setSharing(true);
+    expect(call.state.shareAudio).toBe('tab');
+    await call.leave('user');
+    expect(call.state.shareAudio).toBeNull();
+  });
+
+  it('a tile says whether its screen carries sound', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'screen_share');
+    f.verified.add(BOB_DEV);
+    await f.advance(1_000);
+    const bobTile = () => call.state.tiles.find((t) => t.deviceId === BOB_DEV)!;
+    expect(bobTile().state).toBe('ok');
+    expect(bobTile().screenAudio).toBe(false);
+    f.subscribeTrack(bob, 'screen_share_audio');
+    expect(bobTile().screenAudio).toBe(true);
+    // An unverified tile, or a paused call, never says a screen carries sound (as `screen` is null then).
+    const d = f.addRemote(DEV_D);
+    f.subscribeTrack(d, 'screen_share_audio');
+    expect(call.state.tiles.find((t) => t.deviceId === DEV_D)!.screenAudio).toBe(false);
+    await call.setPaused(true);
+    expect(bobTile().screenAudio).toBe(false);
+  });
+
+  it('the tile mark follows a late audio publication and an unpublish', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'screen_share');
+    f.verified.add(BOB_DEV);
+    await f.advance(1_000);
+    const bobTile = () => call.state.tiles.find((t) => t.deviceId === BOB_DEV)!;
+    expect(bobTile().screenAudio).toBe(false);
+    // Published, not subscribed yet (no trackSubscribed): the room's trackPublished turns the mark at once, no poll.
+    const pub = { source: 'screen_share_audio', kind: 'audio', trackSid: 'TR_late' };
+    bob.trackPublications.set(pub.trackSid, pub);
+    f.room.emit('trackPublished', pub, bob);
+    expect(bobTile().screenAudio).toBe(true);
+    // livekit drops the publication before it says trackUnpublished.
+    bob.trackPublications.delete(pub.trackSid);
+    f.room.emit('trackUnpublished', pub, bob);
+    expect(bobTile().screenAudio).toBe(false);
+  });
+
+  it('the mark does not change when the viewer deafens', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'screen_share');
+    f.verified.add(BOB_DEV);
+    await f.advance(1_000);
+    call.setDeafened(true);
+    const { track } = f.subscribeTrack(bob, 'screen_share_audio');
+    await f.advance(1_000);
+    expect(call.state.tiles.find((t) => t.deviceId === BOB_DEV)!.screenAudio).toBe(true);
+    // Deafened: the share audio is held back, never attached, and its gain is 0.
+    expect(track.attach).not.toHaveBeenCalled();
+    expect(bob.gains.screen_share_audio).toBe(0);
+  });
+
+  it('a listen-only call refuses share before the picker', async () => {
+    const f = fakes();
+    const call = await start(f, { listenOnly: true });
+    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
+    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
+    expect(call.state.sharing).toBe(false);
+    expect(call.state.shareAudio).toBeNull();
   });
 });

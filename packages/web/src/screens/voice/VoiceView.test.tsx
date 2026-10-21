@@ -1104,7 +1104,7 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
   const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
   const focusedIds = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile[data-focused="true"]')].map(e => e.dataset.tileId);
   const tile = (deviceId: string, userId: string, video: MediaStream | null, screen: MediaStream | null) =>
-    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen });
+    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen, screenAudio: false });
 
   it('a participant with a camera and a screen gives two tiles, "bob" and "bob’s screen", with no inset', async () => {
     const app = await inVoice({ voice: room(0) });
@@ -1126,6 +1126,37 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(within(person).getByRole('slider')).toBeInTheDocument();
     expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
     expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: 'muted' })).toBeNull();
+  });
+
+  it('#37: a remote screen without sound shows the mark; with sound it does not; the own screen never does', async () => {
+    const app = await inVoice({ voice: room(FLAG_SCREEN) });
+    const screenTile = (over: Partial<ReturnType<typeof tile>>) => ({ ...tile(BOB_DEV, BOB, null, new MediaStream()), ...over });
+    act(() => app.session.update({ tiles: [screenTile({ screenAudio: false })], sharing: true, localScreen: new MediaStream() }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    expect(within(li(`${BOB_DEV}:screen`)).getByRole('img', { name: t('voice.state.noSound') })).toBeInTheDocument();
+    expect(li(`${OWN_DEV}:screen`).querySelector('[data-state="no-sound"]')).toBeNull();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
+    act(() => app.session.update({ tiles: [screenTile({ screenAudio: true })] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:screen`).querySelector('[data-state="no-sound"]')).toBeNull());
+    // The mark is about the stream, not the person: bob's person tile never says it.
+    expect(li(`${BOB_DEV}:person`).querySelector('[data-state="no-sound"]')).toBeNull();
+  });
+
+  it('#37 T5: a screen with sound has its own volume and mute; the mute sets the stream volume to 0, then restores it', async () => {
+    const app = await inVoice({ voice: room(FLAG_SCREEN), settings: { [`voice.streamVolume.${BOB}`]: '70' } });
+    act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, new MediaStream()), screenAudio: true }] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    const screenLi = within(li(`${BOB_DEV}:screen`));
+    expect(screenLi.getByRole('slider', { name: t('voice.streamVolume', { name: 'bob' }) })).toHaveValue('70');
+    expect(screenLi.queryByRole('img', { name: t('voice.state.noSound') })).toBeNull();
+    // the person's own voice range is a different range and a different key
+    expect(within(li(`${BOB_DEV}:person`)).getByRole('slider', { name: t('voice.volume', { name: 'bob' }) })).toHaveValue('100');
+    const mute = screenLi.getByRole('button', { name: t('voice.streamMute') });
+    expect(mute).toHaveAttribute('aria-pressed', 'false');
+    await app.user.click(mute);
+    expect(app.session.setVolume).toHaveBeenCalledWith(BOB, 0, 'stream');
+    expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: `voice.streamVolume.${BOB}`, value: '0' });
+    expect(app.client.callsOf('setSetting').some(c => c.key === `voice.volume.${BOB}`)).toBe(false);
   });
 
   it('an audio-only participant gives one avatar tile', async () => {
@@ -1294,7 +1325,7 @@ describe('the voice stage header (web3.9)', () => {
 // ring on the list row and on the tile and nothing else.
 describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
   const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;
-  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null }];
+  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null, screenAudio: false }];
 
   it('has no meter, no level text and no line, and keeps the dock to its two lines and three buttons', async () => {
     const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });

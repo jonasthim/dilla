@@ -98,6 +98,8 @@ describe('voice and sound settings (L-TS-54)', () => {
       [SETTINGS.voicePttKey, ['KeyV', 'F13', 'Space', 'a' + '1'.repeat(31)], ['', '1Key', 'Key V', 'a' + '1'.repeat(32)]],
       [SETTINGS.voiceNoise, ['on', 'off', 'automatic', 'lightweight'], ['1', 'true']],
       [SETTINGS.voiceVolume(ID), ['0', '10', '100', '110', '200'], ['05', '15', '210', '-10', '100.0', '']],
+      // #37 T5: the volume of a person's shared screen sound; 0 is the stream mute.
+      [SETTINGS.voiceStreamVolume(ID), ['0', '10', '100', '110', '200'], ['05', '15', '210', '-10', '100.0', '']],
       [SETTINGS.soundVoice, ['on', 'off'], ['0', '1']],
       [SETTINGS.soundRing, ['on', 'off'], ['0', 'quiet']],
       // Product walk M5: the own mute and deafen kept across a reload.
@@ -114,7 +116,7 @@ describe('voice and sound settings (L-TS-54)', () => {
     expect([SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
       SETTINGS.voiceVolume(ID), SETTINGS.soundVoice, SETTINGS.soundRing]).toEqual(['voice.input', 'voice.output', 'voice.mode',
       'voice.pttKey', 'voice.noise', `voice.volume.${ID}`, 'sound.voice', 'sound.ring']);
-    for (const bad of ['voice', 'voice.volume.', `voice.volume.${ID.toUpperCase()}`, `voice.volume.${ID}0`, 'sound', 'sound.mention', 'voice.ptt']) {
+    for (const bad of ['voice', 'voice.volume.', 'voice.streamVolume.', `voice.streamVolume.${ID.toUpperCase()}`, `voice.streamVolume.${ID}0`, `voice.volume.${ID.toUpperCase()}`, `voice.volume.${ID}0`, 'sound', 'sound.mention', 'voice.ptt']) {
       expect(isSettingKey(bad), bad).toBe(false);
     }
   });

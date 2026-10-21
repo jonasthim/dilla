@@ -17,7 +17,7 @@ const view: VoiceParticipantView = {
 const labels: CallTileProps['labels'] = {
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
-    connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
+    connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
   },
   volume: 'volume for ada',
   volumeValue: '{n} %',
@@ -79,6 +79,89 @@ describe('CallTile', () => {
     rerender(<CallTile view={view} {...rest} volume={150} />);
     expect(container.querySelector('.d-call-tile__chip')).toHaveTextContent('150 %');
     expect(css).toMatch(/\.d-call-tile__chip \{[^}]*font-family: var\(--font-mono\);[^}]*background: var\(--surface-hi\)/);
+  });
+
+  it('#37: a screen tile marked silent shows the glyph-only no-sound state; a screen with sound, a camera or an avatar does not', () => {
+    const { container, rerender } = render(<CallTile view={view} {...rest} source="screen" silent />);
+    const mark = container.querySelector('[data-state="no-sound"]')!;
+    expect(mark).toHaveAttribute('role', 'img');
+    expect(mark).toHaveAttribute('aria-label', 'no sound');
+    expect(mark).toHaveAttribute('title', 'no sound');
+    expect(mark.textContent).toBe('');
+    expect(mark.querySelector('[data-icon="volume-off"]')).not.toBeNull(); // Jonas: "no sound" is volume-off, "muted by you" is volume-x
+    rerender(<CallTile view={view} {...rest} source="screen" />);
+    expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="camera" silent />);
+    expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="avatar" silent />);
+    expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
+  });
+
+  it('#37 T5: a remote screen with a stream has its own range and a mute toggle; a muted stream is pressed and not marked silent', () => {
+    const onVolume = vi.fn();
+    const onMute = vi.fn();
+    const stream = { volume: 70, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume, onMute };
+    const { container, rerender } = render(<CallTile view={view} {...rest} source="screen" stream={stream} />);
+    const range = screen.getByRole('slider', { name: 'stream volume for ada' });
+    expect(range).toHaveValue('70');
+    expect(range).toHaveAttribute('aria-valuetext', '70 %');
+    fireEvent.change(range, { target: { value: '90' } });
+    expect(onVolume).toHaveBeenCalledWith(90);
+    const mute = screen.getByRole('button', { name: 'mute stream' });
+    expect(mute).toHaveAttribute('aria-pressed', 'false');
+    expect(mute.querySelector('[data-icon="volume-2"]')).not.toBeNull();
+    fireEvent.click(mute);
+    expect(onMute).toHaveBeenCalledTimes(1);
+    rerender(<CallTile view={view} {...rest} source="screen" stream={{ ...stream, volume: 0 }} />);
+    const pressed = screen.getByRole('button', { name: 'mute stream' });
+    expect(pressed).toHaveAttribute('aria-pressed', 'true');
+    expect(pressed.querySelector('[data-icon="volume-x"]')).not.toBeNull();
+    expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
+    // Not on the own tile, and not on a camera tile.
+    rerender(<CallTile view={view} {...rest} own source="screen" stream={stream} />);
+    expect(screen.queryByRole('button', { name: 'mute stream' })).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="camera" stream={stream} />);
+    expect(screen.queryByRole('button', { name: 'mute stream' })).toBeNull();
+    expect(screen.queryByRole('slider', { name: 'stream volume for ada' })).toBeNull();
+  });
+
+  it('#37 round 2: the phone has a volume button that opens a keyboard-operable popover with the range; Escape closes it and focus returns', () => {
+    const onVolume = vi.fn();
+    const stream = { volume: 70, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume, onMute: () => {} };
+    render(<CallTile view={view} {...rest} source="screen" stream={stream} />);
+    const open = screen.getByRole('button', { name: 'stream volume for ada' });
+    expect(open).toHaveTextContent('70 %');
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    fireEvent.click(open);
+    expect(open).toHaveAttribute('aria-expanded', 'true');
+    const group = screen.getByRole('group', { name: 'stream volume for ada' });
+    const range = within(group).getByRole('slider');
+    expect(range).toHaveFocus();
+    fireEvent.change(range, { target: { value: '120' } });
+    expect(onVolume).toHaveBeenCalledWith(120);
+    fireEvent.keyDown(range, { key: 'Escape' });
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    expect(open).toHaveFocus();
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    // A press outside closes it too.
+    fireEvent.click(open);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    // CSS pins: only the mute and the volume button show on the phone, both 44 px; the desktop range is hidden there.
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__stream > \.d-call-tile__volume \{ display: none; \}/);
+    expect(css).toMatch(/\.d-call-tile__streamvol \{[^}]*height: 2\.75rem/);
+  });
+
+  it('#37 round 2: the phone caption starts at its start edge and wraps only when needed (no 8ch name box, no centring)', () => {
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__name \{ max-width: 100%; min-width: 0; text-align: start; \}/);
+    expect(css).toMatch(/flex-wrap: wrap; justify-content: flex-start; text-align: start;/);
+  });
+
+  it('#37 T5: the mute is a 40 px square on a desktop and 44 px on a phone, shown while pressed (CSS pins)', () => {
+    expect(css).toMatch(/\.d-call-tile__mute \{[^}]*width: 2\.5rem; height: 2\.5rem/);
+    expect(css).toMatch(/\.d-call-tile \.d-call-tile__mute \{ width: 2\.75rem; height: 2\.75rem; \}/);
+    expect(css).toMatch(/\.d-call-tile__mute\[aria-pressed="true"\] \{ opacity: 1; pointer-events: auto; \}/);
   });
 
   it('the own tile and a screen tile have no chip', () => {

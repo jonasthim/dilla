@@ -40,12 +40,34 @@ export function screenAudioOptions(caps: CallCaps): TrackPublishOptions {
   return { ...SCREEN_AUDIO, audioPreset: { maxBitrate: Math.min(SCREEN_AUDIO_BITRATE_BPS, caps.maxAudioBitrateBps) } };
 }
 
-/** Shared audio is content, not speech: no voice processing, both channels. */
-export const SCREEN_AUDIO_CAPTURE: MediaTrackConstraints = {
+/**
+ * Shared audio is content, not speech: no voice processing, both channels. `restrictOwnAudio` (Chrome 141+) asks the
+ * browser to leave the call's own playback out of captured system audio, so viewers never hear their voices come back
+ * (#37). It is always asked for and never read back (D5): a browser that ignores it is a documented limit.
+ */
+export const SCREEN_AUDIO_CAPTURE: MediaTrackConstraints & { restrictOwnAudio?: boolean } = {
   echoCancellation: false,
   noiseSuppression: false,
   autoGainControl: false,
   channelCount: 2,
+  restrictOwnAudio: true,
+};
+
+/**
+ * The `getDisplayMedia` audio hints, stated rather than left to defaults that have changed between releases (Edge
+ * before 142 defaulted `windowAudio` to `exclude`): offer system audio for a screen and a window, never offer this
+ * tab itself, and no surface switching mid-share (#37).
+ */
+export const SCREEN_DISPLAY_HINTS: {
+  systemAudio: 'include';
+  windowAudio: 'system';
+  selfBrowserSurface: 'exclude';
+  surfaceSwitching: 'exclude';
+} = {
+  systemAudio: 'include',
+  windowAudio: 'system',
+  selfBrowserSurface: 'exclude',
+  surfaceSwitching: 'exclude',
 };
 
 /** Browser fallback capture defaults. Neural capture requests NS off at acquisition on browsers with immutable audio constraints; AEC/AGC remain enabled. */

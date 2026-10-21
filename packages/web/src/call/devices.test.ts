@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { acquireMic, acquireCamera, acquireScreen } from './devices.ts';
 
+const vtrack = (surface: string) => ({ kind: 'video', stop: vi.fn(), getSettings: () => ({ displaySurface: surface }) }) as unknown as MediaStreamTrack;
+const atrack = (restrict?: boolean) => ({ kind: 'audio', stop: vi.fn(), getSettings: () => (restrict === undefined ? {} : { restrictOwnAudio: restrict }) }) as unknown as MediaStreamTrack;
 const track = (kind: string) => ({ kind, stop: vi.fn(), id: `${kind}-1` }) as unknown as MediaStreamTrack;
 const stream = (...tracks: MediaStreamTrack[]) => ({
   getTracks: () => tracks,
@@ -63,21 +65,39 @@ describe('camera and screen', () => {
     expect(m.getUserMedia).toHaveBeenCalledWith({ audio: false, video: true });
   });
 
-  it('the screen asks for tab audio and returns both tracks', async () => {
-    const v = track('video');
-    const a = track('audio');
-    const getDisplayMedia = vi.fn(async () => stream(v, a));
-    expect(await acquireScreen({ getDisplayMedia })).toEqual({ video: v, audio: a });
-    expect(getDisplayMedia).toHaveBeenCalledWith({ video: true, audio: SCREEN_AUDIO_EXPECTED });
+  it('the share asks the browser to leave out the call\'s own sound, and for every audio it offers', async () => {
+    const getDisplayMedia = vi.fn(async () => stream(vtrack('browser'), atrack(true)));
+    await acquireScreen({ getDisplayMedia });
+    expect(getDisplayMedia).toHaveBeenCalledWith({
+      video: true,
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
+      systemAudio: 'include', windowAudio: 'system', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
+    });
   });
 
-  it('a screen without audio returns audio null', async () => {
-    const v = track('video');
-    expect(await acquireScreen({ getDisplayMedia: async () => stream(v) })).toEqual({ video: v, audio: null });
+  it('a tab share with sound is tab audio', async () => {
+    const a = atrack();
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('browser'), a) })).toMatchObject({ audio: a, audioKind: 'tab' });
+  });
+
+  it('a restricted screen share with sound is system audio', async () => {
+    const a = atrack(true);
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor'), a) })).toMatchObject({ audio: a, audioKind: 'system' });
+  });
+
+  it('a system share is published whatever the browser did with restrictOwnAudio', async () => {
+    // D5: no detection for browsers that ignore the constraint (Chrome/Edge < 141); the echo there is a documented limit.
+    const a = atrack(); // getSettings() has no restrictOwnAudio
+    const v = vtrack('window');
+    const r = await acquireScreen({ getDisplayMedia: async () => stream(v, a) });
+    expect(r).toEqual({ video: v, audio: a, audioKind: 'system' });
+    expect((a as unknown as { stop: ReturnType<typeof vi.fn> }).stop).not.toHaveBeenCalled();
+  });
+
+  it('a screen without audio is none', async () => {
+    expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor')) })).toMatchObject({ audio: null, audioKind: 'none' });
   });
 });
-
-const SCREEN_AUDIO_EXPECTED = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 };
 
 // Privacy preference must reach capture, not only the neural processor.
 it('Off disables browser suppression at acquisition while retaining echo cancellation', async () => {

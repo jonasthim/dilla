@@ -26,6 +26,8 @@ The media key never appears in this flow: the browser derives it in the core wor
 | connection lost or call ended (added 2026-10-14, WB client I3) | `voice.disconnected` when LiveKit's connection ended and its reconnect gave up, `voice.ended` when the room was closed (the call ended for everyone), `voice.removed` when the instance removed this device from the room; the dock and the stage's controls go away | the page posts `callLeave` with reason `lost`; `call.phase` removed with `call.error.code` E_DISCONNECTED | the notice, in the stage's region when the stage shows, else in the status region that outlives the dock |
 | full | `voice.full` (or `voice.sharersFull` when the camera or share is refused) | `call.error.code` E_CALL_FULL / E_CALL_SHARERS_FULL | the notice |
 | failed | `voice.failed` with the join button available again | `call.phase` failed (also E_DEVICE_LIST_STALE after one refresh, RV-1) | the notice |
+| share without sound (added 2026-10-21, #37) | the sharer's stage notice says `voice.shareAudio.none` (`role="status"`, no focus move, nothing shown before the picker); it goes when the share stops or gets sound. Each viewer's tile for that screen shows the glyph-only `volume-off` state named `voice.state.noSound` (`volume-x` is only the pressed mute button: "muted by you") in its caption, which may wrap; the sharer's own tile never shows it | `PageCallState.shareAudio` is `none` (the browser gave no audio for the surface, the grant did not allow it, or the audio track ended); a viewer's tile has `screenAudio` false (no `screen_share_audio` publication) | the notice (the stage's status region); the mark is a `role="img"` named `voice.state.noSound` |
+| stream volume and mute (added 2026-10-21, #37) | a remote screen tile with sound has its own range (`voice.streamVolume`, 0 to 200 in steps of 10, shown on hover and focus on the stage, always in the flow on the phone) and a mute toggle (`voice.streamMute`, `aria-pressed`, accent-outlined while pressed, the label never swaps; 40 px, 44 px on the phone). On the phone a screen tile shows only the 44 px mute and a 44 px volume button with the value; the button (`aria-expanded`, named `voice.streamVolume`) opens a small popover anchored to the tile with the range: focus moves to the range, Escape or a press outside closes it and focus returns to the button with the `volume-2` glyph, `volume-x` while pressed. The mute is the stream volume at 0 and unmute brings back the last value; a muted stream keeps its pressed mute shown and never the no-sound mark (the mark is about the stream, not the viewer's choice). Deafen and pause still hold it back | `voice.streamVolume.<user>` (per user, local to this account; one gain path with the stream volume; the voice range `voice.volume.<user>` is separate) | none |
 | microphone denied | `voice.micDenied`; joined listen-only | `getUserMedia` NotAllowedError | the notice |
 | microphone missing | `voice.micMissing`; joined listen-only | `getUserMedia` NotFoundError | the notice |
 | microphone failed | `voice.micFailed`; joined listen-only | the page call's `mic` is `failed` (`E_MIC_PUBLISH`: the microphone exists but could not be published; added 2026-10-13, task-8b review m4) | the notice |
@@ -292,6 +294,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.bot.canHear='can hear'` (shown with the bot tag on a bot's sub-row in the voice list, so a bot that can hear is visible before joining; added 2026-10-13, task-7 review I5)
 - `voice.state.notHeard='not heard yet'`, `voice.state.unverified='unverified stream'`, `voice.state.connecting='connecting'`
 - `voice.state.video='camera on'`, `voice.state.screen='sharing screen'`
+- `voice.state.noSound='no sound'` (the glyph-only state of a remote screen tile whose share carries no sound; added 2026-10-21, #37)
 - `voice.tag.web='web'`, `voice.tag.bot='bot'` (the participant tags, as the message rows show them; added 2026-10-13, task-9 review m7)
 
 *Announcements:*
@@ -306,6 +309,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.codeHelp='The code changes whenever someone joins or leaves. Read it aloud: if every screen shows the same code, everyone is hearing the same set of devices.'`
 - `voice.empty='Nobody is in voice yet.'`, `voice.tiles='people in voice'`, `voice.volume='volume for {name}'`
 - `voice.volumeValue='{n} %'` (the volume range's spoken value, `aria-valuetext`; added 2026-10-13, task-7 review M6)
+- `voice.streamVolume='stream volume for {name}'`, `voice.streamMute='mute stream'` (the range and the pressed-state toggle of a remote screen tile with sound; added 2026-10-21, #37)
 
 *Refusals and notices:*
 - `voice.blocked='A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.'`
@@ -323,6 +327,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.ended='Voice ended for everyone.'` (the room was closed under this device: the call ended for everyone; added 2026-10-14, WB client I3)
 - `voice.full='This voice is full.'`
 - `voice.sharersFull='Too many people are sharing. Try again when someone stops.'`
+- `voice.shareAudio.none='Your screen is shared without sound. To share sound, share a browser tab, or on Windows tick "Also share system audio".'` (the sharer's notice once the share started without sound; added 2026-10-21, #37)
 - `voice.failed='Could not join voice. Try again.'`
 - `voice.otherTab='Voice is open in another tab of this browser.'`
 - `voice.micDenied='The microphone is blocked. You can listen; allow the microphone in the browser to talk.'`

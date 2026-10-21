@@ -40,6 +40,11 @@ function volumeOf(settings: Readonly<Record<string, string>>, userId: string): n
   return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
 }
 
+function streamVolumeOf(settings: Readonly<Record<string, string>>, userId: string): number {
+  const v = settings[SETTINGS.voiceStreamVolume(userId)];
+  return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
+}
+
 function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
@@ -57,6 +62,8 @@ type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fulls
  */
 function deviceTiles(base: TileBase, o: {
   camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
+  /** #37: a remote screen: whether it carries sound (the mark when not) and, when it does, its own volume and mute. */
+  remoteScreen?: { screenAudio: boolean; stream: NonNullable<CallTileProps['stream']> };
 }): CallTileProps[] {
   const { view } = base;
   const fullscreenLabel = t('stage.fullscreen');
@@ -67,7 +74,8 @@ function deviceTiles(base: TileBase, o: {
   }];
   if (o.screen !== null || o.sharing) {
     out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
-      fullscreenLabel, mirror: false });
+      fullscreenLabel, mirror: false,
+      ...(o.remoteScreen !== undefined ? { silent: !o.remoteScreen.screenAudio, ...(o.remoteScreen.screenAudio ? { stream: o.remoteScreen.stream } : {}) } : {}) });
   }
   return out;
 }
@@ -100,7 +108,10 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
     const view = listen ? { ...seen, muted: true } : seen;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) },
-    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name,
+      remoteScreen: { screenAudio: tile.screenAudio, stream: {
+        volume: streamVolumeOf(v.settings, tile.userId), labels: { volume: t('voice.streamVolume', { name }), mute: en['voice.streamMute'] },
+        onVolume: (n: number) => call.setStreamVolume(tile.userId, n), onMute: () => call.toggleStreamMute(tile.userId, streamVolumeOf(v.settings, tile.userId)) } } });
   });
   return [...own, ...others];
 }

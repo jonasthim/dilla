@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gainOf, isVolume, volumesFromSettings } from './volume.ts';
+import { gainOf, isVolume, streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
 const BOB = 'b0'.repeat(16);
 const CAROL = 'c0'.repeat(16);
@@ -25,5 +25,17 @@ describe('per-person volume (L-TS-54 voice.volume.<user>)', () => {
   it('reads the voice.volume.<user> settings and ignores anything else', () => {
     expect(volumesFromSettings({ [`voice.volume.${BOB}`]: '150', [`voice.volume.${CAROL}`]: '05', 'voice.mode': 'vad', 'voice.volume.x': '10' }))
       .toEqual({ [BOB]: 150 });
+  });
+
+  it('T5: a stream has its own volume, read from voice.streamVolume.<user>, and deafened or paused holds it at 0', () => {
+    const vols = { [BOB]: 0 };
+    expect(gainOf(BOB, { [BOB]: 150 }, { deafened: false, paused: false })).toBe(1.5);
+    expect(gainOf(BOB, vols, { deafened: false, paused: false })).toBe(0);
+    expect(gainOf(CAROL, vols, { deafened: false, paused: false })).toBe(1);
+    expect(gainOf(BOB, { [BOB]: 150 }, { deafened: true, paused: false })).toBe(0);
+    expect(gainOf(BOB, { [BOB]: 150 }, { deafened: false, paused: true })).toBe(0);
+    expect(streamVolumesFromSettings({ [`voice.streamVolume.${BOB}`]: '70', [`voice.streamVolume.${CAROL}`]: '75', [`voice.volume.${CAROL}`]: '20', 'voice.streamVolume.x': '10' }))
+      .toEqual({ [BOB]: 70 });
+    expect(volumesFromSettings({ [`voice.streamVolume.${BOB}`]: '70' })).toEqual({});
   });
 });

@@ -320,6 +320,7 @@ export function voiceStateLabels(): VoiceStateLabels {
     speaking: t('voice.state.speaking'), muted: t('voice.state.muted'), deafened: t('voice.state.deafened'),
     notHeard: t('voice.state.notHeard'), unverified: t('voice.state.unverified'), connecting: t('voice.state.connecting'),
     video: t('voice.state.video'), screen: t('voice.state.screen'), web: t('voice.tag.web'), bot: t('voice.tag.bot'),
+    noSound: t('voice.state.noSound'),
   };
 }
 

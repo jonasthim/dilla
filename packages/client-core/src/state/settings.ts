@@ -29,6 +29,7 @@ export const SETTINGS = {
   voicePttKey: 'voice.pttKey',                               // a KeyboardEvent.code; absent = no key (decision 2)
   voiceNoise: 'voice.noise',                                 // legacy 'on' (default), 'lightweight' | 'automatic' | 'off'
   voiceVolume: (hex: string) => `voice.volume.${hex}`,       // per user: '0'..'200' in steps of 10; absent = '100'
+  voiceStreamVolume: (hex: string) => `voice.streamVolume.${hex}`, // #37 T5: per user, their shared screen's sound: '0'..'200'; absent = '100'
   // Product walk M5: this browser's own mute and deafen, kept across a reload: 'muted' | 'deafened'; absent = neither.
   voiceSelf: 'voice.self',
   soundVoice: 'sound.voice',                                 // join and leave sounds: 'on' (default) | 'off'
@@ -51,6 +52,7 @@ const NOTIFY_COMMUNITY = 'notify.community.';
 const MUTE_COMMUNITY = 'mute.community.';
 const EVERYONE_COMMUNITY = 'everyone.community.';
 const VOICE_VOLUME = 'voice.volume.';
+const VOICE_STREAM_VOLUME = 'voice.streamVolume.';
 const CHANNEL_COLLAPSED = 'channels.collapsed.';
 const DEVICE_ID = /^[A-Za-z0-9+/=_-]{1,128}$/;
 const PTT_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
@@ -70,6 +72,7 @@ export function isSettingKey(key: string): boolean {
   if (key.startsWith(MUTE_COMMUNITY)) return HEX32.test(key.slice(MUTE_COMMUNITY.length));
   if (key.startsWith(EVERYONE_COMMUNITY)) return HEX32.test(key.slice(EVERYONE_COMMUNITY.length));
   if (key.startsWith(VOICE_VOLUME)) return HEX32.test(key.slice(VOICE_VOLUME.length));
+  if (key.startsWith(VOICE_STREAM_VOLUME)) return HEX32.test(key.slice(VOICE_STREAM_VOLUME.length));
   if (key.startsWith(CHANNEL_COLLAPSED)) return HEX32.test(key.slice(CHANNEL_COLLAPSED.length));
   return false;
 }
@@ -87,7 +90,7 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
   if (key === SETTINGS.voiceNoise) return ['on', 'off', 'automatic', 'lightweight'].includes(value);
   if (key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
-  if (key.startsWith(VOICE_VOLUME)) return VOLUME.test(value);
+  if (key.startsWith(VOICE_VOLUME) || key.startsWith(VOICE_STREAM_VOLUME)) return VOLUME.test(value);
   if (key.startsWith(NOTIFY_CHANNEL) || key.startsWith(NOTIFY_COMMUNITY)) return MODES.includes(value);
   return value === '1';
 }
