@@ -447,6 +447,7 @@ export const en = {
   'shell.attachment.failed': 'could not open ({code})',
   'shell.attachment.tooLarge': 'too large to open in a browser',
   'shell.attachment.unnamed': 'file',
+  'shell.attachment.gif': 'GIF',
   'shell.message.attachmentGone': 'A file of this message is no longer on the server. Discard it and attach the file again.',
   'shell.attachment.bytes': '{n} B',
   'shell.attachment.kb': '{n} KB',

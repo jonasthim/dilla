@@ -21,7 +21,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | a GIF picked | the picker shows `gif.picking` and ignores further picks; the full GIF is downloaded through the instance, then added to the file tray like a chosen file; the picker closes and focus goes to the message box |
 | the pick failed | the picker stays open with `gif.pickFailed` |
 | the GIF is in the tray | the tray shows it as an image file named `giphy-{id}.gif`; Enter in the message box sends it, with or without text; the tray's remove button drops it |
-| a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service |
+| a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service; it plays in the conversation for five minutes after it is first seen, as any GIF does (flow 04) |
 | the picker footer | `gif.powered` |
 | a phone | the picker is the width of the screen above the composer; results and buttons are 44px targets |
 | server settings → overview, the GIFs row | titled `gif.settings.title` with `gif.settings.hint` and a link `gif.settings.getKey` to Giphy's developer page, below the name and the inactive timeout |
