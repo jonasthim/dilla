@@ -27,7 +27,8 @@ export interface PasswordLogin { assertion: string; needs: 0 | 1 | 2; }
 export interface BackupItem { kind: 0 | 1; chunkSeq: number; size: number; created: bigint; }
 export interface BackupObject { object: Uint8Array; created: bigint; }
 export interface BackupStored { blobId: Uint8Array; size: number; created: boolean; }
-export interface DeviceRow { id: Uint8Array; tier: 0 | 1; signerTier: 0 | 1; verifiedAt: bigint | null; revokedAt: bigint | null; lastSeen: bigint; }
+export interface DeviceRow { id: Uint8Array; tier: 0 | 1; signerTier: 0 | 1; verifiedAt: bigint | null; revokedAt: bigint | null; lastSeen: bigint;
+  /** The owner's name for the device; null when unnamed, and for a row from an instance before device names. */ label: string | null; }
 export interface DeviceListHistory { raw: Uint8Array; count: number; lastVersion: bigint | null; }
 export interface DmOpened { channelId: Uint8Array; created: boolean; }
 export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
@@ -656,8 +657,13 @@ export class Routes {
     return arr(decode(await this.body('GET', '/v1/devices', 'read', true))).map((value) => {
       const a = atLeast(value, 6);
       return { id: bin(a[0], 16), tier: oneOf(a[1], [0, 1]), signerTier: oneOf(a[2], [0, 1]),
-        verifiedAt: opt(a[3], u64), revokedAt: opt(a[4], u64), lastSeen: u64(a[5]) };
+        verifiedAt: opt(a[3], u64), revokedAt: opt(a[4], u64), lastSeen: u64(a[5]),
+        label: a.length > 6 ? opt(a[6], str) : null };
     });
+  }
+  /** PATCH /v1/devices/{id}: [label|null] → 204. Null clears the name. The label is not in the signed device list. */
+  async patchDevice(deviceId: Uint8Array, label: string | null): Promise<void> {
+    await this.body('PATCH', `/v1/devices/${id('deviceId', deviceId)}`, 'write', true, { body: encode([label]), ok: [204] });
   }
   async deleteSessions(deviceId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/devices/${id('deviceId', deviceId)}/sessions`, 'write', true, { ok: [204] });

@@ -77,7 +77,7 @@ function member(i: number): Uint8Array {
 interface Case {
   name: string;
   call(r: Routes): Promise<unknown>;
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   bucket: Bucket;
   idempotent: boolean;
@@ -394,11 +394,28 @@ const CASES: Case[] = [
   {
     name: 'listDevices', call: (r) => r.listDevices(),
     method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
+    // The seventh element is the owner's label; a row of six (an instance before device names) has none.
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, 'work laptop'], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
     expected: [
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n },
-      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: 'work laptop' },
+      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n, label: null },
     ],
+  },
+  {
+    name: 'listDevices with a null label', call: (r) => r.listDevices(),
+    method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, null]]),
+    expected: [{ id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: null }],
+  },
+  {
+    name: 'patchDevice names a device', call: (r) => r.patchDevice(DEVICE, 'work laptop'),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode(['work laptop']),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'patchDevice with null clears the name', call: (r) => r.patchDevice(DEVICE, null),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode([null]),
+    reply: () => noContent(), expected: undefined,
   },
   {
     name: 'deleteSessions', call: (r) => r.deleteSessions(DEVICE),

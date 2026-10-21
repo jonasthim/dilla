@@ -407,9 +407,10 @@ export function world(opts: {
       return Promise.resolve({ channelId: DM_CHANNEL, created: true });
     }),
     listDevices: vi.fn((): Promise<DeviceRow[]> => { calls.push('listDevices'); return Promise.resolve([
-      { id: OTHER_DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
-      { id: DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
+      { id: OTHER_DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n, label: null },
+      { id: DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: 'work laptop' },
     ]); }),
+    patchDevice: vi.fn((_id: Uint8Array, _label: string | null) => { calls.push('patchDevice'); return Promise.resolve(); }),
     deleteSessions: vi.fn((_id: Uint8Array) => { calls.push('deleteSessions'); return Promise.resolve(); }),
     deleteDevice: vi.fn((_id: Uint8Array) => { calls.push('deleteDevice'); return Promise.resolve(); }),
     // The return type is spelled out so the tests' replacements (null, or another Uint8Array) typecheck.
