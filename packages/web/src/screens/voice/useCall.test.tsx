@@ -44,10 +44,11 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 /** The page clock moves on by `ms` (Date.now only; timers keep real time). */
 const clock = { skew: 0 };
+// Taken once: a second harness in one test must not wrap the first spy (Vitest 4 returns the same spy and it would call itself).
+const realNow = Date.now.bind(Date);
 function skewClock(): void {
   clock.skew = 0;
-  const real = Date.now.bind(Date);
-  vi.spyOn(Date, 'now').mockImplementation(() => real() + clock.skew);
+  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clock.skew);
 }
 
 function harness(o: { fails?: (channelId: string) => boolean; afk?: UseCallOptions['afk']; lagging?: boolean } = {}) {
