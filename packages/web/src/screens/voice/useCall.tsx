@@ -223,9 +223,11 @@ export const RESTORE_WAIT_MS = 120_000;
 /** Late rejoin (Jonas 2026-10-21): a gap between two of the call's liveness ticks (one a second) longer than this is a
  *  suspend (a closed lid, a sleep); the device has been gone since the tick before it. */
 export const SUSPEND_GAP_MS = 5_000;
-/** A lost connection noticed within this long after a suspend ended counts the suspend as part of the absence (the page
- *  only notices the dead connection a while after it wakes). */
-export const SUSPEND_RECENT_MS = 60_000;
+/** Fix round 1 (review I1): a suspend stays part of the absence until the call shows it came through: the session went
+ *  reconnecting (or connecting) after the wake and then connected again, or it stayed connected, never reconnecting, for
+ *  this long after the wake (the connection survived a short suspend). A reconnect that is still trying holds it however
+ *  long it takes (LiveKit's retries take about a minute). */
+export const SUSPEND_SETTLE_MS = 60_000;
 
 /** One moment on both of the page's clocks. */
 interface Stamp { perf: number; wall: number }
@@ -298,20 +300,40 @@ export function useCall(o: UseCallOptions): CallView {
    *  a restore and an upgrade's recovery, which keep RESTORE_WAIT_MS). A recovery gone longer than its community's AFK
    *  timeout joins nothing. */
   const recoveryGoneFrom = useRef<Stamp | null>(null);
-  /** The attached call's liveness: its last tick (one a second) and the last suspend found between two ticks. */
-  const alive = useRef<{ last: Stamp; gap: { from: Stamp; to: Stamp } | null } | null>(null);
+  /** The attached call's liveness: its last tick (one a second) and the suspend found between two ticks that the call has
+   *  not yet shown it came through (`reconnecting`: the session left 'connected' after the wake). A later gap while one is
+   *  held extends it and keeps its start. */
+  const alive = useRef<{ last: Stamp; gap: { from: Stamp; to: Stamp; reconnecting: boolean } | null } | null>(null);
   const tickAlive = useCallback((): void => {
     const a = alive.current;
     if (a === null) return;
-    if (elapsedSince(a.last) > SUSPEND_GAP_MS) a.gap = { from: a.last, to: stampNow() };
+    if (elapsedSince(a.last) > SUSPEND_GAP_MS) {
+      a.gap = { from: a.gap?.from ?? a.last, to: stampNow(), reconnecting: a.gap?.reconnecting ?? false };
+    }
+    const phase = sessionRef.current?.state.phase;
+    if (a.gap !== null && (phase === 'reconnecting' || phase === 'connecting')) {
+      a.gap.reconnecting = true;
+    } else if (a.gap !== null && !a.gap.reconnecting && phase === 'connected'
+      && elapsedSince(a.gap.to) > SUSPEND_SETTLE_MS) {
+      // The connection stayed up through the suspend and well after it: the suspend is over.
+      a.gap = null;
+    }
     a.last = stampNow();
   }, []);
-  /** When the device was last known to be here, as its connection is found lost: before a suspend that ended just now,
-   *  else now (a drop while awake is counted from when it is noticed). */
+  /** The session's phase as the call's subscriber sees it: leaving 'connected' after a suspend marks it reconnecting, and
+   *  connected again after that clears the suspend (the call came through it). */
+  const phaseAlive = useCallback((phase: PageCallState['phase']): void => {
+    const gap = alive.current?.gap;
+    if (gap == null) return;
+    if (phase === 'reconnecting' || phase === 'connecting') gap.reconnecting = true;
+    else if (phase === 'connected' && gap.reconnecting && alive.current !== null) alive.current.gap = null;
+  }, []);
+  /** When the device was last known to be here, as its connection is found lost: before a suspend the call has not come
+   *  through, else now (a drop while awake is counted from when it is noticed). */
   const goneSince = useCallback((): Stamp => {
     tickAlive();
     const a = alive.current;
-    if (a?.gap != null && elapsedSince(a.gap.to) <= SUSPEND_RECENT_MS) return a.gap.from;
+    if (a?.gap != null) return a.gap.from;
     return a?.last ?? stampNow();
   }, [tickAlive]);
   /** Sets the absence a recovery of `id` is measured from: a lost connection's (`lost`), kept when the same recovery is
@@ -535,6 +557,7 @@ export function useCall(o: UseCallOptions): CallView {
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
+      phaseAlive(next.state.phase);
       // #37: a share that went out without sound tells its sharer once, in the stage's status region (D3, D4: only after
       // the share started); the notice goes when the share gets sound again or stops.
       const silentShare = next.state.shareAudio === 'none';
@@ -580,7 +603,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryRef.current === id && recoveryCameraRef.current) {
       void next.setCamera(true).catch(() => undefined);
     }
-  }, [announce, detach, sayRemoved, client, communityOf, reasonCommunity, awaySince, armGoneFrom]);
+  }, [announce, detach, sayRemoved, client, communityOf, reasonCommunity, awaySince, armGoneFrom, phaseAlive]);
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). AW5 (R-AW1): an
    *  AFK channel is never joined; the person's press on one is `goAway` (joinOnly), and nothing else asks for one. */

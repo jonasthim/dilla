@@ -842,6 +842,50 @@ describe('late rejoin (Jonas 2026-10-21): a device gone longer than its serverâ€
     expect(h.started).toHaveLength(1);
   });
 
+  /** Time passes awake for `ms`: both clocks move in steps under SUSPEND_GAP_MS, each seen by a liveness tick. */
+  const awakeFor = async (ms: number) => {
+    for (let done = 0; done < ms; done += 3_500) { goneFor(3_500); await wait(1_050); }
+  };
+
+  it('fix round 1 (I1): woken after 10 min, a tick sees the gap and the reconnect takes over 60 s: still no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    // LiveKit noticed the dead link after the wake and keeps retrying while the Wi-Fi is slow to come back.
+    act(() => general.update({ phase: 'reconnecting' }));
+    await awakeFor(63_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    await wait(1_200);
+    expect(h.started).toHaveLength(1);
+  }, 40_000);
+
+  it('fix round 1 (I1): a suspend the call reconnected through is over: a short drop after it rejoins by itself', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    act(() => general.update({ phase: 'reconnecting' }));
+    act(() => general.update({ phase: 'connected' }));
+    await wait(1_200);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('fix round 1 (I1): a suspend the connection stayed up through settles after 60 s: a later drop rejoins by itself', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    await awakeFor(63_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  }, 40_000);
+
   it('the upgrade restore keeps its own 120 s window: a long-gone clock does not end it', async () => {
     const h = harness();
     goneFor(600_000);
