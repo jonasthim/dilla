@@ -27,3 +27,29 @@ The capabilities are already documented at `packages/web/src/call/devices.ts:72-
 - **Docs:** `docs/user/voice.md` gets the same three cases in its screen-sharing section.
 - **Gates:** web vitest for devices, useCall and strings; typecheck; check:copy; check:docs; e2e `share.spec` on chromium-voice if you changed it.
 - **Release:** a client-only patch, v0.1.0-web3.9.2. Its notes say the store, schema and wire are unchanged.
+
+## Task FX2 (sonnet, opus review): a "sound from" picker for a share
+Jonas, 2026-10-21. He asked how Discord shares sound on Linux. The answer: its native desktop app captures it, and the browser cannot. He chose **Add a "sound from" picker**.
+
+- **What it does:** when a share is running, or when one starts without sound, the person can choose any audio input as the stream's sound. The list comes from `navigator.mediaDevices.enumerateDevices()`, audio inputs only. On Linux it includes PipeWire/Pulse "Monitor of …" devices (Firefox lists them), and any virtual source carrying one app.
+- **Tracks:**
+  - The chosen device is opened with `getUserMedia({ audio: { deviceId: { exact }, echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 } })`.
+  - It is published as the screen share's audio track: the same publication slot as tab or system audio, source `screen_share_audio`, E2EE like every track. Watchers then get it through the existing per-person stream volume and mute.
+  - Choosing "none" unpublishes it.
+  - The track ends when the share ends.
+  - A browser-captured tab or system sound always wins. The picker shows only when the share has no sound (`audioKind: 'none'`), or as "replace sound" in a menu.
+- **Echo warning:** if the device label matches `/^Monitor of /i` or contains "monitor", the picker warns: `voice.shareAudio.monitorWarn` 'This device carries all your computer's sound, including this call: others will hear themselves. Route only the app you want to a separate device (see help).' Picking it is still allowed.
+- **The mic is never offered:** the device the call's mic uses is excluded from the list.
+- **Permission:** a browser that hasn't granted mic permission shows unlabeled devices. The call already holds mic permission, so labels exist. If labels are missing, show `voice.shareAudio.needsPermission`.
+- **UI:** in the share controls (CallControls, the share menu or tile popover; follow the phone popover pattern from #37 T3/T5), add a "sound from" Select with "none", then the devices. Its state is `screenAudio.source` (`'browser' | deviceId | null`).
+- **Notice:** `voice.shareAudio.none.*` from FX1 gains a second sentence for each case: 'You can also pick a sound source for the stream.' The button `voice.shareAudio.pick` 'pick a sound source' opens the Select.
+- **Docs:** add a `docs/user/voice.md` section, "Share sound from Firefox or Linux". It covers picking a monitor, why that echoes, and how to route one app with PipeWire: `pw-loopback` or `pactl load-module module-null-sink` plus the app's output, with qpwgraph or pavucontrol to move the app.
+- **Copy keys** (`voice.` prefix, flow 06 and its test): `voice.shareAudio.from` 'sound from', `.fromNone` 'none', `.pick`, `.monitorWarn`, `.needsPermission` 'Allow the microphone to see sound sources.'
+- **Tests:**
+  - session: publish, replace and unpublish of the picked track;
+  - it ends with the share;
+  - a browser sound already present hides the picker;
+  - the monitor warning shows by label;
+  - the call mic is excluded.
+- **e2e:** on chromium-voice with a fake audio device (`--use-fake-device-for-media-stream`), pick a device and check that the watcher gets a screen-share audio track.
+- **Gates:** web vitest (session, useCall, VoiceView, strings); ui vitest for the touched components; typecheck; check:copy; check:docs; e2e share.spec on chromium.
