@@ -385,6 +385,46 @@ func TestDeletingACallEndsItThroughTheCallEvents(t *testing.T) {
 	}
 }
 
+// #37 CI (the AFK preview's ghost tile): LiveKit's participant_joined for a page's session is read
+// while the call is live, and its work — the reconcile under the call's lock, then the room's state —
+// runs after the call ended: a reloaded page's boot sweep ended the call it left behind (DELETE
+// ?if_alone=1) in between. The late join must not put the device back in the ended call: the call
+// events list nobody in it, and no voice_state after the end says the device is in the call, or every
+// viewer keeps its tile until a reload (nothing announces it out again: the room is gone, and its
+// leave and room_finished are dropped for an ended call). A late track of that session neither.
+func TestAJoinOrTrackReadLiveAndHandledAfterTheEndLeavesNoGhost(t *testing.T) {
+	for _, event := range []string{webhook.EventParticipantJoined, webhook.EventTrackPublished} {
+		t.Run(event, func(t *testing.T) {
+			f := newEventsFixture(t, api.CallsConfig{})
+			live, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID)
+			if err != nil || live.Ended != nil {
+				t.Fatalf("the voice session before the end = %+v (%v), want it live", live, err)
+			}
+			if status, body := f.e.Do(http.MethodDelete, "/v1/calls/"+f.callID.String()+"?if_alone=1", f.tok, nil); status != http.StatusNoContent {
+				t.Fatalf("DELETE ?if_alone=1 = %d %s", status, f.e.ErrCode(body))
+			}
+			f.events.FlushAnnouncements()
+			before := len(f.gw.all())
+			ev := &livekit.WebhookEvent{Event: event, Id: "EV_" + id.New().String(), Room: &livekit.Room{Name: f.room},
+				Participant: &livekit.ParticipantInfo{Identity: f.dev.String(), Sid: "PA_late"}}
+			if event == webhook.EventTrackPublished {
+				ev.Track = &livekit.TrackInfo{Sid: "TR_late", Source: livekit.TrackSource_MICROPHONE, Type: livekit.TrackType_AUDIO,
+					Encryption: livekit.Encryption_GCM}
+			}
+			f.events.HandleReadLiveForTest(t.Context(), ev, live)
+			f.events.FlushAnnouncements()
+			if got := f.events.Participants(f.callID); len(got) != 0 {
+				t.Fatalf("the ended call lists %+v, want nobody", got)
+			}
+			for _, fr := range f.gw.all()[before:] {
+				if fr.Device == f.dev && fr.Flags != 0 {
+					t.Fatalf("a voice_state after the end says the device is in the call: %+v", fr)
+				}
+			}
+		})
+	}
+}
+
 // An event naming another room of the call (an older one) or no call at all changes nothing.
 func TestAnEventForAnotherRoomIsIgnored(t *testing.T) {
 	f := newEventsFixture(t, api.CallsConfig{})
