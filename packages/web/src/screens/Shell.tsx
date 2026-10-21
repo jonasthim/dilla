@@ -226,7 +226,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // The channel or DM whose loadEarlier call is in flight.
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
-  const [draft, setDraft] = useState<{ channelId: string | null; text: string }>({ channelId: null, text: '' });
+  // `typed`: the person edited this draft in this page. Only such a draft sends typing (final review M3: one restored from an
+  // update checkpoint would otherwise clear away with nobody at the keyboard).
+  const [draft, setDraft] = useState<{ channelId: string | null; text: string; typed?: true }>({ channelId: null, text: '' });
   // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
@@ -523,7 +525,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const typingSent = useRef<string | null>(null);
   const typingAt = useRef(0);
   useEffect(() => {
-    const active = draft.channelId === targetId && draft.text.trim() !== '' ? targetId : null;
+    const active = draft.channelId === targetId && draft.typed === true && draft.text.trim() !== '' ? targetId : null;
     if (typingSent.current === active) {
       // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
       if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
@@ -538,7 +540,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       typingAt.current = Date.now();
       client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
     }
-  }, [client, draft.channelId, draft.text, targetId, typingRefused]);
+  }, [client, draft.channelId, draft.text, draft.typed, targetId, typingRefused]);
   useEffect(() => () => {
     if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
   }, [client, typingRefused]);
@@ -1127,7 +1129,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
-      onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      onDraft={text => setDraft({ channelId: targetId, text, typed: true })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
       {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
       announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
