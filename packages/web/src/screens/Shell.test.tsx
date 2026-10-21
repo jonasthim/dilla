@@ -802,8 +802,8 @@ describe('timeline', () => {
     // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
     expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
-    // Each row names its time once; the gutter of a row folded into its author's run shows a compact time (R29), not this one.
-    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
+    // Each row names its time once, and the gutter of the row folded into its author's run shows the same full time (R29): 8 rows and 1 gutter.
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(9);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
     expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
