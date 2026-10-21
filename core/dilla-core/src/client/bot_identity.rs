@@ -302,6 +302,35 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 }
 
 impl ClientCore {
+    /// Validate that this open client is the fully enrolled native Bot bound to the helper's
+    /// installation tuple. The tuple is public scope metadata; no signing or recovery material is
+    /// exposed by this check.
+    pub fn bot_validate_binding(
+        &self,
+        instance_id: &[u8; 16],
+        community_id: &[u8; 16],
+        installation_id: &[u8; 16],
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
+        if own.kind != Kind::Bot.as_u8() || own.tier != Tier::Native.as_u8() {
+            return Err(binding_mismatch());
+        }
+        let raw = self.read(|c| schema::meta_get(c, schema::BOT_BINDING))?;
+        let Some(raw) = raw else {
+            return Err(binding_mismatch());
+        };
+        let binding = decode_binding(&raw)?;
+        if !nonzero_ids(&binding)
+            || binding.instance_id != *instance_id
+            || binding.community_id != *community_id
+            || binding.installation_id != *installation_id
+            || own.instance_id != *instance_id
+        {
+            return Err(binding_mismatch());
+        }
+        Ok(())
+    }
+
     /// Start (or resume) the one native bot identity bound to an installation and community.
     /// The returned CBOR is the public `[umk_pub, ssk_pub, sig_umk_ssk, device]` registration tuple.
     pub fn bot_bootstrap_begin(

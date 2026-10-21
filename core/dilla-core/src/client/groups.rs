@@ -1,8 +1,9 @@
 //! Local group lifecycle and Welcome acceptance.
 
-use super::error::{E_CORE_INPUT, E_CORE_NOT_FOUND, E_CORE_STATE};
+use super::error::{E_BINDING, E_CORE_INPUT, E_CORE_NOT_FOUND, E_CORE_STATE};
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
+use crate::identity::sha256;
 use crate::ids::{CommunityId, InstanceId};
 use crate::mls::{
     DillaBinding, DillaGroup, GroupKind, StorageError, UnitScope, WelcomeLabel, external_senders,
@@ -10,6 +11,7 @@ use crate::mls::{
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use rusqlite::{OptionalExtension, params};
+use std::fmt::Write as _;
 use tls_codec::Deserialize as _;
 
 pub(crate) const STATE_REGISTERING: i64 = 0;
@@ -54,6 +56,64 @@ fn below_floor(what: &str) -> ClientError {
         E_CORE_INPUT,
         format!("{what} would rejoin at or below an epoch this device has held"),
     )
+}
+
+fn bot_welcome_receipt_key(group_id: &[u8; 16]) -> String {
+    let mut key = String::from("bot_welcome/v1/");
+    for byte in group_id {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
+fn clear_bot_welcome_receipt(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<(), StorageError> {
+    super::schema::meta_del(c, &bot_welcome_receipt_key(group_id))
+}
+
+/// A receipt is a fixed-size, versioned record. The digest covers the exact encrypted Welcome,
+/// ratchet tree, labels, and immutable MLS binding; delivery IDs and policy snapshots are omitted.
+fn bot_welcome_receipt(
+    bot: super::bot_intents::Binding,
+    group_id: &[u8; 16],
+    item: &wire::WelcomeItem,
+    bind: &DillaBinding,
+) -> Vec<u8> {
+    let kind = u64::from(bind.kind.as_u8());
+    let community_id = bind.community_id.as_ref().map(|c| c.0).unwrap_or([0; 16]);
+    let mut input = Encoder::new();
+    input
+        .array(14)
+        .text("dilla.bot.welcome.receipt.v1")
+        .bytes(group_id)
+        .bytes(&bind.instance_id.0)
+        .bytes(&community_id)
+        .bytes(&bind.target_id)
+        .bytes(&bot.installation_id)
+        .uint(kind)
+        .uint(bind.e2ee_version)
+        .uint(bind.media_version)
+        .uint(item.epoch)
+        .uint(item.commit_seq)
+        .bytes(&item.tree_hash);
+    input.bytes(&item.blob).bytes(&item.ratchet_tree);
+    let digest = sha256(&input.into_vec());
+
+    let mut receipt = Encoder::new();
+    receipt
+        .array(9)
+        .uint(1)
+        .bytes(&bind.instance_id.0)
+        .bytes(&community_id)
+        .bytes(&bot.installation_id)
+        .bytes(&bind.target_id)
+        .uint(kind)
+        .uint(bind.e2ee_version)
+        .uint(bind.media_version)
+        .bytes(&digest);
+    receipt.into_vec()
 }
 pub(super) fn group_row(
     c: &rusqlite::Connection,
@@ -361,6 +421,7 @@ impl ClientCore {
                 super::bot_intents::check_result_size(&result)?;
             }
             in_unit(u, |c| {
+                clear_bot_welcome_receipt(c, id)?;
                 c.execute(
                     "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
                      VALUES(?1,?4,?2,?3,0)",
@@ -411,6 +472,7 @@ impl ClientCore {
         }
         self.write(|_, u| {
             in_unit(u, |c| {
+                clear_bot_welcome_receipt(c, id)?;
                 c.execute(
                     "UPDATE app_groups SET state=2,next_seq=?2 WHERE group_id=?1",
                     params![id.as_slice(), next],
@@ -449,6 +511,7 @@ impl ClientCore {
                 g.delete(ctx.provider)?;
             }
             in_unit(u, |c| {
+                clear_bot_welcome_receipt(c, id)?;
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],
@@ -624,6 +687,7 @@ impl ClientCore {
             let result = result.into_vec();
             if intent.is_some() { super::bot_intents::check_result_size(&result)?; }
             in_unit(u, |c| {
+                clear_bot_welcome_receipt(c, id)?;
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],
@@ -710,6 +774,40 @@ impl ClientCore {
         welcomes_body: &[u8],
         expected: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
+        self.welcomes_apply_kind(welcomes_body, expected, GroupKind::Text, None)
+    }
+
+    /// Apply server-expected welcomes for a bound native Bot installation. Unlike the general
+    /// client API, this path requires every expected group to name the installation community.
+    pub fn bot_welcomes_apply(
+        &mut self,
+        welcomes_body: &[u8],
+        expected: &[u8],
+        kind: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        let bot = super::bot_intents::binding(self)?;
+        let group_kind = match kind {
+            0 => GroupKind::Text,
+            1 => GroupKind::Call,
+            _ => return Err(ClientError::new(E_CORE_INPUT, "invalid bot group kind")),
+        };
+        let expected_groups = wire::decode_expected(expected)?;
+        if expected_groups
+            .iter()
+            .any(|v| v.community_id != Some(bot.community_id))
+        {
+            return Err(ClientError::new(E_BINDING, "welcome community mismatch"));
+        }
+        self.welcomes_apply_kind(welcomes_body, expected, group_kind, Some(bot))
+    }
+
+    fn welcomes_apply_kind(
+        &mut self,
+        welcomes_body: &[u8],
+        expected: &[u8],
+        group_kind: GroupKind,
+        bot: Option<super::bot_intents::Binding>,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let items = wire::decode_welcomes_body(welcomes_body)?;
         let expected = wire::decode_expected(expected)?;
@@ -721,15 +819,59 @@ impl ClientCore {
             if let Some(want) = expected.iter().find(|v| v.group_id == item.group_id) {
                 let id = &item.group_id;
                 let row = self.read(|c| group_row(c, id))?;
-                if row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
+                if bot.is_none() && row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
+                    // Preserve the longstanding human client idempotency behavior and ordering.
                     outcome = 1;
-                } else if row
-                    .as_ref()
-                    .is_some_and(|r| !r.bound_to(0, want.community_id.as_ref(), &want.channel_id))
-                {
+                } else if row.as_ref().is_some_and(|r| {
+                    !r.bound_to(
+                        row_kind(group_kind),
+                        want.community_id.as_ref(),
+                        &want.channel_id,
+                    )
+                }) {
                     outcome = 2;
                     reason = rebound().code;
-                } else if self.read(|c| holder(c, &want.channel_id, 0, id))?.is_some() {
+                } else if row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
+                    if let Some(bot) = bot {
+                        if row.as_ref().is_some_and(|r| r.state == STATE_ACTIVE) {
+                            let actual = self.take_group(id)?;
+                            if let Some(group) = actual {
+                                let actual_binding = group.binding();
+                                let binding_matches = actual_binding.instance_id.0
+                                    == own.instance_id
+                                    && actual_binding.community_id.as_ref().map(|c| c.0)
+                                        == Some(bot.community_id)
+                                    && actual_binding.target_id == want.channel_id
+                                    && actual_binding.kind == group_kind
+                                    && actual_binding.e2ee_version == 1
+                                    && actual_binding.media_version == group_kind.media_version();
+                                let expected_receipt = binding_matches
+                                    .then(|| bot_welcome_receipt(bot, id, &item, actual_binding));
+                                let key = bot_welcome_receipt_key(id);
+                                let stored = self.read(|c| super::schema::meta_get(c, &key))?;
+                                self.keep_group(*id, group);
+                                if expected_receipt
+                                    .as_ref()
+                                    .is_some_and(|receipt| stored.as_ref() == Some(receipt))
+                                {
+                                    outcome = 1;
+                                } else {
+                                    outcome = 2;
+                                    reason = E_BINDING;
+                                }
+                            } else {
+                                outcome = 2;
+                                reason = E_BINDING;
+                            }
+                        } else {
+                            outcome = 2;
+                            reason = E_BINDING;
+                        }
+                    }
+                } else if self
+                    .read(|c| holder(c, &want.channel_id, row_kind(group_kind), id))?
+                    .is_some()
+                {
                     outcome = 2;
                     reason = E_CORE_STATE;
                 } else {
@@ -748,8 +890,10 @@ impl ClientCore {
                                 want.community_id.as_ref(),
                                 &want.channel_id,
                                 want.policy_version,
-                                GroupKind::Text,
+                                group_kind,
                             );
+                            let welcome_receipt =
+                                bot.map(|bot| bot_welcome_receipt(bot, id, &item, &bind));
                             let next = checked("commit_seq", item.commit_seq).and_then(|n| {
                                 n.checked_add(1).ok_or_else(|| {
                                     ClientError::new(E_CORE_INPUT, "commit_seq out of range")
@@ -805,14 +949,22 @@ impl ClientCore {
                                                 "INSERT INTO app_groups \
                                                  (group_id,kind,community_id,target_id,state, \
                                                  next_seq,max_epoch,epoch) \
-                                                 VALUES(?1,0,?2,?3,2,?4,?5,?5)",
+                                                 VALUES(?1,?6,?2,?3,2,?4,?5,?5)",
                                                 params![
                                                     id.as_slice(),
                                                     want.community_id.as_ref().map(|c| c.as_slice()),
                                                     want.channel_id.as_slice(),
                                                     next,
                                                     held,
+                                                    row_kind(group_kind),
                                                 ],
+                                            )?;
+                                        }
+                                        if let Some(receipt) = welcome_receipt.as_ref() {
+                                            super::schema::meta_put(
+                                                c,
+                                                &bot_welcome_receipt_key(id),
+                                                receipt,
                                             )?;
                                         }
                                         Ok(())

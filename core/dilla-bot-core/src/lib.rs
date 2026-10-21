@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 
+mod group_adapter;
 mod helper;
 mod socket;
 mod state;

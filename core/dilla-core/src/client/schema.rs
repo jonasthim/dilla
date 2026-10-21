@@ -21,7 +21,7 @@ pub const HANDSHAKE_TAIL: usize = 64;
 
 /// The highest app schema this build reads and migrates to. A store whose `app_meta` schema is
 /// above it was written by a newer client and is refused untouched (`StorageError::StoreNewer`).
-pub const APP_SCHEMA_SUPPORTED: u32 = 7;
+pub const APP_SCHEMA_SUPPORTED: u32 = 8;
 
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
@@ -45,6 +45,26 @@ CREATE TABLE IF NOT EXISTS app_bot_intents (
 CREATE INDEX IF NOT EXISTS app_bot_intents_by_group ON app_bot_intents(group_id,kind,state);
 CREATE UNIQUE INDEX IF NOT EXISTS app_bot_intents_one_pending_per_group
   ON app_bot_intents(group_id) WHERE state=0;
+";
+pub(super) const BOT_KEYPACKAGES_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS app_bot_keypackage_intents (
+  operation_id BLOB PRIMARY KEY CHECK(length(operation_id)=16 AND operation_id != zeroblob(16)),
+  instance_id BLOB NOT NULL CHECK(length(instance_id)=16),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16),
+  installation_id BLOB NOT NULL CHECK(length(installation_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  input_hash BLOB NOT NULL CHECK(length(input_hash)=32),
+  expected_generation INTEGER NOT NULL CHECK(expected_generation>=0),
+  upload_body BLOB,
+  package_refs BLOB NOT NULL,
+  greatest_expiry INTEGER NOT NULL CHECK(greatest_expiry>=0),
+  state INTEGER NOT NULL DEFAULT 0 CHECK(state IN (0,1,2)),
+  resolution_hash BLOB CHECK(resolution_hash IS NULL OR length(resolution_hash)=32),
+  CHECK((state=0 AND upload_body IS NOT NULL AND resolution_hash IS NULL) OR
+        (state IN (1,2) AND upload_body IS NULL AND resolution_hash IS NOT NULL))
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS app_bot_keypackage_one_pending
+  ON app_bot_keypackage_intents(instance_id,community_id,installation_id,device_id) WHERE state=0;
 ";
 pub(crate) const IDENTITY: &str = "identity";
 pub(crate) const ENROL: &str = "enrol";
@@ -483,6 +503,10 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found <= 7 {
         meta_put(c, SCHEMA, &[7])?;
     }
+    c.execute_batch(BOT_KEYPACKAGES_SCHEMA)?;
+    if found <= 8 {
+        meta_put(c, SCHEMA, &[8])?;
+    }
     Ok(found)
 }
 
@@ -821,13 +845,13 @@ mod newer_store_tests {
         .expect("index query")
     }
 
-    /// A store as this build leaves it, then moved on as a newer client might: schema 8 and one
+    /// A store as this build leaves it, then moved on as a newer client might: schema 9 and one
     /// app table gone (renamed or dropped by its migration), which `APP_SCHEMA` would recreate.
-    fn v8_store() -> rusqlite::Connection {
+    fn v9_store() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        db.execute_batch("UPDATE app_meta SET v = x'08' WHERE k = 'schema'; DROP TABLE app_roles;")
-            .expect("simulate a v7 store");
+        db.execute_batch("UPDATE app_meta SET v = x'09' WHERE k = 'schema'; DROP TABLE app_roles;")
+            .expect("simulate a v9 store");
         db
     }
 
@@ -848,8 +872,8 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn the_supported_schema_is_7() {
-        assert_eq!(APP_SCHEMA_SUPPORTED, 7);
+    fn the_supported_schema_is_8() {
+        assert_eq!(APP_SCHEMA_SUPPORTED, 8);
     }
 
     #[test]
@@ -858,7 +882,7 @@ mod newer_store_tests {
         assert_eq!(migrate_conn(&db).expect("migrates"), 4);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db), "app_messages_by_thread exists");
-        assert_eq!(schema_of(&db), vec![0x07]);
+        assert_eq!(schema_of(&db), vec![0x08]);
         // The column's check: a thread id is exactly 16 bytes or NULL.
         let insert = |thread: &[u8]| {
             db.execute(
@@ -872,10 +896,10 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn a_fresh_store_ends_at_7_with_the_thread_column_bot_journal_and_intents() {
+    fn a_fresh_store_ends_at_8_with_the_thread_column_and_bot_journals() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(schema_of(&db), vec![0x07]);
+        assert_eq!(schema_of(&db), vec![0x08]);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db));
         db.query_row(
@@ -891,24 +915,24 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn a_v7_store_opens_untouched() {
+    fn a_v8_store_opens_untouched() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         migrate_conn(&db).expect("fresh");
         let before = snapshot(&db);
-        assert_eq!(migrate_conn(&db).expect("current"), 7);
+        assert_eq!(migrate_conn(&db).expect("current"), 8);
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
     }
 
     #[test]
-    fn a_v8_store_is_refused_with_both_numbers_and_left_unchanged() {
-        let db = v8_store();
+    fn a_v9_store_is_refused_with_both_numbers_and_left_unchanged() {
+        let db = v9_store();
         let before = snapshot(&db);
         let changes = db.total_changes();
         match migrate_conn(&db) {
             Err(StorageError::StoreNewer { found, supported }) => {
-                assert_eq!((found, supported), (8, 7));
+                assert_eq!((found, supported), (9, 8));
             }
-            other => panic!("a v8 store must be refused as StoreNewer, got {other:?}"),
+            other => panic!("a v9 store must be refused as StoreNewer, got {other:?}"),
         }
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
         assert_eq!(db.total_changes(), changes, "no row written");
@@ -917,17 +941,17 @@ mod newer_store_tests {
     #[test]
     fn the_refusal_names_both_numbers() {
         let e = StorageError::StoreNewer {
-            found: 8,
-            supported: 7,
+            found: 9,
+            supported: 8,
         };
         assert_eq!(
             e.to_string(),
-            "app schema 8 is newer than this build, which supports up to 7"
+            "app schema 9 is newer than this build, which supports up to 8"
         );
     }
 
     #[test]
-    fn schemas_up_to_6_still_migrate_and_end_at_7() {
+    fn schemas_up_to_6_still_migrate_and_end_at_8() {
         for found in [3u8, 4, 5, 6] {
             let db = if found == 5 || found == 6 {
                 let db = rusqlite::Connection::open_in_memory().expect("db");
@@ -956,7 +980,7 @@ mod newer_store_tests {
                 db
             };
             assert_eq!(migrate_conn(&db).expect("migrates"), u64::from(found));
-            assert_eq!(schema_of(&db), vec![0x07]);
+            assert_eq!(schema_of(&db), vec![0x08]);
             assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
             if found == 6 {
                 db.query_row("SELECT v FROM app_meta WHERE k='legacy_marker'", [], |r| {
@@ -985,6 +1009,6 @@ mod newer_store_tests {
         )
         .expect("meta table");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(migrate_conn(&db).expect("current"), 7);
+        assert_eq!(migrate_conn(&db).expect("current"), 8);
     }
 }

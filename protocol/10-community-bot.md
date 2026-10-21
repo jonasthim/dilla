@@ -161,7 +161,7 @@ never contain database, provider or decrypted-message error text.
 | 9 call_epoch | `[suboperation, group_id]`, below | core body or void |
 | 10 sign_removal | `[request_id, group_id, target_sequence, expires, now]` | `[proof, signature64]` |
 | 11 state_get | `[suboperation, ...arguments]`, below | state records |
-| 12 state_transaction | `[transaction_id, changes]`, below | `[revisions]` |
+| 12 state_transaction | `[transaction_id, changes]`, below | `[revision, ...]`, one per change |
 | 13 cursor_ack | `[group_id, through_sequence, through_epoch]` | `[]` |
 | 14 key_packages_uploaded | `[operation_id, package_refs, outcome, now, current_generation]`, outcome0 accepted /1 obsolete | `[]` |
 | 15 shutdown | `[]` | `[]`, then close |
@@ -252,6 +252,30 @@ by encoded size; indivisible large group objects use group_transfer below.
 Actionable decrypted messages are delivered through the durable event journal,
 retaining the core-authenticated sender and server receipt time. A user field in
 application content cannot replace attribution.
+
+For suboperation7, `expected_bindings_body` is a deterministic CBOR array of
+`[group_id,community_id,target_id,kind,policy_version]` tuples. IDs are nonzero
+bstr16, kind is0 text or1 call, and each community is the helper's installation
+community. There is exactly one expectation for each distinct group in the
+Welcome batch. Validate all expectations before applying any Welcome; reject
+duplicates, missing or unrelated expectations and unsupported kinds. Mixed text
+and call batches preserve the native per-Welcome outcome order. Both the actual
+cryptographic binding and an existing active group's binding must match the
+expectation before a Welcome can be treated as accepted or already processed.
+Interaction expectations require the later typed participant contract and remain
+unavailable until then. The existing human native Welcome API keeps its original
+four-field expected tuples and behavior.
+
+For a Bot Welcome that successfully activates a group, the helper stores one
+versioned, fixed-size receipt in encrypted `app_meta`, keyed by group id. Its
+digest covers the exact Welcome bytes, ratchet tree, group/epoch/commit/tree-hash
+labels, installation, and immutable MLS binding (instance, community, target,
+kind and protocol versions); it excludes delivery id and policy-version snapshot.
+An already-active Bot group is acknowledged as a duplicate only when its current
+validated MLS binding and the submitted content match that receipt. Missing or
+changed content is refused without mutation. Group creation, discard, and
+external-join replacement clear the receipt in the same storage transaction as
+their state change, so stale Welcome evidence cannot survive another admission.
 
 ### Group upload intents and recovery
 
@@ -611,6 +635,16 @@ rechecks expiry, and enforces capacity counting only newly active ordinary rows.
 All package writes, fallback replacement and the receipt commit atomically.
 Human publication shares device serialization and atomic capacity enforcement,
 without Bot receipts. Consumed ordinary refs are never revived by a replay.
+
+For managed Bots, matching user/device ids and the leaf signing key alone is
+insufficient: the complete MLS leaf credential must equal the installation's
+signature-verified final registered credential. Apply this check at publication,
+group registration, Add acceptance, external join/resync and heal/reseed. A human
+credential under Bot account metadata is refused. The internal WASI ABI8
+`validate_key_package` success tuple is
+`[0,device_id,user_id,last_resort,not_after,kp_ref,signature_key,credential_identity]`;
+the final field is the validated leaf's BasicCredential identity byte string,
+bounded to 8192 bytes by the host. It contains no private key.
 
 A missing receipt after restore cannot admit an old-generation publication.
 Requests waiting for a device lock recheck generation and expiry when admitted;

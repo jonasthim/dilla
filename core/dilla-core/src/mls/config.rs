@@ -91,17 +91,30 @@ pub fn build_key_package(
     credential: CredentialWithKey,
     last_resort: bool,
 ) -> Result<KeyPackageBundle, MlsError> {
+    build_key_package_with_expiry(provider, signer, credential, last_resort)
+        .map(|(bundle, _)| bundle)
+}
+
+/// Builds a KeyPackage and returns the expiry written into that exact package's lifetime.
+/// Native bot publication persists this value with the corresponding public body and MLS ref.
+pub fn build_key_package_with_expiry(
+    provider: &DillaProvider,
+    signer: &SignatureKeyPair,
+    credential: CredentialWithKey,
+    last_resort: bool,
+) -> Result<(KeyPackageBundle, u64), MlsError> {
+    let lifetime = Lifetime::new(KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60);
+    let expires = lifetime.not_after();
     let mut builder = KeyPackage::builder()
         .leaf_node_capabilities(leaf_capabilities())
-        // Verified in step 1: `Lifetime::new(t: u64) -> Self`, seconds
-        // (openmls-0.9.0/src/key_packages/lifetime.rs:64).
-        .key_package_lifetime(Lifetime::new(KEY_PACKAGE_LIFETIME_DAYS * 24 * 60 * 60));
+        .key_package_lifetime(lifetime);
     if last_resort {
         builder = builder.mark_as_last_resort();
     }
-    builder
+    let bundle = builder
         .build(CIPHERSUITE, provider, signer, credential)
-        .map_err(|e| MlsError::OpenMls(format!("{e:?}")))
+        .map_err(|e| MlsError::OpenMls(format!("{e:?}")))?;
+    Ok((bundle, expires))
 }
 
 /// A `GroupContextExtensions` proposal **replaces** the whole extension set, so a rotation has to

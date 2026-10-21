@@ -1814,6 +1814,22 @@ pub struct RawPeer {
 }
 
 impl RawPeer {
+    /// A KeyPackage for adding this real MLS device to a fixture group.
+    pub fn key_package(&self) -> Vec<u8> {
+        let package = KeyPackage::builder()
+            .leaf_node_capabilities(dilla_core::mls::leaf_capabilities())
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential.clone(),
+            )
+            .expect("key package");
+        MlsMessageOut::from(package.key_package().clone())
+            .tls_serialize_detached()
+            .expect("serialize key package")
+    }
+
     /// A signed v1 list for fixture-only trust ingress.
     pub fn device_list_body(&self) -> Vec<u8> {
         let ssk = SskSigner::from_bytes(&[self.user[0].wrapping_add(0x40); 32]);

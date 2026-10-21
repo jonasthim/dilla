@@ -45,7 +45,7 @@ fn conflict() -> ClientError {
     )
 }
 
-fn binding(core: &ClientCore) -> Result<Binding, ClientError> {
+pub(super) fn binding(core: &ClientCore) -> Result<Binding, ClientError> {
     let own = core.own()?;
     if own.kind != 1 || own.tier != 0 {
         return Err(ClientError::new(

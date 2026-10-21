@@ -51,12 +51,14 @@ impl Helper {
         if operation == 16 && matches!(result, Err(DispatchError::Invalid)) {
             self.transfer = None;
         }
-        let (status, payload, shutdown) = match result {
+        let (mut status, payload, shutdown) = match result {
             Ok((body, stop)) => (0, body, stop),
             Err(DispatchError::Invalid) => (1, empty(), false),
+            Err(DispatchError::Forbidden) => (2, empty(), false),
             Err(DispatchError::Conflict) => (4, empty(), false),
             Err(DispatchError::Unavailable) => (5, empty(), false),
             Err(DispatchError::Busy) => (6, empty(), false),
+            Err(DispatchError::NotFound) => (7, empty(), false),
             Err(DispatchError::Upgrade) => (8, empty(), false),
             Err(DispatchError::Internal) => (9, empty(), false),
         };
@@ -67,6 +69,16 @@ impl Helper {
         };
         let encoded = match response.encode() {
             Ok(encoded) => encoded,
+            Err(_) if operation == 6 => {
+                // A successful MLS mutation may have committed an upload intent whose exact
+                // result exceeds the direct helper frame. Surface that transport limit; the
+                // caller can recover the original bytes through suboperation 20.
+                response.payload.zeroize();
+                response.status = 5;
+                response.payload = empty().to_vec();
+                status = 5;
+                response.encode().map_err(|_| HelperError::Internal)?
+            }
             Err(_) => {
                 response.payload.zeroize();
                 return Err(HelperError::Internal);
@@ -110,7 +122,7 @@ impl Helper {
             2 => self.bootstrap(payload),
             3 => self.complete(payload),
             4 => self.session(payload),
-            5 => self.key_packages(payload),
+            5 => self.keypackage_intent(payload),
             10 => self.removal(payload),
             11 => state::get(self.store.as_ref().expect("opened"), payload)
                 .map(|v| (Zeroizing::new(v), false))
@@ -118,7 +130,20 @@ impl Helper {
             12 => state::transaction(self.store.as_mut().expect("opened"), payload)
                 .map(|v| (Zeroizing::new(v), false))
                 .map_err(Into::into),
-            6 | 7 | 8 | 9 | 13 | 14 => Err(DispatchError::Unavailable),
+            6 => crate::group_adapter::dispatch(
+                self.core.as_mut().expect("opened"),
+                self.store.as_ref().expect("opened").bind(),
+                payload,
+            )
+            .map(|v| (v, false)),
+            13 => crate::group_adapter::cursor_ack(
+                self.core.as_mut().expect("opened"),
+                self.store.as_ref().expect("opened").bind(),
+                payload,
+            )
+            .map(|v| (v, false)),
+            7..=9 => Err(DispatchError::Unavailable),
+            14 => self.keypackage_resolve(payload),
             16 => self.group_transfer(payload, request_id),
             _ => Err(DispatchError::Invalid),
         }
@@ -321,29 +346,36 @@ impl Helper {
             v.map_err(|_| crate::store::cbor_shape())
         })
         .map_err(|_| DispatchError::Invalid)?;
-        Ok((result.map_or_else(empty, body), false))
+        Ok((
+            result.map_or_else(empty, |v| Zeroizing::new(body(v))),
+            false,
+        ))
     }
-    fn key_packages(
+    fn keypackage_intent(
         &mut self,
         payload: &[u8],
     ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
-        let (count, last) = decode_strict(payload, |d| {
-            d.array(2)?;
-            let c = d.uint()?;
-            let l = d.uint()?;
-            Ok((c, l))
-        })
-        .map_err(|_| DispatchError::Invalid)?;
-        if !(1..=32).contains(&count) || last > 1 {
-            return Err(DispatchError::Invalid);
-        }
-        let v = self
+        let (instance, community, installation) = self.store.as_ref().expect("opened").bind();
+        let result = self
             .core
             .as_mut()
             .expect("opened")
-            .key_packages(count as u32, last == 1)
+            .bot_keypackage_intent(&instance, &community, &installation, payload)
             .map_err(map_client)?;
-        Ok((body(v), false))
+        Ok((Zeroizing::new(result), false))
+    }
+
+    fn keypackage_resolve(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let (instance, community, installation) = self.store.as_ref().expect("opened").bind();
+        self.core
+            .as_mut()
+            .expect("opened")
+            .bot_keypackage_resolve(&instance, &community, &installation, payload)
+            .map_err(map_client)?;
+        Ok((empty(), false))
     }
     fn removal(&mut self, payload: &[u8]) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
         let (r, g, seq, expires, now) = decode_strict(payload, |d| {
@@ -405,13 +437,13 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
     }
 }
 
-fn body(mut v: Vec<u8>) -> Zeroizing<Vec<u8>> {
+pub(crate) fn body(mut v: Vec<u8>) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(1).bytes(&v);
     v.zeroize();
-    Zeroizing::new(e.into_vec())
+    e.into_vec()
 }
-fn empty() -> Zeroizing<Vec<u8>> {
+pub(crate) fn empty() -> Zeroizing<Vec<u8>> {
     let mut e = Encoder::new();
     e.array(0);
     Zeroizing::new(e.into_vec())
@@ -419,9 +451,11 @@ fn empty() -> Zeroizing<Vec<u8>> {
 fn dispatch_status(error: DispatchError) -> u64 {
     match error {
         DispatchError::Invalid => 1,
+        DispatchError::Forbidden => 2,
         DispatchError::Conflict => 4,
         DispatchError::Unavailable => 5,
         DispatchError::Busy => 6,
+        DispatchError::NotFound => 7,
         DispatchError::Upgrade => 8,
         DispatchError::Internal => 9,
     }
@@ -429,9 +463,11 @@ fn dispatch_status(error: DispatchError) -> u64 {
 #[derive(Debug)]
 pub(crate) enum DispatchError {
     Invalid,
+    Forbidden,
     Conflict,
     Unavailable,
     Busy,
+    NotFound,
     Upgrade,
     Internal,
 }
@@ -453,12 +489,19 @@ fn map_store(e: StoreError) -> DispatchError {
         _ => DispatchError::Invalid,
     }
 }
-fn map_client(e: dilla_core::client::ClientError) -> DispatchError {
+pub(crate) fn map_client(e: dilla_core::client::ClientError) -> DispatchError {
     match e.code {
         "E_STORE_NEWER" => DispatchError::Upgrade,
         "E_CORE_STATE" => DispatchError::Conflict,
         "E_CORE_INPUT" => DispatchError::Invalid,
         "E_CORE_NO_IDENTITY" => DispatchError::Unavailable,
+        "E_CORE_NOT_FOUND" => DispatchError::NotFound,
+        "E_BINDING"
+        | "E_CREDENTIAL"
+        | "E_DEVICE_LIST_STALE"
+        | "E_DEVICE_UNLISTED"
+        | "E_TIER_MISMATCH"
+        | "E_UMK_CHANGED" => DispatchError::Forbidden,
         _ => DispatchError::Internal,
     }
 }

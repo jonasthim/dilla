@@ -15,6 +15,52 @@ const COMMUNITY: [u8; 16] = [0x22; 16];
 const INSTALLATION: [u8; 16] = [0x33; 16];
 const USER: [u8; 16] = [0x44; 16];
 
+#[test]
+fn bot_binding_validation_requires_ready_native_identity_and_exact_store_binding() {
+    let connection = conn();
+    let mut core = ClientCore::open(connection.clone()).expect("open");
+    assert!(
+        core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .is_err()
+    );
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .expect("pending");
+    assert!(
+        core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .is_err()
+    );
+    core.bot_bootstrap_complete(&USER, "native-bot", 1_800_000_000)
+        .expect("ready");
+    assert!(
+        core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .is_ok()
+    );
+    assert_eq!(
+        core.bot_validate_binding(&INSTANCE, &[0x55; 16], &INSTALLATION)
+            .unwrap_err()
+            .code,
+        "E_CORE_STATE"
+    );
+    assert_eq!(
+        core.bot_validate_binding(&INSTANCE, &COMMUNITY, &[0x66; 16])
+            .unwrap_err()
+            .code,
+        "E_CORE_STATE"
+    );
+
+    let human_connection = conn();
+    let mut human = ClientCore::open(human_connection).expect("open human core");
+    human.signup_begin(&INSTANCE).expect("human signup");
+    human
+        .signup_complete(&[0x45; 16], "ordinary-user", 1_800_000_000)
+        .expect("human enrollment");
+    assert!(
+        human
+            .bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .is_err()
+    );
+}
+
 fn conn() -> ConnHandle {
     Arc::new(Mutex::new(
         rusqlite::Connection::open_in_memory().expect("sqlite"),

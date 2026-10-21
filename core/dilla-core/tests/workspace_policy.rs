@@ -41,6 +41,7 @@ fn version_constants_are_the_wire_values() {
     // 5 since 2026-10-05 (hardening G): `public_group_state` carries the tree's `leaf_count`.
     // 6 since 2026-10-06 (DS-MEMBERSHIP-01): `public_group_state` carries `external_senders`.
     // 7 since 2026-10-21 (DILLA-BOT-04): WASI adds strict `verify_credential`.
-    assert_eq!(dilla_core::ABI_VERSION, 7);
+    // 8 since 2026-10-21 (DILLA-BOT-04 Task5): validated KeyPackages return the leaf credential.
+    assert_eq!(dilla_core::ABI_VERSION, 8);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }

@@ -721,16 +721,18 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
         .map_err(|e| AbiError::state(format!("key package ref: {e}")))?;
 
     // ABI v4: the leaf's signature key, which the delivery service compares with the uploading
-    // device's registered key (protocol/02 invariant 4, the KeyPackage route).
+    // device's registered key (protocol/02 invariant 4, the KeyPackage route). ABI v8 appends
+    // the exact validated leaf credential identity bytes for managed Bot admission.
     let mut e = Encoder::new();
-    e.array(7)
+    e.array(8)
         .uint(0)
         .bytes(identity.device_id.as_bytes())
         .bytes(identity.user_id.as_bytes())
         .uint(u64::from(is_last_resort(&kp)))
         .uint(lifetime_not_after(&kp))
         .bytes(kp_ref.as_slice())
-        .bytes(&leaf_signature_key(&kp));
+        .bytes(&leaf_signature_key(&kp))
+        .bytes(&leaf_credential_bytes(&kp)?);
     Ok(e.into_vec())
 }
 
@@ -1343,9 +1345,10 @@ mod tests {
     /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
     /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
     /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
-    /// (DS-MEMBERSHIP-01); 7 since `verify_credential` was exported (DILLA-BOT-04).
+    /// (DS-MEMBERSHIP-01); 7 since `verify_credential` was exported (DILLA-BOT-04); 8 since
+    /// `validate_key_package` appended the leaf credential identity (DILLA-BOT-04 Task5).
     #[test]
-    fn dilla_abi_reports_version_seven() {
+    fn dilla_abi_reports_version_eight() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1361,22 +1364,25 @@ mod tests {
             Ok(abi)
         })
         .unwrap();
-        assert_eq!(abi, 7, "ABI v7: verify_credential is exported");
-        assert_eq!(dilla_core::ABI_VERSION, 7);
+        assert_eq!(
+            abi, 8,
+            "ABI v8: validate_key_package returns credential bytes"
+        );
+        assert_eq!(dilla_core::ABI_VERSION, 8);
     }
 
     /// An older ABI request must now be refused outright — there is no compatibility
     /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3, 4, 5, 6] {
+        for old in [2u64, 3, 4, 5, 6, 7] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('7'),
+                detail.contains(&old.to_string()) && detail.contains('8'),
                 "detail: {detail}"
             );
         }
@@ -2163,9 +2169,8 @@ mod tests {
         assert_eq!(code, crate::abi::E_ABI_STATE);
     }
 
-    /// §3.5: `validate_key_package` grew to six elements and the sixth is the RFC 9420
-    /// KeyPackageRef; ABI v4 adds a seventh, the leaf's signature key, which is the key the
-    /// KeyPackage's own signature verifies under.
+    /// `validate_key_package` returns the KeyPackageRef, leaf signature key, and exact credential
+    /// bytes validated from this same KeyPackage.
     #[test]
     fn validate_key_package_returns_the_key_package_ref() {
         let out = dispatch(
@@ -2176,9 +2181,9 @@ mod tests {
                     .bytes(FIXTURE_KEY_PACKAGE);
             }),
         );
-        let (device_id, user_id, last_resort, not_after, kp_ref, signature_key) =
+        let (device_id, user_id, last_resort, not_after, kp_ref, signature_key, credential) =
             decode_strict(&out, |d: &mut Decoder<'_>| {
-                d.array(7)?;
+                d.array(8)?;
                 assert_eq!(
                     d.uint()?,
                     0,
@@ -2189,6 +2194,7 @@ mod tests {
                     d.bytes()?.to_vec(),
                     d.uint()?,
                     d.uint()?,
+                    d.bytes()?.to_vec(),
                     d.bytes()?.to_vec(),
                     d.bytes()?.to_vec(),
                 ))
@@ -2203,6 +2209,11 @@ mod tests {
             signature_key,
             kp.leaf_node().signature_key().as_slice(),
             "the seventh element is the leaf's own signature key"
+        );
+        assert_eq!(
+            credential,
+            leaf_credential_bytes(&kp).expect("validated leaf credential bytes"),
+            "the eighth element is the exact leaf credential from the validated KeyPackage"
         );
         assert_eq!(device_id.len(), 16);
         assert_eq!(user_id.len(), 16);

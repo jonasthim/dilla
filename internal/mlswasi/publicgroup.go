@@ -135,6 +135,8 @@ type KeyPackageInfo struct {
 	// SignatureKey is the KeyPackage leaf's signature key (ABI v4), the key its signatures verify
 	// under. The delivery service binds it to the publishing device's registered key.
 	SignatureKey []byte
+	// Credential is the exact leaf BasicCredential identity bytes validated from this KeyPackage (ABI v8).
+	Credential []byte
 }
 
 func rawProposalKind(raw cbor.RawMessage) (ProposalKind, error) {
@@ -473,14 +475,19 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if err := expectLen(elems, 7, "validate_key_package"); err != nil {
+	return decodeKeyPackageInfo(elems)
+}
+
+func decodeKeyPackageInfo(elems []cbor.RawMessage) (KeyPackageInfo, error) {
+	if err := expectLen(elems, 8, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	var info KeyPackageInfo
-	if info.DeviceID, err = rawBytes(elems[1]); err != nil {
+	var err error
+	if info.DeviceID, err = rawBytesExact(elems[1], 16, "device_id"); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.UserID, err = rawBytes(elems[2]); err != nil {
+	if info.UserID, err = rawBytesExact(elems[2], 16, "user_id"); err != nil {
 		return KeyPackageInfo{}, err
 	}
 	if info.LastResort, err = rawBool(elems[3]); err != nil {
@@ -489,13 +496,30 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	if info.NotAfter, err = rawUint(elems[4]); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.KPRef, err = rawBytes(elems[5]); err != nil {
+	if info.KPRef, err = rawBytesExact(elems[5], 32, "kp_ref"); err != nil {
 		return KeyPackageInfo{}, err
 	}
-	if info.SignatureKey, err = rawBytes(elems[6]); err != nil {
+	if info.SignatureKey, err = rawBytesExact(elems[6], 32, "signature_key"); err != nil {
 		return KeyPackageInfo{}, err
+	}
+	if info.Credential, err = rawBytes(elems[7]); err != nil {
+		return KeyPackageInfo{}, err
+	}
+	if len(info.Credential) < 1 || len(info.Credential) > 8192 {
+		return KeyPackageInfo{}, fmt.Errorf("mlswasi: validate_key_package credential has %d bytes, want 1..8192", len(info.Credential))
 	}
 	return info, nil
+}
+
+func rawBytesExact(raw cbor.RawMessage, want int, field string) ([]byte, error) {
+	b, err := rawBytes(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != want {
+		return nil, fmt.Errorf("mlswasi: validate_key_package %s has %d bytes, want %d", field, len(b), want)
+	}
+	return b, nil
 }
 
 // ExternalProposeAdd signs an external Add proposal as the instance.

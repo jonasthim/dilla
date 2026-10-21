@@ -139,15 +139,15 @@ func TestClockAndRandomnessConfigurationIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestABIReportsVersionSix(t *testing.T) {
+func TestABIReportsVersionEight(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	info, err := r.ABI(ctx)
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 7 {
-		t.Errorf("ABIVersion = %d, want 7", info.ABIVersion)
+	if info.ABIVersion != 8 {
+		t.Errorf("ABIVersion = %d, want 8", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -695,9 +695,9 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsSevenAndTwentyFourExportsAreRequired(t *testing.T) {
-	if ABIVersion != 7 {
-		t.Fatalf("ABIVersion = %d, want 7", ABIVersion)
+func TestABIVersionIsEightAndTwentyFourExportsAreRequired(t *testing.T) {
+	if ABIVersion != 8 {
+		t.Fatalf("ABIVersion = %d, want 8", ABIVersion)
 	}
 	if len(RequiredExports) != 24 {
 		t.Fatalf("RequiredExports has %d names, want 24", len(RequiredExports))
@@ -726,16 +726,14 @@ func TestABIVersionIsSevenAndTwentyFourExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 7 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 7", info.ABIVersion)
+	if info.ABIVersion != 8 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 8", info.ABIVersion)
 	}
 }
 
-// ABI v6 fails closed against a v5 module: every request this host builds carries version 6, which
-// a v5 guest answers E_ABI_VERSION, so State (and every other call) errors and the delivery
-// service adopts nothing. A request built at version 5 against this module is refused the same
-// way, which is the guest's half.
-func TestAVersionFiveRequestIsRefusedByTheVersionSixModule(t *testing.T) {
+// ABI v8 fails closed against an older module. A request built at version 7 against this module is
+// refused the same way, which is the guest's half of the mismatch check.
+func TestAVersionSevenRequestIsRefusedByTheVersionEightModule(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRuntime(t, Options{PoolSize: 1})
 	inst, err := r.Acquire(ctx)
@@ -743,17 +741,17 @@ func TestAVersionFiveRequestIsRefusedByTheVersionSixModule(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 	defer inst.Release()
-	req, err := encodeRequestVersion(5)
+	req, err := encodeRequestVersion(7)
 	if err != nil {
 		t.Fatalf("encodeRequestVersion: %v", err)
 	}
 	resp, err := inst.Call(ctx, "dilla_abi", req)
 	if err != nil {
-		t.Fatalf("dilla_abi at version 5: %v", err)
+		t.Fatalf("dilla_abi at version 7: %v", err)
 	}
 	var abiErr *ABIError
 	if _, err := responseElements(resp); !errors.As(err, &abiErr) || abiErr.Code != "E_ABI_VERSION" {
-		t.Fatalf("a version-5 request gave %v, want an *ABIError with code E_ABI_VERSION", err)
+		t.Fatalf("a version-7 request gave %v, want an *ABIError with code E_ABI_VERSION", err)
 	}
 }
 

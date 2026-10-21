@@ -67,10 +67,11 @@ import (
 // module of another version answers every request E_ABI_VERSION, and a v5 response has seven
 // elements where State expects eight: either way the request fails, nothing is adopted. **7** since
 // 2026-10-21 (DILLA-BOT-04): the module adds verify_credential, backed by the core's strict
-// Ed25519 verifier.
-const ABIVersion uint64 = 7
+// Ed25519 verifier. **8** since 2026-10-21 (DILLA-BOT-04 Task5): validate_key_package appends the
+// validated leaf credential bytes so managed Bot admission can compare the exact registered value.
+const ABIVersion uint64 = 8
 
-// RequiredExports is the 24-export ABI v7 surface. New refuses any module that does not carry all
+// RequiredExports is the 24-export ABI v8 surface. New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",

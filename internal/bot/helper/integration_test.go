@@ -130,9 +130,9 @@ func TestCompiledHelperIntegration(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(signed, resigned) {
 		t.Fatalf("persisted identity signing changed: %#v (%v)", resigned, err)
 	}
-	_, err = last.GroupApply(context.Background(), []any{uint64(0)})
-	if !errors.As(err, &status) || status.Status != 5 {
-		t.Fatalf("op6 unavailable integration result = %v, want status 5 until adapter lands", err)
+	groups, err := last.GroupApply(context.Background(), []any{uint64(0)})
+	if err != nil || len(groups) != 1 || !reflect.DeepEqual(groups[0], []byte{0x80}) {
+		t.Fatalf("empty enrolled Bot group list = %#v (%v), want an encoded empty CBOR array", groups, err)
 	}
 	if err := last.Close(); err != nil {
 		t.Fatalf("final shutdown: %v", err)

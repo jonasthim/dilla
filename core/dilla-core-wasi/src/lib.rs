@@ -4,7 +4,7 @@
 //! and interfaces §2.10 all say a `cdylib` for `wasm32-wasip1` is linked with `crt1-reactor.o` and
 //! therefore exports `_initialize`; measured on rustc 1.98.1 that is false. rustc passes `--no-entry`
 //! for a `cdylib` and links no crt object, so the built module's export section holds exactly the
-//! dilla exports plus `memory` — 24 + 1 entries at ABI v7 (the 22 `abi_export!` lines plus
+//! dilla exports plus `memory` — 24 + 1 entries at ABI v8 (the 22 `abi_export!` lines plus
 //! `dilla_alloc` and `dilla_free`), 17 + 1 when this was first measured at ABI v1 — there is no
 //! start section, and `__wasm_call_ctors` does
 //! not appear in the module at all. Nothing is lost: `_initialize`'s only job is `__wasm_call_ctors`,
@@ -19,7 +19,7 @@
 //! a no-op rather than an error — harmless here, but gap-19 item 8's "wrong target" guard
 //! (`CompiledModule.ExportedFunctions()` must contain `_initialize`) would reject this correct
 //! artifact, and an export-section assertion must expect the `abi_export!` names plus `memory` (24
-//! plus `memory` at ABI v7; `lint_policy::every_dispatch_arm_is_exported_from_the_module` keeps that
+//! plus `memory` at ABI v8; `lint_policy::every_dispatch_arm_is_exported_from_the_module` keeps that
 //! list and `exports::dispatch` in step with each other), not plus
 //! `_initialize`. Getting a reactor entry back would mean linking `crt1-reactor.o` by hand
 //! (`-C link-arg=<sysroot>/lib/rustlib/wasm32-wasip1/lib/self-contained/crt1-reactor.o`, verified to

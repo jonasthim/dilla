@@ -63,4 +63,8 @@ pub const WIRE_VERSION: u64 = 3;
 /// **7** since 2026-10-21 (DILLA-BOT-04): the WASI module adds `verify_credential`, which decodes
 /// and strictly verifies a credential with the MLS leaf's DSK and returns only public identity
 /// fields. Browser, E2EE, media and negotiated wire versions do not change.
-pub const ABI_VERSION: u64 = 7;
+///
+/// **8** since 2026-10-21 (DILLA-BOT-04 Task5): `validate_key_package`'s response grew an eighth
+/// element, the exact credential bytes validated from the KeyPackage leaf. The Go host bounds
+/// and passes those bytes to the managed Bot admission check; public wire versions do not change.
+pub const ABI_VERSION: u64 = 8;
