@@ -10,7 +10,7 @@ export const afk = {
   'afk.moved': 'Moved to {channel} for inactivity',
   'afk.away': 'away',
   'afk.go': 'go AFK',
-  'afk.youAway': 'You’re away. Join a voice channel, send a message or type to come back.',
+  'afk.youAway': 'You’re away. Join a voice channel, or send a message or type in this server, to come back.',
   'afk.empty': 'Nobody is away.',
   'afk.failed': 'Could not go AFK. Try again.',
   'afk.elsewhere': 'You went AFK on another device.',

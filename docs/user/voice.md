@@ -284,7 +284,7 @@ camera and no media server, and nobody hears anything. The channel instead lists
 - **The away list.** Each person who is away is listed under the AFK row with the word "away", and counted ("2 in AFK").
   Opening the AFK channel shows the same list, or "Nobody is away."
 - **Go AFK.** Click the AFK row, or press **go AFK** on its page. You leave any call you are in, and you are listed as
-  away. Once you are away the page says "You’re away. Join a voice channel, send a message or type to come back."
+  away. Once you are away the page says "You’re away. Join a voice channel, or send a message or type in this server, to come back."
 - **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
   speech is disconnected from the call and listed as away, and the screen announces "Moved to AFK for inactivity".
   Quiet listening counts as idle, and activity on another of your devices does not count. The owner or a manager sets
