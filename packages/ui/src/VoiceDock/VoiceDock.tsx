@@ -44,8 +44,8 @@ export interface VoiceDockProps {
     /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 1's tooltip and accessible name. Without it, `where`. */
     where?: string;
     reconnecting: string;
-    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
-    ping: string; pingNone: string; rate: string;
+    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingSub` ('<1 ms', a ping that rounds to 0: a real LAN reading, not a missing one), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
+    ping: string; pingSub: string; pingNone: string; rate: string;
     /** `voice.dock.stats`: the stats' accessible text, with `{ms}`, `{quality}`, `{up}` and `{down}`; never announced. */
     stats: string;
     /** `voice.dock.quality.*`: the quality words that fill `{quality}`. */
@@ -115,7 +115,7 @@ export function VoiceDock({
     <span className="d-voice-dock__stats" data-quality="none">{labels.pingNone}</span>
   ) : (
     <span className="d-voice-dock__stats" data-quality={stats.quality}>
-      <span aria-hidden="true">{fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
+      <span aria-hidden="true">{stats.rttMs < 1 ? labels.pingSub : fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
       <span className="d-sr-only">{fill(labels.stats, { ms: stats.rttMs, quality: labels.quality[stats.quality], up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
     </span>
   );
