@@ -8,6 +8,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
@@ -37,15 +38,17 @@ class ProbeError(Exception):
 
 
 def _has_control(text: str) -> bool:
-    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in text)
+    return any(unicodedata.category(char) == "Cc" for char in text)
 
 
 def normalize_input(value: str) -> tuple[str, str]:
     """Return (kind, canonical yt-dlp input) for the deliberately small input grammar."""
     if not isinstance(value, str):
         raise ProbeError("invalid input")
+    if _has_control(value):
+        raise ProbeError("invalid input")
     value = value.strip()
-    if not value or len(value) > MAX_SEARCH_TEXT or _has_control(value):
+    if not value or len(value) > MAX_SEARCH_TEXT:
         raise ProbeError("invalid input")
 
     if value.startswith(("https://", "http://", "//")):
@@ -314,7 +317,7 @@ def sample(value: str) -> bytes:
     url = _media_url(data)
     try:
         result = run_isolated(
-            [PYTHON, "-c", _FFMPEG_SCRIPT],
+            ["/usr/bin/python3", "-c", _FFMPEG_SCRIPT],
             timeout=60,
             output_limit=MAX_SAMPLE_OUTPUT,
             input_data=url.encode("ascii"),

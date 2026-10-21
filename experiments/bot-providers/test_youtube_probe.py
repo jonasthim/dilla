@@ -46,10 +46,17 @@ class YouTubeInputTests(unittest.TestCase):
             "https://example.com/video",
             "example.com/video",
             "hello\n--exec",
+            "\nlofi",
+            "lofi\n",
+            "\tlofi",
+            "lofi\x85",
         ]
         for source in bad:
             with self.subTest(source=source), self.assertRaises(youtube_probe.ProbeError):
                 youtube_probe.normalize_input(source)
+
+    def test_trims_ordinary_outer_spaces_and_keeps_internal_search_spaces(self):
+        self.assertEqual(youtube_probe.normalize_input("  lofi study music  "), ("search", "ytsearch5:lofi study music"))
 
 
 class YouTubeMetadataTests(unittest.TestCase):
@@ -141,6 +148,7 @@ class YouTubeMetadataTests(unittest.TestCase):
         self.assertEqual(youtube_probe.sample("https://youtube.com/watch?v=abcdefghijk"), sample_bytes)
         ffmpeg_call = self.call.call_args_list[-1]
         argv = ffmpeg_call.args[0]
+        self.assertEqual(argv[0], "/usr/bin/python3")
         self.assertNotIn(data["url"], argv)
         self.assertEqual(ffmpeg_call.kwargs["input_data"], data["url"].encode())
         self.assertLessEqual(ffmpeg_call.kwargs["timeout"], 60)
