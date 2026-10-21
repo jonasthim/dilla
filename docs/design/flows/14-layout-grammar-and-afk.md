@@ -8,6 +8,9 @@
 | the AFK channel renamed and moved into a category | |
 | idle in voice on desktop | the sweep cuts the call; the stage or the region that outlives the dock says `afk.moved`, and nothing joins (no AFK call, no microphone, no dock) |
 | the AFK row | its away roster: each person away there, with no voice connection, listed under the row with `afk.away` and counted; a click leaves the current call and marks the person away |
+| the AFK channel's page | the away roster as on its row (`afk.away`), or `afk.empty`; the `afk.go` button, which leaves the current call and then marks the person away |
+| the AFK page while away | no button; the line `afk.youAway` |
+| going AFK failed | the line `afk.failed`; the call left stays left |
 | a phone in voice | never moved |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
 | channel settings of the AFK channel | name and category only, plus `afk.channel.note`; server settings → channels: no delete on the AFK row |
@@ -59,6 +62,10 @@
 `afk.channel.note='This is the server’s AFK channel. Everyone in it is muted.'`
 `afk.moved='Moved to {channel} for inactivity'`
 `afk.away='away'`
+`afk.go='go AFK'`
+`afk.youAway='You’re away. Join a voice channel, send a message or type to come back.'`
+`afk.empty='Nobody is away.'`
+`afk.failed='Could not go AFK. Try again.'`
 `layout.dock.connected='voice connected'`
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`

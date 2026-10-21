@@ -210,6 +210,8 @@ const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_R
 /** web3.9 WEB-AFK, AW5: the longest a removal's notice is held while the `afk:` read that says the sweep cut this device
  *  (`pending`) may still be coming. The server's cut can land before that read. */
 export const REMOVED_HOLD_MS = 2_000;
+/** AW5 fix round 1 (I1): the longest a restore or a recovery waits for its channel's community and a fresh AFK read. */
+export const AFK_READ_WAIT_MS = 5_000;
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -263,8 +265,15 @@ export function useCall(o: UseCallOptions): CallView {
   /** AW5: the call whose start found its community's `afk:` slice already saying pending (that read's seq). The server
    *  cleared that pending at this call's admission, so the same read never makes this call's cut the sweep's. */
   const stalePending = useRef<{ channelId: string; seq: number | undefined } | null>(null);
-  /** R-AW7: when the call a recovery is for had started; a later away mark in its community stops the recovery. */
-  const recoveryFrom = useRef(0);
+  /** Fix round 1 (M1): the away row of this user that the call's community held when the call attached (server
+   *  seconds, null for none); a different one later is after the call (R-AW7). */
+  const awayAtAttach = useRef<{ channelId: string; since: number | null } | null>(null);
+  /** The mark a recovery compares against: the call's own (E_DISCONNECTED), or null for a restore (any away row counts). */
+  const recoveryMark = useRef<{ since: number | null } | null>(null);
+  /** Fix round 1 (I3, N2): the person's choices in order (a join, a restore, AFK); an away mark overtaken is dropped. */
+  const intent = useRef(0);
+  /** Fix round 1 (I3): the away mark in flight, settled (never rejecting); a join waits for it. */
+  const awayPut = useRef<Promise<void> | null>(null);
   /** WEB-AFK: a removal notice held for the sweep's read: its timer and its watch of the `afk:` slice; any join, a later
    *  removal or an unmount drops it. */
   const removedHold = useRef<{ timer: ReturnType<typeof setTimeout>; off: () => void } | null>(null);
@@ -410,6 +419,7 @@ export function useCall(o: UseCallOptions): CallView {
     const home = communityOf(id);
     const afkNow = home === null ? null : client.get(`afk:${home}`);
     stalePending.current = afkNow?.pending === true ? { channelId: id, seq: afkNow.seq } : null;
+    awayAtAttach.current = { channelId: id, since: home === null ? null : awaySince(home) };
     sessionRef.current = next;
     channelRef.current = id;
     setSession(next);
@@ -450,7 +460,7 @@ export function useCall(o: UseCallOptions): CallView {
         }
         if (next.state.error === 'E_DISCONNECTED' || recoverEnded) {
           recoveryRef.current = id;
-          recoveryFrom.current = attachedAt.current;
+          recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
           setRecoveryChannelId(id);
           recoveryCameraRef.current = cameraBeforeLoss;
           setRecoveryCamera(cameraBeforeLoss);
@@ -471,7 +481,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryRef.current === id && recoveryCameraRef.current) {
       void next.setCamera(true).catch(() => undefined);
     }
-  }, [announce, detach, sayRemoved, client, communityOf]);
+  }, [announce, detach, sayRemoved, client, communityOf, awaySince]);
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). AW5 (R-AW1): an
    *  AFK channel is never joined; the person's press on one is `goAway` (joinOnly), and nothing else asks for one. */
@@ -510,6 +520,8 @@ export function useCall(o: UseCallOptions): CallView {
       try {
         // WB client m1: a leave still in flight (the worker refuses a join while it runs) is waited for first.
         await leaving.current?.catch(() => undefined);
+        // Fix round 1 (I3): an away mark in flight lands first, so this join's admission follows and clears it.
+        await awayPut.current;
         const mod = await deps.load();
         module.current = mod;
         if (!mod.isVoiceSupported().ok) {
@@ -604,55 +616,11 @@ export function useCall(o: UseCallOptions): CallView {
   }, [deps, client, attach, detach, selfNow, watchSelf, dropHold, isAfk]);
   const joinRef = useRef(join);
   joinRef.current = join;
-  const leaveRef = useRef<(after?: CallNotice) => void>(() => undefined);
   /**
-   * AW5 (R-AW3): choosing AFK. A call in progress (or a start) is left first through the person's own leave, which stops
-   * the microphone and hides the dock; once that leave is done the instance is told (PUT …/afk/away), and it cuts any
-   * other device of this user still in a room. A press while already away there does nothing; nothing ever joins the AFK
-   * channel (R-AW1).
+   * The person's own leave. `quiet` (choosing AFK, fix round 1 M6): focus stays on the control they used, so the left
+   * call's row does not take it.
    */
-  const goAway = useCallback(async (id: string): Promise<void> => {
-    const cid = communityOf(id);
-    if (cid === null || awaySince(cid) !== null) return;
-    if (sessionRef.current !== null || starting.current) leaveRef.current();
-    await startDone.current;
-    await leaving.current?.catch(() => undefined);
-    try {
-      await client.call({ m: 'afkAway', communityId: cid });
-    } catch (e) {
-      const key = joinFailureKey(errorOf(e).code);
-      if (key === null || !mounted.current) return;
-      setNotice({ channelId: id, key });
-      if (!live.current.stageShown(id)) setLasting(t(key));
-    }
-  }, [client, communityOf, awaySince]);
-  /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). A press on an
-   *  AFK channel chooses AFK (goAway). */
-  const joinOnly = useCallback((id: string) => {
-    if (isAfk(id)) { void goAway(id); return; }
-    join(id);
-  }, [join, isAfk, goAway]);
-  /** R-AW7: whether this device's user is away in the community of `id` since `from` (ms; 0 is any time), or the sweep
-   *  cut this device there. A restore or a recovery never rejoins then. */
-  const awayThere = useCallback((id: string, from: number): boolean => {
-    const cid = communityOf(id);
-    if (cid === null) return false;
-    const since = awaySince(cid);
-    return (since !== null && since >= Math.floor(from / 1000)) || sweptName(id) !== null;
-  }, [communityOf, awaySince, sweptName]);
-  const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
-    // AW5 (R-AW7): a web3.9 call in the AFK channel, or a call in a community the person is away in, is not restored.
-    if (isAfk(id) || awayThere(id, 0)) return;
-    recoveryRef.current = id;
-    recoveryFrom.current = 0;
-    recoveryCameraRef.current = camera;
-    setRecoveryChannelId(id);
-    setRecoveryCamera(camera);
-    setRecoverySharing(sharing);
-    join(id);
-  }, [join, isAfk, awayThere]);
-
-  const leave = useCallback((after?: CallNotice) => {
+  const leaveCall = useCallback((after?: CallNotice, quiet = false) => {
     recoveryRef.current = null;
     setRecoveryChannelId(null);
     recoveryCameraRef.current = false;
@@ -677,10 +645,119 @@ export function useCall(o: UseCallOptions): CallView {
     const done = current.leave('user').finally(() => {
       if (leaving.current === done) leaving.current = null;
       setLasting(t('voice.announce.left', { where: live.current.whereOf(id) }));
-      live.current.onLeft(id);
+      if (!quiet) live.current.onLeft(id);
     });
     leaving.current = done;
   }, [detach]);
+  const leave = useCallback((after?: CallNotice) => { leaveCall(after); }, [leaveCall]);
+  const leaveRef = useRef<(after?: CallNotice) => void>(() => undefined);
+  /**
+   * AW5 (R-AW3): choosing AFK. The person's own leave runs first, always: it ends a call in progress (or a start) and stops
+   * the microphone, and it cancels a pending recovery (fix round 1, I2). Once that leave is done the instance is told
+   * (PUT …/afk/away), and it cuts any other device of this user still in a room. A press while already away there does
+   * nothing; nothing ever joins the AFK channel (R-AW1).
+   * Fix round 1 (I3, N2): every choice of the person (a join, a restore, AFK) takes the next `intent`; an away mark whose
+   * intent was overtaken while it waited for the leave is dropped, never sent, and a join waits for a mark in flight, so
+   * its admission always follows (and clears) it.
+   */
+  const goAway = useCallback(async (id: string): Promise<void> => {
+    const cid = communityOf(id);
+    if (cid === null || awaySince(cid) !== null) return;
+    const mine = ++intent.current;
+    leaveCall(undefined, true);
+    await startDone.current;
+    await leaving.current?.catch(() => undefined);
+    await awayPut.current;
+    if (mine !== intent.current || !mounted.current) return;
+    const put = client.call({ m: 'afkAway', communityId: cid });
+    const settled = put.then(() => undefined, () => undefined);
+    awayPut.current = settled;
+    try {
+      await put;
+    } catch {
+      // Fix round 1 (M3): the leave is done and the person is not away; the line says what failed.
+      if (!mounted.current) return;
+      setNotice({ channelId: id, key: 'afk.failed' });
+      if (!live.current.stageShown(id)) setLasting(t('afk.failed'));
+    } finally {
+      if (awayPut.current === settled) awayPut.current = null;
+    }
+  }, [client, communityOf, awaySince, leaveCall]);
+  /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). A press on an
+   *  AFK channel chooses AFK (goAway). */
+  const joinOnly = useCallback((id: string) => {
+    if (isAfk(id)) { void goAway(id); return; }
+    intent.current += 1;
+    join(id);
+  }, [join, isAfk, goAway]);
+  /**
+   * R-AW7: whether the person is away in the community of `id` after the call began, or the sweep cut this device there.
+   * Fix round 1 (M1): no client clock. `mark` is the away row the call's community held at attach (server seconds, null
+   * for none): a row that is there now and was not, or whose since differs, is after the call. `mark` null (a restore,
+   * whose call began before this page) counts any away row.
+   */
+  const awayAfter = useCallback((id: string, mark: { since: number | null } | null): boolean => {
+    const cid = communityOf(id);
+    if (cid === null) return false;
+    const since = awaySince(cid);
+    return (since !== null && (mark === null || mark.since !== since)) || sweptName(id) !== null;
+  }, [communityOf, awaySince, sweptName]);
+  /**
+   * Fix round 1 (I1): what a restore or a recovery may do with `id`, from a fresh read of its community's AFK state (the
+   * worker's `afkRead`), never from a slice left from before a sleep or a reload. It waits (at most AFK_READ_WAIT_MS) for
+   * the channel's community and that read: 'clear' joins; 'afk' (the AFK channel) and 'away' join nothing; 'unknown' (the
+   * wait ran out, or the read failed) joins nothing either: fail closed.
+   */
+  const afkFresh = useCallback(async (id: string, mark: { since: number | null } | null): Promise<'clear' | 'afk' | 'away' | 'unknown'> => {
+    const deadline = Date.now() + AFK_READ_WAIT_MS;
+    const isDm = (): boolean => (client.get('dms') ?? []).some((d) => d.id === id);
+    while (!isDm() && communityOf(id) === null) {
+      if (Date.now() >= deadline || !mounted.current) return 'unknown';
+      await new Promise<void>((r) => { setTimeout(r, 100); });
+    }
+    if (isDm()) return 'clear';
+    const cid = communityOf(id);
+    if (cid === null) return 'unknown';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = await Promise.race([
+      client.call({ m: 'afkRead', communityId: cid }).then(() => true, () => false),
+      new Promise<boolean>((r) => { timer = setTimeout(() => r(false), Math.max(0, deadline - Date.now())); }),
+    ]);
+    clearTimeout(timer);
+    if (!read) return 'unknown';
+    if (isAfk(id)) return 'afk';
+    return awayAfter(id, mark) ? 'away' : 'clear';
+  }, [client, communityOf, isAfk, awayAfter]);
+  /** Fix round 1 (I1): a restore or a recovery that will not join: the recovery ends, and the call shows as lost (or, for
+   *  the sweep's cut, as moved); the AFK channel itself says nothing. */
+  const endRecovery = useCallback((id: string, verdict: 'afk' | 'away' | 'unknown') => {
+    recoveryRef.current = null;
+    setRecoveryChannelId(null);
+    recoveryCameraRef.current = false;
+    setRecoveryCamera(false);
+    setRecoverySharing(false);
+    if (verdict === 'afk' || !mounted.current) return;
+    const swept = verdict === 'away' ? sweptName(id) : null;
+    const text = swept !== null ? t('afk.moved', { channel: swept }) : t('voice.disconnected');
+    setNotice(swept !== null ? { channelId: id, key: 'afk.moved', text } : { channelId: id, key: 'voice.disconnected' });
+    if (!live.current.stageShown(id)) setLasting(text);
+  }, [sweptName]);
+  const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
+    // AW5 (R-AW7), fix round 1 (I1): a web3.9 call in the AFK channel, a call in a community the person is away in, or one
+    // whose AFK state cannot be read is not restored.
+    const mine = ++intent.current;
+    void afkFresh(id, null).then((verdict) => {
+      if (mine !== intent.current || !mounted.current) return;
+      if (verdict !== 'clear') { if (verdict === 'unknown') endRecovery(id, verdict); return; }
+      recoveryRef.current = id;
+      recoveryMark.current = null;
+      recoveryCameraRef.current = camera;
+      setRecoveryChannelId(id);
+      setRecoveryCamera(camera);
+      setRecoverySharing(sharing);
+      join(id);
+    });
+  }, [join, afkFresh, endRecovery]);
 
   /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
   const keepSelf = useCallback((s: PageCall) => {
@@ -854,7 +931,7 @@ export function useCall(o: UseCallOptions): CallView {
       }
       if (phase === 'removed' && (now?.error?.code === 'E_DISCONNECTED' || recoverEnded)) {
         recoveryRef.current = id;
-        recoveryFrom.current = attachedAt.current;
+        recoveryMark.current = { since: awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null };
         setRecoveryChannelId(id);
         recoveryCameraRef.current = s.state.camera;
         setRecoveryCamera(s.state.camera);
@@ -889,14 +966,9 @@ export function useCall(o: UseCallOptions): CallView {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
     let timer: ReturnType<typeof setTimeout>;
-    const retry = () => {
-      if (recoveryRef.current !== recoveryChannelId) return;
-      // AW5 (R-AW7): the sweep cut this device, or the person went away in that community, after the call started.
-      if (awayThere(recoveryChannelId, recoveryFrom.current)) {
-        recoveryRef.current = null;
-        setRecoveryChannelId(null);
-        return;
-      }
+    let cancelled = false;
+    const retry = async (): Promise<void> => {
+      if (cancelled || recoveryRef.current !== recoveryChannelId) return;
       const phase = client.get('call')?.phase;
       const removedCode = client.get('call')?.error?.code;
       if (phase === 'blocked' || (phase === 'removed' && removedCode !== 'E_DISCONNECTED'
@@ -905,13 +977,20 @@ export function useCall(o: UseCallOptions): CallView {
         setRecoveryChannelId(null);
         return;
       }
-      if (navigator.onLine && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
+      if (navigator.onLine && sessionRef.current === null && !starting.current) {
+        // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
+        // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
+        const verdict = await afkFresh(recoveryChannelId, recoveryMark.current);
+        if (cancelled || recoveryRef.current !== recoveryChannelId) return;
+        if (verdict !== 'clear') { endRecovery(recoveryChannelId, verdict); return; }
+        if (sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
+      }
       delay = Math.min(delay * 2, 30_000);
-      timer = setTimeout(retry, delay);
+      timer = setTimeout(() => { void retry(); }, delay);
     };
-    timer = setTimeout(retry, delay);
-    return () => clearTimeout(timer);
-  }, [recoveryChannelId, client, awayThere]);
+    timer = setTimeout(() => { void retry(); }, delay);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [recoveryChannelId, client, afkFresh, endRecovery]);
 
   // Product walk I6: the outgoing ring of a DM call this device opened. It lasts 30 s from the call's start, whoever was
   // rung; once every ring ended with nobody else ever in the call, the caller leaves by itself after a short grace, and the

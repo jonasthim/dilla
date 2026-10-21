@@ -9,4 +9,8 @@ export const afk = {
   'afk.channel.note': 'This is the server’s AFK channel. Everyone in it is muted.',
   'afk.moved': 'Moved to {channel} for inactivity',
   'afk.away': 'away',
+  'afk.go': 'go AFK',
+  'afk.youAway': 'You’re away. Join a voice channel, send a message or type to come back.',
+  'afk.empty': 'Nobody is away.',
+  'afk.failed': 'Could not go AFK. Try again.',
 };
