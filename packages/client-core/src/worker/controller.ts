@@ -23,7 +23,8 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
+  BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes,
+  nameProblem, profileTextProblem, type ChannelRow,
   type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -228,6 +229,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'markRead',
   'setSetting',
   'setPresenceChoice',
+  'updateProfile',
   'presenceActivity',
   'getAFKSettings',
   'setAFK',
@@ -280,6 +282,12 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setOverwrite',
   'setChannelPrivate',
 ]);
+/** The account's user entry with its profile read from `me`: the status message and bio only when set. */
+function profileOf(user: NonNullable<AccountState['user']>, me: { display: string; statusMsg?: string; bio?: string }): NonNullable<AccountState['user']> {
+  const { statusMsg: _status, bio: _bio, ...rest } = user;
+  return { ...rest, display: me.display, ...(me.statusMsg ? { statusMsg: me.statusMsg } : {}), ...(me.bio ? { bio: me.bio } : {}) };
+}
+
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -401,6 +409,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'markRead',
     'setSetting',
     'setPresenceChoice',
+    'updateProfile',
     'presenceActivity',
     'getAFKSettings',
     'setAFK',
@@ -586,6 +595,14 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
+  }
+  if (m === 'updateProfile') {
+    for (const [field, max, multiline] of [['display', DISPLAY_MAX_CHARS, false], ['statusMsg', STATUS_MAX_CHARS, false], ['bio', BIO_MAX_CHARS, true]] as const) {
+      const value = command[field];
+      if (value === undefined) continue;
+      const problem = profileTextProblem(value, max, multiline);
+      if (problem !== null) return `${field} ${problem}`;
+    }
   }
   if (m === 'setPresenceChoice' && !['online', 'idle', 'dnd', 'invisible'].includes(command.choice as string)) return 'invalid presence choice';
   if (m === 'setSetting') {
@@ -1047,6 +1064,7 @@ export class Controller {
       case 'markRead': return this.markRead(command.channelId);
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
+      case 'updateProfile': return this.updateProfile(command);
       case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
@@ -2308,6 +2326,7 @@ export class Controller {
   private publishMembers(communityId: string, rows: readonly MemberRow[], push = true): void {
     this.slices.set(`members:${communityId}`, rows.map((m) => ({
       userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
+      ...(m.statusMsg ? { statusMsg: m.statusMsg } : {}), ...(m.bio ? { bio: m.bio } : {}),
     })));
     // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
     // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
@@ -2786,8 +2805,22 @@ export class Controller {
       const user = this.accountState.user;
       const mine = user !== null && toHex(me.userId) === user.id;
       if (mine) this.selfDisplay = { userId: user.id, display: me.display };
-      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...user, display: me.display } } : {}) });
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...profileOf(user, me) } } : {}) });
     } catch { /* the next ready retries */ }
+  }
+
+  /** EOD E6: saves the given profile fields (a field left out is left alone), then reads the account and every server's
+   *  member list again so the own profile shows at once. Other people's edits arrive with their next member-list read. */
+  private async updateProfile(command: { display?: string; statusMsg?: string; bio?: string }): Promise<null> {
+    const patch: { display?: string; statusMsg?: string; bio?: string } = {};
+    if (command.display !== undefined) patch.display = command.display;
+    if (command.statusMsg !== undefined) patch.statusMsg = command.statusMsg;
+    if (command.bio !== undefined) patch.bio = command.bio;
+    if (Object.keys(patch).length === 0) return null;
+    await this.routes.patchMe(patch);
+    await this.refreshPresenceChoice();
+    await Promise.all((this.slices.get('communities') ?? []).map((c) => this.reloadMembers(c.id).catch(() => undefined)));
+    return null;
   }
 
   private async setPresenceChoice(choice: PresenceChoice): Promise<null> {

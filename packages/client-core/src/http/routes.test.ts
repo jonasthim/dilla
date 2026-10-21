@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
@@ -254,12 +254,12 @@ const CASES: Case[] = [
     name: 'listMembers reads names and kind', call: (r) => r.listMembers(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/members`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [
-      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0],
+      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0, 'on a call', 'hello\nthere'],
       [BOT, 1_700_000_100, 'helper', [ROLE], 'bot1', 'Bot One', 1],
     ]),
     expected: [
-      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] },
-      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE] },
+      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: 'on a call', bio: 'hello\nthere' },
+      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE], statusMsg: '', bio: '' },
     ],
   },
   {
@@ -335,8 +335,14 @@ const CASES: Case[] = [
   {
     name: 'getAccountMe ignores an appended element', call: (r) => r.getAccountMe(),
     method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'appended later']),
-    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3 },
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'on a call', 'bio text', 'appended later']),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: 'on a call', bio: 'bio text' },
+  },
+  {
+    name: 'getAccountMe reads a status message and bio as empty from an instance that sends neither', call: (r) => r.getAccountMe(),
+    method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3]),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: '', bio: '' },
   },
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),
@@ -980,6 +986,31 @@ describe('Routes: response shapes', () => {
   });
 });
 
+describe('Routes: patchMe', () => {
+  it('sends [display, status_msg, bio] with null for a field left alone', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: 'on a call' });
+    expect(t.seen[0].init.method).toBe('PATCH');
+    expect(t.seen[0].url).toBe('https://dilla.test/v1/accounts/me');
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'on a call', null]);
+  });
+  it('sends an empty string to clear a field', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ display: 'Ada', bio: '' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
+  });
+  it('refuses a too long field before any request', async () => {
+    const { t, routes } = setup();
+    await expect(routes.patchMe({ display: 'x'.repeat(65) })).rejects.toThrow(/display/);
+    await expect(routes.patchMe({ statusMsg: 'x'.repeat(191) })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ statusMsg: 'a\nb' })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ bio: 'x'.repeat(501) })).rejects.toThrow(/bio/);
+    expect(t.seen).toHaveLength(0);
+  });
+});
+
 describe('Routes: member paging', () => {
   const row = (i: number) => [member(i), 1_700_000_000, '', [], `u${i}`, `U ${i}`, 0];
 
@@ -994,7 +1025,7 @@ describe('Routes: member paging', () => {
       `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members?after=${hex(member(200))}`,
     ]);
     expect(members).toHaveLength(203);
-    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [] });
+    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' });
     expect(members[202].userId).toEqual(member(203));
   });
 
@@ -1079,7 +1110,7 @@ describe('Routes: web-2b deletes and blobs', () => {
   it('listMembers reads a null role list as empty', async () => {
     const { t, routes } = setup();
     t.replies.push(cborReply(200, [[USER, 1_700_000_000, '', null, 'jonas', 'Jonas', 0]]));
-    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] }]);
+    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' }]);
   });
 });
 

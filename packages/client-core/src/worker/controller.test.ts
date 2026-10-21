@@ -191,6 +191,34 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
+  it('updateProfile sends only the changed fields, then shows the new profile on the account and the own member row', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Ada', kind: 0, flags: 0n, presenceChoice: 1, statusMsg: 'on a call', bio: 'hi' });
+    w.routes.listMembers.mockResolvedValue([{ userId: USER, username: 'web', display: 'Ada', kind: 0 as const, nick: '', roleIds: [], statusMsg: 'on a call', bio: 'hi' }]);
+    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: true }));
+    expect(w.routes.patchMe).toHaveBeenCalledWith({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    await vi.waitFor(() => expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' }));
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.[0]).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' }));
+  });
+  it('updateProfile with nothing to change makes no request, and a field of the wrong type is E_BAD_INPUT', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(1002, { m: 'updateProfile' });
+    await vi.waitFor(() => expect(w.ret(1002)).toMatchObject({ ok: true }));
+    w.call(1003, { m: 'updateProfile', bio: 5 as unknown as string });
+    await vi.waitFor(() => expect(w.ret(1003)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.patchMe).not.toHaveBeenCalled();
+  });
+  it('updateProfile reports a refusal and leaves the account as it was', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.patchMe.mockRejectedValueOnce(new Error('refused'));
+    w.call(1004, { m: 'updateProfile', statusMsg: 'x' });
+    await vi.waitFor(() => expect(w.ret(1004)).toMatchObject({ ok: false }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+  });
   it('carries the account display name on the user, for a person who has joined no server yet', async () => {
     const w = world();
     w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Alice', kind: 0, flags: 0n, presenceChoice: 1 });
