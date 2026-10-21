@@ -115,6 +115,43 @@ func (q *Queries) ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]Lis
 	return items, nil
 }
 
+const listAFKAwayFirst = `-- name: ListAFKAwayFirst :many
+SELECT user_id, since FROM community_afk_away WHERE community_id = ? ORDER BY user_id LIMIT ?2
+`
+
+type ListAFKAwayFirstParams struct {
+	CommunityID id.ID
+	MaxRows     int64
+}
+
+type ListAFKAwayFirstRow struct {
+	UserID id.ID
+	Since  int64
+}
+
+func (q *Queries) ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAFKAwayFirst, arg.CommunityID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAFKAwayFirstRow{}
+	for rows.Next() {
+		var i ListAFKAwayFirstRow
+		if err := rows.Scan(&i.UserID, &i.Since); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setAFKAway = `-- name: SetAFKAway :execrows
 INSERT INTO community_afk_away (community_id, user_id, since)
 VALUES (?, ?, ?)

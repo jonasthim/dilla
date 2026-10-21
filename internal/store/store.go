@@ -415,6 +415,9 @@ type Communities interface {
 	// ListAFKAway is the community's away roster ordered by user id. It is bounded by the
 	// community's member count.
 	ListAFKAway(ctx context.Context, communityID id.ID) ([]AFKAway, error)
+	// ListAFKAwayFirst is the first limit rows of ListAFKAway, bounded in the query (the
+	// snapshot's cap).
+	ListAFKAwayFirst(ctx context.Context, communityID id.ID, limit int32) ([]AFKAway, error)
 	CreateCommunity(ctx context.Context, c CommunityRow) error
 	// GetCommunity answers ErrNotFound for a soft-deleted community too.
 	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)

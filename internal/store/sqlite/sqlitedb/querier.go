@@ -163,6 +163,7 @@ type Querier interface {
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
 	ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error)
+	ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)

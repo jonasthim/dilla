@@ -170,6 +170,30 @@ func TestClearAFKAwayUserClearsEveryCommunity(t *testing.T) {
 	}
 }
 
+// ListAFKAwayFirst bounds the read in the query (AW2 review M3): the first limit rows by user id.
+func TestListAFKAwayFirstLimitsTheRead(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			users := []id.ID{seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID}
+			cid := seedAFKCommunity(ctx, t, repo, users...)
+			for _, u := range users {
+				if _, err := repo.SetAFKAway(ctx, cid, u, 7); err != nil {
+					t.Fatal(err)
+				}
+			}
+			all, err := repo.ListAFKAway(ctx, cid)
+			if err != nil || len(all) != 3 {
+				t.Fatalf("ListAFKAway = %v, %v", all, err)
+			}
+			got, err := repo.ListAFKAwayFirst(ctx, cid, 2)
+			if err != nil || !slices.Equal(got, all[:2]) {
+				t.Fatalf("ListAFKAwayFirst(2) = %v, %v; want %v", got, err, all[:2])
+			}
+		})
+	}
+}
+
 // Migration 00021_afk_away.sql exists in both dialects, so a fully migrated database reports at
 // least schema version 21 (wantSchemaVersion counts the embedded files).
 func TestAFKAwayMigrationIsSchemaVersion21(t *testing.T) {

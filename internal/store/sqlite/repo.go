@@ -2111,6 +2111,18 @@ func (r *Repo) ListAFKAway(ctx context.Context, communityID id.ID) ([]store.AFKA
 	return out, nil
 }
 
+func (r *Repo) ListAFKAwayFirst(ctx context.Context, communityID id.ID, limit int32) ([]store.AFKAway, error) {
+	rows, err := r.r.ListAFKAwayFirst(ctx, sqlitedb.ListAFKAwayFirstParams{CommunityID: communityID, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.AFKAway, len(rows))
+	for i, row := range rows {
+		out[i] = store.AFKAway{UserID: row.UserID, Since: row.Since}
+	}
+	return out, nil
+}
+
 func (r *Repo) SetCommunityAFK(ctx context.Context, communityID id.ID, config store.CommunityAFK) error {
 	return wrap(r.w.SetCommunityAFK(ctx, sqlitedb.SetCommunityAFKParams{CommunityID: communityID, ChannelID: config.ChannelID, TimeoutSeconds: int64(config.TimeoutSeconds)}))
 }

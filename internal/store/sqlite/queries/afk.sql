@@ -19,3 +19,6 @@ DELETE FROM community_afk_away WHERE user_id = ? RETURNING community_id;
 
 -- name: ListAFKAway :many
 SELECT user_id, since FROM community_afk_away WHERE community_id = ? ORDER BY user_id;
+
+-- name: ListAFKAwayFirst :many
+SELECT user_id, since FROM community_afk_away WHERE community_id = ? ORDER BY user_id LIMIT sqlc.arg(max_rows);
