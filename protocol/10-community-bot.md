@@ -308,8 +308,8 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `GET /v1/bot-runtime/installations` | R | — | `[installations]`, at most 100; `after` is last installation id |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation, claim_id, claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
-| `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling | `[request_id, expected_revision, credential_bstr]` | installation |
-| `POST /v1/bot-runtime/installations/{installation}/ready` | B | `[request_id, expected_revision]` | installation |
+| `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/ready` | B, joining; completed retry while ready | `[request_id, expected_revision]` | installation |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
@@ -336,6 +336,14 @@ against the already registered account, UMK, SSK and device key, and atomically
 stores it before moving enrolling to joining. The original operation result is
 retained for matching retries; conflicting reuse fails. Claim expiry or runtime
 revocation never exposes existing private identity state.
+
+A lost finalization response is retried with the same request id and payload
+after the installation has entered joining or ready. In those phases the
+credential route may return only a matching completed receipt; it cannot accept
+a new credential operation. The ready route likewise permits a matching
+completed retry after reaching ready. Current session and installation authority
+is checked before receipt lookup, so disablement or revocation still refuses a
+retry. These recovery paths never reopen enrollment or replace identity keys.
 
 All bot sessions are bound to their installation, account and registered device.
 An enrolling installation permits only capability negotiation, its credential
