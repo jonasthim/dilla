@@ -875,6 +875,17 @@ describe('late rejoin (Jonas 2026-10-21): a device gone longer than its serverâ€
     expect(h.v.notice).toBeNull();
   });
 
+  it('fix round 2: stalls of a background tab (10 s gaps under 60 s apart, connected all along) never add up: a short drop rejoins', async () => {
+    const h = harness();
+    // A 1-minute timeout, so seven stalls added together (70 s) would pass it.
+    h.setAfk(A, { timeoutSeconds: 60 });
+    const general = await h.joined(GENV);
+    for (let i = 0; i < 7; i++) { goneFor(10_000); await wait(1_100); }
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  }, 20_000);
+
   it('fix round 1 (I1): a suspend the connection stayed up through settles after 60 s: a later drop rejoins by itself', async () => {
     const h = harness();
     const general = await h.joined(GENV);

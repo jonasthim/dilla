@@ -235,6 +235,8 @@ const stampNow = (): Stamp => ({ perf: performance.now(), wall: Date.now() });
 /** How long ago `s` was: the larger of the monotonic and the wall clock's answer, since performance.now stops during a
  *  suspend in some browsers (it is not specified to count it) while the wall clock always moves on. */
 const elapsedSince = (s: Stamp): number => Math.max(performance.now() - s.perf, Date.now() - s.wall);
+/** How long a gap between two stamps lasted, by the same larger-clock rule. */
+const gapLength = (g: { from: Stamp; to: Stamp }): number => Math.max(g.to.perf - g.from.perf, g.to.wall - g.from.wall);
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -301,14 +303,20 @@ export function useCall(o: UseCallOptions): CallView {
    *  timeout joins nothing. */
   const recoveryGoneFrom = useRef<Stamp | null>(null);
   /** The attached call's liveness: its last tick (one a second) and the suspend found between two ticks that the call has
-   *  not yet shown it came through (`reconnecting`: the session left 'connected' after the wake). A later gap while one is
-   *  held extends it and keeps its start. */
+   *  not yet shown it came through (`reconnecting`: the session left 'connected' after the wake). A later gap extends a held
+   *  one only while it is reconnecting; otherwise the longer of the two is kept. */
   const alive = useRef<{ last: Stamp; gap: { from: Stamp; to: Stamp; reconnecting: boolean } | null } | null>(null);
   const tickAlive = useCallback((): void => {
     const a = alive.current;
     if (a === null) return;
-    if (elapsedSince(a.last) > SUSPEND_GAP_MS) {
-      a.gap = { from: a.gap?.from ?? a.last, to: stampNow(), reconnecting: a.gap?.reconnecting ?? false };
+    const stalled = elapsedSince(a.last);
+    if (stalled > SUSPEND_GAP_MS) {
+      const held = a.gap;
+      // Fix round 2: a held gap whose call went reconnecting is one absence still going on, so a new gap extends it. One
+      // still settling (connected all along) is not: stalls of a background tab or a long task never add up. The new gap
+      // replaces it, unless the held one was longer (a long sleep then a stall right after the wake keeps the sleep).
+      if (held !== null && held.reconnecting) held.to = stampNow();
+      else if (held === null || stalled >= gapLength(held)) a.gap = { from: a.last, to: stampNow(), reconnecting: false };
     }
     const phase = sessionRef.current?.state.phase;
     if (a.gap !== null && (phase === 'reconnecting' || phase === 'connecting')) {
