@@ -820,7 +820,14 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     if (join !== undefined && texts.length > 0) {
       const lowest = Math.max(...texts.map(b => b.b));
       expect.soft(join.y - lowest, `N4 the join sits within 120 of its text (${texts.map(b => `${b.t}@${b.x.toFixed(0)},${b.y.toFixed(0)}`).join(' | ')} join@${join.x.toFixed(0)},${join.y.toFixed(0)})`).toBeLessThanOrEqual(120);
-      expectOne('N4 the preview texts and the join share one left edge', [...texts.map(b => b.x), join.x], [...texts.map(b => b.t), 'join']);
+      // The empty room is one centred group: each text and the join share the main area's horizontal centre.
+      const main = (await boxes(page, '.d-app-shell__content'))[0];
+      if (main !== undefined) {
+        const mid = main.x + main.w / 2;
+        for (const b of [...texts, join]) {
+          expect.soft(Math.abs(b.x + b.w / 2 - mid), `N4 "${b.t}" is centred on the main area (centre ${(b.x + b.w / 2).toFixed(1)}, main ${mid.toFixed(1)})`).toBeLessThanOrEqual(0.5);
+        }
+      }
     }
     await expectNoOverflow(page, '1440x900', 'the AFK preview');
 
