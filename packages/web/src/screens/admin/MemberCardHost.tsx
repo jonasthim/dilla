@@ -15,11 +15,13 @@ import { MemberRolesFlow } from './MemberRolesFlow.tsx';
  * every render, so a re-mounted row neither closes it nor strands it). A `mention` or `author` card is anchored to that
  * element and closes when the element is gone. `name` is the label to show when the person is no longer a member.
  */
-export interface OpenCard { id: string; source: 'list' | 'mention' | 'author'; anchor: HTMLElement; name?: string; /** The message row it was opened from (its msg id), where focus goes if the anchor is gone. */ rowId?: string }
+export interface OpenCard { id: string; source: 'list' | 'mention' | 'author'; anchor: HTMLElement; name?: string; /** The message row it was opened from (its msg id), where focus goes if the anchor is gone. */ rowId?: string; /** The container of that row (the log or the thread pane), so the fallback picks the row in the same place. */ scope?: HTMLElement }
 
 /** Where focus goes when a message card's anchor is gone: its message row if that still exists, else the log. */
-const messageFallback = (card: OpenCard) => (): HTMLElement | null =>
-  (card.rowId === undefined ? null : document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${card.rowId}"]`)) ?? document.querySelector<HTMLElement>('[role="log"]');
+export const messageFallback = (card: OpenCard) => (): HTMLElement | null => {
+  const find = (root: ParentNode) => (card.rowId === undefined ? null : root.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${card.rowId}"]`));
+  return (card.scope?.isConnected === true ? find(card.scope) : null) ?? find(document) ?? document.querySelector<HTMLElement>('[role="log"]');
+};
 
 export const presenceLabels = (): Record<'online' | 'idle' | 'dnd' | 'offline', string> => ({
   online: t('presence.online'), idle: t('presence.idle'), dnd: t('presence.dnd'), offline: t('presence.offline'),

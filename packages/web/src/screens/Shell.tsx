@@ -908,7 +908,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
 
   // A click on the pill or author name that already holds the open card closes it (the card ignores a pointerdown on its anchor); any other opens, replacing the card.
   const openProfile: ProfileOpener = (userId, anchor, source, name) =>
-    setProfileCard(cur => (cur !== null && cur.anchor === anchor ? null : { id: userId, source, anchor, name, rowId: anchor.closest<HTMLElement>('.d-message-row')?.dataset.msgId }));
+    setProfileCard(cur => (cur !== null && cur.anchor === anchor ? null : { id: userId, source, anchor, name, rowId: anchor.closest<HTMLElement>('.d-message-row')?.dataset.msgId, scope: anchor.closest<HTMLElement>('.d-thread-pane, [role="log"]') ?? undefined }));
   const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
@@ -1734,11 +1734,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
       >
         {main}
-        {community !== null && self !== null ? (
-          <MemberCardHost communityId={community.id} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
-            onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
-        ) : null}
       </AppShell>
+      {/* The message card sits beside the shell, not inside it: main, the rail and the aside go inert while an overlay (the thread sheet) is open, and the card must stay live above it. */}
+      {community !== null && self !== null ? (
+        <MemberCardHost communityId={community.id} selfId={self.id} card={profileCard} onCard={setProfileCard} announce={announce}
+          onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })} />
+      ) : null}
       <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
         requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
         hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}

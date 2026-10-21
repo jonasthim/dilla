@@ -199,6 +199,35 @@ describe('the thread list', () => {
   });
 });
 
+describe('a profile card from a thread row (MP7, N1)', () => {
+  const withMention = (fake: FakeClient) => fake.set(`thread:${GEN}`, { channelId: GEN, rootMsgId: ROOT, root: rootRow(ROOT, '1', 'the first root', 2), hasEarlier: false,
+    items: [timelineItem({ key: 's2', msgId: '73'.repeat(16), seq: '2', body: `hey <@${BOB}>`, senderUser: BOB, senderDevice: BOB, ts: 1_700_000_050 })] });
+  it('on a phone the card sits outside the inert scopes, holds focus, and Escape returns focus to the pill in the sheet', async () => {
+    const { fake, user } = setup({ phone: true });
+    withMention(fake);
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
+    const pill = await within(sheet).findByRole('button', { name: '@Bob' });
+    await user.click(pill);
+    const card = await screen.findByRole('dialog', { name: 'Bob' });
+    expect(card.closest('[inert]')).toBeNull();
+    expect(card.contains(document.activeElement)).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Bob' })).toBeNull();
+    expect(pill).toHaveFocus();
+    expect(threadPane()).not.toBeNull();
+  });
+  it('a card action works from a thread row (message opens the DM)', async () => {
+    const { fake, user } = setup({ phone: true });
+    withMention(fake);
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
+    await user.click(await within(sheet).findByRole('button', { name: '@Bob' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'message' }));
+    expect(screen.queryByRole('dialog', { name: 'Bob' })).toBeNull();
+  });
+});
+
 describe('threads on a phone (a sheet)', () => {
   it('opens full screen as a history entry, closes on the system back, keeps the tab bar and returns focus to the root row', async () => {
     const { fake, user } = setup({ phone: true });

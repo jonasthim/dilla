@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -444,6 +445,12 @@ describe('MessageRow profile opens (MP7)', () => {
     await userEvent.setup().click(container.querySelector('.d-message-row__avatar') as Element);
     expect(onOpenProfile).toHaveBeenCalledTimes(1);
     expect(onReveal).not.toHaveBeenCalled();
+  });
+  it('N3: the phone target of the avatar is 44 px square whatever the avatar size', () => {
+    const css = readFileSync(`${process.cwd()}/src/MessageRow/MessageRow.css`, 'utf8');
+    const rule = /\[data-layout="phone"\] \.d-message-row__avatar\[data-profile="true"\]::after \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/width: 2\.75rem/);
+    expect(rule).toMatch(/height: 2\.75rem/);
   });
   it('leaves the author plain without an id', () => {
     render(<MessageRow author="ada" time="21:02" state="ok" body="hello" onOpenProfile={vi.fn()} />);

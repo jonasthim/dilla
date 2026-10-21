@@ -58,7 +58,7 @@ button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underl
 [data-layout="phone"] button.d-mention::after { content: ""; position: absolute; inset: -0.75rem -0.25rem; }
 [data-layout="phone"] button.d-mention { position: relative; }
 .d-message-row__avatar[data-profile="true"] { position: relative; cursor: pointer; }
-[data-layout="phone"] .d-message-row__avatar[data-profile="true"]::after { content: ""; position: absolute; inset: -0.25rem; }
+[data-layout="phone"] .d-message-row__avatar[data-profile="true"]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.75rem; height: 2.75rem; transform: translate(-50%, -50%); }
 .d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }
 .d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
 .d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
