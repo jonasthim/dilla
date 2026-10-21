@@ -74,5 +74,23 @@ Jonas, 2026-10-21: "AFK channel should always be in the bottom". His answer is b
 - Gates: web vitest for the new function and the Shell list tests; ui vitest for VoiceChannelRow; typecheck; check:copy; the e2e layout.spec on chromium-web if it orders channel rows (grep for the AFK channel's name or `afk`).
 - Shot: a server with two categories plus AFK, desktop 1440, mesh.
 
+### Task MP7 (sonnet): a mention opens the profile card (ui + web)
+Jonas, 2026-10-21: "when mentioning someone in the chat, it should be clickable and pop the 'profile' we talked about earlier". Rulings:
+- **User mentions:** a user mention pill in a message body (`packages/ui/src/MessageRow/MessageRow.tsx:58-66`, `BodyPart` kind `mention`) is a button. It opens the same ProfileCard as the member list, anchored to the pill on desktop and as a sheet on phone. `BodyPart` mention gains `userId?: string`. `packages/web/src/screens/conversation/MessageItem.tsx` `bodyParts(...)` sets it for user mentions, from the member book.
+- **Role and broadcast mentions** (`@role`, `@everyone`) stay plain pills, not clickable.
+- **Author name and avatar** (Claude's ruling, as in Discord; Jonas can undo it): clicking a message's author name or avatar opens the author's card too.
+- **One card source:** the web builds card data with MP2's function, not a second copy. Owner, you, roles, presence and permission-gated actions are the same as from the member list. A mention of someone who is no longer a member opens a card with the name only, no roles and no actions.
+- **Keyboard:** the pill and the author name are reachable inside the active message row in the row's existing inner tab order (as the reply-jump and thread buttons are). Enter opens the card. Escape closes it and returns focus to the pill. Clicking a pill never starts the row's own click or selection behaviour.
+- **Look:** the pill keeps its look. It gets a pointer cursor and an underline on hover and focus-visible. `data-me` and `data-broadcast` are unchanged.
+- Tests:
+  - clicking a user mention opens the card with the right user;
+  - role and `@everyone` pills have no button;
+  - a mention of a non-member opens a name-only card;
+  - Enter on the focused pill opens it and Escape returns focus;
+  - an author click opens the author's card.
+- Gates: ui vitest (MessageRow); web vitest (conversation, MessageItem); typecheck; check:copy if strings change; storybook test for MessageRow.
+- Order: after MP2 (it needs MP2's card wiring in web).
+- Shot: a message with a mention and the card open, desktop 1440 and phone 390, mesh.
+
 ## Release
 Ships after v0.1.0-web3.9.1, with release notes (client only: no schema, store or wire change) and the Homelab deploy.
