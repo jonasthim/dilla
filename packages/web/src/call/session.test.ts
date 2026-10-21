@@ -748,6 +748,52 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toMatchObject({ upKbps: 16 });
   });
 
+  it('L5: a read with no round-trip time clears the link (the dock says "— ms") instead of keeping the last numbers', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 48 });
+    s.rtt = undefined as unknown as number; // the selected pair has no RTT, as during an ICE restart
+    s.sent = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toBeUndefined();
+    s.rtt = 0.03;
+    s.sent = 36_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 30, upKbps: 48 });
+  });
+
+  it('L5: when one direction cannot be read it keeps its previous value for one tick, then shows nothing for it; the other direction stays live', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 96 });
+    s.pub = () => Promise.reject(new Error('closed'));
+    s.sub = () => Promise.resolve(new Map<string, unknown>([ // the subscriber alone still gives the ping
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: s.rtt }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['I', { id: 'I', type: 'inbound-rtp', bytesReceived: s.received }],
+    ]));
+    s.received = 36_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 48 }); // up is last tick's value, once
+    s.received = 60_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: null, downKbps: 96 });
+    s.pub = undefined;
+    s.sent = 36_000;
+    s.received = 84_000;
+    await f.advance(2_000);
+    expect(call.state.link?.upKbps).toBe(Math.round(24_000 * 8 / 6_000)); // the lost ticks are spanned, not a spike
+  });
+
   it('MP5: the poll stops while the call is paused and restarts with a fresh baseline', async () => {
     const { f, s } = linkFakes();
     const call = await start(f);

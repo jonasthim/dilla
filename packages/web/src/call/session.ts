@@ -1302,6 +1302,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let linkTotals: LinkTotals | null = null;
     let linkAt = 0;
     let linkBusy = false;
+    const carried = { up: false, down: false };
     let linkStartedAt = 0;
     const sameLink = (a: LinkSample | undefined, b: LinkSample | undefined): boolean =>
       a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
@@ -1316,7 +1317,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const next = linkSample(linkTotals, pub, sub, at - linkAt);
       linkTotals = next.totals;
       linkAt = at;
-      const link = next.sample ?? state.link;
+      // No sample (no RTT on the selected pair, or nothing readable) clears the link: the dock says "— ms", not the last numbers.
+      // A direction that could not be read keeps its previous value for one tick, then is null.
+      let link = next.sample ?? undefined;
+      if (link !== undefined) {
+        const prev = state.link;
+        const keep = (now: number | null, was: number | null | undefined, side: 'up' | 'down'): number | null => {
+          if (now !== null) { carried[side] = false; return now; }
+          if (was == null || carried[side]) return null;
+          carried[side] = true;
+          return was;
+        };
+        link = { ...link, upKbps: keep(link.upKbps, prev?.upKbps, 'up'), downKbps: keep(link.downKbps, prev?.downKbps, 'down') };
+      } else { carried.up = false; carried.down = false; }
       if (!sameLink(link, state.link)) set({ link });
     };
     // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not

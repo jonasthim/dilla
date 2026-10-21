@@ -122,7 +122,7 @@ describe('linkSample (the dock link read, MP5)', () => {
     const t = base(pub(out('O1', 10_000_000)), sub(inn('I1', 10_000_000)));
     const failed = linkSample(t, undefined, rtc([...pair(0.03), inn('I1', 10_004_000)]), 2000);
     expect(failed.sample).toMatchObject({ downKbps: 16 });
-    expect(failed.sample?.upKbps).toBe(0);
+    expect(failed.sample?.upKbps).toBeNull();
     // the publisher is back after one lost interval: its delta spans two intervals (4 s), not the whole counter
     const good = linkSample(failed.totals, pub(out('O1', 10_004_000)), sub(inn('I1', 10_008_000)), 2000);
     expect(good.sample).toMatchObject({ upKbps: 8, downKbps: 16 });

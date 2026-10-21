@@ -12,7 +12,7 @@ export interface VoiceDockProps {
   where: string;
   /** MP5: the latest link read, line 2 while connected: ping, what this device sends and receives, and the quality that
    *  colours it (`poor` warn, `bad` danger; the accessible text names it too). Absent before the first sample: "— ms". */
-  stats?: { rttMs: number; upKbps: number; downKbps: number; quality: 'good' | 'poor' | 'bad' };
+  stats?: { rttMs: number; /** Null: this direction could not be read; the dock shows a dash. */ upKbps: number | null; downKbps: number | null; quality: 'good' | 'poor' | 'bad' };
   /** Not drawn since web3.9 (R26): the user panel owns mute and deafen. Kept so existing callers still type-check. */
   muted: boolean;
   /** Not drawn since web3.9 (R26): see `muted`. */
@@ -115,8 +115,8 @@ export function VoiceDock({
     <span className="d-voice-dock__stats" data-quality="none">{labels.pingNone}</span>
   ) : (
     <span className="d-voice-dock__stats" data-quality={stats.quality}>
-      <span aria-hidden="true">{fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps, down: stats.downKbps })}</span>
-      <span className="d-sr-only">{fill(labels.stats, { ms: stats.rttMs, quality: labels.quality[stats.quality], up: stats.upKbps, down: stats.downKbps })}</span>
+      <span aria-hidden="true">{fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
+      <span className="d-sr-only">{fill(labels.stats, { ms: stats.rttMs, quality: labels.quality[stats.quality], up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
     </span>
   );
   const cameraInert = busy || !canCamera || listenReason !== undefined;

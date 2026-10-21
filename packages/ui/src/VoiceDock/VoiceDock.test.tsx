@@ -45,6 +45,12 @@ describe('VoiceDock (MP5)', () => {
     expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s');
   });
 
+  it('L5: a direction that could not be read is a dash, never "null" or 0', () => {
+    const { container } = render(<VoiceDock {...dock} stats={{ ...link, upKbps: null }} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑— ↓96 kb/s');
+    expect(container.querySelector('.d-voice-dock__stats')).not.toHaveTextContent('null');
+  });
+
   it('the stats name their quality for a screen reader and carry it as data, never as colour alone', () => {
     const { container, rerender } = render(<VoiceDock {...dock} stats={link} />);
     const stats = container.querySelector('.d-voice-dock__stats')!;

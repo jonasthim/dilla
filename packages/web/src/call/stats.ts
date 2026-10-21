@@ -73,7 +73,7 @@ export function callStatsReport(c: Connection, totals: MediaTotals, previous: Me
 }
 
 /** What the dock shows of the link (MP5): the ping, what this device sends and receives in kb/s, and the loss. */
-export interface LinkSample { rttMs: number; upKbps: number; downKbps: number; lossPct: number }
+export interface LinkSample { rttMs: number; /** Null when this tick had no read of the publisher (a failed getStats): the rate is unknown, not 0. */ upKbps: number | null; /** Null when this tick had no read of the subscriber. */ downKbps: number | null; lossPct: number }
 interface InboundTotals { bytes: number; recv: number; lost: number }
 /** One peer connection’s RTP counters per stream id, and how many reads in a row gave no data for it. */
 interface SideTotals { out: Record<string, number>; inn: Record<string, InboundTotals>; gap: number }
@@ -116,12 +116,15 @@ export function linkSample(
   let downBits = 0;
   let inLoss = 0;
   let based = false;
-  const next = (before: SideTotals | null | undefined, report: StatsLike | null | undefined): SideTotals | null => {
+  let upRead = false;
+  let downRead = false;
+  const next = (before: SideTotals | null | undefined, report: StatsLike | null | undefined, up: boolean): SideTotals | null => {
     const prev = before ?? null;
     if (!report) return prev === null ? null : { ...prev, gap: prev.gap + 1 };
     const now = countersOf(report);
     if (prev !== null) {
       based = true;
+      if (up) upRead = true; else downRead = true;
       const ms = dtMs * (1 + prev.gap);
       let sent = 0;
       let received = 0;
@@ -140,12 +143,12 @@ export function linkSample(
     }
     return { ...now, gap: 0 };
   };
-  const totals: LinkTotals = { pub: next(previous?.pub, publisher), sub: next(previous?.sub, subscriber) };
+  const totals: LinkTotals = { pub: next(previous?.pub, publisher, true), sub: next(previous?.sub, subscriber, false) };
   const rttMs = rttOf(publisher) ?? rttOf(subscriber);
   if (!based || rttMs === null) return { sample: null, totals };
   const outLoss = Math.max(connectionOf(publisher).lossPermille, connectionOf(subscriber).lossPermille) / 10;
   return {
-    sample: { rttMs, lossPct: Math.round(Math.max(outLoss, inLoss) * 10) / 10, upKbps: Math.round(upBits), downKbps: Math.round(downBits) },
+    sample: { rttMs, lossPct: Math.round(Math.max(outLoss, inLoss) * 10) / 10, upKbps: upRead ? Math.round(upBits) : null, downKbps: downRead ? Math.round(downBits) : null },
     totals,
   };
 }
