@@ -53,7 +53,7 @@ describe('MemberPane', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading members');
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle' }));
     expect(screen.getByRole('heading', { name: 'offline — 1' })).toBeInTheDocument();
-    expect(screen.getByText('do not disturb')).toBeInTheDocument();
+    expect(row('bob')).toHaveAccessibleName('bob, do not disturb');
   });
   it('orders a hoisted role section, then online, then offline, each with its count', () => {
     const { fake } = setup();
@@ -74,7 +74,7 @@ describe('MemberPane', () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'online — 2' })).toBeInTheDocument();
-    expect(within(row('olof')).getByText('owner')).toHaveClass('d-sr-only');
+    expect(row('olof')).toHaveAccessibleName('olof, owner, online');
     expect(screen.queryByText('you')).toBeNull();
     await expectNoAxeViolations(view.container);
   });
