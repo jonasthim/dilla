@@ -44,6 +44,7 @@ func TestWaitRemoteSFURetriesUntilRoomServiceIsReady(t *testing.T) {
 
 func TestMediaRunsSeparatelyAndTheAPIControlsItsRooms(t *testing.T) {
 	fd := sfuDeps(t, func(lk *config.LiveKit) { lk.Mode = "sidecar" })
+	fd.cfg.Instance.DataDir = t.TempDir() // serveMedia writes media.json there
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -171,7 +172,7 @@ func TestMediaProbeAndRoomsAreExclusive(t *testing.T) {
 	if !errors.Is(err, exit.Usage) {
 		t.Fatalf("err = %v, want exit.Usage", err)
 	}
-	if !strings.Contains(stderr.String(), "media: --probe and --rooms are exclusive") {
+	if !strings.Contains(stderr.String(), "media: --probe, --rooms and --idle are exclusive") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
