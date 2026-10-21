@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,8 +20,10 @@ import (
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
 )
 
-// countMigrations is the goose version a fully migrated database reports: one per embedded
-// migration file.
+// countMigrations is the goose version a fully migrated database reports: the highest numeric
+// prefix among the embedded migration files. It equals the file count while the numbering has no
+// gap; an unreleased branch built before the migrations below it have landed has one, and goose
+// applies it in order on a fresh database.
 func countMigrations(t *testing.T) int {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
@@ -29,9 +32,15 @@ func countMigrations(t *testing.T) int {
 	}
 	n := 0
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			n++
+		prefix, _, ok := strings.Cut(e.Name(), "_")
+		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
 		}
+		v, err := strconv.Atoi(prefix)
+		if err != nil {
+			t.Fatalf("migration %s has no numeric prefix: %v", e.Name(), err)
+		}
+		n = max(n, v)
 	}
 	if n == 0 {
 		t.Fatal("no embedded migrations at all")

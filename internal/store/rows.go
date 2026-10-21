@@ -53,6 +53,9 @@ type DeviceRow struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+	// Label is the owner's name for the device, 1..64 characters, nil when unnamed. It is not in the
+	// signed device list (protocol/09).
+	Label *string
 }
 
 type DeviceListRow struct {

@@ -67,7 +67,7 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) erro
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created FROM devices WHERE id = $1
+SELECT id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created, label FROM devices WHERE id = $1
 `
 
 type GetDeviceParams struct {
@@ -90,6 +90,7 @@ func (q *Queries) GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, 
 		&i.QuarantineReason,
 		&i.LastSeen,
 		&i.Created,
+		&i.Label,
 	)
 	return i, err
 }
@@ -197,7 +198,7 @@ func (q *Queries) ListDeviceListsAfter(ctx context.Context, arg ListDeviceListsA
 }
 
 const listDevicesByUser = `-- name: ListDevicesByUser :many
-SELECT id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created FROM devices WHERE user_id = $1 ORDER BY created
+SELECT id, user_id, dsk_pub, tier, signer_tier, credential_blob, verified_at, revoked_at, quarantined_at, quarantine_reason, last_seen, created, label FROM devices WHERE user_id = $1 ORDER BY created
 `
 
 type ListDevicesByUserParams struct {
@@ -226,6 +227,7 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, arg ListDevicesByUserPa
 			&i.QuarantineReason,
 			&i.LastSeen,
 			&i.Created,
+			&i.Label,
 		); err != nil {
 			return nil, err
 		}
@@ -294,6 +296,24 @@ type RevokeDeviceParams struct {
 func (q *Queries) RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error {
 	_, err := q.db.ExecContext(ctx, revokeDevice, arg.RevokedAt, arg.ID)
 	return err
+}
+
+const setDeviceLabel = `-- name: SetDeviceLabel :execrows
+UPDATE devices SET label = $1 WHERE id = $2 AND user_id = $3
+`
+
+type SetDeviceLabelParams struct {
+	Label  sql.NullString
+	ID     id.ID
+	UserID id.ID
+}
+
+func (q *Queries) SetDeviceLabel(ctx context.Context, arg SetDeviceLabelParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setDeviceLabel, arg.Label, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const touchDevice = `-- name: TouchDevice :exec

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -255,6 +256,54 @@ func TestListDeviceListsAfterPagesTheHistoryInOrder(t *testing.T) {
 			}
 			if got, err := repo.ListDeviceListsAfter(ctx, other, 0, 64); err != nil || !slices.Equal(versions(got), []uint64{1, 2}) {
 				t.Fatalf("other after 0 = %v, %v; want [1 2]", versions(got), err)
+			}
+		})
+	}
+}
+
+// A device label is the owner's own word for a device. Only the owner's row changes: another
+// user's id answers ErrNotFound and leaves the label alone; nil clears it; the engine keeps it
+// to 64 characters.
+func TestSetDeviceLabelIsOwnerOnlyAndRoundTrips(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			owner, other := seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID
+			did := seedDeviceAt(ctx, t, repo, owner, 100, nil)
+			if got, err := repo.GetDevice(ctx, did); err != nil || got.Label != nil {
+				t.Fatalf("a new device's label = %v, %v; want nil", got.Label, err)
+			}
+			label := "work laptop"
+			if err := repo.SetDeviceLabel(ctx, owner, did, &label); err != nil {
+				t.Fatalf("SetDeviceLabel: %v", err)
+			}
+			got, err := repo.GetDevice(ctx, did)
+			if err != nil || got.Label == nil || *got.Label != label {
+				t.Fatalf("GetDevice label = %v, %v; want %q", got.Label, err, label)
+			}
+			rows, err := repo.ListDevicesByUser(ctx, owner)
+			if err != nil || len(rows) != 1 || rows[0].Label == nil || *rows[0].Label != label {
+				t.Fatalf("ListDevicesByUser = %+v, %v; want the label", rows, err)
+			}
+			stolen := "mine now"
+			if err := repo.SetDeviceLabel(ctx, other, did, &stolen); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("another user's SetDeviceLabel = %v, want ErrNotFound", err)
+			}
+			if got, _ := repo.GetDevice(ctx, did); got.Label == nil || *got.Label != label {
+				t.Fatalf("label after a foreign write = %v, want %q", got.Label, label)
+			}
+			if err := repo.SetDeviceLabel(ctx, owner, id.New(), &label); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("an unknown device = %v, want ErrNotFound", err)
+			}
+			long := strings.Repeat("x", 65)
+			if err := repo.SetDeviceLabel(ctx, owner, did, &long); err == nil {
+				t.Fatal("a 65-character label was stored; the column allows 64")
+			}
+			if err := repo.SetDeviceLabel(ctx, owner, did, nil); err != nil {
+				t.Fatalf("clearing: %v", err)
+			}
+			if got, _ := repo.GetDevice(ctx, did); got.Label != nil {
+				t.Fatalf("label after clearing = %v, want nil", got.Label)
 			}
 		})
 	}

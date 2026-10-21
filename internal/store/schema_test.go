@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,10 +108,12 @@ func TestQueryHeadersAreByteIdenticalAcrossEngines(t *testing.T) {
 	}
 }
 
-// wantSchemaVersion is the goose version a fully migrated database reports: one
-// per embedded migration file, derived rather than written down so that the task
-// which adds a migration does not also have to edit two unrelated assertions.
-// Task 19's 00002_mls.sql was the first to make the number move off 1.
+// wantSchemaVersion is the goose version a fully migrated database reports: the highest
+// numeric prefix among the embedded migration files, derived rather than written down so that
+// the task which adds a migration does not also have to edit two unrelated assertions.
+// It is the highest number, not the file count, because goose applies a numbering gap in order
+// on a fresh database (an unreleased branch may be built before the migrations that will sit
+// below it have landed); once those land the two are the same number.
 func wantSchemaVersion(t *testing.T) int64 {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
@@ -119,9 +122,15 @@ func wantSchemaVersion(t *testing.T) int64 {
 	}
 	var n int64
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			n++
+		prefix, _, ok := strings.Cut(e.Name(), "_")
+		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
 		}
+		v, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s has no numeric prefix: %v", e.Name(), err)
+		}
+		n = max(n, v)
 	}
 	if n == 0 {
 		t.Fatal("no embedded migrations at all")
