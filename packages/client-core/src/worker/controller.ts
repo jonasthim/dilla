@@ -243,6 +243,10 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'checkpointFiles',
   'discardAttachment',
   'openAttachment',
+  'gifStatus',
+  'gifSetKey',
+  'gifClearKey',
+  'gifSetRating',
   'gifSearch',
   'gifFetch',
   'refreshTrust',
@@ -291,12 +295,13 @@ const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2), gifs: instance.gifs,
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
 const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
+const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
@@ -334,6 +339,12 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   checkpointFiles: ['channelId'],
   discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
+  gifStatus: ['communityId'],
+  gifSetKey: ['communityId'],
+  gifClearKey: ['communityId'],
+  gifSetRating: ['communityId'],
+  gifSearch: ['communityId'],
+  gifFetch: ['communityId'],
   verifyContact: ['userId'],
   safetyNumber: ['userId'],
   typing: ['channelId'],
@@ -422,6 +433,10 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'checkpointFiles',
     'discardAttachment',
     'openAttachment',
+    'gifStatus',
+    'gifSetKey',
+    'gifClearKey',
+    'gifSetRating',
     'gifSearch',
     'gifFetch',
     'refreshTrust',
@@ -560,6 +575,9 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof q !== 'string' || UTF8.encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) return `q is not at most ${String(GIF_QUERY_MAX_BYTES)} bytes of text`;
     if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) return `offset is not an integer 0..${String(GIF_OFFSET_MAX)}`;
   }
+  // The key is checked for its shape only; the refusal never names or echoes it.
+  if (m === 'gifSetKey' && (typeof command.key !== 'string' || !GIF_KEY.test(command.key))) return 'key is not 8 to 64 letters and digits';
+  if (m === 'gifSetRating' && !['g', 'pg', 'pg-13', 'r'].includes(command.rating as string)) return 'rating is not g, pg, pg-13 or r';
   if (m === 'gifFetch') {
     if (typeof command.gifId !== 'string' || !GIF_ID.test(command.gifId)) return 'gifId is not 1..64 letters and digits';
     if (command.variant !== 'preview' && command.variant !== 'full') return 'variant is not preview or full';
@@ -1081,8 +1099,12 @@ export class Controller {
       case 'checkpointFiles': return Promise.resolve(this.trays.get(command.channelId)?.files() ?? []);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
-      case 'gifSearch': return this.routes.gifSearch(command.q, command.offset);
-      case 'gifFetch': return this.routes.gifMedia(command.gifId, command.variant)
+      case 'gifStatus': return this.routes.gifStatus(fromHex(command.communityId));
+      case 'gifSetKey': return this.routes.gifSetKey(fromHex(command.communityId), command.key).then(() => null);
+      case 'gifClearKey': return this.routes.gifClearKey(fromHex(command.communityId)).then(() => null);
+      case 'gifSetRating': return this.routes.gifSetRating(fromHex(command.communityId), command.rating).then(() => null);
+      case 'gifSearch': return this.routes.gifSearch(fromHex(command.communityId), command.q, command.offset);
+      case 'gifFetch': return this.routes.gifMedia(fromHex(command.communityId), command.gifId, command.variant)
         .then(bytes => ({ blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' }) }));
       case 'refreshTrust': return this.refreshTrust();
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);

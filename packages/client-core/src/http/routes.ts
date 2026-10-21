@@ -14,9 +14,7 @@ export const WELCOMES_PAGE = 64;
 const BACKUP_TIMEOUT_MS = 120_000;
 
 export interface Instance { instanceId: Uint8Array; generation: bigint; name: string; registrationMode: 0 | 1 | 2;
-  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array;
-  /** E8: the instance has a Giphy key, so the composer shows a GIF button (element 11; absent from an older instance). */
-  gifs: boolean; }
+  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array; }
 export interface InviteInfo { communityId: Uint8Array | null; communityName: string | null; expires: bigint; }
 export interface AccountCreated { userId: Uint8Array; deviceId: Uint8Array; token: string; expires: bigint; }
 export interface Challenge { nonce: Uint8Array; expires: bigint; }
@@ -127,6 +125,11 @@ export const GIF_OFFSET_MAX = 4999;
 export const GIF_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 export const GIF_FULL_MAX_BYTES = 25 * 1024 * 1024;
 const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
+/** A Giphy key as the instance accepts it: 8 to 64 letters and digits. It is only ever sent, never kept or shown back. */
+const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
+export const GIF_RATINGS = ['g', 'pg', 'pg-13', 'r'] as const;
+export type GifRating = typeof GIF_RATINGS[number];
+export interface GifStatus { on: boolean; rating: GifRating }
 export interface GifItem { id: string; title: string; width: number; height: number }
 export interface GifPage { items: GifItem[]; next: number | null }
 function id(name: string, v: Uint8Array): string {
@@ -317,8 +320,7 @@ export class Routes {
   async getInstance(): Promise<Instance> {
     const a = atLeast(decode(await this.body('GET', '/v1/instance', 'read', true)), 11);
     return { instanceId: bin(a[3], 16), generation: u64(a[4]), name: str(a[5]), registrationMode: oneOf(a[6], [0, 1, 2]),
-      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32),
-      gifs: a.length > 11 && oneOf(a[11], [0, 1]) === 1 };
+      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32) };
   }
   async getInvite(code: string): Promise<InviteInfo> {
     const a = atLeast(decode(await this.body('GET', '/i/' + encodeURIComponent(code), 'none', true,
@@ -731,17 +733,39 @@ export class Routes {
       bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes, timeoutMs: null });
     return response.status === 404 ? null : response.body;
   }
-  // ---- E8: the GIF picker (protocol/09 § GIFs). The instance searches and fetches; no Giphy URL is ever built or read here. ----
+  // ---- E8: the GIF picker (protocol/09 § GIFs). The Giphy key is a per-server setting; the instance searches and fetches
+  // for a member of the server. No Giphy URL is ever built or read here, and the key only ever goes up. ----
 
-  /** GET /v1/gifs/search?q=&offset=: 24 results a page; an empty q is trending. 404 E_NOT_FOUND while the instance has no key. */
-  async gifSearch(q: string, offset: number): Promise<GifPage> {
+  /** GET /v1/communities/{id}/gifs: whether this server has a key, and its rating. */
+  async gifStatus(communityId: Uint8Array): Promise<GifStatus> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/gifs`, 'read', true)), 2);
+    const rating = str(a[1]);
+    if (!(GIF_RATINGS as readonly string[]).includes(rating)) throw new CborError('E_CBOR_RANGE', 'unknown gif rating');
+    return { on: oneOf(a[0], [0, 1]) === 1, rating: rating as GifRating };
+  }
+  /** PUT …/gifs/key: sets or replaces the server's key (a manager). The key is checked here as the instance checks it and is in no error. */
+  async gifSetKey(communityId: Uint8Array, key: string): Promise<void> {
+    if (!GIF_KEY.test(key)) throw new RangeError('E_ROUTE_INPUT: a Giphy key is 8 to 64 letters and digits');
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/gifs/key`, 'write', true, { body: encode([key]), ok: [204] });
+  }
+  /** DELETE …/gifs/key. */
+  async gifClearKey(communityId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/gifs/key`, 'write', true, { ok: [204] });
+  }
+  /** PUT …/gifs/rating. */
+  async gifSetRating(communityId: Uint8Array, rating: GifRating): Promise<void> {
+    if (!GIF_RATINGS.includes(rating)) throw new RangeError('E_ROUTE_INPUT: rating must be g, pg, pg-13 or r');
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/gifs/rating`, 'write', true, { body: encode([rating]), ok: [204] });
+  }
+  /** GET …/gifs/search?q=&offset=: 24 results a page; an empty q is trending. 404 E_NOT_FOUND while the server has no key. */
+  async gifSearch(communityId: Uint8Array, q: string, offset: number): Promise<GifPage> {
     if (new TextEncoder().encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) {
       throw new RangeError('E_ROUTE_INPUT: q must be at most ' + GIF_QUERY_MAX_BYTES + ' bytes with no control character');
     }
     if (!Number.isInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) {
       throw new RangeError('E_ROUTE_INPUT: offset must be 0..' + GIF_OFFSET_MAX);
     }
-    const path = `/v1/gifs/search?q=${encodeURIComponent(q)}&offset=${offset}`;
+    const path = `/v1/communities/${id('communityId', communityId)}/gifs/search?q=${encodeURIComponent(q)}&offset=${offset}`;
     const a = atLeast(decode(await this.body('GET', path, 'read', true, { maxBodyBytes: 1_048_576 })), 2);
     const items: GifItem[] = [];
     for (const value of arr(a[0])) {
@@ -753,11 +777,11 @@ export class Routes {
     }
     return { items, next: opt(a[1], u53) };
   }
-  /** GET /v1/gifs/media/{id}?r=preview|full: the GIF's bytes through the instance, so this browser never contacts Giphy. */
-  async gifMedia(gifId: string, variant: 'preview' | 'full', signal?: AbortSignal): Promise<Uint8Array> {
+  /** GET …/gifs/media/{gif_id}?r=preview|full: the GIF's bytes through the instance, so this browser never contacts Giphy. */
+  async gifMedia(communityId: Uint8Array, gifId: string, variant: 'preview' | 'full', signal?: AbortSignal): Promise<Uint8Array> {
     if (!GIF_ID.test(gifId)) throw new RangeError('E_ROUTE_INPUT: a gif id is 1..64 letters and digits');
     if (variant !== 'preview' && variant !== 'full') throw new RangeError('E_ROUTE_INPUT: r must be preview or full');
-    const bytes = await this.body('GET', `/v1/gifs/media/${gifId}?r=${variant}`, 'read', true,
+    const bytes = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/gifs/media/${gifId}?r=${variant}`, 'read', true,
       { maxBodyBytes: variant === 'preview' ? GIF_PREVIEW_MAX_BYTES : GIF_FULL_MAX_BYTES, signal });
     if (!(bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38
       && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61)) {

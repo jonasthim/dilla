@@ -8,7 +8,7 @@ import { boot, lazyStoreExists, opfsDirectoryExists, OPEN_BACKOFF_MS, RESERVE_CA
 import type { KekStore } from './kek';
 
 const INSTANCE: Instance = { instanceId: new Uint8Array(16).fill(0xab), generation: 1n, name: 'dilla.test', registrationMode: 0,
-  authMethods: [0], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(0xcd), gifs: false };
+  authMethods: [0], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(0xcd) };
 const HEX = 'ab'.repeat(16);
 
 class MemoryKek implements KekStore {

@@ -454,7 +454,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
   it('the account slice says which factors the instance offers', async () => {
     const w = world();
     w.routes.getInstance.mockImplementation(() => Promise.resolve({ instanceId: INSTANCE_ID, generation: 7n, name: 'dilla.test',
-      registrationMode: 0, authMethods: [0, 2], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2), gifs: false }));
+      registrationMode: 0, authMethods: [0, 2], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2) }));
     await toReady(w);
     expect(w.account()?.instance).toMatchObject({ passwordSignup: true, passkeys: true, totp: false } satisfies Partial<NonNullable<AccountState['instance']>>);
   });

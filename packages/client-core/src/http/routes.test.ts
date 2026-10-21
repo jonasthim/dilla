@@ -123,7 +123,7 @@ const CASES: Case[] = [
     name: 'getInstance reads elements 3 to 8 and 10, with the session bearer', call: (r) => r.getInstance(),
     method: 'GET', path: '/v1/instance', bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, INSTANCE_DOC),
-    expected: { instanceId: INSTANCE, generation: 7n, name: 'dilla.test', registrationMode: 0, authMethods: [0, 3], policyVersion: 2n, externalSenderPub: PUB, gifs: false },
+    expected: { instanceId: INSTANCE, generation: 7n, name: 'dilla.test', registrationMode: 0, authMethods: [0, 3], policyVersion: 2n, externalSenderPub: PUB },
   },
   {
     name: 'getInvite asks for CBOR and escapes the code', call: (r) => r.getInvite('AB/CD EF'),
