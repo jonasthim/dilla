@@ -1,6 +1,6 @@
 // E8: the GIF picker's two worker commands. The page never holds the session token, so the worker searches and
 // fetches through the instance; a GIF crosses back as a Blob and the page sends it with attachFiles, so it is an
-// ordinary encrypted attachment.
+// ordinary attachment, sealed like any file.
 import { describe, expect, it, vi } from 'vitest';
 import { ACCEPTS } from './controller';
 import { INSTANCE, toReady, world } from './world';

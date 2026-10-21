@@ -27,8 +27,10 @@ import { stage } from './stage.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
+import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
+  ...gif,
   ...storeNewer,
   ...privacy,
   ...admin,

@@ -91,9 +91,11 @@ describe('GifPicker', () => {
         onPick={() => {}} onClose={onClose} /></div>);
     fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenLastCalledWith('escape');
     expect(outer).not.toHaveBeenCalled();
     fireEvent.pointerDown(screen.getByRole('button', { name: 'elsewhere' }));
     expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenLastCalledWith('outside');
     fireEvent.pointerDown(document.querySelector('[data-gif-toggle]')!);
     expect(onClose).toHaveBeenCalledTimes(2);
     fireEvent.pointerDown(screen.getByRole('button', { name: 'dog' }));

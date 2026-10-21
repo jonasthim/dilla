@@ -16,6 +16,8 @@ export interface GifPickerStatus {
 }
 
 export interface GifPickerProps {
+  /** The dialog's id, for the opener's `aria-controls`. */
+  id?: string;
   label: string;
   searchLabel: string;
   searchPlaceholder: string;
@@ -34,7 +36,8 @@ export interface GifPickerProps {
   /** The result being downloaded to be attached; a second pick is ignored meanwhile. */
   pickingId: string | null;
   onPick(id: string): void;
-  onClose(): void;
+  /** Escape asks to close and return focus to the opener; a pointer down outside closes and leaves focus where it landed. */
+  onClose(reason: 'escape' | 'outside'): void;
 }
 
 const COLUMNS = 3;
@@ -48,7 +51,7 @@ const COLUMNS = 3;
  * The previews are decorative (`alt=""`): each button is named by the GIF's title. Returning focus is the caller's.
  */
 export function GifPicker({
-  label, searchLabel, searchPlaceholder, query, onQuery, items, status, poweredBy, untitled, moreLabel, hasMore, onMore,
+  id, label, searchLabel, searchPlaceholder, query, onQuery, items, status, poweredBy, untitled, moreLabel, hasMore, onMore,
   pickingId, onPick, onClose,
 }: GifPickerProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -66,7 +69,7 @@ export function GifPicker({
       const target = e.target;
       if (!(target instanceof Node) || ref.current === null || ref.current.contains(target)) return;
       if (target instanceof Element && target.closest('[data-gif-toggle]') !== null) return;
-      onCloseRef.current();
+      onCloseRef.current('outside');
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
@@ -76,7 +79,7 @@ export function GifPicker({
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      onClose('escape');
       return;
     }
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -121,7 +124,7 @@ export function GifPicker({
 
   const tab = Math.min(focus, Math.max(items.length - 1, 0));
   return (
-    <div ref={ref} role="dialog" aria-label={label} className="d-gif-picker" onKeyDown={onKeyDown}>
+    <div ref={ref} id={id} role="dialog" aria-label={label} className="d-gif-picker" onKeyDown={onKeyDown}>
       <input ref={searchRef} type="search" className="d-gif-picker__search" aria-label={searchLabel} placeholder={searchPlaceholder}
         value={query} autoComplete="off" spellCheck={false} aria-describedby={statusId}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onQuery(e.currentTarget.value)} />

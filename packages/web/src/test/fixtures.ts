@@ -1,7 +1,7 @@
 import type { AccountState, TimelineItem } from '@dilla/client-core';
 
 export const INSTANCE: NonNullable<AccountState['instance']> = {
-  id: 'aa'.repeat(16), name: 'dilla.test', registrationMode: 0, passwordSignup: false, totp: true, passkeys: true,
+  id: 'aa'.repeat(16), name: 'dilla.test', registrationMode: 0, passwordSignup: false, totp: true, passkeys: true, gifs: false,
 };
 export const ME = { id: 'bb'.repeat(16), username: 'ada' };
 
