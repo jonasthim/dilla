@@ -236,7 +236,7 @@ fn real_process_transfer_is_bounded_busy_until_drop_and_keeps_group_unavailable(
         .bytes(&[4; 16])
         .bytes(&[5; 16])
         .bytes(&[6; 16])
-        .text("text")
+        .uint(0)
         .uint(0)
         .bytes(sentinel)
         .bytes(&[0x80]);
