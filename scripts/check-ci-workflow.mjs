@@ -150,7 +150,7 @@ const REQUIRED_STEPS = {
     'node scripts/ci-areas.mjs',
     'EVENT_NAME: ${{ github.event_name }}',
     'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
-    ...['go', 'core', 'web', 'e2e', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
+    ...['go', 'core', 'web', 'e2e', 'text', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
   ],
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
@@ -205,7 +205,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install', "uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        if: needs.changes.outputs.text != 'false'", "name: profile-text tables are current\n        if: needs.changes.outputs.text != 'false'\n        run: node scripts/gen-profile-text-tables.mjs --download --check \"$RUNNER_TEMP/ucd\""],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [

@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   # Decides which parts of the tree the change touches (scripts/ci-areas.mjs holds the path table and its tests) and
-  # writes one output per area: go, core, web, e2e, and code for anything but docs. A pull request whose changed files
+  # writes one output per area: go, core, web, e2e, text (the profile-text tables), and code for anything but docs. A pull request whose changed files
   # all sit under docs/ or are *.md is docs-only: it runs this job and `docs`, and every other job is skipped (a
   # skipped job counts as passed for a required check). A push to main, and any diff that cannot be computed, turn
   # every area on. Every job below `docs` carries `needs: changes` and an `if:` on the outputs it depends on.
@@ -21,6 +21,7 @@ jobs:
       core: ${{ steps.areas.outputs.core }}
       web: ${{ steps.areas.outputs.web }}
       e2e: ${{ steps.areas.outputs.e2e }}
+      text: ${{ steps.areas.outputs.text }}
       code: ${{ steps.areas.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -77,7 +78,15 @@ jobs:
           [ ! -d packages ] || npm run vectors --workspaces --if-present
           git diff --exit-code -- protocol/vectors
           test -z "$(git status --porcelain -- protocol/vectors)"
+      # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are
+      # downloaded once, and only when the generator, the tables or the rule change (the `text` area).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.text != 'false'
+        with:
+          path: ${{ runner.temp }}/ucd
+          key: ucd-${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
       - name: profile-text tables are current
+        if: needs.changes.outputs.text != 'false'
         run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
   ui:
     needs: [changes]
