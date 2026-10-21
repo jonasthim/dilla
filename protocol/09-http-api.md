@@ -32,6 +32,10 @@ Wire-3 session capability negotiation uses authenticated
 1..8 distinct positive uints. The highest common versions are bound to this
 bearer session; a missing intersection is `400 E_VERSION` and changes nothing.
 Gateway identify/resume records its selected versions with the same binding.
+Negotiation admits enrolled humans and live installation-bound bot sessions in
+enrolling, joining or ready installation state. These bot sessions use enrolled
+device scope 0 with `10`'s additional route restrictions; negotiating versions
+does not grant installation or feature authority.
 See `10`'s Session capability and compatibility section for bot upgrade gates;
 request headers never establish negotiated capability.
 

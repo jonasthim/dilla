@@ -274,8 +274,14 @@ contract directly; enrolled bot actions require the normal negotiated session.
 
 ## Installation and enrollment API
 
-Auth scopes E and A are `09`'s enrolled human and instance-admin sessions. B means
+Auth labels E and A here mean enrolled human and instance-admin sessions. B means
 a live managed bot session bound to this community's installation/account/device.
+B uses the existing enrolled device-session scope (numeric 0), with additional
+installation-state and route restrictions; it is not a fourth session scope.
+The installation state enrolling is independent of that session scope. Such a
+session may negotiate capabilities while enrolling, joining or ready, before
+calling routes that require wire 3. Capability negotiation itself does not
+require a previously negotiated version and cannot relax installation limits.
 R means a hashed, operator-registered runtime credential with provisioning scope.
 All E/A changes require existing step-up when the corresponding human operation
 requires it. Installation configuration additionally checks each granted
@@ -301,7 +307,8 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
 | `GET /v1/bot-runtime/installations` | R | — | `[installations]`, at most 100; `after` is last installation id |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation, claim_id, claim_expires]` |
-| `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, token, expires]` |
+| `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
+| `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling | `[request_id, expected_revision, credential_bstr]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/ready` | B | `[request_id, expected_revision]` | installation |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
@@ -313,9 +320,30 @@ Human `/v1/accounts` cannot enroll Bot credentials. Claims last ten minutes, are
 bound to the runtime credential and installation, and repeat requests return the
 same unexpired claim. Enrollment stores its operation result transactionally;
 repeat matching requests return the same account/device, not a second identity.
-An interrupted session response is recovered by normal device-key session proof;
-raw bearer tokens are not retained in send receipts. Claim expiry or runtime
+For an already committed enrollment, a live runtime credential may replay the
+same operation id and exact payload for that installation after claim expiry.
+The stored result is bound to the original runtime credential id; authorization
+and that binding are checked before replay, and an expired claim cannot authorize
+a new enrollment. A revoked runtime cannot retrieve results. Operator credential
+rotation replaces the token hash on the same runtime id, invalidates outstanding
+claims and keeps completed operation receipts; the old token immediately fails.
+Rotation therefore preserves recovery without issuing a second bot identity.
+Enrollment creates no bearer token. The helper completes its local identity with
+the assigned account, then obtains a session using the normal device-key challenge
+and proof. This also recovers a lost enrollment response without retaining raw
+bearer tokens. The credential route verifies the final Bot/Native/Native credential
+against the already registered account, UMK, SSK and device key, and atomically
+stores it before moving enrolling to joining. The original operation result is
+retained for matching retries; conflicting reuse fails. Claim expiry or runtime
 revocation never exposes existing private identity state.
+
+All bot sessions are bound to their installation, account and registered device.
+An enrolling installation permits only capability negotiation, its credential
+finalization and session termination. Joining permits normal signed device-list,
+KeyPackage and authorized group synchronization operations. Ready additionally
+permits enabled feature actions. Disabled or removed installations cannot mint or
+use sessions, including through ordinary device-key renewal. Existing non-bot
+session scopes and human factor requirements remain unchanged.
 
 Ready is accepted only after the final credential, signed native device list,
 KeyPackages and required group membership are verified. Revocation/disable stops
