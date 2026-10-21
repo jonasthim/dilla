@@ -84,7 +84,7 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
       {groups.length > 0
         ? <div className="d-safety-compare__groups" role="group" aria-label={labels.title}>{groups.map((group, index) => <code key={index} data-safety-group>{group}</code>)}</div>
         : error === null && labels.loading ? <p className="d-safety-compare__loading" role="status">{labels.loading}</p> : null}
-      {qrValue !== null && qrShown ? <div className="d-safety-compare__qr"><QrCode value={qrValue} label={labels.qrLabel ?? ''} size={176} /></div> : null}
+      {qrValue !== null && qrShown ? <div className="d-safety-compare__qr"><QrCode value={qrValue} label={labels.qrLabel ?? ''} size={256} /></div> : null}
       {error !== null ? <p className="d-safety-compare__error" role="alert">{error}</p> : null}
       <div className="d-safety-compare__actions">
         <Button onClick={onCopy}>{labels.copy}</Button>
