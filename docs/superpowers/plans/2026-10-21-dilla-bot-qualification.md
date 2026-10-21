@@ -123,3 +123,34 @@ The development-only [provider harness](../../../experiments/bot-providers/READM
 adds dependency/version checks and local synthetic Opus encoding. It does not
 launch providers or consume credentials. Its unit tests and real ffmpeg smoke
 check are preparation for Task 1, not completion of Task 1.
+
+## Development harness verification
+
+After commit `ea0c9a96`, the coordinator independently ran:
+
+```sh
+cd experiments/bot-providers
+python3 -m unittest -v
+python3 provider_harness.py opus-smoke
+python3 provider_harness.py doctor
+```
+
+The 13 unit tests passed. The real local ffmpeg/ffprobe check produced 51 Opus
+packets at 48 kHz stereo, 20 ms frame cadence and 96 kbps CBR. It explicitly
+reports provider playback and browser SFrame decryption unverified. `doctor`
+returns the expected exit 1 for missing Soloist and yt-dlp and reports qualification
+unverified, even though local encoding works.
+
+An independent review found that a descendant holding stdout could defeat the
+deadline and a SIGTERM-ignoring child could survive cleanup. Both were reproduced
+before fixing; the coordinator observed a 0.05-second timeout return success after
+1.019 seconds. The fixes preserve readiness-based reads and terminate the spawned
+process group independently of its leader. New tests check elapsed time and actual
+descendant termination. The reviewer's scoped second pass approved both fixes,
+with no new Important findings. This review covers the bounded harness only.
+
+Task 0 is complete. Task 1 is **blocked/unqualified**, with the preparatory harness
+implemented and verified. Tasks 2–16 have not begun. No production bot service,
+UI, APIs, protocol change, provider integration, feature release, PR, or live
+deployment is represented by this preparation. Resume from the operator inputs
+and unresolved credential interface above; do not bypass the qualification gate.
