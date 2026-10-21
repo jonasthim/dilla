@@ -302,7 +302,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
 | `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or 404 |
-| `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities]` | installation, 201 new / 200 existing |
+| `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
 | `GET /v1/bot-runtime/installations` | R | — | `[installations]`, at most 100; `after` is last installation id |
@@ -352,6 +352,14 @@ removals and disconnects associated media publishers. A runtime credential has
 no generic admin or moderation access. The managed moderator-factor exception
 requires a validated live installation and explicit capability approval; a bare
 Bot-kind account cannot bypass human factor requirements.
+
+`step_up` is the existing short-lived human step-up token, bound to that bearer
+session. A new enable or capability change consumes it after checking current
+permissions. Its secret bytes are excluded from the durable operation digest and
+receipt. A matching completed retry checks current authority and the original
+actor binding, then returns the stored result without consuming another token or
+applying another change. Disable and removal remain available through ordinary
+current human authorization so emergency shutdown requires no bot availability.
 
 ## Durable events and receipts API
 
