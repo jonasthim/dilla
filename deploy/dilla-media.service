@@ -3,15 +3,20 @@ Description=dilla media SFU
 Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
 After=network-online.target
 Wants=network-online.target
-PartOf=dilla.service
+# No PartOf=dilla.service: restarting the API never touches the SFU, so live calls survive an
+# API-only upgrade. dilla-media-refresh.timer moves it onto a new dillad once its calls end.
 
 [Service]
-Type=simple
+# READY: dillad media sends READY=1 once the SFU accepts RoomService requests and media.json is
+# READY: written, so systemctl start and restart return when the media server is ready.
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/dillad media --config=%E/dilla/dilla.toml
+# Exit 69 (the SFU did not come up) is retried; exit.Config (78) means dilla.toml must be fixed.
 Restart=on-failure
 RestartSec=5s
 RestartPreventExitStatus=78
-TimeoutStartSec=30s
+TimeoutStartSec=60s
 TimeoutStopSec=25s
 User=dillad
 Group=dillad

@@ -58,22 +58,155 @@ stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "$1" = is-active ] && [ -n "${STUB_MEDIA_INACTIVE:-}" ]; then exit 3; fi; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
-# With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
-# the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
-# STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
-# FAKE_V2_CONFIG_FAIL, v2 refuses the config before it migrates anything.
-if [ "$1" = restart ] && [ -n "${FAKE_SCHEMA:-}" ]; then
-	if grep -q "^# fake dillad v2 for" "${DILLA_INSTALL_ROOT:-}/usr/local/bin/dillad"; then
-		[ -z "${FAKE_V2_CONFIG_FAIL:-}" ] || exit 1
-		[ -z "${STUB_RESTART_MIGRATES_TO:-}" ] || echo "$STUB_RESTART_MIGRATES_TO" >"$FAKE_SCHEMA"
-		[ -z "${STUB_FAIL_V2:-}" ] || exit 1
-	elif [ "$(cat "$FAKE_SCHEMA")" -gt 16 ]; then
-		echo "serve: database schema $(cat "$FAKE_SCHEMA") is newer than this binary'"'"'s highest migration 16: refusing to start" >&2
-		exit 1
+stub sleep 'exit 0'
+# systemctl models the two services in $DILLA_INSTALL_ROOT/stub: dilla-media's MainPID, a
+# $ROOT/proc/<pid>/exe that is a hard link to the binary it started from (so it keeps that inode
+# when install.sh renames a new file over /usr/local/bin/dillad, as /proc/<pid>/exe does), the
+# media.json a web3.12+ `dillad media` writes before READY, and which process holds turn.listen.
+cat >"$STUBS/systemctl" <<STUB
+#!/bin/sh
+echo "systemctl \$*" >>"$LOG"
+STUB
+cat >>"$STUBS/systemctl" <<'STUB'
+[ "${STUB_SYSTEMCTL_FAIL:-}" != 1 ] || exit 1
+# dillad media writes media.json at 0600.
+umask 077
+R="${DILLA_INSTALL_ROOT:-}"
+S="$R/stub"
+mkdir -p "$S"
+BIN="$R/usr/local/bin/dillad"
+DATA="$R/var/lib/dillad"
+CONF="$R/etc/dilla/dilla.toml"
+hdr() { sed -n "s/^# fake-$1 //p" "$2" 2>/dev/null | head -n 1; }
+level() { l="$(hdr level "$1")"; echo "${l:-0}"; }
+is_v2() { grep -q "^# fake dillad v2 for" "$1"; }
+turn_conf() {
+	awk '/^\[/ { inside = ($0 == "[turn]") } inside && /^  enabled = true$/ { e = 1 } inside && /^  listen = .[^\047]/ { l = 1 } END { exit !(e && l) }' "$CONF" 2>/dev/null
+}
+media_pid() { cat "$S/media.pid" 2>/dev/null || echo 0; }
+media_active() { [ "$(media_pid)" -gt 0 ]; }
+media_json_current() { [ -f "$DATA/media.json" ] && grep -q "\"pid\":$(media_pid)," "$DATA/media.json"; }
+# The running media process binds turn.listen once nobody else holds it.
+media_takes_turn() {
+	media_active && media_json_current && [ ! -e "$S/api.turn" ] && turn_conf || return 0
+	[ "$(hdr caps "$R/proc/$(media_pid)/exe")" = '"turn"' ] || return 0
+	sed -i 's/"capabilities":\[\]/"capabilities":["turn"]/' "$DATA/media.json"
+}
+media_start() {
+	media_active && return 0
+	n=$(($(cat "$S/pidseq" 2>/dev/null || echo 4000) + 1))
+	echo "$n" >"$S/pidseq"
+	# FAKE_MEDIA_PROBE_FAIL or STUB_MEDIA_START_FAIL: the SFU never becomes ready. A release that
+	# refuses dilla.toml (FAKE_V2_CONFIG_FAIL) exits 78 at once.
+	if [ -n "${FAKE_MEDIA_PROBE_FAIL:-}${STUB_MEDIA_START_FAIL:-}" ] || { [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && is_v2 "$BIN"; }; then
+		return 1
 	fi
+	mkdir -p "$R/proc/$n"
+	ln -f "$BIN" "$R/proc/$n/exe"
+	echo "$n" >"$S/media.pid"
+	if [ "$(level "$BIN")" -ge 2 ]; then
+		printf '{"version":"%s","media_level":%s,"capabilities":[],"pid":%s,"started":"2026-10-22T08:00:00Z"}\n' \
+			"$(hdr version "$BIN")" "$(level "$BIN")" "$n" >"$DATA/media.json"
+		media_takes_turn
+	fi
+}
+media_stop() {
+	p="$(media_pid)"
+	rm -f "$S/media.pid"
+	[ "$p" -gt 0 ] || return 0
+	rm -rf "${R:?}/proc/$p"
+	# A clean stop removes its own media.json.
+	if grep -q "\"pid\":$p," "$DATA/media.json" 2>/dev/null; then rm -f "$DATA/media.json"; fi
+}
+# api_start VERB: models dillad serve. With FAKE_SCHEMA (a file holding the database schema
+# version) the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails
+# when STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
+# FAKE_V2_CONFIG_FAIL, v2 refuses the config before it migrates anything. STUB_SYSTEMCTL_FAIL=restart
+# fails `systemctl restart dilla`; STUB_API_RETRY_OK fails the first one but systemd's own
+# Restart=on-failure brings dilla up (serve exited 69).
+api_start() {
+	ok=1
+	if [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ]; then ok=0; fi
+	if [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && is_v2 "$BIN"; then ok=0; fi
+	if [ "$ok" -eq 1 ] && [ -n "${FAKE_SCHEMA:-}" ]; then
+		if is_v2 "$BIN"; then
+			[ -z "${STUB_RESTART_MIGRATES_TO:-}" ] || echo "$STUB_RESTART_MIGRATES_TO" >"$FAKE_SCHEMA"
+			[ -z "${STUB_FAIL_V2:-}" ] || ok=0
+		elif [ "$(cat "$FAKE_SCHEMA")" -gt 16 ]; then
+			echo "serve: database schema $(cat "$FAKE_SCHEMA") is newer than this binary's highest migration 16: refusing to start" >&2
+			ok=0
+		fi
+	fi
+	if [ -n "${STUB_API_RETRY_OK:-}" ] && [ ! -e "$S/api.retried" ]; then
+		touch "$S/api.retried"
+		echo active >"$S/dilla.state"
+		return 1
+	fi
+	if [ "$ok" -eq 0 ]; then
+		echo failed >"$S/dilla.state"
+		return 1
+	fi
+	echo active >"$S/dilla.state"
+	# Who binds turn.listen (R-UP11): serve leaves it to a dilla-media whose valid media.json is of
+	# a level that serves TURN; otherwise serve binds it.
+	rm -f "$S/api.turn"
+	if turn_conf; then
+		if [ "$(level "$BIN")" -ge 2 ] && media_json_current && grep -q '"media_level":[2-9]' "$DATA/media.json" &&
+			[ "$(hdr caps "$R/proc/$(media_pid)/exe")" = '"turn"' ]; then
+			media_takes_turn
+		else
+			touch "$S/api.turn"
+		fi
+	fi
+}
+# STUB_MEDIA_INACTIVE: dilla-media was stopped before this install.sh run (run clears the marker).
+if [ -n "${STUB_MEDIA_INACTIVE:-}" ] && [ ! -e "$S/inactive.done" ]; then
+	touch "$S/inactive.done"
+	media_stop
 fi
-exit 0'
+verb="$1"
+shift
+case "$verb" in
+show) if media_active; then media_pid; else echo 0; fi ;;
+is-active)
+	[ "${1:-}" != --quiet ] || shift
+	case "$1" in
+	dilla-media) media_active ;;
+	dilla) [ "$(cat "$S/dilla.state" 2>/dev/null || echo active)" = active ] ;;
+	esac
+	;;
+start | restart | stop | enable | disable)
+	now=0
+	if [ "${1:-}" = --now ]; then
+		now=1
+		shift
+	fi
+	rc=0
+	for unit in "$@"; do
+		case "$verb:$now:$unit" in
+		start:*:dilla-media | enable:1:dilla-media) media_start || rc=1 ;;
+		restart:*:dilla-media)
+			media_stop
+			media_start || rc=1
+			;;
+		stop:*:dilla-media | disable:1:dilla-media) media_stop ;;
+		start:*:dilla | enable:1:dilla)
+			if [ "$(cat "$S/dilla.state" 2>/dev/null)" != active ]; then api_start start || rc=1; fi
+			;;
+		restart:*:dilla) api_start restart || rc=1 ;;
+		stop:*:dilla | disable:1:dilla)
+			echo inactive >"$S/dilla.state"
+			rm -f "$S/api.turn"
+			media_takes_turn
+			;;
+		esac
+	done
+	exit "$rc"
+	;;
+esac
+exit $?
+STUB
+chmod 0755 "$STUBS/systemctl"
 # runuser -u dillad -- cmd args: run cmd args.
 stub runuser 'echo "runuser $*" >>"'"$LOG"'"; while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift
 # The real-binary config test has no media process: simulate only its readiness probe.
@@ -85,14 +218,22 @@ FAKE="$TMP/fake-dillad"
 cat >"$FAKE" <<'FAKE'
 #!/bin/sh
 # fake dillad for deploy/install_test.sh
+# What this fake is (make_fake rewrites these lines): its version, its media level (0 for a
+# web3.11 or older dillad, which knows no `version --json` and no `media --idle`), the oldest SFU
+# level it works with, and its media capabilities as JSON array items.
+# fake-version 0.1.0-web3.11
+# fake-level 0
+# fake-min 0
+# fake-caps none
 echo "dillad $*" >>"${FAKE_LOG:?}"
-# A newer release that refuses the installed dilla.toml refuses it in every verb (config.Load).
-if [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && grep -q "^# fake dillad v2 for" "$0"; then
+hdr() { sed -n "s/^# fake-$1 //p" "$0" | head -n 1; }
+verb="$1"
+shift
+# A newer release that refuses the installed dilla.toml refuses it in every verb that loads it.
+if [ "$verb" != version ] && [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && grep -q "^# fake dillad v2 for" "$0"; then
 	echo "config: auth.methods must include totp or passkey" >&2
 	exit 78
 fi
-verb="$1"
-shift
 case "$verb" in
 init)
 	for a in "$@"; do
@@ -187,10 +328,25 @@ media)
 		[ -z "${FAKE_ROOMS_FAIL:-}" ] || { echo "media rooms: sidecar unreachable" >&2; exit 69; }
 		if [ -n "${FAKE_ROOMS:-}" ]; then cat "$FAKE_ROOMS"; else echo "no live rooms"; fi
 		;;
+	--idle)
+		# FAKE_IDLE: the exit status (0 idle, 1 busy, 69 cannot tell). web3.11 has no --idle.
+		[ "$(hdr level)" -ge 2 ] || { echo "flag provided but not defined: -idle" >&2; exit 64; }
+		exit "${FAKE_IDLE:-0}"
+		;;
 	*) exit 64 ;;
 	esac
 	;;
-version) echo "dillad fake ${FAKE_VERSION:-1}" ;;
+version)
+	if [ "${1:-}" = --json ]; then
+		[ "$(hdr level)" -ge 2 ] || { echo "flag provided but not defined: -json" >&2; exit 64; }
+		caps="$(hdr caps)"
+		[ "$caps" != none ] || caps=""
+		printf '{"version":"%s","revision":"fake","wire":[2],"schema":21,"media_level":%s,"min_sfu_media_level":%s,"media_capabilities":[%s]}\n' \
+			"$(hdr version)" "$(hdr level)" "$(hdr min)" "$caps"
+	else
+		echo "dillad $(hdr version) (go1.25 linux/amd64) revision=fake CGO_ENABLED=0"
+	fi
+	;;
 migrate)
 	# v1's highest migration is 16, v2's is 17. The database's version is in $FAKE_SCHEMA (16
 	# when unset), as `dillad migrate status` prints it.
@@ -225,7 +381,26 @@ esac
 FAKE
 chmod 0755 "$FAKE"
 
-# A release directory: the three assets under their release names, and SHA256SUMS.
+# make_fake OUT VERSION LEVEL MIN CAPS [v2]: a fake dillad of that release. "v2" marks the newer
+# schema (migration 17) that the migration cases need.
+make_fake() {
+	sed -e "s/^# fake-version .*/# fake-version $2/" -e "s/^# fake-level .*/# fake-level $3/" \
+		-e "s/^# fake-min .*/# fake-min $4/" -e "s/^# fake-caps .*/# fake-caps $5/" "$FAKE" >"$1"
+	[ "${6:-}" != v2 ] || sed -i 's/^# fake dillad for/# fake dillad v2 for/' "$1"
+	chmod 0755 "$1"
+}
+
+# release_json BINARY: what release.yml makes of the binary's `version --json` (R-UP2), or nothing
+# for a binary that has none (web3.11 and older).
+release_json() {
+	j="$(FAKE_LOG=/dev/null "$1" version --json 2>/dev/null)" || return 0
+	v="$(printf '%s' "$j" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+	rest="$(printf '%s' "$j" | sed -e 's/^{"version":"[^"]*","revision":"[^"]*",//' -e 's/}$//')"
+	printf '{"format":1,"tag":"v%s","version":"%s",%s,"sfu_restart":"when-idle"}\n' "$v" "$v" "$rest"
+}
+
+# A release directory: the three assets under their release names, release.json when the binary
+# has `version --json`, and SHA256SUMS over all of them.
 # make_release DIR [BINARY]
 make_release() {
 	mkdir -p "$1"
@@ -233,11 +408,32 @@ make_release() {
 	cp "${2:-$FAKE}" "$1/dillad-linux-arm64"
 	printf '\0asm fake core %s\n' "$1" >"$1/dilla_core_wasi.wasm"
 	cp "$INSTALL" "$1/install.sh" 2>/dev/null || : >"$1/install.sh"
-	(cd "$1" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh >SHA256SUMS)
+	assets="dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh"
+	release_json "$1/dillad-linux-amd64" >"$1/release.json"
+	if [ -s "$1/release.json" ]; then assets="$assets release.json"; else rm -f "$1/release.json"; fi
+	(cd "$1" && sha256sum $assets >SHA256SUMS)
 }
 
+# The releases: web3.11 (REL, the base fake: no release.json), web3.12 (NEW: media level 2, works
+# with level 1, serves TURN in dilla-media), a compatible web3.13 (C13: level 2, needs 2) and an
+# incompatible one (I13: level 3, needs 3), and a web3.10 whose SFU no rule recognises.
 REL="$TMP/release"
 make_release "$REL"
+make_fake "$TMP/fake-v2" 0.1.0-web3.12 2 1 '"turn"' v2
+NEW="$TMP/new-release"
+make_release "$NEW" "$TMP/fake-v2"
+make_fake "$TMP/fake-c13" 0.1.0-web3.13 2 2 '"turn"' v2
+C13="$TMP/c13-release"
+make_release "$C13" "$TMP/fake-c13"
+make_fake "$TMP/fake-i13" 0.1.0-web3.13 3 3 '"turn"' v2
+I13="$TMP/i13-release"
+make_release "$I13" "$TMP/fake-i13"
+make_fake "$TMP/fake-w10" 0.1.0-web3.10 0 0 none
+W10="$TMP/w10-release"
+make_release "$W10" "$TMP/fake-w10"
+# The media unit install.sh writes for a dillad older than web3.12, which sends no READY=1.
+sed -e '/^# READY: /d' -e '/^NotifyAccess=main$/d' -e 's/^Type=notify$/Type=simple/' \
+	-e 's/^TimeoutStartSec=60s$/TimeoutStartSec=30s/' "$MEDIA_UNIT" >"$TMP/dilla-media.simple.service"
 
 # run NAME ARGS... : runs install.sh against a fresh root unless ROOT is set;
 # leaves OUT, ERR and RC.
@@ -249,6 +445,7 @@ run() {
 		mkdir -p "$ROOT"
 	fi
 	: >"$LOG"
+	rm -f "$ROOT/stub/inactive.done" "$ROOT/stub/api.retried"
 	RC=0
 	env PATH="${EXTRA_PATH:+$EXTRA_PATH:}$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" FAKE_LOG="$LOG" \
 		sh "${RUN_SCRIPT:-$INSTALL}" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
@@ -257,6 +454,13 @@ run() {
 }
 
 mode_of() { stat -c %a "$1" 2>/dev/null || echo missing; }
+# count LINE: how many calls in the log are exactly LINE ("systemctl restart dilla" is not
+# "systemctl restart dilla-media").
+count() { grep -cx -- "$1" "$LOG" || true; }
+# line_of LINE [N]: the log line number of the Nth call that is exactly LINE (empty when none).
+line_of() { grep -nx -- "$1" "$LOG" | sed -n "${2:-1}p" | cut -d: -f1; }
+# What `dillad media --rooms` prints while calls are live.
+printf 'room-a\t2 participants\n  alice\n  bob\nroom-b\t0 participants\nroom-c\t1 participants\n  carol\n' >"$TMP/rooms.live"
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac }
 # toml_get FILE TABLE KEY: the raw value text of KEY in [TABLE].
 toml_get() {
@@ -403,12 +607,17 @@ check_common_install() { # NAME
 	has "$ERR" "SECRETINVITECODE" && problems="$problems|the invite code reached stderr"
 	has "$ERR" "secret-turn-" && problems="$problems|the TURN secret reached stderr"
 	has "$ERR" "secret-livekit-" && problems="$problems|the LiveKit secret reached stderr"
-	cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|/usr/local/bin/dillad is not the release binary"
-	cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "$REL/dilla_core_wasi.wasm" || problems="$problems|the core is not beside the binary"
+	cmp -s "$ROOT/usr/local/bin/dillad" "${EXPECT_BIN:-$FAKE}" || problems="$problems|/usr/local/bin/dillad is not the release binary"
+	cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "${EXPECT_REL:-$REL}/dilla_core_wasi.wasm" || problems="$problems|the core is not beside the binary"
 	cmp -s "$ROOT/etc/systemd/system/dilla.service" "$UNIT" || problems="$problems|the installed unit differs from deploy/dilla.service"
-	cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the media unit differs from deploy/dilla-media.service"
-	has "$(cat "$MEDIA_UNIT")" "PartOf=dilla.service" || problems="$problems|deploy/dilla-media.service lacks PartOf=dilla.service"
-	has "$(cat "$ROOT/etc/systemd/system/dilla-media.service")" "PartOf=dilla.service" || problems="$problems|the media unit install.sh wrote lacks PartOf=dilla.service"
+	# web3.11 (the base fake) sends no READY=1, so its unit is the Type=simple variant.
+	cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "${EXPECT_MEDIA_UNIT:-$TMP/dilla-media.simple.service}" || problems="$problems|the media unit differs from the one for this release: $(diff "${EXPECT_MEDIA_UNIT:-$TMP/dilla-media.simple.service}" "$ROOT/etc/systemd/system/dilla-media.service" | tr '\n' ' ')"
+	grep -q '^PartOf=' "$MEDIA_UNIT" && problems="$problems|deploy/dilla-media.service has PartOf (R-UP5)"
+	grep -q '^PartOf=' "$ROOT/etc/systemd/system/dilla-media.service" && problems="$problems|the media unit install.sh wrote has PartOf (R-UP5)"
+	cmp -s "$ROOT/etc/systemd/system/dilla-media-refresh.service" "$HERE/dilla-media-refresh.service" || problems="$problems|the refresh service differs from deploy/dilla-media-refresh.service"
+	cmp -s "$ROOT/etc/systemd/system/dilla-media-refresh.timer" "$HERE/dilla-media-refresh.timer" || problems="$problems|the refresh timer differs from deploy/dilla-media-refresh.timer"
+	cmp -s "$ROOT/usr/local/libexec/dilla-media-refresh" "$HERE/dilla-media-refresh.sh" || problems="$problems|the refresh script differs from deploy/dilla-media-refresh.sh"
+	[ "$(mode_of "$ROOT/usr/local/libexec/dilla-media-refresh")" = 755 ] || problems="$problems|the refresh script mode $(mode_of "$ROOT/usr/local/libexec/dilla-media-refresh"), want 755"
 	[ "$(mode_of "$ROOT/etc/dilla/dilla.toml")" = 640 ] || problems="$problems|dilla.toml mode $(mode_of "$ROOT/etc/dilla/dilla.toml"), want 640"
 	[ "$(mode_of "$ROOT/var/lib/dillad")" = 700 ] || problems="$problems|/var/lib/dillad mode $(mode_of "$ROOT/var/lib/dillad"), want 700"
 	[ "$(mode_of "$ROOT/usr/local/bin/dillad")" = 755 ] || problems="$problems|dillad mode $(mode_of "$ROOT/usr/local/bin/dillad"), want 755"
@@ -493,12 +702,10 @@ else
 fi
 
 # --upgrade: new binary and core, config and data untouched, no init.
-NEW="$TMP/new-release"
-sed 's/^# fake dillad for/# fake dillad v2 for/' "$FAKE" >"$TMP/fake-v2"
-chmod 0755 "$TMP/fake-v2"
-make_release "$NEW" "$TMP/fake-v2"
+# The installed web3.11 SFU is level 1 (from /proc/<pid>/exe version) and web3.12 works with level
+# 1, so this is the compatible case (R-UP3): dilla restarts once and dilla-media never.
 ls -la "$ROOT/var/lib/dillad" >"$TMP/data.before" 2>&1 || :
-KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
 [ -z "$OUT" ] || problems="$problems|stdout = \"$OUT\", want nothing on an upgrade"
@@ -508,27 +715,35 @@ cmp -s "$T" "$TMP/toml.before" || problems="$problems|the upgrade changed dilla.
 ls -la "$ROOT/var/lib/dillad" >"$TMP/data.after" 2>&1 || :
 cmp -s "$TMP/data.before" "$TMP/data.after" || problems="$problems|the upgrade changed the data directory"
 has "$(cat "$LOG")" "dillad init" && problems="$problems|the upgrade ran init"
-has "$(cat "$LOG")" "systemctl restart dilla" || problems="$problems|the upgrade did not restart dilla"
-has "$(cat "$LOG")" "systemctl restart dilla-media" || problems="$problems|the upgrade did not restart media"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla restarted $(count 'systemctl restart dilla') times, want 1"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted"
+has "$(cat "$LOG")" "systemctl stop dilla-media" && problems="$problems|dilla-media was stopped"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran although the SFU stays"
 has "$(cat "$LOG")" "doctor --config=" || problems="$problems|the upgrade did not run doctor"
-if [ -z "$problems" ]; then pass "--upgrade replaces only the binary and the core, restarts and runs doctor"; else
+has "$ERR" "decision: keep dilla-media running" || problems="$problems|the decision is not logged: $ERR"
+has "$ERR" "/exe version" || problems="$problems|the level did not come from /proc/<pid>/exe version: $ERR"
+has "$ERR" "keeps v0.1.0-web3.11 until its calls end" || problems="$problems|the report does not say which binary the SFU runs: $ERR"
+has "$(cat "$LOG")" "systemctl enable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer was not enabled"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the media unit is not deploy/dilla-media.service"
+cmp -s "$ROOT/usr/local/libexec/dilla-media-refresh" "$HERE/dilla-media-refresh.sh" || problems="$problems|the refresh script is not deploy/dilla-media-refresh.sh"
+if [ -z "$problems" ]; then pass "a compatible --upgrade with live rooms restarts dilla once, dilla-media never, and is not refused"; else
 	IFS='|'
 	# shellcheck disable=SC2086
-	fail "--upgrade replaces only the binary and the core, restarts and runs doctor" $problems
+	fail "a compatible --upgrade with live rooms restarts dilla once, dilla-media never, and is not refused" $problems
 	IFS='
 '
 fi
 
-# The live-call preflight: --upgrade asks `dillad media --rooms` as the service user, just before
-# it changes anything. The target release differs from the installed one, so "untouched" is visible.
-printf 'room-a\t2 participants\n  alice\n  bob\nroom-b\t0 participants\nroom-c\t1 participants\n  carol\n' >"$TMP/rooms.live"
+# The live-call preflight: a downgrade to web3.11 has no release.json, so it restarts the SFU, and
+# --upgrade asks `dillad media --rooms` as the service user, just before it changes anything. The
+# target release differs from the installed one, so "untouched" is visible.
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
 cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
 untouched() { # prints a problem list, empty when nothing was touched
 	cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight" || printf '|the binary was replaced'
 	cmp -s "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight" || printf '|dilla.toml changed'
-	# Asking whether dilla-media runs (systemctl is-active) changes nothing; any other systemctl call does.
-	grep systemctl "$LOG" | grep -vq '^systemctl is-active' && printf '|systemctl ran: %s' "$(grep systemctl "$LOG" | tr '\n' ';')"
+	# Asking systemd (is-active, show) changes nothing; any other systemctl call does.
+	grep systemctl "$LOG" | grep -Evq '^systemctl (is-active|show) ' && printf '|systemctl ran: %s' "$(grep systemctl "$LOG" | tr '\n' ';')"
 	has "$(cat "$LOG")" "migrate down" && printf '|migrate ran'
 	return 0
 }
@@ -538,13 +753,14 @@ problems="$(untouched)"
 has "$ERR" "room-a" && has "$ERR" "2 participants" && has "$ERR" "room-c" && has "$ERR" "1 participants" || problems="$problems|the rooms and counts are not listed"
 has "$ERR" "room-b" && problems="$problems|an empty room is listed"
 has "$ERR" "alice" && problems="$problems|identities are listed"
-has "$ERR" "--yes" || problems="$problems|the override is not named"
+has "$ERR" "--restart-sfu" || problems="$problems|the override is not named"
+has "$ERR" "has no release.json" || problems="$problems|the restart decision does not say why: $ERR"
 has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad media --rooms --config=" || problems="$problems|media --rooms did not run as the service user: $(cat "$LOG")"
 [ -z "$OUT" ] || problems="$problems|stdout = \"$OUT\", want nothing"
-if [ -z "$problems" ]; then pass "--upgrade with live rooms refuses and touches nothing"; else
+if [ -z "$problems" ]; then pass "a downgrade (no release.json) with live rooms refuses and touches nothing"; else
 	IFS='|'
 	# shellcheck disable=SC2086
-	fail "--upgrade with live rooms refuses and touches nothing" $problems
+	fail "a downgrade (no release.json) with live rooms refuses and touches nothing" $problems
 	IFS='
 '
 fi
@@ -566,6 +782,8 @@ problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
 has "$ERR" "warning" && has "$ERR" "--yes" || problems="$problems|no warning about the override"
 cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$TMP/dilla-media.simple.service" || problems="$problems|the media unit is not the Type=simple one web3.11 needs"
+has "$(cat "$LOG")" "systemctl disable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer was left on for a dillad without media --idle"
 if [ -z "$problems" ]; then pass "--upgrade --yes proceeds when the live-room check fails, with a warning"; else
 	IFS='|'
 	# shellcheck disable=SC2086
@@ -574,8 +792,8 @@ if [ -z "$problems" ]; then pass "--upgrade --yes proceeds when the live-room ch
 '
 fi
 
-# Final review I1: the rollback stops dilla first, which stops dilla-media (PartOf), so `media --rooms` cannot answer.
-# A stopped media service has no rooms, so there are no live calls: the upgrade says so and proceeds without --yes.
+# A stopped media service has no rooms, so there are no live calls: the upgrade says so and
+# proceeds without --restart-sfu.
 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 STUB_MEDIA_INACTIVE=1 FAKE_ROOMS_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
 problems=""
@@ -585,10 +803,10 @@ has "$(cat "$LOG")" "media --rooms" && problems="$problems|media --rooms ran alt
 has "$ERR" "dilla-media is not running" || problems="$problems|the reason is not said: $ERR"
 has "$ERR" "warning" && problems="$problems|a warning although nothing was overridden"
 cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
-if [ -z "$problems" ]; then pass "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)"; else
+if [ -z "$problems" ]; then pass "--upgrade proceeds without --restart-sfu when dilla-media is stopped (no live calls)"; else
 	IFS='|'
 	# shellcheck disable=SC2086
-	fail "--upgrade proceeds without --yes when dilla-media is stopped (no live calls)" $problems
+	fail "--upgrade proceeds without --restart-sfu when dilla-media is stopped (no live calls)" $problems
 	IFS='
 '
 fi
@@ -602,7 +820,7 @@ problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
 has "$ERR" "warning" && has "$ERR" "live calls" && has "$ERR" "--yes" || problems="$problems|no warning about the override: $ERR"
 cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|the binary was not replaced"
-has "$(cat "$LOG")" "systemctl restart dilla" || problems="$problems|dilla was not restarted"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla was not restarted once"
 if [ -z "$problems" ]; then pass "--upgrade --yes proceeds over live rooms, with a warning"; else
 	IFS='|'
 	# shellcheck disable=SC2086
@@ -614,13 +832,13 @@ fi
 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
-has "$(cat "$LOG")" "media --rooms" || problems="$problems|the rooms were not asked"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|the rooms were asked although the SFU stays"
 has "$ERR" "warning" && problems="$problems|a warning with no live rooms"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the binary was not replaced"
-if [ -z "$problems" ]; then pass "--upgrade with no live rooms proceeds"; else
+if [ -z "$problems" ]; then pass "--upgrade onto a compatible release proceeds without asking for rooms"; else
 	IFS='|'
 	# shellcheck disable=SC2086
-	fail "--upgrade with no live rooms proceeds" $problems
+	fail "--upgrade onto a compatible release proceeds without asking for rooms" $problems
 	IFS='
 '
 fi
@@ -643,14 +861,20 @@ expect_refusal "--upgrade with no instance is refused" "no instance"
 run --yes $PROXY_ARGS $URL
 expect_refusal "--yes without --upgrade is refused" "--yes is for --upgrade"
 
+run --restart-sfu $PROXY_ARGS $URL
+expect_refusal "--restart-sfu without --upgrade is refused" "--restart-sfu is for --upgrade"
+
 # An instance from the old all-in-one release is migrated once. The old process
 # releases the UDP port before the sidecar starts, and the previous config stays
-# beside the new one for rollback.
+# beside the new one for rollback. It ends calls, so it still needs --yes.
 seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+rm -f "$ROOT/stub/media.pid" # an in_process instance runs no dilla-media
 sed -i "s/^  mode = 'in_process'$/  mode = 'in_process' # local SFU/" "$MIGRATING_CONF"
+KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$NEW"
+expect_refusal "the in_process migration needs --yes, not only --restart-sfu" "--yes"
 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
 calls="$(cat "$LOG")"
 problems=""
@@ -659,7 +883,8 @@ problems=""
 [ "$(toml_get "$MIGRATING_CONF.prev" livekit mode)" = "'in_process' # local SFU" ] || problems="$problems|the old config was not saved"
 has "$calls" "systemctl stop dilla" || problems="$problems|the old SFU was not stopped"
 has "$calls" "systemctl enable --now dilla-media" || problems="$problems|the sidecar was not started"
-has "$calls" "systemctl restart dilla" || problems="$problems|the API was not restarted"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|the API was not restarted once"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|the new sidecar was restarted a second time"
 if [ -z "$problems" ]; then pass "an all-in-one install migrates to the sidecar on upgrade"; else
 	IFS='|'
 	# shellcheck disable=SC2086
@@ -674,6 +899,7 @@ seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+rm -f "$ROOT/stub/media.pid" # an in_process instance runs no dilla-media
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-migration"
 echo 16 >"$TMP/schema"
 FAKE_SCHEMA="$TMP/schema" STUB_FAIL_V2=1 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
@@ -693,20 +919,21 @@ if [ -z "$problems" ]; then pass "failed first migration restores the old combin
 '
 fi
 
-# A Type=simple service start can succeed before LiveKit binds. Its authenticated
-# probe must fail the upgrade and restore the previous combined service.
+# A media server that never becomes ready must fail the upgrade and restore the previous combined
+# service.
 seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+rm -f "$ROOT/stub/media.pid" # an in_process instance runs no dilla-media
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-probe"
 FAKE_MEDIA_PROBE_FAIL=1 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$NEW"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|upgrade unexpectedly succeeded"
 [ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'in_process'" ] || problems="$problems|old mode was not restored"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-probe" || problems="$problems|old binary was not restored"
-has "$(cat "$LOG")" "media --probe" || problems="$problems|media readiness was not checked"
 has "$(cat "$LOG")" "systemctl disable --now dilla-media" || problems="$problems|failed media was not disabled"
+has "$ERR" "the media service did not start" || problems="$problems|the media failure is not named: $ERR"
 if [ -z "$problems" ]; then pass "first migration rolls back when media never becomes ready"; else
 	IFS='|'
 	# shellcheck disable=SC2086
@@ -930,8 +1157,8 @@ has "$ERR" "the previous release is running" || problems="$problems|stderr does 
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
 has "$calls" "systemctl stop dilla" || problems="$problems|dilla was not stopped before the down migration"
 down="$(printf '%s\n' "$calls" | grep -n 'migrate down' | head -1 | cut -d: -f1)"
-stop="$(printf '%s\n' "$calls" | grep -n 'systemctl stop dilla' | head -1 | cut -d: -f1)"
-second="$(printf '%s\n' "$calls" | grep -n 'systemctl restart dilla' | sed -n 2p | cut -d: -f1)"
+stop="$(line_of 'systemctl stop dilla')"
+second="$(line_of 'systemctl start dilla')"
 if [ -z "$down" ]; then
 	problems="$problems|no down migration ran"
 else
@@ -955,7 +1182,7 @@ FAKE_SCHEMA="$TMP/schema" FAKE_DOWN_FAIL=1 STUB_FAIL_V2=1 STUB_RESTART_MIGRATES_
 calls="$(cat "$LOG")"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero"
-[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla was restarted again after the down migration failed"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla was restarted again after the down migration failed"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the new binary was swapped out although the database is still at 17"
 has "$ERR" "migrate down --to=16 --i-know-what-i-am-doing" || problems="$problems|stderr does not give the down-migration command"
 has "$ERR" "pre-migration" || problems="$problems|stderr does not name the pre-migration backup"
@@ -966,27 +1193,397 @@ if [ -z "$problems" ]; then pass "a failed down migration never starts the previ
 	unset IFS
 fi
 
-# The new release refuses the installed dilla.toml (web3.6 refuses auth.methods without totp or
-# passkey). The new media probe catches that before the API restart, so the existing API stays up.
+# ----------------------------------------- calls survive an upgrade (UP3) ----
+# verdict NAME: pass, or fail with the problems collected in $problems, stderr and the call log.
+verdict() {
+	if [ -z "$problems" ]; then
+		pass "$1"
+		return 0
+	fi
+	old_ifs="$IFS"
+	IFS='|'
+	fail "$1" $problems "stderr: $ERR" "log: $(tr '\n' ';' <"$LOG")"
+	IFS="$old_ifs"
+}
+# fresh RELEASE [proxy|public]: a new root with an instance installed from RELEASE.
+fresh() {
+	seed_root
+	if [ "${2:-proxy}" = public ]; then
+		KEEP_ROOT=1 run $PUBLIC_ARGS --release-url "file://$1"
+	else
+		KEEP_ROOT=1 run $PROXY_ARGS --release-url "file://$1"
+	fi
+	[ "$RC" -eq 0 ] || fail "the install from $1 before the next case" "rc $RC" "stderr: $ERR"
+}
+# stub_sys ARGS: systemctl as the stub models it, outside an install.sh run (a reboot, a crash).
+stub_sys() { env PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" FAKE_LOG="$LOG" "$STUBS/systemctl" "$@"; }
+# refresh: one run of the installed dilla-media-refresh, as its timer would; leaves RC and ERR
+# (what it logged) and the calls in $LOG.
+refresh() {
+	: >"$LOG"
+	RC=0
+	env PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" FAKE_LOG="$LOG" \
+		sh "$ROOT/usr/local/libexec/dilla-media-refresh" >"$TMP/out" 2>&1 || RC=$?
+	ERR="$(cat "$TMP/out")"
+}
+# set_turn ENABLED LISTEN: [turn] enabled and listen in the instance's dilla.toml.
+set_turn() {
+	awk -v e="$1" -v l="$2" '
+		/^\[/ { inside = ($0 == "[turn]") }
+		inside && /^  enabled = / { $0 = "  enabled = " e }
+		inside && /^  listen = / { $0 = "  listen = \047" l "\047" }
+		{ print }
+	' "$ROOT/etc/dilla/dilla.toml" >"$TMP/turn.toml"
+	cat "$TMP/turn.toml" >"$ROOT/etc/dilla/dilla.toml"
+}
+media_pid_now() { cat "$ROOT/stub/media.pid" 2>/dev/null || echo 0; }
+media_json() { cat "$ROOT/var/lib/dillad/media.json" 2>/dev/null; }
+# media_json_is VERSION: media.json is valid (its pid is the MainPID) and names VERSION.
+media_json_is() {
+	has "$(media_json)" "\"pid\":$(media_pid_now)," && has "$(media_json)" "\"version\":\"$1\""
+}
+# before LINE_A LINE_B: the first call LINE_A comes before the first LINE_B, and both happened.
+before() {
+	a="$(line_of "$1")"
+	b="$(line_of "$2")"
+	[ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+
+# A web3.12 first install: the Type=notify media unit, the refresh units, and the timer enabled.
 seed_root
-KEEP_ROOT=1 run $PUBLIC_ARGS $URL
-[ "$RC" -eq 0 ] || fail "the install before the config-refused case" "rc $RC" "stderr: $ERR"
+EXPECT_BIN="$TMP/fake-v2" EXPECT_REL="$NEW" EXPECT_MEDIA_UNIT="$MEDIA_UNIT" KEEP_ROOT=1 run $PROXY_ARGS --release-url "file://$NEW"
+EXPECT_BIN="$TMP/fake-v2" EXPECT_REL="$NEW" EXPECT_MEDIA_UNIT="$MEDIA_UNIT" check_common_install "a web3.12 install writes the notify media unit and the refresh units verbatim"
+problems=""
+has "$(cat "$LOG")" "systemctl enable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer was not enabled"
+media_json_is 0.1.0-web3.12 || problems="$problems|no valid media.json after the install: $(media_json)"
+verdict "a first install enables dilla-media-refresh.timer"
+
+# The new release refuses the installed dilla.toml (web3.6 refuses auth.methods without totp or
+# passkey). With a compatible SFU only the API restarts, so the API rollback catches it: the
+# previous API comes back, nothing migrated, and dilla-media is never touched.
+fresh "$REL" public
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
 echo 16 >"$TMP/schema"
+pid_before="$(media_pid_now)"
 FAKE_SCHEMA="$TMP/schema" FAKE_V2_CONFIG_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
-calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
+has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
+[ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
+has "$(cat "$LOG")" "migrate down" && problems="$problems|a down migration ran although the database never moved"
+grep -q 'systemctl [a-z]* dilla-media$' "$LOG" && problems="$problems|dilla-media was touched"
+[ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$TMP/dilla-media.simple.service" || problems="$problems|the media unit was not put back for the previous (web3.11) binary"
+verdict "a compatible release that refuses the config is rolled back, and dilla-media is untouched"
+
+# On the restart path dilla-media restarts first, so a release that refuses the config fails there,
+# and the API is never restarted.
+fresh "$REL" public
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" FAKE_V2_CONFIG_FAIL=1 KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$NEW"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
 has "$ERR" "the media service did not start" || problems="$problems|stderr does not report the media readiness failure"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
 [ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
-has "$calls" "migrate down" && problems="$problems|a down migration ran although the database never moved"
-[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 0 ] || problems="$problems|the old API was restarted unnecessarily"
-if [ -z "$problems" ]; then pass "a new release that refuses the config leaves the previous API running"; else
-	IFS='|'
-	fail "a new release that refuses the config leaves the previous API running" $problems "stderr: $ERR" "log: $calls"
-	unset IFS
-fi
+[ "$(count 'systemctl restart dilla')" -eq 0 ] || problems="$problems|the old API was restarted unnecessarily"
+before 'systemctl stop dilla-media' 'systemctl start dilla-media' || problems="$problems|dilla-media was not stopped and started on the previous binary"
+verdict "a release whose media server does not come up never restarts the API"
+
+# Compatible upgrade, live rooms, the level from media.json: dilla once, dilla-media never.
+fresh "$NEW"
+pid_before="$(media_pid_now)"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla restarted $(count 'systemctl restart dilla') times, want 1"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted"
+[ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
+has "$ERR" "media level 2, from its media.json" || problems="$problems|the level did not come from media.json"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-c13" || problems="$problems|the binary was not replaced"
+verdict "a compatible upgrade from web3.12 keeps the SFU, by its media.json"
+
+# Incompatible upgrade with live rooms: refused, nothing changed; --restart-sfu: one restart each,
+# dilla-media before dilla.
+fresh "$NEW"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$I13"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "needs level 3 or later" || problems="$problems|the decision does not say why"
+has "$ERR" "--restart-sfu" || problems="$problems|the override is not named"
+verdict "an incompatible upgrade with live rooms is refused and changes nothing"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$I13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] || problems="$problems|dilla-media restarted $(count 'systemctl restart dilla-media') times, want 1"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla restarted $(count 'systemctl restart dilla') times, want 1"
+before 'systemctl restart dilla-media' 'systemctl restart dilla' || problems="$problems|dilla restarted before dilla-media"
+has "$ERR" "continuing because of --restart-sfu" || problems="$problems|no warning about ending the live calls"
+media_json_is 0.1.0-web3.13 || problems="$problems|media.json does not name the new binary: $(media_json)"
+has "$ERR" "dilla and dilla-media run v0.1.0-web3.13" || problems="$problems|the report does not name the SFU's binary"
+verdict "an incompatible upgrade with --restart-sfu restarts dilla-media, then dilla, once each"
+
+# The restart path, and the API fails: the previous pair back, then dilla-media stopped and started
+# on it, then dilla.
+fresh "$NEW"
+STUB_SYSTEMCTL_FAIL=restart KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$I13"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a failure"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the previous binary is not back"
+has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+first_api="$(line_of 'systemctl restart dilla')"
+stop_media="$(line_of 'systemctl stop dilla-media')"
+start_media="$(line_of 'systemctl start dilla-media')"
+second_api="$(line_of 'systemctl start dilla')"
+[ -n "$first_api" ] && [ -n "$stop_media" ] && [ "$first_api" -lt "$stop_media" ] || problems="$problems|dilla-media was not stopped after the failed API restart"
+[ -n "$start_media" ] && [ "$stop_media" -lt "$start_media" ] || problems="$problems|dilla-media was not started again after it was stopped"
+[ -n "$second_api" ] && [ "$start_media" -lt "$second_api" ] || problems="$problems|dilla was started before dilla-media"
+media_json_is 0.1.0-web3.12 || problems="$problems|dilla-media does not run the previous binary: $(media_json)"
+verdict "the restart path's failed API restart restores .prev, then restarts dilla-media before dilla"
+
+# The keep path, and the API fails: the rollback, and the SFU untouched.
+fresh "$NEW"
+pid_before="$(media_pid_now)"
+STUB_SYSTEMCTL_FAIL=restart KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a failure"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the previous binary is not back"
+has "$ERR" "rolled back" || problems="$problems|stderr does not say it rolled back"
+grep -q 'systemctl [a-z]* dilla-media$' "$LOG" && problems="$problems|dilla-media was touched"
+[ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
+verdict "a failed API restart on the keep path rolls back and leaves the SFU alone"
+
+# serve exits 69 (api.sock, or dilla-media not reachable yet) and systemd's Restart=on-failure
+# brings it up: the upgrade waits for that instead of rolling back.
+fresh "$NEW"
+STUB_API_RETRY_OK=1 KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "came up on systemd's restart" || problems="$problems|the wait for systemd's restart is not said"
+has "$ERR" "rolled back" && problems="$problems|it rolled back"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-c13" || problems="$problems|the new binary is not installed"
+verdict "a first API start that exits 69 is retried by systemd, and the upgrade waits for it"
+
+# A stale media.json (its pid is not the MainPID) is ignored; /proc/<pid>/exe version decides.
+fresh "$NEW"
+ln -f "$FAKE" "$ROOT/proc/$(media_pid_now)/exe"
+sed -i 's/"pid":[0-9]*,/"pid":99999,/' "$ROOT/var/lib/dillad/media.json"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "ignoring $ROOT/var/lib/dillad/media.json: its pid 99999 is not dilla-media's MainPID" || problems="$problems|the stale file is not named"
+has "$ERR" "runs v0.1.0-web3.11 (media level 1, from $ROOT/proc/" || problems="$problems|the level did not come from /proc/<pid>/exe version"
+has "$ERR" "decision: keep" || problems="$problems|a level-1 SFU was not kept for a release that works with level 1"
+verdict "a stale media.json is ignored, and /proc/<pid>/exe version decides (keep)"
+ln -f "$FAKE" "$ROOT/proc/$(media_pid_now)/exe"
+sed -i 's/"pid":[0-9]*,/"pid":99999,/' "$ROOT/var/lib/dillad/media.json"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "runs v0.1.0-web3.11 (media level 1" && has "$ERR" "needs level 2 or later" || problems="$problems|the stale file's level 2 was believed"
+verdict "a stale media.json is ignored, and /proc/<pid>/exe version decides (restart)"
+
+# A web3.10 SFU has no rule that names its level, so it is restarted.
+fresh "$W10"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "media level is unknown (0.1.0-web3.10" || problems="$problems|the unknown level is not said"
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] || problems="$problems|dilla-media was not restarted once"
+before 'systemctl restart dilla-media' 'systemctl restart dilla' || problems="$problems|dilla restarted before dilla-media"
+verdict "an SFU older than web3.11 needs a restart"
+
+# --restart-sfu on a compatible release.
+fresh "$NEW"
+KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$C13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "decision: restart dilla-media, which ends any live call: --restart-sfu was given" || problems="$problems|the decision is not logged"
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] && [ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|not one restart each"
+before 'systemctl restart dilla-media' 'systemctl restart dilla' || problems="$problems|dilla restarted before dilla-media"
+verdict "--restart-sfu restarts a compatible SFU, once, before dilla"
+
+# ------------------------------------------------------- release.json ----
+RJSUM="$TMP/rj-sum"
+make_release "$RJSUM" "$TMP/fake-v2"
+printf ' ' >>"$RJSUM/release.json"
+fresh "$REL"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+KEEP_ROOT=1 run --upgrade --release-url "file://$RJSUM"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "checksum mismatch" || problems="$problems|the mismatch is not named"
+verdict "a release.json that does not match its SHA256SUMS line is refused"
+
+RJLIE="$TMP/rj-lie"
+make_release "$RJLIE" "$TMP/fake-v2"
+sed -i 's/"min_sfu_media_level":1/"min_sfu_media_level":0/' "$RJLIE/release.json"
+(cd "$RJLIE" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh release.json >SHA256SUMS)
+KEEP_ROOT=1 run --upgrade --release-url "file://$RJLIE"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "release.json says min_sfu_media_level is 0, but the new dillad says 1" || problems="$problems|the disagreement is not named"
+verdict "a release.json that disagrees with the binary's version --json is refused"
+
+RJNONE="$TMP/rj-none"
+make_release "$RJNONE" "$TMP/fake-v2"
+grep -v ' release.json$' "$RJNONE/SHA256SUMS" >"$RJNONE/SHA256SUMS.new"
+mv "$RJNONE/SHA256SUMS.new" "$RJNONE/SHA256SUMS"
+KEEP_ROOT=1 run --upgrade --release-url "file://$RJNONE"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "has no release.json in its SHA256SUMS" || problems="$problems|the missing release.json is not named"
+verdict "a web3.12 release whose SHA256SUMS does not list release.json is refused"
+
+KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$NEW/dilla_core_wasi.wasm" --sums "$NEW/SHA256SUMS"
+expect_refusal "--binary with a SHA256SUMS that lists release.json needs --release-json" "--release-json"
+KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$RJNONE/dilla_core_wasi.wasm" --sums "$RJNONE/SHA256SUMS"
+expect_refusal "--binary of web3.12 without release.json is refused" "--release-json"
+KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$NEW/dilla_core_wasi.wasm" --sums "$NEW/SHA256SUMS" --release-json "$NEW/release.json"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "verified dillad-linux-amd64 dilla_core_wasi.wasm release.json against SHA256SUMS" || problems="$problems|release.json was not verified against --sums"
+has "$ERR" "decision: keep" || problems="$problems|the SFU was not kept"
+verdict "--binary --release-json FILE verifies release.json and decides by it"
+run --upgrade --release-json "$NEW/release.json" --release-url "file://$NEW"
+expect_refusal "--release-json without --binary is refused" "--release-json is for --binary"
+
+# ------------------------------------------------- CAP_NET_BIND_SERVICE ----
+fresh "$REL"
+set_turn true ':3478'
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the unit for turn.listen :3478 is not deploy/dilla-media.service"
+grep -q '^AmbientCapabilities=' "$ROOT/etc/systemd/system/dilla-media.service" && problems="$problems|a capability was added for port 3478"
+verdict "turn.listen on 3478 adds no capability to dilla-media.service"
+set_turn true '0.0.0.0:443'
+KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+grep -qx 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$ROOT/etc/systemd/system/dilla-media.service" || problems="$problems|no AmbientCapabilities=CAP_NET_BIND_SERVICE"
+grep -qx 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' "$ROOT/etc/systemd/system/dilla-media.service" || problems="$problems|no CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+verdict "turn.listen on 443 behind a proxy adds CAP_NET_BIND_SERVICE to dilla-media.service"
+
+# ------------------------------------------------- rollback below web3.12 ----
+# The web3.12 SFU holds turn.listen, and web3.11's serve would bind it too: dilla-media stops first.
+fresh "$NEW"
+set_turn true ':3478'
+stub_sys restart dilla-media >/dev/null
+stub_sys restart dilla >/dev/null
+KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "stopping dilla-media first, which ends every live call" || problems="$problems|it does not say it ends calls"
+before 'systemctl stop dilla-media' 'systemctl start dilla-media' || problems="$problems|dilla-media was not stopped, then started"
+before 'systemctl start dilla-media' 'systemctl restart dilla' || problems="$problems|dilla started before dilla-media was stopped and started"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted as well"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$TMP/dilla-media.simple.service" || problems="$problems|the media unit is not web3.11's Type=simple"
+has "$(cat "$LOG")" "systemctl disable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer stays on for web3.11"
+verdict "a rollback to web3.11 with a web3.12 SFU stops dilla-media before it starts dilla"
+
+fresh "$NEW" public
+set_turn true ':5349'
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+KEEP_ROOT=1 run --upgrade --yes --release-url "file://$REL"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "remove turn.listen from dilla.toml first; public-mode TURN goes back to 443" || problems="$problems|the key is not named"
+verdict "a rollback to web3.11 with the public-mode turn.listen set is refused and changes nothing"
+
+# ------------------------------------------------- dilla-media-refresh ----
+fresh "$NEW"
+refresh
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+grep -q '^systemctl restart' "$LOG" && problems="$problems|something was restarted"
+[ -z "$ERR" ] || problems="$problems|a minute with nothing to do logged: $ERR"
+verdict "refresh: the SFU runs the installed inode, so nothing is restarted"
+
+fresh "$REL"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+FAKE_IDLE=1 refresh
+problems=""
+grep -q '^systemctl restart' "$LOG" && problems="$problems|restarted although rooms are busy"
+has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad media --idle --config=$ROOT/etc/dilla/dilla.toml" || problems="$problems|media --idle was not asked as dillad"
+verdict "refresh: another inode but busy rooms: no restart"
+FAKE_IDLE=69 refresh
+problems=""
+grep -q '^systemctl restart' "$LOG" && problems="$problems|restarted although --idle could not tell"
+verdict "refresh: media --idle exits 69: no restart"
+refresh
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] || problems="$problems|dilla-media restarted $(count 'systemctl restart dilla-media') times, want 1"
+[ "$(count 'systemctl restart dilla')" -eq 0 ] || problems="$problems|dilla restarted without a TURN handoff"
+has "$ERR" "dilla-media runs 0.1.0-web3.11 (pid" && has "$ERR" "its rooms are idle: restarting it" || problems="$problems|the restart is not logged"
+media_json_is 0.1.0-web3.12 || problems="$problems|dilla-media does not run the installed binary: $(media_json)"
+verdict "refresh: another inode and idle: one restart, logged"
+refresh
+problems=""
+grep -q '^systemctl restart' "$LOG" && problems="$problems|restarted again"
+verdict "refresh: after its restart the next minute finds nothing to do"
+
+# The TURN handoff: web3.11's API holds turn.listen, the kept web3.11 SFU has none.
+fresh "$REL"
+set_turn true ':3478'
+stub_sys restart dilla >/dev/null
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+[ -e "$ROOT/stub/api.turn" ] || fail "the handoff case starts with dilla holding turn.listen"
+refresh
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] && [ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|not one restart each"
+before 'systemctl restart dilla-media' 'systemctl restart dilla' || problems="$problems|dilla restarted before dilla-media"
+has "$(media_json)" '"capabilities":["turn"]' || problems="$problems|media.json does not list turn: $(media_json)"
+has "$ERR" "TURN handoff done" || problems="$problems|the handoff is not logged"
+verdict "refresh: the TURN handoff restarts dilla-media, then dilla, and waits for turn"
+KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+refresh
+problems=""
+[ "$(count 'systemctl restart dilla-media')" -eq 1 ] || problems="$problems|dilla-media was not restarted"
+[ "$(count 'systemctl restart dilla')" -eq 0 ] || problems="$problems|dilla was restarted between two TURN-serving binaries"
+has "$(media_json)" '"capabilities":["turn"]' || problems="$problems|media.json does not list turn: $(media_json)"
+verdict "refresh: between two TURN-serving binaries dilla is not restarted"
+
+# An SFU crash after a compatible upgrade: systemd starts it on the new binary while dilla still
+# holds turn.listen. The refresh hands TURN over once, when idle, by restarting dilla alone.
+fresh "$REL"
+set_turn true ':3478'
+stub_sys restart dilla >/dev/null
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+stub_sys restart dilla-media >/dev/null
+refresh
+problems=""
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted"
+[ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla was not restarted once"
+has "$(media_json)" '"capabilities":["turn"]' || problems="$problems|media.json does not list turn: $(media_json)"
+verdict "refresh: an SFU that came up on the new binary without TURN gets it at the next idle minute"
+
+# A reboot of a mixed pair: the SFU on web3.11 with a stale media.json, web3.12 on disk. Both units
+# start from the one installed binary, the new process writes media.json, and the refresh service
+# then finds nothing to do.
+fresh "$REL"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+printf '{"version":"0.1.0-web3.12","media_level":2,"capabilities":[],"pid":99999,"started":"2026-10-21T08:00:00Z"}\n' >"$ROOT/var/lib/dillad/media.json"
+rm -rf "${ROOT:?}/proc" "$ROOT/stub/media.pid" "$ROOT/stub/dilla.state" "$ROOT/stub/api.turn"
+: >"$LOG"
+stub_sys start dilla-media
+stub_sys start dilla
+problems=""
+[ "$(stat -L -c %i "$ROOT/proc/$(media_pid_now)/exe")" = "$(stat -c %i "$ROOT/usr/local/bin/dillad")" ] || problems="$problems|dilla-media did not come up on the installed binary"
+media_json_is 0.1.0-web3.12 || problems="$problems|media.json was not rewritten by the new process: $(media_json)"
+grep -q '^After=.*dilla-media.service' "$UNIT" || problems="$problems|dilla.service does not start after dilla-media"
+refresh
+grep -q '^systemctl restart' "$LOG" && problems="$problems|the refresh restarted something after the reboot"
+verdict "a reboot of a mixed pair comes up on web3.12 alone, and the refresh finds nothing to do"
 
 # --------------------------------------------------- the real dillad init ----
 if [ -n "${DILLA_TEST_DILLAD:-}" ]; then
@@ -1016,6 +1613,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh "$INSTALL" 2>&1)"; then pass "shellcheck install.sh"; else fail "shellcheck install.sh" "$out"; fi
 	if out="$(shellcheck "$HERE/proxmox-lxc.sh" 2>&1)"; then pass "shellcheck proxmox-lxc.sh"; else fail "shellcheck proxmox-lxc.sh" "$out"; fi
+	if out="$(shellcheck -s sh "$HERE/dilla-media-refresh.sh" 2>&1)"; then pass "shellcheck dilla-media-refresh.sh"; else fail "shellcheck dilla-media-refresh.sh" "$out"; fi
 else
 	echo "skip shellcheck: not installed"
 fi
