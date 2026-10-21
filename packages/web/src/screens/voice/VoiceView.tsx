@@ -161,7 +161,8 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     const pool = v.call.sharePool;
     const pick = v.call.notice.key.startsWith('voice.shareAudio.none') && pool !== null && pool.labeled && pool.sources.length > 0
       ? { label: t('voice.shareAudio.pick'), onAction: () => document.querySelector<HTMLElement>('[data-share-sound] select')?.focus() } : null;
-    return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: pick, focusOnce: false };
+    const text = v.call.notice.text ?? t(v.call.notice.key);
+    return { kind: 'info', text: pick !== null ? `${text} ${t('voice.shareAudio.pickHint')}` : text, action: pick, focusOnce: false };
   }
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;

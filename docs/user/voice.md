@@ -202,7 +202,7 @@ The notice to the person sharing depends on the browser:
 - In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
 - In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
 
-Each notice ends with "You can also pick a sound source for the stream." and a **pick a sound source** button.
+When the browser lists an audio input you can pick, the notice also says "You can also pick a sound source for the stream." and offers a **pick a sound source** button.
 
 ### Share sound from Firefox or Linux
 

@@ -329,13 +329,14 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.sharersFull='Too many people are sharing. Try again when someone stops.'`
 - `voice.shareAudio.from='sound from'` (FX2: the label of the sharer's sound-source select; shown while sharing with no browser sound, or with a picked device; added 2026-10-21, #37)
 - `voice.shareAudio.fromNone='none'` (its first option: no sound)
+- `voice.shareAudio.pickHint='You can also pick a sound source for the stream.'` (the second sentence of the silent-share notice, after the first, only while the select exists, as the button)
 - `voice.shareAudio.pick='pick a sound source'` (the button in the silent-share notice; focuses the select)
 - `voice.shareAudio.monitorWarn='This device carries all your computer’s sound, including this call: others will hear themselves. Route only the app you want to a separate device (see help).'` (shown while a device whose label says monitor is the source; picking it stays allowed)
 - `voice.shareAudio.pickFailed='Couldn’t open that sound source.'` (the stage notice, `role="status"`, when opening or publishing the picked device failed: refused, busy, unplugged or not allowed; cleared by the next good pick)
 - `voice.shareAudio.needsPermission='Allow the microphone to see sound sources.'` (shown instead of the options whenever any audio input has an empty label, in any browser; the notice's `voice.shareAudio.pick` button is offered only while the select exists)
-- `voice.shareAudio.none.unsupported='Your screen is shared without sound. This browser can’t share sound; Chrome or Edge can share a browser tab with its sound. You can also pick a sound source for the stream.'` (the sharer's notice once the share started without sound, in Firefox-based browsers and Safari; added 2026-10-21, #37)
-- `voice.shareAudio.none.tabOnly='Your screen is shared without sound. Here only a browser tab can carry sound: share a tab and keep "Also share tab audio" ticked. You can also pick a sound source for the stream.'` (the same notice in Chromium on Linux)
-- `voice.shareAudio.none.tabOrSystem='Your screen is shared without sound. To share sound, share a browser tab, or tick "Also share system audio" when you pick a screen. You can also pick a sound source for the stream.'` (the same notice in Chromium on Windows, ChromeOS and macOS)
+- `voice.shareAudio.none.unsupported='Your screen is shared without sound. This browser can’t share sound; Chrome or Edge can share a browser tab with its sound.'` (the sharer's notice once the share started without sound, in Firefox-based browsers and Safari; added 2026-10-21, #37)
+- `voice.shareAudio.none.tabOnly='Your screen is shared without sound. Here only a browser tab can carry sound: share a tab and keep "Also share tab audio" ticked.'` (the same notice in Chromium on Linux)
+- `voice.shareAudio.none.tabOrSystem='Your screen is shared without sound. To share sound, share a browser tab, or tick "Also share system audio" when you pick a screen.'` (the same notice in Chromium on Windows, ChromeOS and macOS)
 - `voice.failed='Could not join voice. Try again.'`
 - `voice.otherTab='Voice is open in another tab of this browser.'`
 - `voice.micDenied='The microphone is blocked. You can listen; allow the microphone in the browser to talk.'`

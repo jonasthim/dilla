@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { t } from '../../strings/index.ts';
+import { en, t } from '../../strings/index.ts';
 import {
   A, BOB, BOB_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
@@ -1451,6 +1451,7 @@ describe('FX2: a "sound from" picker for a share', () => {
     act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
     await main().findByText(/Your screen is shared without sound/);
     expect(main().queryByRole('button', { name: t('voice.shareAudio.pick') })).toBeNull();
+    expect(document.querySelector('.d-call-stage__notice')?.textContent).not.toContain(en['voice.shareAudio.pickHint']);
     expect(from()).toBeNull();
   });
 
@@ -1465,6 +1466,7 @@ describe('FX2: a "sound from" picker for a share', () => {
   it('the notice offers "pick a sound source", which moves focus to the select', async () => {
     const app = await silentShare();
     const pick = await main().findByRole('button', { name: t('voice.shareAudio.pick') });
+    expect(document.querySelector('.d-call-stage__notice')?.textContent).toContain(en['voice.shareAudio.pickHint']);
     const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
     await app.user.click(pick);
     expect(select).toHaveFocus();
