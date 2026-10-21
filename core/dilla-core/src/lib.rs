@@ -59,4 +59,8 @@ pub const WIRE_VERSION: u64 = 3;
 /// this instance's key and `"instance"` credential, and a `pairing` or `interaction` group only
 /// when it carries none: a group whose extension names another key is one the instance can never
 /// propose into.
-pub const ABI_VERSION: u64 = 6;
+///
+/// **7** since 2026-10-21 (DILLA-BOT-04): the WASI module adds `verify_credential`, which decodes
+/// and strictly verifies a credential with the MLS leaf's DSK and returns only public identity
+/// fields. Browser, E2EE, media and negotiated wire versions do not change.
+pub const ABI_VERSION: u64 = 7;

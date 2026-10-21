@@ -42,6 +42,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
+| 2026-10-21 | e2ee 1, media 1, wire 3 | The internal server WASI ABI advances from 6 to 7 with `verify_credential`, reusing the core’s strict credential signature verification for managed bot enrollment. The host requires the export and validates the returned public identity fields. The browser ABI, private helper protocol, E2EE and media formats are unchanged. |
 | 2026-10-21 | e2ee 1, media 1, wire 3 | Built-in community bot contract in `10`: private native helper, `dilla.bot/1` type-0 application bodies, native bot enrollment, durable structural events and send receipts, constrained role delegation, signed moderation removal and recovery feed, encrypted evidence and installation-wide Spotify setup. Advertise `[3,2]`; `POST /v1/sessions/negotiate` and gateway identify/resume persist accepted capability on the bearer session. Bot functionality requires wire3 and ignores free-form version headers; unrelated wire2 functionality remains supported. `vectors/bot.json` adds shared Go/Rust/TypeScript accepted and rejected encodings. E2EE/media versions and the `/v1` route prefix are unchanged. Feature completion and release qualification are tracked separately in the implementation plan. |
 | 2026-09-23 | e2ee 1, media 1, wire 1 | initial |
 | 2026-09-23 | e2ee 1, media 1, wire 1 | `identity.json` gains real Ed25519 credential signatures and the seeds that reproduce them; no format change, so no version bump |

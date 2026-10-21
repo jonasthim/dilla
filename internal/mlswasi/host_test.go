@@ -146,8 +146,8 @@ func TestABIReportsVersionSix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 6 {
-		t.Errorf("ABIVersion = %d, want 6", info.ABIVersion)
+	if info.ABIVersion != 7 {
+		t.Errorf("ABIVersion = %d, want 7", info.ABIVersion)
 	}
 	if info.E2EEVersion != 1 || info.MediaVersion != 1 {
 		t.Errorf("E2EEVersion/MediaVersion = %d/%d, want 1/1", info.E2EEVersion, info.MediaVersion)
@@ -695,12 +695,12 @@ func TestNewNamesTheMissingExport(t *testing.T) {
 	}
 }
 
-func TestABIVersionIsSixAndTwentyThreeExportsAreRequired(t *testing.T) {
-	if ABIVersion != 6 {
-		t.Fatalf("ABIVersion = %d, want 6", ABIVersion)
+func TestABIVersionIsSevenAndTwentyFourExportsAreRequired(t *testing.T) {
+	if ABIVersion != 7 {
+		t.Fatalf("ABIVersion = %d, want 7", ABIVersion)
 	}
-	if len(RequiredExports) != 23 {
-		t.Fatalf("RequiredExports has %d names, want 23", len(RequiredExports))
+	if len(RequiredExports) != 24 {
+		t.Fatalf("RequiredExports has %d names, want 24", len(RequiredExports))
 	}
 	for _, name := range []string{
 		"device_list_entries",
@@ -709,6 +709,7 @@ func TestABIVersionIsSixAndTwentyThreeExportsAreRequired(t *testing.T) {
 		"public_group_group_info_validate",
 		"public_group_proposal_inspect",
 		"private_message_aad",
+		"verify_credential",
 	} {
 		if !slices.Contains(RequiredExports, name) {
 			t.Errorf("RequiredExports is missing %q", name)
@@ -725,8 +726,8 @@ func TestABIVersionIsSixAndTwentyThreeExportsAreRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ABI: %v", err)
 	}
-	if info.ABIVersion != 6 {
-		t.Fatalf("dilla_abi reports abi_version %d, want 6", info.ABIVersion)
+	if info.ABIVersion != 7 {
+		t.Fatalf("dilla_abi reports abi_version %d, want 7", info.ABIVersion)
 	}
 }
 
@@ -800,6 +801,17 @@ func TestNewNamesAMissingAbiV2Export(t *testing.T) {
 		t.Fatal("New accepted a module missing private_message_aad")
 	}
 	if !strings.Contains(err.Error(), "private_message_aad") {
+		t.Fatalf("error must name the missing export, got %v", err)
+	}
+}
+
+func TestNewNamesAMissingCredentialVerificationExport(t *testing.T) {
+	stripped := stripExport(t, loadWasm(t), "verify_credential")
+	_, err := New(context.Background(), stripped, Options{PoolSize: 1})
+	if err == nil {
+		t.Fatal("New accepted a module missing verify_credential")
+	}
+	if !strings.Contains(err.Error(), "verify_credential") {
 		t.Fatalf("error must name the missing export, got %v", err)
 	}
 }

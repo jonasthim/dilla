@@ -388,7 +388,10 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels,
 	}
 	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
 
-	gw := gateway.New(gateway.Options{Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions})
+	gw := gateway.New(gateway.Options{
+		Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions,
+		WireVersions: []uint64{3, 2}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+	})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 	var postPolicy ds.PostPolicy
 	if len(policy) > 0 {

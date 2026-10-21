@@ -58,6 +58,7 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "external_propose_add" => external_propose_add_export(req, t),
         "external_propose_remove" => external_propose_remove_export(req, t),
         "device_list_entries" => device_list_entries_export(req, t),
+        "verify_credential" => verify_credential_export(req),
         other => Err(AbiError::shape(format!("unknown export {other}"))),
     });
     match result {
@@ -77,6 +78,49 @@ fn abi_info(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, AbiError> {
         .uint(dilla_core::MEDIA_VERSION)
         .array(1)
         .uint(CIPHERSUITE_ID);
+    Ok(e.into_vec())
+}
+
+/// Verifies a strict dilla CredentialIdentity against the DSK supplied by its MLS leaf.
+///
+/// The credential is borrowed from the ABI request and checked against the size limit before any
+/// decode or output allocation. Signature verification stays in dilla-core so the server uses the
+/// same strict Ed25519 checks as MLS clients.
+fn verify_credential_export(req: &[u8]) -> Result<Vec<u8>, AbiError> {
+    const MAX_CREDENTIAL_BYTES: usize = 8192;
+
+    let mut d = abi::open(req, 3)?;
+    let credential_bytes = d.bytes()?;
+    if credential_bytes.len() > MAX_CREDENTIAL_BYTES {
+        return Err(AbiError::new(
+            "E_CREDENTIAL",
+            "credential verification failed",
+        ));
+    }
+    let dsk_pub = d.bytes_exact::<32>()?;
+    d.finish()?;
+
+    let credential = CredentialIdentity::decode(credential_bytes)
+        .map_err(|_| AbiError::new("E_CREDENTIAL", "credential verification failed"))?;
+    if credential.is_provisional() || credential.verify_signatures(&dsk_pub).is_err() {
+        return Err(AbiError::new(
+            "E_CREDENTIAL",
+            "credential verification failed",
+        ));
+    }
+
+    let mut e = Encoder::new();
+    e.array(2)
+        .uint(0)
+        .array(8)
+        .bytes(&credential.umk_pub)
+        .bytes(credential.user_id.as_bytes())
+        .bytes(credential.device_id.as_bytes())
+        .uint(u64::from(credential.kind.as_u8()))
+        .uint(u64::from(credential.tier.as_u8()))
+        .uint(u64::from(credential.signer_tier.as_u8()))
+        .bytes(&credential.ssk_pub)
+        .bytes(&credential.sig_umk_ssk);
     Ok(e.into_vec())
 }
 
@@ -1299,9 +1343,9 @@ mod tests {
     /// module grew `device_list_entries` (task 27a, Ruling C); 4 since `validate_key_package` and
     /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
     /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
-    /// (DS-MEMBERSHIP-01).
+    /// (DS-MEMBERSHIP-01); 7 since `verify_credential` was exported (DILLA-BOT-04).
     #[test]
-    fn dilla_abi_reports_version_six() {
+    fn dilla_abi_reports_version_seven() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1317,25 +1361,22 @@ mod tests {
             Ok(abi)
         })
         .unwrap();
-        assert_eq!(
-            abi, 6,
-            "ABI v6: public_group_state carries the group's external_senders"
-        );
-        assert_eq!(dilla_core::ABI_VERSION, 6);
+        assert_eq!(abi, 7, "ABI v7: verify_credential is exported");
+        assert_eq!(dilla_core::ABI_VERSION, 7);
     }
 
-    /// An ABI v2, v3, v4 or v5 request must now be refused outright — there is no compatibility
+    /// An older ABI request must now be refused outright — there is no compatibility
     /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3, 4, 5] {
+        for old in [2u64, 3, 4, 5, 6] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('6'),
+                detail.contains(&old.to_string()) && detail.contains('7'),
                 "detail: {detail}"
             );
         }
@@ -2372,5 +2413,169 @@ mod tests {
             Ok(d.bytes()?.to_vec())
         })
         .unwrap()
+    }
+
+    fn signed_native_bot_credential() -> (CredentialIdentity, [u8; 32]) {
+        use dilla_core::identity::{Kind, SignerTier, SskSigner, Tier, UmkSigner};
+        use dilla_core::ids::{DeviceId, UserId};
+
+        let umk = UmkSigner::from_bytes(&[0x11; 32]);
+        let ssk = SskSigner::from_bytes(&[0x22; 32]);
+        let dsk = [0x33; 32];
+        let device_id = DeviceId::from_bytes([0x44; 16]);
+        (
+            CredentialIdentity {
+                v: 1,
+                umk_pub: umk.public(),
+                user_id: UserId::from_bytes([0; 16]),
+                device_id,
+                kind: Kind::Bot,
+                tier: Tier::Native,
+                signer_tier: SignerTier::Native,
+                ssk_pub: ssk.public(),
+                sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+                sig_ssk_dev: ssk.sign_device(
+                    &device_id,
+                    &dsk,
+                    Kind::Bot,
+                    Tier::Native,
+                    SignerTier::Native,
+                ),
+            },
+            dsk,
+        )
+    }
+
+    fn credential_request(credential: &[u8], dsk: &[u8], version: u64) -> Vec<u8> {
+        req(|e| {
+            e.array(3).uint(version).bytes(credential).bytes(dsk);
+        })
+    }
+
+    #[test]
+    fn verify_credential_refuses_bad_signatures_provisional_and_small_order_key_material() {
+        let (credential, dsk) = signed_native_bot_credential();
+        let mut cases = Vec::new();
+
+        let mut bad_umk_signature = credential.clone();
+        bad_umk_signature.sig_umk_ssk[0] ^= 1;
+        cases.push(("umk-ssk signature", bad_umk_signature));
+
+        let mut bad_device_signature = credential.clone();
+        bad_device_signature.sig_ssk_dev[0] ^= 1;
+        cases.push(("ssk-device signature", bad_device_signature));
+
+        let provisional = CredentialIdentity::provisional(
+            credential.umk_pub,
+            credential.user_id,
+            credential.device_id,
+            credential.kind,
+            credential.tier,
+        );
+        cases.push(("provisional", provisional));
+
+        let mut small_order_key = credential.clone();
+        small_order_key.umk_pub = [0; 32];
+        cases.push(("small-order public key", small_order_key));
+
+        let mut small_order_signature = credential.clone();
+        small_order_signature.sig_umk_ssk = [0; 64];
+        cases.push(("small-order signature encoding", small_order_signature));
+
+        for (name, invalid) in cases {
+            let response = dispatch(
+                "verify_credential",
+                &credential_request(&invalid.encode(), &dsk, dilla_core::ABI_VERSION),
+            );
+            assert_eq!(failure(&response).0, "E_CREDENTIAL", "{name}");
+        }
+        let mut wrong_dsk = dsk;
+        wrong_dsk[0] ^= 1;
+        let response = dispatch(
+            "verify_credential",
+            &credential_request(&credential.encode(), &wrong_dsk, dilla_core::ABI_VERSION),
+        );
+        assert_eq!(failure(&response).0, "E_CREDENTIAL", "wrong leaf DSK");
+    }
+
+    #[test]
+    fn verify_credential_rejects_noncanonical_trailing_truncated_and_oversized_inputs() {
+        let (credential, dsk) = signed_native_bot_credential();
+        let valid = credential.encode();
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        let mut nonminimal = valid.clone();
+        nonminimal.splice(1..2, [0x18, 0x01]);
+        let mut array_key_instead_of_bytes = valid.clone();
+        assert_eq!(
+            array_key_instead_of_bytes[2], 0x58,
+            "UMK key uses a 32-byte bstr"
+        );
+        array_key_instead_of_bytes[2] = 0x98;
+        let truncated = valid[..valid.len() - 1].to_vec();
+        let oversized = vec![0x41; 8193];
+
+        for (name, bytes) in [
+            ("trailing", trailing),
+            ("nonminimal", nonminimal),
+            ("array instead of bstr", array_key_instead_of_bytes),
+            ("truncated", truncated),
+            ("oversized", oversized),
+        ] {
+            let response = dispatch(
+                "verify_credential",
+                &credential_request(&bytes, &dsk, dilla_core::ABI_VERSION),
+            );
+            assert_eq!(failure(&response).0, "E_CREDENTIAL", "{name}");
+        }
+
+        let wrong_abi = dispatch(
+            "verify_credential",
+            &credential_request(&valid, &dsk, dilla_core::ABI_VERSION - 1),
+        );
+        assert_eq!(failure(&wrong_abi).0, crate::abi::E_ABI_VERSION);
+
+        let wrong_dsk_shape = dispatch(
+            "verify_credential",
+            &credential_request(&valid, &[0; 31], dilla_core::ABI_VERSION),
+        );
+        assert_eq!(failure(&wrong_dsk_shape).0, crate::abi::E_ABI_SHAPE);
+    }
+
+    #[test]
+    fn verify_credential_accepts_a_valid_native_bot_credential() {
+        let (credential, dsk) = signed_native_bot_credential();
+        let credential_bytes = credential.encode();
+        let response = dispatch(
+            "verify_credential",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(&credential_bytes)
+                    .bytes(&dsk);
+            }),
+        );
+        let got = decode_strict(&response, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0, "verification succeeds");
+            d.array(8)?;
+            Ok((
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.uint()?,
+                d.uint()?,
+                d.uint()?,
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+            ))
+        })
+        .expect("success response is strict CBOR");
+        assert_eq!(got.0, credential.umk_pub);
+        assert_eq!(got.1, [0; 16]);
+        assert_eq!(got.2, [0x44; 16]);
+        assert_eq!((got.3, got.4, got.5), (1, 0, 0));
+        assert_eq!(got.6, credential.ssk_pub);
+        assert_eq!(got.7, credential.sig_umk_ssk);
     }
 }
