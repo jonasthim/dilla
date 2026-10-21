@@ -222,6 +222,8 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   if (Math.abs(centreOf(tr).x - m.x) > 2 || Math.abs(centreOf(jr).x - m.x) > 2) throw new Error(`${story}: not centred across (main ${String(m.x)}, text ${String(centreOf(tr).x)}, button ${String(centreOf(jr).x)})`);
   if (Math.abs(group.y - m.y) > 2) throw new Error(`${story}: not centred down (main ${String(m.y)}, group ${String(group.y)})`);
   if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
+  const label = document.createRange(); label.selectNodeContents(join);
+  if (Math.abs(centreOf(label.getBoundingClientRect()).x - m.x) > 2) throw new Error(`${story}: the join label is not centred (main ${String(m.x)}, label ${String(centreOf(label.getBoundingClientRect()).x)})`);
   if (phone && jr.height < 44) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 44`);
 }
 /** Nobody is in the voice channel and this device has not joined: the text and the join button, centred. */
