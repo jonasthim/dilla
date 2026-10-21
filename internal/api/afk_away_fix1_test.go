@@ -433,6 +433,8 @@ func TestAFKLastCloseRacingTheMarkStillClears(t *testing.T) {
 	})
 	a.idleMove(t)
 	wg.Wait()
+	a.e.Clk.Advance(31 * time.Second) // Q2 as revised: the clear waits out a 30 s grace
+	waitOffline(t, a.calls)
 	if a.isAway(t, a.cid, a.member) {
 		t.Fatal("the member is away after their last connection closed")
 	}

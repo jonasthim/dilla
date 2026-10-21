@@ -296,6 +296,14 @@ type Calls struct {
 	// keeps AFKMaintenance to one pass at a time.
 	awayEndPending  atomic.Bool
 	awayMaintaining atomic.Bool
+	// awayOff is each user whose last gateway connection closed, waiting out afkOfflineGrace
+	// before their away rows are cleared (Q2 as revised: a reload or a short blip keeps away). One
+	// entry and one timer per user, however often the user reconnects; awayOffMu guards the map and
+	// each entry's deadline, and is taken after awayMu, never before it. awayOffWaiters counts the
+	// goroutines waiting on those timers.
+	awayOffMu      sync.Mutex
+	awayOff        map[id.ID]*awayOffline
+	awayOffWaiters atomic.Int32
 	// afkHook, set by a test only, runs at named points of the AFK paths.
 	afkHook func(stage string)
 }

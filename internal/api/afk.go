@@ -731,16 +731,30 @@ func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked) erro
 	}
 	// The away mark below is decided here: an admission of the user after this point wins (R-AW7).
 	decided := h.afkAdmitSeq
+	// The reason goes in BEFORE the removal (R3-n1), so the cut client's first read already says
+	// "moved"; a removal that fails puts back what was there.
+	prev, hadPrev := h.afkPending[dev]
+	h.setAFKPendingLocked(dev, afkPendingSwept)
+	mine := h.afkPending[dev]
 	h.afkMu.Unlock()
+	h.afkStage("sweep-pending")
 	removeCtx, cancel := sfuCtx(context.WithoutCancel(ctx))
 	err = h.sfu.RemoveParticipants(removeCtx, row.LivekitRoom, dev)
 	cancel()
 	if err != nil {
+		h.afkMu.Lock()
+		if cur, ok := h.afkPending[dev]; ok && cur.reason == mine.reason && cur.at.Equal(mine.at) {
+			if hadPrev {
+				h.afkPending[dev] = prev
+			} else {
+				delete(h.afkPending, dev)
+			}
+		}
+		h.afkMu.Unlock()
 		return err
 	}
 	h.revokeRelay(dev)
 	h.afkMu.Lock()
-	h.setAFKPendingLocked(dev, afkPendingSwept)
 	delete(h.afkTracked, dev)
 	h.afkMu.Unlock()
 	// R-AW3: the cut marks the user away when no other device of theirs is in a call.

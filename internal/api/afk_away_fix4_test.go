@@ -21,7 +21,14 @@ import (
 func TestAFKUnseededClearHonoursAnInFlightMark(t *testing.T) {
 	clears := map[string]func(a *awayEnv, c *api.Calls){
 		"admission": func(a *awayEnv, c *api.Calls) { c.Admitted(t.Context(), a.room, a.memberDev, false) },
-		"offline":   func(a *awayEnv, c *api.Calls) { c.AFKOffline(t.Context(), a.member) },
+		// Q2 as revised: the last connection closes during the mark, and the grace ends while the
+		// mark still holds awayMu; the clear runs after the mark's write.
+		"offline": func(a *awayEnv, c *api.Calls) {
+			a.setOffline(a.member, true)
+			c.AFKOffline(t.Context(), a.member)
+			a.e.Clk.Advance(31 * time.Second)
+			waitOffline(t, c)
+		},
 		"typing":    func(a *awayEnv, c *api.Calls) { c.AFKActiveInChannel(t.Context(), a.member, a.ch) },
 	}
 	for name, clear := range clears {

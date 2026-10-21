@@ -277,8 +277,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
 		OnFactorOwed: func(device id.ID) { cutFromCalls(context.Background(), device) },
-		// AW2: a user's last connection closing clears their AFK away rows at once (Q2), and a
-		// typing op clears the community's (Q1).
+		// AW2: a user's last connection closing starts the 30 s grace after which their AFK away
+		// rows clear unless they reconnect (Q2, as revised), and a typing op clears the
+		// community's (Q1).
 		OnUserOffline: func(user id.ID) {
 			if callRoutes != nil {
 				callRoutes.AFKOffline(context.Background(), user)

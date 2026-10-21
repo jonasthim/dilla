@@ -10,6 +10,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/livekit/protocol/livekit"
 
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -24,9 +25,9 @@ import (
 // Away and calls never overlap (R-AW2): any admission of any device of the user clears every row of
 // that user. A row is set by the sweep's cut when no other device of the user is in a call (R-AW3)
 // and by PUT …/afk/away, which cuts every device of the user first. It is cleared by an admission,
-// by a message or a typing op in that community (Q1), by the user's last gateway connection closing
-// (Q2), and by leaving, a kick or a ban (the store's cascade, announced by AFKMemberRemoved). No
-// client route clears it (Q3).
+// by a message or a typing op in that community (Q1), by the user holding no gateway connection for
+// 30 continuous seconds (Q2, revised: a reload or a short blip keeps away), and by leaving, a kick or
+// a ban (the store's cascade, announced by AFKMemberRemoved). No client route clears it (Q3).
 //
 // Locks (fix rounds 1 and 2). awayMu serialises the roster's writes, and nothing holds it while it
 // waits on a send or on an audience read. awaySet, the in-memory index of who may be away, sits
@@ -53,6 +54,14 @@ const (
 	afkBootGrace = 60 * time.Second
 	// afkAdmitMemory is how long a device's latest admission is remembered for the mark's checks.
 	afkAdmitMemory = 10 * time.Minute
+	// afkOfflineGrace is how long a user must hold no gateway connection, without a break, before
+	// their away rows are cleared (Q2, as revised by Jonas on 2026-10-21): a reload or a short
+	// network blip keeps a person away.
+	afkOfflineGrace = 30 * time.Second
+	// afkRecoverWindow is how far back an admission makes a device one that may still be recovering
+	// its call after the SFU dropped it (the web client retries for 120 s): PUT …/afk/away records
+	// pending 2 for such a device even though no room lists it (R3-M1).
+	afkRecoverWindow = 2 * time.Minute
 )
 
 // afkAdmit is a device's latest admission: its number and when (the instance clock).
@@ -430,6 +439,12 @@ func (h *Calls) clearAwayUser(ctx context.Context, user id.ID) {
 		}
 	}
 	h.awayMu.Lock()
+	h.clearAwayUserLocked(ctx, user)
+}
+
+// clearAwayUserLocked deletes every away row of user and queues their op 55. The caller holds awayMu;
+// it is released on return.
+func (h *Calls) clearAwayUserLocked(ctx context.Context, user id.ID) {
 	cids, err := h.repo.ClearAFKAwayUser(ctx, user)
 	if err != nil {
 		h.awayMu.Unlock()
@@ -498,10 +513,95 @@ func (h *Calls) AFKActiveInGroup(ctx context.Context, user, group id.ID) {
 	h.clearAwayIn(ctx, *g.CommunityID, user)
 }
 
-// AFKOffline is the gateway's hook for a user's last live connection closing (Q2): every away row of
-// the user is cleared at once.
-func (h *Calls) AFKOffline(ctx context.Context, user id.ID) {
-	h.clearAwayUser(ctx, user)
+// awayOffline is a user whose last gateway connection closed: their away rows are cleared at
+// deadline unless a connection came back. AFKOffline moves the deadline and re-arms t; the one
+// goroutine waiting on t never re-arms it.
+type awayOffline struct {
+	deadline time.Time
+	t        clock.Timer
+}
+
+// AFKOffline is the gateway's hook for a user's last live connection closing (Q2, as revised): the
+// user's away rows are cleared once the user has held no gateway connection for afkOfflineGrace
+// continuous seconds. A reconnect within it keeps them (a reload, a short network blip); a later
+// close starts the grace again. A user has one entry and one timer however often they reconnect, so
+// a flapping connection leaks nothing; StopAFK ends the waits, and no clear runs while the gateway
+// drains.
+func (h *Calls) AFKOffline(_ context.Context, user id.ID) {
+	h.awayOffMu.Lock()
+	defer h.awayOffMu.Unlock()
+	deadline := h.clk.Now().Add(afkOfflineGrace)
+	if e := h.awayOff[user]; e != nil {
+		e.deadline = deadline
+		e.t.Reset(afkOfflineGrace)
+		return
+	}
+	h.afkLifeMu.Lock()
+	if h.afkStopped {
+		h.afkLifeMu.Unlock()
+		return
+	}
+	h.afkWG.Add(1)
+	h.afkLifeMu.Unlock()
+	if h.awayOff == nil {
+		h.awayOff = make(map[id.ID]*awayOffline)
+	}
+	e := &awayOffline{deadline: deadline, t: h.clk.NewTimer(afkOfflineGrace)}
+	h.awayOff[user] = e
+	h.awayOffWaiters.Add(1)
+	go h.awaitOffline(user, e)
+}
+
+// awaitOffline waits out e's grace for user, tracked by afkWG, and ends with StopAFK.
+func (h *Calls) awaitOffline(user id.ID, e *awayOffline) {
+	defer h.afkWG.Done()
+	defer h.awayOffWaiters.Add(-1)
+	ctx := h.afkCtx
+	for {
+		select {
+		case <-ctx.Done():
+			e.t.Stop()
+			h.awayOffMu.Lock()
+			if h.awayOff[user] == e {
+				delete(h.awayOff, user)
+			}
+			h.awayOffMu.Unlock()
+			return
+		case <-e.t.C():
+		}
+		if h.offlineDue(ctx, user, e) {
+			return
+		}
+	}
+}
+
+// offlineDue is the end of user's grace: it answers false when a later close moved the deadline (the
+// timer is re-armed already), and otherwise drops the entry and clears every away row of the user,
+// unless a connection came back, the instance stops or the gateway drains. The deadline, the
+// connection and the rows are read under awayMu, where every mark checks the connection and writes:
+// a mark of a user who reconnected cannot fall between this check and the DELETE.
+func (h *Calls) offlineDue(ctx context.Context, user id.ID, e *awayOffline) bool {
+	h.awayMu.Lock()
+	h.awayOffMu.Lock()
+	if h.awayOff[user] != e {
+		h.awayOffMu.Unlock()
+		h.awayMu.Unlock()
+		return true
+	}
+	if h.clk.Now().Before(e.deadline) {
+		h.awayOffMu.Unlock()
+		h.awayMu.Unlock()
+		return false
+	}
+	delete(h.awayOff, user)
+	h.awayOffMu.Unlock()
+	if ctx.Err() != nil || (h.awayDraining != nil && h.awayDraining()) || h.connectedLocked(user) ||
+		!h.idxMayBeAway(user, nil) {
+		h.awayMu.Unlock()
+		return true
+	}
+	h.clearAwayUserLocked(context.WithoutCancel(ctx), user)
+	return true
 }
 
 // afkAdmissionClears is the admission's clear (R-AW2, R-AW4): Admitted records the admission under
@@ -660,11 +760,13 @@ func (h *Calls) sweepMarkAway(ctx context.Context, tracked afkTracked, dev id.ID
 	}
 }
 
-// afkAway is PUT /v1/communities/{id}/afk/away `[]` (R-AW3, by choosing AFK): member-only. It cuts
-// every device of the caller's user from every SFU room, then marks the user away in the community,
-// keeping an earlier since. 204. There is no DELETE (Q3).
+// afkAway is PUT /v1/communities/{id}/afk/away `[]` (R-AW3, by choosing AFK): member-only. It marks
+// the caller's user away in the community first, keeping an earlier since, and then cuts every
+// device of the user from every SFU room (cutUserEverywhere). A cut that fails is logged and the
+// request still answers 204 (R3-n2): the mark stands and every device carries its reason. There is
+// no DELETE (Q3).
 func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
-	cid, user, _, err := h.afkMember(r)
+	cid, user, dev, err := h.afkMember(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -688,65 +790,81 @@ func (h *Calls) afkAway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decided := h.afkDecision()
-	if err := h.cutUserEverywhere(r.Context(), user); err != nil {
-		h.log.ErrorContext(r.Context(), "cutting a user's devices for AFK failed", "user", user, "err", err)
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not cut your devices"))
-		return
-	}
-	h.afkStage("away-cut")
+	h.afkStage("away-decided")
 	if _, err := h.markAway(r.Context(), cid, user, decided, true); err != nil {
 		server.WriteError(w, notFound(err))
 		return
 	}
+	h.cutUserEverywhere(r.Context(), user, dev)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // cutUserEverywhere removes every device of user, with its "#" shadows, from every SFU room it is
-// in, revokes its relay, stops its AFK timer and records its pending cut (reason 2, chosen AFK).
-func (h *Calls) cutUserEverywhere(ctx context.Context, user id.ID) error {
-	if h.sfu == nil {
-		return nil
+// in, revokes its relay and stops its AFK timer. Every device it cuts gets its pending reason 2
+// (chosen AFK) BEFORE the removal (R3-n1), so the cut client's first read already says why; so does
+// every device of the user other than caller that was admitted to a call within afkRecoverWindow
+// and that no room lists now (R3-M1): a call the SFU dropped, whose recovery then reads 2 and does
+// not rejoin. A failed room listing or removal is logged, and the device keeps its reason (R3-n2).
+func (h *Calls) cutUserEverywhere(ctx context.Context, user, caller id.ID) {
+	type cut struct {
+		room string
+		dev  id.ID
 	}
-	devices, err := h.repo.ListDevicesByUser(ctx, user)
-	if err != nil {
-		return err
-	}
-	mine := make(map[string]bool, len(devices))
-	for _, d := range devices {
-		mine[d.ID.String()] = true
-	}
-	type cut struct{ room, dev string }
 	var cuts []cut
-	seen := map[cut]bool{}
-	if err := h.eachUserParticipant(ctx, mine, func(room, dev string) bool {
-		if c := (cut{room, dev}); !seen[c] {
-			seen[c] = true
-			cuts = append(cuts, c)
-		}
-		return true
-	}); err != nil {
-		return err
-	}
-	for _, c := range cuts {
-		dev, err := id.Parse(c.dev)
+	listed := map[id.ID]bool{}
+	if h.sfu != nil {
+		devices, err := h.repo.ListDevicesByUser(ctx, user)
 		if err != nil {
-			continue
+			h.log.ErrorContext(ctx, "listing a user's devices for AFK failed; none is cut", "user", user, "err", err)
 		}
+		mine := make(map[string]bool, len(devices))
+		for _, d := range devices {
+			mine[d.ID.String()] = true
+		}
+		seen := map[cut]bool{}
+		if len(mine) > 0 {
+			if err := h.eachUserParticipant(ctx, mine, func(room, d string) bool {
+				dev, err := id.Parse(d)
+				if err != nil {
+					return true
+				}
+				if c := (cut{room, dev}); !seen[c] {
+					seen[c] = true
+					cuts = append(cuts, c)
+					listed[dev] = true
+				}
+				return true
+			}); err != nil {
+				h.log.ErrorContext(ctx, "listing the SFU rooms for AFK failed; the devices it listed are cut", "user", user, "err", err)
+			}
+		}
+	}
+	h.afkMu.Lock()
+	// The cut device's client learns from any community's snapshot that it left because its user
+	// chose AFK (pending 2), wherever it was: a community call or a DM call.
+	for _, c := range cuts {
+		h.setAFKPendingLocked(c.dev, afkPendingChose)
+	}
+	for dev, a := range h.afkAdmits[user] {
+		if dev != caller && !listed[dev] && h.clk.Since(a.at) < afkRecoverWindow {
+			h.setAFKPendingLocked(dev, afkPendingChose)
+		}
+	}
+	h.afkMu.Unlock()
+	h.afkStage("away-pending")
+	for _, c := range cuts {
 		rctx, cancel := sfuCtx(context.WithoutCancel(ctx))
-		err = h.sfu.RemoveParticipants(rctx, c.room, dev)
+		err := h.sfu.RemoveParticipants(rctx, c.room, c.dev)
 		cancel()
 		if err != nil {
-			return err
+			h.log.ErrorContext(ctx, "cutting a device for AFK failed; it keeps its pending reason", "device", c.dev, "room", c.room, "err", err)
+			continue
 		}
-		h.revokeRelay(dev)
+		h.revokeRelay(c.dev)
 		h.afkMu.Lock()
-		delete(h.afkTracked, dev)
-		// The cut device's client learns from any community's snapshot that it left because its
-		// user chose AFK (pending 2), wherever it was: a community call or a DM call.
-		h.setAFKPendingLocked(dev, afkPendingChose)
+		delete(h.afkTracked, c.dev)
 		h.afkMu.Unlock()
 	}
-	return nil
 }
 
 // eachCommunity calls f for every live community, a page at a time.

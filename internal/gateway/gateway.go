@@ -39,9 +39,10 @@ type Options struct {
 	// composition root can cut the device from its live calls. Nil does nothing.
 	OnFactorOwed func(device id.ID)
 
-	// OnUserOffline runs once a user's last live connection has left the registry (AW2, Q2: offline
-	// clears AFK at once). A second open connection, of any device of the user, keeps it from
-	// running. It runs on the goroutine that removed the connection. Nil does nothing.
+	// OnUserOffline runs once a user's last live connection has left the registry (AW2, Q2: it starts
+	// the 30 s grace after which the user's AFK away rows clear, unless a connection comes back). A
+	// second open connection, of any device of the user, keeps it from running. It runs on the
+	// goroutine that removed the connection and must not block. Nil does nothing.
 	OnUserOffline func(user id.ID)
 	// OnTyping runs after an accepted typing_set on (AW2, Q1: typing is activity), with the user and
 	// the channel. Nil does nothing.

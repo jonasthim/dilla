@@ -371,6 +371,8 @@ func TestAFKLastConnectionClosingClearsAway(t *testing.T) {
 	a.markAway(t, other, a.member, 100)
 	a.setOffline(a.member, true)
 	a.calls.AFKOffline(t.Context(), a.member)
+	a.e.Clk.Advance(31 * time.Second) // Q2 as revised: the clear waits out a 30 s grace
+	waitOffline(t, a.calls)
 	for _, cid := range []id.ID{a.cid, other} {
 		if a.isAway(t, cid, a.member) {
 			t.Fatalf("still away in %s after going offline", cid)
@@ -463,7 +465,7 @@ func TestAFKPutAwayCutsEveryDeviceAndMarksAway(t *testing.T) {
 func TestAFKPutAwayAfterAKickIsNotFound(t *testing.T) {
 	a := newAwayEnv(t)
 	a.calls.SetAFKHookForTest(func(stage string) {
-		if stage == "away-cut" {
+		if stage == "away-decided" {
 			if err := a.e.Repo.DeleteMember(t.Context(), a.cid, a.member); err != nil {
 				t.Error(err)
 			}

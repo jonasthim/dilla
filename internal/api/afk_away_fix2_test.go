@@ -58,7 +58,7 @@ func TestAFKAwaySendsNeverBlockLookupsOrOtherClears(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("clear A never resolved its audience")
 	}
-	returnsWithin(t, 2*time.Second, "a second clear", func() { c.AFKOffline(t.Context(), a.owner) })
+	returnsWithin(t, 2*time.Second, "a second clear", func() { c.AFKActiveInChannel(t.Context(), a.owner, a.ch) })
 	returnsWithin(t, 2*time.Second, "typing of users who are not away", func() {
 		var wg sync.WaitGroup
 		for range 64 {

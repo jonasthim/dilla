@@ -127,7 +127,7 @@ func TestAFKDrainBatchResolvesOnceAndSendsTheFinalState(t *testing.T) {
 			<-release
 		})
 	}
-	c.AFKOffline(t.Context(), a.owner) // the drainer takes this note and blocks on its audience
+	c.AFKActiveInChannel(t.Context(), a.owner, a.ch) // the drainer takes this note and blocks on its audience
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
