@@ -12,6 +12,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { formatDay, t } from '../../strings/index.ts';
 import { useRun } from '../admin/shared.ts';
 import { FactorSetup, sharedRefusal } from '../factor/FactorSetup.tsx';
+import { PasswordDialog } from './PasswordDialog.tsx';
 import { StepUpDialog } from './StepUpDialog.tsx';
 
 const TITLE_ID = 'signin-title';
@@ -21,7 +22,8 @@ type Purpose =
   | { kind: 'totp' }
   | { kind: 'passkey' }
   | { kind: 'remove'; which: 'totp' | 'passkey'; credId: string | null; name: string }
-  | { kind: 'codes' };
+  | { kind: 'codes' }
+  | { kind: 'password' };
 type Phase = 'idle' | 'stepup' | 'action' | 'codes';
 
 type Notice = 'expired' | 'again';
@@ -105,6 +107,16 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
     setPurpose({ kind: 'codes' });
     setPhase('action');
   };
+  /** The password row (flow 15). A change is its own step-up (the old password), and so is a first password on an account that
+   *  holds no second factor; one that holds a factor steps up first, with a passkey as it has no password. */
+  const askPassword = () => {
+    action.reset();
+    setNotice(null);
+    setToken(null);
+    setPurpose({ kind: 'password' });
+    if (factors?.hasPassword === false && ((factors.totp !== null) || factors.passkeys.length > 0)) { setPhase('stepup'); return; }
+    setPhase('action');
+  };
   const end = () => {
     codesConfirmed.current = false;
     action.reset();
@@ -124,6 +136,12 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
     setNext('action');
   };
   /** The token was refused as spent or expired: back to the password, saying so. */
+  const passwordSaved = () => {
+    const had = factors?.hasPassword === true;
+    announce(t(had ? 'settings.password.changed' : 'settings.password.added'));
+    focusAfter.current = t('settings.password.change');
+    end();
+  };
   const lost = (why: Notice | null) => {
     action.reset();
     setToken(null);
@@ -194,10 +212,11 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
 
   const stepUpOpen = phase === 'stepup';
   const confirmOpen = phase === 'action' && (purpose?.kind === 'remove' || purpose?.kind === 'codes');
+  const passwordOpen = phase === 'action' && purpose?.kind === 'password';
   const addOpen = phase === 'action' && token !== null && (purpose?.kind === 'totp' || purpose?.kind === 'passkey');
   const removing = purpose?.kind === 'remove' ? purpose : null;
   const region = <p className="d-sr-only" role="status" aria-live="polite" data-testid="settings-announcer">{live}</p>;
-  const modalOpen = stepUpOpen || confirmOpen || addOpen || phase === 'codes';
+  const modalOpen = stepUpOpen || confirmOpen || passwordOpen || addOpen || phase === 'codes';
 
   return (
     <section ref={rootRef} className="dw-settings-section" aria-labelledby={TITLE_ID}>
@@ -211,7 +230,8 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
         <>
           <p>{t('factorSettings.body', { instance })}</p>
           <FactorLine id="signin-password" heading title={t('factorSettings.password')}
-            detail={t(factors.hasPassword ? 'factorSettings.password.set' : 'factorSettings.password.none')} />
+            detail={t(factors.hasPassword ? 'factorSettings.password.set' : 'factorSettings.password.none')}
+            action={askPassword} actionLabel={t(factors.hasPassword ? 'settings.password.change' : 'settings.password.add')} />
           {factors.totp === null ? (
             <FactorLine id="signin-totp" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
               action={() => { begin({ kind: 'totp' }); }} actionLabel={t('factorSettings.totp.add')} />
@@ -252,6 +272,8 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
         onConfirm={purpose?.kind === 'codes' ? regenerate : remove} onClose={() => { if (!action.busy) end(); }}>
         {region}
       </ConfirmDialog>
+      <PasswordDialog open={passwordOpen} hasPassword={hasPassword} stepup={token} live={region} onDone={passwordSaved}
+        onStepUpLost={() => { lost('expired'); }} onClose={end} />
       {addOpen && token !== null && (purpose?.kind === 'totp' || purpose?.kind === 'passkey') ? (
         <FactorSetup origin="settings" stepLabel="" instanceName={instance} username={account?.user?.username ?? ''} announce={announce}
           embedded={{ stepup: token, start: purpose.kind === 'totp' ? 'app' : 'passkey', onClose: end, onStepUpLost: lost, live: region }}
