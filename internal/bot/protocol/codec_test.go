@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -468,5 +469,71 @@ func TestContextRejectsFarFutureAndOverflow(t *testing.T) {
 	r.Expires = u64(math.MaxUint64)
 	if err := ValidateRequestContext(r, fixtureID(2), math.MaxUint64-10); !errors.Is(err, ErrExpired) {
 		t.Fatalf("overflow: %v", err)
+	}
+}
+
+func TestRawDecodersRejectOversizeBeforeAllocating(t *testing.T) {
+	// A valid, canonical top-level bstr is deliberately the wrong envelope shape.
+	// Without an entrypoint size guard, parse copies its entire payload before the
+	// envelope decoder can reject it.
+	n := MaxHelperBytes + 1
+	raw := make([]byte, 5+n)
+	raw[0] = 0x5a
+	raw[1] = byte(uint32(n) >> 24)
+	raw[2] = byte(uint32(n) >> 16)
+	raw[3] = byte(uint32(n) >> 8)
+	raw[4] = byte(n)
+	decoders := []struct {
+		name   string
+		decode func([]byte) error
+	}{
+		{"request", func(b []byte) error { _, e := DecodeRequestCBOR(b); return e }},
+		{"response", func(b []byte) error { _, e := DecodeResponseCBOR(b); return e }},
+		{"event", func(b []byte) error { _, e := DecodeEvent(b); return e }},
+		{"removal", func(b []byte) error { _, e := DecodeRemovalProof(b); return e }},
+		{"receipt", func(b []byte) error { _, e := DecodeReceipt(b); return e }},
+		{"helper_request", func(b []byte) error { _, e := DecodeHelperRequestCBOR(b); return e }},
+		{"helper_response", func(b []byte) error { _, e := DecodeHelperResponseCBOR(b); return e }},
+	}
+	for _, tc := range decoders {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.decode(raw); !errors.Is(err, ErrLimit) {
+				t.Fatalf("oversized input error = %v, want ErrLimit", err)
+			}
+			allocs := testing.AllocsPerRun(5, func() { _ = tc.decode(raw) })
+			if allocs != 0 {
+				t.Fatalf("oversized input allocated %.1f objects per call", allocs)
+			}
+		})
+	}
+}
+
+func TestHelperPayloadExactMaximum(t *testing.T) {
+	id := fixtureID(1)
+	maxValue := make([]byte, MaxHelperPayload-6) // array head + five-byte bstr head
+	encoded, err := cborx.Marshal([]any{maxValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) != MaxHelperPayload {
+		t.Fatalf("test payload has %d bytes, want %d", len(encoded), MaxHelperPayload)
+	}
+	if _, err := EncodeHelperResponse(HelperResponse{RequestID: id, Payload: []any{maxValue}}); err != nil {
+		t.Fatalf("exact cap rejected: %v", err)
+	}
+	tooLarge := append(maxValue, 0)
+	if _, err := EncodeHelperResponse(HelperResponse{RequestID: id, Payload: []any{tooLarge}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("one over cap error = %v, want ErrInvalid", err)
+	}
+	tooLargePayload, err := cborx.Marshal([]any{tooLarge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := cborx.Marshal([]any{uint64(1), id, uint64(0), tooLargePayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeHelperResponseCBOR(outer); !errors.Is(err, ErrLimit) {
+		t.Fatalf("decoded payload one over cap error = %v, want ErrLimit", err)
 	}
 }

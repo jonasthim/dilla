@@ -20,7 +20,7 @@ const (
 	MaxBodyBytes     = 4000
 	MaxEventBytes    = 4096
 	MaxHelperBytes   = 1 << 20
-	MaxHelperPayload = MaxHelperBytes - 16
+	MaxHelperPayload = 1048480
 )
 
 var (
@@ -159,6 +159,9 @@ func EncodeRequestCBOR(r Request) ([]byte, error) {
 }
 func DecodeRequestCBOR(b []byte) (Request, error) {
 	var z Request
+	if len(b) > MaxBodyBytes {
+		return z, ErrLimit
+	}
 	n, err := parse(b)
 	if err != nil || len(n.a) != 8 || n.a[0].u != 1 {
 		return z, invalid()
@@ -361,6 +364,9 @@ func EncodeResponseCBOR(r Response) ([]byte, error) {
 }
 func DecodeResponseCBOR(b []byte) (Response, error) {
 	var z Response
+	if len(b) > MaxBodyBytes {
+		return z, ErrLimit
+	}
 	n, e := parse(b)
 	if e != nil || len(n.a) != 6 {
 		return z, invalid()
@@ -410,6 +416,11 @@ func encodeRemoval(p RemovalProof) ([]byte, error) {
 }
 func DecodeRemovalProof(b []byte) (RemovalProof, error) {
 	var z RemovalProof
+	// The fixed proof shape cannot exceed 105 bytes: array/version heads, five
+	// 16-byte identifiers, and two uint64 values at their maximum encoding size.
+	if len(b) > 105 {
+		return z, ErrLimit
+	}
 	n, e := parse(b)
 	if e != nil || len(n.a) != 8 {
 		return z, invalid()
@@ -470,6 +481,9 @@ func EncodeEvent(e Event) ([]byte, error) {
 }
 func DecodeEvent(b []byte) (Event, error) {
 	var z Event
+	if len(b) > MaxEventBytes {
+		return z, ErrLimit
+	}
 	n, e := parse(b)
 	if e != nil || len(n.a) != 7 {
 		return z, invalid()
@@ -611,6 +625,9 @@ func EncodeReceipt(r SendReceipt) ([]byte, error) {
 }
 func DecodeReceipt(b []byte) (SendReceipt, error) {
 	var z SendReceipt
+	if len(b) > 512 {
+		return z, ErrLimit
+	}
 	n, e := parse(b)
 	if e != nil || len(n.a) != 8 {
 		return z, invalid()
@@ -736,6 +753,9 @@ func DecodeHelperRequestFrame(frame []byte) (HelperRequest, error) {
 	if a[0].major != 0 || a[0].u != 1 || a[1].major != 2 || a[2].major != 0 || a[3].major != 2 {
 		return z, invalid()
 	}
+	if len(a[3].b) > MaxHelperPayload {
+		return z, ErrLimit
+	}
 	payload, err := parse(a[3].b)
 	if err != nil || payload.major != 4 {
 		return z, invalid()
@@ -760,6 +780,9 @@ func DecodeHelperResponseFrame(frame []byte) (HelperResponse, error) {
 	if a[0].major != 0 || a[0].u != 1 || a[1].major != 2 || a[2].major != 0 || a[3].major != 2 {
 		return z, invalid()
 	}
+	if len(a[3].b) > MaxHelperPayload {
+		return z, ErrLimit
+	}
 	payload, err := parse(a[3].b)
 	if err != nil || payload.major != 4 {
 		return z, invalid()
@@ -771,12 +794,18 @@ func DecodeHelperResponseFrame(frame []byte) (HelperResponse, error) {
 	return r, nil
 }
 func DecodeHelperRequestCBOR(b []byte) (HelperRequest, error) {
+	if len(b) > MaxHelperBytes {
+		return HelperRequest{}, ErrLimit
+	}
 	f := make([]byte, 4+len(b))
 	binary.BigEndian.PutUint32(f, uint32(len(b)))
 	copy(f[4:], b)
 	return DecodeHelperRequestFrame(f)
 }
 func DecodeHelperResponseCBOR(b []byte) (HelperResponse, error) {
+	if len(b) > MaxHelperBytes {
+		return HelperResponse{}, ErrLimit
+	}
 	f := make([]byte, 4+len(b))
 	binary.BigEndian.PutUint32(f, uint32(len(b)))
 	copy(f[4:], b)
