@@ -100,10 +100,10 @@ describe('Controller', () => {
       const { seq } = w.last<Held>(key)!;
       w.gateway.emit(away(STRANGER, 200));
       w.gateway.emit(away(OTHER, 150));
-      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, seq,
+      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, pendingReason: 1, seq,
         away: [{ userId: toHex(OTHER), since: 150 }, { userId: toHex(STRANGER), since: 200 }] });
       w.gateway.emit(away(OTHER, 0));
-      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, seq,
+      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, pendingReason: 1, seq,
         away: [{ userId: toHex(STRANGER), since: 200 }] });
       // A clear of a member who is not away, and a frame for a community this client does not list, change nothing.
       const posts = w.posted.length;
@@ -212,6 +212,25 @@ describe('Controller', () => {
       w.call(999, { m: 'afkAway', communityId: 'nope' });
       await vi.waitFor(() => expect(w.ret(999)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
       expect(w.routes.putAFKAway).toHaveBeenCalledTimes(1);
+    });
+
+    // AW5 fix round 3: the slice carries the read's pending reason (0 none, 1 the sweep, 2 AFK chosen elsewhere).
+    it('a read lands its pending reason in the slice', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, reason: 2, away: [] });
+      w.call(1040, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1040)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: true, pendingReason: 2 });
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      w.call(1041, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1041)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: true, pendingReason: 1 });
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: false, reason: 0, away: [] });
+      w.call(1042, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1042)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: false, pendingReason: 0 });
     });
 
     // AW5 fix round 2 (B-M1): a newer read of the same community that replaces this one's is waited for, not a failure.

@@ -211,6 +211,10 @@ export interface AFKState {
    *  no voice connection, and the unix second it became away there. Set by client-core on every read and kept current by
    *  op 55; a fixture may leave it out. */
   away?: { userId: string; since: number }[];
+  /** AW5 fix round 3: why this device is pending (device-scoped: every community's read says it): 1 the idle sweep moved
+   *  it, 2 this user chose AFK on another device or tab, 0 none. Set by client-core on every read; a fixture may leave it
+   *  out (then `pending` reads as 1). */
+  pendingReason?: 0 | 1 | 2;
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `afk:${string}`

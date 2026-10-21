@@ -94,21 +94,28 @@ const CASES: Case[] = [
     name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, away: [] },
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 1, away: [] },
+  },
+  {
+    // AW5 fix round 3: pending is a reason code; 2 is a cut because this user chose AFK on another device or tab.
+    name: 'AFK snapshot reads pending reason 2 (AFK chosen elsewhere)', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 2, []]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 2, away: [] },
   },
   {
     // AW4: the fifth element is the away roster [[user_id, since_ts]].
     name: 'AFK snapshot reads the away roster of a 5-element answer', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 1758659040], [member(2), 1758659100]]]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: false,
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: false, reason: 0,
       away: [{ userId: member(1), since: 1758659040 }, { userId: member(2), since: 1758659100 }] },
   },
   {
     name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [null, 300, []]),
-    expected: { channelId: null, timeoutSeconds: 300, pending: false, away: [] },
+    expected: { channelId: null, timeoutSeconds: 300, pending: false, reason: 0, away: [] },
   },
   {
     name: 'AFK away (choosing AFK) sends [] and takes 204', call: r => r.putAFKAway(COMMUNITY),
@@ -1618,9 +1625,9 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
-  it('a pending of 2, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
+  it('a pending reason of 3, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
     const two = setup();
-    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 2]));
+    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 3]));
     await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
     for (const tail of [0xf5, 0xf4]) {
       const head = encode([CHANNEL, 300, []]);

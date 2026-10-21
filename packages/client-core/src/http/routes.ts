@@ -35,7 +35,10 @@ export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
 /** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet.
  *  AW4: `away` is the community's away roster, each member and the unix second it became away; empty from a web3.9 host. */
-export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; away: AFKAwayRow[] }
+/** `pending`: this device has a pending cut. AW5 fix round 3: `reason` says why (device-scoped, any community's read):
+ *  1 the idle sweep moved it, 2 this user chose AFK on another device or tab; 0 none. A fixture may leave `reason` out
+ *  (then 1 when pending). */
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; reason?: 0 | 1 | 2; away: AFKAwayRow[] }
 export interface AFKAwayRow { userId: Uint8Array; since: number }
 /** 09 § GET /v1/communities/{id}/afk: the away roster holds at most 1024 entries. */
 const AFK_AWAY_MAX = 1024;
@@ -238,6 +241,12 @@ function checkedText(field: string, v: string, maxBytes: number): string {
   for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
   return v;
 }
+/** AW5 fix round 3: GET …/afk's pending reason, 0, 1 or 2 (a web3.9/3.11 instance answers 0 or 1). */
+function pendingReason(v: CborValue): 0 | 1 | 2 {
+  const n = u53(v);
+  if (n > 2) throw new CborError('E_CBOR_RANGE', 'expected 0, 1 or 2, got ' + String(n));
+  return n as 0 | 1 | 2;
+}
 function flag(v: CborValue): boolean {
   const n = u53(v);
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
@@ -377,7 +386,8 @@ export class Routes {
       seen.add(key);
       away.push({ userId, since });
     }
-    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: a.length > 3 ? flag(a[3]) : false, away };
+    const reason = a.length > 3 ? pendingReason(a[3]) : 0;
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: reason !== 0, reason, away };
   }
   /** PUT /v1/communities/{id}/afk/away: [] (AW4, R-AW3). The caller's user goes to the AFK channel: the instance cuts every
    *  device of the user from its call, then marks the user away. There is no route that clears away (Q3). */

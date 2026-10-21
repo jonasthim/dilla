@@ -2787,7 +2787,8 @@ export class Controller {
       for (const change of buffer.frames) away = awayPatched(away, change) ?? away;
       // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq, away });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, pendingReason: row.reason ?? (row.pending ? 1 : 0),
+        seq: ++this.afkLandedSeq, away });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
