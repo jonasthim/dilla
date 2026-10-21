@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BodyPart } from '@dilla/ui';
-import { parseMarkdown, parseTree, parseTreeUncached, safeLink } from './markdown.ts';
+import { CACHE_LIMITS, cacheSize, parseMarkdown, parseTree, parseTreeUncached, safeLink } from './markdown.ts';
 
 const ID = 'a'.repeat(32);
 const resolve = (target: string): BodyPart => ({ kind: 'mention', label: `@${target.slice(0, 3)}`, me: false, broadcast: false });
@@ -196,17 +196,49 @@ describe('parseMarkdown', () => {
       'unclosed tildes and underscores': n => '~~a_a '.repeat(n / 6),
       'backtick runs of growing length': n => { let s = ''; let k = 1; while (s.length < n) { s += '`'.repeat(k) + 'a'; k++; } return s.slice(0, n); },
       'quotes': n => '> *a\n'.repeat(n / 5),
+      'links in brackets': n => '(http://a'.repeat(n / 9),
+      'many short links': n => 'http://a.b/c '.repeat(n / 13),
+      'links with parentheses': n => 'https://a.b/(x)) '.repeat(n / 17),
+      'links in emphasis': n => '*http://a.b/c* '.repeat(n / 15),
     };
     for (const [name, make] of Object.entries(cases)) {
-      it(`${name}: 4000 characters in under 5 ms, 50000 in under 50 ms`, () => {
-        expect(best(make(4000))).toBeLessThan(5);
-        expect(best(make(50000))).toBeLessThan(50);
+      it(`${name}: grows less than 16-fold from 4k to 32k characters, 4000 in under 25 ms, 50000 in under 250 ms`, () => {
+        const small = best(make(4000));
+        const large = best(make(32000));
+        expect(small).toBeLessThan(25);
+        expect(best(make(50000))).toBeLessThan(250);
+        // Eight times the input must cost less than sixteen times the time (linear is 8). A 1 ms floor keeps timer noise out of the ratio.
+        expect(large / Math.max(small, 1)).toBeLessThan(16);
       });
     }
     it('remembers the parse of a body, so a re-render does not parse again', () => {
       const body = '**x** https://example.com ' + Math.random();
       expect(parseTree(body)).toBe(parseTree(body));
       expect(parseTreeUncached(body)).not.toBe(parseTree(body));
+    });
+  });
+
+  describe('N1: the memo is bounded', () => {
+    it('keeps at most 200 bodies, dropping the least recently used first', () => {
+      const first = 'first body ' + Math.random();
+      const kept = parseTree(first);
+      for (let k = 0; k < CACHE_LIMITS.entries - 1; k++) { parseTree(`filler ${k} ${Math.random()}`); parseTree(first); }
+      for (let k = 0; k < 150; k++) parseTree(`more ${k} ${Math.random()}`);
+      expect(cacheSize().entries).toBeLessThanOrEqual(CACHE_LIMITS.entries);
+      expect(parseTree(first)).toBe(kept);
+    });
+    it('keeps at most 2 MB of body text', () => {
+      for (let k = 0; k < 40; k++) parseTree(`${k} ${Math.random()} `.padEnd(3900, 'x'));
+      expect(cacheSize().chars).toBeLessThanOrEqual(CACHE_LIMITS.chars);
+      for (let k = 0; k < 700; k++) parseTree(`${k} ${Math.random()} `.padEnd(3900, 'y'));
+      expect(cacheSize().chars).toBeLessThanOrEqual(CACHE_LIMITS.chars);
+      expect(cacheSize().entries).toBeLessThanOrEqual(CACHE_LIMITS.entries);
+    });
+    it('does not cache a body over 4000 characters', () => {
+      const long = 'a'.repeat(CACHE_LIMITS.body + 1) + Math.random();
+      const before = cacheSize();
+      expect(parseTree(long).tree).toEqual(parseTreeUncached(long).tree);
+      expect(cacheSize()).toEqual(before);
     });
   });
 

@@ -61,13 +61,16 @@ export function safeLink(text: string): string | null {
 }
 
 class Out {
-  readonly parts: Tree[] = [];
-  text(s: string): void {
-    if (s === '') return;
-    const last = this.parts[this.parts.length - 1];
-    if (last?.kind === 'text') last.text += s; else this.parts.push({ kind: 'text', text: s });
+  private readonly out: Tree[] = [];
+  private buf: string[] = [];
+  /** Plain text is gathered as chunks and joined once, not appended a character at a time. */
+  text(s: string): void { if (s !== '') this.buf.push(s); }
+  push(part: Tree): void { this.flush(); this.out.push(part); }
+  private flush(): void {
+    if (this.buf.length > 0) this.out.push({ kind: 'text', text: this.buf.join('') });
+    this.buf = [];
   }
-  push(part: Tree): void { this.parts.push(part); }
+  get parts(): Tree[] { this.flush(); return this.out; }
 }
 
 /** Per-call lookups, built in one pass, that replace the forward scans. */
@@ -273,17 +276,25 @@ function strip(p: Tree): Tree {
   }
 }
 
-const CACHE_MAX = 1000;
+/** The memo holds at most this many bodies and this many characters of them, and never a body longer than a message can be. */
+export const CACHE_LIMITS = { entries: 200, chars: 2_000_000, body: 4000 } as const;
 const cache = new Map<string, Parsed>();
-/** The parse of a body, remembered by the body text, so a re-render of an unchanged message does not parse again. */
+let cachedChars = 0;
+export const cacheSize = (): { entries: number; chars: number } => ({ entries: cache.size, chars: cachedChars });
+/** The parse of a body, remembered by the body text (least recently used goes first), so a re-render of an unchanged message does not parse again. */
 export function parseTree(body: string): Parsed {
-  let hit = cache.get(body);
-  if (hit === undefined) {
-    if (cache.size >= CACHE_MAX) cache.clear();
-    hit = parseUncached(body);
-    cache.set(body, hit);
+  const hit = cache.get(body);
+  if (hit !== undefined) { cache.delete(body); cache.set(body, hit); return hit; }
+  const parsed = parseUncached(body);
+  if (body.length > CACHE_LIMITS.body) return parsed;
+  cache.set(body, parsed);
+  cachedChars += body.length;
+  for (const [key] of cache) {
+    if (cache.size <= CACHE_LIMITS.entries && cachedChars <= CACHE_LIMITS.chars) break;
+    cache.delete(key);
+    cachedChars -= key.length;
   }
-  return hit;
+  return parsed;
 }
 /** The same parse without the memo (for timing). */
 export const parseTreeUncached = parseUncached;
