@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +34,80 @@ func keyFile(t *testing.T, content string, mode os.FileMode) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func secretFile(t *testing.T, name, content string, mode os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(content), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestTokenFileRequiresPrivateRegularCurrentOwnerBoundedFile(t *testing.T) {
+	base := []string{"-url", "ws://x", "-base-key-file", "-", "-leaf", "0", "-epoch", "1", "-roster", "0:" + devA}
+	good := secretFile(t, "token", "  jwt-secret\n", 0o600)
+	args := append([]string{"-token-file", good}, base...)
+	c, err := parseFlags(args, strings.NewReader(keyHex), &bytes.Buffer{})
+	if err != nil || c.Token != "jwt-secret" {
+		t.Fatalf("private token file = %q, %v", c.Token, err)
+	}
+
+	groupReadable := secretFile(t, "group-token", "jwt-secret", 0o640)
+	large := secretFile(t, "large-token", strings.Repeat("x", (1<<20)+1), 0o600)
+	link := filepath.Join(t.TempDir(), "token-link")
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(t.TempDir(), "token-fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("cannot construct a FIFO: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{{"group readable", groupReadable, "owner-only 0600 regular file"}, {"symlink", link, "unavailable or unsafe"}, {"fifo", fifo, "owner-only 0600 regular file"}, {"oversized", large, "too large"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseFlags(append([]string{"-token-file", tc.path}, base...), strings.NewReader(keyHex), &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseFlags error = %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), tc.path) || strings.Contains(err.Error(), "jwt-secret") {
+				t.Fatalf("token-file error disclosed path or token: %v", err)
+			}
+		})
+	}
+
+	other := secretFile(t, "other-owner", "jwt-secret", 0o600)
+	if err := os.Chown(other, os.Geteuid()+1, -1); err == nil {
+		_, err = parseFlags(append([]string{"-token-file", other}, base...), strings.NewReader(keyHex), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "private regular file") {
+			t.Fatalf("other-owner token file = %v", err)
+		}
+	}
+}
+
+func TestTokenFileFlagsAreRequiredAndMutuallyExclusive(t *testing.T) {
+	key := keyFile(t, keyHex, 0o600)
+	base := []string{"-url", "ws://x", "-base-key-file", key, "-leaf", "0", "-epoch", "1", "-roster", "0:" + devA}
+	file := secretFile(t, "token", "jwt-secret", 0o600)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{{"neither", nil, "-token or -token-file is required"}, {"both", []string{"-token", "jwt-secret", "-token-file", file}, "mutually exclusive"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseFlags(append(append([]string{}, tc.args...), base...), strings.NewReader(""), &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseFlags error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestFlagsParseAWellFormedCommandLine(t *testing.T) {

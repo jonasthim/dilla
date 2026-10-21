@@ -53,6 +53,41 @@ type report struct {
 	Dropped         map[string]uint64 `json:"dropped"`
 }
 
+const maxTokenBytes = 1 << 20
+
+// readTokenFile reads a bounded token from a private regular file. It deliberately returns only
+// static errors: neither the token nor its path belongs in diagnostics or test output.
+func readTokenFile(path string) (string, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return "", errors.New("token file is unavailable or unsafe")
+	}
+	f := os.NewFile(uintptr(fd), "token")
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", errors.New("token file is unavailable or unsafe")
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || !ok || int64(st.Uid) != int64(os.Geteuid()) || info.Mode().Perm() != 0o600 {
+		return "", errors.New("token file must be an owner-only 0600 regular file owned by the current user")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxTokenBytes+1))
+	if err != nil {
+		clear(raw)
+		return "", errors.New("token file cannot be read")
+	}
+	defer clear(raw)
+	if len(raw) > maxTokenBytes {
+		return "", errors.New("token file is too large")
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", errors.New("token file must contain one non-empty token")
+	}
+	return token, nil
+}
+
 func deviceID(s string) ([16]byte, error) {
 	d, ok := media.DeviceID(s)
 	if !ok {
@@ -123,6 +158,7 @@ func parseFlags(args []string, stdin io.Reader, stderr io.Writer) (config, error
 	fs.SetOutput(stderr)
 	url := fs.String("url", "", "LiveKit signalling URL (the calls route's livekit_url)")
 	token := fs.String("token", "", "the room token")
+	tokenFile := fs.String("token-file", "", "private file containing the room token (owner-only mode 0600)")
 	baseKeyFile := fs.String("base-key-file", "", `file holding the call group's dilla-sframe/1 base key as 32 lowercase hex, mode 0600; "-" reads it from stdin`)
 	leaf := fs.Int("leaf", -1, "this device's leaf index")
 	epoch := fs.Uint64("epoch", 0, "the epoch the base key belongs to")
@@ -136,9 +172,24 @@ func parseFlags(args []string, stdin io.Reader, stderr io.Writer) (config, error
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
-	c := config{URL: *url, Token: *token, Epoch: *epoch, MinEpoch: *minEpoch, Subscribe: *subscribe, Duration: *duration, MediaDir: *mediaDir}
-	if c.URL == "" || c.Token == "" {
+	c := config{URL: *url, Epoch: *epoch, MinEpoch: *minEpoch, Subscribe: *subscribe, Duration: *duration, MediaDir: *mediaDir}
+	if *token != "" && *tokenFile != "" {
+		return config{}, errors.New("-token and -token-file are mutually exclusive")
+	}
+	if c.URL == "" {
 		return config{}, errors.New("-url and -token are required")
+	}
+	if *tokenFile != "" {
+		var err error
+		c.Token, err = readTokenFile(*tokenFile)
+		if err != nil {
+			return config{}, err
+		}
+	} else {
+		c.Token = *token
+	}
+	if c.Token == "" {
+		return config{}, errors.New("-token or -token-file is required")
 	}
 	key, err := readBaseKey(*baseKeyFile, stdin)
 	if err != nil {
