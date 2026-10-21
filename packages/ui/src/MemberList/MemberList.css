@@ -22,3 +22,6 @@
 .d-member-list__line2 { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
 .d-member-list__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); color: var(--fg); }
 .d-member-list__crown { display: inline-flex; flex: none; color: var(--fg-2); }
+.d-member-list__bot { flex: none; padding: 0 0.25rem; font-size: var(--text-micro); line-height: 1rem; text-transform: uppercase; letter-spacing: var(--label-tracking); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); }
+/* The button is flush with the aside's edges and the aside clips: the focus ring is drawn inside the button (R18). */
+.d-member-list .d-member-list__open:focus-visible { outline-offset: -2px; }

@@ -12,6 +12,7 @@ const meta = {
         { id: 'u3', name: 'Sigrid', presence: 'idle' },
         { id: 'u4', name: 'Maximilian-Alexander von Hohenzollern-Sigmaringen the Third', color: 0xf1c40f, presence: 'dnd' },
         { id: 'u7', name: 'Dag', status: 'in a meeting', presence: 'dnd' },
+        { id: 'u8', name: 'Botty', isBot: true, presence: 'online' },
       ] },
       { id: 'offline', kind: 'offline', title: 'offline', members: [
         { id: 'u5', name: 'Cleo', color: 0x9b59b6, presence: 'offline' },
@@ -55,6 +56,15 @@ function expectMembers(root: HTMLElement, story: string): void {
   if (xs.size > 1) throw new Error(`${story}: the names start at ${[...xs].join(', ')}, not at one x`);
   const off = root.querySelector<HTMLElement>('[data-kind="offline"] [data-row] .d-member-list__text');
   if (off !== null && getComputedStyle(off).opacity !== '0.8') throw new Error(`${story}: an offline row is not dimmed (${getComputedStyle(off).opacity})`);
+  // I2: the focused row button draws its 2px ring inside its own box, so the aside's edge cannot clip it.
+  const btn = rows[0]!.querySelector<HTMLElement>('.d-member-list__open')!;
+  btn.focus({ focusVisible: true } as FocusOptions);
+  const ring = getComputedStyle(btn);
+  if (ring.outlineOffset !== '-2px') throw new Error(`${story}: the row's focus ring is offset ${ring.outlineOffset}, not -2px (inside)`);
+  const list = root.querySelector<HTMLElement>('.d-member-list')!.getBoundingClientRect();
+  const br = btn.getBoundingClientRect();
+  if (br.left < list.left - 0.5 || br.right > list.right + 0.5) throw new Error(`${story}: the focus ring leaves the list`);
+  btn.blur();
   // The long name takes the room it has (an ellipsis only at the very end), never a tag's.
   const long = Array.from(root.querySelectorAll<HTMLElement>('.d-member-list__name')).find(n => n.textContent?.startsWith('Maximilian'));
   if (long !== undefined && long.clientWidth < 100) throw new Error(`${story}: the long name is squeezed to ${String(long.clientWidth)}px`);

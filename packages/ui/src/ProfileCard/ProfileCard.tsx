@@ -76,17 +76,26 @@ export function ProfileCard({
   }, []);
 
   // A popover sits beside its row, inside the viewport (or inside the app shell, a size container and so the containing block of a fixed element).
+  // It follows the row: re-placed on a window resize and on a scroll of any container.
   useLayoutEffect(() => {
     if (mode !== 'popover' || !anchor || !ref.current) { setAt(null); return; }
-    const w = ref.current.offsetWidth;
-    const h = ref.current.offsetHeight;
-    const shell = anchor.closest('.d-app-shell')?.getBoundingClientRect();
-    const box = shell ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    const a = anchor.getBoundingClientRect();
-    const leftOfRow = a.left - box.left - GAP - w;
-    const x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
-    const y = Math.max(0, Math.min(a.top - box.top, box.height - h));
-    setAt({ x: Math.max(0, Math.min(x, box.width - w)), y });
+    const place = () => {
+      if (!ref.current) return;
+      const w = ref.current.offsetWidth;
+      const h = ref.current.offsetHeight;
+      const shell = anchor.closest('.d-app-shell')?.getBoundingClientRect();
+      const box = shell ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      const a = anchor.getBoundingClientRect();
+      const leftOfRow = a.left - box.left - GAP - w;
+      const x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
+      const y = Math.max(0, Math.min(a.top - box.top, box.height - h));
+      const next = { x: Math.max(0, Math.min(x, box.width - w)), y };
+      setAt(cur => (cur !== null && cur.x === next.x && cur.y === next.y ? cur : next));
+    };
+    place();
+    window.addEventListener('resize', place);
+    document.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); document.removeEventListener('scroll', place, true); };
   }, [mode, anchor]);
 
   // A pointerdown outside the popover (and its own row, which decides for itself) closes it.

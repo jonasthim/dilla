@@ -37,9 +37,17 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/** Waits (up to 3s) for the card to be mounted and placed, never a fixed delay. */
+async function settled(root: HTMLElement): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    const card = root.querySelector<HTMLElement>('.d-profile-card');
+    if (card !== null && (card.dataset.layout === 'sheet' || card.style.left !== '')) { await new Promise(r => setTimeout(r, 30)); return; }
+    await new Promise(r => setTimeout(r, 50));
+  }
+}
 /** P3: a popover beside the row (left of the list), focus inside, not over the row it opened from. */
 async function expectPopover(root: HTMLElement, story: string): Promise<void> {
-  await new Promise(r => setTimeout(r, 50));
+  await settled(root);
   const card = root.querySelector<HTMLElement>('.d-profile-card');
   const row = root.querySelector<HTMLElement>('[data-focus-key="member:u1"]');
   if (card === null || row === null) throw new Error(`${story}: no card or no row`);
@@ -51,7 +59,7 @@ async function expectPopover(root: HTMLElement, story: string): Promise<void> {
 }
 /** P3: a sheet pinned to the bottom of the screen at phone width, 44px targets, focus inside. */
 async function expectSheet(root: HTMLElement, story: string): Promise<void> {
-  await new Promise(r => setTimeout(r, 50));
+  await settled(root);
   const card = root.querySelector<HTMLElement>('.d-profile-card');
   if (card === null) throw new Error(`${story}: no card`);
   const c = card.getBoundingClientRect();

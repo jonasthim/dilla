@@ -243,6 +243,63 @@ describe('MemberList role colour on the name (P1)', () => {
   });
 });
 
+describe('MemberList fix round 1', () => {
+  it('I1: an offline row dims its text to 0.8, so a role colour that only just passes opaque falls back there (0xe74c3c: online yes, offline no)', () => {
+    document.documentElement.dataset.theme = 'mesh';
+    const p = props({ groups: [
+      { id: 'on', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid', color: 0xe74c3c }] },
+      { id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xe74c3c }] },
+    ] });
+    render(<MemberList {...p} />);
+    expect(screen.getByText('Astrid').style.color).not.toBe('');
+    expect(screen.getByText('Bjorn').style.color).toBe('');
+  });
+
+  it('I1: an offline row keeps a colour that still passes after the dimming (0xf1c40f on mesh)', () => {
+    document.documentElement.dataset.theme = 'mesh';
+    const p = props({ groups: [{ id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xf1c40f }] }] });
+    render(<MemberList {...p} />);
+    expect(screen.getByText('Bjorn').style.color).not.toBe('');
+  });
+
+  it('I2: the row button draws its focus ring inside its box (CSS pin)', () => {
+    expect(css).toMatch(/\.d-member-list \.d-member-list__open:focus-visible \{[^}]*outline-offset: -2px/);
+  });
+
+  it('M2: Shift+F10 opens once even when the browser also sends a contextmenu event after the key', () => {
+    const onOpen = vi.fn();
+    render(<MemberList {...props({ onOpen })} />);
+    const btn = screen.getByRole('button', { name: /Bjorn/ });
+    const li = btn.closest('li')!;
+    const down = fireEvent.keyDown(btn, { key: 'F10', shiftKey: true });
+    expect(down).toBe(false);
+    fireEvent.contextMenu(li, { button: 0, detail: 0 });
+    expect(onOpen).toHaveBeenCalledOnce();
+    // a later, separate right-click still opens
+    vi.useFakeTimers(); vi.setSystemTime(Date.now() + 5000);
+    fireEvent.contextMenu(li, { button: 2, detail: 1 });
+    vi.useRealTimers();
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('M3: the row button announces a dialog popup, and expanded only for the open member', () => {
+    render(<MemberList {...props({ openId: 'u2' })} />);
+    expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /Astrid/ })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('M1: a bot keeps a small bot tag after the name, from botLabel; no other tag', () => {
+    const p = props({ botLabel: 'bott', groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Dag', isBot: true, tags: ['bot', 'you'] }, { id: 'b', name: 'Eva' }] }] });
+    render(<MemberList {...p} />);
+    const [a, b] = screen.getAllByRole('listitem');
+    expect(within(a!).getByText('bott')).toHaveClass('d-member-list__bot');
+    expect(a!.querySelector('.d-member-list__name')!.compareDocumentPosition(within(a!).getByText('bott')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(a).not.toHaveTextContent('you');
+    expect(b!.querySelector('.d-member-list__bot')).toBeNull();
+  });
+});
+
 describe('MemberList vertical alignment (P4)', () => {
   it('line 2 exists only when the member has a status; without one the name is the only line', () => {
     const p = props({ groups: [{ id: 'g', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid' }, { id: 'b', name: 'Bjorn', status: 'in a meeting' }] }] });

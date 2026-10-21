@@ -178,6 +178,20 @@ describe('ProfileCard placement', () => {
     expect(parseFloat(screen.getByRole('dialog').style.left)).toBeGreaterThanOrEqual(204);
   });
 
+  it('M4: re-places the popover on a window resize and on a scroll anywhere', () => {
+    const anchor = anchorButton();
+    const spy = vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(900, 100));
+    render(<ProfileCard {...props({ anchor })} />);
+    const card = screen.getByRole('dialog');
+    expect(card.style.top).toBe('100px');
+    spy.mockReturnValue(rect(900, 300));
+    fireEvent(window, new Event('resize'));
+    expect(card.style.top).toBe('300px');
+    spy.mockReturnValue(rect(900, 350));
+    fireEvent.scroll(document.body);
+    expect(card.style.top).toBe('350px');
+  });
+
   it('is a sheet when asked to, or inside a phone shell: a modal dialog on a scrim, with no position of its own', () => {
     const { unmount } = render(<ProfileCard {...props({ layout: 'sheet' })} />);
     expect(screen.getByRole('dialog')).toHaveAttribute('data-layout', 'sheet');
