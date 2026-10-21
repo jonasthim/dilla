@@ -25,6 +25,8 @@ export { isVoiceSupported, localDecodeList } from '@dilla/media';
 export { bindPushToTalk } from './ptt.ts';
 export { streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
+/** FX2: one audio input offered as a share's sound; `monitor` when its label says it carries the computer's own sound. */
+export interface ShareSource { id: string; label: string; monitor: boolean }
 export type TileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
 export interface PageCallTile {
   deviceId: string;
@@ -64,7 +66,10 @@ export interface PageCallState {
   localScreen: MediaStream | null;
   /** #37: the sound this device's share carries: a tab's, the system's, or none (the browser gave no audio, or the grant
    *  did not allow it). null while not sharing. */
-  shareAudio: ShareAudioKind | null;
+  shareAudio: ShareAudioKind | 'device' | null;
+  /** FX2: where the share's sound comes from: 'browser' (the tab's or the system's, from getDisplayMedia), the id of an
+   *  audio input the person picked ('device' above), or null (no sound, or not sharing). */
+  shareSource: 'browser' | string | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
   noise: NoisePreference | 'on';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
@@ -88,6 +93,12 @@ export interface PageCall {
   setDeafened(on: boolean): void;
   setCamera(on: boolean): Promise<void>;
   setSharing(on: boolean): Promise<void>;
+  /** FX2: the audio inputs a running share can take its sound from (the call's own microphone left out), and whether the
+   *  browser gave them labels. */
+  shareSources(): Promise<{ sources: ShareSource[]; labeled: boolean }>;
+  /** FX2: publishes audio input `id` as the share's sound (replacing an earlier pick), or unpublishes it with null. Refused
+   *  (E_UNAVAILABLE) while no share runs and while the browser's own sound is the share's. */
+  setShareSource(id: string | null): Promise<void>;
   /** 0..200 in steps of 10: the person's voice (default) or, with `'stream'`, their shared screen's sound (T5). */
   setVolume(userId: string, volume: number, source?: 'voice' | 'stream'): void;
   /** RV-3: driven by the call slice’s phase 'paused'. */
@@ -553,7 +564,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      shareAudio: null, noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      shareAudio: null, shareSource: null, noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
       audioBlocked: false, audio: { attached: 0, expected: 0 }, listenOnly,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
@@ -979,7 +990,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
     let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
-    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void } | null = null;
+    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void;
+      /** FX2: the audio input the person picked as the share's sound, while one is published. */
+      device: { track: MediaStreamTrack; onEnded: () => void } | null } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
       const p = local.permissions;
       if (!p || p.canPublish === false) return false;
@@ -1030,8 +1043,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const s = screen;
       if (s === null) return;
       screen = null;
-      set({ sharing: false, localScreen: null, shareAudio: null });
+      set({ sharing: false, localScreen: null, shareAudio: null, shareSource: null });
       s.video.removeEventListener('ended', s.onEnded);
+      if (s.device !== null) {
+        s.device.track.removeEventListener('ended', s.device.onEnded);
+        await local.unpublishTrack(s.device.track).catch(() => undefined);
+        s.device.track.stop();
+      }
       s.audio?.removeEventListener('ended', s.onAudioEnded);
       await local.unpublishTrack(s.video).catch(() => undefined);
       if (s.audio) await local.unpublishTrack(s.audio).catch(() => undefined);
@@ -1130,13 +1148,79 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const onAudioEnded = (): void => {
         if (ended || screen === null || screen.audio !== audioTrack || audioTrack === null) return;
         audioTrack.removeEventListener('ended', onAudioEnded);
-        set({ shareAudio: 'none' });
+        set({ shareAudio: 'none', shareSource: null });
         void local.unpublishTrack(audioTrack).catch(() => undefined).then(() => { if (!ended) refresh(); });
       };
       audioTrack?.addEventListener('ended', onAudioEnded);
-      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded };
-      set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio });
+      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null };
+      set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio, shareSource: shareAudio === 'none' ? null : 'browser' });
     });
+
+    // FX2: the share's sound from an audio input the person picked (a PipeWire/Pulse monitor, a virtual source).
+    const clearDevice = async (s: NonNullable<typeof screen>): Promise<void> => {
+      const d = s.device;
+      if (d === null) return;
+      s.device = null;
+      d.track.removeEventListener('ended', d.onEnded);
+      await local.unpublishTrack(d.track).catch(() => undefined);
+      d.track.stop();
+    };
+    const setShareSource = (id: string | null): Promise<void> => inLane(async () => {
+      sendable();
+      usable();
+      const s = screen;
+      if (s === null || (s.audio !== null && state.shareSource === 'browser')) throw new PageCallError('E_UNAVAILABLE');
+      if (id === null) {
+        await clearDevice(s);
+        set({ shareAudio: 'none', shareSource: null });
+        return;
+      }
+      if (!permitted('screenAudio')) throw new PageCallError('E_FORBIDDEN');
+      let track: MediaStreamTrack;
+      try {
+        const stream = await deps.media.getUserMedia({ audio: { deviceId: { exact: id }, echoCancellation: false, noiseSuppression: false,
+          autoGainControl: false, channelCount: 2 } });
+        const got = stream.getAudioTracks()[0];
+        if (got === undefined) { for (const t of stream.getTracks()) t.stop(); throw new PageCallError('E_UNAVAILABLE'); }
+        track = got;
+      } catch (err) {
+        throw pageCallError(err);
+      }
+      try {
+        usable();
+        if (screen !== s) throw new PageCallError('E_UNAVAILABLE');
+        await local.publishTrack(track, screenAudioOptions(caps));
+      } catch (err) {
+        await local.unpublishTrack(track).catch(() => undefined);
+        track.stop();
+        throw pageCallError(err);
+      }
+      if (ended || state.paused || screen !== s) {
+        await local.unpublishTrack(track).catch(() => undefined);
+        track.stop();
+        throw new PageCallError('E_UNAVAILABLE');
+      }
+      await clearDevice(s);
+      const onEnded = (): void => {
+        if (ended || screen !== s || s.device?.track !== track) return;
+        track.removeEventListener('ended', onEnded);
+        s.device = null;
+        set({ shareAudio: 'none', shareSource: null });
+        void local.unpublishTrack(track).catch(() => undefined).then(() => { if (!ended) refresh(); });
+      };
+      track.addEventListener('ended', onEnded);
+      s.device = { track, onEnded };
+      set({ shareAudio: 'device', shareSource: id });
+    });
+    const shareSources = async (): Promise<{ sources: ShareSource[]; labeled: boolean }> => {
+      let all: MediaDeviceInfo[] = [];
+      try { all = await deps.media.enumerateDevices(); } catch { all = []; }
+      const own = micTrack?.getSettings?.().deviceId;
+      const inputs = all.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications'
+        && d.deviceId !== '' && d.deviceId !== own);
+      return { labeled: inputs.every((d) => d.label !== ''),
+        sources: inputs.map((d) => ({ id: d.deviceId, label: d.label, monitor: /^Monitor of /i.test(d.label) || /monitor/i.test(d.label) })) };
+    };
 
     // ---- self flags, sent only after callJoin (the PageCall exists only once it answered)
     const sendSelf = (): void => {
@@ -1253,6 +1337,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       camera?.track.stop();
       screen?.video.stop();
       screen?.audio?.stop();
+      screen?.device?.track.stop();
       camera = null;
       screen = null;
     };
@@ -1275,7 +1360,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         leaving = releaseAll().then(() => posted);
       }
       set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null,
-        shareAudio: null });
+        shareAudio: null, shareSource: null });
       return leaving;
     };
 
@@ -1377,6 +1462,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setCamera,
       setSharing,
+      shareSources,
+      setShareSource,
       setVolume(userId, volume, source = 'voice') {
         if (!isVolume(volume)) throw new PageCallError('E_INVALID_REQUEST');
         (source === 'stream' ? streamVolumes : volumes)[userId] = volume;

@@ -55,6 +55,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { justify-self: start; }
 /* web3.9 WEB-DOCK (R26): the dock has no meter or lines; product walk M7's push-to-talk line and web3.4 V2's hearing line stand under the stage's controls (the class names stay). */
 .dw-voice-stage__lines { display: grid; justify-items: center; gap: 0.25rem; margin-top: 0.5rem; }
+/* FX2: the sharer's "sound from" select under the stage's controls. */
+.dw-voice-stage__sound { display: grid; justify-items: center; gap: 0.25rem; margin-top: 0.5rem; max-width: 24rem; margin-inline: auto; }
+.dw-voice-stage__sound .d-select { width: 100%; }
+.dw-voice-stage__sound-note { margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
 .dw-voice-dock__mode { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
 .dw-voice-dock__hearing { margin: 0; font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .dw-voice-dock__mode .d-btn { min-height: 2.5rem; }

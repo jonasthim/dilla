@@ -3316,6 +3316,135 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     expect(bob.gains.screen_share_audio).toBe(0);
   });
 
+  describe('FX2: a "sound from" device as the share\'s sound', () => {
+    const deviceTrack = () => {
+      const stop = vi.fn();
+      const track = { kind: 'audio', stop, getSettings: () => ({}), addEventListener: () => undefined, removeEventListener: () => undefined } as unknown as MediaStreamTrack;
+      const stream = { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] } as unknown as MediaStream;
+      return { track, stop, stream };
+    };
+    /** A call sharing without sound, whose getUserMedia hands out `devs` in turn for the picked device. */
+    const sharing = async (f: ReturnType<typeof fakes>, surface: 'browser' | 'monitor' = 'monitor', withAudio = false) => {
+      const call = await start(f);
+      const s = picked(surface, withAudio);
+      f.deps.media.getDisplayMedia = vi.fn(async () => s.stream);
+      await call.setSharing(true);
+      return call;
+    };
+
+    it('publishes the chosen device as screen_share_audio, opened raw and stereo', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      expect(call.state.shareSource).toBeNull();
+      const d = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn(async () => d.stream);
+      f.room.localParticipant.publishTrack.mockClear();
+      await call.setShareSource('monitor-1');
+      expect(f.deps.media.getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'monitor-1' },
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 } });
+      expect(sources(f)).toEqual(['screen_share_audio']);
+      expect(f.room.localParticipant.publishTrack.mock.calls[0][0]).toBe(d.track);
+      expect(f.room.localParticipant.publishTrack.mock.calls[0][1])
+        .toEqual(screenAudioOptions({ maxAudioBitrateBps: 64_000, maxShareBitrateBps: 2_500_000, vp9: false }));
+      expect(call.state.shareSource).toBe('monitor-1');
+      expect(call.state.shareAudio).toBe('device');
+    });
+
+    it('replaces the device: the old track is unpublished and stopped, the new one published', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      const b = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn().mockResolvedValueOnce(a.stream).mockResolvedValueOnce(b.stream);
+      await call.setShareSource('one');
+      f.room.localParticipant.publishTrack.mockClear();
+      await call.setShareSource('two');
+      expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(a.track);
+      expect(a.stop).toHaveBeenCalled();
+      expect(f.room.localParticipant.publishTrack.mock.calls[0][0]).toBe(b.track);
+      expect(call.state.shareSource).toBe('two');
+    });
+
+    it('none unpublishes it, and the share is silent again', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn(async () => a.stream);
+      await call.setShareSource('one');
+      await call.setShareSource(null);
+      expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(a.track);
+      expect(a.stop).toHaveBeenCalled();
+      expect(call.state.shareSource).toBeNull();
+      expect(call.state.shareAudio).toBe('none');
+      expect(call.state.sharing).toBe(true);
+    });
+
+    it('the device track ends with the share', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const a = deviceTrack();
+      f.deps.media.getUserMedia = vi.fn(async () => a.stream);
+      await call.setShareSource('one');
+      await call.setSharing(false);
+      expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(a.track);
+      expect(a.stop).toHaveBeenCalled();
+      expect(call.state.shareSource).toBeNull();
+      expect(call.state.shareAudio).toBeNull();
+    });
+
+    it('a device track that ends on its own leaves a silent share', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const fns = new Set<() => void>();
+      const a = deviceTrack();
+      (a.track as unknown as { addEventListener: (t: string, fn: () => void) => void }).addEventListener = (_t, fn) => { fns.add(fn); };
+      f.deps.media.getUserMedia = vi.fn(async () => a.stream);
+      await call.setShareSource('one');
+      for (const fn of [...fns]) fn();
+      await f.advance(0);
+      expect(call.state.shareSource).toBeNull();
+      expect(call.state.shareAudio).toBe('none');
+    });
+
+    it('a browser sound that is already there wins: the device is refused and never opened', async () => {
+      const f = fakes();
+      const call = await sharing(f, 'browser', true);
+      expect(call.state.shareSource).toBe('browser');
+      f.deps.media.getUserMedia = vi.fn(async () => deviceTrack().stream);
+      await expect(call.setShareSource('one')).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
+      expect(f.deps.media.getUserMedia).not.toHaveBeenCalled();
+      expect(call.state.shareAudio).toBe('tab');
+    });
+
+    it('needs a running share', async () => {
+      const f = fakes();
+      const call = await start(f);
+      await expect(call.setShareSource('one')).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
+    });
+
+    it('lists the audio inputs, flags monitors by label, and leaves out the call microphone', async () => {
+      const dev = (deviceId: string, label: string, kind = 'audioinput') => ({ kind, deviceId, label }) as MediaDeviceInfo;
+      const mic = { kind: 'audio', stop: vi.fn(), getSettings: () => ({ deviceId: 'mic-1' }) } as unknown as MediaStreamTrack;
+      const f = fakes({
+        devices: [dev('default', 'Default'), dev('mic-1', 'Built-in Microphone'), dev('mon-1', 'Monitor of Built-in Audio Analog Stereo'),
+          dev('app-1', 'Browser sink'), dev('out-1', 'Speakers', 'audiooutput')],
+        getUserMedia: async () => ({ getTracks: () => [mic], getAudioTracks: () => [mic], getVideoTracks: () => [] }) as unknown as MediaStream,
+      });
+      const call = await start(f);
+      expect(await call.shareSources()).toEqual({ labeled: true, sources: [
+        { id: 'mon-1', label: 'Monitor of Built-in Audio Analog Stereo', monitor: true },
+        { id: 'app-1', label: 'Browser sink', monitor: false },
+      ] });
+    });
+
+    it('says the labels are missing when the browser hides them', async () => {
+      const dev = (deviceId: string) => ({ kind: 'audioinput', deviceId, label: '' }) as MediaDeviceInfo;
+      const f = fakes({ devices: [dev('a'), dev('b')] });
+      const call = await start(f);
+      expect((await call.shareSources()).labeled).toBe(false);
+    });
+  });
+
   it('a listen-only call refuses share before the picker', async () => {
     const f = fakes();
     const call = await start(f, { listenOnly: true });

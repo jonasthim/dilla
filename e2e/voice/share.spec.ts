@@ -220,18 +220,25 @@ test('a screen share and a camera reach the other browser verified, and stop', a
   }
 });
 
+/** The silent-share notice key this Chromium's own platform string calls for (the e2e's independent reading of #37 FX1). */
+async function noticeKeyOf(page: Page): Promise<'voice.shareAudio.none.tabOnly' | 'voice.shareAudio.none.tabOrSystem'> {
+  const platform = await page.evaluate(() => (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.userAgent);
+  return /Windows|CrOS|Chrom(e|ium) ?OS|Mac/i.test(platform) ? 'voice.shareAudio.none.tabOrSystem' : 'voice.shareAudio.none.tabOnly';
+}
+
 // #37 (T4, D3): a share the browser gave no sound tells both sides: the sharer gets the stage notice that says how to share
 // sound, and the viewer's screen tile carries the glyph-only `no sound` state (the volume-off icon, its word as the name).
 test('a share without sound says so on both sides', async ({ peerBrowser, browserName }) => {
   test.skip(browserName !== 'chromium' && browserName !== 'firefox', 'a screen share is measured on Chromium and Firefox only');
   const firefox = browserName === 'firefox';
-  // The notice names what this browser can do (#37): Firefox shares no sound; Chromium on Linux (CI) only a tab's.
-  const noticeKey = firefox ? 'voice.shareAudio.none.unsupported' : 'voice.shareAudio.none.tabOnly';
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
     await alice.context.addInitScript(silentDisplayMedia, firefox);
+    // The notice names what this browser can do (#37): Firefox shares no sound; Chromium a tab's, and on Windows, ChromeOS and
+    // macOS the system's too. Playwright's desktop Chrome profile claims a Windows UA, so the platform is read from the page.
+    const noticeKey = firefox ? 'voice.shareAudio.none.unsupported' : await noticeKeyOf(alice.page);
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
@@ -278,6 +285,51 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(share).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
     await expect(notice).not.toContainText(copy(noticeKey), { timeout: WAIT });
     await expect(mark).toHaveCount(0, { timeout: WAIT });
+    await expect(shared).toHaveCount(0, { timeout: WAIT });
+  } finally {
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});
+
+// FX2 (#37): a share the browser gave no sound can take it from any audio input. Chromium's fake devices
+// (--use-fake-device-for-media-stream) stand in for a PipeWire monitor: pick one in "sound from", and the other browser's
+// tile for the screen loses its no-sound mark while the sound goes out encrypted in the screen-audio slot.
+test('a share without sound takes its sound from a picked audio input', async ({ peerBrowser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'the fake audio devices are Chromium switches');
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
+  try {
+    await alice.context.addInitScript(silentDisplayMedia, false);
+    await peer.setup();
+    await onboard(alice, peer, 'alice');
+    await onboard(bob, peer, 'bob');
+    await peer.seat(2);
+    const a = await self(alice.page);
+    await joinVoice(alice.page, peer.communityName, peer.voiceName);
+    await joinVoice(bob.page, peer.communityName, peer.voiceName);
+    await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+    await heard(bob.page, a.device);
+    const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
+      .getByRole('button', { name: copy('voice.shareOn'), exact: true });
+    const shared = screenTile(bob.page, 'alice');
+    const mark = stateWord(shared, 'no-sound');
+    await share.click();
+    await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    await expect(mark).toBeVisible({ timeout: WAIT });
+    const from = stage(alice.page).getByRole('combobox', { name: copy('voice.shareAudio.from'), exact: true });
+    await expect(from).toBeVisible({ timeout: WAIT });
+    const options = await from.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+    expect(options.length, 'none plus at least one audio input').toBeGreaterThan(1);
+    await from.selectOption(options[1]!);
+    await expect(mark).toHaveCount(0, { timeout: WAIT });
+    await expect.poll(() => slotSent(alice.page, 3), { timeout: WAIT }).toBeGreaterThan(0);
+    // None unpublishes it: the mark returns.
+    await from.selectOption('');
+    await expect(mark).toBeVisible({ timeout: WAIT });
+    await share.click();
     await expect(shared).toHaveCount(0, { timeout: WAIT });
   } finally {
     await peerBrowser.close(bob);

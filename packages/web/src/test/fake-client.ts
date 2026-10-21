@@ -127,7 +127,7 @@ export function bobChanged(): TrustSummary {
 /** A PageCall double: the toggles change its state, and every call is recorded in order. */
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
-    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, noise: 'on', audioBlocked: false,
+    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, shareSource: null, noise: 'on', audioBlocked: false,
     audio: { attached: 0, expected: 0 }, listenOnly: false };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
@@ -145,6 +145,13 @@ export class FakeSession implements PageCall {
   readonly pushToTalk = vi.fn();
   readonly setVolume = vi.fn();
   readonly startAudio = vi.fn(() => { this.log.push('startAudio'); return Promise.resolve(); });
+  sharePool: { sources: Array<{ id: string; label: string; monitor: boolean }>; labeled: boolean } = { sources: [], labeled: true };
+  readonly shareSources = vi.fn(() => Promise.resolve(this.sharePool));
+  readonly setShareSource = vi.fn((id: string | null) => {
+    this.log.push(`shareSource:${id}`);
+    this.update({ shareSource: id, shareAudio: id === null ? 'none' : 'device' });
+    return Promise.resolve();
+  });
   readonly setOutput = vi.fn((id: string) => { this.log.push(`output:${id}`); return Promise.resolve(); });
   private readonly bridge: Pick<CoreClient, 'call'> | null;
   constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }

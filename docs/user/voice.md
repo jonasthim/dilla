@@ -202,6 +202,24 @@ The notice to the person sharing depends on the browser:
 - In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
 - In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
 
+Each notice ends with "You can also pick a sound source for the stream." and a **pick a sound source** button.
+
+### Share sound from Firefox or Linux
+
+A browser cannot capture your computer's sound by itself on Linux, and Firefox cannot at all. dilla lets you choose any
+audio input as the stream's sound instead. While you share and the share has no sound of its own, a **sound from** list
+appears under the call controls: **none**, then every audio input the browser lists, except the microphone the call uses.
+Pick one and it is sent as the stream's sound, encrypted like the rest; everyone watching can set its volume or mute it.
+Choose **none** or stop sharing and it goes. A tab's or a screen's sound from the browser always wins, and then the list is not shown.
+If the list says "Allow the microphone to see sound sources.", the browser hides device names until the microphone is allowed.
+
+- **A monitor** ("Monitor of …" on PipeWire and PulseAudio) carries everything your computer plays, including this call, so
+  the others will hear themselves. dilla warns when you pick one. It is allowed, for example with headphones and a call you mute for yourself.
+- **One app only:** make a separate output for that app and pick its monitor. With PipeWire, `pw-loopback` creates a
+  virtual device; with PulseAudio or PipeWire-Pulse, `pactl load-module module-null-sink sink_name=share` creates one
+  named "share", and its monitor is "Monitor of share". Move the app's output to that device in pavucontrol or qpwgraph,
+  then pick "Monitor of share" in **sound from**. The call itself keeps playing on your normal speakers.
+
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
 ## Calls in direct messages

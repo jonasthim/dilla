@@ -1384,3 +1384,65 @@ describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () =>
     expect(dockEl().querySelector('.dw-voice-dock__mode, [data-audio-expected]')).toBeNull();
   });
 });
+
+describe('FX2: a "sound from" picker for a share', () => {
+  const from = () => main().queryByRole('combobox', { name: t('voice.shareAudio.from') });
+  const POOL = { labeled: true, sources: [
+    { id: 'mon-1', label: 'Monitor of Built-in Audio', monitor: true },
+    { id: 'app-1', label: 'Browser sink', monitor: false },
+  ] };
+  const silentShare = async () => {
+    const app = await inVoice();
+    app.session.sharePool = POOL;
+    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
+    return app;
+  };
+
+  it('offers none and the devices while the share has no sound, and a pick goes to the session', async () => {
+    const app = await silentShare();
+    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
+    expect([...select.querySelectorAll('option')].map(o => o.textContent)).toEqual([
+      t('voice.shareAudio.fromNone'), 'Monitor of Built-in Audio', 'Browser sink']);
+    await app.user.selectOptions(select, 'app-1');
+    expect(app.session.setShareSource).toHaveBeenCalledWith('app-1');
+    act(() => app.session.update({ shareSource: 'app-1', shareAudio: 'device' }));
+    await waitFor(() => expect(from()).toHaveValue('app-1'));
+    await app.user.selectOptions(from()!, '');
+    expect(app.session.setShareSource).toHaveBeenLastCalledWith(null);
+  });
+
+  it('is not there before a share, nor while the browser gives the share its sound', async () => {
+    const app = await inVoice();
+    app.session.sharePool = POOL;
+    expect(from()).toBeNull();
+    act(() => app.session.update({ sharing: true, shareAudio: 'tab', shareSource: 'browser', localScreen: new MediaStream() }));
+    await waitFor(() => expect(main().getByRole('button', { name: 'share screen' })).toHaveAttribute('aria-pressed', 'true'));
+    expect(from()).toBeNull();
+  });
+
+  it('warns about a monitor by its label, and still lets it be picked', async () => {
+    const app = await silentShare();
+    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
+    expect(main().queryByText(t('voice.shareAudio.monitorWarn'))).toBeNull();
+    await app.user.selectOptions(select, 'mon-1');
+    expect(app.session.setShareSource).toHaveBeenCalledWith('mon-1');
+    act(() => app.session.update({ shareSource: 'mon-1', shareAudio: 'device' }));
+    expect(await main().findByText(t('voice.shareAudio.monitorWarn'))).toBeInTheDocument();
+  });
+
+  it('says the microphone must be allowed when the browser hides the labels', async () => {
+    const app = await inVoice();
+    app.session.sharePool = { labeled: false, sources: [{ id: 'x', label: '', monitor: false }] };
+    act(() => app.session.update({ sharing: true, shareAudio: 'none', localScreen: new MediaStream() }));
+    expect(await main().findByText(t('voice.shareAudio.needsPermission'))).toBeInTheDocument();
+    expect(from()).toBeNull();
+  });
+
+  it('the notice offers "pick a sound source", which moves focus to the select', async () => {
+    const app = await silentShare();
+    const pick = await main().findByRole('button', { name: t('voice.shareAudio.pick') });
+    const select = await waitFor(() => { const e = from(); expect(e).not.toBeNull(); return e!; });
+    await app.user.click(pick);
+    expect(select).toHaveFocus();
+  });
+});
