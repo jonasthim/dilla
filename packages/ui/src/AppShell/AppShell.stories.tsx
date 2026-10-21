@@ -105,7 +105,7 @@ const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement })
   if (document.elementFromPoint(x, y) !== sep) throw new Error('the panel edge, 10px above its bottom, does not hit the splitter');
   // The resting hairline is the splitter's own one line, drawn above the sidebar and the panel (what they paint under it cannot cut it).
   const line = getComputedStyle(sep, '::before');
-  if (line.backgroundColor === 'rgba(0, 0, 0, 0)' || line.width !== '1px') throw new Error(`the splitter draws no 1px resting line (${line.backgroundColor}, ${line.width})`);
+  if (line.borderLeftColor === 'rgba(0, 0, 0, 0)' || line.borderLeftWidth !== '1px') throw new Error(`the splitter draws no 1px resting line (${line.borderLeftColor}, ${line.borderLeftWidth})`);
   if (Math.abs(parseFloat(line.height) - s.height) > 1) throw new Error(`the resting line is ${line.height} high, the splitter ${s.height}px`);
   if (getComputedStyle(panel).boxShadow !== 'none') throw new Error('the panel draws a second line');
   const userRow = canvasElement.querySelector<HTMLElement>('.d-user-panel');
