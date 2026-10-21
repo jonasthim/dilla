@@ -67,7 +67,7 @@ describe('AppShell splitters', () => {
     expect(s).toHaveAttribute('aria-valuemin', '192');
     expect(s).toHaveAttribute('aria-valuemax', '384');
     const sidebar = container.querySelector('.d-app-shell__sidebar')!;
-    expect(sidebar.lastElementChild).toBe(s);
+    expect(sidebar.nextElementSibling).toBe(s);
     expect(s).toHaveAttribute('aria-controls', sidebar.id);
     expect(sidebar.id).not.toBe('');
     const a = sep(labels.aside);

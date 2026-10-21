@@ -89,6 +89,32 @@ export const BottomPanel: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
   globals: { theme: 'mesh' }, play: bottomPlay,
 };
+/** MP8: the sidebar splitter runs from the sidebar's top to the panel's bottom, and a drag from the panel's edge resizes the sidebar. */
+const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const q = (sel: string) => canvasElement.querySelector<HTMLElement>(sel);
+  const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
+  const sidebar = q('.d-app-shell__sidebar');
+  const panel = q('.d-app-shell__panel');
+  if (sep === null || sidebar === null || panel === null) throw new Error('the shell has no sidebar splitter, sidebar or panel');
+  const [s, sb, p] = [sep, sidebar, panel].map(e => e.getBoundingClientRect());
+  if (Math.abs(s.top - sb.top) > 1) throw new Error(`the splitter starts at ${s.top}, the sidebar at ${sb.top}`);
+  if (Math.abs(s.bottom - p.bottom) > 1) throw new Error(`the splitter ends at ${s.bottom}, the panel at ${p.bottom}`);
+  sep.scrollIntoView({ block: 'end' });
+  const pr = panel.getBoundingClientRect();
+  const x = pr.right - 1, y = pr.bottom - 10;
+  if (document.elementFromPoint(x, y) !== sep) throw new Error('the panel edge, 10px above its bottom, does not hit the splitter');
+  const before = Number(sep.getAttribute('aria-valuenow'));
+  const ev = (type: string, dx: number) => sep.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x + dx, clientY: y }));
+  ev('pointerdown', 0); ev('pointermove', 40);
+  await new Promise(r => setTimeout(r, 50));
+  const after = Number(sep.getAttribute('aria-valuenow'));
+  ev('pointerup', 40);
+  if (after <= before) throw new Error(`a drag from the panel edge did not widen the sidebar (${before} -> ${after})`);
+};
+export const BottomPanelSplitter: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
+  globals: { theme: 'mesh' }, play: fullHeightPlay,
+};
 export const BottomPanelLight: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
   globals: { theme: 'light' }, play: bottomPlay,
