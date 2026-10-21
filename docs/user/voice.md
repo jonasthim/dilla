@@ -2,7 +2,7 @@
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
 camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-21, web-3.9).
+2026-10-21, web3.10).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -21,7 +21,7 @@ added "harbour". While people are in one, it shows how many are in it, and the p
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the page are shown by name too.
 
-On a computer, one click on a voice channel joins it. The call panel above your user panel shows the channel name over "connecting", then your ping,
+On a computer, one click on a voice channel joins it. The row of the channel you are in has no join icon and no coloured speaker: its name turns bold and the screen reader adds "connected". The call panel above your user panel shows the channel name over "connecting", then your ping,
 and the screen announces "You joined {where}." Each person in the call has a tile with their name and
 their state. On a phone, tap the voice channel to see who is there, then press **join voice**.
 
@@ -36,7 +36,7 @@ On a tile, and on a person's line under the channel in the list, what they are d
 line after the name, in this order: muted (a crossed-out microphone), deafened (crossed-out headphones), camera,
 screen and speaking (a green dot). None has a visible word: each has its name, such as "muted", "deafened", "camera on",
 "sharing screen" or "speaking", as a tooltip when you point at it and for a screen reader. A person with none of them
-is quiet and unmuted.
+is quiet and unmuted. Under a channel in the list, a person's icons sit at the right, with a small gap between two and their right edge in line with the channel row's count.
 
 Three states keep their words, because they are about trust and what you can hear:
 
@@ -62,7 +62,7 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 ### The call panel
 
 At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
-in {where}" in place of the rates when that is so), and then three icon buttons: **camera**,
+in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel are three icon buttons, in this order: **camera**,
 **share screen** and **leave**. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
 those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
@@ -274,7 +274,7 @@ with each person (Settings → privacy) is still how you know who they are.
 ## AFK channels
 
 Every server has a voice channel called "AFK". It is made with the server, and a server's owner or anyone who manages
-channels can rename it and move it into a category (it always stays last in its list), but nobody can delete it.
+channels can rename it and move it into a category (it always stays the very last row of the whole channel list, below every category, and folding a category never hides it), but nobody can delete it.
 
 ![Mira in the AFK channel of Midgard Crew: the stage says "Everyone is muted in AFK"](screenshots/afk-call-desktop.png)
 
