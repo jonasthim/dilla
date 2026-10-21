@@ -367,9 +367,10 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
             id(d)?;
             id(d)?;
             id(d)?;
-            kind(d)?;
+            let kind = kind(d)?;
             d.uint()?;
-            if d.opt_bytes_exact::<32>()?.is_some_and(|v| v == [0; 32]) {
+            let sender = d.opt_bytes_exact::<32>()?;
+            if sender.is_some_and(|v| v == [0; 32]) || (kind == 3) != sender.is_none() {
                 return Err(shape());
             }
             true
@@ -384,7 +385,9 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
             id(d)?;
             id(d)?;
             id(d)?;
-            kind(d)?;
+            if kind(d)? == 3 {
+                return Err(shape());
+            }
             d.uint()?;
             bounded_bytes(d, 1, MAX_LOGICAL)?;
             bounded_bytes(d, 1, MAX_LOGICAL)?;
@@ -468,9 +471,10 @@ fn id(d: &mut Decoder<'_>) -> Result<(), CborError> {
         Ok(())
     }
 }
-fn kind(d: &mut Decoder<'_>) -> Result<(), CborError> {
-    if matches!(d.text()?, "text" | "call" | "interaction") {
-        Ok(())
+fn kind(d: &mut Decoder<'_>) -> Result<u64, CborError> {
+    let kind = d.uint()?;
+    if matches!(kind, 0 | 1 | 3) {
+        Ok(kind)
     } else {
         Err(shape())
     }
@@ -540,7 +544,7 @@ mod tests {
             .bytes(&[1; 16])
             .bytes(&[2; 16])
             .bytes(&[3; 16])
-            .text("text")
+            .uint(0)
             .uint(0)
             .bytes(&vec![0x44; 2 * 1024 * 1024])
             .bytes(&[0x80]);
@@ -758,7 +762,7 @@ mod tests {
                     id(&mut e, 1);
                     id(&mut e, 2);
                     id(&mut e, 3);
-                    e.text("text").uint(0).null();
+                    e.uint(0).uint(0).bytes(&[4; 32]);
                 }
                 3 | 6 => {
                     e.array(4).uint(sub);
@@ -776,7 +780,7 @@ mod tests {
                     id(&mut e, 1);
                     id(&mut e, 2);
                     id(&mut e, 3);
-                    e.text("text").uint(0).bytes(&[0]).bytes(&[0]);
+                    e.uint(0).uint(0).bytes(&[0]).bytes(&[0]);
                 }
                 7 => {
                     e.array(3).uint(sub);
@@ -841,6 +845,74 @@ mod tests {
                 validate_target_payload(&e.into_vec()).is_ok(),
                 "minimal contract payload for group suboperation {sub} must validate"
             );
+        }
+    }
+
+    #[test]
+    fn kind_and_sender_constraints_are_checked_before_dispatch() {
+        fn create(kind: u64, sender: Option<[u8; 32]>) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(7)
+                .uint(2)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .bytes(&[3; 16]);
+            e.uint(kind).uint(0);
+            match sender {
+                Some(key) => e.bytes(&key),
+                None => e.null(),
+            };
+            e.into_vec()
+        }
+        fn external_join(kind: u64) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(8)
+                .uint(5)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .bytes(&[3; 16])
+                .uint(kind)
+                .uint(0)
+                .bytes(&[0])
+                .bytes(&[0]);
+            e.into_vec()
+        }
+        fn dispatch_count(payload: &[u8]) -> (Result<(), ()>, usize) {
+            let now = Instant::now();
+            let digest: [u8; 32] = Sha256::digest(payload).into();
+            let (mut transfer, id) = Transfer::begin([9; 16], payload.len(), digest, now).unwrap();
+            transfer.append(id, 0, payload, now).unwrap();
+            let calls = AtomicUsize::new(0);
+            let result = transfer
+                .execute_with(id, now, |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    (0, Zeroizing::new(vec![0x80]))
+                })
+                .map(|_| ());
+            (result, calls.load(Ordering::SeqCst))
+        }
+
+        for invalid in [
+            create(0, None),
+            create(1, None),
+            create(3, Some([4; 32])),
+            external_join(3),
+        ] {
+            let (result, calls) = dispatch_count(&invalid);
+            assert!(result.is_err(), "invalid kind/sender pairing was accepted");
+            assert_eq!(calls, 0, "invalid target payload reached dispatch");
+        }
+
+        for valid in [
+            create(0, Some([4; 32])),
+            create(1, Some([4; 32])),
+            create(3, None),
+            external_join(0),
+            external_join(1),
+        ] {
+            let (result, calls) = dispatch_count(&valid);
+            assert!(result.is_ok(), "valid kind/sender pairing was rejected");
+            assert_eq!(calls, 1, "valid target payload must reach dispatch once");
         }
     }
 }
