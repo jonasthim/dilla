@@ -22,22 +22,20 @@ from pathlib import Path
 DEFAULT_TIMEOUT = 5.0
 MAX_OUTPUT = 65536
 MAX_DURATION = 5.0
-DOCTOR_TOOLS = ("soloist", "yt-dlp", "ffmpeg", "ffprobe", "js-runtime", "audio-tool")
+DOCTOR_TOOLS = ("librespot", "yt-dlp", "ffmpeg", "ffprobe", "js-runtime")
 DEFAULT_NAMES = {
-    "soloist": ("soloist", "spotify-soloist"),
+    "librespot": ("dilla-librespot-probe",),
     "yt-dlp": ("yt-dlp",),
     "ffmpeg": ("ffmpeg",),
     "ffprobe": ("ffprobe",),
     "js-runtime": ("deno", "node", "bun"),
-    "audio-tool": ("pactl", "pw-cli", "wpctl"),
 }
 VERSION_ARGS = {
-    "soloist": ("--version",),
+    "librespot": ("--version",),
     "yt-dlp": ("--version",),
     "ffmpeg": ("-version",),
     "ffprobe": ("-version",),
     "js-runtime": ("--version",),
-    "audio-tool": ("--version",),
 }
 
 
@@ -292,12 +290,11 @@ def validate_opus(ffprobe: str, audio: Path) -> int:
 
 
 def _path_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--soloist-bin")
+    parser.add_argument("--librespot-bin")
     parser.add_argument("--yt-dlp-bin")
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--ffprobe-bin")
     parser.add_argument("--js-runtime-bin")
-    parser.add_argument("--audio-tool-bin")
 
 
 def main(argv: list[str] | None = None) -> int:

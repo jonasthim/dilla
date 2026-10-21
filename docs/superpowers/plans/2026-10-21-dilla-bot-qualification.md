@@ -1,6 +1,8 @@
 # Dilla Bot qualification record
 
-Date: 2026-10-21. Scope: Task 0 baseline and Task 1 prerequisites.
+Date: 2026-10-21. Scope: Task 0 baseline and Task 1 development probes.
+Provider revision: the user approved evaluating librespot instead of Soloist.
+The Soloist observations below are retained as historical evidence.
 Status: **not qualified; production implementation and release gates remain closed**.
 See [implementation plan](2026-10-21-dilla-bot.md) and
 [design](../specs/2026-10-21-dilla-bot.md).
@@ -21,7 +23,7 @@ was moved with explicit filesystem approval, without creating a duplicate.
 Original `/home/thim/Repositories/dilla` stays on local main `3ed7234b` with its
 untracked `.claude/` untouched.
 
-## Observed local prerequisites
+## Initial local prerequisites (before the librespot revision)
 
 | Item | Observation |
 | --- | --- |
@@ -41,7 +43,7 @@ This is the development workstation, not a verified intended service environment
 No real provider playback, browser decryption, isolated capture, pairing, or reboot
 test has been performed. Installed tools alone are not qualification evidence.
 
-## Provider constraints requiring resolution
+## Historical Soloist constraints
 
 The currently documented Soloist startup uses `--api-key VALUE`; no protected
 file or inherited-descriptor input is documented there. This conflicts with the
@@ -75,13 +77,14 @@ Source: [yt-dlp documentation](https://github.com/yt-dlp/yt-dlp).
 
 ## Operator input needed to resume qualification
 
-Supply the intended Linux test/service host and service identity, the path to the
-operator-obtained Soloist binary, protected API-key file path, and dedicated
-Premium account pairing readiness. Provide paths, never credentials in chat.
-Resolve the protected secret-input incompatibility with a supported mechanism
-before starting Soloist. Production deployment remains a separate action.
+Supply the intended Linux test/service host and service identity, and authorize
+the dedicated Premium account with the development helper's protected-file PKCE
+flow. Provide only paths and test-host information in chat, never credentials or
+the redirected authorization URL. Soloist and its API key are no longer required.
+Production deployment remains a separate action. See the current
+[probe instructions](../../../experiments/bot-providers/README.md).
 
-Task 1 then needs actual evidence for isolated headless pairing/output, restart
+Task 1 then needs actual evidence for headless authorization/direct PCM output, restart
 and reboot, complete track/album/playlist resolution without playback, pause/seek/
 transition/completion behavior, bounded Opus output and browser SFrame decryption.
 The latter needs a development test peer before production Task 8; mocks and
@@ -124,7 +127,7 @@ adds dependency/version checks and local synthetic Opus encoding. It does not
 launch providers or consume credentials. Its unit tests and real ffmpeg smoke
 check are preparation for Task 1, not completion of Task 1.
 
-## Development harness verification
+## Initial development harness verification (before the librespot revision)
 
 After commit `ea0c9a96`, the coordinator independently ran:
 
@@ -152,5 +155,5 @@ with no new Important findings. This review covers the bounded harness only.
 Task 0 is complete. Task 1 is **blocked/unqualified**, with the preparatory harness
 implemented and verified. Tasks 2–16 have not begun. No production bot service,
 UI, APIs, protocol change, provider integration, feature release, PR, or live
-deployment is represented by this preparation. Resume from the operator inputs
-and unresolved credential interface above; do not bypass the qualification gate.
+deployment is represented by this preparation. Resume from the current operator inputs
+and qualification matrix; do not bypass the qualification gate.
