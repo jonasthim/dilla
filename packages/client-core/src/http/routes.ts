@@ -36,8 +36,15 @@ export interface DmOpened { channelId: Uint8Array; created: boolean; }
 export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
-/** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet. */
-export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }
+/** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet.
+ *  AW4: `away` is the community's away roster, each member and the unix second it became away; empty from a web3.9 host. */
+/** `pending`: this device has a pending cut. AW5 fix round 3: `reason` says why (device-scoped, any community's read):
+ *  1 the idle sweep moved it, 2 this user chose AFK on another device or tab; 0 none. A fixture may leave `reason` out
+ *  (then 1 when pending). */
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; reason?: 0 | 1 | 2; away: AFKAwayRow[] }
+export interface AFKAwayRow { userId: Uint8Array; since: number }
+/** 09 § GET /v1/communities/{id}/afk: the away roster holds at most 1024 entries. */
+const AFK_AWAY_MAX = 1024;
 export interface AFKSettings { channelId: Uint8Array | null; timeoutSeconds: number }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
@@ -128,6 +135,19 @@ export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
 export interface PasskeyLogin { assertion: string; needs: 0 | 1 }
 export interface StepUpToken { token: string; expires: bigint }
 
+/** E8 (internal/api/gifs.go): the query, offset and id bounds, and the size caps of a preview and a full GIF. */
+export const GIF_QUERY_MAX_BYTES = 100;
+export const GIF_OFFSET_MAX = 4999;
+export const GIF_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+export const GIF_FULL_MAX_BYTES = 25 * 1024 * 1024;
+const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
+/** A Giphy key as the instance accepts it: 8 to 64 letters and digits. It is only ever sent, never kept or shown back. */
+const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
+export const GIF_RATINGS = ['g', 'pg', 'pg-13', 'r'] as const;
+export type GifRating = typeof GIF_RATINGS[number];
+export interface GifStatus { on: boolean; rating: GifRating }
+export interface GifItem { id: string; title: string; width: number; height: number }
+export interface GifPage { items: GifItem[]; next: number | null }
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
@@ -251,6 +271,13 @@ function checkedText(field: string, v: string, maxBytes: number): string {
   for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
   return v;
 }
+/** AW5 fix round 3: GET …/afk's pending reason (protocol/07): 0 none, 1 the idle sweep, 2 AFK chosen elsewhere. Round 3b:
+ *  any non-zero value is pending, and one this client does not know (3 or more) reads as 2, the calm reason; never an
+ *  error. */
+function pendingReason(v: CborValue): 0 | 1 | 2 {
+  const n = u53(v);
+  return n === 0 ? 0 : n === 1 ? 1 : 2;
+}
 function flag(v: CborValue): boolean {
   const n = u53(v);
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
@@ -372,11 +399,32 @@ export class Routes {
       return { id: bin(a[0], 16), name: str(a[1]), owner: bin(a[2], 16), policyVersion: u64(a[3]) };
     });
   }
-  /** GET /v1/communities/{id}/afk: [id|null, timeout, [] (the retired occupant list, ignored), pending?]; the dilla CBOR has no booleans, so pending and exempt are uint 0 or 1; a 3-element answer is not pending. */
+  /** GET /v1/communities/{id}/afk: [id|null, timeout, [] (the retired occupant list, ignored), pending?, away?]; the dilla
+   *  CBOR has no booleans, so pending and exempt are uint 0 or 1; a 3-element answer is not pending, and an answer of
+   *  fewer than five elements (web3.9) has no one away (AW4). */
   async getAFK(communityId: Uint8Array): Promise<AFKSnapshot> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk`, 'read', true)), 3);
     bounded(a[2], 1024, 'AFK occupants');
-    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: a.length > 3 ? flag(a[3]) : false };
+    // Fix round 1 (N3): a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+    const away: AFKAwayRow[] = [];
+    const seen = new Set<string>();
+    for (const value of a.length > 4 ? bounded(a[4], AFK_AWAY_MAX, 'AFK away') : []) {
+      const row = atLeast(value, 2);
+      const userId = bin(row[0], 16);
+      const since = u53(row[1]);
+      const key = toHex(userId);
+      if (since === 0 || seen.has(key)) continue;
+      seen.add(key);
+      away.push({ userId, since });
+    }
+    const reason = a.length > 3 ? pendingReason(a[3]) : 0;
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]), pending: reason !== 0, reason, away };
+  }
+  /** PUT /v1/communities/{id}/afk/away: [] (AW4, R-AW3). The caller's user goes to the AFK channel: the instance cuts every
+   *  device of the user from its call, then marks the user away. There is no route that clears away (Q3). */
+  async putAFKAway(communityId: Uint8Array): Promise<void> {
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/afk/away`, 'write', true,
+      { body: encode([]), ok: [204] });
   }
   async getAFKSettings(communityId: Uint8Array): Promise<AFKSettings> {
     const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'read', true)), 2);
@@ -742,6 +790,63 @@ export class Routes {
     const response = await this.http.request({ method: 'GET', path: blobPath(channelId, blobId),
       bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes, timeoutMs: null });
     return response.status === 404 ? null : response.body;
+  }
+  // ---- E8: the GIF picker (protocol/09 § GIFs). The Giphy key is a per-server setting; the instance searches and fetches
+  // for a member of the server. No Giphy URL is ever built or read here, and the key only ever goes up. ----
+
+  /** GET /v1/communities/{id}/gifs: whether this server has a key, and its rating. */
+  async gifStatus(communityId: Uint8Array): Promise<GifStatus> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/gifs`, 'read', true)), 2);
+    const rating = str(a[1]);
+    if (!(GIF_RATINGS as readonly string[]).includes(rating)) throw new CborError('E_CBOR_RANGE', 'unknown gif rating');
+    return { on: oneOf(a[0], [0, 1]) === 1, rating: rating as GifRating };
+  }
+  /** PUT …/gifs/key: sets or replaces the server's key (a manager). The key is checked here as the instance checks it and is in no error. */
+  async gifSetKey(communityId: Uint8Array, key: string): Promise<void> {
+    if (!GIF_KEY.test(key)) throw new RangeError('E_ROUTE_INPUT: a Giphy key is 8 to 64 letters and digits');
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/gifs/key`, 'write', true, { body: encode([key]), ok: [204] });
+  }
+  /** DELETE …/gifs/key. */
+  async gifClearKey(communityId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/gifs/key`, 'write', true, { ok: [204] });
+  }
+  /** PUT …/gifs/rating. */
+  async gifSetRating(communityId: Uint8Array, rating: GifRating): Promise<void> {
+    if (!GIF_RATINGS.includes(rating)) throw new RangeError('E_ROUTE_INPUT: rating must be g, pg, pg-13 or r');
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/gifs/rating`, 'write', true, { body: encode([rating]), ok: [204] });
+  }
+  /** GET …/gifs/search?q=&offset=: 24 results a page; an empty q is trending. 404 E_NOT_FOUND while the server has no key. */
+  async gifSearch(communityId: Uint8Array, q: string, offset: number): Promise<GifPage> {
+    if (new TextEncoder().encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) {
+      throw new RangeError('E_ROUTE_INPUT: q must be at most ' + GIF_QUERY_MAX_BYTES + ' bytes with no control character');
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) {
+      throw new RangeError('E_ROUTE_INPUT: offset must be 0..' + GIF_OFFSET_MAX);
+    }
+    const path = `/v1/communities/${id('communityId', communityId)}/gifs/search?q=${encodeURIComponent(q)}&offset=${offset}`;
+    const a = atLeast(decode(await this.body('GET', path, 'read', true, { maxBodyBytes: 1_048_576 })), 2);
+    const items: GifItem[] = [];
+    for (const value of arr(a[0])) {
+      const row = atLeast(value, 4);
+      const gifId = str(row[0]);
+      // An id the instance should never send is dropped, not trusted into a path.
+      if (!GIF_ID.test(gifId)) continue;
+      items.push({ id: gifId, title: str(row[1]), width: u53(row[2]), height: u53(row[3]) });
+    }
+    return { items, next: opt(a[1], u53) };
+  }
+  /** GET …/gifs/media/{gif_id}?r=preview|full: the GIF's bytes through the instance, so this browser never contacts Giphy. */
+  async gifMedia(communityId: Uint8Array, gifId: string, variant: 'preview' | 'full', signal?: AbortSignal): Promise<Uint8Array> {
+    if (!GIF_ID.test(gifId)) throw new RangeError('E_ROUTE_INPUT: a gif id is 1..64 letters and digits');
+    if (variant !== 'preview' && variant !== 'full') throw new RangeError('E_ROUTE_INPUT: r must be preview or full');
+    const bytes = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/gifs/media/${gifId}?r=${variant}`, 'read', true,
+      { maxBodyBytes: variant === 'preview' ? GIF_PREVIEW_MAX_BYTES : GIF_FULL_MAX_BYTES, signal });
+    if (!(bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38
+      && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61)) {
+      throw new DillaHttpError({ status: 503, code: 'E_UNAVAILABLE', detail: 'the gif service sent something that is not a gif',
+        retryAfterMs: null, extra: [] });
+    }
+    return bytes;
   }
   async deleteBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {
     await this.body('DELETE', blobPath(channelId, blobId), 'write', true, { ok: [204, 404] });

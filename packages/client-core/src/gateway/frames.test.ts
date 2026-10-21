@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
-import { callRingOf, communityChangedOf, decodeFrame, DROPPABLE_OPS, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
+import { afkAwayOf, callRingOf, communityChangedOf, decodeFrame, DROPPABLE_OPS, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
 interface FrameReject { name: string; frame: string; code: string }
@@ -36,6 +36,8 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'community_changed with 2 elements': 'E_FRAME_SHAPE',
   // The instance answers E_FRAME_TYPE (op 19 is S->C); this client decodes op 19 and refuses eight elements (web3.7).
   'message.ct with 8 elements': 'E_FRAME_SHAPE',
+  // The instance answers E_FRAME_TYPE (op 55 is S->C, AW3); this client decodes op 55 and refuses four elements, not three (AW4).
+  'afk_away with 4 elements': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -50,9 +52,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 32 cases and 19 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(32);
-    expect(vectors.rejects).toHaveLength(19);
+  it('holds the 34 cases and 20 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(34);
+    expect(vectors.rejects).toHaveLength(20);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -115,7 +117,7 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54 });
+      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55 });
   });
 });
 
@@ -200,4 +202,35 @@ it('accepts community_changed with one id and refuses a short id, a second eleme
   expect(() => decodeFrame(encodeFrame(Op.communityChanged, 0, fid(1), [community]))).toThrow('E_FRAME_SHAPE');
   expect(() => communityChangedOf({ op: Op.callRing, n: 0n, groupId: null, payload: [community] })).toThrow('E_FRAME_SHAPE');
   expect(DROPPABLE_OPS.has(Op.communityChanged)).toBe(true);
+});
+
+// AW4: op 55 afk_away [community_id, user_id, since_ts], since_ts 0 = cleared. A hostile or buggy instance's misshapen
+// one is a shape error the gateway drops (DROPPABLE_OPS), and afkAwayOf reads a well-formed one.
+describe('afk_away (op 55)', () => {
+  const [community, user] = [fid(9), fid(10)];
+
+  it('decodes a set and a clear to { communityId, userId, since }', () => {
+    for (const since of [1758659040, 0]) {
+      const frame = decodeFrame(encodeFrame(Op.afkAway, 0, null, [community, user, since]));
+      expect(frame).toMatchObject({ op: 55, n: 0n, groupId: null });
+      expect(afkAwayOf(frame)).toEqual({ communityId: community, userId: user, since });
+    }
+    expect(DROPPABLE_OPS.has(Op.afkAway)).toBe(true);
+  });
+
+  it('refuses a short id, a missing or extra element, a non-uint since, an n and a group', () => {
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community.slice(1), user, 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community, user.slice(1), 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community, user]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community, user, 1, 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community, user, 'now']))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, null, [community, user, fid(1)]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 1, null, [community, user, 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.afkAway, 0, fid(1), [community, user, 1]))).toBe('E_FRAME_SHAPE');
+  });
+
+  it('a typed read of another op, or a since past the safe integers, is a shape error', () => {
+    expect(() => afkAwayOf({ op: Op.communityChanged, n: 0n, groupId: null, payload: [community, user, 1n] })).toThrow('E_FRAME_SHAPE');
+    expect(() => afkAwayOf(decodeFrame(encodeFrame(Op.afkAway, 0, null, [community, user, 2n ** 60n])))).toThrow('E_FRAME_SHAPE');
+  });
 });

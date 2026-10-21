@@ -963,6 +963,10 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
 			return err
 		}
+		// E8: the server's Giphy key goes with it; a secret must not outlive the server it belongs to.
+		if err := tx.PutSetting(r.Context(), gifSettingKey(row.ID), []byte("{}"), now); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "community.delete", Target: row.ID.String(),
 			Detail: "", At: now,

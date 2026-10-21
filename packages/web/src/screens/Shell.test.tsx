@@ -186,6 +186,20 @@ it('restores the draft after a refreshed tab boots and clears the checkpoint', a
   expect(remove).toHaveBeenCalledOnce();
 });
 
+it('final review M3: a draft restored after an update reload sends no typing signal until the person edits it', async () => {
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { draft: { channelId: GEN, text: 'kept across reload' } }, files: [] }),
+      remove: () => Promise.resolve() },
+    reload: () => undefined };
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(composer()).toHaveValue('kept across reload'));
+  await new Promise(r => setTimeout(r, 50));
+  // Typing clears away (Q1): a restored draft with nobody at the keyboard must not.
+  expect(fake.callsOf('typing').filter(c => c.on)).toEqual([]);
+  await user.type(composer(), '!');
+  await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: true }));
+});
+
 it('restores selected files before clearing a refreshed tab checkpoint', async () => {
   const file = new File(['attachment'], 'kept.txt', { type: 'text/plain' });
   const remove = vi.fn(() => Promise.resolve());

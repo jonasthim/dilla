@@ -316,6 +316,7 @@ full contract.
 | invites | `POST /v1/communities/{id}/invites`, `GET /v1/communities/{id}/invites`, `DELETE /v1/invites/{id}` |
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
+| gifs | `GET /v1/communities/{id}/gifs`, `PUT/DELETE …/gifs/key`, `PUT …/gifs/rating`, `GET …/gifs/search`, `GET …/gifs/media/{gif_id}`; see § GIFs |
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wires 1 and 2); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
@@ -794,6 +795,37 @@ are CBOR as everywhere else.
   attachments indefinitely. Deleting a channel removes its references. Attachment retention never
   follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
 
+### GIFs
+
+An optional GIF picker, per server. A server manager enters that server's Giphy API key in its settings; a server
+without a key has no GIFs (every search and media route answers `404 E_NOT_FOUND`), and the web client shows no
+picker. There are no GIFs in direct messages: the routes belong to a community. Every route is `E`.
+
+| Method and path | Request | Response | Errors |
+|---|---|---|---|
+| `GET /v1/communities/{id}/gifs` | — | `[gifs(uint 0 or 1), rating(tstr)]`: whether the server has a key, and the rating (`g`, `pg`, `pg-13` or `r`). Never the key | `404` to a non-member |
+| `PUT /v1/communities/{id}/gifs/key` | `[key(tstr)]`, 8 to 64 letters and digits | `204` | `403 E_FORBIDDEN` without Manage Server (the owner holds it), `400 E_INVALID_REQUEST` |
+| `DELETE /v1/communities/{id}/gifs/key` | — | `204` | `403 E_FORBIDDEN` |
+| `PUT /v1/communities/{id}/gifs/rating` | `[rating(tstr)]` | `204` | `403 E_FORBIDDEN`, `400 E_INVALID_REQUEST` |
+| `GET /v1/communities/{id}/gifs/search?q=&offset=` | `q` is at most 100 bytes of text and may be empty (trending); `offset` is `0..4999` | `[[[gif_id(tstr), title(tstr), width(uint), height(uint), path(tstr)]], next_offset(uint or null)]`; 24 results a page, `path` is this server's own media path | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member across all servers, 10 then 1 a second), `503 E_UNAVAILABLE` with `Retry-After` |
+| `GET /v1/communities/{id}/gifs/media/{gif_id}?r=preview` | `gif_id` is a Giphy id (letters and digits, at most 64); `r` is `preview` or `full` | `200` the GIF, `Content-Type: image/gif` (a preview is at most 5 MiB, a full GIF at most 25 MiB) | `400 E_INVALID_REQUEST`, `404`, `429 E_RATE_LIMITED` (per member across all servers, 60 then 20 a second), `503 E_UNAVAILABLE` with `Retry-After` |
+
+- **The key is write-only.** It is stored in the instance's settings table, never read back out by any route, and is in
+  no reply, header, log line, audit detail or diagnostics line. Setting, replacing and removing it, and changing the
+  rating, each write an audit row (`community.gifs.key_set`, `community.gifs.key_remove`, `community.gifs.rating`)
+  whose detail is empty. Deleting the server forgets the key.
+- **What each party sees.** Search and the picked GIF go through the instance, so Giphy sees the instance and never a
+  person. The instance sees the search terms and which GIF a member picked and when, and can probably link a pick to
+  the attachment that follows from its timing and size; it cannot read the message or learn who reads it. The GIF
+  is sent as an ordinary encrypted attachment (`04` § Envelope), so a reader's client never contacts Giphy.
+- **No URL comes from the caller.** The instance builds the one upstream URL from the checked `gif_id` and a host on a
+  fixed allow-list of Giphy's own hosts, over HTTPS; a redirect off the list, a non-GIF content type or magic, a body
+  over the cap (counted on the bytes, not the header), a timeout, a connection to a non-public address, or no free
+  fetch slot is `503 E_UNAVAILABLE`.
+- **Fetch slots.** A media or search request holds one of eight instance-wide slots (at most three per member and four per server) from
+  before the upstream request until its reply is written; a request waits briefly for a slot before the `503`. The
+  rating filters search; a media route fetches any Giphy id a member asks for.
+
 ### Backups
 
 The two header objects of `06-backup-archive.md` ("Header"), for the session's own user: no route
@@ -871,7 +903,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
 | `GET /v1/communities/{id}/afk/settings` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint)]`: the built-in AFK channel and its timeout (default `300`) | `manage_community` |
 | `PUT /v1/communities/{id}/afk/settings` | `[timeout_seconds(uint)]`, or `[channel_id(bstr16), timeout_seconds(uint)]` when `channel_id` is the built-in AFK channel | `204`; timeout is one of `60, 300, 900, 1800, 3600` (there is no "off"); the channel is never chosen here: `400 E_INVALID_REQUEST` `the AFK channel is built in; send [timeout_seconds]` for any other `channel_id`, `null` included, and `400 E_INVALID_REQUEST` for any other timeout | `manage_community` |
-| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), [], pending(uint)]`: the built-in AFK channel; the third element is always the empty array (web3.8's retired occupant list, kept so a web3.8 parser still reads it); `pending` is `1` only while the sweep's move of the calling device in this community is younger than 10 minutes, else `0` (the dilla CBOR subset has no booleans). A community with no live AFK channel gets one here first; `channel_id` is `null` only if that fails | community membership |
+| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), [], pending(uint), away([[user_id(bstr16), since_ts(uint)]])]`: the built-in AFK channel; the third element is always the empty array (web3.8's retired occupant list, kept so a web3.8 parser still reads it); `pending` is the calling device's pending cut, a reason code (the dilla CBOR subset has no booleans): `0` none, `1` the sweep moved the device, `2` the device was cut because its user chose AFK (`PUT …/afk/away`); it is device-scoped, so every community's snapshot reports it to that device, a read does not consume it, and it lasts through gateway disconnects until an admission of that device clears it, at most 24 hours (held in memory; a restart drops it with the calls); a client reads any value it does not know as pending; `away` is the community's away roster (below), sorted by `user_id`, at most 1024 entries, `since_ts` the unix second each member became away. A client that reads four elements is unaffected. A community with no live AFK channel gets one here first; `channel_id` is `null` only if that fails. `away` is empty whenever `channel_id` is `null` for the caller, so the roster goes only to those who may reach the AFK channel, the audience of `afk_away` | community membership |
+| `PUT /v1/communities/{id}/afk/away` | `[]` | `204`; the caller's user goes to the AFK channel: the user is first marked away in this community (a member already away keeps the earlier `since_ts`; a user who holds no gateway connection, or one of whose devices was admitted to a call meanwhile, is not marked), then every device of the user is cut from every call room it is in (a community's or a DM's, in any community). Each device it cuts gets pending `2` (the snapshot above) before its removal, so its first read already says why; so does every other device of the user that was admitted to a call in the last 2 minutes and that no room lists now (a call recovering after the media server dropped it), so that its recovery does not rejoin. A cut that fails is logged, the device keeps pending `2`, and the answer is still `204`. `400 E_INVALID_REQUEST` for any other body; `404 E_NOT_FOUND` for a non-member (also when a kick lands during the request) and for a community whose AFK channel the caller cannot reach. There is no `DELETE`: only the instance clears away | community membership |
 | `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` or `[channel_id(bstr16), exempt(uint)]` | `204`; records this authenticated device's activity in that live community voice call. `exempt` is `0` or `1` (`400 E_INVALID_REQUEST` otherwise, and for a CBOR boolean); with `1` the device is never moved out of that call's room, even when the report precedes its admission | community membership |
 | `POST /v1/communities/{id}/afk` | any | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's manual move) | — |
 | `DELETE /v1/communities/{id}/afk` | — | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's leave) | — |
@@ -894,12 +927,43 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   and `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` on it are `403 E_FORBIDDEN` `the AFK
   channel takes no permission overwrites`. A category delete leaves it at the top level, and a
   community transfer leaves it as it is.
-- **Permissions and listen-only.** Every member holds `view_channel` and `connect` in the AFK
+- **Permissions and no calls.** Every member holds `view_channel` and `connect` in the AFK
   channel whatever their roles say (the owner and administrators keep every bit), so every member is
-  in its `channel_members` and its call group. A call there is listen-only: the token, the `/rtc`
-  admission and every grant re-push give no source to publish, and `POST /v1/calls/{call_id}/share`
-  is `403 E_FORBIDDEN` `nobody shares in the AFK channel`. When the instance cannot read the AFK
-  pointer, the grant is listen-only.
+  in its `channel_members` and its call group. The AFK channel never hosts a call (R-AW1): `POST
+  /v1/channels/{id}/calls` on it is `403 E_FORBIDDEN` `nobody joins a call in the AFK channel`, and
+  so is the `/rtc` admission of a token minted for it, so no token for it is minted or admitted. A
+  call an earlier release left live there ends when the instance starts, and every user with a
+  device in its call group becomes away (below). The listen-only grant stays as a backstop: a grant
+  re-push in such a room gives no source to publish, `POST /v1/calls/{call_id}/share` is `403
+  E_FORBIDDEN` `nobody shares in the AFK channel`, and when the instance cannot read the AFK pointer,
+  the grant is listen-only.
+- **Away (AFK means disconnected).** A member who is *away* is listed under the community's AFK
+  channel and has no voice connection. The instance stores away per community and user, and away and
+  calls never overlap: if a user is away in any community, no device of that user is in any call
+  (R-AW2). A user becomes away in a community (R-AW3):
+  - by the sweep: its cut of an idle device (below) marks the user away there, `since_ts` the cut,
+    unless another device of the user is in a call (listed in any room, or admitted to one within the
+    last 30 seconds), an admission of the user came after the sweep decided, or the user holds no
+    gateway connection; otherwise the idle device is only cut;
+  - by choosing AFK: `PUT /v1/communities/{id}/afk/away`, which the client sends after it has left
+    its call; the instance marks the user away and then cuts any device of the user still in a
+    room.
+
+  Away is cleared (R-AW4) by any admission of any device of the user to any call room, which clears
+  every community; by a message upload (an end-to-end encrypted upload into a text group of one of
+  the community's channels, or an accepted `POST /v1/channels/{id}/messages` in a readable one) or a
+  `typing_set` on by the user in
+  a channel of that community, which clears that community; by the user holding no gateway
+  connection for 30 continuous seconds, which clears every community: a second open connection
+  keeps it, a connection that comes back within the 30 seconds (a page reload, a short network
+  drop) keeps it, and a later close starts the 30 seconds again; nothing is cleared this way while
+  the instance shuts down; and by
+  leaving the community, a kick or a ban (the row goes with the membership, and the remaining
+  audience is sent `afk_away` with `since_ts` `0`). No client route clears it. Every change is announced with
+  `afk_away` (`02` § Gateway frames, op 55) to every user who may view the AFK channel; a change that
+  changed nothing is not. The roster is stored, so a restart keeps it for users who stay connected;
+  60 seconds after the instance starts, the rows of users with no gateway connection are cleared and
+  announced.
 - **AFK lifecycle.** The instance keeps a server-side activity time for each device in community
   voice. Browser keyboard, pointer and touch input, and microphone speech report activity; listening
   alone does not. A device that cannot be idle-detected (a phone) reports `exempt` `1` once per join
@@ -907,10 +971,13 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   when its browser timers are suspended; the AFK channel's own calls are never tracked. The server
   decides a move and the client carries it out, because the server cannot add a device to an
   end-to-end encrypted call group: the instance removes the device from its SFU room, revokes its
-  relay, marks a pending move for that device alone (10 minutes) and sends `community_changed`
-  (`02`) to that user's live connections. The client reads `pending` from the snapshot and joins the
-  AFK channel like any other call; any admission of that device to a room clears it. Nothing but
-  the sweep sets `pending`. Settings changes send `community_changed` to the members.
+  relay, marks a pending move for that device alone (`pending` `1`; it lasts through disconnects and
+  reads until an admission of that device, at most 24 hours), marks the user away as above, and
+  sends `community_changed` (`02`) to that user's live connections. The client reads `pending` from
+  the snapshot only to tell the user why the device left its call (`1` moved by the sweep, `2` chose
+  AFK), never to join anything; any admission of that device to a room clears it. Only the sweep
+  (`1`) and `PUT …/afk/away` (`2`, for each device it cuts) set `pending`. Settings changes send
+  `community_changed` to the members.
 
 - **Discovery and snapshot.** `GET /v1/channels/{id}/call` tells a client which call group to join
   or register and who is in the channel's call. `group_id` is the live call's group; with no live

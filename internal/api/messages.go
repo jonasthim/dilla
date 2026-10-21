@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"strconv"
 
@@ -26,6 +27,9 @@ type Messages struct {
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
 	Limiter *server.RateLimiter
+	// AfterUpload runs after an accepted upload with the uploader's user and the group (AW2, Q1: a
+	// message takes the sender out of the community's AFK list); nil does nothing.
+	AfterUpload func(ctx context.Context, user, group id.ID)
 }
 
 // defaultMaxCiphertextBytes is the MLS ciphertext cap of the Global Constraints, 131072 bytes. The
@@ -93,6 +97,9 @@ func (h *Messages) upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
+	}
+	if h.AfterUpload != nil {
+		h.AfterUpload(r.Context(), session.UserID, groupID)
 	}
 	if err := server.EncodeBody(w, http.StatusOK, uploadResponse{
 		Seq: out.Seq, FrankingTag: out.FrankingTag, RecvTS: out.RecvTS,

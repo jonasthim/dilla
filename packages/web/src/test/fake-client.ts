@@ -128,7 +128,7 @@ export function bobChanged(): TrustSummary {
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
     tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, shareSource: null, noise: 'on', audioBlocked: false,
-    audio: { attached: 0, expected: 0 }, listenOnly: false };
+    audio: { attached: 0, expected: 0 } };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -195,6 +195,8 @@ export interface VoiceHarnessOptions {
   withSettings?: boolean;
   /** The call module fails to load (a lost chunk). */
   loadFails?: boolean;
+  /** selectCommunity refuses with this code (a server whose channels did not load). */
+  refuseSelect?: string;
   /** The session starts with the browser holding call audio back (audioBlocked), or turns so in the tick it attaches. */
   audioBlocked?: 'at-start' | 'same-tick';
 }
@@ -240,12 +242,14 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1), unless a test holds it.
       if (!o.joinLeavesSlice) fake.set('call', callState({ phase: 'in', channelId: command.channelId, callId: command.channelId }));
     }
+    if (command.m === 'selectCommunity' && o.refuseSelect !== undefined) return Promise.reject(refusal({ code: o.refuseSelect }));
     return Promise.resolve(null);
   };
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
-  fake.set(`channels:${A}`, CHANNELS);
+  // A refused selectCommunity leaves the server's channels unloaded (the sidebar says so).
+  if (o.refuseSelect === undefined) fake.set(`channels:${A}`, CHANNELS);
   fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, pending: false });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);
@@ -294,9 +298,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       }
       // As the real session: it starts in the mode it was started with, and in the kept mute or deafen (`self`). It does not
       // read `selfNow`, so the shell's attach reconcile is what a press during the start is tested against.
-      const listen = opts.listenOnly === true;
-      session.state = { ...session.state, mode: opts.mode, muted: listen || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-        listenOnly: listen, mic: listen ? 'listen' : session.state.mic };
+      session.state = { ...session.state, mode: opts.mode, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened' };
       sessions.push(session);
       return session;
     }),

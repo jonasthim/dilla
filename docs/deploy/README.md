@@ -83,6 +83,8 @@ with no media port to reach. Run it after every change.
 | `acme_ip` | The instance has no domain of its own and clients connect to an address. | A public IP the certificate authority can reach on 443/tcp (validation is TLS-ALPN-01). dillad forces the `shortlived` profile, the only one that permits IP names, so certificates are renewed far more often; `tls.renewal_window_ratio` sets when. |
 | `behind_proxy` | A reverse proxy you already run terminates TLS. | dillad listens on `server.plain_listen` (`127.0.0.1:8080` by default) and trusts `X-Forwarded-For` only from `server.trusted_proxy_cidrs`, which must be non-empty. `instance.public_ip` and `tls.agreed` are not required. |
 
+**Probing health.** `/healthz` (liveness) and `/readyz` (readiness) are served on `server.plain_listen` only. dillad does not also listen on the loopback address, so probe the address configured there, for example `curl -fsS http://10.0.0.5:8080/readyz` for `plain_listen = '10.0.0.5:8080'`. A `curl` to `127.0.0.1` prints `000` unless `plain_listen` is a loopback address. The installer's `--listen` sets it.
+
 In every mode except `behind_proxy`, TURN shares 443 with the web server: a demultiplexer in front
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
 7882/udp (LiveKit's media port) need to be open.
@@ -772,6 +774,8 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 | web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
 | web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
+| web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
+| web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
@@ -845,6 +849,42 @@ Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treat
 Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
 channel's rules until it reloads.
 
+### The optional GIF picker: a Giphy key per server
+
+GIFs need no configuration in `dilla.toml`. A person who manages a server enters that server's own Giphy API key in
+server settings → overview ("GIFs (Giphy)"; get a key at developers.giphy.com), and that server gets a **gif** button in
+its channels. A server without a key has none; there are no GIFs in direct messages (a known limit). The key is
+**write-only**: the page shows dots afterwards, with **replace** and **remove**, and no route, log line, audit row or
+`dillad doctor` line ever contains it. There is no migration: the key is kept in the instance's settings table
+(`instance_settings`, key `community_gifs:{server id}`) as plain text, like the TOTP secrets, so a database backup holds
+it and should be protected as it is. Deleting a server forgets its key. Setting, replacing or removing a key, and
+changing the rating, are audited (`community.gifs.key_set`, `community.gifs.key_remove`, `community.gifs.rating`) without
+the key.
+
+What this means for privacy:
+
+- Search and the picked GIF go through `dillad`, so **Giphy sees your server, never the people on it**. `dillad` sees what
+  people search for, which GIF they picked and when, and can probably link a pick to the attachment that follows by its
+  timing and size; it cannot read the message.
+- A picked GIF is downloaded by `dillad` and sent as an ordinary encrypted attachment, so **no reader's browser
+  contacts giphy.com**. The server's content-security policy needs no Giphy host.
+- `dillad` fetches only from Giphy's own hosts (`api.giphy.com` and `media*.giphy.com`) over HTTPS, builds each URL
+  itself from a checked Giphy id, refuses redirects off that list and refuses to connect to a non-public address
+  (including private, loopback, link-local, carrier-grade NAT, documentation, 6to4, Teredo and NAT64 ranges). It uses no
+  proxy: the host needs outbound HTTPS to `*.giphy.com`. An outage at Giphy shows people "could not reach the gif
+  service" and nothing else.
+- A GIF is capped at 25 MB (a preview at 5 MB) counted on the bytes received; a fetch times out after 15 seconds. Each
+  fetch holds one of **eight** instance-wide slots (at most **three** per person and **four** per server) from before the request to Giphy until
+  the reply has been written to the person's browser, and a reply that cannot be written within 30 seconds is dropped, so
+  the memory a slow or silent client can pin is bounded by eight GIFs. A request waits up to two seconds for a slot, then
+  gets `503` with `Retry-After`.
+- Search is limited per person, across all the servers they are in (10 at once, then 1 a second), and so is the media route
+  (60 at once, then 20 a second).
+- The rating (g, pg, pg-13 by default, r) filters **search**; the media route fetches any Giphy id a member asks for, so
+  the rating is not a hard limit on what a member can attach (they can attach any file anyway).
+
+Rolling back to a release without GIFs leaves the `community_gifs:*` settings rows in the table, which nothing reads.
+
 ### Upgrading with profile text: migration 00022
 
 **Release note.** New display names, status messages and bios refuse control, bidi, zero-width and other invisible characters
@@ -857,8 +897,7 @@ encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes th
 `GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
 the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
 
-To go back run the rollback by hand above with `--to=20` (`--to=21` once this branch is rebased onto web3.11, which carries
-00021). Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
+To go back run the rollback by hand above with `--to=21`. Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
 
 ## Capacity
 

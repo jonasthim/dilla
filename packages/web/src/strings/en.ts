@@ -29,8 +29,10 @@ import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
 import { profile } from './profile.ts';
+import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
+  ...gif,
   ...storeNewer,
   ...privacy,
   ...admin,
@@ -463,12 +465,7 @@ export const en = {
   'voice.count': '{n} in voice',
   'voice.join': 'join voice',
   'voice.row.joined': 'connected',
-  'voice.afk.title': 'AFK channel',
-  'voice.afk.loading': 'Loading voice channels…',
-  'voice.afk.silent': 'This channel is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return.',
   'voice.afk.count': '{n} in AFK',
-  'voice.afk.move': 'Move to AFK',
-  'voice.afk.leave': 'Leave AFK',
   'call.start': 'call',
   'call.join': 'join call',
   'voice.dock.region': 'voice controls',

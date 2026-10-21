@@ -62,7 +62,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... (--public-ip IP | --node-ip IP | --no-media-ip) [options]
        install.sh --public --domain NAME --public-ip IP --agree-tos [options]
-       install.sh --upgrade [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE]
+       install.sh --upgrade [--yes] [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE]
 
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
@@ -86,7 +86,11 @@ modes (exactly one):
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
   --upgrade              replace the binary and core, restart the API and media services,
                          and run doctor; migrates livekit.mode from in_process to sidecar
-                         once, saving dilla.toml.prev; rolls back a failed API restart
+                         once, saving dilla.toml.prev; rolls back a failed API restart.
+                         Restarting the SFU ends every live call, so it first runs
+                         `dillad media --rooms` and refuses, changing nothing, if a room
+                         has participants or the check cannot be made
+    --yes                upgrade anyway, ending any live calls (with --upgrade only)
 
 options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
@@ -106,6 +110,7 @@ USAGE
 
 MODE=""
 UPGRADE=0
+ASSUME_YES=0
 CHECK_ARGS=0
 DOMAIN=""
 PUBLIC_IP=""
@@ -142,7 +147,7 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--behind-proxy | --public | --agree-tos | --upgrade | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
+	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
 	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums)
@@ -169,6 +174,7 @@ while [ "$#" -gt 0 ]; do
 		saw "$flag"
 		;;
 	--upgrade) UPGRADE=1 ;;
+	--yes) ASSUME_YES=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--no-media-ip)
@@ -293,6 +299,7 @@ valid_domain() {
 if [ "$UPGRADE" -eq 1 ]; then
 	[ -z "$SET_MODE_FLAGS" ] || die "--upgrade keeps the installed network settings; drop$SET_MODE_FLAGS"
 else
+	[ "$ASSUME_YES" -eq 0 ] || die "--yes is for --upgrade"
 	[ -n "$MODE" ] || {
 		usage
 		die "choose a mode: --behind-proxy or --public (or --upgrade for an installed instance)"
@@ -614,6 +621,40 @@ rollback_stuck() {
 	exit 1
 }
 
+# live_calls_preflight refuses (exit 1, nothing touched) while a room has participants or when the
+# check cannot be made, unless --yes. It runs at the moment the upgrade is about to stop things:
+# an answer from earlier does not count. `media --rooms` prints "no live rooms", or per room
+# "<room><TAB><n> participants" followed by the participants' identities indented by two spaces.
+live_calls_preflight() {
+	_rooms=""
+	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
+		_why="livekit.mode is $LIVEKIT_MODE_BEFORE, so the SFU runs inside dilla and its rooms cannot be listed; this upgrade restarts it and ends every live call"
+	elif ! systemctl is-active --quiet dilla-media; then
+		# A stopped SFU holds no rooms (a rollback stops dilla first, and dilla-media with it through PartOf).
+		log "dilla-media is not running, so there are no live calls"
+		return 0
+	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
+		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
+		if [ -z "$_busy" ]; then
+			case "$_rooms" in
+			"no live rooms" | *participants*) return 0 ;;
+			esac
+			_why="dillad media --rooms printed something unexpected: $_rooms"
+		else
+			_why="there are live calls, and restarting the SFU disconnects everyone in them"
+			log "live rooms:"
+			printf '%s\n' "$_busy" | while IFS= read -r _line; do log "$_line"; done
+		fi
+	else
+		_why="could not list the live rooms (runuser -u dillad -- $BIN_DIR/dillad media --rooms --config=$CONF failed)"
+	fi
+	if [ "$ASSUME_YES" -eq 1 ]; then
+		log "warning: $_why; continuing because of --yes"
+		return 0
+	fi
+	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --yes to upgrade anyway"
+}
+
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
@@ -628,6 +669,8 @@ if [ "$UPGRADE" -eq 1 ]; then
 	# the way down).
 	SCHEMA_BEFORE="$(schema_version "$BIN_DIR/dillad")" ||
 		die "could not read the database's schema version with the installed binary (runuser -u dillad -- $BIN_DIR/dillad migrate status --config=$CONF); nothing was changed"
+	# Last check before anything is written or stopped.
+	live_calls_preflight
 	# The previous pair stays beside the new one, for the rollback below and by hand.
 	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
 	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decode, encode } from '../cbor';
+import { decode, encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
@@ -94,13 +94,33 @@ const CASES: Case[] = [
     name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true },
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 1, away: [] },
+  },
+  {
+    // AW5 fix round 3: pending is a reason code; 2 is a cut because this user chose AFK on another device or tab.
+    name: 'AFK snapshot reads pending reason 2 (AFK chosen elsewhere)', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 2, []]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 2, away: [] },
+  },
+  {
+    // AW4: the fifth element is the away roster [[user_id, since_ts]].
+    name: 'AFK snapshot reads the away roster of a 5-element answer', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 1758659040], [member(2), 1758659100]]]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: false, reason: 0,
+      away: [{ userId: member(1), since: 1758659040 }, { userId: member(2), since: 1758659100 }] },
   },
   {
     name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [null, 300, []]),
-    expected: { channelId: null, timeoutSeconds: 300, pending: false },
+    expected: { channelId: null, timeoutSeconds: 300, pending: false, reason: 0, away: [] },
+  },
+  {
+    name: 'AFK away (choosing AFK) sends [] and takes 204', call: r => r.putAFKAway(COMMUNITY),
+    method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/away`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([]), reply: () => noContent(), expected: undefined,
   },
   {
     name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
@@ -1691,10 +1711,15 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
-  it('a pending of 2, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
-    const two = setup();
-    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 2]));
-    await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+  // AW5 fix round 3b (protocol/07): any non-zero pending is pending; an unknown reason (3 or more) reads as 2, the calm one.
+  it('an unknown pending reason of 3 or more is pending and reads as reason 2, never an error', async () => {
+    for (const n of [3, 7, 255]) {
+      const one = setup();
+      one.t.replies.push(cborReply(200, [CHANNEL, 300, [], n]));
+      await expect(one.routes.getAFK(COMMUNITY)).resolves.toMatchObject({ pending: true, reason: 2 });
+    }
+  });
+  it('a raw CBOR true and a raw CBOR false pending are refused (the subset has no booleans)', async () => {
     for (const tail of [0xf5, 0xf4]) {
       const head = encode([CHANNEL, 300, []]);
       const raw = new Uint8Array([...head, tail]);
@@ -1709,6 +1734,36 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(noContent());
     await routes.sendAFKActivity(COMMUNITY, CHANNEL, false);
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([CHANNEL])));
+  });
+  // AW4: a web3.9 instance answers four elements; its roster is empty.
+  it('a 4-element web3.9 snapshot has an empty away roster', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 1]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([]);
+  });
+  // Fix round 1, N3: a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+  it('an away roster skips since 0 and keeps the first row of a repeated user', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 0], [member(2), 50], [member(2), 70], [member(3), 90]]]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([{ userId: member(2), since: 50 }, { userId: member(3), since: 90 }]);
+  });
+  it('an away roster over 1024 rows, a short user id, a missing since or a since past the safe integers is refused', async () => {
+    const uid = (i: number) => { const u = member(i % 256); u[14] = i >> 8; return u; };
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => [uid(i), 1]);
+    const bad: [CborInput[], string][] = [
+      [rows(1025), 'E_CBOR_SHAPE'],
+      [[[member(1).slice(1), 1]], 'E_CBOR_SHAPE'],
+      [[[member(1)]], 'E_CBOR_SHAPE'],
+      [[[member(1), 2n ** 60n]], 'E_CBOR_RANGE'],
+    ];
+    for (const [away, code] of bad) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, away]));
+      await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code });
+    }
+    const ok = setup();
+    ok.t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, rows(1024)]));
+    expect((await ok.routes.getAFK(COMMUNITY)).away).toHaveLength(1024);
   });
   it('moveToAFK and leaveAFK no longer exist', () => {
     const { routes } = setup();

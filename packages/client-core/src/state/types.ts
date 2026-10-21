@@ -201,14 +201,22 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
-/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: the sweep moved
- *  this device and it has not joined yet. */
+/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: AFK cut this
+ *  device from its call (the sweep, or AFK chosen on another device; web3.11 joins nothing on it). */
 export interface AFKState {
   channelId: string | null; timeoutSeconds: number; pending: boolean;
   /** web3.9 R-AFK4: rises with every landed read (one counter for the worker's life), so each read that says `pending`
    *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
    *  leave it out. */
   seq?: number;
+  /** AW4: the community's away roster, sorted by user id (lower-case hex): each member listed under the AFK channel with
+   *  no voice connection, and the unix second it became away there. Set by client-core on every read and kept current by
+   *  op 55; a fixture may leave it out. */
+  away?: { userId: string; since: number }[];
+  /** AW5 fix round 3: why this device is pending (device-scoped: every community's read says it): 1 the idle sweep moved
+   *  it, 2 this user chose AFK on another device or tab, 0 none. Set by client-core on every read; a fixture may leave it
+   *  out (then `pending` reads as 1). */
+  pendingReason?: 0 | 1 | 2;
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `afk:${string}`
