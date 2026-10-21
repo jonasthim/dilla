@@ -210,7 +210,7 @@ func (g *Gifs) describe(err error) string {
 
 // get fetches rawURL, which the caller built from allow-listed parts, and returns at most max bytes
 // of its body. The slot, the timeout and the cap bound what one call can hold.
-func (g *Gifs) get(ctx context.Context, rawURL string, max int64, contentType func(string) bool) ([]byte, error) {
+func (g *Gifs) get(ctx context.Context, rawURL string, limit int64, contentType func(string) bool) ([]byte, error) {
 	select {
 	case g.slots <- struct{}{}:
 		defer func() { <-g.slots }()
@@ -236,29 +236,29 @@ func (g *Gifs) get(ctx context.Context, rawURL string, max int64, contentType fu
 		return nil, errGifUnavailable
 	}
 	defer func() { _ = resp.Body.Close() }()
-	switch {
-	case resp.StatusCode == http.StatusOK:
-	case resp.StatusCode == http.StatusNotFound:
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
 		return nil, errGifNotFound
 	default:
 		g.log.Warn("gifs: upstream refused", "status", resp.StatusCode)
 		return nil, errGifUnavailable
 	}
-	if resp.ContentLength > max {
-		g.log.Warn("gifs: upstream body over the cap", "declared", resp.ContentLength, "cap", max)
+	if resp.ContentLength > limit {
+		g.log.Warn("gifs: upstream body over the cap", "declared", resp.ContentLength, "cap", limit)
 		return nil, errGifBadBody
 	}
 	if contentType != nil && !contentType(resp.Header.Get("Content-Type")) {
 		g.log.Warn("gifs: upstream content type refused", "type", resp.Header.Get("Content-Type"))
 		return nil, errGifBadBody
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		g.log.Warn("gifs: upstream body failed", "err", g.describe(err))
 		return nil, errGifUnavailable
 	}
-	if int64(len(body)) > max {
-		g.log.Warn("gifs: upstream body over the cap", "cap", max)
+	if int64(len(body)) > limit {
+		g.log.Warn("gifs: upstream body over the cap", "cap", limit)
 		return nil, errGifBadBody
 	}
 	return body, nil
@@ -323,7 +323,7 @@ func validGifID(id string) bool {
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 			return false
 		}
 	}
