@@ -12,8 +12,11 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/gateway"
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -105,6 +108,75 @@ func TestIdentifyWithWireThreeReachesReady(t *testing.T) {
 	}
 	if session.WireVersion != 3 || session.E2EEVersion != 1 || session.MediaVersion != 1 {
 		t.Fatalf("identify persisted versions = [%d %d %d], want [3 1 1]", session.WireVersion, session.E2EEVersion, session.MediaVersion)
+	}
+}
+
+// The composed gateway resolves group ownership and current installation state through the real
+// repository. An already identified wire-2 socket sees ordinary community traffic before an
+// installation exists, is filtered as soon as one is committed, and resumes receiving after the
+// installation is disabled.
+func TestComposedGatewayReadsCurrentCommunityCompatibility(t *testing.T) {
+	srv, ts, token := newGreetedServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _ := dialHello(t, ctx, ts.URL)
+	identifyWith(t, ctx, c, token, 2)
+	if op, _ := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("identify op %d, want ready", op)
+	}
+	// Identify emits a presence update after ready; consume it before checking explicit delivery.
+	if op, _ := readFrame(t, ctx, c); op != uint64(gateway.OpPresence) {
+		t.Fatalf("post-ready op %d, want presence", op)
+	}
+	session, err := srv.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := srv.Now().Unix()
+	communityID, groupID := id.New(), id.New()
+	if err := srv.Repo().Tx(ctx, func(tx store.Repository) error {
+		if err := tx.CreateCommunity(ctx, store.CommunityRow{ID: communityID, Owner: session.UserID,
+			Name: "compatibility", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
+			return err
+		}
+		community := communityID
+		return tx.CreateGroup(ctx, store.GroupRow{GroupID: groupID, Binding: []byte{0x80}, Kind: api.GroupText,
+			CommunityID: &community, TargetID: id.New(), Ciphersuite: 1, Epoch: 1, ExternalSenderKeyID: id.New(),
+			E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: now})
+	}); err != nil {
+		t.Fatalf("seed community/group: %v", err)
+	}
+	deliver := func() {
+		group := groupID
+		payload, err := cborx.Marshal("event")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv.Gateway().DeliverDevice(session.DeviceID, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload})
+	}
+	deliver()
+	if op, _ := readFrame(t, ctx, c); op != uint64(gateway.OpMessageCT) {
+		t.Fatalf("pre-install delivery op %d, want message", op)
+	}
+	beforeBlocked := srv.Gateway().Debug(session.DeviceID, groupID).Conns[0].N
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: communityID, State: store.BotInstallationPending,
+		Revision: 1, ApprovedBy: session.UserID, ApprovedAt: now, Created: now, Updated: now}
+	if err := srv.Repo().CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatalf("CreateBotInstallation: %v", err)
+	}
+	deliver()
+	if got := srv.Gateway().Debug(session.DeviceID, groupID).Conns[0].N; got != beforeBlocked {
+		t.Fatalf("wire-2 replay n advanced after installation became active: %d -> %d", beforeBlocked, got)
+	}
+	installation.State = store.BotInstallationDisabled
+	installation.Revision++
+	installation.Updated = now + 1
+	if err := srv.Repo().UpdateBotInstallation(ctx, installation.ID, 1, installation); err != nil {
+		t.Fatalf("disable installation: %v", err)
+	}
+	deliver()
+	if op, _ := readFrame(t, ctx, c); op != uint64(gateway.OpMessageCT) {
+		t.Fatalf("post-disable delivery op %d, want message", op)
 	}
 }
 

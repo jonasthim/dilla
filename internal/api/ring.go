@@ -384,7 +384,10 @@ func (r *Ringer) deliver(to, call, channel, user id.ID, state, expires uint64) {
 		r.log.Error("encoding a call_ring failed", "err", err)
 		return
 	}
-	r.gw.DeliverUser(to, gateway.Frame{Op: gateway.OpCallRing, Payload: p})
+	r.gw.DeliverUser(to, gateway.Frame{
+		Op: gateway.OpCallRing, Payload: p,
+		Scope: gateway.FrameScope{Channels: []id.ID{channel}},
+	})
 }
 
 // --- the Calls side: the start's ring and the decline route. ---

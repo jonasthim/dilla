@@ -301,7 +301,10 @@ func (h *Readable) deliver(ctx context.Context, channelID id.ID, seq uint64, sen
 		return
 	}
 	h.fan.SetChannelMembers(channelID, users)
-	h.fan.DeliverChannel(channelID, gateway.Frame{Op: gateway.OpMessagePlain, Payload: payload, Replay: true})
+	h.fan.DeliverChannel(channelID, gateway.Frame{
+		Op: gateway.OpMessagePlain, Payload: payload, Replay: true,
+		Scope: gateway.FrameScope{Channels: []id.ID{channelID}},
+	})
 }
 
 type listItem struct {

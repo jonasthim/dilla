@@ -286,6 +286,7 @@ func TestACommitAckFrameReachesTheDeliveryServiceHandler(t *testing.T) {
 		}
 	}
 	c := h.connect(t, id.New())
+	h.setGroupsForDevice(c.deviceID, group)
 	p, err := payload(uint64(7))
 	if err != nil {
 		t.Fatalf("payload: %v", err)

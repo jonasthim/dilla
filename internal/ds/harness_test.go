@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/ds"
@@ -130,10 +131,12 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	h.wasm = wasm
 
 	h.auth = newFakeAuth()
+	botCapability := capability.New(repo)
 	// The back-off window comes from the policy the delivery service is built with, exactly as the
 	// composition root wires it (deviation B23).
 	h.gw = gateway.New(gateway.Options{
 		Clock: clk, Store: gatewayStore{repo}, Generation: 1, Auth: h.auth,
+		ScopeResolver: gatewayScopeResolver{repo: repo}, CommunityCompatibility: botCapability,
 		Backoff: ds.DefaultPolicy().Backoff, BackoffJitter: ds.DefaultPolicy().BackoffJitter,
 		MaxFrameBytes: maxFrameBytes,
 	})
@@ -144,15 +147,16 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	h.postPolicy = &recordingPostPolicy{}
 
 	d, err := ds.New(ds.Options{
-		Store:      repo,
-		Wasm:       wasm,
-		Gateway:    h.gw,
-		Clock:      clk,
-		Keys:       testInstanceKeys(t),
-		Policy:     ds.DefaultPolicy(),
-		Channels:   h.channels,
-		ACL:        h.acl,
-		PostPolicy: h.postPolicy,
+		Store:         repo,
+		BotCapability: botCapability,
+		Wasm:          wasm,
+		Gateway:       h.gw,
+		Clock:         clk,
+		Keys:          testInstanceKeys(t),
+		Policy:        ds.DefaultPolicy(),
+		Channels:      h.channels,
+		ACL:           h.acl,
+		PostPolicy:    h.postPolicy,
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
@@ -160,6 +164,24 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
 	h.ds = d
 	return h
+}
+
+type gatewayScopeResolver struct{ repo store.Repository }
+
+func (r gatewayScopeResolver) GroupResource(ctx context.Context, groupID id.ID) (gateway.GroupResource, error) {
+	group, err := r.repo.GetGroup(ctx, groupID)
+	if err != nil {
+		return gateway.GroupResource{}, err
+	}
+	return gateway.GroupResource{Kind: group.Kind, CommunityID: group.CommunityID}, nil
+}
+
+func (r gatewayScopeResolver) ChannelCommunity(ctx context.Context, channelID id.ID) (*id.ID, error) {
+	channel, err := r.repo.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return channel.CommunityID, nil
 }
 
 func openMigratedSQLite(t *testing.T, path string) store.Repository {

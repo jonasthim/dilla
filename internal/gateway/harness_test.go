@@ -19,11 +19,16 @@ type harness struct {
 	clk        *hookClock
 	generation uint64
 
-	mu          sync.Mutex
-	sinks       map[*conn]*recordingSink
-	groups      map[id.ID][]id.ID       // device -> its groups, what GroupsForDevice answers
-	outstanding map[id.ID]uint64        // group -> proposals_outstanding
-	tokens      map[string]auth.Session // session token -> the session it resolves to
+	mu           sync.Mutex
+	sinks        map[*conn]*recordingSink
+	groups       map[id.ID][]id.ID       // device -> its groups, what GroupsForDevice answers
+	outstanding  map[id.ID]uint64        // group -> proposals_outstanding
+	tokens       map[string]auth.Session // session token -> the session it resolves to
+	groupScope   map[id.ID]GroupResource
+	channelScope map[id.ID]*id.ID
+	enabled      map[id.ID]bool
+	scopeErr     error
+	policyErr    error
 }
 
 // hookClock is the harness clock. It is a clock.Fake with one extra power: a test can arm a
@@ -73,18 +78,23 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	clk := &hookClock{Fake: clock.NewFake(time.Unix(1_700_000_000, 0))}
 	h := &harness{
-		clk:         clk,
-		generation:  1,
-		sinks:       map[*conn]*recordingSink{},
-		groups:      map[id.ID][]id.ID{},
-		outstanding: map[id.ID]uint64{},
-		tokens:      map[string]auth.Session{},
+		clk:          clk,
+		generation:   1,
+		sinks:        map[*conn]*recordingSink{},
+		groups:       map[id.ID][]id.ID{},
+		outstanding:  map[id.ID]uint64{},
+		tokens:       map[string]auth.Session{},
+		groupScope:   map[id.ID]GroupResource{},
+		channelScope: map[id.ID]*id.ID{},
+		enabled:      map[id.ID]bool{},
 	}
 	h.gw = New(Options{
-		Clock:      clk,
-		Generation: 1,
-		Store:      h, // the harness is the store double: see the three methods below
-		Auth:       h, // and the Authenticator double
+		Clock:                  clk,
+		Generation:             1,
+		Store:                  h, // the harness is the store double: see the three methods below
+		Auth:                   h, // and the Authenticator double
+		ScopeResolver:          h,
+		CommunityCompatibility: h,
 		Outstanding: func(_ context.Context, g id.ID) uint64 {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -98,6 +108,33 @@ func newHarness(t *testing.T) *harness {
 		_ = h.gw.Shutdown(context.Background())
 	})
 	return h
+}
+
+func (h *harness) GroupResource(_ context.Context, groupID id.ID) (GroupResource, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.scopeErr != nil {
+		return GroupResource{}, h.scopeErr
+	}
+	return h.groupScope[groupID], nil // unknown synthetic test groups default to unscoped
+}
+
+func (h *harness) ChannelCommunity(_ context.Context, channelID id.ID) (*id.ID, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.scopeErr != nil {
+		return nil, h.scopeErr
+	}
+	return h.channelScope[channelID], nil
+}
+
+func (h *harness) Enabled(_ context.Context, communityID id.ID) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.policyErr != nil {
+		return false, h.policyErr
+	}
+	return h.enabled[communityID], nil
 }
 
 // tokenFor is the session token that resolves to this device. connect mints one per device, so a
@@ -117,12 +154,32 @@ func (h *harness) setOutstanding(group id.ID, n uint64) {
 	h.mu.Unlock()
 }
 
+func (h *harness) setGroupResource(group id.ID, resource GroupResource) {
+	h.mu.Lock()
+	h.groupScope[group] = resource
+	h.mu.Unlock()
+}
+
+func (h *harness) setChannelCommunity(channel id.ID, community *id.ID) {
+	h.mu.Lock()
+	h.channelScope[channel] = community
+	h.mu.Unlock()
+}
+
+func (h *harness) setCommunityEnabled(community id.ID, enabled bool) {
+	h.mu.Lock()
+	h.enabled[community] = enabled
+	h.mu.Unlock()
+}
+
 // connect registers a ready connection without a socket: the transport is task 17's sink
 // interface, so the registry and fan-out are testable without a WebSocket.
 func (h *harness) connect(t *testing.T, device id.ID) *conn {
 	t.Helper()
 	sink := newRecordingSink(1024, false)
-	session := auth.Session{DeviceID: device, UserID: id.New(), Scope: auth.ScopeEnrolled}
+	hash := make([]byte, 32)
+	copy(hash, device[:])
+	session := auth.Session{DeviceID: device, UserID: id.New(), Scope: auth.ScopeEnrolled, TokenHash: hash}
 	h.mu.Lock()
 	h.tokens[h.tokenFor(device)] = session
 	h.mu.Unlock()

@@ -35,6 +35,13 @@ type Options struct {
 	// it structurally.
 	Auth Authenticator
 
+	// ScopeResolver and CommunityCompatibility are the narrow authoritative readers used by
+	// wire-2 gateway admissions. They are separate from Store so codec/session tests do not need a
+	// repository-shaped dependency. Production wires the resolver to current group/channel rows
+	// and the shared bot capability policy to committed installation state.
+	ScopeResolver          ScopeResolver
+	CommunityCompatibility CommunityCompatibility
+
 	// OnFactorOwed runs for a device whose connection the liveness sweep closed because its
 	// account now owes a second factor (an operator's reset-factors, web3.6 S3), so the
 	// composition root can cut the device from its live calls. Nil does nothing.
@@ -495,22 +502,44 @@ func (g *Gateway) rotateResume(c *conn) error {
 // DeliverGroup fans one frame out to every connection of every member device of a group,
 // including the uploader's own (R30). The payload is encoded once by the caller.
 func (g *Gateway) DeliverGroup(groupID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Groups = appendScopeID(f.Scope.Groups, groupID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfGroup(groupID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfDevice(deviceID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverUser(userID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfUser(userID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
@@ -529,8 +558,16 @@ func (g *Gateway) SetChannelMembers(channelID id.ID, users []id.ID) {
 // payload is encoded once by the caller; a replayable frame is recorded in each connection's ring,
 // so a client that reconnects inside the ring window does not have to re-fetch.
 func (g *Gateway) DeliverChannel(channelID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Channels = appendScopeID(f.Scope.Channels, channelID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
 	for _, c := range g.reg.connsOfChannel(channelID) {
-		c.send(f)
+		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
@@ -605,7 +642,15 @@ func (g *Gateway) Online(deviceID id.ID) bool {
 }
 
 func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
-	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), FrameScope{Groups: []id.ID{groupID}})
+	if err != nil {
+		return nil
+	}
+	minWire := uint64(0)
+	if requiresWire3 {
+		minWire = 3
+	}
+	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose, minWire)
 }
 
 // sweepLiveness closes every connection whose heartbeat is overdue (4009) and every one whose

@@ -244,6 +244,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// functions, so they close over `delivery`, which is assigned before New
 	// returns and therefore before any connection can reach either callback.
 	policy := policyFromConfig(o.Config)
+	botCapability := capability.New(o.Repo)
 	var delivery *ds.DS
 	var callSFU api.CallTokens
 	if o.SFU != nil {
@@ -274,14 +275,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		WireVersions: o.WireVersions, E2EEVersions: o.E2EEVersions, MediaVersions: o.MediaVersions,
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
-		OnFactorOwed:      func(device id.ID) { cutFromCalls(context.Background(), device) },
-		Store:             o.Repo,
-		Clock:             o.Clock,
-		Log:               o.Log,
-		Metrics:           o.Metrics,
-		Auth:              sessions,
-		TypingAudience:    api.TypingAudience(o.Repo),
-		VoiceSelfAudience: api.VoiceSelfAudience(o.Repo, callSFU),
+		OnFactorOwed:           func(device id.ID) { cutFromCalls(context.Background(), device) },
+		Store:                  o.Repo,
+		Clock:                  o.Clock,
+		Log:                    o.Log,
+		Metrics:                o.Metrics,
+		Auth:                   sessions,
+		ScopeResolver:          gatewayScopeResolver{repo: o.Repo},
+		CommunityCompatibility: botCapability,
+		TypingAudience:         api.TypingAudience(o.Repo),
+		VoiceSelfAudience:      api.VoiceSelfAudience(o.Repo, callSFU),
 		// The self-mute and self-deafen bits a device in a live room sent, for the voice snapshot
 		// (GET /v1/channels/{id}/call, web-3 task 3).
 		VoiceSelfStored: func(call, device id.ID, bits uint64) {
@@ -319,7 +322,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:         o.Repo,
-		BotCapability: capability.New(o.Repo),
+		BotCapability: botCapability,
 		Wasm:          wasm,
 		Gateway:       gw,
 		Clock:         o.Clock,

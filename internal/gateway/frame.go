@@ -10,6 +10,7 @@ package gateway
 import (
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -164,6 +165,22 @@ type Frame struct {
 	GroupID *id.ID
 	Payload cbor.RawMessage
 	Replay  bool
+	// Scope is internal delivery authority. It is never serialized. Producers set channel scopes
+	// where the wire frame has no group binding; DeliverGroup and addressed MLS Welcomes acquire
+	// their group scope from GroupID.
+	Scope FrameScope
+}
+
+// FrameScope names the resources whose current compatibility policy governs a frame. Keeping
+// resource identifiers beside the encoded payload lets replay revalidate the exact admission
+// without interpreting client-controlled CBOR. The slices are copied when the ring retains them.
+type FrameScope struct {
+	Groups   []id.ID
+	Channels []id.ID
+}
+
+func (s FrameScope) clone() FrameScope {
+	return FrameScope{Groups: slices.Clone(s.Groups), Channels: slices.Clone(s.Channels)}
 }
 
 // Encode stamps n onto a frame. A frame with Replay false is always sent with n = 0.

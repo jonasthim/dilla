@@ -136,7 +136,10 @@ func (c *CallEvents) deliver(batch map[announceKey]announcement) {
 				c.log.Error("encoding a voice_state failed", "err", err)
 				continue
 			}
-			f := gateway.Frame{Op: gateway.OpVoiceState, Payload: payload}
+			f := gateway.Frame{
+				Op: gateway.OpVoiceState, Payload: payload,
+				Scope: gateway.FrameScope{Channels: []id.ID{chID}},
+			}
 			for _, u := range audience {
 				c.gw.DeliverUser(u, f)
 			}
