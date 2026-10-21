@@ -224,10 +224,27 @@ class RunnerValidationTests(unittest.TestCase):
                 sandbox.run_isolated(["/usr/bin/true"], **kwargs)
 
     def test_invalid_tools_directory_is_rejected(self):
-        with self.assertRaises(provider_harness.HarnessError) as caught:
-            sandbox.run_isolated(
-                ["/usr/bin/true"], timeout=1, output_limit=16, tools_dir=Path("relative-tools")
-            )
+        candidates = (
+            Path("relative-tools"),
+            Path("/home"),
+            Path.home(),
+            Path("/tmp"),
+            Path.home() / ".cache",
+            Path(__file__).resolve().parents[2],
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(provider_harness.HarnessError) as caught:
+                sandbox._validate_tools_dir(candidate)
+            self.assertEqual(caught.exception.kind, "invalid tools path")
+
+    def test_tools_directory_accepts_only_dedicated_venv_and_rejects_symlink(self):
+        expected = Path(sandbox.__file__).resolve().parent / ".youtube-venv"
+        self.assertEqual(sandbox._validate_tools_dir(expected), expected)
+        with tempfile.TemporaryDirectory(prefix="tools-link-") as directory:
+            link = Path(directory) / "youtube-venv"
+            link.symlink_to(expected, target_is_directory=True)
+            with self.assertRaises(provider_harness.HarnessError) as caught:
+                sandbox._validate_tools_dir(link)
         self.assertEqual(caught.exception.kind, "invalid tools path")
 
 
@@ -276,6 +293,27 @@ class NamespaceRunnerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.output, b"OggS")
+
+    def test_stderr_over_limit_terminates_with_static_error(self):
+        code = "import sys; sys.stderr.buffer.write(b'PRIVATE-'+b'x'*65536); sys.stderr.flush()"
+        with self.assertRaises(provider_harness.HarnessError) as caught:
+            sandbox.run_isolated(
+                ["/usr/bin/python3", "-c", code], timeout=3, output_limit=16
+            )
+        self.assertEqual(caught.exception.kind, "stderr limit")
+
+    def test_system_tls_context_loads_ca_certificates(self):
+        result = sandbox.run_isolated(
+            [
+                "/usr/bin/python3",
+                "-c",
+                "import ssl; print(ssl.create_default_context().cert_store_stats()['x509_ca'])",
+            ],
+            timeout=3,
+            output_limit=64,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertGreater(int(result.output), 0)
 
     def test_host_loopback_and_direct_public_network_are_unreachable(self):
         host_listener = socket.socket()

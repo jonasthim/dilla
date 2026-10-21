@@ -14,6 +14,7 @@ import selectors
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ MAX_CONNECTIONS = 32
 MAX_TUNNEL_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
 READY_MESSAGE = b"DILLA-EGRESS-READY /1.0\r\n\r\n"
+READY_ACK = b"DILLA-EGRESS-ACK /1.0\r\n\r\n"
 DNS_TIMEOUT = 2.5
 CONNECT_TIMEOUT = 4.0
 IO_TIMEOUT = 10.0
@@ -406,6 +408,7 @@ class _Broker:
         header, _ = _recv_header(client)
         if header == READY_MESSAGE:
             self.ready_event.set()
+            client.sendall(READY_ACK)
             return
         host = _parse_connect(header)
         if self.stop_event.is_set() or time.monotonic() >= self.deadline:
@@ -506,6 +509,8 @@ def _sandbox_main(argv: list[str]) -> int:
     try:
         ready.connect("/run/egress.sock")
         ready.sendall(READY_MESSAGE)
+        if ready.recv(len(READY_ACK)) != READY_ACK:
+            raise OSError("broker readiness acknowledgement missing")
     except OSError:
         relay.close()
         ready.close()
@@ -525,6 +530,7 @@ def _sandbox_main(argv: list[str]) -> int:
         "NO_PROXY": "",
         "no_proxy": "",
         "NODE_OPTIONS": "--disable-wasm-trap-handler --max-old-space-size=128",
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -558,18 +564,11 @@ def _validate_tools_dir(tools_dir: Path | None) -> Path | None:
         return None
     try:
         candidate = Path(tools_dir)
-        if not candidate.is_absolute() or not candidate.is_dir():
+        expected = Path(__file__).resolve().parent / ".youtube-venv"
+        if not candidate.is_absolute() or candidate != expected or candidate.is_symlink() or not candidate.is_dir():
             raise _fail("invalid tools path")
         resolved = candidate.resolve(strict=True)
-        if resolved == Path("/") or not resolved.is_dir():
-            raise _fail("invalid tools path")
-        repo_root = Path(__file__).resolve().parents[2]
-        home = Path.home().resolve()
-        # Broad home/repository mounts can expose unrelated configuration or
-        # credentials. A dedicated venv or tools directory remains acceptable.
-        if resolved in (repo_root, home, home.parent) or home.is_relative_to(resolved):
-            raise _fail("invalid tools path")
-        if any(part.lower() in {".ssh", ".aws", ".config", ".gnupg", ".kube", "secrets", "credentials"} for part in resolved.parts):
+        if resolved != expected or not resolved.is_dir():
             raise _fail("invalid tools path")
         return resolved
     except (OSError, RuntimeError):
@@ -589,12 +588,30 @@ def _node_binary() -> Path:
         raise _fail("unavailable") from None
 
 
+def _system_ca_bundle() -> Path:
+    """Resolve OpenSSL's compiled system bundle, independent of host env overrides."""
+    try:
+        defaults = ssl.get_default_verify_paths()
+        if not defaults.openssl_cafile:
+            raise _fail("unavailable")
+        bundle = Path(defaults.openssl_cafile).resolve(strict=True)
+        if not bundle.is_file() or bundle.stat().st_size > 16 * 1024 * 1024:
+            raise _fail("unavailable")
+        home = Path.home().resolve()
+        if bundle == home or home in bundle.parents:
+            raise _fail("unavailable")
+        return bundle
+    except (OSError, RuntimeError):
+        raise _fail("unavailable") from None
+
+
 def _bwrap_args(socket_path: Path, tools_dir: Path | None, cpu_limit: int) -> list[str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise _fail("unavailable")
     script_dir = Path(__file__).resolve().parent
     node_binary = _node_binary()
+    ca_bundle = _system_ca_bundle()
     worker_script = script_dir / "youtube_probe.py"
     harness_script = script_dir / "provider_harness.py"
     if not worker_script.is_file() or not harness_script.is_file():
@@ -620,7 +637,12 @@ def _bwrap_args(socket_path: Path, tools_dir: Path | None, cpu_limit: int) -> li
         args[-2:] = ["--ro-bind", "/bin", "/bin"]
     # Mount only the selected Node executable, not its personal parent tree.
     args.extend(("--ro-bind", str(node_binary), "/usr/bin/node"))
-    args.extend(("--dir", "/etc", "--dir", "/etc/ssl", "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"))
+    args.extend((
+        "--dir", "/etc",
+        "--dir", "/etc/ssl",
+        "--ro-bind", str(ca_bundle), "/etc/ssl/cert.pem",
+        "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs",
+    ))
     args.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run"))
     args.extend(("--dir", "/opt", "--dir", "/opt/dilla-probe"))
     args.extend(("--ro-bind", str(script_dir / "youtube_sandbox.py"), "/opt/dilla-probe/youtube_sandbox.py"))
@@ -647,6 +669,7 @@ def _bwrap_args(socket_path: Path, tools_dir: Path | None, cpu_limit: int) -> li
             "--setenv", "no_proxy", "",
             "--setenv", "DILLA_CPU_LIMIT", str(cpu_limit),
             "--setenv", "NODE_OPTIONS", "--disable-wasm-trap-handler --max-old-space-size=128",
+            "--setenv", "SSL_CERT_FILE", "/etc/ssl/cert.pem",
             "--setenv", "LANG", "C.UTF-8",
             "--setenv", "LC_ALL", "C.UTF-8",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
@@ -749,8 +772,11 @@ def run_isolated(
                     if len(current) > output_limit:
                         raise _fail("output limit")
                 else:
-                    # Stderr is drained independently and never retained.
-                    stderr_count = min(MAX_STDERR, stderr_count + len(chunk))
+                    # Stderr is drained separately and never retained. Stop a
+                    # producer that exceeds its independent output budget.
+                    stderr_count += len(chunk)
+                    if stderr_count > MAX_STDERR:
+                        raise _fail("stderr limit")
             if process.poll() is not None and not broker.ready_event.is_set():
                 if not broker.ready_event.wait(timeout=min(0.25, max(0, deadline - time.monotonic()))):
                     raise _fail("unavailable")
@@ -763,6 +789,8 @@ def run_isolated(
             returncode = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             raise _fail("timeout") from None
+        if not broker.ready_event.is_set() and not broker.ready_event.wait(timeout=0.25):
+            raise _fail("unavailable")
         return provider_harness.ProcessResult(returncode, bytes(stdout))
     except provider_harness.HarnessError:
         raise
