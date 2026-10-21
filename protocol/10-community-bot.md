@@ -154,7 +154,7 @@ never contain database, provider or decrypted-message error text.
 | 2 bootstrap | `[instance_id, community_id, installation_id]` | `[umk_pub32, ssk_pub32, sig_umk_ssk64, device]` |
 | 3 enroll_complete | `[bot_user, username, now]` | `[final_credential, signed_device_list_body]` |
 | 4 session | `[suboperation, ...arguments]`, below | core body or void |
-| 5 key_packages | `[count, last_resort]`, count1..32, last_resort0..1 | `[upload_body]` |
+| 5 key_packages | `[operation_id, count, last_resort, expected_generation]`, count1..32, last_resort0..1 | `[upload_body, package_refs, greatest_expiry]` |
 | 6 group_apply | `[suboperation, ...arguments]`, below | core body or void |
 | 7 prepare_send | `[operation_id, group_id, send_request_body, now]` | `[message_id, upload_body]` |
 | 8 send_receipt | `[operation_id, receipt_body, send_response_body]` | `[]` |
@@ -163,7 +163,7 @@ never contain database, provider or decrypted-message error text.
 | 11 state_get | `[suboperation, ...arguments]`, below | state records |
 | 12 state_transaction | `[transaction_id, changes]`, below | `[revisions]` |
 | 13 cursor_ack | `[group_id, through_sequence, through_epoch]` | `[]` |
-| 14 key_packages_uploaded | `[package_refs]`, at most100 distinct bstr32 | `[]` |
+| 14 key_packages_uploaded | `[operation_id, package_refs, outcome, now, current_generation]`, outcome0 accepted /1 obsolete | `[]` |
 | 15 shutdown | `[]` | `[]`, then close |
 | 16 group_transfer | `[suboperation, ...arguments]`, below | transfer result |
 
@@ -181,6 +181,43 @@ Session suboperations are: 0 identity `[]`; 1 sign `[nonce32,purpose0..1]`;
 5 device_list `[]`; 6 device_list_published `[]`. Token text is bounded to256
 bytes and exists only within protected IPC and the encrypted store. Session
 responses never include an identity signing key or recovery key.
+
+### KeyPackage publication intents
+
+Op5 requires a fully enrolled native Bot and a nonzero bstr16 operation id.
+Generations and timestamps are uint values at most signed-int64 max; generation 0
+is valid. `package_refs` is the ordered array of distinct bstr32 MLS references
+computed by the native core for the complete batch, including its fallback if
+present. There are count plus last_resort entries, at most 33. `greatest_expiry`
+is the greatest expiry of the generated packages. Go never computes MLS refs.
+The canonical upload body is at most 1,047,296 bytes (1 MiB minus 1,280), reserving
+space for all 33 refs, the expiry and CBOR wrappers within the existing helper
+payload/frame bounds. Its ordinary package array has 1..32 nonempty byte strings;
+the optional fallback is null or a nonempty byte string. The successful op5
+result has exactly as many refs as packages including that fallback. Crypto
+validation remains in the native core and server WASI, not the shape codecs.
+
+A dedicated identity-scoped encrypted journal permits one unresolved batch per
+installation/device. Generating MLS private material and retaining the exact
+public upload body, ordered refs, expiry and canonical `[count,last_resort,
+expected_generation]` hash share one native transaction. Equal pending retries
+return identical output. Conflicting inputs and resolved crypto retries refuse.
+This journal is separate from group upload intents below.
+
+Op14 requires the complete ordered refs. Outcome 0 means the parent verified a
+matching authenticated publication receipt, including body hash and count.
+Outcome 1 records an obsolete batch whose historical acceptance remains unknown:
+its stored generation is less than authenticated current_generation, or all its
+packages have expired at authenticated server time now. The core checks that
+condition. Capacity refusal keeps the batch pending; invalid credentials or
+malformed uploads surface a service fault instead of generating replacement keys.
+
+Resolution atomically clears public output and retains compact retry metadata;
+it never deletes private MLS KeyPackage material needed for late Welcomes. Its
+semantic hash covers outcome and ordered refs. now/current_generation supply
+first-resolution evidence, so an identical resolution can repeat after restart
+with newer evidence. Opposite outcomes or changed refs conflict. Session renewal
+does not change an intent's original expected_generation.
 
 Group suboperations are: 0 list `[]`; 1 inspect `[group_id]`;
 2 create `[operation_id,group_id,target_id,kind,policy,external_sender_pub32|null]`;
@@ -472,6 +509,8 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R, matching claim | `[request_id, claim_id, umk_pub32, ssk_pub32, sig_umk_ssk64, device]` | `[bot_user, bot_device, username]` |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B, enrolling; completed retries while joining/ready | `[request_id, expected_revision, credential_bstr]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/ready` | B, joining; completed retry while ready | `[request_id, expected_revision]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
+| `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
@@ -543,6 +582,43 @@ receipt. A matching completed retry checks current authority and the original
 actor binding, then returns the stored result without consuming another token or
 applying another change. Disable and removal remain available through ordinary
 current human authorization so emergency shutdown requires no bot availability.
+
+### Managed Bot KeyPackage publication
+
+Managed Bots publish only through the installation-scoped route above; their
+generic `POST /v1/keypackages` is refused. The existing human publication API is
+unchanged. Both new routes require wire 3, a current credential-verified Bot
+session bound to this exact installation/account/device, and joining or ready
+state. Runtime credentials cannot use them. `upload_body` is a bstr containing
+the existing strict deterministic `[packages,last_resort]` upload. Operation ids
+are nonzero bstr16, generations are uint at most signed-int64 max (including 0),
+and upload_sha256 is bstr32. Count is the number of distinct accepted refs.
+
+An accepted publication receipt binds installation, user, device, operation,
+expected generation, SHA256 of the exact canonical upload bytes, count and
+acceptance time. Compact receipts remain until installation removal. Reuse of an
+operation with a different body or generation conflicts. Current authority is
+checked before receipt lookup. Equal accepted retries return the historical
+result before expiry, capacity or fallback validation and never write packages.
+This remains true after a generation change, consumption or expiry. Retrying
+accepted fallback A after B cannot replace B. A receipt proves historical
+acceptance only; current inventory and readiness use active package counts.
+
+First acceptance serializes publication for the installation/device using
+database locks. Under that lock it checks the current server generation, validates
+every package against the registered credential with WASI, deduplicates refs,
+rechecks expiry, and enforces capacity counting only newly active ordinary rows.
+All package writes, fallback replacement and the receipt commit atomically.
+Human publication shares device serialization and atomic capacity enforcement,
+without Bot receipts. Consumed ordinary refs are never revived by a replay.
+
+A missing receipt after restore cannot admit an old-generation publication.
+Requests waiting for a device lock recheck generation and expiry when admitted;
+a delayed first acceptance cannot overwrite a later batch after releasing that
+lock. A missing response or receipt is not proof of refusal. The caller retains
+and retries the same pending native operation until it resolves acceptance or
+the explicit obsolete condition above. Restore generation and package purge
+remain one exclusive server operation.
 
 ## Durable events and receipts API
 

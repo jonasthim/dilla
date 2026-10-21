@@ -185,6 +185,13 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R | `[request_id,claim_id,umk_pub,ssk_pub,sig_umk_ssk,device]` | `[bot_user,bot_device,username]`; no bearer token |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B (enrolling; completed retries in joining/ready) | `[request_id,expected_revision,credential]` | installation |
 | `POST /v1/bot-runtime/installations/{installation}/ready` | B (joining; completed retry in ready) | `[request_id,expected_revision]` | installation |
+| `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
+| `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
+
+Managed Bots use this scoped publication route, with the durable retry and
+generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human
+publication is unchanged. Receipts prove historical acceptance, not current
+directory availability, and remain subject to current installation authority.
 
 ## Invites
 

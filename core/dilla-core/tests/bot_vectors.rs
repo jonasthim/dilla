@@ -1,3 +1,6 @@
+use dilla_core::bot::keypackage::{
+    Intent, IntentResult, Publication, PublicationReceipt, Resolution,
+};
 use dilla_core::bot::{Event, HelperRequest, HelperResponse, Receipt, RemovalProof, Response};
 use dilla_core::bot::{Request, RequestArgs};
 use dilla_core::cbor::Encoder;
@@ -42,6 +45,121 @@ fn application_context_is_checked_explicitly() {
             .validate_context(CommunityId::from_bytes([3; 16]), 100)
             .is_err()
     );
+}
+
+#[test]
+fn keypackage_result_worst_case_fits_helper_payload_by_45_bytes() {
+    use dilla_core::bot::keypackage::{
+        HELPER_PAYLOAD_MAX, Intent, IntentResult, MAX_UPLOAD_BODY, Publication, Resolution,
+    };
+    use dilla_core::bot::{HELPER_MAX, HelperResponse};
+    // [upload_bstr, refs_array, greatest_expiry]: a 5-byte bstr head, a
+    // 2-byte array head plus 33*(2-byte bstr head + 32 bytes), and a 9-byte uint.
+    let encoded = 1 + 5 + MAX_UPLOAD_BODY + 2 + 33 * 34 + 9;
+    assert_eq!(encoded, 1_048_435);
+    assert_eq!(HELPER_PAYLOAD_MAX - encoded, 45);
+    assert!(
+        Intent {
+            operation_id: MsgId::from_bytes([1; 16]),
+            count: 33,
+            last_resort: 0,
+            expected_generation: 0,
+        }
+        .encode()
+        .is_err()
+    );
+    assert!(
+        Resolution {
+            operation_id: MsgId::from_bytes([1; 16]),
+            package_refs: vec![[7; 32], [7; 32]],
+            outcome: 0,
+            now: 0,
+            current_generation: 0,
+        }
+        .encode()
+        .is_err()
+    );
+
+    let upload = canonical_keypackage_upload(MAX_UPLOAD_BODY);
+    assert_eq!(upload.len(), MAX_UPLOAD_BODY);
+    let package_refs: Vec<[u8; 32]> = (1..=33).map(|value| [value; 32]).collect();
+    let result = IntentResult {
+        upload_body: upload.clone(),
+        package_refs,
+        greatest_expiry: i64::MAX as u64,
+    };
+    let encoded_result = result.encode().expect("maximum op5 result encodes");
+    assert_eq!(encoded_result.len(), encoded);
+    assert!(encoded_result.len() <= HELPER_PAYLOAD_MAX);
+    let decoded_result = IntentResult::decode(&encoded_result).unwrap();
+    assert_eq!(decoded_result, result);
+    assert_eq!(decoded_result.encode().unwrap(), encoded_result);
+
+    let publication = Publication {
+        operation_id: MsgId::from_bytes([0x96; 16]),
+        expected_generation: i64::MAX as u64,
+        upload_body: upload.clone(),
+    };
+    let encoded_publication = publication.encode().expect("maximum publication encodes");
+    let decoded_publication = Publication::decode(&encoded_publication).unwrap();
+    assert_eq!(decoded_publication, publication);
+    assert_eq!(decoded_publication.encode().unwrap(), encoded_publication);
+
+    let helper = HelperResponse {
+        request_id: MsgId::from_bytes([0x97; 16]),
+        status: 0,
+        payload: encoded_result.clone(),
+    };
+    let helper_bytes = helper.encode().expect("maximum helper response encodes");
+    assert_eq!(helper_bytes.len(), 1_048_460);
+    assert!(helper_bytes.len() <= HELPER_MAX);
+    let decoded_helper = HelperResponse::decode(&helper_bytes).unwrap();
+    assert_eq!(decoded_helper.request_id, helper.request_id);
+    assert_eq!(decoded_helper.status, helper.status);
+    assert_eq!(decoded_helper.payload, helper.payload);
+
+    let oversized_upload = canonical_keypackage_upload(MAX_UPLOAD_BODY + 1);
+    assert_eq!(oversized_upload.len(), MAX_UPLOAD_BODY + 1);
+    let oversized_publication = Publication {
+        upload_body: oversized_upload.clone(),
+        ..publication
+    };
+    assert!(oversized_publication.encode().is_err());
+    let mut publication_cbor = Encoder::new();
+    publication_cbor
+        .array(3)
+        .bytes(oversized_publication.operation_id.as_bytes())
+        .uint(oversized_publication.expected_generation)
+        .bytes(&oversized_upload);
+    assert!(Publication::decode(&publication_cbor.into_vec()).is_err());
+
+    let oversized_result = IntentResult {
+        upload_body: oversized_upload.clone(),
+        package_refs: (1..=33).map(|value| [value; 32]).collect(),
+        greatest_expiry: i64::MAX as u64,
+    };
+    assert!(oversized_result.encode().is_err());
+    let mut result_cbor = Encoder::new();
+    result_cbor.array(3).bytes(&oversized_upload).array(33);
+    for value in 1..=33 {
+        result_cbor.bytes(&[value; 32]);
+    }
+    result_cbor.uint(i64::MAX as u64);
+    assert!(IntentResult::decode(&result_cbor.into_vec()).is_err());
+}
+
+fn canonical_keypackage_upload(target_len: usize) -> Vec<u8> {
+    use dilla_core::cbor::Encoder;
+    let mut encoder = Encoder::new();
+    encoder
+        .array(2)
+        .array(32)
+        .bytes(&vec![0x11; target_len - 72]);
+    for _ in 0..31 {
+        encoder.bytes(&[0x22]);
+    }
+    encoder.bytes(&[0x33]);
+    encoder.into_vec()
 }
 
 #[test]
@@ -114,7 +232,12 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             "event",
             "receipt",
             "helper_request",
-            "helper_response"
+            "helper_response",
+            "keypackage_publication",
+            "keypackage_publication_receipt",
+            "keypackage_intent",
+            "keypackage_intent_result",
+            "keypackage_resolution"
         ]
         .into_iter()
         .collect()
@@ -208,6 +331,26 @@ fn shared_bot_corpus_round_trips_and_rejects() {
                     raw
                 );
             }
+            "keypackage_publication" => {
+                let value = Publication::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
+            "keypackage_publication_receipt" => {
+                let value = PublicationReceipt::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
+            "keypackage_intent" => {
+                let value = Intent::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
+            "keypackage_intent_result" => {
+                let value = IntentResult::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
+            "keypackage_resolution" => {
+                let value = Resolution::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
             other => panic!("unknown bot vector kind: {other}"),
         }
     }
@@ -277,6 +420,17 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             "helper_response" => raw
                 .as_ref()
                 .is_some_and(|r| HelperResponse::decode(r).is_ok()),
+            "keypackage_publication" => {
+                raw.as_ref().is_some_and(|r| Publication::decode(r).is_ok())
+            }
+            "keypackage_publication_receipt" => raw
+                .as_ref()
+                .is_some_and(|r| PublicationReceipt::decode(r).is_ok()),
+            "keypackage_intent" => raw.as_ref().is_some_and(|r| Intent::decode(r).is_ok()),
+            "keypackage_intent_result" => raw
+                .as_ref()
+                .is_some_and(|r| IntentResult::decode(r).is_ok()),
+            "keypackage_resolution" => raw.as_ref().is_some_and(|r| Resolution::decode(r).is_ok()),
             other => panic!("unknown bot reject kind: {other}"),
         };
         assert!(!accepted, "reject vector accepted: {}", case["name"]);

@@ -361,6 +361,66 @@
       "name": "helper response",
       "kind": "helper_response",
       "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a004180"
+    },
+    {
+      "name": "generic helper op5 payload remains opaque",
+      "kind": "helper_request",
+      "hex": "84015095959595959595959595959595959595054482182001"
+    },
+    {
+      "name": "keypackage_publication maximum valid boundary",
+      "kind": "keypackage_publication",
+      "hex": "8350919191919191919191919191919191911b7fffffffffffffff4582814151f6"
+    },
+    {
+      "name": "keypackage_publication_receipt maximum valid boundary",
+      "kind": "keypackage_publication_receipt",
+      "hex": "8300582092929292929292929292929292929292929292929292929292929292929292921821"
+    },
+    {
+      "name": "keypackage_intent maximum valid boundary",
+      "kind": "keypackage_intent",
+      "hex": "8450939393939393939393939393939393931820011b7fffffffffffffff"
+    },
+    {
+      "name": "keypackage_intent_result maximum valid boundary",
+      "kind": "keypackage_intent_result",
+      "hex": "834582814151f6815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11b7fffffffffffffff"
+    },
+    {
+      "name": "keypackage_resolution maximum valid boundary",
+      "kind": "keypackage_resolution",
+      "hex": "855094949494949494949494949494949494815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1011b7fffffffffffffff1b7fffffffffffffff"
+    },
+    {
+      "name": "keypackage_publication zero boundary",
+      "kind": "keypackage_publication",
+      "hex": "835091919191919191919191919191919191004582814151f6"
+    },
+    {
+      "name": "keypackage_publication_receipt zero boundary",
+      "kind": "keypackage_publication_receipt",
+      "hex": "83005820929292929292929292929292929292929292929292929292929292929292929201"
+    },
+    {
+      "name": "keypackage_intent zero boundary",
+      "kind": "keypackage_intent",
+      "hex": "845093939393939393939393939393939393010000"
+    },
+    {
+      "name": "keypackage_intent_result zero boundary",
+      "kind": "keypackage_intent_result",
+      "hex": "834582814151f6815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a100"
+    },
+    {
+      "name": "keypackage_resolution zero boundary",
+      "kind": "keypackage_resolution",
+      "hex": "855094949494949494949494949494949494815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1000000"
+    },
+    {
+      "name": "keypackage_resolution permits opaque zero-valued ref",
+      "kind": "keypackage_resolution",
+      "hex": "8550949494949494949494949494949494948158200000000000000000000000000000000000000000000000000000000000000000000000"
     }
   ],
   "rejects": [
@@ -545,6 +605,171 @@
       "name": "helper malformed length prefix",
       "kind": "helper_request",
       "hex": "0000000580"
+    },
+    {
+      "name": "zero operation id",
+      "kind": "keypackage_publication",
+      "hex": "835000000000000000000000000000000000014582814151f6"
+    },
+    {
+      "name": "generation exceeds int64",
+      "kind": "keypackage_publication",
+      "hex": "8350919191919191919191919191919191911b80000000000000004582814151f6"
+    },
+    {
+      "name": "malformed nested upload",
+      "kind": "keypackage_publication",
+      "hex": "835091919191919191919191919191919191014982666c6567616379f6"
+    },
+    {
+      "name": "wrong upload hash length",
+      "kind": "keypackage_publication_receipt",
+      "hex": "8300581f0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "name": "zero receipt count",
+      "kind": "keypackage_publication_receipt",
+      "hex": "83005820000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "count exceeds maximum",
+      "kind": "keypackage_intent",
+      "hex": "84509393939393939393939393939393939318210000"
+    },
+    {
+      "name": "legacy op5 request shape",
+      "kind": "keypackage_intent",
+      "hex": "82182001"
+    },
+    {
+      "name": "duplicate package refs",
+      "kind": "keypackage_intent_result",
+      "hex": "834582814151f6825820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a101"
+    },
+    {
+      "name": "missing package ref",
+      "kind": "keypackage_intent_result",
+      "hex": "834582814151f68001"
+    },
+    {
+      "name": "legacy op5 result shape",
+      "kind": "keypackage_intent_result",
+      "hex": "824582814151f601"
+    },
+    {
+      "name": "outcome out of range",
+      "kind": "keypackage_resolution",
+      "hex": "855094949494949494949494949494949494815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1020000"
+    },
+    {
+      "name": "duplicate refs",
+      "kind": "keypackage_resolution",
+      "hex": "855094949494949494949494949494949494825820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1000000"
+    },
+    {
+      "name": "legacy op14 request shape",
+      "kind": "keypackage_resolution",
+      "hex": "825094949494949494949494949494949494815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "keypackage_publication: nonminimal CBOR array head",
+      "kind": "keypackage_publication",
+      "hex": "9800"
+    },
+    {
+      "name": "keypackage_publication: trailing CBOR item",
+      "kind": "keypackage_publication",
+      "hex": "8000"
+    },
+    {
+      "name": "keypackage_publication: CBOR map root",
+      "kind": "keypackage_publication",
+      "hex": "a0"
+    },
+    {
+      "name": "keypackage_publication: indefinite CBOR array",
+      "kind": "keypackage_publication",
+      "hex": "9fff"
+    },
+    {
+      "name": "keypackage_publication_receipt: nonminimal CBOR array head",
+      "kind": "keypackage_publication_receipt",
+      "hex": "9800"
+    },
+    {
+      "name": "keypackage_publication_receipt: trailing CBOR item",
+      "kind": "keypackage_publication_receipt",
+      "hex": "8000"
+    },
+    {
+      "name": "keypackage_publication_receipt: CBOR map root",
+      "kind": "keypackage_publication_receipt",
+      "hex": "a0"
+    },
+    {
+      "name": "keypackage_publication_receipt: indefinite CBOR array",
+      "kind": "keypackage_publication_receipt",
+      "hex": "9fff"
+    },
+    {
+      "name": "keypackage_intent: nonminimal CBOR array head",
+      "kind": "keypackage_intent",
+      "hex": "9800"
+    },
+    {
+      "name": "keypackage_intent: trailing CBOR item",
+      "kind": "keypackage_intent",
+      "hex": "8000"
+    },
+    {
+      "name": "keypackage_intent: CBOR map root",
+      "kind": "keypackage_intent",
+      "hex": "a0"
+    },
+    {
+      "name": "keypackage_intent: indefinite CBOR array",
+      "kind": "keypackage_intent",
+      "hex": "9fff"
+    },
+    {
+      "name": "keypackage_intent_result: nonminimal CBOR array head",
+      "kind": "keypackage_intent_result",
+      "hex": "9800"
+    },
+    {
+      "name": "keypackage_intent_result: trailing CBOR item",
+      "kind": "keypackage_intent_result",
+      "hex": "8000"
+    },
+    {
+      "name": "keypackage_intent_result: CBOR map root",
+      "kind": "keypackage_intent_result",
+      "hex": "a0"
+    },
+    {
+      "name": "keypackage_intent_result: indefinite CBOR array",
+      "kind": "keypackage_intent_result",
+      "hex": "9fff"
+    },
+    {
+      "name": "keypackage_resolution: nonminimal CBOR array head",
+      "kind": "keypackage_resolution",
+      "hex": "9800"
+    },
+    {
+      "name": "keypackage_resolution: trailing CBOR item",
+      "kind": "keypackage_resolution",
+      "hex": "8000"
+    },
+    {
+      "name": "keypackage_resolution: CBOR map root",
+      "kind": "keypackage_resolution",
+      "hex": "a0"
+    },
+    {
+      "name": "keypackage_resolution: indefinite CBOR array",
+      "kind": "keypackage_resolution",
+      "hex": "9fff"
     }
   ]
 }

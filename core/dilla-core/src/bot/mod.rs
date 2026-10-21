@@ -3,6 +3,8 @@
 //! This module is deliberately structural: it validates the wire contract and explicit
 //! authenticated context, while dispatchers remain responsible for authorization and state.
 
+pub mod keypackage;
+
 use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
 use crate::ids::{ChannelId, CommunityId, DeviceId, MsgId, UserId};
 

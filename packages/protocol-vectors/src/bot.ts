@@ -39,6 +39,7 @@ export function botVectors() {
  for(const [kind,name,v] of [
   ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
+ cases.push({name:'generic helper op5 payload remains opaque',kind:'helper_request',hex:cbor([1n,id(0x95),5n,encode([32n,1n])])});
  const rejects:any[]=[];
  const rej=(name:string,kind:string,v:unknown,extra:any={})=>rejects.push({name,kind,hex:cbor(v),...extra});
  const base=[1n,id(1),comm,null,0n,null,null,[]];
@@ -79,6 +80,45 @@ export function botVectors() {
  if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
  rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});
  rejects.push({name:'helper malformed length prefix',kind:'helper_request',hex:'0000000580'});
+ // Typed KeyPackage payloads are distinct from generic helper envelopes.
+ const upload=encode([[new Uint8Array([0x51])],null]);
+ const refs=[new Uint8Array(32).fill(0xa1)];
+ const typedCases:[string,unknown][]=[
+  ['keypackage_publication',[id(0x91),(1n<<63n)-1n,upload]],
+  ['keypackage_publication_receipt',[0n,new Uint8Array(32).fill(0x92),33n]],
+  ['keypackage_intent',[id(0x93),32n,1n,(1n<<63n)-1n]],
+  ['keypackage_intent_result',[upload,refs,(1n<<63n)-1n]],
+  ['keypackage_resolution',[id(0x94),refs,1n,(1n<<63n)-1n,(1n<<63n)-1n]],
+ ];
+ for(const [kind,value] of typedCases)cases.push({name:`${kind} maximum valid boundary`,kind,hex:cbor(value)});
+ const zeroBoundaries:[string,unknown][]=[
+  ['keypackage_publication',[id(0x91),0n,upload]],
+  ['keypackage_publication_receipt',[0n,new Uint8Array(32).fill(0x92),1n]],
+  ['keypackage_intent',[id(0x93),1n,0n,0n]],
+  ['keypackage_intent_result',[upload,refs,0n]],
+  ['keypackage_resolution',[id(0x94),refs,0n,0n,0n]],
+ ];
+ for(const [kind,value] of zeroBoundaries)cases.push({name:`${kind} zero boundary`,kind,hex:cbor(value)});
+ cases.push({name:'keypackage_resolution permits opaque zero-valued ref',kind:'keypackage_resolution',hex:cbor([id(0x94),[new Uint8Array(32)],0n,0n,0n])});
+ const typedRejects:[string,string,unknown][]=[
+  ['keypackage_publication','zero operation id',[id(0),1n,upload]],
+  ['keypackage_publication','generation exceeds int64',[id(0x91),1n<<63n,upload]],
+  ['keypackage_publication','malformed nested upload',[id(0x91),1n,encode(['legacy',null])]],
+  ['keypackage_publication_receipt','wrong upload hash length',[0n,new Uint8Array(31),1n]],
+  ['keypackage_publication_receipt','zero receipt count',[0n,new Uint8Array(32),0n]],
+  ['keypackage_intent','count exceeds maximum',[id(0x93),33n,0n,0n]],
+  ['keypackage_intent','legacy op5 request shape',[32n,1n]],
+  ['keypackage_intent_result','duplicate package refs',[upload,[refs[0],refs[0]],1n]],
+  ['keypackage_intent_result','missing package ref',[upload,[],1n]],
+  ['keypackage_intent_result','legacy op5 result shape',[upload,1n]],
+  ['keypackage_resolution','outcome out of range',[id(0x94),refs,2n,0n,0n]],
+  ['keypackage_resolution','duplicate refs',[id(0x94),[refs[0],refs[0]],0n,0n,0n]],
+  ['keypackage_resolution','legacy op14 request shape',[id(0x94),refs]],
+ ];
+ for(const [kind,name,value] of typedRejects)rej(name,kind,value);
+ const malformedOuter=[['nonminimal CBOR array head','9800'],['trailing CBOR item','8000'],['CBOR map root','a0'],['indefinite CBOR array','9fff']] as const;
+ for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
+  for(const [name,hexValue] of malformedOuter)rejects.push({name:`${kind}: ${name}`,kind,hex:hexValue});
  return {version:1,cases,rejects};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}

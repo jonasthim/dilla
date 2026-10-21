@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { fromHex, toHex } from '../hex.ts';
 import * as bot from './protocol.ts';
+import * as kp from './keypackage.ts';
+import { encode } from '../cbor/index.ts';
 
-type VectorKind = 'request' | 'response' | 'removal' | 'event' | 'receipt' | 'helper_request' | 'helper_response';
+type VectorKind = 'request' | 'response' | 'removal' | 'event' | 'receipt' | 'helper_request' | 'helper_response' | 'keypackage_publication' | 'keypackage_publication_receipt' | 'keypackage_intent' | 'keypackage_intent_result' | 'keypackage_resolution';
 type Context = { community: string; group?: string; actor_user?: string; actor_device?: string; now: string };
 type Vector = { name: string; kind: VectorKind; hex?: string; body?: string; preimage_hex?: string; context?: Context };
 type Vectors = { cases: Vector[]; rejects: Vector[] };
@@ -14,7 +16,12 @@ type Decoded =
   | { kind: 'event'; value: bot.DurableEvent }
   | { kind: 'receipt'; value: bot.SendReceipt }
   | { kind: 'helper_request'; value: bot.HelperEnvelope }
-  | { kind: 'helper_response'; value: bot.HelperResponse };
+  | { kind: 'helper_response'; value: bot.HelperResponse }
+  | { kind: 'keypackage_publication'; value: kp.KeyPackagePublication }
+  | { kind: 'keypackage_publication_receipt'; value: kp.KeyPackagePublicationReceipt }
+  | { kind: 'keypackage_intent'; value: kp.KeyPackageIntent }
+  | { kind: 'keypackage_intent_result'; value: kp.KeyPackageIntentResult }
+  | { kind: 'keypackage_resolution'; value: kp.KeyPackageResolution };
 
 const vectors = JSON.parse(readFileSync(new URL('../../../../protocol/vectors/bot.json', import.meta.url), 'utf8')) as Vectors;
 
@@ -52,6 +59,11 @@ function decodeVector(kind: VectorKind, hex: string, body?: string): Decoded {
     case 'receipt': return { kind, value: bot.decodeSendReceipt(fromHex(hex)) };
     case 'helper_request': return { kind, value: bot.decodeHelperRequest(fromHex(hex)) };
     case 'helper_response': return { kind, value: bot.decodeHelperResponse(fromHex(hex)) };
+    case 'keypackage_publication': return { kind, value: kp.decodeKeyPackagePublication(fromHex(hex)) };
+    case 'keypackage_publication_receipt': return { kind, value: kp.decodeKeyPackagePublicationReceipt(fromHex(hex)) };
+    case 'keypackage_intent': return { kind, value: kp.decodeKeyPackageIntent(fromHex(hex)) };
+    case 'keypackage_intent_result': return { kind, value: kp.decodeKeyPackageIntentResult(fromHex(hex)) };
+    case 'keypackage_resolution': return { kind, value: kp.decodeKeyPackageResolution(fromHex(hex)) };
   }
 }
 
@@ -64,6 +76,11 @@ function encodeVector(decoded: Decoded): Uint8Array | string {
     case 'receipt': return bot.encodeSendReceipt(decoded.value);
     case 'helper_request': return bot.encodeHelperRequest(decoded.value);
     case 'helper_response': return bot.encodeHelperResponse(decoded.value);
+    case 'keypackage_publication': return kp.encodeKeyPackagePublication(decoded.value);
+    case 'keypackage_publication_receipt': return kp.encodeKeyPackagePublicationReceipt(decoded.value);
+    case 'keypackage_intent': return kp.encodeKeyPackageIntent(decoded.value);
+    case 'keypackage_intent_result': return kp.encodeKeyPackageIntentResult(decoded.value);
+    case 'keypackage_resolution': return kp.encodeKeyPackageResolution(decoded.value);
   }
 }
 
@@ -84,10 +101,65 @@ function checkContext(decoded: Decoded, c: Context): void {
 }
 
 describe('shared bot protocol vectors', () => {
+  it('keeps the maximum nested upload plus 33 refs within the helper payload cap', () => {
+    const resultBytes = 1 + 5 + kp.MAX_KEYPACKAGE_UPLOAD_BODY + 2 + 33 * 34 + 9;
+    expect(resultBytes).toBe(1_048_435);
+    expect(kp.HELPER_PAYLOAD_MAX - resultBytes).toBe(45);
+  });
+
+  it('roundtrips actual maximum KeyPackage payloads and rejects upload cap plus one', () => {
+    const makeUpload = (targetLength: number): Uint8Array => {
+      const packages = [new Uint8Array(targetLength - 72), ...Array.from({ length: 31 }, () => new Uint8Array([0x22]))];
+      const body = encode([packages, new Uint8Array([0x33])]);
+      expect(body.length).toBe(targetLength);
+      return body;
+    };
+    const refs = Array.from({ length: 33 }, (_, index) => new Uint8Array(32).fill(index + 1));
+    const maximumUpload = makeUpload(kp.MAX_KEYPACKAGE_UPLOAD_BODY);
+    const result = kp.encodeKeyPackageIntentResult({
+      uploadBody: maximumUpload,
+      packageRefs: refs,
+      greatestExpiry: (1n << 63n) - 1n,
+    });
+    expect(result.length).toBe(1_048_435);
+    expect(result.length).toBeLessThanOrEqual(kp.HELPER_PAYLOAD_MAX);
+    const decodedResult = kp.decodeKeyPackageIntentResult(result);
+    expect(decodedResult.uploadBody).toEqual(maximumUpload);
+    expect(decodedResult.packageRefs).toEqual(refs);
+    expect(decodedResult.greatestExpiry).toBe((1n << 63n) - 1n);
+    expect(kp.encodeKeyPackageIntentResult(decodedResult)).toEqual(result);
+
+    const operationId = new Uint8Array(16).fill(0x96);
+    const publication = kp.encodeKeyPackagePublication({
+      operationId,
+      expectedGeneration: (1n << 63n) - 1n,
+      uploadBody: maximumUpload,
+    });
+    const decodedPublication = kp.decodeKeyPackagePublication(publication);
+    expect(decodedPublication.uploadBody).toEqual(maximumUpload);
+    expect(kp.encodeKeyPackagePublication(decodedPublication)).toEqual(publication);
+
+    const helper = bot.encodeHelperResponse({ requestId: operationId, status: 0, payload: result });
+    expect(helper.length).toBe(1_048_460);
+    expect(helper.length).toBeLessThanOrEqual(1 << 20);
+    expect(bot.decodeHelperResponse(helper).payload).toEqual(result);
+
+    const oversizedUpload = makeUpload(kp.MAX_KEYPACKAGE_UPLOAD_BODY + 1);
+    expect(() => kp.encodeKeyPackagePublication({ operationId, expectedGeneration: 0n, uploadBody: oversizedUpload })).toThrow(kp.KeyPackageCodecError);
+    expect(() => kp.decodeKeyPackagePublication(encode([operationId, 0n, oversizedUpload]))).toThrow();
+    expect(() => kp.encodeKeyPackageIntentResult({ uploadBody: oversizedUpload, packageRefs: refs, greatestExpiry: 0n })).toThrow(kp.KeyPackageCodecError);
+    expect(() => kp.decodeKeyPackageIntentResult(encode([oversizedUpload, refs, 0n]))).toThrow();
+  }, 30_000);
+
+  it('validates typed encoder inputs', () => {
+    expect(() => kp.encodeKeyPackagePublication({ operationId: new Uint8Array(16), expectedGeneration: 0n, uploadBody: new Uint8Array([0x82,0x81,0x41,0x01,0xf6]) })).toThrow(kp.KeyPackageCodecError);
+    expect(() => kp.encodeKeyPackageIntent({ operationId: new Uint8Array(16).fill(1), count: 33n, lastResort: 0n, expectedGeneration: 0n })).toThrow(kp.KeyPackageCodecError);
+  });
+
   it('roundtrips every valid canonical encoding and checks contexts', () => {
     expect(vectors.cases.length).toBeGreaterThanOrEqual(37);
     const kinds = new Set(vectors.cases.map((vector) => vector.kind));
-    expect([...kinds].sort()).toEqual(['event', 'helper_request', 'helper_response', 'receipt', 'removal', 'request', 'response']);
+    expect([...kinds].sort()).toEqual(['event', 'helper_request', 'helper_response', 'keypackage_intent', 'keypackage_intent_result', 'keypackage_publication', 'keypackage_publication_receipt', 'keypackage_resolution', 'receipt', 'removal', 'request', 'response']);
 
     for (const vector of vectors.cases) {
       const hex = vector.hex;
@@ -121,7 +193,7 @@ describe('shared bot protocol vectors', () => {
         const decoded = decodeVector(vector.kind, vector.hex ?? '', vector.body);
         if (vector.context !== undefined) checkContext(decoded, vector.context);
       };
-      expect(run, vector.name).toThrow(bot.BotError);
+      expect(run, vector.name).toThrow(vector.kind.startsWith('keypackage_') ? undefined : bot.BotError);
     }
   });
 });

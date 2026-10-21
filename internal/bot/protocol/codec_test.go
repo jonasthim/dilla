@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -107,6 +108,115 @@ func TestSharedBotVectors(t *testing.T) {
 	}
 }
 
+func TestKeyPackageResultWorstCaseFitsHelperPayload(t *testing.T) {
+	resultBytes := 1 + 5 + MaxKeyPackageUploadBody + 2 + 33*34 + 9
+	if resultBytes != 1_048_435 || MaxHelperPayload-resultBytes != 45 {
+		t.Fatalf("max result arithmetic=%d spare=%d", resultBytes, MaxHelperPayload-resultBytes)
+	}
+	maxUpload := keyPackageUploadAtLength(t, MaxKeyPackageUploadBody)
+	refs := keyPackageTestRefs()
+	result := KeyPackageIntentResult{UploadBody: maxUpload, PackageRefs: refs, GreatestExpiry: math.MaxInt64}
+	encodedResult, err := EncodeKeyPackageIntentResult(result)
+	if err != nil {
+		t.Fatalf("encode maximum result: %v", err)
+	}
+	if len(encodedResult) != resultBytes || len(encodedResult) > MaxHelperPayload {
+		t.Fatalf("maximum result length=%d, want %d (cap %d)", len(encodedResult), resultBytes, MaxHelperPayload)
+	}
+	decodedResult, err := DecodeKeyPackageIntentResult(encodedResult)
+	if err != nil || !bytes.Equal(decodedResult.UploadBody, maxUpload) || !reflect.DeepEqual(decodedResult.PackageRefs, refs) || decodedResult.GreatestExpiry != math.MaxInt64 {
+		t.Fatalf("maximum result roundtrip failed: %v", err)
+	}
+	reencodedResult, err := EncodeKeyPackageIntentResult(decodedResult)
+	if err != nil || !bytes.Equal(reencodedResult, encodedResult) {
+		t.Fatalf("maximum result did not re-encode byte-exactly: %v", err)
+	}
+
+	publication := KeyPackagePublication{OperationID: fixtureID(0x96), ExpectedGeneration: math.MaxInt64, UploadBody: maxUpload}
+	encodedPublication, err := EncodeKeyPackagePublication(publication)
+	if err != nil {
+		t.Fatalf("encode maximum publication: %v", err)
+	}
+	decodedPublication, err := DecodeKeyPackagePublication(encodedPublication)
+	if err != nil || !bytes.Equal(decodedPublication.UploadBody, maxUpload) || decodedPublication.ExpectedGeneration != math.MaxInt64 {
+		t.Fatalf("maximum publication roundtrip failed: %v", err)
+	}
+	reencodedPublication, err := EncodeKeyPackagePublication(decodedPublication)
+	if err != nil || !bytes.Equal(reencodedPublication, encodedPublication) {
+		t.Fatalf("maximum publication did not re-encode byte-exactly: %v", err)
+	}
+
+	helper, err := EncodeHelperResponse(HelperResponse{RequestID: fixtureID(0x97), Status: 0, Payload: []any{maxUpload, refsAsAny(refs), uint64(math.MaxInt64)}})
+	if err != nil {
+		t.Fatalf("encode maximum helper response: %v", err)
+	}
+	if len(helper)-4 != 1_048_460 || len(helper)-4 > MaxHelperBytes {
+		t.Fatalf("helper response body length %d, want 1048460 and at most %d", len(helper)-4, MaxHelperBytes)
+	}
+	if _, err := DecodeHelperResponseFrame(helper); err != nil {
+		t.Fatalf("decode maximum helper response: %v", err)
+	}
+
+	oversizedUpload := keyPackageUploadAtLength(t, MaxKeyPackageUploadBody+1)
+	if _, err := EncodeKeyPackagePublication(KeyPackagePublication{OperationID: fixtureID(0x96), ExpectedGeneration: 0, UploadBody: oversizedUpload}); err == nil {
+		t.Fatal("publication encoder accepted body over cap")
+	}
+	oversizedPublication, err := cborx.Marshal([]any{fixtureID(0x96), uint64(0), oversizedUpload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeKeyPackagePublication(oversizedPublication); err == nil {
+		t.Fatal("publication decoder accepted body over cap")
+	}
+	if _, err := EncodeKeyPackageIntentResult(KeyPackageIntentResult{UploadBody: oversizedUpload, PackageRefs: refs, GreatestExpiry: math.MaxInt64}); err == nil {
+		t.Fatal("result encoder accepted body over cap")
+	}
+	oversizedResult, err := cborx.Marshal([]any{oversizedUpload, refsAsAny(refs), uint64(math.MaxInt64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeKeyPackageIntentResult(oversizedResult); err == nil {
+		t.Fatal("result decoder accepted body over cap")
+	}
+	if _, err := EncodeKeyPackageIntent(KeyPackageIntent{OperationID: fixtureID(1), Count: 33}); err == nil {
+		t.Fatal("encoder accepted count above 32")
+	}
+}
+
+func keyPackageUploadAtLength(t *testing.T, target int) []byte {
+	t.Helper()
+	bigLen := target - 72 // outer array + 2-byte 32-item array head + 5-byte large bstr head + 31 small packages + fallback
+	packages := make([]any, 0, 32)
+	packages = append(packages, make([]byte, bigLen))
+	for range 31 {
+		packages = append(packages, []byte{0x22})
+	}
+	raw, err := cborx.Marshal([]any{packages, []byte{0x33}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != target {
+		t.Fatalf("constructed upload length=%d, want %d", len(raw), target)
+	}
+	return raw
+}
+
+func keyPackageTestRefs() [][32]byte {
+	refs := make([][32]byte, 33)
+	for i := range refs {
+		refs[i][31] = byte(i + 1)
+	}
+	return refs
+}
+
+func refsAsAny(refs [][32]byte) []any {
+	out := make([]any, len(refs))
+	for i := range refs {
+		out[i] = append([]byte(nil), refs[i][:]...)
+	}
+	return out
+}
+
 func roundTripVector(t *testing.T, tc vectorCase, raw []byte) []byte {
 	t.Helper()
 	var got []byte
@@ -167,6 +277,36 @@ func roundTripVector(t *testing.T, tc vectorCase, raw []byte) []byte {
 		v, err = DecodeHelperResponseCBOR(raw)
 		if err == nil {
 			got, err = EncodeHelperResponseCBOR(v)
+		}
+	case "keypackage_publication":
+		var v KeyPackagePublication
+		v, err = DecodeKeyPackagePublication(raw)
+		if err == nil {
+			got, err = EncodeKeyPackagePublication(v)
+		}
+	case "keypackage_publication_receipt":
+		var v KeyPackagePublicationReceipt
+		v, err = DecodeKeyPackagePublicationReceipt(raw)
+		if err == nil {
+			got, err = EncodeKeyPackagePublicationReceipt(v)
+		}
+	case "keypackage_intent":
+		var v KeyPackageIntent
+		v, err = DecodeKeyPackageIntent(raw)
+		if err == nil {
+			got, err = EncodeKeyPackageIntent(v)
+		}
+	case "keypackage_intent_result":
+		var v KeyPackageIntentResult
+		v, err = DecodeKeyPackageIntentResult(raw)
+		if err == nil {
+			got, err = EncodeKeyPackageIntentResult(v)
+		}
+	case "keypackage_resolution":
+		var v KeyPackageResolution
+		v, err = DecodeKeyPackageResolution(raw)
+		if err == nil {
+			got, err = EncodeKeyPackageResolution(v)
 		}
 	default:
 		t.Fatalf("unknown vector kind %q", tc.Kind)
@@ -233,6 +373,36 @@ func roundTripVectorErr(tc vectorCase, raw []byte) ([]byte, error) {
 			return nil, e
 		}
 		return EncodeHelperResponseCBOR(v)
+	case "keypackage_publication":
+		v, e := DecodeKeyPackagePublication(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeKeyPackagePublication(v)
+	case "keypackage_publication_receipt":
+		v, e := DecodeKeyPackagePublicationReceipt(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeKeyPackagePublicationReceipt(v)
+	case "keypackage_intent":
+		v, e := DecodeKeyPackageIntent(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeKeyPackageIntent(v)
+	case "keypackage_intent_result":
+		v, e := DecodeKeyPackageIntentResult(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeKeyPackageIntentResult(v)
+	case "keypackage_resolution":
+		v, e := DecodeKeyPackageResolution(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeKeyPackageResolution(v)
 	default:
 		return nil, invalid()
 	}
