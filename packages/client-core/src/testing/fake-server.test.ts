@@ -1269,6 +1269,19 @@ describe('FakeServer sets a first password behind a step-up as dillad does', () 
     expect(await refusalOf(c.routes.regenerateBackupCodes(token))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
   });
 
+  it('a first password needs a session younger than the reauth window (403 E_FORBIDDEN), checked before the step-up; a fresh session passes', async () => {
+    const server = new FakeServer();
+    const { c, session } = await noPassword(server);
+    server.nowS += 301;
+    expect(await setFirst(server, session, [null, 'first pw'])).toMatchObject({ status: 403, body: ['E_FORBIDDEN', expect.any(String), null] });
+    expect(await refusalOf(c.routes.passwordLogin('cy', 'first pw'))).toMatchObject({ status: 401 });
+    const fresh = await c.routes.postSession(DEV_A, establishBody(DEV_A, null));
+    expect((await setFirst(server, fresh.token, [null, 'first pw'])).status).toBe(204);
+    // A change with the old password is not subject to the window.
+    server.nowS += 301;
+    expect((await setFirst(server, fresh.token, ['first pw', 'second pw'])).status).toBe(204);
+  });
+
   it('the two-element body is still served, and a third element is ignored when a password exists', async () => {
     const server = new FakeServer();
     const { c, session } = await noPassword(server);

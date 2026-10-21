@@ -307,14 +307,26 @@ const answered = async (w: World, id: number): Promise<unknown> => { await vi.wa
 
 describe('the factor commands through the worker', () => {
   const FACTOR_COMMANDS = ['refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish'] as const;
-  const READY_ONLY = ['stepUp', 'stepUpPasskeyBegin', 'stepUpPasskeyFinish', 'removeFactor', 'regenerateBackupCodes', 'changePassword'] as const;
+  const READY_ONLY = ['stepUp', 'stepUpPasskeyBegin', 'stepUpPasskeyFinish', 'removeFactor', 'regenerateBackupCodes', 'changePassword', 'freshSession'] as const;
 
-  it('ready accepts all eleven; factor-setup accepts the five that enrol and read', () => {
+  it('ready accepts all twelve; factor-setup accepts the five that enrol and read', () => {
     for (const m of [...FACTOR_COMMANDS, ...READY_ONLY]) expect(ACCEPTS.ready).toContain(m);
     for (const m of FACTOR_COMMANDS) expect(ACCEPTS['factor-setup']).toContain(m);
     for (const m of READY_ONLY) expect(ACCEPTS['factor-setup']).not.toContain(m);
     expect(ACCEPTS['factor-setup']).toEqual(expect.arrayContaining(['factorSetupDone', 'forgetBrowser']));
     expect(ACCEPTS['signin-login']).not.toContain('refreshFactors');
+  });
+
+  it('freshSession establishes a new session from the device key and answers null; a refused establish is E_SIGNIN_EVICTED', async () => {
+    const w = world();
+    await toReady(w);
+    const before = w.calls.filter((c) => c === 'session.establish').length;
+    w.call(30, { m: 'freshSession' });
+    expect(await answered(w, 30)).toEqual({ t: 'ret', id: 30, ok: true, value: null });
+    expect(w.calls.filter((c) => c === 'session.establish')).toHaveLength(before + 1);
+    w.session.establish.mockImplementationOnce(() => Promise.resolve(false));
+    w.call(31, { m: 'freshSession' });
+    expect(await answered(w, 31)).toMatchObject({ ok: false, error: { code: 'E_SIGNIN_EVICTED' } });
   });
 
   it('a malformed command is E_BAD_INPUT with its reason; the route is not called', async () => {

@@ -53,6 +53,7 @@ export type Command =
   | { m: 'stepUpPasskeyBegin' }                                  // ready → { ceremonyId, options }
   | { m: 'stepUpPasskeyFinish'; ceremonyId: string; response: string }               // ready → { token }
   | { m: 'removeFactor'; stepup: string; kind: 'totp' | 'passkey'; credId: string | null } // ready → null
+  | { m: 'freshSession' }                                         // ready → null; mints a new session from the device key (a first password needs one under the reauth window)
   | { m: 'changePassword'; old: string | null; next: string; stepup: string | null } // ready → null; slice factors (hasPassword). Neither password is kept
   | { m: 'regenerateBackupCodes'; stepup: string }               // ready → { backupCodes }
   | { m: 'signInKey'; recoveryKey: string }                      // signin-key → ready; registers when nothing is registered yet

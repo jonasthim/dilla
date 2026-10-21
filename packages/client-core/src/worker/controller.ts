@@ -221,6 +221,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'stepUpPasskeyFinish',
   'removeFactor',
   'changePassword',
+  'freshSession',
   'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
@@ -399,6 +400,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'stepUpPasskeyFinish',
     'removeFactor',
     'changePassword',
+    'freshSession',
     'regenerateBackupCodes',
     'markRead',
     'setSetting',
@@ -660,6 +662,13 @@ export class Controller {
   private starting: Promise<null> | null = null;
   private resetting: Promise<null> | null = null;
   private graceTimer: number | null = null;
+  /** A session cut just now. The instance wants one younger than its reauth window for a first password, and the step-up token
+   *  is bound to the session it was made in, so the page runs this before the step-up, not after. */
+  private async freshSession(): Promise<null> {
+    if (this.session === null) throw new Refusal('E_NOT_READY', 'no session');
+    if (!(await this.session.establish())) throw new Error('E_SIGNIN_EVICTED');
+    return null;
+  }
   /** The socket re-establish retry onRevokedSocket armed after a network failure (I4). */
   private reauthTimer: number | null = null;
   private phase: BootPhase = 'loading';
@@ -1040,6 +1049,7 @@ export class Controller {
       case 'stepUp': return this.factorsCtl.stepUp(command.method, command.secret);
       case 'stepUpPasskeyBegin': return this.factorsCtl.stepUpPasskeyBegin();
       case 'stepUpPasskeyFinish': return this.factorsCtl.stepUpPasskeyFinish(command.ceremonyId, command.response);
+      case 'freshSession': return this.freshSession();
       case 'changePassword': return this.factorsCtl.changePassword(command.old, command.next, command.stepup);
       case 'removeFactor': return this.factorsCtl.removeFactor(command.stepup, command.kind, command.credId);
       case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
