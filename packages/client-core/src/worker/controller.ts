@@ -220,6 +220,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'stepUpPasskeyBegin',
   'stepUpPasskeyFinish',
   'removeFactor',
+  'changePassword',
   'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
@@ -397,6 +398,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'stepUpPasskeyBegin',
     'stepUpPasskeyFinish',
     'removeFactor',
+    'changePassword',
     'regenerateBackupCodes',
     'markRead',
     'setSetting',
@@ -1038,6 +1040,7 @@ export class Controller {
       case 'stepUp': return this.factorsCtl.stepUp(command.method, command.secret);
       case 'stepUpPasskeyBegin': return this.factorsCtl.stepUpPasskeyBegin();
       case 'stepUpPasskeyFinish': return this.factorsCtl.stepUpPasskeyFinish(command.ceremonyId, command.response);
+      case 'changePassword': return this.factorsCtl.changePassword(command.old, command.next, command.stepup);
       case 'removeFactor': return this.factorsCtl.removeFactor(command.stepup, command.kind, command.credId);
       case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
