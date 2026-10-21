@@ -237,11 +237,18 @@ func (h *Calls) drain(ctx context.Context) {
 			h.awayMu.Lock()
 			gw := h.awayGW
 			h.awayMu.Unlock()
-			for _, n := range batch {
+			// One audience per community per batch, and the final state per (community, user).
+			audiences := make(map[id.ID][]id.ID)
+			for _, n := range coalesceAway(batch) {
 				if ctx.Err() != nil {
 					break
 				}
-				h.sendAway(ctx, gw, n)
+				audience, ok := audiences[n.community]
+				if !ok {
+					audience = h.awayAudience(ctx, n.community)
+					audiences[n.community] = audience
+				}
+				sendAway(gw, n, audience)
 			}
 			h.awayQMu.Lock()
 			h.awaySending = false
@@ -293,23 +300,30 @@ func (h *Calls) GoAFKMaintenance() {
 	}()
 }
 
-// sendAway sends op 55 to every user who may view the community's AFK channel (its EligibleUsers,
-// the voice_state pattern). A community with no AFK channel, or a failure to read its audience,
-// sends nothing: the snapshot is the record.
-func (h *Calls) sendAway(ctx context.Context, gw VoiceGateway, n awayNote) {
-	cfg, err := h.repo.GetCommunityAFK(ctx, n.community)
+// awayAudience is every user who may view the community's AFK channel (its EligibleUsers, the
+// voice_state pattern). A community with no AFK channel, or a failure to read its audience, answers
+// nobody: the snapshot is the record.
+func (h *Calls) awayAudience(ctx context.Context, cid id.ID) []id.ID {
+	cfg, err := h.repo.GetCommunityAFK(ctx, cid)
 	if err != nil || cfg.ChannelID == nil {
-		return
+		return nil
 	}
 	ch, err := h.repo.GetChannel(ctx, *cfg.ChannelID)
 	if err != nil {
-		return
+		return nil
 	}
 	audience, err := EligibleUsers(ctx, h.repo, ch)
 	if err != nil {
-		h.log.WarnContext(ctx, "resolving the AFK channel's audience for afk_away failed", "community", n.community, "err", err)
-		return
+		if ctx.Err() == nil {
+			h.log.WarnContext(ctx, "resolving the AFK channel's audience for afk_away failed", "community", cid, "err", err)
+		}
+		return nil
 	}
+	return audience
+}
+
+// sendAway delivers one op 55 to audience.
+func sendAway(gw VoiceGateway, n awayNote, audience []id.ID) {
 	payload, err := gateway.AFKAwayPayload(n.community, n.user, n.since)
 	if err != nil {
 		return
@@ -318,6 +332,27 @@ func (h *Calls) sendAway(ctx context.Context, gw VoiceGateway, n awayNote) {
 	for _, u := range audience {
 		gw.DeliverUser(u, f)
 	}
+}
+
+// coalesceAway keeps, of the notes for one (community, user) in a batch, only the last: the final
+// state is what a client must end on, and an earlier one would be superseded within the same send.
+// The kept notes stay in their order (N-C).
+func coalesceAway(batch []awayNote) []awayNote {
+	type key struct{ community, user id.ID }
+	seen := make(map[key]bool, len(batch))
+	keep := make([]awayNote, 0, len(batch))
+	for i := len(batch) - 1; i >= 0; i-- {
+		k := key{batch[i].community, batch[i].user}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		keep = append(keep, batch[i])
+	}
+	for i, j := 0, len(keep)-1; i < j; i, j = i+1, j-1 {
+		keep[i], keep[j] = keep[j], keep[i]
+	}
+	return keep
 }
 
 // noteAFKAdmissionLocked records an admission of dev of user. The caller holds afkMu.
@@ -370,6 +405,13 @@ func (h *Calls) clearAwayUser(ctx context.Context, user id.ID) {
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
+	// Unseeded, every user may be away: a read-only lookup first, so only a user with a row takes
+	// the lock and runs the DELETE (N-B).
+	if !h.awaySeededNow() {
+		if has, err := h.repo.AFKAwayExistsUser(ctx, user); err == nil && !has {
+			return
+		}
+	}
 	h.awayMu.Lock()
 	cids, err := h.repo.ClearAFKAwayUser(ctx, user)
 	if err != nil {
@@ -391,6 +433,11 @@ func (h *Calls) clearAwayIn(ctx context.Context, cid, user id.ID) {
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
+	if !h.awaySeededNow() {
+		if has, err := h.repo.AFKAwayExists(ctx, cid, user); err == nil && !has {
+			return
+		}
+	}
 	h.awayMu.Lock()
 	cleared, err := h.repo.ClearAFKAway(ctx, cid, user)
 	if err != nil {
@@ -547,6 +594,7 @@ func (h *Calls) markAway(ctx context.Context, cid, user id.ID, decided uint64, n
 	// own event (an admission's number, a closed last connection) land before the checks below,
 	// which then skip the mark. A skipped mark takes back an entry it added.
 	had := h.idxNote(user, cid)
+	h.afkStage("mark-noted")
 	undo := func() {
 		if !had {
 			h.idxDrop(user, cid)
@@ -726,6 +774,11 @@ func (h *Calls) SeedAFKAway(ctx context.Context) error {
 	if failed != nil {
 		return failed
 	}
+	// The merge runs under awayMu (N-A): a mark notes its entry and takes it back on a skip under
+	// awayMu, so a merge either lands before the mark (which then finds the entry and keeps it) or
+	// after its undo (which then puts back the entry of the stored row).
+	h.awayMu.Lock()
+	defer h.awayMu.Unlock()
 	h.awayIdxMu.Lock()
 	defer h.awayIdxMu.Unlock()
 	if h.awaySet == nil {
@@ -775,6 +828,10 @@ func (h *Calls) trySeed(ctx context.Context) {
 	defer h.awayMu.Unlock()
 	if err != nil {
 		h.seedFailedLocked()
+		if ctx.Err() != nil {
+			h.log.DebugContext(ctx, "loading the away roster stopped with the instance", "err", err)
+			return
+		}
 		h.log.ErrorContext(ctx, "loading the away roster failed; every clear reads the store until a retry lands",
 			"err", err, "retry_in", h.seedBackoff.String())
 		return

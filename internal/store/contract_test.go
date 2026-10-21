@@ -172,7 +172,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"GetVoiceSession", "ListLiveVoiceSessions",
 			"GetCommunityAFK", "SetCommunityAFK",
 			// afk-disconnect AW1, reached through the embedded Communities: the stored away roster.
-			"ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
+			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
 			// Fix wave C3, reached through the embedded ChannelMembers: a kick, ban or
 			// leave drops the user's rows for the community's channels.
 			"DeleteCommunityChannelMembers",
@@ -202,7 +202,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// Communities is the slice of Structure Plan 2 task 1's tables support; it
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
-			"ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
+			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
 			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",

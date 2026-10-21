@@ -2111,6 +2111,16 @@ func (r *Repo) ListAFKAway(ctx context.Context, communityID id.ID) ([]store.AFKA
 	return out, nil
 }
 
+func (r *Repo) AFKAwayExists(ctx context.Context, communityID, userID id.ID) (bool, error) {
+	n, err := r.r.AFKAwayExists(ctx, sqlitedb.AFKAwayExistsParams{CommunityID: communityID, UserID: userID})
+	return n > 0, wrap(err)
+}
+
+func (r *Repo) AFKAwayExistsUser(ctx context.Context, userID id.ID) (bool, error) {
+	n, err := r.r.AFKAwayExistsUser(ctx, sqlitedb.AFKAwayExistsUserParams{UserID: userID})
+	return n > 0, wrap(err)
+}
+
 func (r *Repo) ListAFKAwayFirst(ctx context.Context, communityID id.ID, limit int32) ([]store.AFKAway, error) {
 	rows, err := r.r.ListAFKAwayFirst(ctx, sqlitedb.ListAFKAwayFirstParams{CommunityID: communityID, MaxRows: int64(limit)})
 	if err != nil {

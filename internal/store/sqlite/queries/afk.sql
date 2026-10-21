@@ -22,3 +22,9 @@ SELECT user_id, since FROM community_afk_away WHERE community_id = ? ORDER BY us
 
 -- name: ListAFKAwayFirst :many
 SELECT user_id, since FROM community_afk_away WHERE community_id = ? ORDER BY user_id LIMIT sqlc.arg(max_rows);
+
+-- name: AFKAwayExists :one
+SELECT COUNT(*) FROM (SELECT 1 FROM community_afk_away WHERE community_id = ? AND user_id = ? LIMIT 1) AS t;
+
+-- name: AFKAwayExistsUser :one
+SELECT COUNT(*) FROM (SELECT 1 FROM community_afk_away WHERE user_id = ? LIMIT 1) AS t;

@@ -290,7 +290,6 @@ type Calls struct {
 	// a failed seed (R5). All under awayMu.
 	awayGraceUntil time.Time
 	awayGraceDone  bool
-	awayBooted     bool
 	seedNextAt     time.Time
 	seedBackoff    time.Duration
 	// awayEndPending is set while a boot-time AFK-call end is unfinished (M4); awayMaintaining

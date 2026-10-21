@@ -194,6 +194,36 @@ func TestListAFKAwayFirstLimitsTheRead(t *testing.T) {
 	}
 }
 
+// AFKAwayExists and AFKAwayExistsUser are the read-only lookups of an unseeded index (fix round 3,
+// N-B): a row in the community, and a row in any community.
+func TestAFKAwayExistsLookups(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			u, v := seedUser(ctx, t, repo).ID, seedUser(ctx, t, repo).ID
+			one := seedAFKCommunity(ctx, t, repo, u, v)
+			two := seedAFKCommunity(ctx, t, repo, u, v)
+			if _, err := repo.SetAFKAway(ctx, one, u, 3); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []struct {
+				cid, uid id.ID
+				want     bool
+			}{{one, u, true}, {two, u, false}, {one, v, false}} {
+				if got, err := repo.AFKAwayExists(ctx, c.cid, c.uid); err != nil || got != c.want {
+					t.Fatalf("AFKAwayExists = %v, %v; want %v", got, err, c.want)
+				}
+			}
+			if got, err := repo.AFKAwayExistsUser(ctx, u); err != nil || !got {
+				t.Fatalf("AFKAwayExistsUser(u) = %v, %v; want true", got, err)
+			}
+			if got, err := repo.AFKAwayExistsUser(ctx, v); err != nil || got {
+				t.Fatalf("AFKAwayExistsUser(v) = %v, %v; want false", got, err)
+			}
+		})
+	}
+}
+
 // Migration 00021_afk_away.sql exists in both dialects, so a fully migrated database reports at
 // least schema version 21 (wantSchemaVersion counts the embedded files).
 func TestAFKAwayMigrationIsSchemaVersion21(t *testing.T) {

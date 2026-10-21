@@ -418,6 +418,10 @@ type Communities interface {
 	// ListAFKAwayFirst is the first limit rows of ListAFKAway, bounded in the query (the
 	// snapshot's cap).
 	ListAFKAwayFirst(ctx context.Context, communityID id.ID, limit int32) ([]AFKAway, error)
+	// AFKAwayExists and AFKAwayExistsUser are read-only lookups: an away row of the user in the
+	// community, and in any community (the clears' check while the in-memory index is unseeded).
+	AFKAwayExists(ctx context.Context, communityID, userID id.ID) (bool, error)
+	AFKAwayExistsUser(ctx context.Context, userID id.ID) (bool, error)
 	CreateCommunity(ctx context.Context, c CommunityRow) error
 	// GetCommunity answers ErrNotFound for a soft-deleted community too.
 	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)

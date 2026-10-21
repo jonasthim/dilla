@@ -216,7 +216,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ownsWasm = true
 	}
 	blobs, ownsBlobs := o.Blobs, false
+	// stopAFK stops the call routes' op 55 drainer when New fails after mounting them (AW2 I-4).
+	var stopAFK func()
 	closeWasmOnError := func() {
+		if stopAFK != nil {
+			stopAFK()
+		}
 		if ownsWasm {
 			_ = wasm.Close(context.Background())
 		}
@@ -483,6 +488,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
+	stopAFK = callRoutes.StopAFK
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()

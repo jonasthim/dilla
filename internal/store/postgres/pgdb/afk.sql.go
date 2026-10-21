@@ -11,6 +11,37 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const aFKAwayExists = `-- name: AFKAwayExists :one
+SELECT COUNT(*) FROM (SELECT 1 FROM community_afk_away WHERE community_id = $1 AND user_id = $2 LIMIT 1) AS t
+`
+
+type AFKAwayExistsParams struct {
+	CommunityID id.ID
+	UserID      id.ID
+}
+
+func (q *Queries) AFKAwayExists(ctx context.Context, arg AFKAwayExistsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, aFKAwayExists, arg.CommunityID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const aFKAwayExistsUser = `-- name: AFKAwayExistsUser :one
+SELECT COUNT(*) FROM (SELECT 1 FROM community_afk_away WHERE user_id = $1 LIMIT 1) AS t
+`
+
+type AFKAwayExistsUserParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) AFKAwayExistsUser(ctx context.Context, arg AFKAwayExistsUserParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, aFKAwayExistsUser, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const clearAFKAway = `-- name: ClearAFKAway :execrows
 DELETE FROM community_afk_away WHERE community_id = $1 AND user_id = $2
 `

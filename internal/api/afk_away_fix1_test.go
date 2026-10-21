@@ -32,6 +32,8 @@ type awayProbeRepo struct {
 	listCalls int    // ListAFKAway calls
 	// onGetMember runs inside GetMember after the read, before it answers (fix round 2, R2).
 	onGetMember func()
+	// onClear runs inside ClearAFKAway, before the delete (fix round 3, N-B).
+	onClear func(user id.ID)
 }
 
 func (p *awayProbeRepo) GetMember(ctx context.Context, cid, uid id.ID) (store.MemberOfCommunityRow, error) {
@@ -80,7 +82,16 @@ func (p *awayProbeRepo) GetGroup(ctx context.Context, g id.ID) (store.GroupRow, 
 
 func (p *awayProbeRepo) ClearAFKAway(ctx context.Context, cid, uid id.ID) (bool, error) {
 	p.count("ClearAFKAway")
+	if f := p.onClear; f != nil {
+		f(uid)
+	}
 	return p.Repository.ClearAFKAway(ctx, cid, uid)
+}
+
+func (p *awayProbeRepo) clearsOf(name string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.counts[name]
 }
 
 func (p *awayProbeRepo) ClearAFKAwayUser(ctx context.Context, uid id.ID) ([]id.ID, error) {
