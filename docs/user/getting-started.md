@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on RELEASE-DATE ("web-3.9"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-21 ("web-3.9"): starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -1359,7 +1359,7 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (RELEASE-DATE)
+## 11. Known limits (2026-10-21)
 
 - No native phone or desktop app (on a phone, the web client has [its own layout](#on-your-phone)). A second browser needs the recovery key and the password, and the second factor
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
