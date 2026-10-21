@@ -192,9 +192,43 @@ beside the person's own tile, so with the camera and a share both on, a person h
 - A browser tab in Chrome or Edge (all platforms).
 - A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
 - A browser tab on Linux (no screen or window audio).
-- No sound from Firefox or Safari.
+- No sound from Firefox or Safari by themselves; there you can pick an audio input as the stream's sound (see [Share sound from Firefox or Linux](#share-sound-from-firefox-or-linux)).
 
-A game or app's own sound needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing how to get sound, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+A game or app's own sound without a virtual device needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
+
+The notice to the person sharing depends on the browser:
+
+- In Firefox (and browsers built on it) and Safari: "This browser can’t share sound; Chrome or Edge can share a browser tab with its sound."
+- In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
+- In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
+
+When the browser lists an audio input you can pick, the notice also says "You can also pick a sound source for the stream." and offers a **pick a sound source** button.
+
+### Share sound from Firefox or Linux
+
+A browser cannot capture your computer's sound by itself on Linux, and Firefox cannot at all. dilla lets you choose any
+audio input as the stream's sound instead. While you share and the share has no sound of its own, a **sound from** list
+appears under the call controls: **none**, then every audio input the browser lists, except the microphone the call uses.
+Pick one and it is sent as the stream's sound, encrypted like the rest; everyone watching can set its volume or mute it.
+Choose **none** or stop sharing and it goes. A tab's or a screen's sound from the browser always wins, and then the list is not shown.
+If the list says "Allow the microphone to see sound sources.", the browser hides device names until the microphone is allowed.
+
+- **A monitor** ("Monitor of …") carries everything your computer plays, including this call, so the others will hear
+  themselves. Firefox lists these devices directly, and dilla warns when you pick one. Chrome and Edge on Linux do not list
+  monitors at all; use the recipe below there.
+- **One app only, and you still hear it** (Chrome, Edge and Firefox): give that app its own output, send a copy of it to
+  your speakers, and turn the output's monitor into an ordinary input. Each `pactl load-module` prints a number: note it,
+  because it is how you undo the step.
+  1. The output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
+  2. A copy to your speakers, so you still hear the app: `pactl load-module module-loopback source=dilla-share.monitor`
+  3. An input made from the output's monitor: `pactl load-module module-remap-source master=dilla-share.monitor source_name=dilla-share-input source_properties=device.description=dilla-share-input`
+  4. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
+  5. Start the share, and in **sound from** pick "dilla-share-input". The call keeps playing on your normal speakers and is not in the stream.
+
+  On PipeWire, `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'`
+  replaces steps 1 and 2 in one command (leave it running; Ctrl+C stops it); steps 3 to 5 stay the same.
+  To undo, run `pactl unload-module <number>` for each number you noted, last one first. Do not unload by module name: that
+  would also remove loopbacks and sinks you made for something else.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 

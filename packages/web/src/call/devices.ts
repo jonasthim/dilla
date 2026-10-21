@@ -90,3 +90,5 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
   if (audio === null) return { video, audio: null, audioKind: 'none' };
   return { video, audio, audioKind: video.getSettings().displaySurface === 'browser' ? 'tab' : 'system' };
 }
+
+export { shareAudioAdvice, type ShareAudioAdvice } from './share-audio-advice.ts';

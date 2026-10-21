@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, VoiceDock,
+  Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, Select, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -156,7 +156,14 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     // Product walk I8: removed, and the channel is gone for this device (the membership is): the removal says so.
     if (removedFromServer(v, channelId)) return { kind: 'info', text: t('voice.removedNotMember'), action: null, focusOnce: false };
   }
-  if (v.call.notice?.channelId === channelId) return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: null, focusOnce: false };
+  if (v.call.notice?.channelId === channelId) {
+    // FX2: a silent share's notice offers the sound-source select (it takes the focus; the select shows with the notice).
+    const pool = v.call.sharePool;
+    const pick = v.call.notice.key.startsWith('voice.shareAudio.none') && pool !== null && pool.labeled && pool.sources.length > 0
+      ? { label: t('voice.shareAudio.pick'), onAction: () => document.querySelector<HTMLElement>('[data-share-sound] select')?.focus() } : null;
+    const text = v.call.notice.text ?? t(v.call.notice.key);
+    return { kind: 'info', text: pick !== null ? `${text} ${t('voice.shareAudio.pickHint')}` : text, action: pick, focusOnce: false };
+  }
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;
 }
@@ -267,6 +274,31 @@ function StageLines({ v }: { v: VoiceContext }) {
   );
 }
 
+/**
+ * FX2: the "sound from" select of a share. It shows while the share has no sound of the browser's own (a tab's or the
+ * system's always wins) and lists the audio inputs the session offers, the call's own microphone left out. A device whose
+ * label says monitor warns that others will hear themselves; picking it stays allowed.
+ */
+function ShareSound({ v }: { v: VoiceContext }) {
+  const s = v.call.state;
+  const pool = v.call.sharePool;
+  if (pool === null || s?.sharing !== true) return null;
+  // M1: unlabeled inputs, in any browser, ask for the microphone before they can be told apart.
+  if (!pool.labeled) {
+    return <div className="dw-voice-stage__sound" data-share-sound><p className="dw-voice-stage__sound-note">{t('voice.shareAudio.needsPermission')}</p></div>;
+  }
+  if (pool.sources.length === 0) return null;
+  const value = s.shareSource ?? '';
+  const picked = pool.sources.find(d => d.id === value);
+  return (
+    <div className="dw-voice-stage__sound" data-share-sound>
+      <Select label={t('voice.shareAudio.from')} value={value} {...(picked?.monitor === true ? { hint: t('voice.shareAudio.monitorWarn') } : {})}
+        options={[{ value: '', label: t('voice.shareAudio.fromNone') }, ...pool.sources.map(d => ({ value: d.id, label: d.label }))]}
+        onChange={id => v.call.setShareSource(id === '' ? null : id)} />
+    </div>
+  );
+}
+
 function Controls({ v, paused, dm, afkName }: { v: VoiceContext; paused: boolean; dm: boolean; afkName: string }) {
   const s = v.call.state;
   const canShare = canCapture();
@@ -356,7 +388,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
       <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={afk ? { text: t('afk.stage.muted', { channel: name ?? title }) } : joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><StageLines v={v} /></>
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><ShareSound v={v} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>
