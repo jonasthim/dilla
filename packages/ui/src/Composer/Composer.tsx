@@ -24,6 +24,12 @@ export interface ComposerProps {
   /** The attach button (`+`) before the textarea, shown when both are given. */
   attachLabel?: string;
   onAttach?(): void;
+  /**
+   * The GIF picker's opener (E8), after the attach button: a text button that toggles the owner's picker panel
+   * (`aria-haspopup="dialog"`, `aria-expanded`, `aria-controls` while open). `data-gif-toggle` lets the panel ignore
+   * a pointer down on it, so the click toggles instead of closing and reopening.
+   */
+  gif?: { label: string; open: boolean; controls?: string; onToggle(): void; buttonRef?: Ref<HTMLButtonElement> };
   /** Rendered above the box: the reply chip, the tray, the mention list. */
   top?: ReactNode;
   /**
@@ -72,7 +78,7 @@ function labelParts(label: string): { lead: string; target: string | null } {
  */
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
-  attachLabel, onAttach, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
+  attachLabel, onAttach, gif, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
 }: ComposerProps) {
   const inputId = useId();
   const reasonId = useId();
@@ -173,6 +179,13 @@ export function Composer({
         {attachLabel !== undefined && onAttach ? (
           <button type="button" className="d-composer__attach" aria-label={attachLabel} disabled={disabled === true} onClick={() => onAttach()}>
             <span aria-hidden="true">+</span>
+          </button>
+        ) : null}
+        {gif !== undefined ? (
+          <button ref={gif.buttonRef} type="button" className="d-composer__gif" aria-label={gif.label} aria-haspopup="dialog"
+            aria-expanded={gif.open} aria-controls={gif.open ? gif.controls : undefined} data-gif-toggle="" disabled={disabled === true}
+            onClick={() => gif.onToggle()}>
+            <span aria-hidden="true">gif</span>
           </button>
         ) : null}
         <textarea ref={textareaRef} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
