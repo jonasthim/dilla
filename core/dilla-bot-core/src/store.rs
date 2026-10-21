@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OpenFlags, params};
 use std::{
     fs::{self, File, OpenOptions},
+    io::{Read, Write},
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -10,6 +11,7 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 const STORE_VERSION: i64 = 1;
+const INIT_MAGIC: &[u8] = b"DILLA-BOT-INIT-v1\0";
 
 pub(crate) fn cbor_shape() -> dilla_core::cbor::CborError {
     dilla_core::cbor::CborError::TypeMismatch {
@@ -38,9 +40,7 @@ pub enum StoreError {
 
 pub struct Store {
     pub(crate) conn: dilla_core::mls::ConnHandle,
-    // Keep the verified directory open and address files through this descriptor.
-    // This prevents a later rename or symlink swap in an ancestor from redirecting
-    // SQLite or the lock-file checks to another directory.
+    // Retain the verified private directory handle for the store lifetime.
     _dir: File,
     _lock: File,
 }
@@ -60,89 +60,31 @@ impl Store {
         let lock_path = dir.join("state.lock");
         let (lock, _) = secure_file(&lock_path)?;
         lock.try_lock().map_err(|_| StoreError::Locked)?;
-
         let db_path = dir.join("state.db");
-        let (_db, db_created) = secure_file(&db_path)?;
-        check_optional_sidecar(&dir.join("state.db-wal"))?;
-        check_optional_sidecar(&dir.join("state.db-shm"))?;
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-        let mut conn =
-            Connection::open_with_flags(&db_path, flags).map_err(|_| StoreError::Database)?;
-        let mut key_hex = Zeroizing::new(String::with_capacity(64));
-        for b in key {
-            use std::fmt::Write;
-            let _ = write!(key_hex, "{b:02x}");
-        }
-        let mut key_pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", *key_hex));
-        let key_result = conn.execute_batch(&key_pragma).map_err(|_| StoreError::Key);
-        key_pragma.zeroize();
-        key_result?;
-        key_hex.zeroize();
-        let cipher: String = conn
-            .query_row("PRAGMA cipher_version", [], |r| r.get(0))
-            .map_err(|_| StoreError::Key)?;
-        if cipher.is_empty() {
-            return Err(StoreError::Key);
-        }
-        let _: i64 = conn
-            .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
-            .map_err(|_| StoreError::Key)?;
-        conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cipher_memory_security=ON;")
-            .map_err(|_| StoreError::Key)?;
-
-        let has_meta: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='bot_helper_meta')", [], |r| r.get(0)).map_err(|_| StoreError::Database)?;
-        if !has_meta {
-            if !db_created {
-                return Err(StoreError::Binding);
-            }
-            conn.execute_batch(
-                "PRAGMA secure_delete=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
-            )
-            .map_err(|_| StoreError::Database)?;
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(|_| StoreError::Database)?;
-            tx.execute_batch("CREATE TABLE bot_helper_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL); CREATE TABLE bot_state (area INTEGER NOT NULL, key BLOB NOT NULL, revision INTEGER NOT NULL, value BLOB, PRIMARY KEY(area,key)); CREATE TABLE bot_state_receipts (id BLOB PRIMARY KEY, digest BLOB NOT NULL, result BLOB NOT NULL);")
-                .map_err(|_| StoreError::Database)?;
-            tx.execute("INSERT INTO bot_helper_meta(k,v) VALUES('version',?1),('instance',?2),('community',?3),('installation',?4)", params![STORE_VERSION, instance.as_slice(), community.as_slice(), installation.as_slice()]).map_err(|_| StoreError::Database)?;
-            tx.commit().map_err(|_| StoreError::Database)?;
-        } else {
-            let version: i64 = conn
-                .query_row(
-                    "SELECT CAST(v AS INTEGER) FROM bot_helper_meta WHERE k='version'",
-                    [],
-                    |r| r.get(0),
+        let binding = (instance, community, installation);
+        let conn = match fs::symlink_metadata(&db_path) {
+            Ok(_) => {
+                let conn = open_canonical(&db_path, key)?;
+                validate_binding(&conn, binding)?;
+                cleanup_published_stage(dir, &db_path, binding)?;
+                conn.execute_batch(
+                    "PRAGMA secure_delete=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
                 )
-                .map_err(|_| StoreError::Version)?;
-            if version != STORE_VERSION {
-                return Err(StoreError::Version);
+                .map_err(|_| StoreError::Database)?;
+                conn
             }
-            let found: (Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row("SELECT (SELECT v FROM bot_helper_meta WHERE k='instance'),(SELECT v FROM bot_helper_meta WHERE k='community'),(SELECT v FROM bot_helper_meta WHERE k='installation')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_| StoreError::Binding)?;
-            if found.0.as_slice() != instance
-                || found.1.as_slice() != community
-                || found.2.as_slice() != installation
-            {
-                return Err(StoreError::Binding);
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                publish_new_store(dir, &db_path, binding, key)?;
+                let conn = open_canonical(&db_path, key)?;
+                validate_binding(&conn, binding)?;
+                conn.execute_batch(
+                    "PRAGMA secure_delete=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
+                )
+                .map_err(|_| StoreError::Database)?;
+                conn
             }
-            for name in ["bot_state", "bot_state_receipts"] {
-                let exists: bool = conn
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-                        [name],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StoreError::Database)?;
-                if !exists {
-                    return Err(StoreError::Version);
-                }
-            }
-            conn.execute_batch(
-                "PRAGMA secure_delete=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
-            )
-            .map_err(|_| StoreError::Database)?;
-        }
+            Err(_) => return Err(StoreError::File),
+        };
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             _dir: dir_fd,
@@ -166,6 +108,328 @@ impl Store {
                 .expect("validated installation"),
         )
     }
+}
+
+fn open_canonical(path: &Path, key: &[u8; 32]) -> Result<Connection, StoreError> {
+    let (_, created) = secure_file(path)?;
+    if created {
+        return Err(StoreError::File);
+    }
+    for suffix in ["-wal", "-shm", "-journal"] {
+        check_optional_sidecar(&with_suffix(path, suffix))?;
+    }
+    let (conn, _) = open_keyed(path, key)?;
+    Ok(conn)
+}
+
+fn open_keyed(path: &Path, key: &[u8; 32]) -> Result<(Connection, i64), StoreError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+    let conn = Connection::open_with_flags(path, flags).map_err(|_| StoreError::Database)?;
+    let mut key_hex = Zeroizing::new(String::with_capacity(64));
+    for b in key {
+        use std::fmt::Write;
+        let _ = write!(key_hex, "{b:02x}");
+    }
+    let mut key_pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", *key_hex));
+    let key_result = conn.execute_batch(&key_pragma).map_err(|_| StoreError::Key);
+    key_pragma.zeroize();
+    key_result?;
+    key_hex.zeroize();
+
+    // These are connection-only settings and must be active before SQLCipher
+    // decrypts even the first page. The schema query below remains the key check.
+    conn.execute_batch("PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;")
+        .map_err(|_| StoreError::Key)?;
+    let cipher: String = conn
+        .query_row("PRAGMA cipher_version", [], |r| r.get(0))
+        .map_err(|_| StoreError::Key)?;
+    if cipher.is_empty() {
+        return Err(StoreError::Key);
+    }
+    let schema_count: i64 = conn
+        .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
+        .map_err(|_| StoreError::Key)?;
+    Ok((conn, schema_count))
+}
+
+fn validate_binding(
+    conn: &Connection,
+    (instance, community, installation): ([u8; 16], [u8; 16], [u8; 16]),
+) -> Result<(), StoreError> {
+    let has_meta: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='bot_helper_meta')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|_| StoreError::Database)?;
+    if !has_meta {
+        return Err(StoreError::Binding);
+    }
+    let version: i64 = conn
+        .query_row(
+            "SELECT CAST(v AS INTEGER) FROM bot_helper_meta WHERE k='version'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|_| StoreError::Version)?;
+    if version != STORE_VERSION {
+        return Err(StoreError::Version);
+    }
+    let found: (Vec<u8>, Vec<u8>, Vec<u8>) = conn
+        .query_row("SELECT (SELECT v FROM bot_helper_meta WHERE k='instance'),(SELECT v FROM bot_helper_meta WHERE k='community'),(SELECT v FROM bot_helper_meta WHERE k='installation')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
+        .map_err(|_| StoreError::Binding)?;
+    if found.0.as_slice() != instance
+        || found.1.as_slice() != community
+        || found.2.as_slice() != installation
+    {
+        return Err(StoreError::Binding);
+    }
+    for name in ["bot_state", "bot_state_receipts"] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                [name],
+                |r| r.get(0),
+            )
+            .map_err(|_| StoreError::Database)?;
+        if !exists {
+            return Err(StoreError::Version);
+        }
+    }
+    Ok(())
+}
+
+fn initialize_schema(
+    conn: &mut Connection,
+    (instance, community, installation): ([u8; 16], [u8; 16], [u8; 16]),
+) -> Result<(), StoreError> {
+    conn.execute_batch("PRAGMA secure_delete=ON; PRAGMA synchronous=FULL;")
+        .map_err(|_| StoreError::Database)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| StoreError::Database)?;
+    tx.execute_batch("CREATE TABLE bot_helper_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL); CREATE TABLE bot_state (area INTEGER NOT NULL, key BLOB NOT NULL, revision INTEGER NOT NULL, value BLOB, PRIMARY KEY(area,key)); CREATE TABLE bot_state_receipts (id BLOB PRIMARY KEY, digest BLOB NOT NULL, result BLOB NOT NULL);")
+        .map_err(|_| StoreError::Database)?;
+    tx.execute("INSERT INTO bot_helper_meta(k,v) VALUES('version',?1),('instance',?2),('community',?3),('installation',?4)", params![STORE_VERSION, instance.as_slice(), community.as_slice(), installation.as_slice()]).map_err(|_| StoreError::Database)?;
+    tx.commit().map_err(|_| StoreError::Database)
+}
+
+fn publish_new_store(
+    dir: &Path,
+    canonical: &Path,
+    binding: ([u8; 16], [u8; 16], [u8; 16]),
+    key: &[u8; 32],
+) -> Result<(), StoreError> {
+    let marker = dir.join("state.init");
+    let stage = match fs::symlink_metadata(&marker) {
+        Ok(_) => {
+            let nonce = read_init_marker(&marker, binding)?;
+            let stage = stage_path(dir, nonce);
+            if fs::symlink_metadata(&stage).is_err() {
+                let (file, created) = secure_file(&stage)?;
+                if !created {
+                    return Err(StoreError::File);
+                }
+                file.sync_all().map_err(|_| StoreError::File)?;
+                sync_dir(dir)?;
+            }
+            stage
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            create_init_stage(dir, marker.as_path(), binding)?
+        }
+        Err(_) => return Err(StoreError::File),
+    };
+    refuse_existing(&with_suffix(&stage, "-wal"))?;
+    refuse_existing(&with_suffix(&stage, "-shm"))?;
+    check_optional_sidecar(&with_suffix(&stage, "-journal"))?;
+    let (stage_file, created) = secure_file(&stage)?;
+    if created {
+        stage_file.sync_all().map_err(|_| StoreError::File)?;
+        sync_dir(dir)?;
+    }
+    drop(stage_file);
+
+    let (mut conn, schema_count) = open_keyed(&stage, key)?;
+    if schema_count == 0 {
+        initialize_schema(&mut conn, binding)?;
+    } else {
+        validate_binding(&conn, binding)?;
+    }
+    let journal_mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .map_err(|_| StoreError::Database)?;
+    if journal_mode != "delete" {
+        return Err(StoreError::File);
+    }
+    drop(conn);
+    refuse_existing(&with_suffix(&stage, "-journal"))?;
+
+    File::open(&stage)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    fs::hard_link(&stage, canonical).map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    fs::remove_file(&stage).map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    fs::remove_file(marker).map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    Ok(())
+}
+
+fn create_init_stage(
+    dir: &Path,
+    marker: &Path,
+    (instance, community, installation): ([u8; 16], [u8; 16], [u8; 16]),
+) -> Result<PathBuf, StoreError> {
+    let mut random = File::open("/dev/urandom").map_err(|_| StoreError::File)?;
+    let (nonce, stage, stage_file) = loop {
+        let mut nonce = [0u8; 16];
+        random
+            .read_exact(&mut nonce)
+            .map_err(|_| StoreError::File)?;
+        if nonce.iter().all(|b| *b == 0) {
+            continue;
+        }
+        let stage = stage_path(dir, nonce);
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&stage)
+        {
+            Ok(file) => break (nonce, stage, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(StoreError::File),
+        }
+    };
+    stage_file.sync_all().map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+
+    let mut contents = Vec::with_capacity(INIT_MAGIC.len() + 64);
+    contents.extend_from_slice(INIT_MAGIC);
+    contents.extend_from_slice(&STORE_VERSION.to_be_bytes());
+    contents.extend_from_slice(&instance);
+    contents.extend_from_slice(&community);
+    contents.extend_from_slice(&installation);
+    contents.extend_from_slice(&nonce);
+    let tmp = dir.join(format!("state.init-tmp-{}", nonce_hex(nonce)));
+    let mut marker_tmp = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&tmp)
+        .map_err(|_| StoreError::File)?;
+    marker_tmp
+        .write_all(&contents)
+        .and_then(|_| marker_tmp.sync_all())
+        .map_err(|_| StoreError::File)?;
+    fs::hard_link(&tmp, marker).map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    fs::remove_file(tmp).map_err(|_| StoreError::File)?;
+    sync_dir(dir)?;
+    Ok(stage)
+}
+
+fn read_init_marker(
+    marker: &Path,
+    (instance, community, installation): ([u8; 16], [u8; 16], [u8; 16]),
+) -> Result<[u8; 16], StoreError> {
+    let (mut file, created) = secure_file(marker)?;
+    if created {
+        return Err(StoreError::File);
+    }
+    let expected_len = INIT_MAGIC.len() + 8 + 16 * 4;
+    if file.metadata().map_err(|_| StoreError::File)?.len() != expected_len as u64 {
+        return Err(StoreError::File);
+    }
+    let mut contents = vec![0; expected_len];
+    file.read_exact(&mut contents)
+        .map_err(|_| StoreError::File)?;
+    if contents.len() != expected_len
+        || &contents[..INIT_MAGIC.len()] != INIT_MAGIC
+        || i64::from_be_bytes(
+            contents[INIT_MAGIC.len()..INIT_MAGIC.len() + 8]
+                .try_into()
+                .unwrap(),
+        ) != STORE_VERSION
+    {
+        return Err(StoreError::File);
+    }
+    let mut cursor = INIT_MAGIC.len() + 8;
+    for expected in [instance, community, installation] {
+        if contents[cursor..cursor + 16] != expected {
+            return Err(StoreError::Binding);
+        }
+        cursor += 16;
+    }
+    let nonce: [u8; 16] = contents[cursor..cursor + 16].try_into().unwrap();
+    if nonce.iter().all(|b| *b == 0) {
+        return Err(StoreError::File);
+    }
+    Ok(nonce)
+}
+
+fn stage_path(dir: &Path, nonce: [u8; 16]) -> PathBuf {
+    dir.join(format!("state.db.init-{}", nonce_hex(nonce)))
+}
+
+fn nonce_hex(nonce: [u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for b in nonce {
+        use std::fmt::Write;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn cleanup_published_stage(
+    dir: &Path,
+    canonical: &Path,
+    binding: ([u8; 16], [u8; 16], [u8; 16]),
+) -> Result<(), StoreError> {
+    let marker = dir.join("state.init");
+    match fs::symlink_metadata(&marker) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(StoreError::File),
+    }
+    let nonce = read_init_marker(&marker, binding)?;
+    let stage = stage_path(dir, nonce);
+    match fs::symlink_metadata(&stage) {
+        Ok(_) => {
+            let canonical_meta = fs::symlink_metadata(canonical).map_err(|_| StoreError::File)?;
+            let stage_meta = fs::symlink_metadata(&stage).map_err(|_| StoreError::File)?;
+            if canonical_meta.dev() != stage_meta.dev() || canonical_meta.ino() != stage_meta.ino()
+            {
+                return Err(StoreError::File);
+            }
+            fs::remove_file(&stage).map_err(|_| StoreError::File)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(StoreError::File),
+    }
+    fs::remove_file(marker).map_err(|_| StoreError::File)?;
+    sync_dir(dir)
+}
+
+fn sync_dir(dir: &Path) -> Result<(), StoreError> {
+    File::open(dir)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| StoreError::File)
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 fn secure_dir(path: &Path) -> Result<File, StoreError> {
@@ -261,6 +525,14 @@ fn check_optional_sidecar(path: &Path) -> Result<(), StoreError> {
             Err(StoreError::File)
         }
         Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(StoreError::File),
+    }
+}
+
+fn refuse_existing(path: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(StoreError::File),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err(StoreError::File),
     }

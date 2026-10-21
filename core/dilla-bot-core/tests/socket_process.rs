@@ -13,7 +13,7 @@ use std::{
         fd::AsRawFd,
         unix::{fs::PermissionsExt, net::UnixStream},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -82,6 +82,66 @@ fn read_response(stream: &mut UnixStream, child: &mut std::process::Child) -> He
     let mut body = vec![0; u32::from_be_bytes(p) as usize];
     stream.read_exact(&mut body).unwrap();
     HelperResponse::decode(&body).unwrap()
+}
+
+fn staging_fixture(
+    path: &Path,
+    ids: ([u8; 16], [u8; 16], [u8; 16]),
+    key: [u8; 32],
+    stage_exists: bool,
+    committed: bool,
+    published: bool,
+) -> (PathBuf, PathBuf) {
+    const MAGIC: &[u8] = b"DILLA-BOT-INIT-v1\0";
+    let nonce = [0xA7; 16];
+    let stage = path.join(format!(
+        "state.db.init-{}",
+        nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ));
+    let marker = path.join("state.init");
+    assert!(!committed || stage_exists);
+    if stage_exists {
+        let c = rusqlite::Connection::open(&stage).unwrap();
+        let key_hex = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        c.execute_batch(&format!(
+            "PRAGMA key = \"x'{key_hex}'\"; PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;"
+        ))
+            .unwrap();
+        if committed {
+            c.execute_batch("CREATE TABLE bot_helper_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL); CREATE TABLE bot_state (area INTEGER NOT NULL, key BLOB NOT NULL, revision INTEGER NOT NULL, value BLOB, PRIMARY KEY(area,key)); CREATE TABLE bot_state_receipts (id BLOB PRIMARY KEY, digest BLOB NOT NULL, result BLOB NOT NULL);")
+                .unwrap();
+            c.execute(
+                "INSERT INTO bot_helper_meta(k,v) VALUES('version',?1),('instance',?2),('community',?3),('installation',?4)",
+                rusqlite::params![1i64, ids.0.as_slice(), ids.1.as_slice(), ids.2.as_slice()],
+            )
+            .unwrap();
+        }
+        drop(c);
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let mut marker_bytes = Vec::new();
+    marker_bytes.extend_from_slice(MAGIC);
+    marker_bytes.extend_from_slice(&1i64.to_be_bytes());
+    marker_bytes.extend_from_slice(&ids.0);
+    marker_bytes.extend_from_slice(&ids.1);
+    marker_bytes.extend_from_slice(&ids.2);
+    marker_bytes.extend_from_slice(&nonce);
+    fs::write(&marker, marker_bytes).unwrap();
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+    if published {
+        fs::hard_link(&stage, path.join("state.db")).unwrap();
+    }
+    (stage, marker)
+}
+
+fn open_payload(ids: ([u8; 16], [u8; 16], [u8; 16]), key: [u8; 32]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(4)
+        .bytes(&ids.0)
+        .bytes(&ids.1)
+        .bytes(&ids.2)
+        .bytes(&key);
+    e.into_vec()
 }
 
 #[test]
@@ -225,6 +285,56 @@ fn separate_helper_processes_cannot_open_the_same_identity() {
 }
 
 #[test]
+fn staged_first_open_crash_windows_recover_only_marker_owned_state() {
+    let ids = ([41; 16], [42; 16], [43; 16]);
+    let key = [0x5A; 32];
+
+    for (stage_exists, committed, published) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let path = temp_dir();
+        let (stage, marker) = staging_fixture(&path, ids, key, stage_exists, committed, published);
+        let before_stage = stage_exists.then(|| fs::read(&stage).unwrap());
+        let before_marker = fs::read(&marker).unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let mut child = spawn(&path, &server);
+        drop(server);
+
+        if committed && !published {
+            write_request(
+                &mut client,
+                [1; 16],
+                1,
+                open_payload(([99; 16], ids.1, ids.2), key),
+            );
+            assert_eq!(read_response(&mut client, &mut child).status, 4);
+            write_request(&mut client, [2; 16], 1, open_payload(ids, [0x6B; 32]));
+            assert_eq!(read_response(&mut client, &mut child).status, 1);
+            assert_eq!(
+                fs::read(&stage).unwrap(),
+                before_stage.as_ref().unwrap().as_slice()
+            );
+            assert_eq!(fs::read(&marker).unwrap(), before_marker);
+        }
+
+        write_request(&mut client, [3; 16], 1, open_payload(ids, key));
+        assert_eq!(read_response(&mut client, &mut child).status, 0);
+        assert!(path.join("state.db").exists());
+        assert!(!stage.exists());
+        assert!(!marker.exists());
+        let mut shutdown = Encoder::new();
+        shutdown.array(0);
+        write_request(&mut client, [4; 16], 15, shutdown.into_vec());
+        assert_eq!(read_response(&mut client, &mut child).status, 0);
+        assert!(child.wait().unwrap().success());
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+#[test]
 fn missing_or_wrong_database_key_is_refused_without_key_logs() {
     let path = temp_dir();
     {
@@ -288,18 +398,12 @@ fn missing_or_wrong_database_key_is_refused_without_key_logs() {
 
 #[test]
 fn truncated_frame_and_unsupported_envelopes_close_cleanly() {
-    for raw in [
-        {
+    {
+        let raw = {
             let mut e = Encoder::new();
             e.array(4).uint(2).bytes(&[1; 16]).uint(1).bytes(&[0x80]);
             e.into_vec()
-        },
-        {
-            let mut e = Encoder::new();
-            e.array(4).uint(1).bytes(&[1; 16]).uint(99).bytes(&[0x80]);
-            e.into_vec()
-        },
-    ] {
+        };
         let path = temp_dir();
         let (mut client, server) = UnixStream::pair().unwrap();
         let mut child = spawn(&path, &server);
@@ -310,6 +414,27 @@ fn truncated_frame_and_unsupported_envelopes_close_cleanly() {
         assert!(child.wait().unwrap().success());
         let _ = fs::remove_dir_all(path);
     }
+    let path = temp_dir();
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let mut child = spawn(&path, &server);
+    drop(server);
+    let mut empty = Encoder::new();
+    empty.array(0);
+    let mut unknown = Encoder::new();
+    unknown
+        .array(4)
+        .uint(1)
+        .bytes(&[7; 16])
+        .uint(99)
+        .bytes(&empty.into_vec());
+    write_raw(&mut client, unknown.into_vec());
+    let invalid = read_response(&mut client, &mut child);
+    assert_eq!(invalid.status, 1);
+    assert_eq!(invalid.request_id.as_bytes(), &[7; 16]);
+    drop(client);
+    assert!(child.wait().unwrap().success());
+    let _ = fs::remove_dir_all(path);
+
     let path = temp_dir();
     let (mut client, server) = UnixStream::pair().unwrap();
     let mut child = spawn(&path, &server);

@@ -258,7 +258,7 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
     if input.len() > HELPER_MAX {
         return Err(());
     }
-    decode_strict(input, |d| {
+    let (raw_id, operation, payload) = decode_strict(input, |d| {
         d.array(4)?;
         if d.uint()? != 1 {
             return Err(crate::store::cbor_shape());
@@ -268,9 +268,6 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
             return Err(crate::store::cbor_shape());
         }
         let operation = d.uint()?;
-        if !(1..=15).contains(&operation) {
-            return Err(crate::store::cbor_shape());
-        }
         let payload = d.bytes()?;
         if payload.is_empty() || payload.len() > HELPER_PAYLOAD_MAX {
             return Err(crate::store::cbor_shape());
@@ -280,15 +277,19 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
             Ok(())
         })
         .map_err(|_| crate::store::cbor_shape())?;
-        Ok(())
+        Ok((raw_id, operation, Zeroizing::new(payload.to_vec())))
     })
     .map_err(|_| ())?;
-    let request = HelperRequest::decode(input).map_err(|_| ())?;
-    Ok((
-        request.request_id,
-        request.operation,
-        Zeroizing::new(request.payload),
-    ))
+    if (1..=15).contains(&operation) {
+        let request = HelperRequest::decode(input).map_err(|_| ())?;
+        Ok((
+            request.request_id,
+            request.operation,
+            Zeroizing::new(request.payload),
+        ))
+    } else {
+        Ok((MsgId::from_bytes(raw_id), operation, payload))
+    }
 }
 
 fn body(mut v: Vec<u8>) -> Zeroizing<Vec<u8>> {
