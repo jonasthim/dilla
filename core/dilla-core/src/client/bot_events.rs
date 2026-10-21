@@ -243,7 +243,7 @@ impl ClientCore {
         limit: u64,
     ) -> Result<Vec<u8>, ClientError> {
         let community = bot_community(self)?;
-        if !(1..=PAGE_LIMIT).contains(&limit) || after_delivery_id >= i64::MAX as u64 {
+        if !(1..=PAGE_LIMIT).contains(&limit) || after_delivery_id > i64::MAX as u64 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
                 "event cursor/limit out of range",
@@ -353,7 +353,7 @@ impl ClientCore {
     /// deduplication metadata. Backward and future acknowledgements are refused.
     pub fn bot_events_ack(&mut self, through_delivery_id: u64) -> Result<(), ClientError> {
         let _ = bot_community(self)?;
-        if through_delivery_id >= i64::MAX as u64 {
+        if through_delivery_id > i64::MAX as u64 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
                 "event acknowledgement out of range",

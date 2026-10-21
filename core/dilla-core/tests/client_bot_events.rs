@@ -277,6 +277,51 @@ fn native_bot_event_api_starts_empty_and_rejects_invalid_limits_and_ack() {
 }
 
 #[test]
+fn signed_int64_max_cursor_and_ack_are_admitted_but_max_plus_one_is_refused() {
+    let (mut bot, connection) = ready_bot();
+    let max = i64::MAX as u64;
+    connection
+        .lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_bot_events(delivery_id,group_id,source_seq,community_id,channel_id,epoch,recv_ts,sender_user,sender_device,sender_kind,sender_tier,sender_leaf,sender_credential,sender_sig_key,message_id,envelope_type,original_body,disposition) \
+             VALUES(?1,?2,1,?3,?4,0,0,?5,?6,1,0,0,x'01',zeroblob(32),?7,0,NULL,1)",
+            rusqlite::params![
+                max as i64,
+                GROUP.as_slice(),
+                COMMUNITY.as_slice(),
+                CHANNEL.as_slice(),
+                PEER_USER.as_slice(),
+                PEER_DEVICE.as_slice(),
+                [0x7fu8; 16].as_slice(),
+            ],
+        )
+        .expect("synthetic maximum delivery marker without an impossible row count");
+
+    let page = bot
+        .bot_events_read(max, 10)
+        .expect("max cursor is representable");
+    let (count, next, high) = decode_strict(&page, |d| {
+        d.array(3)?;
+        let count = d.array_len()?;
+        let next = d.uint()?;
+        let high = d.uint()?;
+        Ok((count, next, high))
+    })
+    .expect("page cursor tuple");
+    assert_eq!((count, next, high), (0, max, max));
+    assert_eq!(
+        bot.bot_events_read(max + 1, 10).unwrap_err().code,
+        "E_CORE_INPUT"
+    );
+    bot.bot_events_ack(max).expect("max ack is representable");
+    assert_eq!(
+        bot.bot_events_ack(max + 1).unwrap_err().code,
+        "E_CORE_INPUT"
+    );
+}
+
+#[test]
 fn accepted_mls_event_survives_reopen_and_ack_clears_only_its_body() {
     let (mut bot, connection, mut relay, mut peer) = bot_with_trusted_peer();
 
@@ -579,6 +624,40 @@ fn uploader_or_class_mismatch_cannot_create_a_journal_event() {
 }
 
 #[test]
+fn corrupt_real_mls_ciphertext_never_creates_a_journal_event() {
+    let (mut bot, connection, mut relay, mut peer) = bot_with_trusted_peer();
+    let source_seq = peer.send(&mut relay, "ciphertext that will be corrupted");
+    let mut source = relay.messages.last().expect("real MLS message").clone();
+    let blob = source.blob.as_mut().expect("encrypted MLS application");
+    let last = blob.len() - 1;
+    blob[last] ^= 0x01;
+    bot.group_apply(&GROUP, &[0x80], &encode_rows(&[&source]), source_seq)
+        .expect("undecryptable MLS source is retained as unreadable");
+
+    let journal_count: i64 = connection
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT count(*) FROM app_bot_events WHERE group_id=?1 AND source_seq=?2",
+            rusqlite::params![GROUP.as_slice(), source_seq as i64],
+            |r| r.get(0),
+        )
+        .expect("journal count");
+    let status: i64 = connection
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT status FROM app_messages WHERE group_id=?1 AND seq=?2",
+            rusqlite::params![GROUP.as_slice(), source_seq as i64],
+            |r| r.get(0),
+        )
+        .expect("unreadable source marker");
+    assert_eq!(journal_count, 0);
+    assert_eq!(status, 1, "the source is stored as unreadable");
+    assert!(decode_events(&bot.bot_events_read(0, 10).expect("drain")).is_empty());
+}
+
+#[test]
 fn native_bot_outbox_echo_is_not_a_remote_event() {
     let (mut bot, connection, mut relay, _peer) = bot_with_trusted_peer();
     let identity: Vec<u8> = connection
@@ -710,7 +789,7 @@ fn late_pending_revalidation_gets_a_new_delivery_id_after_a_higher_ack() {
 }
 
 #[test]
-fn late_server_tombstone_suppresses_an_unacknowledged_event() {
+fn explicit_message_deleted_suppresses_an_unacknowledged_event() {
     let (mut bot, _connection, mut relay, mut peer) = bot_with_trusted_peer();
     let source_seq = peer.send(&mut relay, "must be withdrawn");
     let source = relay.messages.last().expect("message").clone();
@@ -724,6 +803,59 @@ fn late_server_tombstone_suppresses_an_unacknowledged_event() {
     bot.message_deleted(&GROUP, source_seq)
         .expect("late tombstone");
     assert!(decode_events(&bot.bot_events_read(0, 10).expect("suppressed")).is_empty());
+}
+
+#[test]
+fn group_apply_server_tombstone_clears_a_queued_body_and_advances_the_marker() {
+    let (mut bot, connection, mut relay, mut peer) = bot_with_trusted_peer();
+    let source_seq = peer.send(&mut relay, "server tombstone source");
+    let source = relay.messages.last().expect("message").clone();
+    bot.group_apply(&GROUP, &[0x80], &encode_rows(&[&source]), source_seq)
+        .expect("accept event");
+    let delivery_id = decode_events(&bot.bot_events_read(0, 10).expect("queued"))[0].0;
+
+    // Rewind only the fixture's applied cursor so the same server sequence is presented as the
+    // next row in a resumed sync. The row itself is an actual delivery-service tombstone.
+    connection
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_groups SET next_seq=?2 WHERE group_id=?1",
+            rusqlite::params![GROUP.as_slice(), source_seq as i64],
+        )
+        .expect("stage resumed sync cursor");
+    relay.delete_message(source_seq);
+    let tombstone = relay
+        .messages
+        .iter()
+        .find(|row| row.seq == source_seq)
+        .expect("delivery-service tombstone row")
+        .clone();
+    bot.group_apply(&GROUP, &[0x80], &encode_rows(&[&tombstone]), source_seq)
+        .expect("apply server tombstone row");
+    drop(bot);
+
+    let mut bot = ClientCore::open(connection.clone()).expect("reopen after tombstone");
+    let page = bot.bot_events_read(0, 10).expect("read retained marker");
+    let (count, next, high) = decode_strict(&page, |d| {
+        d.array(3)?;
+        let count = d.array_len()?;
+        let next = d.uint()?;
+        let high = d.uint()?;
+        Ok((count, next, high))
+    })
+    .expect("suppressed cursor page");
+    assert_eq!((count, next, high), (0, delivery_id, delivery_id));
+    let retained: (Option<String>, i64, i64) = connection
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT original_body,disposition,(SELECT status FROM app_messages WHERE group_id=?1 AND seq=?2) FROM app_bot_events WHERE group_id=?1 AND source_seq=?2",
+            rusqlite::params![GROUP.as_slice(), source_seq as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("tombstone leaves compact journal metadata");
+    assert_eq!(retained, (None, 1, 2));
 }
 
 #[test]
