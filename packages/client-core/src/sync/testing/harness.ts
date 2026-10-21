@@ -84,7 +84,8 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {
   return {
-    deviceId: me.device, userId: me.user, generation: 1n, keypackagesRemaining: 32, groups, heartbeatMs: 30000, maxFrameBytes: 131584,
+    deviceId: me.device, userId: me.user, generation: 1n, versions: { wire: 2n, e2ee: 1n, media: 1n },
+    keypackagesRemaining: 32, groups, heartbeatMs: 30000, maxFrameBytes: 131584,
     backoffMs: 300, backoffJitterMs: 300,
   };
 }

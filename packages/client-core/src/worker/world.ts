@@ -146,7 +146,7 @@ export const INSTANCE: Instance = {
   policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2),
 };
 export const READY_INFO: ReadyInfo = {
-  deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+  deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
   heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 1_000, backoffJitterMs: 500,
 };
 export const refusal = (status: number, code: string, retryAfterMs: number | null = null): DillaHttpError =>

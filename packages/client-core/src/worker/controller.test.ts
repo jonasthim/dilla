@@ -465,7 +465,7 @@ it('refreshes only core-owned pending leaves and never publishes list bytes', as
   await toReady(w);
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 1, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
@@ -1644,7 +1644,7 @@ it('resign waits for ready backup maintenance', async () => {
   const gate = deferred<void>();
   w.account.ensureBackups.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.ensureBackups).toHaveBeenCalledTimes(2));
@@ -1662,7 +1662,7 @@ it('resign waits for ready keypackage refill', async () => {
   const gate = deferred<void>();
   w.routes.postKeyPackages.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 1, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.postKeyPackages).toHaveBeenCalled());
@@ -1681,7 +1681,7 @@ it('resign waits for ready trust ingestion', async () => {
   const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
   w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
@@ -1699,7 +1699,7 @@ it('resign waits for ready own-list maintenance', async () => {
   const gate = deferred<{ version: bigint; listed: boolean }>();
   w.account.refreshOwnDeviceList.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.refreshOwnDeviceList).toHaveBeenCalledTimes(2));
@@ -1717,7 +1717,7 @@ it('resign waits for ready backup repair after the own-list refresh', async () =
   const gate = deferred<boolean>();
   w.account.repairBackupState.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
@@ -1735,7 +1735,7 @@ it('resign waits for the ready community refresh', async () => {
   const gate = deferred<Awaited<ReturnType<typeof w.routes.listCommunities>>>();
   w.routes.listCommunities.mockImplementationOnce(() => gate.promise);
   w.gateway.emit({ type: 'ready', info: {
-    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    deviceId: DEVICE, userId: USER, generation: 7n, versions: { wire: 2n, e2ee: 1n, media: 1n }, keypackagesRemaining: 32, groups: [],
     heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
   } });
   await vi.waitFor(() => expect(w.routes.listCommunities).toHaveBeenCalledTimes(2));

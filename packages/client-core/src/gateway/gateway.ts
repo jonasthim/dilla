@@ -9,6 +9,7 @@ export interface ReadyInfo {
   deviceId: Uint8Array;
   userId: Uint8Array;
   generation: bigint;
+  versions: { wire: bigint; e2ee: bigint; media: bigint };
   keypackagesRemaining: number;
   groups: { groupId: Uint8Array; epoch: bigint; lastSeq: bigint; proposalsOutstanding: number }[];
   heartbeatMs: number;
@@ -44,10 +45,11 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-/** web3.8 (R2): the wire version this client identifies with; a hello that does not offer it closes 4006 (protocol/07). */
-const WIRE = 2n;
+const WIRE_PREFERENCE = [3n, 2n] as const;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
-type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & { versions: bigint[][] };
+type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
+  versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
+};
 
 function readHello(payload: CborValue[]): HelloInfo {
   const p = arr(payload, 9);
@@ -56,7 +58,12 @@ function readHello(payload: CborValue[]): HelloInfo {
   const maxFrameBytes = u53(p[4]);
   bin(p[5], 16);
   u64(p[6]);
-  return { versions, heartbeatMs, maxFrameBytes, backoffMs: u53(p[7]), backoffJitterMs: u53(p[8]) };
+  return { versions, selectedVersions: { wire: 0n, e2ee: 1n, media: 1n }, heartbeatMs, maxFrameBytes,
+    backoffMs: u53(p[7]), backoffJitterMs: u53(p[8]) };
+}
+
+function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint | null {
+  return preference.find((version) => offered.includes(version)) ?? null;
 }
 
 function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
@@ -65,15 +72,15 @@ function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
   const userId = bin(p[1], 16);
   const generation = u64(p[2]);
   bin(p[3], 32);
-  u64(p[4]);
-  u64(p[5]);
-  u64(p[6]);
+  const versions = { wire: u64(p[4]), e2ee: u64(p[5]), media: u64(p[6]) };
+  if (versions.wire !== hello.selectedVersions.wire || versions.e2ee !== hello.selectedVersions.e2ee
+    || versions.media !== hello.selectedVersions.media) throw new Error('ready version mismatch');
   const keypackagesRemaining = u53(p[7]);
   const groups = arr(p[8]).map((entry) => {
     const group = arr(entry, 4);
     return { groupId: bin(group[0], 16), epoch: u64(group[1]), lastSeq: u64(group[2]), proposalsOutstanding: u53(group[3]) };
   });
-  return { deviceId, userId, generation, keypackagesRemaining, groups,
+  return { deviceId, userId, generation, versions, keypackagesRemaining, groups,
     heartbeatMs: hello.heartbeatMs, maxFrameBytes: hello.maxFrameBytes,
     backoffMs: hello.backoffMs, backoffJitterMs: hello.backoffJitterMs };
 }
@@ -94,9 +101,12 @@ export class Gateway {
   private heartbeatTimer: number | null = null;
   private ackTimer: number | null = null;
   private readonly lastTyping = new Map<string, number>();
+  private accepted: ReadyInfo['versions'] | null = null;
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
   get status(): GatewayStatus { return this.current; }
+  /** Accepted capabilities are available only for the current ready connection. */
+  get acceptedVersions(): ReadyInfo['versions'] | null { return this.current === 'ready' ? this.accepted : null; }
 
   subscribe(listener: (e: GatewayEvent) => void): () => void {
     this.listeners.add(listener);
@@ -141,6 +151,7 @@ export class Gateway {
   }
 
   private connect(): void {
+    this.accepted = null;
     this.phase = 'minting';
     const id = ++this.attempt;
     // The mint is the first step of the handshake and is bounded like the others: a ticket request stalled
@@ -202,13 +213,17 @@ export class Gateway {
       try { hello = readHello(frame.payload); }
       catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
       const versions = hello.versions;
-      if (!versions[0].includes(WIRE) || !versions[1].includes(1n) || !versions[2].includes(1n)) {
+      const wire = highestCommon(versions[0], WIRE_PREFERENCE);
+      const e2ee = highestCommon(versions[1], [1n]);
+      const media = highestCommon(versions[2], [1n]);
+      if (wire === null || e2ee === null || media === null) {
         this.teardown(CLIENT_CLOSE.version, false);
         this.setStatus('idle', CLIENT_CLOSE.version);
         return;
       }
+      hello.selectedVersions = { wire, e2ee, media };
       this.hello = hello;
-      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, 0]));
+      this.send(encodeFrame(Op.identify, 1, null, ['', wire, e2ee, media, 0]));
       this.phase = 'ready-wait';
       this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => this.teardown(CLIENT_CLOSE.helloTimeout, true));
       return;
@@ -221,6 +236,7 @@ export class Gateway {
         this.cancel('handshakeTimer');
         this.failures = 0;
         this.phase = 'ready';
+        this.accepted = info.versions;
         this.setStatus('ready', null);
         this.emit({ type: 'ready', info });
         this.scheduleBeat();
@@ -280,6 +296,7 @@ export class Gateway {
   }
 
   private teardown(code: number, reconnect: boolean): void {
+    this.accepted = null;
     const ws = this.socket;
     this.attempt += 1;
     this.cancel('handshakeTimer');
@@ -292,6 +309,7 @@ export class Gateway {
   }
 
   private fail(closeCode: number | null): void {
+    this.accepted = null;
     this.attempt += 1;
     this.cancel('handshakeTimer');
     this.cancel('heartbeatTimer');
@@ -307,6 +325,7 @@ export class Gateway {
   }
 
   private goIdle(): void {
+    this.accepted = null;
     this.attempt += 1;
     this.cancel('reconnectTimer');
     this.cancel('handshakeTimer');

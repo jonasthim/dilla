@@ -34,13 +34,14 @@ const DEVICE = new Uint8Array(16).fill(0x08);
 const USER = new Uint8Array(16).fill(0x09);
 const GROUP = new Uint8Array(16).fill(0x07);
 
-function hello(over: { wire?: number[]; heartbeatMs?: number; maxFrameBytes?: number } = {}): Uint8Array {
-  return encodeFrame(Op.hello, 0, null, [over.wire ?? [2], [1], [1], over.heartbeatMs ?? 30000,
+function hello(over: { wire?: number[]; e2ee?: number[]; media?: number[]; heartbeatMs?: number; maxFrameBytes?: number } = {}): Uint8Array {
+  return encodeFrame(Op.hello, 0, null, [over.wire ?? [2], over.e2ee ?? [1], over.media ?? [1], over.heartbeatMs ?? 30000,
     over.maxFrameBytes ?? 131584, INSTANCE, 1, 300, 300]);
 }
 
-function ready(): Uint8Array {
-  return encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 1, 1, 1, 32, [[GROUP, 6, 4127, 2]]]);
+function ready(over: { wire?: number; e2ee?: number; media?: number } = {}): Uint8Array {
+  return encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), over.wire ?? 2, over.e2ee ?? 1,
+    over.media ?? 1, 32, [[GROUP, 6, 4127, 2]]]);
 }
 
 /** A manual clock: timers run only inside advance(), in deadline order, ties in creation order. */
@@ -206,24 +207,38 @@ describe('Gateway connect', () => {
     const s = h.last();
     s.open();
     expect(s.sent).toHaveLength(0);
+    expect(h.gw.acceptedVersions).toBeNull();
     s.receive(hello());
     expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
+    expect(h.gw.acceptedVersions).toEqual({ wire: 2n, e2ee: 1n, media: 1n });
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
       type: 'ready',
       info: {
         deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32,
         groups: [{ groupId: GROUP, epoch: 6n, lastSeq: 4127n, proposalsOutstanding: 2 }],
+        versions: { wire: 2n, e2ee: 1n, media: 1n },
         heartbeatMs: 30000, maxFrameBytes: 131584, backoffMs: 300, backoffJitterMs: 300,
       },
     });
     expect(statuses(h.events)).toEqual(['connecting:null', 'ready:null']);
   });
 
-  // web3.8 (R2): the instance advertises wire 2 alone; a hello that offers only wire 1 is an instance this client cannot
-  // speak to, so it closes 4006 and stays down until the page is reloaded.
-  it('refuses a hello without wire version 2 and stays down', async () => {
+  it('selects the highest common wire regardless of server order and exposes the echo only after ready', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [2, 3] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 3, 1, 1, 0])]);
+    expect(h.events.some((e) => e.type === 'ready')).toBe(false);
+    s.receive(ready({ wire: 3 }));
+    expect(h.events.find((e) => e.type === 'ready')).toMatchObject({ info: { versions: { wire: 3n, e2ee: 1n, media: 1n } } });
+  });
+
+  it('falls back to wire 2 and refuses a hello without wire version 2', async () => {
     const h = harness();
     h.gw.start();
     await flush();
@@ -239,17 +254,39 @@ describe('Gateway connect', () => {
     await flush();
     expect(FakeSocket.instances).toHaveLength(1);
     expect(h.minted()).toBe(1);
+
+    const fallback = harness();
+    fallback.gw.start();
+    await flush();
+    const f = fallback.last();
+    f.open();
+    f.receive(hello({ wire: [2] }));
+    expect(f.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
   });
 
-  it('identifies with wire version 2 when the hello offers 1 and 2, and refuses one without e2ee or media version 1', async () => {
+  it('rejects ready when the server echoes a different selected version', async () => {
+    for (const echo of [{ wire: 2 }, { e2ee: 2 }, { media: 2 }]) {
+      const h = harness();
+      h.gw.start();
+      await flush();
+      const s = h.last();
+      s.open();
+      s.receive(hello({ wire: [3, 2] }));
+      s.receive(ready(echo));
+      expect(s.closedWith?.code).toBe(CLIENT_CLOSE.undecodable);
+      expect(h.events.some((e) => e.type === 'ready')).toBe(false);
+    }
+  });
+
+  it('identifies with the selected wire when the hello offers 2 and 3, and refuses one without e2ee or media version 1', async () => {
     const h = harness();
     h.gw.start();
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [1, 2] }));
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
-    for (const bad of [[[2], [2], [1]], [[2], [1], [2]]]) {
+    s.receive(hello({ wire: [1, 2, 3] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 3, 1, 1, 0])]);
+    for (const bad of [[[2, 3], [2], [1]], [[2, 3], [1], [2]]]) {
       const g = harness();
       g.gw.start();
       await flush();
@@ -507,7 +544,9 @@ describe('Gateway reconnect', () => {
   it('honours reconnect.after_ms and treats invalid_session as a reconnect', async () => {
     const h = harness();
     const s1 = await connected(h);
+    expect(h.gw.acceptedVersions).toEqual({ wire: 2n, e2ee: 1n, media: 1n });
     s1.receive(encodeFrame(Op.reconnect, 0, null, ['going away', 2500]));
+    expect(h.gw.acceptedVersions).toBeNull();
     expect(s1.closedWith?.code).toBe(1000);
     expect(h.events.at(-1)).toEqual({ type: 'status', status: 'waiting', closeCode: 1000 });
     expect(h.clock.pending()).toEqual([2500]);
@@ -515,8 +554,10 @@ describe('Gateway reconnect', () => {
     await flush();
     const s2 = h.last();
     s2.open();
-    s2.receive(hello());
-    s2.receive(ready());
+    s2.receive(hello({ wire: [3, 2] }));
+    expect(h.gw.acceptedVersions).toBeNull();
+    s2.receive(ready({ wire: 3 }));
+    expect(h.gw.acceptedVersions).toEqual({ wire: 3n, e2ee: 1n, media: 1n });
     s2.receive(encodeFrame(Op.invalidSession, 0, null, [0, 'unknown resume token']));
     expect(s2.closedWith?.code).toBe(1000);
     expect(h.clock.pending()).toEqual([500]);

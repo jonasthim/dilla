@@ -100,10 +100,10 @@ function requestValue(x: BotRequest): CborInput[] {
   return [1n,x.requestId,x.communityId,x.channelId,BigInt(x.operation),x.revision,x.expires,args];
 }
 function readRequest(v: CborValue): BotRequest {
-  const a=arr(v,8); if(u64(a[0]!)!==1n)fail('E_BOT_VERSION');
-  const op=Number(u64(a[4]!)); if(!Number.isSafeInteger(op))fail('E_BOT_OPERATION');
-  const out:BotRequest={requestId:readId(a[1]!),communityId:readId(a[2]!),channelId:readOptId(a[3]!),operation:op,
-    revision:readOptU(a[5]!),expires:readOptU(a[6]!),args:arr(a[7]!) as CborInput[]};
+  const a=arr(v,8); if(u64(a[0])!==1n)fail('E_BOT_VERSION');
+  const op=Number(u64(a[4])); if(!Number.isSafeInteger(op))fail('E_BOT_OPERATION');
+  const out:BotRequest={requestId:readId(a[1]),communityId:readId(a[2]),channelId:readOptId(a[3]),operation:op,
+    revision:readOptU(a[5]),expires:readOptU(a[6]),args:arr(a[7])};
   requestValue(out); return out;
 }
 export function encodeBotRequest(request: BotRequest): string { return guarded(() => bodyEncode(requestValue(request))); }
@@ -139,13 +139,13 @@ function responseValue(response: BotResponse): CborInput[] {
 
 function readResponse(value: CborValue): BotResponse {
   const fields = arr(value, 6);
-  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
 
   const response: BotResponse = {
-    requestId: readId(fields[1]!),
-    communityId: readId(fields[2]!),
-    status: Number(u64(fields[3]!)),
-    revision: readOptU(fields[4]!),
+    requestId: readId(fields[1]),
+    communityId: readId(fields[2]),
+    status: Number(u64(fields[3])),
+    revision: readOptU(fields[4]),
     data: bytes(fields[5]!),
   };
   responseValue(response);
@@ -185,11 +185,11 @@ function removalValue(proof: RemovalProof): CborInput[] {
 
 function readRemoval(value: CborValue): RemovalProof {
   const fields = arr(value, 8);
-  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
   const proof: RemovalProof = {
-    requestId: readId(fields[1]!), actorUser: readId(fields[2]!), actorDevice: readId(fields[3]!),
-    communityId: readId(fields[4]!), groupId: readId(fields[5]!), targetSeq: u64(fields[6]!),
-    expires: u64(fields[7]!),
+    requestId: readId(fields[1]), actorUser: readId(fields[2]), actorDevice: readId(fields[3]),
+    communityId: readId(fields[4]), groupId: readId(fields[5]), targetSeq: u64(fields[6]),
+    expires: u64(fields[7]),
   };
   removalValue(proof);
   return proof;
@@ -306,14 +306,14 @@ function eventValue(event: DurableEvent): CborInput[] {
 
 function readEvent(value: CborValue): DurableEvent {
   const fields = arr(value, 7);
-  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
   const event: DurableEvent = {
-    eventId: readId(fields[1]!),
-    sequence: u64(fields[2]!),
-    communityId: readId(fields[3]!),
-    timestamp: u64(fields[4]!),
-    kind: Number(u64(fields[5]!)),
-    data: arr(fields[6]!) as CborInput[],
+    eventId: readId(fields[1]),
+    sequence: u64(fields[2]),
+    communityId: readId(fields[3]),
+    timestamp: u64(fields[4]),
+    kind: Number(u64(fields[5])),
+    data: arr(fields[6]),
   };
   eventValue(event);
   return event;
@@ -363,15 +363,15 @@ function receiptValue(receipt: SendReceipt): CborInput[] {
 
 function readReceipt(value: CborValue): SendReceipt {
   const fields = arr(value, 8);
-  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
+  if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
   const receipt: SendReceipt = {
-    operationId: readId(fields[1]!),
-    communityId: readId(fields[2]!),
-    groupId: readId(fields[3]!),
+    operationId: readId(fields[1]),
+    communityId: readId(fields[2]),
+    groupId: readId(fields[3]),
     ciphertextSha256: bytes(fields[4]!, 32),
-    status: Number(u64(fields[5]!)),
-    sequence: readOptU(fields[6]!),
-    epoch: readOptU(fields[7]!),
+    status: Number(u64(fields[5])),
+    sequence: readOptU(fields[6]),
+    epoch: readOptU(fields[7]),
   };
   receiptValue(receipt);
   return receipt;
@@ -420,9 +420,9 @@ function helperValue(
 
 function readHelper(value: CborValue, isResponse: boolean): HelperEnvelope | HelperResponse {
   const fields = arr(value, 4);
-  if (u64(fields[0]!) !== 1n) fail('E_BOT_VERSION');
-  const requestId = readId(fields[1]!);
-  const operation = Number(u64(fields[2]!));
+  if (u64(fields[0]) !== 1n) fail('E_BOT_VERSION');
+  const requestId = readId(fields[1]);
+  const operation = Number(u64(fields[2]));
   const payload = bytes(fields[3]!);
   const envelope = isResponse
     ? { requestId, status: operation, payload }

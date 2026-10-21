@@ -22,3 +22,5 @@ export { canCreateAnnouncement } from './admin/roles';
 export { PERM, COMMUNITY_BITS, PERM_GROUPS, PERM_BY_KEY, resolveCommunity, resolveChannel, channelBitsOf, isPrivate } from './admin/perm';
 export type { PermKey, PermRole, PermOverwrite, PermMember, PermInput } from './admin/perm';
 export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } from './core-port';
+export { negotiateSession } from './http/negotiate-session';
+export type { SessionCapabilities } from './http/negotiate-session';
