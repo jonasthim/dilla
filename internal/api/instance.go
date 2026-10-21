@@ -80,14 +80,21 @@ func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
 	// The hello's own list (web3.8 S1): the composition root passes the one it hands the gateway.
 	wire := d.WireVersions
 	if len(wire) == 0 {
-		// The gateway package's own default, for this package's unit tests only: the real list
-		// comes from dillad.New, the one composition root ({dillad.WireVersion}, 2).
-		wire = []uint64{1}
+		// Match dillad's production offer when a focused handler test omits composition wiring.
+		wire = []uint64{3, 2}
+	}
+	e2ee := d.E2EEVersions
+	if len(e2ee) == 0 {
+		e2ee = []uint64{1}
+	}
+	media := d.MediaVersions
+	if len(media) == 0 {
+		media = []uint64{1}
 	}
 	doc := []any{
-		wire,        // wire_versions
-		[]uint64{1}, // e2ee_versions
-		[]uint64{1}, // media_versions
+		wire,  // wire_versions
+		e2ee,  // e2ee_versions
+		media, // media_versions
 		d.Instance.InstanceID,
 		d.Instance.Generation,
 		d.Config.Instance.Domain,

@@ -1,6 +1,7 @@
 package dillad_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -11,14 +12,13 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
-// version_test.go is web3.8 S1: the instance offers wire version 2 alone. A hello's wire list is
-// [2], an identify that picks wire 1 is refused with E_VERSION and close 4006, and GET
-// /v1/instance advertises the same [2] as the hello. web3.6 and web3.7 clients both identify with
-// wire 1, so a stale bundle meets the version close and its reload banner instead of uploading
-// two-element bodies the delivery service now refuses.
+// Session capability negotiation adds bot wire 3 while preserving wire 2. Wire 1 remains
+// unsupported, and discovery must match the hello offer.
 
 // dialHello opens /gateway without a credential on the upgrade and returns the connection and the
 // hello payload.
@@ -51,12 +51,12 @@ func identifyWith(t *testing.T, ctx context.Context, c *websocket.Conn, bearer s
 	}
 }
 
-func TestTheGatewayOffersWireTwo(t *testing.T) {
+func TestTheGatewayOffersWireThreeAndTwo(t *testing.T) {
 	_, ts, _ := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, hello := dialHello(t, ctx, ts.URL)
-	for i, want := range [][]uint64{{2}, {1}, {1}} {
+	for i, want := range [][]uint64{{3, 2}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, hello[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("hello %s = %v, want %v", names[i], got, want)
@@ -90,7 +90,94 @@ func TestIdentifyWithWireOneIsRefused(t *testing.T) {
 	}
 }
 
-func TestTheInstanceDocumentAdvertisesWireTwo(t *testing.T) {
+func TestIdentifyWithWireThreeReachesReady(t *testing.T) {
+	srv, ts, token := newGreetedServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _ := dialHello(t, ctx, ts.URL)
+	identifyWith(t, ctx, c, token, 3)
+	if op, payload := readFrame(t, ctx, c); op != 3 {
+		t.Fatalf("identify with wire 3: op %d %v, want ready (3)", op, payload)
+	}
+	session, err := srv.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.WireVersion != 3 || session.E2EEVersion != 1 || session.MediaVersion != 1 {
+		t.Fatalf("identify persisted versions = [%d %d %d], want [3 1 1]", session.WireVersion, session.E2EEVersion, session.MediaVersion)
+	}
+}
+
+func TestGatewayResumePersistsOriginalCapabilitiesOnReplacementBearer(t *testing.T) {
+	srv, ts, token := newGreetedServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c, hello := dialHello(t, ctx, ts.URL)
+	identifyWith(t, ctx, c, token, 3)
+	op, ready := readFrame(t, ctx, c)
+	if op != 3 {
+		t.Fatalf("identify op %d, want ready", op)
+	}
+	resumeToken, ok := ready[3].([]byte)
+	if !ok || len(resumeToken) != 32 {
+		t.Fatalf("ready resume token = %#v, want 32 bytes", ready[3])
+	}
+	first, err := srv.Sessions().Resolve(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := srv.Repo().GetDevice(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replacement auth.Token
+	if err := srv.Repo().Tx(ctx, func(tx store.Repository) error {
+		var issueErr error
+		replacement, issueErr = srv.Sessions().NewDeviceSession(ctx, tx, first.UserID, first.DeviceID, device.Tier)
+		return issueErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(websocket.StatusNormalClosure, "resume test"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.Gateway().Suspended() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("suspended = %d, want 1", srv.Gateway().Suspended())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c2, resumedHello := dialHello(t, ctx, ts.URL)
+	instanceA, _ := hello[5].([]byte)
+	instanceB, _ := resumedHello[5].([]byte)
+	if !bytes.Equal(instanceB, instanceA) {
+		t.Fatal("resume connected to another instance")
+	}
+	frame, err := cborx.Marshal([]any{uint64(2), uint64(1), nil,
+		[]any{replacement.Token, resumeToken, hello[6], uint64(0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c2.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		t.Fatal(err)
+	}
+	if op, payload := readFrame(t, ctx, c2); op != 4 {
+		t.Fatalf("resume op %d %v, want resumed (4)", op, payload)
+	}
+	second, err := srv.Sessions().Resolve(ctx, replacement.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.WireVersion != 3 || second.E2EEVersion != 1 || second.MediaVersion != 1 {
+		t.Fatalf("resume persisted versions = [%d %d %d], want [3 1 1]", second.WireVersion, second.E2EEVersion, second.MediaVersion)
+	}
+	if bytes.Equal(first.TokenHash, second.TokenHash) {
+		t.Fatal("replacement bearer reused the original token hash")
+	}
+}
+
+func TestTheInstanceDocumentAdvertisesWireThreeAndTwo(t *testing.T) {
 	_, ts, _ := newGreetedServer(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/v1/instance", nil)
 	if err != nil {
@@ -115,7 +202,7 @@ func TestTheInstanceDocumentAdvertisesWireTwo(t *testing.T) {
 	if len(doc) != 11 {
 		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
-	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{2}) {
-		t.Fatalf("wire_versions = %v, want [2], the hello's list", got)
+	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{3, 2}) {
+		t.Fatalf("wire_versions = %v, want [3 2], the hello's list", got)
 	}
 }

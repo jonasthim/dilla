@@ -332,8 +332,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check. wire_versions is the hello's
-	// [2] (web3.8 S1, TestTheInstanceDocumentAdvertisesWireTwo).
-	for i, want := range [][]uint64{{2}, {1}, {1}} {
+	// [3,2] with the session capability negotiation release.
+	for i, want := range [][]uint64{{3, 2}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, doc[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("%s = %v, want %v", names[i], got, want)

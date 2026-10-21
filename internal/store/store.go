@@ -128,6 +128,7 @@ type Devices interface {
 type Sessions interface {
 	CreateSession(ctx context.Context, s SessionRow) error
 	GetSessionByHash(ctx context.Context, tokenHash []byte, now int64) (SessionRow, error)
+	SetSessionVersions(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error
 	TouchSession(ctx context.Context, tokenHash []byte, idleExpires int64) error
 	DeleteSession(ctx context.Context, tokenHash []byte) error
 	DeleteSessionsByDevice(ctx context.Context, deviceID id.ID) (int64, error)

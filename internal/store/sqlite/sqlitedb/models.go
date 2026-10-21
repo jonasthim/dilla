@@ -408,14 +408,17 @@ type Roles struct {
 }
 
 type Sessions struct {
-	TokenHash   []byte
-	DeviceID    id.ID
-	UserID      id.ID
-	Scope       int64
-	Tier        int64
-	Created     int64
-	Expires     int64
-	IdleExpires int64
+	TokenHash    []byte
+	DeviceID     id.ID
+	UserID       id.ID
+	Scope        int64
+	Tier         int64
+	Created      int64
+	Expires      int64
+	IdleExpires  int64
+	WireVersion  int64
+	E2eeVersion  int64
+	MediaVersion int64
 }
 
 type SlowmodeMarks struct {

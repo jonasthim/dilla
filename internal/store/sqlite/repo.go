@@ -525,16 +525,32 @@ func (r *Repo) GetSessionByHash(ctx context.Context, tokenHash []byte, now int64
 		return store.SessionRow{}, wrap(err)
 	}
 	return store.SessionRow{
-		TokenHash:   row.TokenHash,
-		DeviceID:    row.DeviceID,
-		UserID:      row.UserID,
-		Scope:       uint8(row.Scope),
-		Tier:        uint8(row.Tier),
-		Created:     row.Created,
-		Expires:     row.Expires,
-		IdleExpires: row.IdleExpires,
-		FactorOwed:  row.FactorOwed == 1,
+		TokenHash:    row.TokenHash,
+		DeviceID:     row.DeviceID,
+		UserID:       row.UserID,
+		Scope:        uint8(row.Scope),
+		Tier:         uint8(row.Tier),
+		Created:      row.Created,
+		Expires:      row.Expires,
+		IdleExpires:  row.IdleExpires,
+		WireVersion:  uint64(row.WireVersion),
+		E2EEVersion:  uint64(row.E2eeVersion),
+		MediaVersion: uint64(row.MediaVersion),
+		FactorOwed:   row.FactorOwed == 1,
 	}, nil
+}
+
+func (r *Repo) SetSessionVersions(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
+	n, err := r.w.SetSessionVersions(ctx, sqlitedb.SetSessionVersionsParams{
+		WireVersion: int64(wire), E2eeVersion: int64(e2ee), MediaVersion: int64(media), TokenHash: tokenHash,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repo) TouchSession(ctx context.Context, tokenHash []byte, idleExpires int64) error {

@@ -456,10 +456,17 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if session.DeviceID != c.deviceID {
 		return refuse("resume token does not belong to this session")
 	}
+	if session.UserID != c.userID {
+		return refuse("resume token does not belong to this account")
+	}
 	out, err := c.tryResume(token, generation, lastN, g.Generation())
 	if err != nil {
 		g.suspended.Delete(string(token))
 		return refuse("resume window elapsed or n below the ring floor")
+	}
+	versions := [3]uint64{c.wire, c.e2ee, c.media}
+	if err := g.recordCapabilities(ctx, session.TokenHash, versions); err != nil {
+		return refuse("session capability persistence failed")
 	}
 
 	// The connection comes back into the live registry over the NEW sink.
@@ -468,6 +475,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	c.mu.Lock()
 	c.state = stateReady
 	c.lastLive = now
+	c.tokenHash = append(c.tokenHash[:0], session.TokenHash...)
 	// Paused until the connection is live again, as on identify: see newPausedWriter.
 	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,

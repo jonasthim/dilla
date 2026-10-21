@@ -8,6 +8,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 SELECT s.*, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = $1 AND s.expires > $2 AND s.idle_expires > $3;
 
+-- name: SetSessionVersions :execrows
+UPDATE sessions SET wire_version = $1, e2ee_version = $2, media_version = $3 WHERE token_hash = $4;
+
 -- name: TouchSession :exec
 UPDATE sessions SET idle_expires = $1 WHERE token_hash = $2;
 

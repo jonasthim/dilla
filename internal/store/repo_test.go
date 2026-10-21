@@ -253,6 +253,18 @@ func TestRepositoryConformance(t *testing.T) {
 				if _, err := repo.GetSessionByHash(ctx, hash, 20); err != nil {
 					t.Fatalf("GetSessionByHash: %v", err)
 				}
+				if err := repo.SetSessionVersions(ctx, hash, 3, 1, 1); err != nil {
+					t.Fatalf("SetSessionVersions: %v", err)
+				}
+				selected, err := repo.GetSessionByHash(ctx, hash, 20)
+				if err != nil || selected.WireVersion != 3 || selected.E2EEVersion != 1 || selected.MediaVersion != 1 {
+					t.Fatalf("session versions = [%d %d %d], %v; want [3 1 1]", selected.WireVersion, selected.E2EEVersion, selected.MediaVersion, err)
+				}
+				missing := make([]byte, 32)
+				missing[0] = 8
+				if err := repo.SetSessionVersions(ctx, missing, 2, 1, 1); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("SetSessionVersions for missing bearer = %v, want ErrNotFound", err)
+				}
 				n, err := repo.DeleteSessionsByDevice(ctx, d.ID)
 				if err != nil || n != 1 {
 					t.Fatalf("DeleteSessionsByDevice = %d, %v", n, err)

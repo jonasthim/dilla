@@ -396,6 +396,7 @@ type Querier interface {
 	// promise every client depends on: the generation only ever grows.
 	SetGeneration(ctx context.Context, arg SetGenerationParams) error
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
+	SetSessionVersions(ctx context.Context, arg SetSessionVersionsParams) (int64, error)
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
 	SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error)
 	TakeInviteSignup(ctx context.Context, arg TakeInviteSignupParams) (int64, error)

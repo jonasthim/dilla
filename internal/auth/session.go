@@ -187,7 +187,10 @@ type Session struct {
 	// FactorOwed is the account's users.factor_owed when the token was resolved (web3.6 S1): the
 	// account holds no second factor yet, so an enrolled session of it reaches only protocol/09's
 	// `F` and `P` routes (Middleware, MiddlewareOwedOK) and never the gateway.
-	FactorOwed bool
+	FactorOwed   bool
+	WireVersion  uint64
+	E2EEVersion  uint64
+	MediaVersion uint64
 }
 
 // InPairingGroup reports whether this session may act on a group. An enrolled or admin session is
@@ -866,8 +869,18 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	return Session{
 		UserID: row.UserID, DeviceID: row.DeviceID, Scope: Scope(row.Scope),
 		TokenHash: row.TokenHash, Expires: row.Expires, IdleExpires: idleExpires,
-		FactorOwed: row.FactorOwed,
+		FactorOwed:  row.FactorOwed,
+		WireVersion: row.WireVersion, E2EEVersion: row.E2EEVersion, MediaVersion: row.MediaVersion,
 	}, nil
+}
+
+// RecordCapabilities persists a negotiated selection against the exact bearer session hash.
+// The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
+func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
+	if len(tokenHash) != 32 || (wire != 2 && wire != 3) || e2ee != 1 || media != 1 {
+		return errors.New("auth: invalid negotiated capabilities")
+	}
+	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)
 }
 
 func (s *Sessions) RevokeDevice(ctx context.Context, deviceID id.ID) error {

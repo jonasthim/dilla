@@ -55,9 +55,10 @@ type Deps struct {
 	ExternalSenderPub []byte
 
 	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
-	// (web3.8 S1). The composition root passes the one list it hands the gateway, so the two
-	// cannot disagree; nil serves [1], the gateway package's own default.
-	WireVersions []uint64
+	// and is passed from the same composition options as the gateway.
+	WireVersions  []uint64
+	E2EEVersions  []uint64
+	MediaVersions []uint64
 
 	// CloseGateway closes a device's gateway connections inside the same
 	// transaction that revokes it. Nil until part 1b's gateway exists; the
@@ -259,6 +260,7 @@ func Register(m *server.Mux, d Deps) {
 	// The challenge route meters itself on its own two keys inside the handler.
 	m.Handle("POST /v1/devices/{device_id}/sessions/challenge", http.HandlerFunc(d.SessionChallenge))
 	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
+	m.Handle("POST /v1/sessions/negotiate", d.enrolled(d.NegotiateSession))
 	// The sessions DELETE is on the device write bucket like DELETE /v1/devices/{device_id}, and
 	// keeps the same ten-minute grace for another device's unlisted row (fix-wave review NEW-1).
 	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.owedOK(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))

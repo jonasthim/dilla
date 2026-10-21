@@ -53,7 +53,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Sessions", reflect.TypeOf((*store.Sessions)(nil)).Elem(), []string{
 			"CountSessionsByDevice", "CreateSession", "DeleteOldestSessionForDevice",
 			"DeleteSession", "DeleteSessionsByDevice", "DeleteSessionsByUser",
-			"GetSessionByHash", "PruneSessions", "TouchSession",
+			"GetSessionByHash", "PruneSessions", "SetSessionVersions", "TouchSession",
 		}},
 		{"Auth", reflect.TypeOf((*store.Auth)(nil)).Elem(), []string{
 			"ClearLoginFailures", "ConsumeRecoveryCode", "ConsumeTOTPCounter",

@@ -8,6 +8,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 SELECT s.*, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = ? AND s.expires > ? AND s.idle_expires > ?;
 
+-- name: SetSessionVersions :execrows
+UPDATE sessions SET wire_version = ?, e2ee_version = ?, media_version = ? WHERE token_hash = ?;
+
 -- name: TouchSession :exec
 UPDATE sessions SET idle_expires = ? WHERE token_hash = ?;
 

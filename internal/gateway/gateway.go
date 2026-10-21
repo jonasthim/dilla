@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -167,6 +168,12 @@ type Authenticator interface {
 	Resolve(ctx context.Context, bearer string) (auth.Session, error)
 }
 
+// CapabilityRecorder is optional for legacy test doubles and older in-process integrations. A
+// production connection that selects wire 3 must have this recorder and persist before ready.
+type CapabilityRecorder interface {
+	RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error
+}
+
 // Compile-time proof of the claim deviation B9 rests on: *auth.Sessions satisfies Authenticator
 // without the gateway ever holding one. The gateway's own tests use a double, so without this the
 // first thing to find out would be task 27a's wiring.
@@ -176,8 +183,9 @@ type Authenticator interface {
 // Repository embedded neither until tasks 19 and 23 added them (deviation ID1). Task 23 closed
 // that gap, so the assertion lands here with it.
 var (
-	_ Authenticator = (*auth.Sessions)(nil)
-	_ Store         = (store.Repository)(nil)
+	_ Authenticator      = (*auth.Sessions)(nil)
+	_ CapabilityRecorder = (*auth.Sessions)(nil)
+	_ Store              = (store.Repository)(nil)
 )
 
 // OnlineDevice is one candidate for invariant 7's committer election.
@@ -274,6 +282,9 @@ func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*
 // connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
 // that learned its versions after sendReady would echo three zeros.
 func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
+	if err := g.recordCapabilities(ctx, session.TokenHash, chosen); err != nil {
+		return nil, err
+	}
 	token, err := newResumeToken()
 	if err != nil {
 		return nil, err
@@ -322,6 +333,20 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	c.currentWriter().open()
 	g.touch(ctx, c.deviceID, now)
 	return c, nil
+}
+
+func (g *Gateway) recordCapabilities(ctx context.Context, tokenHash []byte, chosen [3]uint64) error {
+	recorder, ok := g.opts.Auth.(CapabilityRecorder)
+	if !ok {
+		if chosen[0] >= 3 {
+			return errors.New("gateway: wire 3 requires session capability persistence")
+		}
+		return nil
+	}
+	if len(tokenHash) != 32 {
+		return errors.New("gateway: session capability binding is missing")
+	}
+	return recorder.RecordCapabilities(ctx, tokenHash, chosen[0], chosen[1], chosen[2])
 }
 
 // deviceToucher is the one optional store method the gateway calls: store.Repository's
