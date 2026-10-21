@@ -1,0 +1,136 @@
+package api_test
+
+// device_label_test.go covers PATCH /v1/devices/{device_id} (EOD E7): the owner names a device,
+// GET /v1/devices carries the name, and nobody else's session reaches it.
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// seedDeviceFor adds a second device row to user and returns its id.
+func seedDeviceFor(t *testing.T, deps api.Deps, user id.ID) id.ID {
+	t.Helper()
+	now := deps.Clock.Now().Unix()
+	row := store.DeviceRow{ID: id.New(), UserID: user, DSKPub: make([]byte, 32), CredentialBlob: []byte{1},
+		LastSeen: now, Created: now}
+	if err := deps.Repo.CreateDevice(t.Context(), row); err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	return row.ID
+}
+
+func listedLabels(t *testing.T, h http.Handler, token string) map[id.ID]any {
+	t.Helper()
+	rec := cborCall(t, h, http.MethodGet, "/v1/devices", token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/devices = %d %x", rec.Code, rec.Body.Bytes())
+	}
+	var rows [][]any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode the device list: %v", err)
+	}
+	out := map[id.ID]any{}
+	for _, row := range rows {
+		if len(row) != 7 {
+			t.Fatalf("device row = %v, want 7 elements ending in the label", row)
+		}
+		raw, _ := row[0].([]byte)
+		out[id.ID(raw)] = row[6]
+	}
+	return out
+}
+
+func TestTheOwnerNamesAndUnnamesADevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, dev, token := seedAPISession(t, deps)
+	path := "/v1/devices/" + dev.ID.String()
+	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
+		t.Fatalf("a new device's label = %v, want null", got)
+	}
+	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{"work laptop"}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != "work laptop" {
+		t.Fatalf("label after PATCH = %v, want work laptop", got)
+	}
+	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{nil}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH null = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
+		t.Fatalf("label after PATCH null = %v, want null", got)
+	}
+}
+
+func TestADeviceNamesAnotherDeviceOfTheSameUser(t *testing.T) {
+	h, deps := newTestAPI(t)
+	user, _, token := seedAPISession(t, deps)
+	sibling := seedDeviceFor(t, deps, user.ID)
+	if rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+sibling.String(), token, []any{"phone"}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH of a sibling device = %d %x, want 204", rec.Code, rec.Body.Bytes())
+	}
+	if got := listedLabels(t, h, token)[sibling]; got != "phone" {
+		t.Fatalf("sibling label = %v, want phone", got)
+	}
+}
+
+func TestNobodyNamesAnotherUsersDevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, victim, victimToken := seedAPISession(t, deps)
+	_, _, attackerToken := seedAPISession(t, deps)
+	rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+victim.ID.String(), attackerToken, []any{"pwned"})
+	if rec.Code != http.StatusNotFound || refusalCode(t, rec) != "E_NOT_FOUND" {
+		t.Fatalf("another user's PATCH = %d %q, want 404 E_NOT_FOUND", rec.Code, refusalCode(t, rec))
+	}
+	if got := listedLabels(t, h, victimToken)[victim.ID]; got != nil {
+		t.Fatalf("label after a foreign PATCH = %v, want null", got)
+	}
+	unknown := "/v1/devices/" + id.New().String()
+	if rec := cborCall(t, h, http.MethodPatch, unknown, attackerToken, []any{"x"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("PATCH of an unknown device = %d, want 404 like another user's", rec.Code)
+	}
+}
+
+func TestADeviceLabelIsValidated(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, dev, token := seedAPISession(t, deps)
+	path := "/v1/devices/" + dev.ID.String()
+	for name, body := range map[string]any{
+		"empty":              []any{""},
+		"over 64 characters": []any{strings.Repeat("x", 65)},
+		"a control byte":     []any{"bad\x00name"},
+		"a newline":          []any{"two\nlines"},
+		"no element":         []any{},
+		"two elements":       []any{"a", "b"},
+		"a number":           []any{7},
+	} {
+		if rec := cborCall(t, h, http.MethodPatch, path, token, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: PATCH = %d, want 400", name, rec.Code)
+		}
+	}
+	if got := listedLabels(t, h, token)[dev.ID]; got != nil {
+		t.Fatalf("label after refused PATCHes = %v, want null", got)
+	}
+	// 64 characters, counted as characters and not bytes, is the limit.
+	edge := strings.Repeat("é", 64)
+	if rec := cborCall(t, h, http.MethodPatch, path, token, []any{edge}); rec.Code != http.StatusNoContent {
+		t.Fatalf("PATCH of 64 two-byte characters = %d, want 204", rec.Code)
+	}
+}
+
+func TestAPendingSessionCannotNameADevice(t *testing.T) {
+	h, deps := newTestAPI(t)
+	owner, dev, _ := seedAPIDevice(t, deps)
+	listerOf(t, deps).list(owner.ID, dev)
+	_, pending := pendingSession(t, h, deps, owner.ID)
+	rec := cborCall(t, h, http.MethodPatch, "/v1/devices/"+dev.ID.String(), pending, []any{"x"})
+	if rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FORBIDDEN" {
+		t.Fatalf("pending PATCH = %d %q, want 403 E_FORBIDDEN", rec.Code, refusalCode(t, rec))
+	}
+}

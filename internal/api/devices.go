@@ -8,6 +8,9 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -102,7 +105,7 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 const keylessDeleteGrace = 600
 
 // ListDevices is GET /v1/devices →
-// [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen]].
+// [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen, label|null]].
 func (d Deps) ListDevices(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -119,9 +122,59 @@ func (d Deps) ListDevices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []any{
 			row.ID, uint64(row.Tier), uint64(row.SignerTier),
 			nullableTime(row.VerifiedAt), nullableTime(row.RevokedAt), uint64(row.LastSeen), //nolint:gosec // G115: a unix second or row id this server wrote, never negative
+			row.Label,
 		})
 	}
 	d.write(w, r, http.StatusOK, out)
+}
+
+// maxDeviceLabel is the longest device name, in characters (protocol/09 § Devices).
+const maxDeviceLabel = 64
+
+// patchDeviceRequest is PATCH /v1/devices/{device_id}'s body: [label|null]. Null clears the name.
+type patchDeviceRequest struct {
+	_     struct{} `cbor:",toarray"`
+	Label *string
+}
+
+// validDeviceLabel reports whether s is 1..64 characters of valid UTF-8 with no control character.
+func validDeviceLabel(s string) bool {
+	if !utf8.ValidString(s) || utf8.RuneCountInString(s) < 1 || utf8.RuneCountInString(s) > maxDeviceLabel {
+		return false
+	}
+	return !strings.ContainsFunc(s, unicode.IsControl)
+}
+
+// PatchDevice is PATCH /v1/devices/{device_id}: [label|null] → 204. It names (or, with null,
+// unnames) a device of the caller's own account, this one or a sibling; the owner is part of the
+// store's UPDATE, so another user's device answers 404 exactly as an unknown id does. The name is
+// not in the signed device list: the server stores it readable, like a display name, and could
+// change it (protocol/09).
+func (d Deps) PatchDevice(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	deviceID, err := server.PathID(r, "device_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body patchDeviceRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if body.Label != nil && !validDeviceLabel(*body.Label) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "label must be 1 to %d characters with no control characters, or null", maxDeviceLabel))
+		return
+	}
+	if err := d.Repo.SetDeviceLabel(r.Context(), sess.UserID, deviceID, body.Label); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.noContent(w, r)
 }
 
 // DeleteDevice is DELETE /v1/devices/{device_id} → 204. protocol/02 § Device
