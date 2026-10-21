@@ -195,7 +195,7 @@ func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, err
 	if session.Scope != auth.ScopeEnrolled || session.FactorOwed {
 		return auth.Session{}, errNotEnrolledSession
 	}
-	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || session.WireVersion < 3) {
+	if session.Bot != nil && session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady {
 		return auth.Session{}, errNotEnrolledSession
 	}
 	return session, nil
@@ -397,6 +397,10 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
+	if session.Bot != nil && chosen[0] < 3 {
+		g.refuse(ctx, s, frameErr("E_VERSION", "managed bots require wire version 3; supported versions are [3]", CloseVersion))
+		return nil, false
+	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
 	if err != nil {
 		s.close(CloseUnknown, "register")
@@ -463,6 +467,12 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	}
 	if session.UserID != c.userID {
 		return refuse("resume token does not belong to this account")
+	}
+	if c.isBot != (session.Bot != nil) {
+		return refuse("resume session type changed")
+	}
+	if session.Bot != nil && (c.wire < 3 || session.WireVersion < 3) {
+		return refuse("managed bot wire capability is not resumable; identify again")
 	}
 	out, err := c.tryResume(token, generation, lastN, g.Generation())
 	if err != nil {

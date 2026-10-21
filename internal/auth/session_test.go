@@ -22,6 +22,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -35,6 +36,40 @@ import (
 // authDBPaths lets corruptDSKPub reach the file behind a repository, which is
 // the only way to write a row the schema's CHECK forbids.
 var authDBPaths = map[store.Repository]string{}
+
+type routeGroupFaultRepo struct {
+	store.Repository
+	groupID id.ID
+}
+
+func (r routeGroupFaultRepo) GetGroup(ctx context.Context, groupID id.ID) (store.GroupRow, error) {
+	if groupID == r.groupID {
+		return store.GroupRow{}, errors.New("private database failure detail")
+	}
+	return r.Repository.GetGroup(ctx, groupID)
+}
+
+func assertBotVersionError(t *testing.T, body []byte) {
+	t.Helper()
+	var fields []any
+	if err := cborx.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 6 || fields[0] != "E_VERSION" || fields[2] != nil {
+		t.Fatalf("version error fields = %v, want six-field E_VERSION with null retry slot", fields)
+	}
+	got, err := cborx.Marshal(fields[3:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := cborx.Marshal([][]uint64{{3}, {1}, {1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("supported versions = %x, want %x", got, want)
+	}
+}
 
 // newSessions returns a Sessions over a migrated temporary database and the
 // fake clock that drives it. The generation is 7, so a Token.Generation of 0 is
@@ -358,6 +393,78 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	ownGroup := group(&community.ID)
 	foreignGroup := group(&foreignCommunity.ID)
 	dmGroup := group(nil)
+	// A bot with no selection or persisted wire 2 must first pass the route and
+	// resource checks, then receive the protocol's exact supported-version error.
+	for _, tc := range []struct {
+		name, token, group string
+		wantCode           string
+	}{
+		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "wire two", token: tok.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "foreign resource visibility precedes wire refusal", token: renewed.Token, group: foreignGroup.String(), wantCode: "E_FORBIDDEN"},
+	} {
+		if tc.name == "wire two" {
+			if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 2, 1, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			mux := http.NewServeMux()
+			mux.Handle("GET /v1/groups/{id}/info", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled))
+			req := httptest.NewRequest(http.MethodGet, "/v1/groups/"+tc.group+"/info", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if called {
+				t.Fatal("handler ran before version/resource refusal")
+			}
+			var fields []any
+			if err := cborx.Unmarshal(rec.Body.Bytes(), &fields); err != nil || len(fields) == 0 || fields[0] != tc.wantCode {
+				t.Fatalf("response=%d body=%x err=%v, want %s", rec.Code, rec.Body.Bytes(), err, tc.wantCode)
+			}
+			if tc.wantCode == "E_VERSION" {
+				assertBotVersionError(t, rec.Body.Bytes())
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("version response status = %d, want 400", rec.Code)
+				}
+			} else if rec.Code != http.StatusForbidden {
+				t.Fatalf("resource refusal status = %d, want 403", rec.Code)
+			}
+		})
+	}
+	negotiationReached := false
+	negotiationMux := http.NewServeMux()
+	negotiationMux.Handle("POST /v1/sessions/negotiate", s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		negotiationReached = true
+	}), auth.ScopeEnrolled))
+	negotiationReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/negotiate", nil)
+	negotiationReq.Header.Set("Authorization", "Bearer "+renewed.Token)
+	negotiationRec := httptest.NewRecorder()
+	negotiationMux.ServeHTTP(negotiationRec, negotiationReq)
+	if !negotiationReached || negotiationRec.Code != http.StatusOK {
+		t.Fatalf("capability negotiation was refused before wire selection: reached=%v status=%d body=%x", negotiationReached, negotiationRec.Code, negotiationRec.Body.Bytes())
+	}
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve succeeds through this wrapper; the subsequent route-specific group
+	// read fails operationally and must become sanitized 503 E_UNAVAILABLE.
+	faultSessions := auth.NewSessions(routeGroupFaultRepo{Repository: repo, groupID: ownGroup}, clk,
+		config.Default().Auth.Session, id.New(), 7)
+	mux := http.NewServeMux()
+	mux.Handle("GET /v1/groups/{id}/info", faultSessions.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), auth.ScopeEnrolled))
+	req := httptest.NewRequest(http.MethodGet, "/v1/groups/"+ownGroup.String()+"/info", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var faultFields []any
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &faultFields); err != nil || len(faultFields) < 1 || faultFields[0] != "E_UNAVAILABLE" || rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("route store failure response=%d body=%x err=%v, want 503 E_UNAVAILABLE", rec.Code, rec.Body.Bytes(), err)
+	}
+	if len(faultFields) < 2 || faultFields[1] != "authorization state unavailable" {
+		t.Fatalf("route store failure leaked or lost sanitized detail: %v", faultFields)
+	}
 	for _, tc := range []struct {
 		name, pattern, method, pathName, pathValue string
 		wantNext                                   bool

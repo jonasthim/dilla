@@ -1087,9 +1087,24 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 			server.WriteError(w, err)
 			return
 		}
-		if sess.Bot != nil && !s.botRouteAllowed(r.Context(), r, *sess.Bot, sess) {
-			server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
-			return
+		if sess.Bot != nil {
+			allowed, routeErr := s.botRouteAllowed(r.Context(), r, *sess.Bot, sess)
+			if routeErr != nil {
+				if errors.Is(routeErr, botaccess.ErrIneligible) || errors.Is(routeErr, store.ErrNotFound) {
+					allowed = false
+				} else {
+					server.WriteError(w, server.Unavailable(1000, "authorization state unavailable"))
+					return
+				}
+			}
+			if !allowed {
+				server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
+				return
+			}
+			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion < 3 {
+				server.WriteError(w, server.Version([]uint64{3}, []uint64{1}, []uint64{1}))
+				return
+			}
 		}
 		if sess.Scope != want && sess.Scope != ScopeEnrolled {
 			server.WriteError(w, scopeRefusal(sess.Scope))
@@ -1115,144 +1130,246 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 
 // botRouteAllowed is the explicit HTTP surface for bound bot sessions. Every
 // resource path is resolved against the current repository before it is allowed.
-func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot BotSessionBinding, session Session) bool {
+func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot BotSessionBinding, session Session) (bool, error) {
 	pattern := r.Pattern
-	if pattern == "" || session.WireVersion < 3 && pattern != "POST /v1/sessions/negotiate" {
-		return false
+	if pattern == "" {
+		return false, nil
 	}
 	phase := bot.State
 	joining := phase == store.BotInstallationJoining || phase == store.BotInstallationReady
 	ready := phase == store.BotInstallationReady
 	communityPath := func(name string) bool { return pathIDEquals(r, name, bot.CommunityID) }
-	groupPath := func(name string) bool {
-		if !communityPathForBot(ctx, s.repo, bot) {
-			return false
+	groupPath := func(name string) (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
 		}
 		groupID, ok := pathID(r, name)
 		if !ok {
-			return false
+			return false, nil
 		}
 		group, err := s.repo.GetGroup(ctx, groupID)
-		return err == nil && group.CommunityID != nil && *group.CommunityID == bot.CommunityID &&
-			group.ClosedAt == nil && group.Kind <= 1
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID &&
+			group.ClosedAt == nil && group.Kind <= 1, nil
 	}
-	channelPath := func(name string) bool {
-		if !communityPathForBot(ctx, s.repo, bot) {
-			return false
+	channelPath := func(name string) (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
 		}
 		channelID, ok := pathID(r, name)
 		if !ok {
-			return false
+			return false, nil
 		}
 		channel, err := s.repo.GetChannel(ctx, channelID)
-		return err == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID && channel.DeletedAt == nil
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID && channel.DeletedAt == nil, nil
 	}
-	callPath := func() bool {
-		if !communityPathForBot(ctx, s.repo, bot) {
-			return false
+	callPath := func() (bool, error) {
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
 		}
 		callID, ok := pathID(r, "call_id")
 		if !ok {
-			return false
+			return false, nil
 		}
 		call, err := s.repo.GetVoiceSession(ctx, callID)
-		if err != nil || call.Ended != nil {
-			return false
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if call.Ended != nil {
+			return false, nil
 		}
 		channel, err := s.repo.GetChannel(ctx, call.ChannelID)
-		return err == nil && channel.DeletedAt == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return channel.DeletedAt == nil && channel.CommunityID != nil && *channel.CommunityID == bot.CommunityID, nil
 	}
 	switch pattern {
 	case "POST /v1/sessions/negotiate":
-		return phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady
+		return phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
 	case "DELETE /v1/devices/{device_id}/sessions":
-		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "device_id", session.DeviceID)
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "device_id", session.DeviceID), nil
 	case "PUT /v1/bot-runtime/installations/{installation}/credential":
-		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID)
+		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/ready":
-		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID)
+		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
-		return joining && pathIDEquals(r, "user_id", session.UserID)
+		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":
 		if !joining {
-			return false
+			return false, nil
 		}
 		userID, ok := pathID(r, "user_id")
-		return ok && botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, userID) == nil
+		if !ok {
+			return false, nil
+		}
+		err := botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, userID)
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil, err
 	case "GET /v1/devices/{device_id}/keypackage":
 		if !joining {
-			return false
+			return false, nil
 		}
 		deviceID, ok := pathID(r, "device_id")
 		if !ok {
-			return false
+			return false, nil
 		}
 		device, err := s.repo.GetDevice(ctx, deviceID)
-		return err == nil && device.RevokedAt == nil && device.QuarantinedAt == nil &&
-			botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, device.UserID) == nil
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if device.RevokedAt != nil || device.QuarantinedAt != nil {
+			return false, nil
+		}
+		err = botaccess.EligibleCommunityMember(ctx, s.repo, bot.CommunityID, device.UserID)
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil, err
 	case "POST /v1/keypackages", "GET /v1/welcomes", "DELETE /v1/welcomes/{welcome_id}":
 		// These resources are device-scoped by the delivery service. In particular,
 		// KeyPackage publication is for session.DeviceID and Welcome acknowledgement
 		// checks that the welcome belongs to that same device.
-		return joining && communityPathForBot(ctx, s.repo, bot)
+		if !joining {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
 	case "POST /v1/groups":
 		// The typed binding is in the request body; StructureChannels.MayRegister
 		// validates its target and current community eligibility inside the DS.
-		return (joining || ready) && communityPathForBot(ctx, s.repo, bot)
+		if !joining && !ready {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
 	case "GET /v1/groups/{id}/info", "GET /v1/groups/{id}/tree", "GET /v1/groups/{id}/handshakes",
 		"GET /v1/groups/{id}/proposals", "POST /v1/groups/{id}/commit", "POST /v1/groups/{id}/proposal",
 		"POST /v1/groups/{id}/resync", "POST /v1/groups/{id}/fork-report",
 		"GET /v1/groups/{id}/messages", "POST /v1/groups/{id}/cursor",
 		"GET /v1/groups/{id}/heal", "POST /v1/groups/{id}/heal":
-		return joining && groupPath("id")
+		if !joining {
+			return false, nil
+		}
+		return groupPath("id")
 	case "POST /v1/groups/{id}/message":
-		return ready && groupPath("id")
+		if !ready {
+			return false, nil
+		}
+		return groupPath("id")
 	case "DELETE /v1/groups/{id}/messages/{seq}":
-		return ready && groupPath("id")
+		if !ready {
+			return false, nil
+		}
+		return groupPath("id")
 	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members",
 		"GET /v1/communities/{id}/permissions", "GET /v1/communities/{id}/channels":
-		return joining && communityPath("id") && communityPathForBot(ctx, s.repo, bot)
+		if !joining || !communityPath("id") {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
 	case "GET /v1/channels/{id}", "GET /v1/channels/{id}/members", "GET /v1/channels/{id}/messages":
-		return joining && channelPath("id")
+		if !joining {
+			return false, nil
+		}
+		return channelPath("id")
 	case "POST /v1/channels/{id}/messages":
-		return ready && channelPath("id")
+		if !ready {
+			return false, nil
+		}
+		return channelPath("id")
 	case "POST /v1/channels/{id}/calls", "GET /v1/channels/{id}/call":
-		return ready && channelPath("id")
+		if !ready {
+			return false, nil
+		}
+		return channelPath("id")
 	case "GET /v1/communities/{id}/calls":
-		return ready && communityPath("id") && communityPathForBot(ctx, s.repo, bot)
+		if !ready || !communityPath("id") {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
 	case "DELETE /v1/calls/{call_id}", "POST /v1/calls/{call_id}/share",
 		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline":
-		return ready && callPath()
+		if !ready {
+			return false, nil
+		}
+		return callPath()
 	case "POST /v1/gateway/ticket":
-		return joining && communityPathForBot(ctx, s.repo, bot)
+		if !joining {
+			return false, nil
+		}
+		return communityPathForBot(ctx, s.repo, bot)
 	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
 		"GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/groups/{group}/bot/messages", "POST /v1/groups/{group}/moderation/removals",
 		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
-		if !ready || !communityPathForBot(ctx, s.repo, bot) {
-			return false
+		if !ready {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
 		}
 		if strings.Contains(pattern, "/groups/{group}/") {
 			return groupPath("group")
 		}
-		return communityPath("community")
+		return communityPath("community"), nil
 	default:
-		return false
+		return false, nil
 	}
 }
 
-func communityPathForBot(ctx context.Context, repo store.Repository, bot BotSessionBinding) bool {
-	binding, isBot, err := botaccess.ForUserCommunity(ctx, repo, mustBotUserID(ctx, repo, bot), bot.CommunityID)
-	return err == nil && isBot && binding.InstallationID == bot.InstallationID && binding.State == bot.State
+func communityPathForBot(ctx context.Context, repo store.Repository, bot BotSessionBinding) (bool, error) {
+	userID, err := mustBotUserID(ctx, repo, bot)
+	if err != nil {
+		if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	binding, isBot, err := botaccess.ForUserCommunity(ctx, repo, userID, bot.CommunityID)
+	if errors.Is(err, botaccess.ErrIneligible) || errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return isBot && binding.InstallationID == bot.InstallationID && binding.State == bot.State, nil
 }
 
-func mustBotUserID(ctx context.Context, repo store.Repository, bot BotSessionBinding) id.ID {
+func mustBotUserID(ctx context.Context, repo store.Repository, bot BotSessionBinding) (id.ID, error) {
 	// Resolve the installation on the indexed community key; no global scan.
 	row, err := repo.GetActiveBotInstallationByCommunity(ctx, bot.CommunityID)
-	if err != nil || row.UserID == nil || row.ID != bot.InstallationID {
-		return id.ID{}
+	if err != nil {
+		return id.ID{}, err
 	}
-	return *row.UserID
+	if row.UserID == nil || row.ID != bot.InstallationID {
+		return id.ID{}, botaccess.ErrIneligible
+	}
+	return *row.UserID, nil
 }
 
 func pathID(r *http.Request, name string) (id.ID, bool) {
