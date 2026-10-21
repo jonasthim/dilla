@@ -105,12 +105,21 @@ removes (`409` otherwise), so a stolen enrolled session cannot cut a recovering 
 the list `PUT` that names it. The three `/v1/devices` routes spend the device session's read (`GET`)
 and write (`POST`, `DELETE`) buckets.
 
+**The text rule.** A display name (at sign-up, in `POST /v1/accounts`, and in `PATCH /v1/accounts/me`), a member `nick`, a
+`status_msg`, a `bio` and a device label share one rule: NFC, counted in characters, trimmed, and not only whitespace or
+marks. A line break is refused except in a `bio` (where `\r\n` becomes `\n`). The rule refuses a control character; the
+bidi controls (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); U+061C; U+2028 and U+2029; the invisible characters
+U+00AD, U+034F, U+115F, U+1160, U+180E, U+200B, U+2060 to U+2064, U+206A to U+206F, U+2800, U+3164, U+FEFF, U+FFA0 and
+U+FFF9 to U+FFFB; and the tag characters U+E0020 to U+E007F except as the tag sequence after a black flag (U+1F3F4) that
+ends in U+E007F. U+200C and U+200D are refused unless RFC 5892 Appendix A.1 and A.2 allow them: after a virama (Canonical_
+Combining_Class 9), a ZWNJ between joining letters (so Persian, Kurdish and Sinhala text keeps working), or a ZWJ joining
+two emoji (an Extended_Pictographic with an emoji presentation, so a family is kept and two copyright signs are not). The
+tables are Unicode 17. Only a new or changed text is checked: **a display name stored before this rule is kept as it is**
+and still reads back, and a client may change any other field without sending it.
+
 `PATCH /v1/accounts/me` writes the profile (EOD E6; schema 22, migration `00022_profile`). `display`
-is at most 64 characters, `status_msg` at most 190 and one line, `bio` at most 500 with line breaks. Each is
-NFC-normalised and counted in characters. `status_msg` and `bio` are also trimmed, and whitespace only is refused. All three
-refuse a control character (a bio keeps `\n`, and `\r\n` becomes `\n`), the bidi controls (U+200E, U+200F, U+202A to U+202E,
-U+2066 to U+2069), U+061C, the zero-width characters (U+200B, U+200C, U+2060, U+FEFF; U+200D only joining two emoji) and
-U+2028 and U+2029. Each given field is checked before anything is written, and one `UPDATE` writes only the fields given, so
+is at most 64 characters, `status_msg` at most 190 and one line, `bio` at most 500 with line breaks. Each given field is
+checked by the text rule before anything is written, and one `UPDATE` writes only the fields given, so
 two devices that change different fields do not lose each other's edit. The route spends the device session's write bucket
 like the presence writes. The server stores the text **readable**, like the display
 name: it is not end-to-end encrypted, and anyone who shares a community with the account reads it. The account has no
@@ -371,7 +380,7 @@ community answers `404` to everyone.
   administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
   instance's relying party.
 - A member's `nick` is a **display name**, not a handle: free Unicode, NFC, at most 64 characters,
-  no control or bidi character. The handle rules do not apply to it. An empty `nick` means the
+  under the text rule above (no control, bidi, zero-width or other invisible character). The handle rules do not apply to it. An empty `nick` means the
   member's own display name shows.
 - `GET /v1/communities` lists the caller's own memberships and nothing else: a community the
   caller left or was removed from, or one that is soft-deleted, is not listed. It names no

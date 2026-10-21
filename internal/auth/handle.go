@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/secure/precis"
-	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -25,6 +24,7 @@ var (
 	ErrHandleUnicode  = errors.New("auth: v1 handles are ASCII only")
 	ErrDisplayLength  = errors.New("auth: a display name is at most 64 characters")
 	ErrDisplayControl = errors.New("auth: a display name may not contain a control, bidi or invisible character")
+	ErrDisplayBlank   = errors.New("auth: a display name may not be only whitespace")
 )
 
 // NormalizeHandle canonicalises a handle: PRECIS UsernameCaseMapped (RFC 8265 —
@@ -80,16 +80,19 @@ func ValidHandle(s string) bool {
 	return true
 }
 
-// NormalizeDisplay normalises a display name to NFC and refuses bidi controls.
-// Display names are freeform by design, so the only rules are the ones that
-// would let one user paint another user's name in the UI.
+// NormalizeDisplay is NormalizeUserText for a display name: at most 64 characters, one line, the same character rule
+// (so no control, bidi, zero-width or other invisible character, and a joiner only where a script or an emoji needs
+// one), trimmed, and not only whitespace. "" is allowed: the username shows. A name stored before this rule
+// existed is kept as it is; only a new or changed name is checked.
 func NormalizeDisplay(s string) (string, error) {
-	out := norm.NFC.String(s)
-	if utf8.RuneCountInString(out) > displayMax {
+	out, err := NormalizeUserText(s, displayMax, false)
+	switch {
+	case errors.Is(err, ErrTextLength):
 		return "", ErrDisplayLength
-	}
-	if !textCharsOK(out, false) {
+	case errors.Is(err, ErrTextChars):
 		return "", ErrDisplayControl
+	case errors.Is(err, ErrTextBlank):
+		return "", ErrDisplayBlank
 	}
-	return out, nil
+	return out, err
 }

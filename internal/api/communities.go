@@ -1144,8 +1144,9 @@ func requireMod2FAFlag(v uint64) (uint8, error) {
 
 // memberNick normalises a member nickname. R16: a nick is a display name, not a
 // handle, so it takes auth.NormalizeDisplay's rules (free Unicode, NFC, at most
-// 64 characters, no control or bidi character) rather than the ASCII handle
-// rules. Every members row this package writes goes through it.
+// 64 characters, trimmed, under the shared text rule of auth.NormalizeUserText:
+// no control, bidi, zero-width or other invisible character) rather than the
+// ASCII handle rules. Every members row this package writes goes through it.
 func memberNick(s string) (string, error) {
 	out, err := auth.NormalizeDisplay(s)
 	if err != nil {
