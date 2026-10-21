@@ -115,7 +115,7 @@ def _base_yt_dlp_args(*, audio: bool = False) -> list[str]:
         "--ignore-config",
         "--no-plugin-dirs",
         "--no-remote-components",
-        "--no-flat-playlist",
+        "--flat-playlist",
         "--js-runtimes",
         f"node:{NODE}",
         "--no-warnings",
@@ -197,18 +197,26 @@ def _descriptor(entry: object) -> dict[str, object]:
         or not title.strip()
         or len(title) > MAX_TITLE
         or _has_control(title)
-        or isinstance(duration, bool)
-        or not isinstance(duration, (int, float))
-        or (isinstance(duration, float) and not math.isfinite(duration))
-        or duration <= 0
-        or duration > MAX_DURATION
+        or (
+            duration is not None
+            and (
+                isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or (isinstance(duration, float) and not math.isfinite(duration))
+                or duration <= 0
+                or duration > MAX_DURATION
+            )
+        )
         or (
             availability is not None
             and (not isinstance(availability, str) or availability not in {"public", "unlisted"})
         )
     ):
         raise ProbeError("video metadata is unavailable or incomplete")
-    return {"id": video_id, "title": title, "duration": duration}
+    descriptor: dict[str, object] = {"id": video_id, "title": title}
+    if duration is not None:
+        descriptor["duration"] = duration
+    return descriptor
 
 
 def _tracks(data: dict, kind: str) -> list[dict[str, object]]:

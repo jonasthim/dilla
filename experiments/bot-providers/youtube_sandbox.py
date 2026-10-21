@@ -96,9 +96,12 @@ def _parse_connect(header: bytes) -> str:
         if not name.isascii() or not name.replace("-", "").isalnum() or key in seen:
             raise _fail("proxy request rejected")
         seen.add(key)
-        # Host is accepted only when it repeats the same uncredentialed target.
-        if key == "host" and value.strip().lower() not in (host.lower(), host.lower() + ":443"):
-            raise _fail("proxy request rejected")
+        if key == "host":
+            host_value = value.strip().lower()
+            # FFmpeg's HTTP proxy client uses the proxy authority in Host even
+            # for CONNECT. The CONNECT authority remains the sole destination.
+            if host_value not in (host.lower(), host.lower() + ":443", "127.0.0.1:3128"):
+                raise _fail("proxy request rejected")
         if key not in ("host", "proxy-connection", "connection", "user-agent"):
             raise _fail("proxy request rejected")
     return host.lower()

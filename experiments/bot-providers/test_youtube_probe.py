@@ -16,6 +16,19 @@ def video(video_id="abcdefghijk", title="A title", duration=12.5):
     }
 
 
+def flat_video(video_id="abcdefghijk", title="A title", duration=None):
+    return {
+        "_type": "url",
+        "ie_key": "Youtube",
+        "id": video_id,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "title": title,
+        "duration": duration,
+        "description": "thumbnail and snippet fields are intentionally discarded" * 20,
+        "thumbnails": [{"url": "https://i.ytimg.com/vi/example/hqdefault.jpg"}] * 10,
+    }
+
+
 class YouTubeInputTests(unittest.TestCase):
     def test_canonicalizes_supported_inputs(self):
         cases = {
@@ -75,6 +88,8 @@ class YouTubeMetadataTests(unittest.TestCase):
         self.assertIn("--ignore-config", argv)
         self.assertIn("--no-plugin-dirs", argv)
         self.assertIn("--no-remote-components", argv)
+        self.assertIn("--flat-playlist", argv)
+        self.assertNotIn("--no-flat-playlist", argv)
         self.assertIn("--js-runtimes", argv)
         self.assertEqual(argv[-1], "https://www.youtube.com/watch?v=abcdefghijk")
         self.assertLessEqual(self.call.call_args.kwargs["timeout"], 120)
@@ -82,12 +97,24 @@ class YouTubeMetadataTests(unittest.TestCase):
         self.assertEqual(self.call.call_args.kwargs["tools_dir"], youtube_probe.SCRIPT_DIR / ".youtube-venv")
 
     def test_search_and_complete_playlist_are_expanded(self):
-        search = {"_type": "playlist", "playlist_count": 2, "entries": [video(), video("lmnopqrstuv", "B", 4)]}
+        search = {
+            "_type": "playlist",
+            "playlist_count": 2,
+            "entries": [flat_video(), flat_video("lmnopqrstuv", "B", 4)],
+        }
         self.metadata_result(search)
-        self.assertEqual(youtube_probe.resolve("lofi" )["count"], 2)
+        resolved = youtube_probe.resolve("lofi")
+        self.assertEqual(resolved["count"], 2)
+        self.assertEqual(resolved["tracks"][0], {"id": "abcdefghijk", "title": "A title"})
+        self.assertEqual(resolved["tracks"][1]["duration"], 4)
         self.assertTrue(self.call.call_args.args[0][-1].startswith("ytsearch5:"))
+        self.assertEqual(self.call.call_args.kwargs["output_limit"], 2 * 1024 * 1024)
 
-        playlist = {"_type": "playlist", "playlist_count": 2, "entries": [video(), video("lmnopqrstuv", "B", 4)]}
+        playlist = {
+            "_type": "playlist",
+            "playlist_count": 2,
+            "entries": [flat_video(), flat_video("lmnopqrstuv", "B", 4)],
+        }
         self.metadata_result(playlist)
         self.assertEqual(youtube_probe.resolve("https://youtube.com/playlist?list=PL_123")["count"], 2)
 

@@ -54,6 +54,25 @@ class BrokerPolicyTests(unittest.TestCase):
             with self.subTest(request=request), self.assertRaises(provider_harness.HarnessError):
                 sandbox._parse_connect(request)
 
+    def test_ffmpeg_connect_accepts_only_the_fixed_local_proxy_host_header(self):
+        request = (
+            b"CONNECT target.googlevideo.com:443 HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:3128\r\n\r\n"
+        )
+        self.assertEqual(sandbox._parse_connect(request), "target.googlevideo.com")
+
+        for host_header in ("127.0.0.1:3129", "arbitrary.invalid:443"):
+            with self.subTest(host_header=host_header), self.assertRaises(provider_harness.HarnessError):
+                sandbox._parse_connect(
+                    f"CONNECT target.googlevideo.com:443 HTTP/1.1\r\nHost: {host_header}\r\n\r\n".encode()
+                )
+
+        with self.assertRaises(provider_harness.HarnessError) as caught:
+            sandbox._parse_connect(
+                b"CONNECT private.internal:443 HTTP/1.1\r\nHost: 127.0.0.1:3128\r\n\r\n"
+            )
+        self.assertEqual(caught.exception.kind, "proxy destination rejected")
+
     def test_all_dns_answers_must_be_public_and_transition_addresses_are_rejected(self):
         self.assertEqual(str(sandbox._public_address("142.250.72.14")), "142.250.72.14")
         for address in (
