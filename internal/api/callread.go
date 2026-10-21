@@ -89,6 +89,15 @@ func (h *Calls) channelCall(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	resp := channelCallResponse{Participants: []participantRow{}}
 	open, err := h.openCallGroup(r.Context(), ch)
 	if err != nil {
@@ -137,6 +146,10 @@ func (h *Calls) communityCalls(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
 		server.WriteError(w, notFound(err))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, &cid); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	channels, err := h.repo.ListChannels(r.Context(), cid)

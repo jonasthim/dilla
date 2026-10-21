@@ -151,6 +151,10 @@ func (d Deps) GetBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if err := requireBotWire(s.WireVersion); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	row, err := d.Repo.GetActiveBotInstallationByCommunity(r.Context(), cid)
 	if errors.Is(err, store.ErrNotFound) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
@@ -183,7 +187,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "invalid request id or capability mask"))
 		return
 	}
-	com, have, err := humanForBot(r, d.Repo, cid, s)
+	_, have, err := humanForBot(r, d.Repo, cid, s)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -213,6 +217,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if prior.ActorKind != 0 || prior.ActorID != s.UserID || prior.ActorDevice == nil || *prior.ActorDevice != s.DeviceID || prior.Operation != botOpConfigure || !bytes.Equal(prior.PayloadHash, digest) {
 				return botConflict("request id was used for a different operation")
 			}
+			if err := requireBotWire(s.WireVersion); err != nil {
+				return err
+			}
 			return decodeBotInstallationResult(prior.ResultCBOR, &result)
 		}
 		if !errors.Is(perr, store.ErrNotFound) {
@@ -222,6 +229,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(cerr, store.ErrNotFound) {
 			if req.ExpectedRevision != nil {
 				return botConflict("installation revision changed")
+			}
+			if err := requireBotWire(s.WireVersion); err != nil {
+				return err
 			}
 			current = store.BotInstallationRow{ID: id.New(), CommunityID: cid, State: store.BotInstallationPending, Revision: 1,
 				Capabilities: uint8(req.Capabilities), ApprovedBy: s.UserID, ApprovedAt: now, Created: now, Updated: now}
@@ -239,6 +249,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 				return botConflict("installation revision changed")
 			}
 			if current.State != store.BotInstallationDisabled && current.Capabilities == uint8(req.Capabilities) {
+				if err := requireBotWire(s.WireVersion); err != nil {
+					return err
+				}
 				result = current
 				resultCBOR, err := encodeBotInstallationResult(current)
 				if err != nil {
@@ -250,11 +263,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if current.RemovedAt != nil {
 				return botConflict("removed installation cannot be re-enabled")
 			}
-			if err := d.spendBotStepUp(req.StepUp, s); err != nil {
-				return err
-			}
+			var managedRole *store.RoleRow
 			if current.RoleID != nil {
-				managedRole, err := tx.GetRole(r.Context(), *current.RoleID)
+				role, err := tx.GetRole(r.Context(), *current.RoleID)
 				if err != nil {
 					return err
 				}
@@ -269,13 +280,22 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 							highest = role.Position
 						}
 					}
-					if highest < 2 || managedRole.Position >= highest {
+					if highest < 2 || role.Position >= highest {
 						return server.Errorf(server.CodeForbidden, "no safe managed-role position below the configuring human")
 					}
 				}
+				managedRole = &role
+			}
+			if err := requireBotWire(s.WireVersion); err != nil {
+				return err
+			}
+			if err := d.spendBotStepUp(req.StepUp, s); err != nil {
+				return err
+			}
+			if managedRole != nil {
 				managedRole.Allow = uint64(botRoleBits(req.Capabilities, lockedHave) &^ moderatorBits)
 				managedRole.Deny = 0
-				if err := tx.PutRole(r.Context(), managedRole); err != nil {
+				if err := tx.PutRole(r.Context(), *managedRole); err != nil {
 					return err
 				}
 			}
@@ -308,7 +328,6 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	d.write(w, r, status, botInstallationValue(result))
-	_ = com
 }
 
 func checkBotCapabilityAuthority(have Bits, caps uint64) error {
@@ -507,6 +526,10 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 		return
 	}
 	if _, _, err := humanForBot(r, d.Repo, cid, s); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := requireBotWire(s.WireVersion); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -1014,6 +1037,10 @@ func (d Deps) FinalizeBotCredential(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
 		return
 	}
+	if err := requireBotWire(s.WireVersion); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	digest := botPayloadHash(struct {
 		Request, Installation id.ID
 		Revision              uint64
@@ -1133,6 +1160,10 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 	row, err := d.Repo.GetBotInstallation(r.Context(), installationID)
 	if err != nil || row.ID != s.Bot.InstallationID || row.UserID == nil || *row.UserID != s.UserID || row.DeviceID == nil || *row.DeviceID != s.DeviceID {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
+		return
+	}
+	if err := requireBotWire(s.WireVersion); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	digest := botPayloadHash(struct {

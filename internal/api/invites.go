@@ -393,6 +393,10 @@ func (h *Invites) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := requireCommunityWire(r.Context(), h.repo, m.session.WireVersion, &m.community); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	plain, hash := auth.NewInviteCode()
 	now := h.clk.Now().Unix()
 	row := store.InviteRow{
@@ -504,6 +508,12 @@ func (h *Invites) revoke(w http.ResponseWriter, r *http.Request) {
 		}
 		if !snap.Resolve(s.UserID).Has(PermManageCommunity) {
 			h.fail(w, r, "revoke invite", server.Errorf(server.CodeForbidden, "missing permission"))
+			return
+		}
+	}
+	if inv.RevokedAt == nil {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, &cid); err != nil {
+			server.WriteError(w, err)
 			return
 		}
 	}

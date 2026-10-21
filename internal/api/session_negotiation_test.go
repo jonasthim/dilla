@@ -204,7 +204,7 @@ func TestSessionNegotiationRequiresBearerAndCannotBeGrantedByHeaders(t *testing.
 	}
 }
 
-func TestBotSessionRouteRequiresEnrolledWireThree(t *testing.T) {
+func TestBotSessionRoutePreservesEnrollmentAuthAndDefersResourceWireGate(t *testing.T) {
 	h, deps := newTestAPI(t)
 	_, _, token := seedAPISession(t, deps)
 	mux := server.NewMux()
@@ -220,10 +220,9 @@ func TestBotSessionRouteRequiresEnrolledWireThree(t *testing.T) {
 		return rec
 	}
 	rec := call()
-	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
-		t.Fatalf("unnegotiated bot guard = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("bot route wrapper blocked handler before resource authorization: %d", rec.Code)
 	}
-	assertNegotiationVersionError(t, rec, [][]uint64{{3}, {1}, {1}})
 	body, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token); rec.Code != http.StatusOK {
 		t.Fatalf("negotiate wire 3 = %d, want 200", rec.Code)

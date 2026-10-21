@@ -198,6 +198,12 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if env.Type != EnvEdit && env.Type != EnvDelete {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+			h.fail(w, r, "post readable message", err)
+			return
+		}
+	}
 	// protocol/04's C, from the envelope and the k_f it carries in the clear.
 	// Task 17 recomputes exactly this when it verifies a report.
 	c, err := Commitment(req.Envelope, env.KF)
@@ -313,8 +319,12 @@ type listItem struct {
 // [[seq, sender, envelope, franking_tag, created, edited|null, deleted|null]].
 // A deleted message is a tombstone: an empty envelope and its deleted time.
 func (h *Readable) list(w http.ResponseWriter, r *http.Request) {
-	_, ch, _, err := h.channel(r, PermReadHistory)
+	s, ch, _, err := h.channel(r, PermReadHistory)
 	if err != nil {
+		h.fail(w, r, "list readable messages", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "list readable messages", err)
 		return
 	}
@@ -441,6 +451,9 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 	if row.Sender != s.UserID {
 		return server.Errorf(server.CodeForbidden, "only the author may edit a message")
 	}
+	if err := requireCommunityWire(ctx, h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		return err
+	}
 	c, err := Commitment(envelope, env.KF)
 	if err != nil {
 		return err
@@ -468,6 +481,9 @@ func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.
 	}
 	if row.Sender != s.UserID {
 		return server.Errorf(server.CodeNotUploader, "only the author may delete a message")
+	}
+	if err := requireCommunityWire(ctx, h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		return err
 	}
 	if err := h.repo.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
 		return notFound(err)
@@ -517,6 +533,10 @@ type searchItem struct {
 func (h *Readable) search(w http.ResponseWriter, r *http.Request) {
 	s, ch, _, err := h.channel(r, PermReadHistory)
 	if err != nil {
+		h.fail(w, r, "search readable channels", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "search readable channels", err)
 		return
 	}
@@ -607,6 +627,10 @@ func (h *Readable) readState(w http.ResponseWriter, r *http.Request) {
 	}
 	var req readStateRequest
 	if err := server.DecodeBody(w, r, readBody, &req); err != nil {
+		h.fail(w, r, "put read state", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		h.fail(w, r, "put read state", err)
 		return
 	}

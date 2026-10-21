@@ -124,7 +124,7 @@ func (c *Communities) afkSettings(w http.ResponseWriter, r *http.Request) {
 // shape `[channel_id, timeout_seconds]` when channel_id is the built-in channel. The channel is never
 // chosen here: the timeout is written beside the pointer as it stands, under the community row lock.
 func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
-	row, _, err := c.managerOnly(r)
+	row, s, err := c.managerOnly(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -169,6 +169,9 @@ func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(body) == 2 && (named == nil || cfg.ChannelID == nil || *named != *cfg.ChannelID) {
 			return server.Errorf(server.CodeInvalidRequest, "the AFK channel is built in; send [timeout_seconds]")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
+			return err
 		}
 		return tx.SetCommunityAFK(r.Context(), row.ID, store.CommunityAFK{ChannelID: cfg.ChannelID, TimeoutSeconds: timeout})
 	}); err != nil {
@@ -395,6 +398,10 @@ func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
 
 	version := row.PolicyVersion
 	if len(changed) > 0 {
+		if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 		err = c.repo.Tx(r.Context(), func(tx store.Repository) error {
 			// Re-read inside the transaction: the row memberOnly returned is a
 			// snapshot from before it, and the policy version must follow the
@@ -528,6 +535,9 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		// member row: a join the gate refuses burns no use, and a use is never
 		// spent for a member row that was not written.
 		if err := c.admitByInvite(r.Context(), tx, row, s.UserID, hashes); err != nil {
+			return err
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
 			return err
 		}
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
@@ -824,6 +834,10 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "kick", err)
 		return
 	}
+	if err := requireCommunityWire(r.Context(), c.repo, m.session.WireVersion, &m.community); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
@@ -882,6 +896,10 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 			"the owner must transfer ownership or delete the community"))
 		return
 	}
+	if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	// The membership and the user's channel_members rows for the community go in
 	// one transaction, as for a kick.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
@@ -920,6 +938,10 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	row, s, err := c.ownerOnly(r)
 	if err != nil {
 		c.fail(w, r, "delete community", err)
+		return
+	}
+	if err := requireCommunityWire(r.Context(), c.repo, s.WireVersion, &row.ID); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	now := c.clk.Now().Unix()
@@ -1034,6 +1056,9 @@ func (c *Communities) transfer(w http.ResponseWriter, r *http.Request) {
 		// As joinGate: an account that may not join a community may not own one.
 		if u.DisabledAt != nil || u.DeletedAt != nil {
 			return server.Errorf(server.CodeInvalidRequest, "that account can no longer own a community")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
+			return err
 		}
 		if err := tx.SetCommunityOwner(r.Context(), row.ID, req.UserID); err != nil {
 			return err

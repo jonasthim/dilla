@@ -623,6 +623,15 @@ func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	s, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, &cid); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	h.afkMu.Lock()
 	if exempt {
 		// R5: a device that cannot be idle-detected (a phone) is never moved out of this call. The

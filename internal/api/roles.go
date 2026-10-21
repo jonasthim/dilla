@@ -505,6 +505,9 @@ func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 			return server.Errorf(server.CodeInvalidRequest,
 				"a community has at most %d roles", maxRolesPerCommunity)
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &cid); err != nil {
+			return err
+		}
 		if err := tx.PutRole(r.Context(), role); err != nil {
 			return err
 		}
@@ -694,6 +697,9 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 			return server.Errorf(server.CodeForbidden,
 				"a role cannot be moved to or above your highest role")
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &current.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.PutRole(r.Context(), role); err != nil {
 			return err
 		}
@@ -769,6 +775,9 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if !locked.outranks(current.Position) {
 			return server.Errorf(server.CodeForbidden, "a role at or above your highest role cannot be deleted")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &role.CommunityID); err != nil {
+			return err
 		}
 		if err := tx.DeleteRole(r.Context(), role.CommunityID, role.ID); err != nil {
 			return notFound(err)
@@ -931,6 +940,9 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		if err := requireCommunityWire(r.Context(), tx, locked.a.s.WireVersion, &locked.cid); err != nil {
+			return err
+		}
 		if err := tx.PutMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
 			return err
 		}
@@ -971,6 +983,9 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 			return notFound(err)
 		}
 		if _, err := h.grantPath(r, tx, "revoked"); err != nil {
+			return err
+		}
+		if err := requireCommunityWire(r.Context(), tx, g.a.s.WireVersion, &g.cid); err != nil {
 			return err
 		}
 		if err := tx.DeleteMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
@@ -1169,6 +1184,9 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		if err := requireCommunityWire(r.Context(), tx, locked.s.WireVersion, locked.ch.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.PutOverwrite(r.Context(), put); err != nil {
 			return err
 		}
@@ -1210,6 +1228,9 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 		if err := keepsView(r.Context(), tx, o.s.UserID, locked.ch, func(rows []store.OverwriteRow) []store.OverwriteRow {
 			return withoutOverwrite(rows, o.kind, o.tgt)
 		}); err != nil {
+			return err
+		}
+		if err := requireCommunityWire(r.Context(), tx, locked.s.WireVersion, locked.ch.CommunityID); err != nil {
 			return err
 		}
 		if err := tx.DeleteOverwrite(r.Context(), o.ch.ID, o.kind, o.tgt); err != nil {

@@ -576,6 +576,9 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		if row.Position >= AFKBuiltinPosition {
 			return reservedPosition()
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.CreateChannel(r.Context(), row); err != nil {
 			return err
 		}
@@ -879,6 +882,9 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.UpdateChannel(r.Context(), row); err != nil {
 			return notFound(err)
 		}
@@ -1082,6 +1088,9 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if afk.ChannelID != nil && *afk.ChannelID == row.ID {
 			return server.Errorf(server.CodeForbidden, "the AFK channel cannot be deleted")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, row.CommunityID); err != nil {
+			return err
 		}
 		// Read the channel's open groups inside the transaction; close them after it.
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {

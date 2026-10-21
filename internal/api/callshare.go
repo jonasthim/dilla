@@ -467,6 +467,22 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "missing permission"))
 		return
 	}
+	if err := h.requireLeafOfCall(r.Context(), row, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := h.refuseBarred(r.Context(), h.repo, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if h.leases.penalised(row.CallID, row.LivekitRoom, s.DeviceID) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if h.sfu == nil {
 		server.WriteError(w, notImplemented("this instance runs no SFU (livekit.enabled is false)"))
 		return
@@ -557,6 +573,10 @@ func (h *Calls) unshare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row.Ended == nil {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 		if err := h.releaseShare(r.Context(), ch, row, s.DeviceID); err != nil {
 			server.WriteError(w, err)
 			return

@@ -145,6 +145,10 @@ func (b *Blobs) put(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if err := requireCommunityWire(r.Context(), b.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != octetStream {
 		server.WriteError(w, server.WithStatus(http.StatusUnsupportedMediaType,
 			server.Errorf(server.CodeInvalidRequest, "Content-Type must be %s", octetStream)))
@@ -442,7 +446,7 @@ func errStorageFull() *server.Error {
 // response must not tell a caller that a blob they cannot reach exists
 // (gap-47 §4.2).
 func (b *Blobs) get(w http.ResponseWriter, r *http.Request) {
-	_, ch, blobID, err := b.channel(r, PermReadHistory)
+	s, ch, blobID, err := b.channel(r, PermReadHistory)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -453,6 +457,10 @@ func (b *Blobs) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := b.repo.GetBlobRef(r.Context(), blobID, ch.ID); err != nil {
 		server.WriteError(w, notFound(err))
+		return
+	}
+	if err := requireCommunityWire(r.Context(), b.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	f, _, err := b.store.Get(blobID)
@@ -517,6 +525,9 @@ func (b *Blobs) confirm(w http.ResponseWriter, r *http.Request) {
 		if err != nil || dev.UserID != s.UserID {
 			return server.Errorf(server.CodeNotUploader, "only the uploading user may confirm this object")
 		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, ch.CommunityID); err != nil {
+			return err
+		}
 		return tx.ConfirmBlobRef(r.Context(), blobID, ch.ID)
 	})
 	if errors.Is(err, store.ErrNotFound) {
@@ -566,6 +577,9 @@ func (b *Blobs) delete(w http.ResponseWriter, r *http.Request) {
 		// A reference whose device row is gone has no provable uploader; only the admin purge can remove it.
 		if err != nil || dev.UserID != s.UserID {
 			return server.Errorf(server.CodeNotUploader, "only the uploading user may delete this object")
+		}
+		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, ch.CommunityID); err != nil {
+			return err
 		}
 		if err := tx.DeleteBlobRef(r.Context(), blobID, ch.ID); err != nil {
 			return err

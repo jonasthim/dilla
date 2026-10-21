@@ -120,6 +120,9 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		if err := stillModerates(r.Context(), tx, m, PermBanMembers); err != nil {
 			return err
 		}
+		if err := requireCommunityWire(r.Context(), tx, m.session.WireVersion, &m.community); err != nil {
+			return err
+		}
 		if err := tx.PutBan(r.Context(), store.BanRow{
 			CommunityID: m.community, UserID: m.target, Reason: req.Reason,
 			ByUser: m.session.UserID, Created: now, Expires: expires,
@@ -187,6 +190,18 @@ func (b *Bans) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	now := b.clk.Now().Unix()
 	if err := b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
+			return notFound(err)
+		}
+		if err := stillModerates(r.Context(), tx, m, PermBanMembers); err != nil {
+			return err
+		}
+		if _, err := tx.GetBan(r.Context(), m.community, m.target); err != nil {
+			return notFound(err)
+		}
+		if err := requireCommunityWire(r.Context(), tx, m.session.WireVersion, &m.community); err != nil {
+			return err
+		}
 		if err := tx.DeleteBan(r.Context(), m.community, m.target); err != nil {
 			return notFound(err)
 		}

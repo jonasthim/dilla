@@ -275,8 +275,10 @@ func TestManagedRoleRoutesBindAuthorityToExactBotInstallation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateBotInstallation: %v", err)
 	}
+	setWireVersion(e, ownerTok, 3)
 
 	human, humanTok := e.NewUser("human-target")
+	setWireVersion(e, humanTok, 3)
 	joinCommunity(t, e, cid, humanTok)
 	if err := e.Repo.UpdateCommunityMeta(t.Context(), cid, community.Name, community.MinAccountAgeSeconds, 1); err != nil {
 		t.Fatalf("enable require_mod_2fa: %v", err)

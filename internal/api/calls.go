@@ -457,6 +457,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	// An instance with livekit.enabled = false has no SFU to mint a room token from: every gate
 	// above answers as it does elsewhere, and a call that would open is 501, before any voice
 	// session is recorded for a room nobody can join.
@@ -681,6 +685,12 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	if h.leases.penalised(callID, row.LivekitRoom, s.DeviceID) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
+	}
+	if !closed {
+		if err := requireCommunityWire(r.Context(), h.repo, s.WireVersion, ch.CommunityID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
 	}
 	// The conditional form closes the group first, under its lock and only while the caller is its
 	// only current leaf; endCall then finds it closed and finishes the end. A joiner whose commit

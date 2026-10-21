@@ -27,6 +27,257 @@ func TestBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	}
 }
 
+func TestBotOnlyCommunityRouteChecksAuthorityBeforeWireRequirement(t *testing.T) {
+	h, deps := newTestAPI(t)
+	owner, _, ownerToken := seedAPISession(t, deps)
+	member, _, memberToken := seedAPISession(t, deps)
+	cid := id.New()
+	now := deps.Clock.Now().Unix()
+	if err := deps.Repo.CreateCommunity(context.Background(), store.CommunityRow{ID: cid, Owner: owner.ID, Name: "test", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []id.ID{owner.ID, member.ID} {
+		if err := deps.Repo.PutMember(context.Background(), store.MemberOfCommunityRow{CommunityID: cid, UserID: user, Joined: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := deps.Repo.PutRole(context.Background(), store.RoleRow{ID: id.New(), CommunityID: cid, Name: "@everyone", Position: 0, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + cid.String() + "/bot"
+	if rec := getAuth(h, path, memberToken); rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized bot route = %d, want 403 before E_VERSION", rec.Code)
+	}
+	if rec := getAuth(h, path, ownerToken); rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
+		t.Fatalf("authorized wire-0 bot route = %d, want 400 E_VERSION", rec.Code)
+	}
+	unknown := "/v1/communities/" + id.New().String() + "/bot"
+	if rec := getAuth(h, unknown, ownerToken); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown community bot route = %d, want 404 before E_VERSION", rec.Code)
+	}
+}
+
+func TestConfigureBotChecksCapabilityAuthorityBeforeWireUpgrade(t *testing.T) {
+	h, deps := newTestAPI(t)
+	owner, _, ownerToken := seedAPISession(t, deps)
+	manager, _, managerToken := seedAPISession(t, deps)
+	cid := seedBotCommunity(t, deps, owner.ID)
+	ctx := context.Background()
+	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: manager.ID, Joined: deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	managerRole := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "bot manager", Position: 10,
+		Allow: uint64(api.PermViewChannel | api.PermReadHistory | api.PermSendMessages | api.PermAddReactions | api.PermManageCommunity), Created: deps.Clock.Now().Unix()}
+	if err := deps.Repo.PutRole(ctx, managerRole); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutMemberRole(ctx, cid, manager.ID, managerRole.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + cid.String() + "/bot"
+	encode := func() []byte {
+		body, err := cborx.Marshal([]any{id.New(), nil, uint64(16), ""}) // warnings requires PermModerateMembers
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func()
+	}{
+		{name: "wire 0", setup: func() {}},
+		{name: "wire 2", setup: func() {
+			negotiate, _ := cborx.Marshal([]any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
+			if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, managerToken); rec.Code != http.StatusOK {
+				t.Fatalf("manager negotiate wire 2 = %d (%x)", rec.Code, rec.Body.Bytes())
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup()
+			denied := putCBORAuth(h, path, encode(), managerToken)
+			if denied.Code != http.StatusForbidden || refusalCode(t, denied) != "E_FORBIDDEN" {
+				t.Fatalf("manager lacking requested capability permission = %d (%x), want 403 E_FORBIDDEN", denied.Code, denied.Body.Bytes())
+			}
+			if _, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unauthorized configure installation lookup = %v, want no installation", err)
+			}
+		})
+	}
+
+	// The owner remains authorized, but wire 2 must refuse before creating or changing an installation.
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
+	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, ownerToken); rec.Code != http.StatusOK {
+		t.Fatalf("owner negotiate wire 2 = %d (%x)", rec.Code, rec.Body.Bytes())
+	}
+	upgraded := putCBORAuth(h, path, encode(), ownerToken)
+	if upgraded.Code != http.StatusBadRequest || refusalCode(t, upgraded) != "E_VERSION" {
+		t.Fatalf("authorized wire-2 configure = %d (%x), want 400 E_VERSION", upgraded.Code, upgraded.Body.Bytes())
+	}
+	if _, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("wire-refused configure installation lookup = %v, want no installation", err)
+	}
+
+	// A manager with the requested capability permission still keeps the prior
+	// managed-role hierarchy refusal ahead of the compatibility response.
+	managerRole.Allow |= uint64(api.PermModerateMembers)
+	if err := deps.Repo.PutRole(ctx, managerRole); err != nil {
+		t.Fatal(err)
+	}
+	managedRole := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "managed bot", Position: managerRole.Position, Created: deps.Clock.Now().Unix()}
+	if err := deps.Repo.PutRole(ctx, managedRole); err != nil {
+		t.Fatal(err)
+	}
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: cid, RoleID: &managedRole.ID,
+		State: store.BotInstallationPending, Revision: 1, Capabilities: 0, ApprovedBy: owner.ID,
+		ApprovedAt: deps.Clock.Now().Unix(), Created: deps.Clock.Now().Unix(), Updated: deps.Clock.Now().Unix()}
+	if err := deps.Repo.CreateBotInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	expectedRevision := uint64(1)
+	ceilingBody, err := cborx.Marshal([]any{id.New(), expectedRevision, uint64(16), ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedByHierarchy := putCBORAuth(h, path, ceilingBody, managerToken)
+	if deniedByHierarchy.Code != http.StatusForbidden || refusalCode(t, deniedByHierarchy) != "E_FORBIDDEN" {
+		t.Fatalf("manager at managed-role ceiling = %d (%x), want 403 E_FORBIDDEN", deniedByHierarchy.Code, deniedByHierarchy.Body.Bytes())
+	}
+	unchanged, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil || unchanged.ID != installation.ID || unchanged.Revision != installation.Revision || unchanged.Capabilities != installation.Capabilities {
+		t.Fatalf("installation after managed-role refusal = %+v, %v; want unchanged %+v", unchanged, err, installation)
+	}
+}
+
+func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
+	h, deps := newTestAPIWired(t, func(d *api.Deps) {
+		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
+	})
+	owner, _, ownerToken := seedAPISession(t, deps)
+	manager, _, managerToken := seedAPISession(t, deps)
+	cid := seedBotCommunity(t, deps, owner.ID)
+	ctx := context.Background()
+	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: manager.ID, Joined: deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	managerRole := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "bot manager", Position: 10,
+		Allow: uint64(api.PermViewChannel | api.PermReadHistory | api.PermSendMessages | api.PermAddReactions | api.PermManageCommunity | api.PermModerateMembers), Created: deps.Clock.Now().Unix()}
+	if err := deps.Repo.PutRole(ctx, managerRole); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutMemberRole(ctx, cid, manager.ID, managerRole.ID); err != nil {
+		t.Fatal(err)
+	}
+	managedRole := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "managed bot", Position: 5, Created: deps.Clock.Now().Unix()}
+	if err := deps.Repo.PutRole(ctx, managedRole); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + cid.String() + "/bot"
+	negotiate := func(token string, version uint64) {
+		t.Helper()
+		body, err := cborx.Marshal([]any{[]any{version}, []any{uint64(1)}, []any{uint64(1)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token); rec.Code != http.StatusOK {
+			t.Fatalf("negotiate wire %d = %d (%x)", version, rec.Code, rec.Body.Bytes())
+		}
+	}
+	negotiate(managerToken, 3)
+	negotiate(ownerToken, 3)
+	issueStepUp := func(user id.ID, token string) string {
+		t.Helper()
+		sess, err := deps.Sessions.Resolve(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, _ := deps.StepUps.Issue(user, sess.TokenHash)
+		return step
+	}
+	encode := func(request id.ID, revision *uint64, caps uint64, step string) []byte {
+		t.Helper()
+		body, err := cborx.Marshal([]any{request, revision, caps, step})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	// Manager accepts C1 and receives receipt A.
+	receiptA := id.New()
+	first := putCBORAuth(h, path, encode(receiptA, nil, 16, issueStepUp(manager.ID, managerToken)), managerToken)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("initial C1 configure = %d (%x), want 201", first.Code, first.Body.Bytes())
+	}
+	current, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.RoleID = &managedRole.ID
+	current.Revision++
+	current.Updated = deps.Clock.Now().Unix()
+	if err := deps.Repo.UpdateBotInstallation(ctx, current.ID, current.Revision-1, current); err != nil {
+		t.Fatalf("attach managed role: %v", err)
+	}
+
+	// Owner changes capabilities to C2, advancing the live installation.
+	revision := current.Revision
+	changed := putCBORAuth(h, path, encode(id.New(), &revision, 0, issueStepUp(owner.ID, ownerToken)), ownerToken)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("owner configure C2 = %d (%x), want 200", changed.Code, changed.Body.Bytes())
+	}
+	current, err = deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Revision != revision+1 || current.Capabilities != 0 {
+		t.Fatalf("installation after C2 = revision %d capabilities %d, want %d and 0", current.Revision, current.Capabilities, revision+1)
+	}
+
+	// The manager retains C1's permission but now ranks below the managed bot role.
+	managerRole.Position = 4
+	if err := deps.Repo.PutRole(ctx, managerRole); err != nil {
+		t.Fatal(err)
+	}
+
+	// The exact wire-3 receipt replay returns its historical result without step-up,
+	// despite the changed live configuration and hierarchy.
+	replay := putCBORAuth(h, path, encode(receiptA, nil, 16, ""), managerToken)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("wire-3 replay A after C2/rank change = %d (%x), want 200", replay.Code, replay.Body.Bytes())
+	}
+	var replayValue []any
+	if err := cborx.Unmarshal(replay.Body.Bytes(), &replayValue); err != nil {
+		t.Fatal(err)
+	}
+	if len(replayValue) < 7 || replayValue[3] != uint64(1) || replayValue[6] != uint64(16) {
+		t.Fatalf("wire-3 replay result = %#v, want historical revision 1 / capabilities 16", replayValue)
+	}
+
+	negotiate(managerToken, 2)
+	oldWireReplay := putCBORAuth(h, path, encode(receiptA, nil, 16, ""), managerToken)
+	if oldWireReplay.Code != http.StatusBadRequest || refusalCode(t, oldWireReplay) != "E_VERSION" {
+		t.Fatalf("wire-2 replay A = %d (%x), want 400 E_VERSION", oldWireReplay.Code, oldWireReplay.Body.Bytes())
+	}
+
+	// A fresh configure is a new action, so the current managed-role ceiling still
+	// refuses it before E_VERSION and before recording an operation.
+	freshID := id.New()
+	currentRevision := current.Revision
+	fresh := putCBORAuth(h, path, encode(freshID, &currentRevision, 16, ""), managerToken)
+	if fresh.Code != http.StatusForbidden || refusalCode(t, fresh) != "E_FORBIDDEN" {
+		t.Fatalf("wire-2 fresh configure at managed-role ceiling = %d (%x), want 403 E_FORBIDDEN", fresh.Code, fresh.Body.Bytes())
+	}
+	unchanged, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil || unchanged.Revision != currentRevision || unchanged.Capabilities != 0 {
+		t.Fatalf("installation after refused fresh configure = %+v, %v; want revision %d capabilities 0", unchanged, err, currentRevision)
+	}
+	if _, err := deps.Repo.GetBotOperation(ctx, cid, freshID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("fresh configure receipt lookup = %v, want no receipt", err)
+	}
+}
+
 func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *testing.T, repo store.Repository) {
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)

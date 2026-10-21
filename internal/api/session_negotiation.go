@@ -84,19 +84,11 @@ func (d Deps) NegotiateSession(w http.ResponseWriter, r *http.Request) {
 	d.write(w, r, http.StatusOK, []uint64{selected[0], selected[1], selected[2]})
 }
 
-// BotSessionRoute is the narrow gate for future bot-only handlers. It preserves the ordinary
-// enrolled-session and rate-limit checks, then requires a session that negotiated wire 3.
+// BotSessionRoute preserves enrolled-session and rate-limit checks for bot-only handlers. Each
+// handler applies the wire-3 requirement after authorizing its bound resource, so hidden and
+// unknown resources keep their established refusal.
 func BotSessionRoute(sessions *auth.Sessions, l *server.RateLimiter) func(pattern string, h http.Handler) http.Handler {
 	return func(pattern string, h http.Handler) http.Handler {
-		return sessions.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			session, ok := auth.FromContext(r.Context())
-			if !ok || session.WireVersion < 3 {
-				refusal := server.Version([]uint64{3}, []uint64{1}, []uint64{1})
-				refusal.Detail = "bot capability requires wire version 3"
-				server.WriteError(w, refusal)
-				return
-			}
-			dsMeter(l, routeClass(pattern), h.ServeHTTP).ServeHTTP(w, r)
-		}), auth.ScopeEnrolled)
+		return sessions.Middleware(dsMeter(l, routeClass(pattern), h.ServeHTTP), auth.ScopeEnrolled)
 	}
 }
