@@ -899,6 +899,36 @@ Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treat
 Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
 channel's rules until it reloads.
 
+### The optional GIF picker: `giphy.api_key`
+
+GIFs are off until you give `dillad` a Giphy API key. Add it to `dilla.toml` and restart:
+
+```toml
+[giphy]
+api_key = "…"      # empty (the default) turns GIFs off
+rating  = "pg-13"  # the most mature rating search returns: g, pg, pg-13 or r
+```
+
+With a key, the web client shows a **gif** button in the composer, and `dillad` serves two routes behind the signed-in
+session: `GET /v1/gifs/search` and `GET /v1/gifs/media/{id}`. Without one both answer `404` and `GET /v1/instance`
+reports GIFs off (element 11, `0`). What this means for privacy:
+
+- Search and the picked GIF go through `dillad`, so **Giphy sees your server, never the people on it**, and your server
+  sees what people search for. The key is in `dilla.toml` only: it is in no reply, header or log line, and `dillad
+  doctor` prints whether GIFs are on and never the key.
+- A picked GIF is downloaded by `dillad` and sent as an ordinary encrypted attachment, so **no reader's browser
+  contacts giphy.com**. The server's content-security policy needs no Giphy host.
+- `dillad` fetches only from Giphy's own hosts (`api.giphy.com` and `media*.giphy.com`) over HTTPS, builds each URL
+  itself from a checked Giphy id, refuses redirects off that list and refuses to connect to a private address. A
+  GIF is capped at 25 MB (a preview at 5 MB) on the bytes received, and a fetch times out after 15 seconds, with at most
+  eight in flight.
+- Search is limited per person (10 at once, then 1 a second) and so is the media route (60 at once, then 20 a second).
+- `dillad` runs no proxy for this traffic: it connects directly, so the host needs outbound HTTPS to `*.giphy.com`.
+  An outage at Giphy shows people "could not reach the gif service" and nothing else.
+
+Rolling back to an earlier release leaves `[giphy]` in `dilla.toml`, which an earlier `dillad` refuses (unknown table):
+remove the table first.
+
 ## Capacity
 
 Every figure in this section is a measured cell from `docs/spikes/2026-10-capacity.md` (SP-29), on the

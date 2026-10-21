@@ -1231,6 +1231,21 @@ between the images of the same message, **Save** saves it, **Close** or Escape c
 browser downloads a file each time you open or save it and keeps no copy of opened files; the small previews come
 with the message. When a message with files is deleted, its files are deleted from the instance too.
 
+### GIFs
+
+When the operator of {instance} has turned GIFs on, a **gif** button (named "add a gif") sits next to **attach
+files**. It opens a small picker above the message field: type to search (or leave it empty for what is trending),
+use the arrow keys or Tab to move over the results, and press Enter, Space or click to pick one. **more** loads the
+next page. The footer says "Powered by GIPHY". Escape closes the picker and puts focus back on the **gif** button.
+
+Picking a GIF adds it to "files to send" like any file you attach, named `giphy-{id}.gif`, and puts focus in the
+message field; press Enter to send it, with or without text, or **remove** it. Nothing is sent until you do.
+
+Two things to know about privacy. Your searches go to {instance}, which asks Giphy on your behalf, so Giphy sees the
+instance and not you; the instance itself sees what you search for. The GIF is downloaded by the instance and sent
+to the conversation as an ordinary file, protected like any other, so the people who read it never contact
+giphy.com. If the instance has no Giphy key there is no **gif** button.
+
 ### Keys in the conversation
 
 | Key | What it does |
