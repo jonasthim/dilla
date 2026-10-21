@@ -327,6 +327,27 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
     expect(h.started).toHaveLength(1);
   });
 
+  it('round 3b: the moved line names the AFK channel of the cut call’s own community, not the first listed one', async () => {
+    const h = harness();
+    // Two communities, both reporting this device's pending (device-scoped); B's AFK channel has its own name.
+    act(() => { h.client.set(`channels:${B}`, [voice(B_GEN, B, 'hall'), voice(B_AFK, B, 'Lounge', 1 << 30)]); });
+    await h.joined(B_GEN);
+    reasonOnRead(h, 1);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: B_GEN, key: 'afk.moved', text: t('afk.moved', { channel: 'Lounge' }) }));
+  });
+
+  it('round 3b: a DM call’s moved line names the community whose away roster lists this user, as a fallback', async () => {
+    const h = harness();
+    act(() => { h.client.set(`channels:${B}`, [voice(B_GEN, B, 'hall'), voice(B_AFK, B, 'Lounge', 1 << 30)]); });
+    act(() => { h.client.set('dms', [{ id: DM_ID, kind: 3, members: [ME.id], name: 'bob', group: 'active' }]); });
+    await h.joined(DM_ID);
+    h.awayMe(B);
+    reasonOnRead(h, 1);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: DM_ID, key: 'afk.moved', text: t('afk.moved', { channel: 'Lounge' }) }));
+  });
+
   it('round 3: the sweep’s reason 1 says afk.moved, also when its away mark lands first', async () => {
     const h = harness();
     await h.joined(GENV);

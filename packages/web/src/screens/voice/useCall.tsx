@@ -316,16 +316,21 @@ export function useCall(o: UseCallOptions): CallView {
    *  DM call any listed community (the reason is device-scoped: every community's read says it); null when there is none. */
   const reasonCommunity = useCallback((id: string): string | null => communityOf(id) ?? client.get('communities')?.[0]?.id ?? null,
     [client, communityOf]);
-  /** The name of the AFK channel for `afk.moved`: the call's own community's, else the read's, else 'AFK'. */
-  const afkNameFor = useCallback((id: string, cid: string): string => {
-    for (const c of [communityOf(id), cid]) {
-      if (c === null) continue;
+  /** The name of the AFK channel for `afk.moved`. Round 3b: pending is device-scoped (every community reports it), so the
+   *  community is the cut call's own; a DM call (no own community) falls back to a community whose away roster lists this
+   *  user; else 'AFK'. */
+  const afkNameFor = useCallback((id: string): string => {
+    const nameIn = (c: string): string | undefined => {
       const afkId = client.get(`afk:${c}`)?.channelId ?? null;
-      const name = afkId === null ? undefined : (client.get(`channels:${c}`) ?? []).find((ch) => ch.id === afkId)?.name;
-      if (name !== undefined) return name;
+      return afkId === null ? undefined : (client.get(`channels:${c}`) ?? []).find((ch) => ch.id === afkId)?.name;
+    };
+    const own = communityOf(id);
+    if (own !== null) return nameIn(own) ?? 'AFK';
+    for (const c of client.get('communities') ?? []) {
+      if (awaySince(c.id) !== null) return nameIn(c.id) ?? 'AFK';
     }
     return 'AFK';
-  }, [client, communityOf]);
+  }, [client, communityOf, awaySince]);
   /**
    * AW5 fix round 3 (B2-I1, B2-M2, B2-M3, B2-n1): why the call `id` was cut, from the instance's pending reason for this
    * device (R-AW6): 1 the idle sweep moved it ('Moved to AFK'), 2 this user chose AFK on another device or tab ('You went
@@ -364,7 +369,7 @@ export function useCall(o: UseCallOptions): CallView {
       const cut = cutReason(id);
       if (cut === null) return false;
       if (cut.reason === 1) {
-        const text = t('afk.moved', { channel: afkNameFor(id, cut.cid) });
+        const text = t('afk.moved', { channel: afkNameFor(id) });
         setNotice({ channelId: id, key: 'afk.moved', text });
         if (!live.current.stageShown(id)) setLasting(text);
       } else {
@@ -803,7 +808,7 @@ export function useCall(o: UseCallOptions): CallView {
       return;
     }
     const cid = reasonCommunity(id);
-    const text = verdict === 'moved' && cid !== null ? t('afk.moved', { channel: afkNameFor(id, cid) }) : t('voice.disconnected');
+    const text = verdict === 'moved' && cid !== null ? t('afk.moved', { channel: afkNameFor(id) }) : t('voice.disconnected');
     setNotice(verdict === 'moved' && cid !== null ? { channelId: id, key: 'afk.moved', text } : { channelId: id, key: 'voice.disconnected' });
     if (!live.current.stageShown(id)) setLasting(text);
   }, [reasonCommunity, afkNameFor]);

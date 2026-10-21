@@ -1625,10 +1625,15 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
-  it('a pending reason of 3, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
-    const two = setup();
-    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 3]));
-    await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+  // AW5 fix round 3b (protocol/07): any non-zero pending is pending; an unknown reason (3 or more) reads as 2, the calm one.
+  it('an unknown pending reason of 3 or more is pending and reads as reason 2, never an error', async () => {
+    for (const n of [3, 7, 255]) {
+      const one = setup();
+      one.t.replies.push(cborReply(200, [CHANNEL, 300, [], n]));
+      await expect(one.routes.getAFK(COMMUNITY)).resolves.toMatchObject({ pending: true, reason: 2 });
+    }
+  });
+  it('a raw CBOR true and a raw CBOR false pending are refused (the subset has no booleans)', async () => {
     for (const tail of [0xf5, 0xf4]) {
       const head = encode([CHANNEL, 300, []]);
       const raw = new Uint8Array([...head, tail]);

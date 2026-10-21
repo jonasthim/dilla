@@ -241,11 +241,12 @@ function checkedText(field: string, v: string, maxBytes: number): string {
   for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
   return v;
 }
-/** AW5 fix round 3: GET …/afk's pending reason, 0, 1 or 2 (a web3.9/3.11 instance answers 0 or 1). */
+/** AW5 fix round 3: GET …/afk's pending reason (protocol/07): 0 none, 1 the idle sweep, 2 AFK chosen elsewhere. Round 3b:
+ *  any non-zero value is pending, and one this client does not know (3 or more) reads as 2, the calm reason; never an
+ *  error. */
 function pendingReason(v: CborValue): 0 | 1 | 2 {
   const n = u53(v);
-  if (n > 2) throw new CborError('E_CBOR_RANGE', 'expected 0, 1 or 2, got ' + String(n));
-  return n as 0 | 1 | 2;
+  return n === 0 ? 0 : n === 1 ? 1 : 2;
 }
 function flag(v: CborValue): boolean {
   const n = u53(v);
