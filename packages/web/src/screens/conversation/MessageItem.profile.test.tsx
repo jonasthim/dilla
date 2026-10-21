@@ -27,10 +27,11 @@ describe('a mention and an author open the profile card (MP7)', () => {
     expect(within(rowOf(P1).querySelector<HTMLElement>('.d-message-row__body')!).queryAllByRole('button')).toEqual([]);
     expect(rowOf(P1).querySelectorAll('span.d-mention')).toHaveLength(1);
   });
-  it('opens a name-only card for a former member we hold a message from', async () => {
+  it('L4: a former member whose name we do not know gets a card titled "former member", never the raw id', async () => {
     const { user } = renderConversation({ items: [peerRow(P2, '1', 'i was here', { senderUser: STRANGER }), peerRow(P1, '2', `bye <@${STRANGER}>`)] });
     await user.click(within(rowOf(P1)).getByRole('button', { name: '@eeeeeeee' }));
-    expect(card()).toHaveAccessibleName('eeeeeeee');
+    expect(card()).toHaveAccessibleName('former member');
+    expect(card()).not.toHaveTextContent('eeeeeeee');
     expect(actionNames()).toEqual([]);
     expect(within(card()).queryByRole('list')).toBeNull();
   });

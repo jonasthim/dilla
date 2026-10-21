@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { ChannelSummary, DeviceSummary, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { formatDay, formatTime } from '../strings/index.ts';
 import {
-  authorName, badgeLabel, bodyParts, withSenders, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
+  authorName, knownName, badgeLabel, bodyParts, withSenders, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
   mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
   stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, selfName, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
@@ -226,6 +226,10 @@ describe('names in bodies (L-TS-37)', () => {
       .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false, userId: UNKNOWN }]);
     expect(bodyParts(`<@${UNKNOWN}>`, withSenders(book, [{ senderUser: null }, { senderUser: BOB }]), false))
       .toEqual([{ kind: 'mention', label: '@eeeeeeee', me: false, broadcast: false }]);
+  });
+  it('L4: knownName gives a shown name only when it is not the 8-character id fallback', () => {
+    expect(knownName('eeeeeeee', UNKNOWN)).toBe('');
+    expect(knownName('Bob', UNKNOWN)).toBe('Bob');
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))

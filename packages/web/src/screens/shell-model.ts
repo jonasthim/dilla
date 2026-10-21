@@ -232,6 +232,11 @@ export function selfName(self: { id: string; username: string; display?: string 
   return self.display !== undefined && self.display !== '' ? self.display : self.username;
 }
 
+/** The name to show on a former member's card: the label when it is a name, '' when it is only the 8-character id fallback of `authorName` or a mention pill. */
+export function knownName(label: string, userId: string): string {
+  return label === userId.slice(0, 8) ? '' : label;
+}
+
 /**
  * A body as text and mention pills. `mentionsMe` is the row's mention flag from the core, which alone decides whether an
  * @everyone, @here or a token of one of my roles counted (the sender's right, the role's "anyone can mention"). Such a pill

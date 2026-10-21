@@ -233,7 +233,7 @@ yourself. The server still checks every kick and ban.
 A mention of a person in a message, and a message's author name or avatar, open the same card, in channels and in threads
 (on a phone, inside the thread sheet). The card sits under the mention or the name. Tab reaches the mention and the author name
 inside the message, Enter opens the card and Escape closes it and returns to where you were. A mention of someone who has
-left the server opens a card with their name only, no roles and no actions, and only while one of their messages is still
+left the server opens a card with no roles and no actions, titled "former member" because the server no longer tells us their name, and only while one of their messages is still
 held in this browser. Role mentions and @everyone are not clickable. In direct messages a mention is plain text for now.
 
 **kick** asks "Kick {name} from {server}?": "{name} leaves every channel and call of {server} at once. They can

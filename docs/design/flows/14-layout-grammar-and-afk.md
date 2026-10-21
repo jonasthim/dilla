@@ -70,6 +70,7 @@
 `layout.profile.close='close'`
 `layout.profile.bot='bot'`
 `layout.profile.manageRoles='edit roles'`
+`layout.profile.formerMember='former member'`
 `presence.online='online'`
 `presence.idle='idle'`
 `presence.dnd='do not disturb'`

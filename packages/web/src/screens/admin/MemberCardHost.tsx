@@ -119,7 +119,7 @@ export function MemberCardHost(props: MemberCardHostProps): React.JSX.Element {
           roles={data.roles} actions={data.actions.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' }))}
           onAction={id => onAction(data.userId, id)} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement={card.source === 'list' ? 'side' : 'below'} fallbackFocus={card.source === 'list' ? undefined : messageFallback(card)} {...labels} />
       ) : card !== null && card.source !== 'list' && card.name !== undefined && members !== undefined ? (
-        <ProfileCard name={card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" fallbackFocus={messageFallback(card)} {...labels} />
+        <ProfileCard name={card.name === '' ? t('layout.profile.formerMember') : card.name} username="" roles={[]} actions={[]} onAction={() => {}} onClose={() => onCard(null)} anchor={card.anchor} layout={layout} placement="below" fallbackFocus={messageFallback(card)} {...labels} />
       ) : null}
       <KickFlow open={kickOpen} communityId={communityId} serverName={community?.name ?? ''} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
