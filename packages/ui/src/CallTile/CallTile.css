@@ -146,11 +146,17 @@
   .d-call-tile[data-stage] .d-call-tile__volume { position: static; width: auto; padding: 0 0.5rem 0.25rem; background: none; border-radius: 0; opacity: 1; pointer-events: auto; }
   /* The stream's range and mute: in the flow under the caption, 44 px, always shown. */
   .d-call-tile .d-call-tile__mute { width: 2.75rem; height: 2.75rem; }
-  .d-call-tile[data-stage] .d-call-tile__stream { position: relative; left: auto; bottom: auto; align-self: stretch; width: auto; max-width: none; padding: 0 0.5rem 0.25rem; gap: 0.5rem; }
+  .d-call-tile[data-stage] .d-call-tile__stream { position: static; left: auto; bottom: auto; align-self: stretch; width: auto; max-width: none; padding: 0 0.5rem 0.25rem; gap: 0.5rem; }
   .d-call-tile[data-stage] .d-call-tile__stream > .d-call-tile__volume { display: none; }
   .d-call-tile[data-stage] .d-call-tile__stream .d-call-tile__mute { opacity: 1; pointer-events: auto; }
-  .d-call-tile[data-stage] .d-call-tile__stream .d-call-tile__streamvol { display: inline-flex; }
-  .d-call-tile[data-stage] .d-call-tile__popover { display: block; left: 0.5rem; right: 0.5rem; bottom: 100%; }
+  .d-call-tile[data-stage] .d-call-tile__stream .d-call-tile__streamvol { display: inline-flex; opacity: 1; pointer-events: auto; }
+  /* The popover is anchored to the tile and sits over the bottom row (the buttons), so it spans the tile and leaves the caption alone. */
+  .d-call-tile[data-stage] .d-call-tile__popover {
+    display: block; left: 0; right: 0; bottom: 0; margin: 0; padding: 0 0.25rem; pointer-events: auto; opacity: 1;
+    border-width: 1px 0 0; border-radius: 0; box-sizing: border-box;
+  }
+  .d-call-tile[data-stage] .d-call-tile__popover .d-call-tile__volume-value { display: none; }
+  .d-call-tile[data-stage] .d-call-tile__stream[data-open] .d-call-tile__mute, .d-call-tile[data-stage] .d-call-tile__stream[data-open] .d-call-tile__streamvol { visibility: hidden; }
   .d-call-tile[data-stage] .d-call-tile__popover .d-call-tile__volume { position: static; padding: 0; background: none; opacity: 1; pointer-events: auto; max-width: none; }
 }
 /* D4: on the phone layout (landscape included) the avatar sits centred in its 16:9 box, and the volume has no hover, so it stays shown. */
@@ -162,3 +168,4 @@
 [data-layout="phone"] .d-call-tile[data-stage] .d-call-tile__stream > .d-call-tile__volume { display: none; }
 [data-layout="phone"] .d-call-tile[data-stage] .d-call-tile__stream .d-call-tile__streamvol { display: inline-flex; }
 [data-layout="phone"] .d-call-tile[data-stage] .d-call-tile__popover { display: block; }
+[data-layout="phone"] .d-call-tile[data-stage] .d-call-tile__stream .d-call-tile__streamvol { pointer-events: auto; }
