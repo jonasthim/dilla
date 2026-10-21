@@ -214,6 +214,41 @@ describe('Controller', () => {
       expect(w.routes.putAFKAway).toHaveBeenCalledTimes(1);
     });
 
+    // AW5 fix round 2 (B-M1): a newer read of the same community that replaces this one's is waited for, not a failure.
+    it('afkRead answers with a newer read that superseded its own', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      await vi.waitFor(() => expect(w.last(key)).not.toBeUndefined());
+      const reads = w.routes.getAFK.mock.calls.length;
+      let land: (v: Awaited<ReturnType<typeof w.routes.getAFK>>) => void = () => undefined;
+      w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+      w.call(1020, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(reads + 1));
+      // A second read (a reload, setAFK or another afkRead) starts while the first is in flight. The first lands first
+      // and is discarded as superseded; the first afkRead waits for the second, which lands later.
+      let land2: (v: Awaited<ReturnType<typeof w.routes.getAFK>>) => void = () => undefined;
+      w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land2 = resolve; }));
+      w.call(1021, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(reads + 2));
+      land({ channelId: CHANNEL, timeoutSeconds: 60, pending: false, away: [] });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(w.ret(1020)).toBeUndefined();
+      land2({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      await vi.waitFor(() => expect(w.ret(1020)).toMatchObject({ ok: true, value: null }));
+      await vi.waitFor(() => expect(w.ret(1021)).toMatchObject({ ok: true, value: null }));
+      expect(w.last(key)).toMatchObject({ pending: true });
+    });
+
+    // AW5 fix round 2 (nit): the worker's own bound matches the page's wait.
+    it('afkRead answers E_UNAVAILABLE once its timeoutMs passes with no read landed', async () => {
+      const w = world();
+      await toReady(w);
+      w.routes.getAFK.mockImplementationOnce(() => new Promise(() => undefined));
+      w.call(1030, { m: 'afkRead', communityId: toHex(COMMUNITY), timeoutMs: 50 });
+      await vi.waitFor(() => expect(w.ret(1030)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
+    });
+
     // AW5 fix round 1 (I1): the page's restore and recovery ask for a fresh read and act only once it landed.
     it('afkRead answers once a fresh read landed, and refuses when the read fails or the community is unlisted', async () => {
       const w = world();
