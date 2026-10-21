@@ -692,6 +692,36 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.error).toBeNull();
   });
 
+  it('MP5: a local 2 s poll publishes call.state.link while connected, apart from the 10 s server report, and leave clears it', async () => {
+    const f = fakes();
+    let sent = 0;
+    let received = 0;
+    const pc = f.room.engine.pcManager as unknown as { publisher: { getStats: () => Promise<Map<string, unknown>> }; subscriber: { getStats: () => Promise<Map<string, unknown>> } };
+    pc.publisher.getStats = async () => new Map<string, unknown>([
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: 0.024 }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['O', { id: 'O', type: 'outbound-rtp', bytesSent: sent }],
+    ]);
+    pc.subscriber = { getStats: async () => new Map<string, unknown>([['I', { id: 'I', type: 'inbound-rtp', bytesReceived: received }]]) };
+    const call = await start(f);
+    expect(call.state.link).toBeUndefined();
+    await f.advance(2_000);
+    expect(call.state.link).toEqual({ rttMs: 24, upKbps: 0, downKbps: 0, lossPct: 0 });
+    sent = 12_000;
+    received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toEqual({ rttMs: 24, upKbps: 48, downKbps: 96, lossPct: 0 });
+    expect(f.calls.filter((c) => c.m === 'callStats')).toHaveLength(0); // the server report is still every 10 s
+    f.room.emit('reconnecting');
+    expect(call.state.link).toBeUndefined();
+    f.room.emit('reconnected');
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 0, downKbps: 0 });
+    await call.leave('user');
+    expect(call.state.link).toBeUndefined();
+  });
+
   it('E_CALL_IN_OTHER_TAB ends the attempt with that code and calls callLeave', async () => {
     const f = fakes({ joinCallError: new Error('E_CALL_IN_OTHER_TAB') });
     await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts)).rejects.toMatchObject({ code: 'E_CALL_IN_OTHER_TAB' });

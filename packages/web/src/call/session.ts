@@ -18,7 +18,9 @@ import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
-import { callStatsReport, connectionOf, mediaTotals, STATS_EVERY_MS, type MediaTotals } from './stats.ts';
+import {
+  callStatsReport, connectionOf, linkSample, LINK_EVERY_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
+} from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
@@ -66,6 +68,9 @@ export interface PageCallState {
   /** web3.4 V2: the remote audio tracks this device is subscribed to (expected: pending and attached) and those
    *  attached, so playing (attached stays the same while deafened or paused holds a new track back). */
   audio: { attached: number; expected: number };
+  /** MP5: the latest local link read (every 2 s while connected): the ping and what this device sends and receives. Absent
+   *  before the first read, while not connected, and after leave. */
+  link?: LinkSample | undefined;
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -1140,6 +1145,34 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.phase === 'connected') void reportStats().catch(() => undefined); // a 429 or a 404 is not the person’s problem
       later(statsTick, STATS_EVERY_MS);
     };
+    // MP5: the dock's own link read, every LINK_EVERY_MS while connected; it never goes to the server.
+    let linkTotals: LinkTotals | null = null;
+    let linkAt = 0;
+    let linkBusy = false;
+    const readLink = async (): Promise<void> => {
+      const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
+      const [pub, sub] = await Promise.all([
+        Promise.resolve(pcs?.publisher?.getStats?.()).catch(() => undefined),
+        Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
+      ]);
+      if (ended || state.phase !== 'connected') return;
+      const at = deps.now();
+      const next = linkSample(linkTotals, pub, sub, at - linkAt);
+      linkTotals = next.totals;
+      linkAt = at;
+      set({ link: next.sample ?? state.link });
+    };
+    const linkTick = (): void => {
+      if (ended) return;
+      if (state.phase !== 'connected') {
+        linkTotals = null;
+        if (state.link !== undefined) set({ link: undefined });
+      } else if (!linkBusy) {
+        linkBusy = true;
+        void readLink().catch(() => undefined).finally(() => { linkBusy = false; });
+      }
+      later(linkTick, LINK_EVERY_MS);
+    };
     const scheduleIce = (list: IceServerTuple[], retry = false): void => {
       if (ended) return;
       const expiry = iceExpiryMs(list);
@@ -1162,7 +1195,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const onPeople = (): void => { applyGains(); refresh(); };
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
-    onRoomReconnecting = () => { if (!ended) set({ phase: 'reconnecting' }); };
+    onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
     onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
     onRoomEnd = (reason) => {
       if (ended) return;
@@ -1241,7 +1274,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);
       }
-      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null });
+      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null, link: undefined });
       return leaving;
     };
 
@@ -1305,6 +1338,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     sampling = true;
     armSample();
     later(statsTick, STATS_EVERY_MS);
+    linkAt = deps.now();
+    later(linkTick, LINK_EVERY_MS);
     scheduleIce(firstIce);
 
     return {
