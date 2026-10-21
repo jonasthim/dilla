@@ -109,6 +109,17 @@ export const StreamMuted: Story = {
     if (canvasElement.querySelector('[data-state="no-sound"]') !== null) throw new Error('StreamMuted: a muted stream is marked silent');
   },
 };
+/** Phone: the volume button opens the stream range in a popover anchored to the tile (on a desktop width the range shows on hover). */
+export const StreamPopoverOpen: Story = {
+  args: { view: { ...VIEW, screen: true }, source: 'screen', title: 'ada’s screen', stream: { ...STREAM, volume: 70 }, onFocusTile: () => {} },
+  parameters: { tileHeight: '158px' },
+  render: args => <WithCamera {...args} />,
+  play: ({ canvasElement }) => {
+    const button = canvasElement.querySelector<HTMLButtonElement>('.d-call-tile__streamvol');
+    if (button === null) throw new Error('StreamPopoverOpen: no volume button');
+    button.click();
+  },
+};
 export const SharingScreen: Story = { args: { view: { ...VIEW, screen: true } }, render: args => <WithCamera {...args} /> };
 export const Bot: Story = { args: { view: { ...VIEW, name: 'relay', web: false, bot: true }, labels: { ...LABELS, volume: 'volume for relay' } } };
 /** Product walk I3: the own tile's self-view, the camera mirrored. */

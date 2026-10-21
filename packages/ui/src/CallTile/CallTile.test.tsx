@@ -88,7 +88,7 @@ describe('CallTile', () => {
     expect(mark).toHaveAttribute('aria-label', 'no sound');
     expect(mark).toHaveAttribute('title', 'no sound');
     expect(mark.textContent).toBe('');
-    expect(mark.querySelector('[data-icon="volume-x"]')).not.toBeNull();
+    expect(mark.querySelector('[data-icon="volume-off"]')).not.toBeNull(); // Jonas: "no sound" is volume-off, "muted by you" is volume-x
     rerender(<CallTile view={view} {...rest} source="screen" />);
     expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
     rerender(<CallTile view={view} {...rest} source="camera" silent />);
@@ -123,6 +123,39 @@ describe('CallTile', () => {
     rerender(<CallTile view={view} {...rest} source="camera" stream={stream} />);
     expect(screen.queryByRole('button', { name: 'mute stream' })).toBeNull();
     expect(screen.queryByRole('slider', { name: 'stream volume for ada' })).toBeNull();
+  });
+
+  it('#37 round 2: the phone has a volume button that opens a keyboard-operable popover with the range; Escape closes it and focus returns', () => {
+    const onVolume = vi.fn();
+    const stream = { volume: 70, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume, onMute: () => {} };
+    render(<CallTile view={view} {...rest} source="screen" stream={stream} />);
+    const open = screen.getByRole('button', { name: 'stream volume for ada' });
+    expect(open).toHaveTextContent('70 %');
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    fireEvent.click(open);
+    expect(open).toHaveAttribute('aria-expanded', 'true');
+    const group = screen.getByRole('group', { name: 'stream volume for ada' });
+    const range = within(group).getByRole('slider');
+    expect(range).toHaveFocus();
+    fireEvent.change(range, { target: { value: '120' } });
+    expect(onVolume).toHaveBeenCalledWith(120);
+    fireEvent.keyDown(range, { key: 'Escape' });
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    expect(open).toHaveFocus();
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    // A press outside closes it too.
+    fireEvent.click(open);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
+    // CSS pins: only the mute and the volume button show on the phone, both 44 px; the desktop range is hidden there.
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__stream > \.d-call-tile__volume \{ display: none; \}/);
+    expect(css).toMatch(/\.d-call-tile__streamvol \{[^}]*height: 2\.75rem/);
+  });
+
+  it('#37 round 2: the phone caption starts at its start edge and wraps only when needed (no 8ch name box, no centring)', () => {
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__name \{ max-width: 100%; min-width: 0; text-align: start; \}/);
+    expect(css).toMatch(/flex-wrap: wrap; justify-content: flex-start; text-align: start;/);
   });
 
   it('#37 T5: the mute is a 40 px square on a desktop and 44 px on a phone, shown while pressed (CSS pins)', () => {

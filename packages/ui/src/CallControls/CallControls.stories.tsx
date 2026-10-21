@@ -8,6 +8,7 @@ import { CallControls } from './CallControls.tsx';
 export function expectVoiceTargets(root: HTMLElement, story: string): void {
   const min = window.innerWidth < 768 ? 44 : 40;
   for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]'))) {
+    if (el.getClientRects().length === 0) continue; // not drawn (a phone-only control on a desktop width): no target
     const r = el.getBoundingClientRect();
     const range = el instanceof HTMLInputElement;
     if (r.height < min || (!range && r.width < min)) {

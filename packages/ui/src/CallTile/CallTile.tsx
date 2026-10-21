@@ -138,6 +138,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   fullscreenLabel, focused = false, orphan = false, onFocusTile, silent = false, stream }: CallTileProps) {
   const ticks = useId();
   const streamTicks = useId();
+  const popTicks = useId();
   const statesId = useId();
   const liRef = useRef<HTMLLIElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -151,7 +152,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
   // R25: speaking is the ring, not a dot; the word stays for assistive technology (sr-only below).
   const noSound: VoiceStateWord[] = isScreen && silent
-    ? [{ key: 'no-sound', glyph: <Icon name="volume-x" size={14} />, text: labels.state.noSound, glyphOnly: true }] : [];
+    ? [{ key: 'no-sound', glyph: <Icon name="volume-off" size={14} />, text: labels.state.noSound, glyphOnly: true }] : [];
   const words = isScreen ? noSound : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking');
   const speaking = !isScreen && view.speaking;
   const volumeText = labels.volumeValue.replaceAll('{n}', String(volume));
@@ -199,12 +200,7 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
           <VolumeRange label={labels.volume} valueText={volumeText} volume={volume} ticks={ticks} onVolume={onVolume} />
         )}
         {isScreen && !own && stream !== undefined ? (
-          <div className="d-call-tile__stream">
-            <VolumeRange label={stream.labels.volume} valueText={labels.volumeValue.replaceAll('{n}', String(stream.volume))}
-              volume={stream.volume} ticks={streamTicks} onVolume={stream.onVolume} />
-            <button type="button" className="d-call-tile__mute" aria-pressed={stream.volume === 0} aria-label={stream.labels.mute}
-              onClick={stream.onMute}><Icon name={stream.volume === 0 ? 'volume-x' : 'volume-2'} size={16} /></button>
-          </div>
+          <StreamControls stream={stream} valueText={labels.volumeValue.replaceAll('{n}', String(stream.volume))} ticks={streamTicks} popTicks={popTicks} />
         ) : null}
       </div>
     </li>
@@ -226,5 +222,44 @@ function VolumeRange({ label, valueText, volume, ticks, onVolume }: {
       </span>
       <datalist id={ticks}><option value="100" /></datalist>
     </label>
+  );
+}
+
+/**
+ * The stream's controls. Desktop: the range and the mute (shown on hover and focus). Phone (CSS swaps them, 44 px): the mute
+ * and a volume button showing the value; the button opens a small popover with the range, anchored to the tile. The popover
+ * is a keyboard-operable group: focus moves to its range, Escape or a press outside closes it, and focus returns to the button.
+ */
+function StreamControls({ stream, valueText, ticks, popTicks }: {
+  stream: NonNullable<CallTileProps['stream']>; valueText: string; ticks: string; popTicks: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const popId = useId();
+  useEffect(() => {
+    if (!open) return;
+    box.current?.querySelector('input')?.focus();
+    const away = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (!box.current?.contains(target) && !button.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', away);
+    return () => { document.removeEventListener('pointerdown', away); };
+  }, [open]);
+  const close = () => { setOpen(false); button.current?.focus(); };
+  return (
+    <div className="d-call-tile__stream" onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }}>
+      <VolumeRange label={stream.labels.volume} valueText={valueText} volume={stream.volume} ticks={ticks} onVolume={stream.onVolume} />
+      <button type="button" className="d-call-tile__mute" aria-pressed={stream.volume === 0} aria-label={stream.labels.mute}
+        onClick={stream.onMute}><Icon name={stream.volume === 0 ? 'volume-x' : 'volume-2'} size={16} /></button>
+      <button ref={button} type="button" className="d-call-tile__streamvol" aria-label={stream.labels.volume} aria-haspopup="true"
+        aria-expanded={open} aria-controls={open ? popId : undefined} onClick={() => { setOpen(o => !o); }}>{valueText}</button>
+      {open ? (
+        <div ref={box} id={popId} role="group" aria-label={stream.labels.volume} className="d-call-tile__popover">
+          <VolumeRange label={stream.labels.volume} valueText={valueText} volume={stream.volume} ticks={popTicks} onVolume={stream.onVolume} />
+        </div>
+      ) : null}
+    </div>
   );
 }
