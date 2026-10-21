@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,8 @@ import type { DillaHarness, DillaHarness21, DillaRemoteStats } from '../../packa
 
 type W = { harness: DillaHarness & DillaHarness21 };
 type BotReport = { published: Record<string, string>; decrypted: number; decrypted_by_kind: Record<string, number> };
-type BotProcess = { result: Promise<BotReport>; stop: () => Promise<void> };
+type BotClose = { code: number | null; signal: NodeJS.Signals | null };
+type BotProcess = { result: Promise<BotReport>; stop: () => Promise<BotClose> };
 const HARNESS = 'http://127.0.0.1:5179/';
 const MAX_INPUT_BYTES = 1 << 20;
 const MAX_BOT_OUTPUT_BYTES = 16_384;
@@ -46,8 +47,8 @@ async function stageInput(path: string, scratch: string): Promise<{ bytes: numbe
   }
 }
 
-function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): BotProcess {
-  const bin = process.env.DILLA_MEDIABOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'target', 'dilla-mediabot');
+function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number, timeoutGate: Promise<void> = Promise.resolve()): BotProcess {
+  const bin = process.env.DILLA_MEDIABOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'target', 'dilla-mediabot');
   const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   let output = '';
   let outputBytes = 0;
@@ -57,8 +58,8 @@ function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): Bo
   let closed = false;
   let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-  let resolveClosed!: () => void;
-  const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  let resolveClosed!: (close: BotClose) => void;
+  const closedPromise = new Promise<BotClose>((resolve) => { resolveClosed = resolve; });
   const requestStop = () => {
     if (closed) return;
     child.kill('SIGTERM');
@@ -70,10 +71,13 @@ function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): Bo
   };
 
   const result = new Promise<BotReport>((resolve, reject) => {
-    deadlineTimer = setTimeout(() => {
-      timedOut = true;
-      requestStop();
-    }, timeoutMs);
+    void timeoutGate.then(() => {
+      if (closed) return;
+      deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        requestStop();
+      }, timeoutMs);
+    }, () => requestStop());
     child.stdout.on('data', (chunk: Buffer) => {
       const remaining = MAX_BOT_OUTPUT_BYTES - outputBytes;
       if (remaining > 0) {
@@ -91,11 +95,11 @@ function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): Bo
     child.once('error', () => {
       spawnFailed = true;
     });
-    child.once('close', (code) => {
+    child.once('close', (code, signal) => {
       closed = true;
       clearTimeout(deadlineTimer);
       clearTimeout(hardKillTimer);
-      resolveClosed();
+      resolveClosed({ code, signal });
       if (spawnFailed) {
         reject(new Error('dilla-mediabot could not be started'));
         return;
@@ -120,9 +124,17 @@ function runEncryptedBot(args: string[], baseKey: string, timeoutMs: number): Bo
     result,
     async stop() {
       requestStop();
-      await closedPromise;
+      return await closedPromise;
     },
   };
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { await access(path); return; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+  }
+  throw new Error('mediabot did not signal readiness');
 }
 
 const remoteAudio = async (page: import('@playwright/test').Page, identity: string) =>
@@ -132,19 +144,30 @@ const remoteAudio = async (page: import('@playwright/test').Page, identity: stri
 test('mediabot timeout sends TERM, escalates to KILL, and reaps the process', async () => {
   const scratch = await mkdtemp(join(tmpdir(), 'dilla-mediabot-timeout-'));
   const fake = join(scratch, 'mediabot');
-  await writeFile(fake, '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n', { mode: 0o700 });
+  const readyFile = join(scratch, 'ready');
+  await writeFile(fake, '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.env.DILLA_MEDIABOT_READY, "ready"); setInterval(() => {}, 1000);\n', { mode: 0o700 });
   await chmod(fake, 0o700);
   const previous = process.env.DILLA_MEDIABOT;
+  const previousReady = process.env.DILLA_MEDIABOT_READY;
   process.env.DILLA_MEDIABOT = fake;
-  const run = runEncryptedBot([], '0a'.repeat(16), 50);
+  process.env.DILLA_MEDIABOT_READY = readyFile;
+  let readyResolve!: () => void;
+  let readyReject!: (error: Error) => void;
+  const readiness = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const run = runEncryptedBot([], '0a'.repeat(16), 50, readiness);
   const started = Date.now();
   try {
+    await waitForFile(readyFile, 5_000).then(readyResolve, readyReject);
     await expect(run.result).rejects.toThrow('dilla-mediabot timed out');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
     expect(Date.now() - started).toBeLessThan(4_000);
+    expect((await run.stop()).signal).toBe('SIGKILL');
   } finally {
     await run.stop();
     if (previous === undefined) delete process.env.DILLA_MEDIABOT;
     else process.env.DILLA_MEDIABOT = previous;
+    if (previousReady === undefined) delete process.env.DILLA_MEDIABOT_READY;
+    else process.env.DILLA_MEDIABOT_READY = previousReady;
     await rm(scratch, { recursive: true, force: true });
   }
 });
@@ -161,6 +184,7 @@ test('mediabot output overflow is capped, terminated, and reaped', async () => {
   try {
     await expect(run.result).rejects.toThrow('dilla-mediabot did not complete successfully');
     expect(Date.now() - started).toBeLessThan(4_000);
+    expect((await run.stop()).signal).toBe('SIGKILL');
   } finally {
     await run.stop();
     if (previous === undefined) delete process.env.DILLA_MEDIABOT;

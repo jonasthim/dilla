@@ -83,13 +83,16 @@ func TestTokenFileRequiresPrivateRegularCurrentOwnerBoundedFile(t *testing.T) {
 		})
 	}
 
-	other := secretFile(t, "other-owner", "jwt-secret", 0o600)
-	if err := os.Chown(other, os.Geteuid()+1, -1); err == nil {
-		_, err = parseFlags(append([]string{"-token-file", other}, base...), strings.NewReader(keyHex), &bytes.Buffer{})
-		if err == nil || !strings.Contains(err.Error(), "private regular file") {
+	t.Run("other owner", func(t *testing.T) {
+		other := secretFile(t, "other-owner", "jwt-secret", 0o600)
+		if err := os.Chown(other, os.Geteuid()+1, -1); err != nil {
+			t.Skipf("cannot construct a file owned by another uid: %v", err)
+		}
+		_, err := parseFlags(append([]string{"-token-file", other}, base...), strings.NewReader(keyHex), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "owner-only 0600 regular file") {
 			t.Fatalf("other-owner token file = %v", err)
 		}
-	}
+	})
 }
 
 func TestTokenFileFlagsAreRequiredAndMutuallyExclusive(t *testing.T) {
