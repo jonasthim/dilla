@@ -106,6 +106,6 @@ export function shareAudioAdvice(env: { ua: string; uaPlatform?: string; brands?
     return 'tab-only';
   }
   const platform = env.uaPlatform !== undefined && env.uaPlatform !== '' ? env.uaPlatform : ua;
-  if (/Windows|Win32|Win64|CrOS|Chrome OS|ChromeOS|Mac/i.test(platform)) return 'tab-or-system';
+  if (/Windows|CrOS|Chrom(?:e|ium) ?OS|Mac/i.test(platform)) return 'tab-or-system';
   return 'tab-only';
 }

@@ -118,6 +118,10 @@ describe('shareAudioAdvice (#37): what sound a share can carry on this browser',
     ['Edge on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0' }, 'tab-or-system'],
     ['Chrome on macOS', { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'macOS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
     ['Chrome on Chrome OS', { ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Chrome OS', brands: ['Chromium', 'Google Chrome'] }, 'tab-or-system'],
+    ['Chromium OS platform string', { ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', uaPlatform: 'Chromium OS', brands: ['Chromium'] }, 'tab-or-system'],
+    ['brands alone name Chromium (no Chrome/ in the UA), on Windows', { ua: 'Mozilla/5.0 (Windows NT 10.0)', brands: ['Chromium'] }, 'tab-or-system'],
+    ['Chrome on iOS (CriOS)', { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Mobile/15E148 Safari/604.1' }, 'unsupported'],
+    ['Chrome on Android', { ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36', uaPlatform: 'Android', brands: ['Chromium', 'Google Chrome'] }, 'tab-only'],
   ];
   it.each(cases)('%s', (_name, env, want) => {
     expect(shareAudioAdvice(env)).toBe(want);

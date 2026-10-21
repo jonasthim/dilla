@@ -358,7 +358,10 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       const shared = screenTile(bob.page, 'alice');
       await expect(stateWord(shared, 'no-sound')).toHaveCount(0);
       await expect(shared.getByRole('img', { name: copy('voice.state.noSound'), exact: true })).toHaveCount(0);
-      await expect(stage(alice.page).locator('.d-call-stage__notice[role="status"]')).not.toContainText(copy('voice.shareAudio.none.tabOnly'));
+      // Whichever of the three notices this platform would say (#37 FX1): none of them shows.
+      for (const key of ['voice.shareAudio.none.unsupported', 'voice.shareAudio.none.tabOnly', 'voice.shareAudio.none.tabOrSystem'] as const) {
+        await expect(stage(alice.page).locator('.d-call-stage__notice[role="status"]')).not.toContainText(copy(key));
+      }
       // E2EE: the tab's sound went out in the screen-audio slot, encrypted, and the very track bob plays at 440 Hz is one his
       // media worker decrypted and authenticated frame by frame.
       expect(await slotSent(alice.page, 3), 'screen-audio frames alice encrypted').toBeGreaterThan(0);
