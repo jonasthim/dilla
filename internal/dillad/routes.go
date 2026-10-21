@@ -135,6 +135,8 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	api.NewReadable(repo, res, p.gw, p.keys, clk, log).Register(m)
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).WithUploadMeter(p.uploads).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
+	// E8: the GIF picker. Mounted always; each route answers 404 while giphy.api_key is empty.
+	api.NewGifs(cfg.Giphy, p.limiter, log).Register(m)
 	calls.Register(m)
 	stats.Register(m)
 	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).

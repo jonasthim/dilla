@@ -296,6 +296,7 @@ full contract.
 | invites | `POST /v1/communities/{id}/invites`, `GET /v1/communities/{id}/invites`, `DELETE /v1/invites/{id}` |
 | DMs | `POST /v1/dms` `[recipients([bstr16])]` → `[channel_id]`; `GET /v1/dms` |
 | readable | `POST /v1/channels/{id}/messages` `[envelope(bstr)]` → `[seq, franking_tag, recv_ts]`; `GET /v1/channels/{id}/messages?from=`; `PATCH`/`DELETE /v1/channels/{id}/messages/{seq}`; `GET /v1/channels/{id}/search?q=&limit=&before=`; `PUT /v1/channels/{id}/read-state` |
+| gifs | `GET /v1/gifs/search?q=&offset=`, `GET /v1/gifs/media/{id}?r=`; see § GIFs |
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wires 1 and 2); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
@@ -773,6 +774,26 @@ are CBOR as everywhere else.
   follows the deletion rule above. A community without `retention_days`, a DM and a group DM keep
   attachments indefinitely. Deleting a channel removes its references. Attachment retention never
   follows `02`'s 30-day delivery window, because an archive restore needs attachments far older.
+
+### GIFs
+
+An optional GIF picker (`giphy.api_key`, off by default). Every route is `E` and answers `404 E_NOT_FOUND`
+while the instance has no key; the discovery document's `gifs` element (§ Instance) tells a client
+first. Search and the media proxy run in the instance, so Giphy sees the instance and never a
+person. The picked GIF is downloaded through the proxy and sent as an ordinary encrypted
+attachment (`04` § Envelope), so a reader's client never contacts Giphy and the instance never
+learns which message carries it.
+
+| Method and path | Request | Response | Errors |
+|---|---|---|---|
+| `GET /v1/gifs/search?q=&offset=` | `q` is at most 100 bytes of text and may be empty (trending); `offset` is `0..4999` | `[[[id(tstr), title(tstr), width(uint), height(uint), path(tstr)]], next_offset(uint or null)]`; 24 results a page, `path` is this server's own `/v1/gifs/media/{id}?r=preview` | `400 E_INVALID_REQUEST`, `429 E_RATE_LIMITED` (per user, 10 then 1 a second), `503 E_UNAVAILABLE` |
+| `GET /v1/gifs/media/{id}?r=preview` | `id` is a Giphy id (letters and digits, at most 64); `r` is `preview` or `full` | `200` the GIF, `Content-Type: image/gif` (a preview is at most 5 MiB, a full GIF at most 25 MiB) | `400 E_INVALID_REQUEST`, `404 E_NOT_FOUND`, `429 E_RATE_LIMITED` (per user, 60 then 20 a second), `503 E_UNAVAILABLE` |
+
+- **No URL comes from the caller.** The instance builds the one upstream URL from the checked `id`
+  and a host on a fixed allow-list of Giphy's own hosts, over HTTPS; a redirect off the list, a
+  non-GIF content type or magic, a body over the cap (counted on the bytes, not the header), a
+  timeout or a connection to a non-public address is `503 E_UNAVAILABLE`.
+- **The key is the instance's.** It is in no reply, header or log line.
 
 ### Backups
 
@@ -1461,7 +1482,7 @@ but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 
 | `GET /v1/instance` | — or E, F (`instance.discovery`) | — | the discovery document below | `401` |
 | `GET /v1/instance/limits` | — | — | the limits array below | — |
 
-The discovery document is an eleven-element array, in this order:
+The discovery document is a twelve-element array, in this order:
 
 ```
 [
@@ -1475,7 +1496,8 @@ The discovery document is an eleven-element array, in this order:
   auth_methods,            ; [uint], ascending, no duplicates
   policy_version,          ; uint
   external_sender_key_id,  ; bstr 16
-  external_sender_pub      ; bstr 32
+  external_sender_pub,     ; bstr 32
+  gifs                     ; uint, 1 when the GIF picker is on (§ GIFs), else 0
 ]
 ```
 
