@@ -255,7 +255,7 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if matches!(self.operation, 0|1|2|10..=23|30|40|50..=52|60|61) == false {
+        if !matches!(self.operation, 0|1|2|10..=23|30|40|50..=52|60|61) {
             return Err(CodecError::Operation);
         }
         if !args_match(self.operation, &self.args) {
@@ -1147,7 +1147,7 @@ pub fn parse_frame(frame: &[u8]) -> Result<&[u8], CodecError> {
 
 fn b64url_encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((data.len() * 4 + 2) / 3);
+    let mut out = String::with_capacity((data.len() * 4).div_ceil(3));
     for c in data.chunks(3) {
         let a = c[0];
         let b = *c.get(1).unwrap_or(&0);

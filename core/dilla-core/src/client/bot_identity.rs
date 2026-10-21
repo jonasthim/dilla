@@ -205,7 +205,7 @@ pub(super) fn validate_open(
 }
 
 pub(super) fn decode_binding(bytes: &[u8]) -> Result<BotBinding, ClientError> {
-    decode_strict(&bytes, |d| {
+    decode_strict(bytes, |d| {
         d.array(4)?;
         if d.uint()? != 1 {
             return Err(shape());
