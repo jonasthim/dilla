@@ -1,10 +1,11 @@
 // Flow 08: the member pane. W3 mounts it in the shell's aside; it reads the members, roles and permissions slices.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
+import { MemberList, ProfileCard, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
-import { memberGroups, memberName, menuFor, type MenuAction } from './members-model.ts';
+import { memberGroups, memberName, type MenuAction } from './members-model.ts';
+import { memberCardData } from './member-card.ts';
 import { BanFlow, KickFlow, type ModTarget } from './Moderation.tsx';
 import { MemberRolesFlow } from './MemberRolesFlow.tsx';
 
@@ -32,6 +33,8 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const [kickOpen, setKickOpen] = useState(false);
   const [banOpen, setBanOpen] = useState(false);
   const [rolesFor, setRolesFor] = useState<string | null>(null);
+  // The member whose profile card is open, and the row's button it is anchored to.
+  const [card, setCard] = useState<{ id: string; anchor: HTMLElement } | null>(null);
 
   // Where focus goes when a dialog closes: the row's trigger that opened it, or that member's trigger re-mounted in another
   // group (a hoisted role given meanwhile), else (a kicked member's row is gone) the pane. The same rule as Dialog's own.
@@ -67,7 +70,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const ownerId = community?.owner ?? '';
   const list = members ?? [];
   const roleList = roles ?? [];
-  const ctx = { selfId, ownerId, roles: roleList };
+  const ctx = { selfId, ownerId, roles: roleList, access };
   const byId = new Map(list.map(m => [m.userId, m]));
 
   const labelOf: Record<MenuAction, string> = {
@@ -78,25 +81,29 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     kind: g.role !== null ? 'role' as const : g.id === 'offline' ? 'offline' as const : 'online' as const,
     title: g.role?.name ?? t(g.id === 'offline' ? 'layout.members.offline' : 'layout.members.online'),
     color: g.role?.color ?? null,
-    members: g.members.map(row => {
-      const summary = byId.get(row.userId);
-      const items = summary === undefined ? [] : menuFor(summary, access, ctx);
-      return { id: row.userId, name: row.name, color: row.color, presence: presence?.[row.userId] ?? 'offline', tags: row.tags.map(tag => t(`members.${tag}`)), actionsLabel: t('members.actions', { name: row.name }),
-        actions: items.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' })) };
-    }),
+    members: g.members.map(row => ({ id: row.userId, name: row.name, color: row.color, presence: presence?.[row.userId] ?? 'offline',
+      isOwner: row.tags.includes('owner'), isBot: row.tags.includes('bot') })),
   }));
+
+  // A primary click on the open member's row closes the card, another row switches it (the card itself ignores a pointerdown on its anchor).
+  // Enter, a right-click, Shift+F10 and the ContextMenu key only ever open. A re-mounted row closes the card (the card sees its anchor gone).
+  const onOpen = (userId: string, anchor: HTMLElement, via: 'click' | 'menu') =>
+    setCard(cur => (cur !== null && cur.id === userId && via === 'click' ? null : { id: userId, anchor }));
+  const cardMember = card === null ? undefined : byId.get(card.id);
+  const cardData = cardMember === undefined ? null : memberCardData(cardMember, ctx);
 
   const onAction = (userId: string, action: string) => {
     const row = byId.get(userId);
     if (row === undefined) return;
     const target = { userId, name: memberName(row) };
-    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    opener.current = card?.anchor ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     restore.current = action === 'kick' || action === 'ban' || action === 'roles';
     if (action === 'message') props.onMessage(userId);
     else if (action === 'compare') props.onCompare(userId);
     else if (action === 'roles') setRolesFor(userId);
     else if (action === 'kick') { setKick(target); setKickOpen(true); }
     else if (action === 'ban') { setBan(target); setBanOpen(true); }
+    setCard(null);
   };
 
   return (
@@ -106,7 +113,14 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
       {/* The shell's aside carries the name "members of {server}"; the list's own 48 bar (S3) is the word "members", on the header's hairline.
           A phone's sheet already has its PhoneHeader, so it draws no second bar. */}
       <MemberList label={phone ? undefined : t('members.toggle')} groups={groups} loading={members === undefined || presence === undefined || presence === null}
-        loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />
+        loadingLabel={t('members.loading')} emptyLabel={t('members.empty')}
+        ownerLabel={t('layout.profile.owner')} botLabel={t('layout.profile.bot')} openId={card?.id ?? null} onOpen={onOpen} />
+      {cardData !== null && card !== null ? (
+        <ProfileCard name={cardData.name} username={cardData.username} presence={presence?.[cardData.userId] ?? 'offline'} isOwner={cardData.isOwner} isYou={cardData.isYou}
+          roles={cardData.roles} actions={cardData.actions.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' }))}
+          onAction={id => onAction(cardData.userId, id)} onClose={() => setCard(null)} anchor={card.anchor} layout={phone ? 'sheet' : 'popover'}
+          ownerLabel={t('layout.profile.owner')} youLabel={t('layout.profile.you')} rolesLabel={t('layout.profile.roles')} closeLabel={t('layout.profile.close')} />
+      ) : null}
       <KickFlow open={kickOpen} communityId={communityId} serverName={serverName} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
       <BanFlow open={banOpen} communityId={communityId} serverName={serverName} target={ban} announce={text => props.announce(text)}

@@ -784,7 +784,9 @@ describe('timeline', () => {
     expect(within(log).getAllByText('Ada L')).toHaveLength(3);
     expect(within(log).getByText('4a4a4a4a')).toBeInTheDocument();
     expect(within(log).getByText('device 29292929')).toBeInTheDocument();
-    expect(within(log).getAllByText('web')).toHaveLength(3);
+    // MP4 removed the device tag from grouped rows: Ada's s3 and the pending row head runs of their own (s4 to s6 sit between),
+    // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
+    expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
     // Each row names its time once; the gutter of a row folded into its author's run shows a compact time (R29), not this one.
     expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);

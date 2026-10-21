@@ -204,27 +204,26 @@ describe('lost access', () => {
 });
 
 describe('the role flows', () => {
-  it('opens the assign dialog from the member menu; closing returns focus to the menu trigger', async () => {
+  it('opens the assign dialog from the member card; closing returns focus to the member row', async () => {
     wide();
     const { user } = setup({ acc: { manageRoles: true } });
-    const trigger = screen.getByRole('button', { name: 'actions for Bob' });
-    await user.click(trigger);
-    await user.click(screen.getByRole('menuitem', { name: 'roles' }));
+    await user.click(screen.getByRole('button', { name: /\bBob\b/ }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'roles' }));
     const dialog = await screen.findByRole('dialog', { name: 'Roles of Bob' });
     await user.keyboard('{Escape}');
     expect(dialog).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'actions for Bob' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /\bBob\b/ })).toHaveFocus();
   });
-  it('in the narrow drawer, closing the assign dialog returns to the menu trigger and closing the drawer returns to the toggle', async () => {
+  it('in the narrow drawer, closing the assign dialog returns to the member row and closing the drawer returns to the toggle', async () => {
     window.matchMedia = ((query: string) => ({ matches: false, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
       addListener: () => undefined, removeListener: () => undefined, onchange: null, dispatchEvent: () => false }));
     const { user } = setup({ acc: { manageRoles: true } });
     await user.click(screen.getByRole('button', { name: /^members/ }));
-    await user.click(screen.getByRole('button', { name: 'actions for Bob' }));
-    await user.click(screen.getByRole('menuitem', { name: 'roles' }));
+    await user.click(screen.getByRole('button', { name: /\bBob\b/ }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'roles' }));
     await screen.findByRole('dialog', { name: 'Roles of Bob' });
     await user.keyboard('{Escape}');
-    expect(screen.getByRole('button', { name: 'actions for Bob' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /\bBob\b/ })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'close members' }));
     expect(screen.getByRole('button', { name: /^members/ })).toHaveFocus();
   });

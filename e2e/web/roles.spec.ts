@@ -48,7 +48,7 @@ const dialogOf = (page: Page, key: string, vars?: Record<string, string>) =>
 const membersRegion = (page: Page) => page.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true });
 const memberRow = (page: Page, name: string) => membersRegion(page).getByRole('listitem').filter({ hasText: name });
 const memberTrigger = (page: Page, name: string) =>
-  memberRow(page, name).getByRole('button', { name: copy('members.actions', { name }), exact: true });
+  memberRow(page, name).locator('.d-member-list__open');
 const groupHeading = (page: Page, count: number) =>
   membersRegion(page).getByRole('heading', { name: copy('members.group', { name: ROLE, count }), exact: true });
 /** The shell's polite live region: it holds the latest announcement until the next one replaces it. */
@@ -74,7 +74,7 @@ async function closeSettings(page: Page): Promise<void> {
 /** Opens the member's action menu from its row and picks `item`. */
 async function memberAction(page: Page, name: string, item: string): Promise<void> {
   await memberTrigger(page, name).click();
-  await page.getByRole('menuitem', { name: copy(item), exact: true }).click();
+  await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
 }
 /** The roles list row of a role: a listitem named by the role's name. */
 const roleRow = (settings: Locator, name: string) => settings.getByRole('list', { name: copy('roles.title'), exact: true }).getByRole('listitem').filter({ hasText: name });

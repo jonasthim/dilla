@@ -71,10 +71,10 @@ async function closeSettings(page: Page): Promise<void> {
   await expect(dialogOf(page, 'admin.title')).toBeHidden();
   await expect(button(page, 'admin.open')).toBeFocused();
 }
-/** Opens the member's action menu from its row and picks `item`. */
+/** Opens the member's profile card from its row and picks the action `item`. */
 async function memberAction(page: Page, server: string, name: string, item: string): Promise<void> {
-  await memberRow(page, server, name).getByRole('button', { name: copy('members.actions', { name }), exact: true }).click();
-  await page.getByRole('menuitem', { name: copy(item), exact: true }).click();
+  await memberRow(page, server, name).locator('.d-member-list__open').click();
+  await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
 }
 /** Joins `server` with the invite link from the rail's "join" button. */
 async function joinWith(page: Page, link: string): Promise<Locator> {
@@ -126,6 +126,35 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(memberRow(page, SERVER, FRIEND)).toBeVisible({ timeout: WAIT });
     await expect(memberRow(page, SERVER, OWNER)).toBeVisible();
     await expectAccessible(page, 'the members pane');
+
+    // 3a. The profile card: a click on a row opens it beside the list (a sheet on a phone), with the owner and "you" words only where they apply.
+    await memberRow(page, SERVER, OWNER).locator('.d-member-list__open').click();
+    const ownerCard = page.getByRole('dialog', { name: OWNER });
+    await expect(ownerCard).toBeVisible();
+    await expect(ownerCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
+    await expect(ownerCard.getByText(copy('layout.profile.you'), { exact: true })).toBeVisible();
+    // Her own card: no message, compare, kick or ban, only the roles she may assign.
+    await expect(ownerCard.locator('.d-profile-card__action')).toHaveText([copy('roles.menu.assign')]);
+    const shots = process.env.DILLA_SHOTS;
+    if (shots) {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await expect(ownerCard).toBeVisible();
+      await page.screenshot({ path: `${shots}/card-desktop-1440.png` });
+    }
+    await page.keyboard.press('Escape');
+    await expect(ownerCard).toBeHidden();
+    await expect(memberRow(page, SERVER, OWNER).locator('.d-member-list__open')).toBeFocused();
+    if (shots) {
+      const wide = page.viewportSize();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole('button', { name: copy('nav.channel.menu'), exact: true }).click();
+      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
+      await memberRow(page, SERVER, FRIEND).locator('.d-member-list__open').click();
+      await expect(page.getByRole('dialog', { name: FRIEND })).toBeVisible();
+      await page.screenshot({ path: `${shots}/card-phone-390.png` });
+      await page.keyboard.press('Escape');
+      if (wide) await page.setViewportSize(wide);
+    }
 
     // 3b. Audit S3: the members aside draws its own 48px bar, its hairline on the channel header's line, as a column at 1440 and as
     // the overlay at 1024 (where the close control sits in that bar, at its right).
@@ -234,11 +263,13 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await openChannel(page2, RENAMED, 'lobby');
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
 
-    // 12. Björn's menu for Ada lists only message and compare; his settings show only invites and the leave tab.
+    // 12. Björn's card for Ada (the owner) lists only message and compare; his settings show only invites and the leave tab.
     await expect(membersRegion(page2, RENAMED)).toBeVisible({ timeout: WAIT });
-    await memberRow(page2, RENAMED, OWNER).getByRole('button', { name: copy('members.actions', { name: OWNER }), exact: true }).click();
-    const items = page2.getByRole('menu').getByRole('menuitem');
-    await expect(items).toHaveText([copy('members.menu.message'), copy('members.menu.compare')]);
+    await memberRow(page2, RENAMED, OWNER).locator('.d-member-list__open').click();
+    const seenCard = page2.getByRole('dialog', { name: OWNER });
+    await expect(seenCard.locator('.d-profile-card__action')).toHaveText([copy('members.menu.message'), copy('members.menu.compare')]);
+    await expect(seenCard.getByText(copy('layout.profile.owner'), { exact: true })).toBeVisible();
+    await expect(seenCard.getByText(copy('layout.profile.you'), { exact: true })).toHaveCount(0);
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');

@@ -59,18 +59,19 @@ export type MenuAction = 'message' | 'compare' | 'roles' | 'kick' | 'ban';
 export interface MenuContext { selfId: string; ownerId: string; roles: readonly RoleSummary[] }
 
 /**
- * The actions offered for `member`: message (not on self), compare safety numbers, and kick and ban when the loaded
- * permissions allow it and the target ranks below the caller. Advisory only: the instance decides again.
+ * The actions offered for `member`: message and compare safety numbers (neither on the viewer's own card), roles with
+ * manageRoles, and kick and ban when the loaded permissions allow it and the target ranks below the caller (never on
+ * the owner or on self). Advisory only: the instance decides again.
  */
 export function menuFor(member: MemberSummary, access: CommunityAccess | undefined, ctx: MenuContext): MenuAction[] {
   const out: MenuAction[] = [];
-  if (member.userId !== ctx.selfId) out.push('message');
-  out.push('compare');
+  const self = member.userId === ctx.selfId;
+  if (!self) out.push('message', 'compare');
   if (access !== undefined && access.loaded) {
     if (access.manageRoles) out.push('roles');
     const may = canModerate({ me: ctx.selfId, target: member.userId, owner: ctx.ownerId, myTop: access.top, targetTop: topOf(member.roleIds, ctx.roles) });
-    if (may && access.kickMembers) out.push('kick');
-    if (may && access.banMembers) out.push('ban');
+    if (may && !self && member.userId !== ctx.ownerId && access.kickMembers) out.push('kick');
+    if (may && !self && member.userId !== ctx.ownerId && access.banMembers) out.push('ban');
   }
   return out;
 }

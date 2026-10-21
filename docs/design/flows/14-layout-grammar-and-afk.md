@@ -64,6 +64,11 @@
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`
 `layout.members.offline='offline'`
+`layout.profile.owner='owner'`
+`layout.profile.you='you'`
+`layout.profile.roles='roles'`
+`layout.profile.close='close'`
+`layout.profile.bot='bot'`
 `layout.log.older='viewing older messages'`
 `layout.log.jump='jump to present'`
 `layout.log.today='today'`

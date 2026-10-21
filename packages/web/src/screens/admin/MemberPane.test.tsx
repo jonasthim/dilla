@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { CommunityAccess, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
@@ -30,9 +30,13 @@ function setup(acc: CommunityAccess | undefined = access()) {
     <MemberPane communityId={CID} selfId={ME} onMessage={onMessage} onCompare={onCompare} announce={announce} /></CoreProvider></div>);
   return { fake, announce, onMessage, onCompare, view, user: userEvent.setup() };
 }
+/** A member's row button: its name starts with the presence word, then the display name (and the owner word). */
+const row = (who: string) => screen.getByRole('button', { name: new RegExp(`\\b${who}\\b`) });
+const card = () => screen.getByRole('dialog');
+const cardActions = () => within(card()).queryAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent);
 async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item: string) {
-  await user.click(screen.getByRole('button', { name: `actions for ${who}` }));
-  await user.click(screen.getByRole('menuitem', { name: item }));
+  await user.click(row(who));
+  await user.click(within(card()).getByRole('button', { name: item }));
 }
 
 describe('MemberPane', () => {
@@ -57,39 +61,126 @@ describe('MemberPane', () => {
     const titles = screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent);
     expect(titles).toEqual(['mods — 2', 'online — 1', 'offline — 1']);
   });
-  it('keeps keyboard focus on a member action when presence moves its row', () => {
+  it('keeps keyboard focus on a member row when presence moves it', () => {
     const { fake } = setup();
-    const before = screen.getByRole('button', { name: 'actions for bob' });
+    const before = row('bob');
     act(() => before.focus());
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
-    const after = screen.getByRole('button', { name: 'actions for bob' });
+    const after = row('bob');
     expect(after).not.toBe(before);
     expect(after).toHaveFocus();
   });
-  it('lists groups with the owner and you tags', async () => {
+  it('lists groups with a crown for the owner and no tags: owner is a spoken word, "you" is not in the list', async () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'online — 2' })).toBeInTheDocument();
-    expect(screen.getByText('owner')).toBeInTheDocument();
-    expect(screen.getByText('you')).toBeInTheDocument();
+    expect(within(row('olof')).getByText('owner')).toHaveClass('d-sr-only');
+    expect(screen.queryByText('you')).toBeNull();
     await expectNoAxeViolations(view.container);
+  });
+  it('a click opens the card with the member, the roles in order with their colours, and the right actions', async () => {
+    const { user } = setup();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await user.click(row('carol'));
+    expect(card()).toHaveAccessibleName('carol');
+    expect(within(card()).getByText('@carol')).toBeInTheDocument();
+    expect(within(card()).getByRole('list', { name: 'roles' })).toHaveTextContent('mods');
+    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
+    expect(row('carol')).toHaveAttribute('aria-expanded', 'true');
+  });
+  it('lists several roles highest first with their colour swatches', async () => {
+    const { user, fake } = setup();
+    const red: RoleSummary = { ...MOD, id: id(11), name: 'reds', color: 0xE5484D, position: 7, hoist: false };
+    act(() => {
+      fake.set(`roles:${CID}`, [MOD, red]);
+      fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob', [MOD.id, red.id]), m(CAL, 'carol')]);
+    });
+    await user.click(row('bob'));
+    const items = within(within(card()).getByRole('list', { name: 'roles' })).getAllByRole('listitem');
+    expect(items.map(i => i.textContent)).toEqual(['reds', 'mods']);
+    expect(items[0]?.querySelector('[style*="background"], .d-role-dot')).not.toBeNull();
+  });
+  it('shows "you" and "owner" on the right cards only', async () => {
+    const { user } = setup();
+    await user.click(row('ada'));
+    expect(within(card()).getByText('you')).toBeInTheDocument();
+    expect(within(card()).queryByText('owner')).toBeNull();
+    await user.click(row('olof'));
+    expect(within(card()).getByText('owner')).toBeInTheDocument();
+    expect(within(card()).queryByText('you')).toBeNull();
+    await user.click(row('bob'));
+    expect(within(card()).queryByText('you')).toBeNull();
+    expect(within(card()).queryByText('owner')).toBeNull();
+  });
+  it('the viewer\'s own card has no message, compare, kick or ban', async () => {
+    const { user } = setup(access({ manageRoles: true }));
+    await user.click(row('ada'));
+    expect(cardActions()).toEqual(['roles']);
   });
   it('offers kick and ban on bob, and none on the owner or an equal rank', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['message', 'compare safety numbers', 'kick', 'ban']);
+    await user.click(row('bob'));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'kick', 'ban']);
     await user.keyboard('{Escape}');
-    await user.click(screen.getByRole('button', { name: 'actions for olof' }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['message', 'compare safety numbers']);
+    await user.click(row('olof'));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
     await user.keyboard('{Escape}');
-    await user.click(screen.getByRole('button', { name: 'actions for carol' }));
-    expect(screen.queryByRole('menuitem', { name: 'kick' })).toBeNull();
+    await user.click(row('carol'));
+    expect(within(card()).queryByRole('button', { name: 'kick' })).toBeNull();
+  });
+  it('a member without the kick permission sees no kick, and without ban no ban', async () => {
+    const { user } = setup(access({ kickMembers: false }));
+    await user.click(row('bob'));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'ban']);
   });
   it('shows no kick or ban until permissions have loaded', async () => {
     const { user } = setup(access({ loaded: false }));
-    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
-    expect(screen.queryByRole('menuitem', { name: 'kick' })).toBeNull();
-    expect(screen.queryByRole('menuitem', { name: 'ban' })).toBeNull();
+    await user.click(row('bob'));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
+  });
+  it('clicking the open member again closes the card, another row switches it, Escape closes and returns focus', async () => {
+    const { user } = setup();
+    await user.click(row('bob'));
+    await user.click(row('bob'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await user.click(row('bob'));
+    await user.click(row('carol'));
+    expect(card()).toHaveAccessibleName('carol');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(row('carol')).toHaveFocus();
+  });
+  it('a contextmenu or Enter on the open member\'s row keeps the card open (only a primary click toggles)', async () => {
+    const { user } = setup();
+    await user.click(row('bob'));
+    fireEvent.contextMenu(row('bob').closest('li')!, { button: 2, detail: 1 });
+    expect(card()).toHaveAccessibleName('bob');
+    act(() => row('bob').focus());
+    await user.keyboard('{Enter}');
+    expect(card()).toHaveAccessibleName('bob');
+  });
+  it('N3: a card whose row is re-mounted closes, and focus lands on that member\'s row again', async () => {
+    const { user, fake } = setup();
+    await user.click(row('bob'));
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    fireEvent(window, new Event('resize'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(row('bob')).toHaveFocus());
+  });
+  it('Enter on a focused row and the context key open the card', async () => {
+    const { user } = setup();
+    act(() => row('bob').focus());
+    await user.keyboard('{Enter}');
+    expect(card()).toHaveAccessibleName('bob');
+    await user.keyboard('{Escape}');
+    act(() => row('carol').focus());
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    expect(card()).toHaveAccessibleName('carol');
+  });
+  it('has no axe violations with the card open', async () => {
+    const { user } = setup();
+    await user.click(row('bob'));
+    await expectNoAxeViolations(document.body);
   });
   it('hands message and compare to the shell', async () => {
     const { user, onMessage, onCompare } = setup();
@@ -103,9 +194,9 @@ describe('MemberPane', () => {
 describe('role assignment', () => {
   it('offers roles only with manageRoles, opens the dialog and closes it with done', async () => {
     const { user } = setup(access({ manageRoles: true }));
-    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['message', 'compare safety numbers', 'roles', 'kick', 'ban']);
-    await user.click(screen.getByRole('menuitem', { name: 'roles' }));
+    await user.click(row('bob'));
+    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'roles', 'kick', 'ban']);
+    await user.click(within(card()).getByRole('button', { name: 'roles' }));
     const dialog = screen.getByRole('dialog', { name: 'Roles of bob' });
     expect(within(dialog).getByRole('checkbox', { name: 'mods' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Done' }));
@@ -113,8 +204,8 @@ describe('role assignment', () => {
   });
   it('has no roles item without manageRoles', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
-    expect(screen.queryByRole('menuitem', { name: 'roles' })).toBeNull();
+    await user.click(row('bob'));
+    expect(within(card()).queryByRole('button', { name: 'roles' })).toBeNull();
   });
 });
 
@@ -147,7 +238,7 @@ describe('focus and reopening', () => {
     const { user } = setup();
     await pick(user, 'bob', 'kick');
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus());
+    await waitFor(() => expect(row('bob')).toHaveFocus());
   });
   it('a successful kick leaves focus on the member region, not body', async () => {
     const { user, fake } = setup();
@@ -265,7 +356,7 @@ describe('role assignment focus', () => {
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' }));
-    expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus();
+    expect(row('bob')).toHaveFocus();
   });
   it('Done after a grant that moves the member into a hoisted group returns focus to his re-mounted menu trigger', async () => {
     const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
@@ -273,12 +364,12 @@ describe('role assignment focus', () => {
       if (c.m === 'grantRole') fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob', [MOD.id]), m(CAL, 'carol', [MOD.id])]);
       return Promise.resolve(null);
     };
-    const before = screen.getByRole('button', { name: 'actions for bob' });
+    const before = row('bob');
     await pick(user, 'bob', 'roles');
     await user.click(within(screen.getByRole('dialog')).getByRole('checkbox', { name: 'mods' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'actions for bob' })).not.toBe(before));
+    await waitFor(() => expect(row('bob')).not.toBe(before));
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus();
+    expect(row('bob')).toHaveFocus();
   });
 });
