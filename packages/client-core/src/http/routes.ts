@@ -495,12 +495,11 @@ export class Routes {
     await this.body('POST', `/v1/groups/${id('groupId', groupId)}/moderation/removals`, 'write', true,
       { body: signedBody, maxBodyBytes: 128 });
   }
-  /** A 404 means the community has no active installation; other refusals remain visible. */
+  /** CBOR null means the community has no active installation; refusals remain visible. */
   async getBotInstallation(communityId: Uint8Array): Promise<BotInstallationRow | null> {
     const path = `/v1/communities/${id('communityId', communityId)}/bot`;
-    try { return botInstallationRow(decode(await this.body('GET', path, 'read', true)), communityId); }
-    catch (e) { if (e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND'
-      && e.detail === 'bot installation absent') return null; throw e; }
+    const row = decode(await this.body('GET', path, 'read', true));
+    return row === null ? null : botInstallationRow(row, communityId);
   }
   /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
   async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {

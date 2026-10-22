@@ -1708,14 +1708,14 @@ describe('member timeout routes', () => {
 describe('managed community bot installation routes', () => {
   const installation = [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1, 1_800_000_000];
 
-  it('reads a bounded installation and treats only its 404 as absent', async () => {
+  it('reads a bounded installation, treats CBOR null as absent, and preserves refusals', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(200, installation));
     await expect(routes.getBotInstallation(COMMUNITY)).resolves.toMatchObject({
       id: BOT, communityId: COMMUNITY, state: 1, revision: 3n, userId: USER, deviceId: DEVICE, capabilities: 1,
     });
     expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
-    t.replies.push(refusal(404, 'E_NOT_FOUND', 'bot installation absent'));
+    t.replies.push(cborReply(200, null));
     await expect(routes.getBotInstallation(COMMUNITY)).resolves.toBeNull();
     t.replies.push(refusal(404, 'E_NOT_FOUND', 'not found'));
     await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 404, detail: 'not found' });

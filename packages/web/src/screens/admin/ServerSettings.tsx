@@ -67,11 +67,11 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   if (access !== undefined && loaded) {
     if (access.manageCommunity) tabs.push({ id: 'overview', label: t('admin.nav.overview') });
     if (access.manageCommunity) tabs.push({ id: 'bot', label: t('admin.nav.bot') });
-    tabs.push({ id: 'selfRoles', label: t('admin.nav.selfRoles') });
     if (access.manageChannels) tabs.push({ id: 'channels', label: t('admin.nav.channels') });
     if (access.manageRoles) tabs.push({ id: 'roles', label: t('roles.tab') });
     if (access.createInvite) tabs.push({ id: 'invites', label: t('admin.nav.invites') });
     if (access.banMembers) tabs.push({ id: 'bans', label: t('admin.nav.bans') });
+    tabs.push({ id: 'selfRoles', label: t('admin.nav.selfRoles') });
     tabs.push({ id: 'danger', label: t(access.owner ? 'admin.nav.delete' : 'admin.nav.leave') });
   }
   const active = tabs.find(x => x.id === tab)?.id ?? tabs[0]?.id ?? null;

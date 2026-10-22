@@ -58,6 +58,26 @@ func TestBotOnlyCommunityRouteChecksAuthorityBeforeWireRequirement(t *testing.T)
 	}
 }
 
+func TestBotInstallationAbsentIsTypedNullAfterAuthorization(t *testing.T) {
+	h, deps := newTestAPI(t)
+	owner, _, token := seedAPISession(t, deps)
+	cid := seedBotCommunity(t, deps, owner.ID)
+	negotiate, err := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, token); rec.Code != http.StatusOK {
+		t.Fatalf("negotiate wire 3 = %d", rec.Code)
+	}
+	rec := getAuth(h, "/v1/communities/"+cid.String()+"/bot", token)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), []byte{0xf6}) {
+		t.Fatalf("absent bot response = %d %x, want CBOR null", rec.Code, rec.Body.Bytes())
+	}
+	if rec := getAuth(h, "/v1/communities/"+id.New().String()+"/bot", token); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown community response = %d, want 404", rec.Code)
+	}
+}
+
 func TestConfigureBotChecksCapabilityAuthorityBeforeWireUpgrade(t *testing.T) {
 	h, deps := newTestAPI(t)
 	owner, _, ownerToken := seedAPISession(t, deps)

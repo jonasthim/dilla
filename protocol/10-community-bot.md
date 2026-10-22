@@ -580,7 +580,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
-| `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or 404 |
+| `GET /v1/communities/{community}/bot` | E, manage_community | — | installation or CBOR null when absent |
 | `PUT /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision|null, capabilities, step_up]` | installation, 201 new / 200 existing |
 | `POST /v1/communities/{community}/bot/disable` | E, manage_community | `[request_id, expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E, manage_community | `[request_id, expected_revision]` | 204 |
