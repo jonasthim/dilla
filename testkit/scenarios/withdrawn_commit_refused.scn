@@ -1,0 +1,31 @@
+# UP6b, correction C3: a commit that applies a withdrawn ref is refused 409 E_COMMIT_CONFLICT,
+# detail withdrawn, with an empty winning_commit — from a client from before the withdrawal (carol,
+# legacy: no caps bit 0, no kinds=3, so her queue still holds the ref) and as a replay of a commit
+# built on the old queue. The instance never unqueued the ref from its PublicGroup, so a commit that
+# omits it is processed, not refused 422.
+instance dilla
+client alice
+client bob
+client carol legacy
+group call kind=call target=e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent bob call
+sync alice
+sync bob
+sync carol
+stash_commit alice call
+resume bob call withdrawn=1
+sync alice
+sync carol
+expect_reject E_COMMIT_CONFLICT rule=withdrawn commit carol call
+expect_reject E_COMMIT_CONFLICT rule=withdrawn post_stash alice call
+commit alice call
+sync bob
+sync carol
+send bob call still in the call
+expect_decrypts alice call still in the call
+expect_decrypts carol call still in the call

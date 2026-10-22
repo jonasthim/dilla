@@ -77,6 +77,12 @@ pub struct TestClient {
     next_msg: u64,
     /// Deleted seqs seen since the last `take_deleted` call.
     deleted: Vec<(Vec<u8>, u64)>,
+    /// UP6b: a client from before the withdrawal (`client <name> legacy`): it never asks for
+    /// kind-3 rows and never drops a queued instance Remove the listing lacks, so its commit in a
+    /// group whose epoch holds a withdrawal applies the withdrawn ref (409 `withdrawn`).
+    legacy: bool,
+    /// Per group, one commit built and not posted (`stash_commit`), for a replay (`post_stash`).
+    stashed: BTreeMap<Vec<u8>, CommitRequest>,
 }
 
 impl TestClient {
@@ -200,7 +206,86 @@ impl TestClient {
             queued: BTreeMap::new(),
             next_msg: 1,
             deleted: Vec::new(),
+            legacy: false,
+            stashed: BTreeMap::new(),
         })
+    }
+
+    /// UP6b: marks this client as one from before the withdrawal (see `legacy`).
+    pub fn set_legacy(&mut self, legacy: bool) {
+        self.legacy = legacy;
+    }
+
+    /// Whether this client is a legacy one (`client <name> legacy`).
+    pub fn is_legacy(&self) -> bool {
+        self.legacy
+    }
+
+    /// How many proposals this client holds queued for its next commit in `group_id`.
+    pub fn queued_count(&self, group_id: &[u8]) -> usize {
+        self.queued.get(group_id).map_or(0, BTreeSet::len)
+    }
+
+    /// UP6b: builds a commit over this client's queue and keeps it unposted; the client's own state
+    /// is left as it was. `post_stash` uploads it later: a replay of a commit built on the old queue.
+    pub fn stash_commit(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        self.absorb_proposals(ds, group_id)?;
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let epoch = group.epoch();
+        let bundle = group.self_update(&self.provider, &self.signer)?;
+        let request = (|| {
+            let group_info = bundle.group_info.ok_or_else(|| {
+                TestkitError::Scenario("the staged commit carries no GroupInfo".into())
+            })?;
+            Ok::<_, TestkitError>(CommitRequest {
+                epoch,
+                commit: serialize(&bundle.commit)?,
+                group_info: serialize(&MlsMessageOut::from(group_info))?,
+                welcomes: Vec::new(),
+            })
+        })();
+        group.clear_pending_commit(&self.provider)?;
+        self.stashed.insert(group_id.to_vec(), request?);
+        Ok(())
+    }
+
+    /// Uploads the commit `stash_commit` kept. It is never merged: a scenario posts it to be
+    /// refused.
+    pub fn post_stash(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+    ) -> Result<(), TestkitError> {
+        let request = self
+            .stashed
+            .remove(group_id)
+            .ok_or_else(|| TestkitError::Scenario("no stashed commit for this group".into()))?;
+        ds.post_commit(group_id, request)?;
+        Err(TestkitError::Assertion(
+            "the stashed commit was accepted; a replay must be refused".into(),
+        ))
+    }
+
+    /// UP6b: applies a `withdrawn` row (kind 3) — the named proposal leaves the queue only when it
+    /// is the instance's own Remove (`DillaGroup::withdraw_instance_remove`); anything else is a
+    /// no-op. A legacy client never asked for the row and never receives it.
+    fn apply_withdrawn(&mut self, group_id: &[u8], blob: &[u8]) -> Result<(), TestkitError> {
+        let reference = dilla_core::mls::decode_withdrawn_blob(blob)
+            .map_err(|e| TestkitError::Scenario(format!("a malformed withdrawn row: {e}")))?;
+        if let Some(group) = self.groups.get_mut(group_id)
+            && group.withdraw_instance_remove(&self.provider, &reference)?
+            && let Some(q) = self.queued.get_mut(group_id)
+        {
+            q.remove(&reference);
+        }
+        Ok(())
     }
 
     /// Same user, UMK and SSK; a new device id and DSK derived from `seed` exactly as `new` derives them;
@@ -1022,6 +1107,19 @@ impl TestClient {
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        // UP6b, correction I4: the listing never names a withdrawn proposal, so a queued instance
+        // Remove it does not name is taken out (a client that missed the kind-3 row). A legacy
+        // client predates the rule.
+        if !self.legacy {
+            let listed: BTreeSet<Vec<u8>> = items.iter().map(|i| i.proposal_ref.clone()).collect();
+            let dropped = group
+                .drop_unlisted_instance_removes(&self.provider, |r| listed.contains(r))?;
+            if let Some(q) = self.queued.get_mut(group_id) {
+                for r in &dropped {
+                    q.remove(r);
+                }
+            }
+        }
         for item in items.into_iter().filter(|i| !i.void) {
             let message = deserialize_protocol(&item.blob)?;
             if message.epoch().as_u64() != group.epoch() {
@@ -1079,6 +1177,10 @@ impl TestClient {
                     if self.groups.contains_key(&group_id) {
                         self.deleted.push((group_id, seq));
                     }
+                }
+                Frame::MlsHandshake { group_id, item } if item.kind == 3 => {
+                    // Not an MLS message, and not part of a heal's tail.
+                    self.apply_withdrawn(&group_id, &item.blob)?;
                 }
                 Frame::MlsHandshake { group_id, item } => {
                     let tail = self.tails.entry(group_id.clone()).or_default();

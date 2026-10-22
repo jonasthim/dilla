@@ -1,0 +1,35 @@
+# UP6b: the all-dropped call's variant. The second device resumes before the first device's commit
+# lands: its own Remove is withdrawn, the commit built on the old queue is refused (409
+# E_COMMIT_CONFLICT, detail withdrawn, an empty winning_commit), the rebuilt commit leaves it in,
+# and only the third device rejoins externally.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7 community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent alice call
+absent bob call
+absent carol call
+sync alice
+sync bob
+sync carol
+resume alice call withdrawn=1
+sync alice
+stash_commit alice call
+resume bob call withdrawn=1
+expect_reject E_COMMIT_CONFLICT rule=withdrawn post_stash alice call
+sync alice
+commit alice call
+sync bob
+expect_reject E_LEAF_NOT_CURRENT resume carol call
+resync carol call
+sync alice
+sync bob
+send alice call bob kept his leaf
+expect_decrypts bob call bob kept his leaf
+expect_decrypts carol call bob kept his leaf

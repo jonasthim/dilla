@@ -170,7 +170,13 @@ impl Runner {
                     },
                     Err(e),
                 ) => {
-                    let text = e.to_string();
+                    let mut text = e.to_string();
+                    if let TestkitError::Ds(DsError::CommitConflict { winning_commit, .. }) = &e {
+                        text.push_str(&format!(
+                            " (winning_commit {} bytes)",
+                            winning_commit.len()
+                        ));
+                    }
                     // A rule, when named, must be the one the instance's E_COMMIT_INVALID names:
                     // invariant 4 has a dozen reasons to refuse a commit, and a scenario about one
                     // of them must not pass on another.
@@ -179,6 +185,13 @@ impl Runner {
                         (Some(want), TestkitError::Ds(DsError::CommitInvalid { reason })) => {
                             reason == want
                         }
+                        // UP6b: `rule=withdrawn` on E_COMMIT_CONFLICT is invariant 6's refusal of a
+                        // commit that applies a withdrawn proposal, whose winning_commit is empty;
+                        // a lost race always names its winner.
+                        (
+                            Some(want),
+                            TestkitError::Ds(DsError::CommitConflict { winning_commit, .. }),
+                        ) => want == "withdrawn" && winning_commit.is_empty(),
                         (Some(_), _) => false,
                     };
                     // The status is checked only when the statement names one (`expect_425`):
@@ -247,9 +260,63 @@ impl Runner {
                 kind,
                 device_list,
                 key_packages,
+                legacy,
             } => {
                 let count = if *key_packages { Some(4) } else { None };
-                self.new_client(name, *tier, *kind, count, *device_list)
+                self.new_client_as(name, *tier, *kind, count, *device_list, *legacy)
+            }
+            Stmt::Absent { client, group } | Stmt::Resume { client, group, .. } => {
+                if !self.is_remote() {
+                    return Err(DsError::Unsupported(
+                        "DsStub does not model instance-originated proposals, so it has no absence \
+                         Remove to withdraw (UP6b); use `ds <url>`"
+                            .into(),
+                    )
+                    .into());
+                }
+                let id = self.group(group)?.id.clone();
+                let device = self.device_of(client)?;
+                let body = format!(
+                    "{{\"group\":\"{}\",\"device\":\"{}\"}}",
+                    hex::encode(&id),
+                    device.to_hex()
+                );
+                let path = if matches!(stmt, Stmt::Absent { .. }) {
+                    "/debug/absent"
+                } else {
+                    "/debug/resume"
+                };
+                let out = control_post(path, &body)?;
+                let answer: serde_json::Value = if out.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&out).map_err(|e| {
+                        DsError::Protocol(format!("control {path}: {e}"))
+                    })?
+                };
+                if answer["code"].as_str() == Some("E_LEAF_NOT_CURRENT") {
+                    return Err(DsError::LeafNotCurrent.into());
+                }
+                if let Stmt::Resume {
+                    expect: Some(want), ..
+                } = stmt
+                {
+                    let got = answer["withdrawn"].as_u64().unwrap_or(u64::MAX);
+                    if got != *want {
+                        return Err(TestkitError::Assertion(format!(
+                            "{client}'s resume withdrew {got} Removes, want {want}"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Stmt::StashCommit { client, group } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |c, ds| c.stash_commit(ds, &id))
+            }
+            Stmt::PostStash { client, group } => {
+                let id = self.group(group)?.id.clone();
+                self.with_client(client, |c, ds| c.post_stash(ds, &id))
             }
             Stmt::PublishKeyPackages { client, count } => {
                 self.with_client(client, |c, ds| c.publish_key_packages(ds, *count))
@@ -710,6 +777,19 @@ impl Runner {
         key_packages: Option<usize>,
         device_list: DeviceListMode,
     ) -> Result<(), TestkitError> {
+        self.new_client_as(name, tier, kind, key_packages, device_list, false)
+    }
+
+    /// `new_client` for a client that is `legacy` (UP6b) or not.
+    fn new_client_as(
+        &mut self,
+        name: &str,
+        tier: Tier,
+        kind: Kind,
+        key_packages: Option<usize>,
+        device_list: DeviceListMode,
+        legacy: bool,
+    ) -> Result<(), TestkitError> {
         if self.clients.contains_key(name) {
             return Err(TestkitError::Scenario(format!("client {name} exists")));
         }
@@ -759,7 +839,8 @@ impl Runner {
             // Every account owes a second factor, and an owed session reaches nothing else (not even the
             // gateway): enrol an authenticator app before the first connection.
             let totp = HttpDs::enrol_second_factor(&base, &enrolled.token, false)?;
-            let mut ds = HttpDs::with_session(&base, client.device_id(), enrolled.token)?;
+            let mut ds =
+                HttpDs::with_session_caps(&base, client.device_id(), enrolled.token, !legacy)?;
             ds.set_totp(totp);
             ds.set_session_expires(enrolled.expires);
             // The user signs its one device into its device list, as a real client does right
@@ -803,6 +884,7 @@ impl Runner {
                 .and_then(|ds| client.publish_key_packages(ds, n)),
             None => Ok(()),
         };
+        client.set_legacy(legacy);
         self.clients.insert(name.to_owned(), client);
         result
     }
@@ -1185,6 +1267,10 @@ fn actor_of(stmt: &Stmt) -> Option<&str> {
         | Stmt::Heal { client, .. }
         | Stmt::AckCommit { client }
         | Stmt::Leave { client, .. }
+        | Stmt::Absent { client, .. }
+        | Stmt::Resume { client, .. }
+        | Stmt::StashCommit { client, .. }
+        | Stmt::PostStash { client, .. }
         | Stmt::PublishKeyPackages { client, .. } => Some(client),
         Stmt::Remove { actor, .. }
         | Stmt::Kick { actor, .. }

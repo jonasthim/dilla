@@ -1,0 +1,26 @@
+# UP6b ("Only its own"): of three that dropped, two resume and one never does. The others' resumes
+# never withdraw the departed device's Remove: it is committed and its leaf is gone within the
+# normal sweep window.
+instance dilla
+client alice
+client bob
+client carol
+group call kind=call target=edededededededededededededededed community=none creator=alice
+join bob call via=external
+sync alice
+join carol call via=external
+sync alice
+sync bob
+absent alice call
+absent bob call
+absent carol call
+resume alice call withdrawn=1
+resume bob call withdrawn=1
+sync alice
+sync bob
+commit alice call
+sync bob
+expect_reject E_LEAF_NOT_CURRENT send carol call am I still in the call
+expect_reject E_LEAF_NOT_CURRENT resume carol call
+send alice call carol is gone
+expect_decrypts bob call carol is gone

@@ -119,6 +119,38 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		writeJSON(w, map[string]int{"proposals": n})
 	})
+	// UP6b (R-UP12): the two halves of the withdrawal a scenario drives. /debug/absent is the room
+	// sweep's Remove of a device that stayed out of its call (ds.ProposeAbsenceRemove, bound to the
+	// membership it holds now); /debug/resume is that device's own call start reaching its last step
+	// before the mint (ds.WithdrawAbsenceRemoves). A membership already gone answers
+	// {"code":"E_LEAF_NOT_CURRENT"}, the start's refusal.
+	mux.HandleFunc("POST /debug/absent", func(w http.ResponseWriter, r *http.Request) {
+		groupID, device, leaf, added, ok := memberOf(w, r, h)
+		if !ok {
+			return
+		}
+		err := h.Server().DS().ProposeAbsenceRemove(r.Context(), groupID, leaf, device, added, id.New())
+		if err != nil && !errors.Is(err, ds.ErrRemoveTargetGone) {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /debug/resume", func(w http.ResponseWriter, r *http.Request) {
+		groupID, device, leaf, added, ok := memberOf(w, r, h)
+		if !ok {
+			return
+		}
+		n, err := h.Server().DS().WithdrawAbsenceRemoves(r.Context(), groupID, device, leaf, added)
+		switch {
+		case errors.Is(err, ds.ErrMembershipGone):
+			writeJSON(w, map[string]any{"withdrawn": 0, "code": "E_LEAF_NOT_CURRENT"})
+		case err != nil:
+			writeError(w, err)
+		default:
+			writeJSON(w, map[string]any{"withdrawn": n})
+		}
+	})
 	mux.HandleFunc("POST /debug/admit", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Group  string `json:"group"`
@@ -463,6 +495,39 @@ func Conn(ctx context.Context, s *dillad.Server, device, group id.ID) (ConnRepor
 	}
 	out.DS.CursorSeq, out.DS.CursorEpoch = cursor.LastSeq, cursor.LastEpoch
 	return out, nil
+}
+
+// memberOf decodes {"group", "device"} and reads the membership (leaf, added epoch) the device holds
+// in the group now. A device that holds none answers {"code":"E_LEAF_NOT_CURRENT"} and ok is false.
+func memberOf(w http.ResponseWriter, r *http.Request, h *Host) (groupID, device id.ID, leaf uint32, added uint64, ok bool) {
+	var body struct {
+		Group  string `json:"group"`
+		Device string `json:"device"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	var err error
+	if groupID, err = id.Parse(body.Group); err != nil {
+		http.Error(w, "group: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if device, err = id.Parse(body.Device); err != nil {
+		http.Error(w, "device: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	members, err := h.Server().Repo().ListMembers(r.Context(), groupID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, m := range members {
+		if m.DeviceID == device && m.RemovedEpoch == nil {
+			return groupID, device, m.LeafIndex, m.AddedEpoch, true
+		}
+	}
+	writeJSON(w, map[string]any{"withdrawn": 0, "code": "E_LEAF_NOT_CURRENT"})
+	return groupID, device, 0, 0, false
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

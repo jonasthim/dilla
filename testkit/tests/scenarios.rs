@@ -211,6 +211,9 @@ fn the_control_listener_verbs_are_refused_by_the_stub() {
         "expect_closed chat",
         "mark_revoked bob",
         "channel 99999999999999999999999999999999 mode=readable",
+        // UP6b: the stub models no instance proposal, so it has no absence Remove to withdraw.
+        "absent bob chat",
+        "resume bob chat withdrawn=1",
     ] {
         let src = format!(
             "\
@@ -238,4 +241,47 @@ group chat kind=text target=99999999999999999999999999999999 creator=alice
 fn the_vector_runner_is_green_from_the_testkit_too() {
     let report = dilla_core::vectors::run_all();
     assert!(report.is_ok(), "{}", report.to_text());
+}
+
+/// UP6b: every withdrawal scenario parses, with its new verbs (`absent`, `resume … withdrawn=`,
+/// `stash_commit`, `post_stash`, a `legacy` client and `rule=withdrawn`); they run against an
+/// instance (internal/testkit/withdrawn_test.go).
+#[test]
+fn the_withdrawal_scenarios_parse() {
+    for (name, src) in [
+        ("all-drop-resume", include_str!("../scenarios/all-drop-resume.scn")),
+        (
+            "all_drop_second_resumes_first",
+            include_str!("../scenarios/all_drop_second_resumes_first.scn"),
+        ),
+        (
+            "withdrawn_commit_refused",
+            include_str!("../scenarios/withdrawn_commit_refused.scn"),
+        ),
+        (
+            "withdrawn_listings",
+            include_str!("../scenarios/withdrawn_listings.scn"),
+        ),
+        (
+            "withdrawable_survives_redrive",
+            include_str!("../scenarios/withdrawable_survives_redrive.scn"),
+        ),
+        (
+            "resume_then_leave",
+            include_str!("../scenarios/resume_then_leave.scn"),
+        ),
+        ("withdraw_races", include_str!("../scenarios/withdraw_races.scn")),
+        (
+            "really_left_is_removed",
+            include_str!("../scenarios/really_left_is_removed.scn"),
+        ),
+        (
+            "kick_absorbed_by_absence",
+            include_str!("../scenarios/kick_absorbed_by_absence.scn"),
+        ),
+    ] {
+        parse(src, name).unwrap_or_else(|e| panic!("{name}:{}: {}", e.line, e.message));
+    }
+    let bad = "instance dilla\nclient alice\nresume alice chat withdrawn=many\n";
+    assert!(parse(bad, "bad").is_err(), "withdrawn= needs a count");
 }
