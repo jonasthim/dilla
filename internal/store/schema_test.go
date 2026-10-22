@@ -256,7 +256,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 	}
 }
 
-// wantTables is the exact set 001/002/003/004/005/006/009 declare, sorted, so that a
+// wantTables is the exact set of tables declared by the current SQLite schema, sorted, so that a
 // dropped or renamed table is caught and not just a change in the count. Task 19
 // added 004_mls.sql's twelve; task 23 added 005_messages.sql's one; Plan 2 task 1
 // added 006_structure.sql's four (communities, members, roles, member_roles); Plan 2
@@ -276,7 +276,7 @@ var wantTables = []string{
 	"member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "moderation_removal_heads", "moderation_removals", "oidc_identities",
-	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "role_panel_options", "role_panels", "roles", "self_role_policy", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",
+	"password_credentials", "pending_joins", "reaction_role_grant_sources", "read_state", "readable_messages", "recovery_codes", "reports", "role_panel_options", "role_panels", "roles", "self_role_policy", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",
 	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 

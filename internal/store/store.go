@@ -59,6 +59,7 @@ type Repository interface {
 	// Plan 2 task 16 (P2-D22) — 00011_voice.sql
 	VoiceSessions
 	RolePanels
+	ReactionRoleGrantSources
 	BotRuntimes
 	BotInstallations
 	BotClaims

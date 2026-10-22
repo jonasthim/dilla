@@ -92,6 +92,7 @@ type Channels struct {
 	// calls cuts a removed group-DM participant's connected call session, and re-syncs a channel's
 	// live call after a visibility change; nil touches no call.
 	calls *Calls
+	roles *Roles
 	// notify tells the community's members, after the commit, that a channel was created,
 	// updated or deleted (op 54); nil tells nobody.
 	notify *StructureNotifier
@@ -102,6 +103,8 @@ func (c *Channels) WithCalls(calls *Calls) *Channels {
 	c.calls = calls
 	return c
 }
+
+func (c *Channels) WithRoles(roles *Roles) *Channels { c.roles = roles; return c }
 
 // WithNotifier sets where a community channel's create, update and delete is announced, and
 // returns c.
@@ -1096,6 +1099,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	now := c.clk.Now().Unix()
 	var toClose []id.ID
+	var roleAffected []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := c.lockManageable(r, tx, row); err != nil {
 			return err
@@ -1118,6 +1122,10 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
+		}
+		roleAffected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
+		if err != nil {
+			return err
 		}
 		// A deleted category's channels stay, at the top level: the tombstone
 		// keeps its row, so ON DELETE SET NULL never fires, and a child left
@@ -1144,6 +1152,11 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
+	}
+	if c.roles != nil {
+		for _, user := range roleAffected {
+			c.roles.reactionRoleChanged(r.Context(), *row.CommunityID, user)
+		}
 	}
 	// The channel's MLS groups are closed by the delivery service, which owns
 	// mls_groups, AFTER the commit: ds.Close writes through the single-connection

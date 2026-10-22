@@ -2549,7 +2549,7 @@ func (r *Repo) RemoveMemberRoleGrant(ctx context.Context, communityID, userID, r
 		return store.ErrNotFound
 	}
 	var remaining int64
-	if err := r.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3`, communityID, userID, roleID).Scan(&remaining); err != nil {
+	if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3) + (SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3)`, communityID, userID, roleID).Scan(&remaining); err != nil {
 		return err
 	}
 	if remaining == 0 {

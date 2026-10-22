@@ -3,6 +3,7 @@ package api_test
 import (
 	"log/slog"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -200,8 +201,20 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if err != nil || registered.AuthorID != botID || registered.InstallationID != installationID {
 		t.Fatalf("registered panel identity = %+v, %v", registered, err)
 	}
-	if err := e.Repo.DeleteChannel(t.Context(), channel, now+1); err != nil {
+	if err := e.Repo.AddReactionRoleGrant(t.Context(), store.ReactionRoleGrant{CommunityID: cid, UserID: owner, RoleID: role, ChannelID: channel, MessageSeq: 9, Reaction: "✅"}); err != nil {
 		t.Fatal(err)
+	}
+	ownerSession := e.sess[ownerTok]
+	ownerSession.WireVersion, ownerSession.E2EEVersion, ownerSession.MediaVersion = 3, 1, 1
+	e.sess[ownerTok] = ownerSession
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, owner); err != nil || !slices.Contains(held, role) {
+		t.Fatalf("role before channel deletion = %v, %v; want present", held, err)
+	}
+	if status, body := e.Do(http.MethodDelete, "/v1/channels/"+channel.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("delete role panel channel = %d (%x), want 204", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, owner); err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after channel deletion = %v, %v; want absent", held, err)
 	}
 	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
 	if status != http.StatusNotFound {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"unicode/utf8"
@@ -71,6 +72,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 		seen[option.Emoji] = true
 	}
 	var panel store.RolePanelRow
+	var affected []id.ID
 	options := make([]store.RolePanelOptionRow, len(req.Options))
 	for i, option := range req.Options {
 		options[i] = store.RolePanelOptionRow{Emoji: option.Emoji, RoleID: option.Role}
@@ -138,11 +140,18 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		panel = store.RolePanelRow{CommunityID: cid, ChannelID: req.ChannelID, MessageSeq: req.MessageSeq, AuthorID: botUser.ID, InstallationID: installation.ID}
+		affected, err = tx.(store.ReactionRoleGrantSources).ListReactionRolePanelGrantUsers(r.Context(), cid, req.ChannelID, req.MessageSeq)
+		if err != nil {
+			return err
+		}
 		return tx.SetRolePanel(r.Context(), panel, options)
 	})
 	if err != nil {
 		h.fail(w, r, "register role panel", err)
 		return
+	}
+	for _, user := range affected {
+		h.reactionRoleChanged(r.Context(), cid, user)
 	}
 	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, uint64(len(options))})
 }
@@ -197,6 +206,128 @@ func (h *Roles) selfRoleCandidate(ctx *http.Request, repo store.Repository, cid,
 		return server.Errorf(server.CodeForbidden, "bot-managed role cannot be self-assigned")
 	}
 	return nil
+}
+
+// applyRolePanelReaction adds or removes the authenticated reactor's own
+// provenance only when reply_to names an exact, live, bot-authored panel in
+// this channel. Unknown messages and non-panel reactions remain ordinary
+// readable-channel reactions.
+func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch store.ChannelRow, actor auth.Session, env Envelope) (bool, error) {
+	if (env.Type != EnvReactionAdd && env.Type != EnvReactionRemove) || ch.CommunityID == nil || env.ReplyTo == nil {
+		return false, nil
+	}
+	seq, err := targetSeq(env)
+	if err != nil || seq == 0 {
+		return false, nil
+	}
+	if _, err := tx.GetMember(r.Context(), *ch.CommunityID, actor.UserID); err != nil {
+		if err == store.ErrNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	reactor, err := tx.GetUser(r.Context(), actor.UserID)
+	if err != nil {
+		return false, err
+	}
+	if reactor.Kind != kindHuman {
+		return false, nil
+	}
+	rows, err := tx.ListReadableMessages(r.Context(), ch.ID, seq, 1)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != 1 || rows[0].Seq != seq || rows[0].Deleted != nil {
+		return false, nil
+	}
+	panel, err := tx.GetRolePanel(r.Context(), ch.ID, seq)
+	if err == store.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if panel.CommunityID != *ch.CommunityID || rows[0].Sender != panel.AuthorID {
+		return false, nil
+	}
+	installation, err := tx.GetBotInstallation(r.Context(), panel.InstallationID)
+	if err != nil {
+		return false, err
+	}
+	if installation.CommunityID != *ch.CommunityID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || *installation.UserID != panel.AuthorID || *installation.DeviceID != rows[0].UploaderDevice {
+		return false, nil
+	}
+	bot, err := tx.GetUser(r.Context(), panel.AuthorID)
+	if err != nil {
+		return false, err
+	}
+	if bot.Kind != 1 {
+		return false, nil
+	}
+	if _, err := tx.GetMember(r.Context(), *ch.CommunityID, panel.AuthorID); err != nil {
+		if err == store.ErrNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	options, err := tx.ListRolePanelOptions(r.Context(), ch.ID, seq)
+	if err != nil {
+		return false, err
+	}
+	var roleID id.ID
+	for _, option := range options {
+		if option.Emoji == env.Body {
+			roleID = option.RoleID
+			break
+		}
+	}
+	if roleID.IsZero() {
+		return false, nil
+	}
+	source := store.ReactionRoleGrant{CommunityID: *ch.CommunityID, UserID: actor.UserID, RoleID: roleID, ChannelID: ch.ID, MessageSeq: seq, Reaction: env.Body}
+	if env.Type == EnvReactionRemove {
+		err := tx.RemoveReactionRoleGrant(r.Context(), source)
+		if err == store.ErrNotFound {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	policy, err := tx.ListSelfRolePolicy(r.Context(), *ch.CommunityID)
+	if err != nil {
+		return false, err
+	}
+	var approval *store.SelfRolePolicyRow
+	for i := range policy {
+		if policy[i].RoleID == roleID {
+			approval = &policy[i]
+			break
+		}
+	}
+	if approval == nil {
+		return false, nil
+	}
+	approverSnap, err := LoadSnapshot(r.Context(), tx, *ch.CommunityID, approval.ApprovedBy, nil)
+	if err != nil {
+		return false, nil
+	}
+	approverBits := approverSnap.Resolve(approval.ApprovedBy)
+	if !approverBits.Has(PermManageRoles) || h.selfRoleCandidate(r, tx, *ch.CommunityID, approval.ApprovedBy, roleID, approverBits, approverSnap) != nil {
+		return false, nil
+	}
+	if err := tx.AddReactionRoleGrant(r.Context(), source); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (h *Roles) reactionRoleChanged(ctx context.Context, communityID, userID id.ID) {
+	if err := syncChannelEligibility(ctx, h.repo, h.dsvc, communityID, userID, h.clk.Now().Unix()); err != nil {
+		h.log.ErrorContext(ctx, "sync channel eligibility after reaction role", "community", communityID, "user", userID, "err", err)
+	}
+	h.syncCallGrants(ctx, communityID, &userID, nil)
+	if h.notify != nil {
+		h.notify.Changed(ctx, communityID)
+	}
 }
 
 func (h *Roles) listSelfRoles(w http.ResponseWriter, r *http.Request) {

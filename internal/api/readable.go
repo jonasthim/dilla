@@ -50,18 +50,26 @@ var _ Fanout = (*gateway.Gateway)(nil)
 // the read position. Register mounts the handlers bare, as Channels does, and
 // each handler requires an enrolled session itself.
 type Readable struct {
-	repo store.Repository
-	res  *Resolver
-	fan  Fanout
-	keys FrankingKeys
-	clk  clock.Clock
-	log  *slog.Logger
+	repo  store.Repository
+	res   *Resolver
+	fan   Fanout
+	keys  FrankingKeys
+	clk   clock.Clock
+	log   *slog.Logger
+	roles *Roles
 }
 
 // NewReadable wires the routes. fan may be nil, which stores and answers
 // without a live fan-out (a build with no gateway); keys may not.
 func NewReadable(repo store.Repository, res *Resolver, fan Fanout, keys FrankingKeys, clk clock.Clock, log *slog.Logger) *Readable {
 	return &Readable{repo: repo, res: res, fan: fan, keys: keys, clk: clk, log: log}
+}
+
+// WithRoles connects role-panel reaction processing and its post-commit
+// membership/call synchronization to the readable message route.
+func (h *Readable) WithRoles(roles *Roles) *Readable {
+	h.roles = roles
+	return h
 }
 
 func (h *Readable) Register(mux *server.Mux) {
@@ -215,6 +223,7 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	keyID, key := h.keys.Current()
 	var seq uint64
 	var tag []byte
+	var roleChanged bool
 	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
 		// The community lock serialises this write with moderator timeout changes.
 		if err := tx.LockCommunity(r.Context(), *ch.CommunityID); err != nil {
@@ -246,6 +255,12 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 			// device, and a report's first equation is checked against C.
 			UploaderDevice: s.DeviceID, CommitmentC: c,
 		})
+		if err != nil {
+			return err
+		}
+		if h.roles != nil && (env.Type == EnvReactionAdd || env.Type == EnvReactionRemove) {
+			roleChanged, err = h.roles.applyRolePanelReaction(r, tx, ch, s, env)
+		}
 		return err
 	})
 	if err != nil {
@@ -253,6 +268,9 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.deliver(r.Context(), ch.ID, seq, s.UserID, req.Envelope, tag, 0, 0)
+	if roleChanged {
+		h.roles.reactionRoleChanged(afterCommit(r), *ch.CommunityID, s.UserID)
+	}
 	if err := server.EncodeBody(w, http.StatusOK, postResponse{Seq: seq, FrankingTag: tag, RecvTS: uint64(now)}); err != nil { //nolint:gosec // G115: a unix second from the instance clock
 		h.log.Error("encode readable post", "err", err)
 	}
@@ -524,8 +542,25 @@ func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.
 	if err := requireCommunityWire(ctx, h.repo, s.WireVersion, ch.CommunityID); err != nil {
 		return err
 	}
-	if err := h.repo.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
-		return notFound(err)
+	var affected []id.ID
+	err = h.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := tx.DeleteReadableMessage(ctx, ch.ID, seq, h.clk.Now().Unix()); err != nil {
+			return notFound(err)
+		}
+		var err error
+		affected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRolePanelGrants(ctx, *ch.CommunityID, ch.ID, seq)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if h.roles != nil {
+		for _, user := range affected {
+			h.roles.reactionRoleChanged(ctx, *ch.CommunityID, user)
+		}
 	}
 	h.deliver(ctx, ch.ID, seq, row.Sender, nil, row.FrankingTag, 0, 1)
 	return nil

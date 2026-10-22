@@ -38,6 +38,76 @@ func (r *Repo) SetRolePanel(ctx context.Context, panel store.RolePanelRow, optio
 	} else if n != 1 {
 		return store.ErrConflict
 	}
+	old, err := r.tx.QueryContext(ctx, `SELECT emoji,role_id FROM role_panel_options WHERE channel_id=$1 AND message_seq=$2`, panel.ChannelID, int64(panel.MessageSeq))
+	if err != nil {
+		return wrap(err)
+	}
+	type oldOption struct {
+		emoji string
+		role  id.ID
+	}
+	var oldOptions []oldOption
+	for old.Next() {
+		var v oldOption
+		if err := old.Scan(&v.emoji, &v.role); err != nil {
+			old.Close()
+			return wrap(err)
+		}
+		oldOptions = append(oldOptions, v)
+	}
+	if err := old.Err(); err != nil {
+		old.Close()
+		return wrap(err)
+	}
+	if err := old.Close(); err != nil {
+		return wrap(err)
+	}
+	for _, prior := range oldOptions {
+		keep := false
+		for _, next := range options {
+			if next.Emoji == prior.emoji && next.RoleID == prior.role {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			continue
+		}
+		users, err := r.tx.QueryContext(ctx, `SELECT DISTINCT user_id FROM reaction_role_grant_sources WHERE community_id=$1 AND channel_id=$2 AND message_seq=$3 AND reaction=$4 AND role_id=$5`, panel.CommunityID, panel.ChannelID, int64(panel.MessageSeq), prior.emoji, prior.role)
+		if err != nil {
+			return wrap(err)
+		}
+		var affected []id.ID
+		for users.Next() {
+			var u id.ID
+			if err := users.Scan(&u); err != nil {
+				users.Close()
+				return wrap(err)
+			}
+			affected = append(affected, u)
+		}
+		if err := users.Err(); err != nil {
+			users.Close()
+			return wrap(err)
+		}
+		if err := users.Close(); err != nil {
+			return wrap(err)
+		}
+		if _, err := r.tx.ExecContext(ctx, `DELETE FROM reaction_role_grant_sources WHERE community_id=$1 AND channel_id=$2 AND message_seq=$3 AND reaction=$4 AND role_id=$5`, panel.CommunityID, panel.ChannelID, int64(panel.MessageSeq), prior.emoji, prior.role); err != nil {
+			return wrap(err)
+		}
+		for _, u := range affected {
+			var count int
+			if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=$1 AND user_id=$2 AND role_id=$3)`, panel.CommunityID, u, prior.role).Scan(&count); err != nil {
+				return wrap(err)
+			}
+			if count == 0 {
+				if _, err := r.tx.ExecContext(ctx, `DELETE FROM member_roles WHERE community_id=$1 AND user_id=$2 AND role_id=$3`, panel.CommunityID, u, prior.role); err != nil {
+					return wrap(err)
+				}
+			}
+		}
+	}
 	if _, err := r.tx.ExecContext(ctx, `DELETE FROM role_panel_options WHERE channel_id=$1 AND message_seq=$2`, panel.ChannelID, int64(panel.MessageSeq)); err != nil {
 		return wrap(err)
 	}
