@@ -434,7 +434,7 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
       const c = need();
       const recoveryKey = c.signup_begin(CORE_INSTANCE_ID);
       const request = c.signup_request('spike-invite', 'facade', 'Facade', null);
-      const complete = c.signup_complete(CORE_USER_ID, 'facade', CORE_NOW);
+      const complete = c.signup_complete(CORE_USER_ID, 'facade', CORE_NOW, CORE_EXTERNAL_SENDER_PUB);
       c.device_list_published();
       const keyPackages = c.key_packages(2, true);
       return {

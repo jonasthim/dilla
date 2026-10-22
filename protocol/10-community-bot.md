@@ -740,9 +740,15 @@ uses the existing snapshot tuple `[user_id,umk_pub,ssk_pub,ssk_binding_signature
 version,blob,signature,prev_hash,hash]`. The response signature is Ed25519 over
 `ASCII("dilla bot current interaction context v1") || 0x00 || payload`; clients MUST treat
 the proof as a short-lived snapshot (30 seconds), verify the signature against
-the advertised instance key and check its current-state fields before offering
-or processing a Welcome. It is distinct from the Bot-only pre-registration
-context snapshot above.
+the persisted instance signing-key pin, and check its current-state fields before offering
+or processing a Welcome. A human client establishes its first pin from `/v1/instance` over the
+bearer-authenticated session created by account enrollment, and stores that key atomically with
+local enrollment. Neither unauthenticated discovery nor a key included in a proof may establish a
+pin. A later discovery key mismatch fails closed; this version defines no silent key rotation or
+repair. Existing ready identities created before this pin existed have no authenticated pin to
+migrate and must refuse this proof until an explicit trusted migration is defined. An interrupted
+pending enrollment may resume its pin after it establishes a session and reads authenticated
+discovery. This is distinct from the Bot-only pre-registration context snapshot above.
 For an already committed enrollment, a live runtime credential may replay the
 same operation id and exact payload for that installation after claim expiry.
 The stored result is bound to the original runtime credential id; authorization

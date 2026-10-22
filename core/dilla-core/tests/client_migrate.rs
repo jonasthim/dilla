@@ -1203,7 +1203,7 @@ fn a_v1_pending_signup_migrates_and_completes_to_a_v2_identity() {
         .expect("identity shape")
     };
     assert_eq!(phase(&core), 1, "still a pending signup");
-    core.signup_complete(&[0xa1; 16], "alice", NOW)
+    core.signup_complete(&[0xa1; 16], "alice", NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     assert_eq!(phase(&core), 2);
     let record = meta_of(&conn.lock().expect("lock"), "identity").expect("the identity record");

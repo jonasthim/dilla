@@ -16,6 +16,7 @@ use crate::ids::{DeviceId, UserId};
 use crate::mls::{CIPHERSUITE, DillaProvider, StorageError, UnitScope, build_key_package};
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use ed25519_dalek::VerifyingKey;
 use openmls::prelude::{BasicCredential, CredentialWithKey, MlsMessageOut};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
@@ -30,6 +31,15 @@ pub(super) const AAD_STATE: &[u8] = b"dilla state v1";
 const ROOT_SEALED_LEN: usize = 103;
 const MAX_KEY_PACKAGES: u32 = 32;
 const MAX_TOKEN_BYTES: usize = 256;
+
+fn validate_instance_signer_key(key: &[u8; 32]) -> Result<(), ClientError> {
+    let verifying = VerifyingKey::from_bytes(key)
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "invalid instance Ed25519 key"))?;
+    if verifying.is_weak() {
+        return Err(ClientError::new(E_CORE_INPUT, "weak instance Ed25519 key"));
+    }
+    Ok(())
+}
 
 /// The protocol/02 Device sessions preimage, also in `protocol/vectors/identity.json`.
 /// A `Vec` keeps its 81-byte length observable, including the final purpose byte.
@@ -826,14 +836,29 @@ impl ClientCore {
         user_id: &[u8; 16],
         username: &str,
         now: u64,
+        instance_signer_pub: &[u8; 32],
     ) -> Result<Vec<u8>, ClientError> {
         if *user_id == [0; 16] {
             return Err(ClientError::new(E_CORE_INPUT, "user_id is all zero"));
         }
+        validate_instance_signer_key(instance_signer_pub)?;
         self.write(|ctx, u| {
             ensure_no_bot_identity(u)?;
             let (identity, signup, enrol) = u.with_conn(load_phase)?;
             let rec = pending(decode_phase(identity, signup, enrol)?)?;
+            let pinned = u.with_conn(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+            match pinned {
+                Some(pinned) if pinned.as_slice() != instance_signer_pub => {
+                    return Err(ClientError::new(
+                        E_CORE_STATE,
+                        "instance external-sender key changed",
+                    ));
+                }
+                Some(_) => {}
+                None => u.with_conn(|c| {
+                    schema::meta_put(c, schema::INSTANCE_SIGNER_KEY, instance_signer_pub)
+                })?,
+            }
             let cred = credential(&rec, *user_id);
             cred.verify_signatures(&rec.dsk_pub)?;
             let unsigned = DeviceListUnsigned {
@@ -880,6 +905,33 @@ impl ClientCore {
             })?;
             Ok(put)
         })
+    }
+
+    /// Return the human client's enrolled instance key for verification inside the core. The
+    /// public half never crosses the worker boundary; proof contents cannot establish this pin.
+    pub(crate) fn pinned_instance_signer_key(&self) -> Result<[u8; 32], ClientError> {
+        let raw = self.read(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+        let raw = raw
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "instance signing key is not pinned"))?;
+        let key: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        validate_instance_signer_key(&key)
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        Ok(key)
+    }
+
+    /// Continuity check for authenticated instance discovery. This method is deliberately
+    /// read-only: a changed or missing key requires explicit reconciliation.
+    pub fn instance_signer_key_matches(&self, observed_key: &[u8; 32]) -> Result<(), ClientError> {
+        validate_instance_signer_key(observed_key)?;
+        if self.pinned_instance_signer_key()?.as_slice() != observed_key {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "instance external-sender key changed",
+            ));
+        }
+        Ok(())
     }
     pub fn signup_reset(&mut self) -> Result<(), ClientError> {
         self.write(|ctx, u| {

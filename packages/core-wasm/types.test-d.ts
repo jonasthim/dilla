@@ -19,7 +19,7 @@ interface ExpectedCoreHandle {
   identity(): Uint8Array;
   signup_begin(instance_id: Uint8Array): string;
   signup_request(invite: string, username: string, display: string, password?: string | null): Uint8Array;
-  signup_complete(user_id: Uint8Array, username: string, now: bigint): Uint8Array;
+  signup_complete(user_id: Uint8Array, username: string, now: bigint, instance_signer_pub: Uint8Array): Uint8Array;
   signup_reset(): void;
   device_list_body(): Uint8Array;
   device_list_published(): void;

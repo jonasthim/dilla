@@ -31,6 +31,8 @@ pub(crate) const BOT_PENDING: &str = "bot_pending";
 pub(crate) const BOT_BINDING: &str = "bot_binding";
 /// External-sender key learned from authenticated Go `/v1/instance` discovery.
 pub(crate) const BOT_INSTANCE_KEY: &str = "bot_instance_key";
+/// External-sender signing key learned over an authenticated human enrollment session.
+pub(crate) const INSTANCE_SIGNER_KEY: &str = "instance_signer_key";
 pub(super) const BOT_INTENTS_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS app_bot_intents (
   operation_id BLOB PRIMARY KEY CHECK(length(operation_id)=16 AND operation_id != zeroblob(16)),

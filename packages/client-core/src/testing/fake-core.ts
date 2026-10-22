@@ -59,6 +59,7 @@ export class FakeCore implements CorePort {
   private prior: { sealed: SealedObjects; stateList: bigint | null } | null = null;
   private readonly settingsMap = new Map<string, string>();
   private record: SessionRecord | null = null;
+  instanceSignerPub: Uint8Array | null = null;
   private paused = false;
   private closed = false;
 
@@ -178,7 +179,7 @@ export class FakeCore implements CorePort {
       new Uint8Array(64).fill(3), password, [deviceId, fakeDskPub(deviceId), 1, 1,
         encode(['fake.cred', new Uint8Array(16), deviceId])]]);
   }
-  signupComplete(userId: Id, username: string, now: bigint): Uint8Array {
+  signupComplete(userId: Id, username: string, now: bigint, instanceSignerPub: Uint8Array): Uint8Array {
     this.enter('signupComplete'); this.requirePending();
     const deviceId = this.info.deviceId;
     if (deviceId === null) throw new CoreError('E_CORE_NO_IDENTITY');
@@ -188,6 +189,7 @@ export class FakeCore implements CorePort {
     this.sealed = { root: FAKE_ROOT_SEALED, state: FAKE_STATE_SEALED, stateUploaded: false };
     this.stateList = 1n;
     this.info = { ...this.info, phase: 2, userId, username, listPublished: false };
+    this.instanceSignerPub = instanceSignerPub.slice();
     return this.listBody;
   }
   signupReset(): void {
