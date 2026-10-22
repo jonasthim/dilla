@@ -101,7 +101,7 @@ export const admin = {
   'admin.bot.music.providerUnknown': 'Provider status unavailable',
   'admin.bot.music.youtubeHelp': 'The server does not currently report whether YouTube playback is configured or ready.',
   'admin.bot.moderationLog.title': 'Moderation log',
-  'admin.bot.moderationLog.unavailable': 'Moderation log is unavailable until this client can use the authenticated encrypted interaction transport. No case data has been loaded.',
+  'admin.bot.moderationLog.unavailable': 'Moderation log is unavailable until authenticated interaction support is ready in this client. No case data has been loaded.',
   'admin.afk.title': 'AFK channel',
   'admin.afk.hint': 'Idle people in voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel.',
   'admin.afk.channel': 'AFK destination',

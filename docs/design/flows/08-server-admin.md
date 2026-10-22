@@ -295,6 +295,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.youtube='YouTube'`
 - `admin.bot.music.providerUnknown='Provider status unavailable'`
 - `admin.bot.music.youtubeHelp='The server does not currently report whether YouTube playback is configured or ready.'`
+- `admin.bot.moderationLog.title='Moderation log'`
+- `admin.bot.moderationLog.unavailable='Moderation log is unavailable until authenticated interaction support is ready in this client. No case data has been loaded.'`
 - `mod.timeout.title='Text timeout for {name}'`
 - `mod.timeout.menu='Text timeout'`
 - `mod.timeout.body='{name} can still read, join voice, and use direct messages. They cannot post, react, edit, or pin in {server} while timed out.'`
