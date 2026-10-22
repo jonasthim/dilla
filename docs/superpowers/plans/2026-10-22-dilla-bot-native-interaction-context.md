@@ -1,5 +1,15 @@
 # Native Bot interaction context contract — 22 October 2026
 
+**Status update (later on 22 October):** The initial prohibition below applied while the helper
+lacked signed current-context transport and transaction-local candidate verification. Those
+prerequisites were subsequently implemented. The reviewed native create operation now validates
+the signed context, real candidate MLS state, local identity pins, and device lists within one
+storage transaction before writing the group and intent. Human Welcome acceptance similarly
+verifies a fresh signed proof and derives its expected binding inside Rust before the atomic
+join. These transaction-local operations supersede the preparation-only sequence described
+below; callers cannot construct the validated binding. Runtime dispatch and end-to-end browser
+acceptance remain unavailable, so this update does not declare the interaction feature ready.
+
 ## Decision
 
 Do not add a production native-helper operation for kind-3 interaction context yet. The helper
