@@ -26,6 +26,7 @@ const (
 var (
 	ErrInteractionRegistrationRecovery       = errors.New("bot interaction registration requires recovery")
 	ErrInteractionRegistrationOutcomeUnknown = errors.New("bot interaction registration outcome is unknown")
+	ErrInteractionRegistrationRenewed        = errors.New("bot interaction registration safely renewed; retry pending intent")
 	ErrInteractionNotEligible                = errors.New("member is not eligible for bot interaction registration")
 )
 
@@ -142,7 +143,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 	} else {
 		in, err = decodeInteractionRegistrationIntent(v.Value)
-		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || in.Policy != d.PolicyVersion || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
+		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || in.Policy != d.PolicyVersion || in.Generation != d.Generation || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
 		if in.Phase == 2 {
@@ -213,13 +214,6 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 	if in.Phase == 1 {
 		return c.resolveInteractionReceipt(ctx, key, revision, in, in.Receipt)
 	}
-	if !in.Submitted {
-		in.Submitted = true
-		revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
-		if err != nil {
-			return InteractionRegistrationResult{}, err
-		}
-	}
 	receipt, err := c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
 	if err == nil {
 		return c.acceptInteractionReceipt(ctx, key, revision, in, receipt)
@@ -228,6 +222,30 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrInteractionRegistrationOutcomeUnknown, err)
 	}
 	if err := c.proveInteractionRetrySafe(ctx, in); err != nil {
+		return InteractionRegistrationResult{}, err
+	}
+	if in.Submitted {
+		in.Operation = id.New()
+		in.AdmissionRequest = id.New()
+		in.Admission = nil
+		in.Snapshot = nil
+		in.Body = nil
+		in.Welcome = nil
+		in.KeyPackage = append([]byte(nil), req.ParticipantKeyPackage...)
+		in.MinimumRevision = req.MinimumEligibilityRevision
+		in.Policy = d.PolicyVersion
+		in.Generation = d.Generation
+		in.Submitted = false
+		in.Phase = 0
+		in.Receipt = client.BotGroupRegistrationReceipt{}
+		if _, err := c.saveInteractionRegistration(ctx, key, revision, in); err != nil {
+			return InteractionRegistrationResult{}, err
+		}
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRenewed
+	}
+	in.Submitted = true
+	revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
+	if err != nil {
 		return InteractionRegistrationResult{}, err
 	}
 	receipt, postErr := c.session.RegisterBotGroupWithAdmissionRequest(ctx, c.installation, in.Operation, in.Generation, in.Body, in.AdmissionRequest)

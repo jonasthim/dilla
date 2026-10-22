@@ -46,6 +46,42 @@ func TestInteractionRegistrationRecoversLostResponseAfterRestartWithoutRecreate(
 	}
 }
 
+func TestInteractionRegistrationRenewsExpiredAdmissionAfterProvenLostResponse(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.dropRegistrationResponse = true
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
+		t.Fatalf("first Register error = %v, want unknown outcome", err)
+	}
+	oldOperation, oldAdmission := f.s.lastOperation, f.s.requestIDs[0]
+	f.s.currentTime = 131 // old admission expired at 130
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRenewed) {
+		t.Fatalf("safe renewal result = %v, want renewal staged", err)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || renewed.Operation == oldOperation || renewed.AdmissionRequest == oldAdmission || renewed.Submitted {
+		t.Fatalf("renewal did not stage fresh operation/admission: intent=%+v err=%v", renewed, err)
+	}
+	f.s.dropRegistrationResponse = false
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register renewed intent: %v", err)
+	}
+	if f.s.registerCalls != 2 || f.n.createCalls != 2 {
+		t.Fatalf("renewal must create and submit one fresh body: posts=%d native creates=%d", f.s.registerCalls, f.n.createCalls)
+	}
+	value, err = f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || intent.Operation == oldOperation || intent.AdmissionRequest == oldAdmission || intent.Phase != 2 {
+		t.Fatalf("renewed intent did not complete with fresh IDs: %+v err=%v", intent, err)
+	}
+}
+
 func TestInteractionRegistrationRejectsConflictingReuse(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	_, err := f.coordinator.Register(context.Background(), f.request)
@@ -186,6 +222,33 @@ func TestInteractionRegistrationQueueProcessesDevicesOnlyForCurrentEpisode(t *te
 	}
 	if f.s.registeredGroups[0] == f.s.registeredGroups[1] {
 		t.Fatal("device candidates reused one group identifier")
+	}
+}
+
+func TestInteractionRegistrationQueueKeepsEpisodeUntilDevicesAppear(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("empty candidate pass: %v", err)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, []byte(interactionRegistrationQueueKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := decodeInteractionRegistrationJobs(value.Value)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("empty device list dropped pending episode: jobs=%+v err=%v", jobs, err)
+	}
+	f.s.candidates = []id.ID{id.New()}
+	f.s.keyPackage = []byte{7, 8, 9}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("device arrival pass: %v", err)
+	}
+	if f.s.registerCalls != 1 {
+		t.Fatalf("device arrival registered %d times, want 1", f.s.registerCalls)
 	}
 }
 
@@ -372,6 +435,8 @@ type interactionRegistrationSessionFake struct {
 	admission, snapshot         []byte
 	registerCalls, receiptCalls uint64
 	storeThenLoseResponse       bool
+	dropRegistrationResponse    bool
+	lastOperation               id.ID
 	hideReceiptCalls            uint64
 	receipt                     *client.BotGroupRegistrationReceipt
 	requestIDs                  []id.ID
@@ -442,6 +507,10 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 		return client.BotGroupRegistrationReceipt{}, errors.New("bad group")
 	}
 	s.registeredGroups = append(s.registeredGroups, group)
+	s.lastOperation = op
+	if s.dropRegistrationResponse {
+		return client.BotGroupRegistrationReceipt{}, errors.New("response lost before commit")
+	}
 	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
 	s.receipt = &r
 	if s.storeThenLoseResponse {

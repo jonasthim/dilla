@@ -106,7 +106,9 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			continue
 		}
 		if len(devices) == 0 {
-			jobs = removeRegistrationJob(jobs, i)
+			// A signed empty list can become populated later without a new
+			// membership episode. Keep the durable job for a future pass.
+			i++
 			continue
 		}
 		processed := make(map[id.ID]struct{}, len(job.Processed))
