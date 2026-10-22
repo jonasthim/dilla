@@ -27,6 +27,11 @@ func registrationBody(t *testing.T, group id.ID) []byte {
 	return cbor(t, []any{group, []byte("binding"), []byte("group-info"), []byte("tree")})
 }
 
+func kind3RegistrationBody(t *testing.T, group id.ID) []byte {
+	t.Helper()
+	return cbor(t, []any{group, []byte("binding"), []byte("group-info"), []byte("tree"), []byte("initial-welcome")})
+}
+
 func registrationReceipt(operation, group id.ID, body []byte, generation, epoch, next uint64) []any {
 	return []any{operation, group, registrationHash(body), generation, epoch, next}
 }
@@ -78,9 +83,9 @@ func TestRegisterBotGroupPostsExactPendingBodyAndAcceptsNewOrReplay(t *testing.T
 	}
 }
 
-func TestRegisterBotGroupWithAdmissionRequestPostsExactVersionedShape(t *testing.T) {
+func TestRegisterBotGroupWithAdmissionRequestPostsExactKind3Body(t *testing.T) {
 	installation, operation, admissionRequest, group := testID(21), testID(22), testID(24), testID(23)
-	body := registrationBody(t, group)
+	body := kind3RegistrationBody(t, group)
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/instance" {
 			reply(w, 200, discovery(testID(99)))
@@ -99,12 +104,51 @@ func TestRegisterBotGroupWithAdmissionRequestPostsExactVersionedShape(t *testing
 		if !ok || !bytes.Equal(gotBody, body) {
 			t.Errorf("registration body = %x, want exact %x", gotBody, body)
 		}
-		reply(w, http.StatusBadRequest, cbor(t, []any{uint64(1), "E_INVALID_REQUEST", "kind-3 registration is refused"}))
+		reply(w, http.StatusCreated, registrationReceipt(operation, group, body, 17, 9, 1))
 	}, time.Second)
 	s, _ := c.Session("device-token")
-	_, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), installation, operation, 17, body, admissionRequest)
-	if err == nil {
-		t.Fatal("kind-3 admission registration unexpectedly succeeded")
+	if _, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), installation, operation, 17, body, admissionRequest); err != nil {
+		t.Fatalf("kind-3 admission registration: %v", err)
+	}
+}
+
+func TestRegisterBotGroupWithAdmissionRequestConflictingReceiptIsUnknown(t *testing.T) {
+	installation, operation, group := testID(21), testID(22), testID(23)
+	body := kind3RegistrationBody(t, group)
+	conflictingBody := kind3RegistrationBody(t, testID(25))
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, 200, discovery(testID(99)))
+			return
+		}
+		reply(w, http.StatusOK, registrationReceipt(operation, group, conflictingBody, 17, 9, 1))
+	}, time.Second)
+	s, _ := c.Session("device-token")
+	_, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), installation, operation, 17, body, testID(24))
+	if !outcomeIs(err, OutcomeUnknown) {
+		t.Fatalf("conflicting receipt error = %v, want unknown outcome", err)
+	}
+}
+
+func TestRegisterBotGroupRequiresBodyShapeToMatchAdmissionKind(t *testing.T) {
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, 200, discovery(testID(99)))
+			return
+		}
+		calls++
+	}, time.Second)
+	s, _ := c.Session("device-token")
+	if _, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), testID(21), testID(22), 17, registrationBody(t, testID(23)), testID(24)); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("four-field kind-3 body error = %v, want ErrInvalidConfig", err)
+	}
+	emptyWelcome := cbor(t, []any{testID(23), []byte("binding"), []byte("info"), []byte("tree"), []byte{}})
+	if _, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), testID(21), testID(22), 17, emptyWelcome, testID(24)); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("empty Welcome error = %v, want ErrInvalidConfig", err)
+	}
+	if calls != 0 {
+		t.Fatalf("sent %d requests for invalid kind-3 bodies", calls)
 	}
 }
 

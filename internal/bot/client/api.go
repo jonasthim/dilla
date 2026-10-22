@@ -865,7 +865,7 @@ func (s *Session) RegisterBotGroup(ctx context.Context, installation, operation 
 }
 
 // RegisterBotGroupWithAdmissionRequest submits a kind-3 registration intent linked to its
-// durable admission request. Kind-3 registration remains subject to the server's refusal gate.
+// durable admission request.
 func (s *Session) RegisterBotGroupWithAdmissionRequest(ctx context.Context, installation, operation id.ID, expectedGeneration uint64, registrationBody []byte, admissionRequestID id.ID) (BotGroupRegistrationReceipt, error) {
 	if admissionRequestID.IsZero() {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
@@ -885,6 +885,9 @@ func (s *Session) registerBotGroup(ctx context.Context, installation, operation 
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
 	}
+	if admissionRequestID != nil && group.bodyFields != 5 || admissionRequestID == nil && group.bodyFields != 4 {
+		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
+	}
 	var requestTuple []any
 	if admissionRequestID == nil {
 		requestTuple = []any{operation, expectedGeneration, registrationBody}
@@ -899,7 +902,7 @@ func (s *Session) registerBotGroup(ctx context.Context, installation, operation 
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, err
 	}
-	return decodeBotGroupRegistrationReceipt(raw, operation, &group, registrationBody, &expectedGeneration)
+	return decodeBotGroupRegistrationReceipt(raw, operation, &group.id, registrationBody, &expectedGeneration)
 }
 
 // BotGroupRegistrationReceipt reads the durable receipt scoped to this
@@ -926,21 +929,32 @@ func (s *Session) BotGroupRegistrationReceipt(ctx context.Context, installation,
 	return decodeBotGroupRegistrationReceipt(raw, operation, nil, nil, nil)
 }
 
-func registrationBodyGroup(body []byte) (id.ID, error) {
+type registrationGroup struct {
+	id         id.ID
+	bodyFields int
+}
+
+func registrationBodyGroup(body []byte) (registrationGroup, error) {
 	var fields []any
-	if len(body) > maxBotGroupRegistrationBody || cborx.Unmarshal(body, &fields) != nil || len(fields) != 4 {
-		return id.ID{}, ErrProtocol
+	if len(body) > maxBotGroupRegistrationBody || cborx.Unmarshal(body, &fields) != nil || len(fields) != 4 && len(fields) != 5 {
+		return registrationGroup{}, ErrProtocol
 	}
 	group, ok := asID(fields[0])
 	if !ok {
-		return id.ID{}, ErrProtocol
+		return registrationGroup{}, ErrProtocol
 	}
 	for _, field := range fields[1:] {
 		if _, ok := asBytes(field, -1); !ok {
-			return id.ID{}, ErrProtocol
+			return registrationGroup{}, ErrProtocol
 		}
 	}
-	return group, nil
+	if len(fields) == 5 {
+		welcome, ok := asBytes(fields[4], -1)
+		if !ok || len(welcome) == 0 {
+			return registrationGroup{}, ErrProtocol
+		}
+	}
+	return registrationGroup{id: group, bodyFields: len(fields)}, nil
 }
 
 func decodeBotGroupRegistrationReceipt(raw []byte, operation id.ID, group *id.ID, body []byte, expectedGeneration *uint64) (BotGroupRegistrationReceipt, error) {
