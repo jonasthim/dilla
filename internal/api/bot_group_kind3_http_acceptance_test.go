@@ -393,6 +393,21 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 		t.Fatalf("AfterRegister ran on kind-3 replay: %d calls", hookCalls.Load())
 	}
 
+	_, _, nonBotToken := seedAPISession(t, h.deps)
+	receiptPath := path + "/" + operation.String()
+	lookup := h.do(t, http.MethodGet, receiptPath, newToken, nil)
+	if lookup.Code != http.StatusOK || !bytes.Equal(lookup.Body.Bytes(), created.Body.Bytes()) {
+		t.Fatalf("receipt GET after proof compaction: %d %x, want exact accepted receipt %x", lookup.Code, lookup.Body.Bytes(), created.Body.Bytes())
+	}
+	unauthorizedLookup := h.do(t, http.MethodGet, receiptPath, nonBotToken, nil)
+	if unauthorizedLookup.Code < 400 {
+		t.Fatalf("non-Bot session read managed registration receipt: %d", unauthorizedLookup.Code)
+	}
+	crossInstallationLookup := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+id.New().String()+"/groups/"+operation.String(), newToken, nil)
+	if crossInstallationLookup.Code < 400 {
+		t.Fatalf("cross-installation receipt GET accepted: %d", crossInstallationLookup.Code)
+	}
+
 	var registrationTuple []any
 	if err := cborx.Unmarshal(fixture["registration"], &registrationTuple); err != nil || len(registrationTuple) != 4 {
 		t.Fatalf("decode fixture registration: %v", err)
@@ -416,7 +431,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if conflictingAdmission.Code < 400 {
 		t.Fatalf("different admission request accepted: %d", conflictingAdmission.Code)
 	}
-	unauthorized := h.do(t, http.MethodPost, path, h.session, body)
+	unauthorized := h.do(t, http.MethodPost, path, nonBotToken, body)
 	if unauthorized.Code < 400 {
 		t.Fatalf("non-Bot session accepted kind-3 registration: %d", unauthorized.Code)
 	}
