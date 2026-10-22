@@ -401,7 +401,7 @@ full contract.
 
 | Area | Routes |
 |---|---|
-| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
+| communities | `POST/GET /v1/communities`, `GET/PATCH/DELETE /v1/communities/{id}`, `GET /v1/communities/{id}/members`, `GET /v1/communities/{id}/members/{user_id}`, `DELETE /v1/communities/{id}/members/{user_id}`, `POST /v1/communities/{id}/join`, `POST /v1/communities/{id}/leave` |
 | channels | `POST/GET /v1/communities/{id}/channels`, `GET/PATCH/DELETE /v1/channels/{id}`, `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}`, `DELETE` the same, `GET /v1/channels/{id}/members`, `PUT/DELETE /v1/channels/{id}/members/{user_id}` |
 | roles | `POST /v1/communities/{id}/roles`, `PATCH/DELETE /v1/roles/{id}`, `PUT/DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` |
 | bans | `PUT /v1/communities/{id}/bans/{user_id}`, `DELETE` the same, `GET /v1/communities/{id}/bans` |
@@ -433,6 +433,7 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/members/{user_id}` | — | `[user_id(bstr16), nick(tstr), username(tstr), display(tstr)]` for a current member; `404 E_NOT_FOUND` if the target is absent. The caller must also be a current member; names are read only from that community's current membership and the user's current account row |
 | `GET /v1/communities/{id}/presence` | — | `[[user_id, status]]` for all current members; membership required; status 0 Offline, 1 Online, 2 Idle, 3 Do Not Disturb |
 | `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |

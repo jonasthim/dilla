@@ -79,6 +79,49 @@ func TestCreateCommunityMakesCreatorOwnerAndMember(t *testing.T) {
 	}
 }
 
+func TestGetCurrentCommunityMemberIsScopedToCallerMembership(t *testing.T) {
+	e := communityEnv(t)
+	_, ownerTok := e.NewUser("owner")
+	community := createCommunity(t, e, ownerTok)
+	member, _ := e.NewUser("member")
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: community, UserID: member, Nick: "Ada", Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + community.String() + "/members/" + member.String()
+	status, body := e.Do(http.MethodGet, path, ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET member = %d (%x), want 200", status, body)
+	}
+	var got struct {
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Nick     string
+		Username string
+		Display  string
+	}
+	mustUnmarshal(t, body, &got)
+	if got.UserID != member || got.Nick != "Ada" || got.Display == "" {
+		t.Fatalf("member profile = %+v", got)
+	}
+	outsider, outsiderTok := e.NewUser("outsider")
+	if status, _ := e.Do(http.MethodGet, path, outsiderTok, nil); status != http.StatusNotFound {
+		t.Errorf("unrelated caller GET member = %d, want 404", status)
+	}
+	missingPath := "/v1/communities/" + community.String() + "/members/" + outsider.String()
+	if status, _ := e.Do(http.MethodGet, missingPath, ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("absent member GET = %d, want 404", status)
+	}
+	otherCommunity := createCommunity(t, e, ownerTok)
+	crossOnly, _ := e.NewUser("crossonly")
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: otherCommunity, UserID: crossOnly, Nick: "Other community name", Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	crossPath := "/v1/communities/" + community.String() + "/members/" + crossOnly.String()
+	if status, _ := e.Do(http.MethodGet, crossPath, ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("member from another community GET = %d, want 404", status)
+	}
+}
+
 func TestMembershipEventsUseOneEpisodeForJoinLeaveAndNewEpisodeForRejoin(t *testing.T) {
 	e := communityEnv(t)
 	owner, ownerTok := e.NewUser("owner")

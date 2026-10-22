@@ -82,9 +82,17 @@ func (s *testSender) SendWelcome(_ context.Context, req SendRequest) (protocol.S
 	return s.receipt, s.err
 }
 
-type testMembership bool
+type testMembers struct {
+	present bool
+	name    string
+	err     error
+	calls   int
+}
 
-func (m testMembership) IsCurrentMember(context.Context, id.ID) (bool, error) { return bool(m), nil }
+func (m *testMembers) ResolveCurrentMember(context.Context, id.ID) (bool, string, error) {
+	m.calls++
+	return m.present, m.name, m.err
+}
 
 type testDestination struct {
 	group id.ID
@@ -100,7 +108,8 @@ func fixture() (*testNative, *testSender, *Processor, id.ID, id.ID, id.ID, id.ID
 	n := &testNative{binding: native.Binding{Instance: testID(5), Community: community, Installation: install}, values: map[string]native.StateValue{}, transactions: map[id.ID][]native.StateChange{}}
 	channel, group := testID(6), testID(12)
 	s := &testSender{receipt: protocol.SendReceipt{OperationID: testID(9), AttemptID: testID(10), CommunityID: community, GroupID: group, Outcome: protocol.ReceiptAccepted, SendResponse: &protocol.OriginalSendResponse{Sequence: 1, FrankingTag: make([]byte, 32), ReceiveTimestamp: 1, Body: mustCBOR([]any{uint64(1), make([]byte, 32), uint64(1)})}}}
-	p, _ := New(n, Options{ChannelID: channel, ExpectedGroupID: group, Destination: testDestination{group: group}, Template: "Welcome {member} to {server} in {channel}", ServerName: "Dilla", ChannelName: "general", MemberName: func(id.ID) string { return "Ada" }, Membership: testMembership(true), Sender: s, Now: func() time.Time { return time.Unix(2_000_000, 0) }})
+	members := &testMembers{present: true, name: "Ada"}
+	p, _ := New(n, Options{ChannelID: channel, ExpectedGroupID: group, Destination: testDestination{group: group}, Template: "Welcome {member} to {server} in {channel}", ServerName: "Dilla", ChannelName: "general", Members: members, Sender: s, Now: func() time.Time { return time.Unix(2_000_000, 0) }})
 	return n, s, p, community, user, episode, install
 }
 func testID(v byte) id.ID   { var out id.ID; out[15] = v; return out }
@@ -147,6 +156,26 @@ func TestConfiguredEventHandlerDistinguishesProvenDisabledFromPending(t *testing
 	}
 	if err = handler(context.Background(), event); err == nil || err.Error() != "configured welcome is pending: authenticated current-membership and member-profile APIs are unavailable" {
 		t.Fatalf("configured join should remain pending, got %v", err)
+	}
+}
+
+func TestConfiguredLeaveAdvancesWithoutWelcomeDestination(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	change, err := ConfigStateChange(Config{ChannelID: testID(6), Template: "hello {member}", ServerName: "Dilla"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = n.StateTransaction(context.Background(), testID(21), []native.StateChange{change}); err != nil {
+		t.Fatal(err)
+	}
+	event := joinEvent(community, user, episode, 1_999_999)
+	event.Kind = protocol.EventMemberLeave
+	if err := ConfiguredEventHandler(n, nil)(context.Background(), event); err != nil {
+		t.Fatalf("leave blocked by unavailable configured channel: %v", err)
+	}
+	p := &Processor{native: n, binding: n.Binding()}
+	if status, err := p.Status(context.Background(), user, episode); err != nil || status != StatusLeft {
+		t.Fatalf("leave status = %d, %v", status, err)
 	}
 }
 
@@ -222,12 +251,38 @@ func TestOldJoinIsMarkedMissedWithoutSend(t *testing.T) {
 
 func TestLeftMemberIsNotWelcomed(t *testing.T) {
 	_, s, p, c, u, e, _ := fixture()
-	p.membership = testMembership(false)
+	p.members = &testMembers{present: false}
 	if err := p.Process(context.Background(), joinEvent(c, u, e, 1_999_999)); err != nil {
 		t.Fatal(err)
 	}
 	if s.calls != 0 {
 		t.Fatal("sent to a member who already left")
+	}
+	if state, err := p.Status(context.Background(), u, e); err != nil || state != StatusLeft {
+		t.Fatalf("status=%v err=%v, want left", state, err)
+	}
+}
+
+func TestMemberProfileFailureLeavesWelcomePendingAndRetries(t *testing.T) {
+	_, s, p, c, u, e, _ := fixture()
+	members := &testMembers{present: true, name: "Ada", err: errors.New("profile API unavailable")}
+	p.members = members
+	ev := joinEvent(c, u, e, 1_999_999)
+	if err := p.Process(context.Background(), ev); err == nil {
+		t.Fatal("profile lookup failure should be retryable")
+	}
+	if members.calls != 1 || s.calls != 0 {
+		t.Fatalf("profile calls=%d sends=%d after failure", members.calls, s.calls)
+	}
+	if state, err := p.Status(context.Background(), u, e); err != nil || state != StatusPending {
+		t.Fatalf("status=%v err=%v, want pending", state, err)
+	}
+	members.err = nil
+	if err := p.Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if members.calls != 2 || s.calls != 1 || s.text[0] != "Welcome Ada to Dilla in general" {
+		t.Fatalf("profile calls=%d sends=%d text=%v", members.calls, s.calls, s.text)
 	}
 }
 

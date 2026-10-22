@@ -90,6 +90,9 @@ func ConfiguredEventHandler(n Native, processor func(context.Context, Config) (*
 		if err != nil {
 			return err
 		}
+		if event.Kind == protocol.EventMemberLeave {
+			return ProcessLeave(ctx, n, event)
+		}
 		if processor == nil {
 			return errors.New("configured welcome is pending: authenticated current-membership and member-profile APIs are unavailable")
 		}

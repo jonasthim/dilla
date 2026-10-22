@@ -90,6 +90,7 @@ func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("PATCH /v1/communities/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/communities/{id}", c.delete)
 	mux.HandleFunc("GET /v1/communities/{id}/members", c.members)
+	mux.HandleFunc("GET /v1/communities/{id}/members/{user_id}", c.member)
 	mux.HandleFunc("GET /v1/communities/{id}/permissions", c.permissions)
 	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}", c.removeMember)
 	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
@@ -785,6 +786,50 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		c.log.Error("encode members", "err", err)
+	}
+}
+
+type currentMemberResp struct {
+	_        struct{} `cbor:",toarray"`
+	UserID   id.ID
+	Nick     string
+	Username string
+	Display  string
+}
+
+// member returns only a current membership. The caller must also be a current
+// community member, so absent targets and non-member callers cannot inspect a
+// user's profile across communities.
+func (c *Communities) member(w http.ResponseWriter, r *http.Request) {
+	row, _, err := c.memberOnly(r)
+	if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	uid, err := server.PathID(r, "user_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	m, err := c.repo.GetMember(r.Context(), row.ID, uid)
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
+		return
+	}
+	if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	u, err := c.repo.GetUser(r.Context(), uid)
+	if errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "member profile temporarily unavailable"))
+		return
+	} else if err != nil {
+		c.fail(w, r, "get member", err)
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, currentMemberResp{UserID: uid, Nick: m.Nick, Username: u.Username, Display: u.Display}); err != nil {
+		c.log.Error("encode member", "err", err)
 	}
 }
 

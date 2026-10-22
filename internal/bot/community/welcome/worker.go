@@ -39,8 +39,8 @@ type Native interface {
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
 }
 
-type Membership interface {
-	IsCurrentMember(context.Context, id.ID) (bool, error)
+type MemberResolver interface {
+	ResolveCurrentMember(context.Context, id.ID) (present bool, name string, err error)
 }
 
 // DestinationResolver verifies that the configured channel is still a valid
@@ -71,8 +71,7 @@ type Options struct {
 	ChannelID                         id.ID
 	ExpectedGroupID                   id.ID
 	Template, ServerName, ChannelName string
-	MemberName                        func(id.ID) string
-	Membership                        Membership
+	Members                           MemberResolver
 	Destination                       DestinationResolver
 	Sender                            Sender
 	Now                               func() time.Time
@@ -102,15 +101,14 @@ type Processor struct {
 	channel                           id.ID
 	expectedGroup                     id.ID
 	template, serverName, channelName string
-	memberName                        func(id.ID) string
-	membership                        Membership
+	members                           MemberResolver
 	destination                       DestinationResolver
 	sender                            Sender
 	now                               func() time.Time
 }
 
 func New(n Native, options Options) (*Processor, error) {
-	if n == nil || options.Membership == nil || options.Destination == nil || options.Sender == nil || options.ChannelID.IsZero() || options.ExpectedGroupID.IsZero() || options.MemberName == nil {
+	if n == nil || options.Members == nil || options.Destination == nil || options.Sender == nil || options.ChannelID.IsZero() || options.ExpectedGroupID.IsZero() {
 		return nil, errors.New("missing welcome dependency")
 	}
 	b := n.Binding()
@@ -123,7 +121,20 @@ func New(n Native, options Options) (*Processor, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Processor{native: n, binding: b, channel: options.ChannelID, expectedGroup: options.ExpectedGroupID, template: options.Template, serverName: options.ServerName, channelName: options.ChannelName, memberName: options.MemberName, membership: options.Membership, destination: options.Destination, sender: options.Sender, now: options.Now}, nil
+	return &Processor{native: n, binding: b, channel: options.ChannelID, expectedGroup: options.ExpectedGroupID, template: options.Template, serverName: options.ServerName, channelName: options.ChannelName, members: options.Members, destination: options.Destination, sender: options.Sender, now: options.Now}, nil
+}
+
+// ProcessLeave records a membership departure without resolving a welcome
+// destination. A deleted channel must not hold the structural event cursor.
+func ProcessLeave(ctx context.Context, n Native, event protocol.Event) error {
+	if n == nil || event.Kind != protocol.EventMemberLeave {
+		return errors.New("invalid welcome leave")
+	}
+	binding := n.Binding()
+	if binding.Instance.IsZero() || binding.Community.IsZero() || binding.Installation.IsZero() {
+		return errors.New("invalid welcome installation binding")
+	}
+	return (&Processor{native: n, binding: binding}).Process(ctx, event)
 }
 
 // Preview substitutes only the three supported references and bounds both the
@@ -258,14 +269,13 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 	if group.IsZero() || group != p.expectedGroup {
 		return errors.New("welcome channel destination is missing or changed")
 	}
-	member, err := p.membership.IsCurrentMember(ctx, user)
+	member, name, err := p.members.ResolveCurrentMember(ctx, user)
 	if err != nil {
 		return err
 	}
 	if !member {
 		return p.save(ctx, key, revision, episode{Status: StatusLeft, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
 	}
-	name := p.memberName(user)
 	text, err := Preview(p.template, name, p.serverName, p.channelName)
 	if err != nil {
 		return err
