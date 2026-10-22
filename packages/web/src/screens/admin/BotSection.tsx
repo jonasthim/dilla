@@ -15,6 +15,8 @@ type Phase = 'idle' | 'stepup';
 type StepUpPurpose = 'bot' | 'spotify';
 type JoinRoleSetting = { roleId: string | null; installationId: string };
 const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
+const BOT_STATUS_POLL_INTERVAL_MS = 2_000;
+const BOT_STATUS_POLL_LIMIT = 30;
 
 const CAPABILITY_OPTIONS = [
   { name: 'music', bit: 1 << 0, permission: null, requirement: 'music' },
@@ -60,12 +62,15 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const [selectedCapabilities, setSelectedCapabilities] = useState(0);
   const [editingCapabilities, setEditingCapabilities] = useState(false);
+  const editingCapabilitiesRef = useRef(false);
   const readGeneration = useRef(0);
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
 
   useEffect(() => {
     const generation = ++readGeneration.current;
+    let canceled = false;
+    let statusTimer: number | undefined;
     setInstallation(null);
     setJoinRole(null);
     setJoinRoleValue('');
@@ -76,14 +81,40 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setPhase('idle');
     setSelectedCapabilities(0);
     setEditingCapabilities(false);
+    editingCapabilitiesRef.current = false;
+    const scheduleStatusRefresh = (attempt: number): void => {
+      if (canceled || attempt >= BOT_STATUS_POLL_LIMIT) return;
+      statusTimer = window.setTimeout(() => {
+        statusTimer = undefined;
+        if (canceled || generation !== readGeneration.current) return;
+        void client.call({ m: 'getBotInstallation', communityId }).then(value => {
+          if (canceled || generation !== readGeneration.current) return;
+          const next = value as Installation | null;
+          if (next !== null && next.communityId !== communityId) return;
+          if (editingCapabilitiesRef.current) {
+            // Keep the edit's revision and mask together. If the server changed
+            // capabilities meanwhile, saving with this older revision must conflict.
+            setInstallation(current => current === null || next === null ? next : { ...current, state: next.state });
+          } else {
+            setInstallation(next);
+            setSelectedCapabilities(next?.capabilities ?? 0);
+          }
+          if (next !== null && next.state <= 2) scheduleStatusRefresh(attempt + 1);
+        }).catch(() => {
+          if (!canceled && generation === readGeneration.current) scheduleStatusRefresh(attempt + 1);
+        });
+      }, BOT_STATUS_POLL_INTERVAL_MS);
+    };
     void client.call({ m: 'getBotInstallation', communityId }).then(value => {
-      if (generation !== readGeneration.current) return;
+      if (canceled || generation !== readGeneration.current) return;
       const loadedInstallation = value as Installation | null;
+      if (loadedInstallation !== null && loadedInstallation.communityId !== communityId) return;
       setInstallation(loadedInstallation);
       setSelectedCapabilities(loadedInstallation?.capabilities ?? 0);
       setLoadedFor(communityId);
+      if (loadedInstallation !== null && loadedInstallation.state <= 2) scheduleStatusRefresh(0);
     }).catch((e: unknown) => {
-      if (generation !== readGeneration.current) return;
+      if (canceled || generation !== readGeneration.current) return;
       setError(errorMessage(errorOf(e)));
       setLoadedFor(communityId);
     });
@@ -99,6 +130,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       setJoinRoleLoadedFor(communityId);
     });
     void client.call({ m: 'refreshFactors' }).catch(() => undefined);
+    return () => {
+      canceled = true;
+      if (statusTimer !== undefined) window.clearTimeout(statusTimer);
+    };
   }, [client, communityId]);
 
   const current = loadedFor === communityId;
@@ -124,6 +159,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       setInstallation(updatedInstallation);
       setSelectedCapabilities(updatedInstallation.capabilities);
       setEditingCapabilities(false);
+      editingCapabilitiesRef.current = false;
       announce(currentInstallation === null || currentInstallation.state === 4
         ? t('admin.bot.enabledNotice') : t('admin.bot.capabilities.updated'));
     }).catch((e: unknown) => { if (generation === readGeneration.current) setError(errorMessage(errorOf(e))); })
@@ -231,7 +267,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
         </SettingsRow>
       ) : null}
       {canEditInstallationCapabilities && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
-        onClick={() => setEditingCapabilities(true)}>{t('admin.bot.capabilities.edit')}</Button> : null}
+        onClick={() => { editingCapabilitiesRef.current = true; setEditingCapabilities(true); }}>{t('admin.bot.capabilities.edit')}</Button> : null}
       {showCapabilitySelection ? (
         <fieldset aria-describedby={`${base}-capability-help`}>
           <legend>{t('admin.bot.capabilities.select')}</legend>
@@ -263,6 +299,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
             <Button aria-disabled={busy || undefined} onClick={() => {
               setSelectedCapabilities(currentInstallation?.capabilities ?? 0);
               setEditingCapabilities(false);
+              editingCapabilitiesRef.current = false;
             }}>{t('admin.bot.capabilities.cancel')}</Button>
           </div> : null}
         </fieldset>

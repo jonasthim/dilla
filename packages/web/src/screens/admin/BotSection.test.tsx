@@ -308,6 +308,66 @@ describe('the server bot settings', () => {
     expect(document.activeElement).toBeInstanceOf(HTMLElement);
   });
 
+  it('refreshes pending and joining status until Ready, then stops polling', async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = { ...ROW, state: 0 as const };
+      const { fake } = setup(initial);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
+      let polls = 0;
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') {
+          polls += 1;
+          return Promise.resolve(polls === 1 ? { ...initial, state: 2 } : { ...initial, state: 3, revision: '3', userId: '77'.repeat(16) });
+        }
+        return Promise.resolve(null);
+      };
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.joining']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fake.callsOf('getBotInstallation')).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending community poll after switching settings to another community', async () => {
+    vi.useFakeTimers();
+    try {
+      const communityB = 'c3'.repeat(16);
+      const rowA = { ...ROW, state: 0 as const };
+      const rowB = { ...ROW, communityId: communityB, state: 3 as const, revision: '9', userId: '99'.repeat(16) };
+      const fake = new FakeClient();
+      fake.set('account', account());
+      fake.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
+      fake.set('communities', [{ id: SERVER, name: 'A', owner: ME.id }, { id: communityB, name: 'B', owner: ME.id }]);
+      fake.set(`permissions:${SERVER}`, ACCESS);
+      fake.set(`permissions:${communityB}`, ACCESS);
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') return Promise.resolve(command.communityId === SERVER ? rowA : rowB);
+        return Promise.resolve(null);
+      };
+      const announce = vi.fn();
+      const view = render(<div className="d-root"><CoreProvider client={fake}>
+        <ServerSettings communityId={SERVER} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
+      </CoreProvider></div>);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
+      view.rerender(<div className="d-root"><CoreProvider client={fake}>
+        <ServerSettings communityId={communityB} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
+      </CoreProvider></div>);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('disables the bot using the current revision and announces the returned state', async () => {
     const { fake, user, announce } = setup({ ...ROW, state: 3, revision: '8', userId: '77'.repeat(16) });
     expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
