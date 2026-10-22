@@ -12,7 +12,7 @@ import { CALL_IDLE, type CallJoinResult, type CallKeys, type CallPhase, type Cal
 import type { FromWorker } from '../worker/protocol';
 import { joinCall, JoinRefused, type JoinRoutes } from './join';
 import { Rings } from './ring';
-import { statusOf, sweepStaleCalls } from './sweep';
+import { HOLD_MS, holdRuns, statusOf, sweepStaleCalls } from './sweep';
 import { VoiceBook, type VoiceRoutes } from './voice';
 
 /** L-TS-56 step 5: a fresh leaf secret every hour of a call, and a conflicted rotation tried again a minute later. */
@@ -25,10 +25,7 @@ export const CALL_ROTATE_RETRIES = 5;
 export const WAIT_LIST_MS = 10_000;
 /** web3.7 3a-client: a join waits at most this long for the boot sweep of leftover call groups (calls/sweep.ts). */
 export const SWEEP_JOIN_WAIT_MS = 5000;
-/** UP6 (R-UP6): how long a held call group is kept for a resume: the page's restore window (RESTORE_WAIT_MS, 120 s,
- *  packages/web useCall) plus 60 s. Wall-clock, so never trusted alone: an expired hold is acted on only once the
- *  instance answers, and a resume after it is still tried (the instance's leaf check decides). */
-export const HOLD_MS = 120_000 + 60_000;
+export { HOLD_MS };
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
   | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
@@ -568,7 +565,9 @@ export class CallController {
 
   /** `lost` (WB client I3): the page's room ended on its own; the call ends in phase removed (E_DISCONNECTED), so the
    *  page and every other reader see a defined end rather than a silent idle. */
-  async leave(blocked = false, lost = false): Promise<null> {
+  /** `person` (UP6): the person's own leave or switch. With no live call and no join, it abandons a held call group
+   *  (callRelease: its self-Remove); a page's pagehide never does (the update reload holds through it). */
+  async leave(blocked = false, lost = false, person = false): Promise<null> {
     // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
     const joining = this.joining;
     if (joining !== null && this.live === null) {
@@ -577,6 +576,7 @@ export class CallController {
       return null;
     }
     const live = this.live;
+    if (live === null && person && this.held !== null) await this.release();
     if (live === null) {
       // Task 8b review I1: the page's leave after the worker's own blocked or removed end keeps that phase, with its error
       // and changedUser (plan :403, "stays blocked when leaving because of a block"); only a live call's leave idles.
@@ -656,13 +656,14 @@ export class CallController {
     this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) });
   }
 
-  private expired(held: Held): boolean { return this.deps.now() >= held.until; }
+  /** A hold whose `until` has passed, or lies beyond the longest hold (the wall clock stepped back): acted on as expired. */
+  private expired(held: Held): boolean { return !holdRuns(held.until, this.deps.now()); }
   private isHeld(groupId: Id): boolean { return this.held !== null && toHex(this.held.groupId) === toHex(groupId); }
 
   private armExpiry(held: Held): void {
     if (held.timer !== null) this.deps.clearTimeout(held.timer);
     held.timer = this.deps.setTimeout(() => { held.timer = null; if (this.held === held) this.expireHeld(); },
-      Math.max(0, held.until - this.deps.now()));
+      Math.max(0, Math.min(held.until - this.deps.now(), HOLD_MS)));
   }
 
   /** The hold ends without anything sent; the marker goes. */
@@ -739,7 +740,9 @@ export class CallController {
     const keep = parseKeep(raw);
     let row = null;
     try { row = keep === null ? null : core.groupRow(fromHex(keep.groupId)); } catch { row = null; }
-    if (keep === null || row?.kind !== 1 || row.state !== 2 || toHex(row.targetId) !== keep.channelId) {
+    // An `until` beyond the longest hold that can have been made now (the clock stepped back since, or a forged row) is
+    // invalid: the marker goes and the boot sweep sweeps the group as any leftover.
+    if (keep === null || keep.until > this.deps.now() + HOLD_MS || row?.kind !== 1 || row.state !== 2 || toHex(row.targetId) !== keep.channelId) {
       try { core.settingDelete(CALL_KEEP_KEY); } catch { /* read again at the next boot */ }
       return;
     }

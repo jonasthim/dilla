@@ -2112,6 +2112,8 @@ describe('a room that ended on its own (wb-client I3)', () => {
 
 describe('a held call (UP6, R-UP6)', () => {
   const LOST = { m: 'callLeave', reason: 'lost' } as const;
+  /** The harness's clocks start here (ManualClock). */
+  const START = 1_700_000_000_000;
   const callRoutes = (w: World): string[] => w.server.routes().filter((r) => r !== 'GET device list' && r !== 'GET members');
   const count = (w: World, route: string): number => w.server.routes().filter((r) => r === route).length;
   const coreCalls = (w: World, m: string, g: Id): number => w.model.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
@@ -2297,7 +2299,7 @@ describe('a held call (UP6, R-UP6)', () => {
   }
 
   it('an update reload: the boot sweep spares the kept group, and the join resumes it', async () => {
-    const seed = reloaded(Number.MAX_SAFE_INTEGER);
+    const seed = reloaded(START + 60_000);
     const w = await harness({ voiceChannel: true, before: seed.before });
     await settled(w, 8);
     expect(count(w, 'POST proposal')).toBe(0);
@@ -2307,6 +2309,69 @@ describe('a held call (UP6, R-UP6)', () => {
     expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
     expect(r).toMatchObject({ groupId: toHex(seed.group()), resumed: true, expired: false });
     expect(marker(w)).toBeUndefined();
+  });
+
+  it('a marker whose until lies beyond the longest hold (the clock stepped back since it was written) is invalid: swept', async () => {
+    // Written at START + 60 s for a hold of HOLD_MS, then the wall clock went back an hour: until > now + HOLD_MS.
+    const seed = reloaded(START + 60_000 + HOLD_MS + 3_600_000);
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    for (let i = 0; i < 20 && count(w, 'POST proposal') === 0; i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(seed.group())?.state).toBe(4);
+    expect(marker(w)).toBeUndefined();
+  });
+
+  it('a held call whose until the wall clock outruns backwards is acted on as expired', async () => {
+    const w = await joined();
+    await w.call({ m: 'callHold', channelId: w.voice });
+    w.server.reset();
+    // The clock steps back an hour: until is now beyond now + HOLD_MS; the next ready acts on the hold.
+    w.wall.skew = -3_600_000;
+    w.reconnect();
+    for (let i = 0; i < 20 && count(w, 'POST proposal') === 0; i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(marker(w)).toBeUndefined();
+  });
+
+  it('the boot race the other way: the expired marker\'s self-Remove lands before the restore join, which then joins afresh', async () => {
+    const seed = reloaded(0);
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    for (let i = 0; i < 20 && count(w, 'POST proposal') === 0; i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(seed.group())?.state).toBe(4);
+    // The instance's guard 1 while that Remove stands (the model's flag for it).
+    w.ds.removeTarget.add(toHex(ME.device));
+    w.server.reset();
+    const id = w.send(JOIN(w));
+    for (let t = 0; t < 6_000 && w.ret(id) === undefined; t += 1_000) { await settle(); await w.clock.advance(1_000); }
+    // The rejoin waits for its own Remove (E_REMOVE_PENDING), never resumes; bob commits it, and the join goes on.
+    expect(w.ret(id)).toBeUndefined();
+    expect(w.server.routes()).toContain('POST resync');
+    expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+    w.ds.peerCommit(seed.group(), PEER);
+    w.ds.removeTarget.delete(toHex(ME.device));
+    for (let t = 0; t < 10_000 && w.ret(id) === undefined; t += 1_000) { await settle(); await w.clock.advance(1_000); }
+    const r = w.ret(id);
+    expect(r).toMatchObject({ ok: true });
+    expect((r as { value: CallJoinResult }).value.resumed).toBeUndefined();
+    expect(w.slice('call').phase).toBe('in');
+    expect(count(w, 'POST calls')).toBe(1);
+  });
+
+  it("a person's leave while held (phase removed) abandons the hold with one self-Remove; a pagehide never does", async () => {
+    for (const reason of ['user', 'switch'] as const) {
+      const w = await joined();
+      await w.call(LOST);
+      w.server.reset();
+      await w.call({ m: 'callLeave', reason: 'pagehide' });
+      expect(count(w, 'POST proposal')).toBe(0);
+      await w.call({ m: 'callLeave', reason });
+      expect(count(w, 'POST proposal')).toBe(1);
+      expect(w.model.group(w.callGroup)?.state).toBe(4);
+      expect(w.slice('call')).toMatchObject({ phase: 'removed' });
+      await w.call({ m: 'callLeave', reason });
+      expect(count(w, 'POST proposal')).toBe(1);
+    }
   });
 
   it('a reload without a marker still sweeps the call group (reload.spec)', async () => {

@@ -7,7 +7,7 @@ import { DillaHttpError } from '../http/errors';
 import type { ChannelCall } from '../http/routes';
 import { ManualClock, settle } from '../sync/testing/model';
 import { CallController, SWEEP_JOIN_WAIT_MS, type CallDeps } from './controller';
-import { sweepStaleCalls, type SweepDeps } from './sweep';
+import { HOLD_MS, sweepStaleCalls, type SweepDeps } from './sweep';
 
 const id = (b: number, n = 1): Id => { const x = new Uint8Array(16); x[0] = b; x[15] = n; return x; };
 const ME = { userId: id(0x11), deviceId: id(0x12) };
@@ -208,6 +208,21 @@ describe('sweepStaleCalls (web3.7 3a-client, R32)', () => {
     await sweepStaleCalls(f.deps);
     expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
     expect(f.core.groupRow(G)?.state).toBe(2);
+  });
+
+  it('UP6: a kept group whose until lies beyond now + HOLD_MS (the clock stepped back) is not spared', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    withOthers(f);
+    f.deps.keep = () => ({ groupId: G, until: 1_000 + HOLD_MS + 1 });
+    f.deps.now = () => 1_000;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, LEAVE, FORGET]);
+    f.core.hold(G2, CHANNEL2);
+    f.deps.keep = () => ({ groupId: G2, until: 1_000 + HOLD_MS });
+    f.core.log.length = 0;
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([]);
   });
 
   it('UP6: a sweep of only one group leaves every other leftover as it is', async () => {

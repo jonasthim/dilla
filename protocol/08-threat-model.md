@@ -119,9 +119,10 @@ Stated plainly in the product's documentation and onboarding:
   call is told to clear its keys and then terminated, so no key in it is used after the failure; its
   memory is released by the browser, not zeroed.
 - A client that lost its call's room, or reloads into a new build mid-call, holds its `call` group
-  leaf for a resume (`01` § Group kinds, a held leaf) instead of sending its self-`Remove`. It keeps
-  only the current epoch's secrets it already holds; nothing new is derived for it and no epoch is
-  opened to it, and media needs an SFU token that only a current leaf gets. The bound is the
+  leaf for a resume (`01` § Group kinds, a held leaf) instead of sending its self-`Remove`. Until the
+  room sweep's `Remove` is committed the leaf is a member: commits other members make meanwhile carry
+  path secrets to it and its catch-up derives those epochs, as for a crashed tab's leaf. Media still
+  needs an SFU token, which only a current leaf gets. The bound is the
   instance's room sweep alone, the same as for a crashed tab: about 30 to 60 seconds after the SFU
   stops seeing the device (plus any time the SFU or the instance is down, when the sweep cannot
   run). The client's hold adds no server-side grace; a returning device whose leaf the sweep

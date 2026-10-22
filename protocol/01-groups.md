@@ -24,8 +24,11 @@ membership, so a device that has rejoined the group since is never removed (`09`
 
 A client MAY hold its `call` group leaf without a live room for a bounded time (a held leaf): when
 its room is lost with `E_DISCONNECTED`, or when the page reloads into a new build. It then sends no
-self-`Remove` and keeps the group state and the current epoch's secrets it already holds; nothing new
-is derived for it and no epoch is opened to it. The held leaf is bounded by the room sweep above
+self-`Remove` and keeps the group state. The leaf stays a member until the room sweep's `Remove` is
+committed, so a commit another member makes before then (a rotation, an Add) carries path secrets to
+it, and the client's catch-up derives those epochs, exactly as for a crashed tab's leaf. Media in any
+epoch still needs an SFU token, which the instance mints only for a current leaf. The held leaf is
+bounded by the room sweep above
 alone: the client's hold never extends the instance's tolerance, so the leaf is removed about 30 to
 60 seconds after the SFU stops seeing the device, as for a crashed tab (while the SFU or the instance
 is down the sweep cannot run, so the bound is that downtime plus the same 60 seconds). The client's
@@ -38,9 +41,11 @@ longer in the current tree (removed) and a group whose epoch the instance does n
 names another group (or none) for the channel, the client forgets the group without a `Remove` and
 joins afresh by external commit. Forgetting without a `Remove` is safe because the room sweep is
 authoritative: the instance proposes the `Remove` of an absent leaf itself, and the next commit
-rotates the epoch. Every other way a client abandons a held leaf (the person's leave, a release, the
-hold's end, a sign-out or hand-over, a boot that finds no unexpired hold naming the group) sends
-exactly one self-`Remove`.
+rotates the epoch. Every other way a client abandons a held leaf (the person's leave or switch while
+the room is lost, giving up on the restore, the hold's end, a sign-out or hand-over, a boot that finds
+no hold naming the group, or one whose `until` has passed or lies beyond the longest hold from now)
+sends exactly one self-`Remove`. A page's own unload (`pagehide`) does not: an update reload holds
+through it.
 
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the

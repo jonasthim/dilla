@@ -1201,7 +1201,7 @@ export class Controller {
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
       case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
-      case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
+      case 'callLeave': return this.calls.leave(false, command.reason === 'lost', command.reason === 'user' || command.reason === 'switch');
       case 'callHold': return this.calls.callHold(command.channelId);
       case 'callRelease': return this.calls.release();
       case 'callShare': return this.calls.share(command.on);

@@ -33,6 +33,15 @@ export interface SweepDeps {
   only?: Id;
 }
 
+/** UP6 (R-UP6): how long a held call group is kept for a resume: the page's restore window (RESTORE_WAIT_MS, 120 s,
+ *  packages/web useCall) plus 60 s. Wall-clock, so never trusted alone: an expired hold is acted on only once the
+ *  instance answers, and a resume after it is still tried (the instance's leaf check decides). */
+export const HOLD_MS = 120_000 + 60_000;
+
+/** Whether a hold's `until` still runs at `now`: not passed, and not beyond the longest hold that can have been made at
+ *  `now` (a later `until` was written before the wall clock stepped back, or is forged: it is invalid, never kept). */
+export const holdRuns = (until: number, now: number): boolean => now < until && until <= now + HOLD_MS;
+
 /** The status of a failed request (0: the instance could not be reached), else null. */
 export const statusOf = (e: unknown): number | null => (e instanceof DillaHttpError ? e.status : null);
 /** A request the sweep's signal cancelled. */
@@ -93,7 +102,7 @@ function live(d: SweepDeps, core: CorePort, groupId: Id): boolean {
   // UP6: an unexpired hold is spared; an expired one is swept, and only after the instance answered its call read (an
   // offline read returns before anything is posted or forgotten).
   const keep = d.keep?.() ?? null;
-  if (keep !== null && toHex(keep.groupId) === toHex(groupId) && (d.now?.() ?? Date.now()) < keep.until) return false;
+  if (keep !== null && toHex(keep.groupId) === toHex(groupId) && holdRuns(keep.until, d.now?.() ?? Date.now())) return false;
   try { return core.groupRow(groupId)?.state === 2; } catch { return false; }
 }
 

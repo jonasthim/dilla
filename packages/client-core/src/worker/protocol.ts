@@ -111,7 +111,9 @@ export type Command =
   | { m: 'callLeave'; reason: 'user' | 'pagehide' | 'switch' | 'lost' }                  // → null
   // UP6 (R-UP6): 'lost' above holds the call group (no self-Remove) for a resume by the next callJoin of the channel.
   // callHold: the update reload; the live call of the channel is held the same way and the callKeep marker persisted,
-  // so the next page's boot sweep spares the group. callRelease: the hold is abandoned (its self-Remove and forget).
+  // so the next page's boot sweep spares the group. callRelease: the hold is abandoned (its self-Remove and forget);
+  // the page sends it when it gives up on the restore. A callLeave 'user' or 'switch' with no live call abandons a hold
+  // the same way (the person's leave in phase removed); 'pagehide' never does.
   | { m: 'callHold'; channelId: string }                                                 // → null
   | { m: 'callRelease' }                                                                 // → null
   | { m: 'callShare'; on: boolean }                                                      // → null
