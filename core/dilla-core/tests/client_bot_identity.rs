@@ -14,6 +14,10 @@ const INSTANCE: [u8; 16] = [0x11; 16];
 const COMMUNITY: [u8; 16] = [0x22; 16];
 const INSTALLATION: [u8; 16] = [0x33; 16];
 const USER: [u8; 16] = [0x44; 16];
+const INSTANCE_SIGNER_PUB: [u8; 32] = [
+    0xdb, 0x99, 0x5f, 0xe2, 0x51, 0x69, 0xd1, 0x41, 0xca, 0xb9, 0xbb, 0xba, 0x92, 0xba, 0xa0, 0x1f,
+    0x9f, 0x2e, 0x1e, 0xce, 0x7d, 0xf4, 0xcb, 0x2a, 0xc0, 0x51, 0x90, 0xf3, 0x7f, 0xcc, 0x1f, 0x9d,
+];
 
 #[test]
 fn bot_instance_key_is_pinned_and_rechecked_after_reopen() {
@@ -100,7 +104,12 @@ fn bot_binding_validation_requires_ready_native_identity_and_exact_store_binding
     let mut human = ClientCore::open(human_connection).expect("open human core");
     human.signup_begin(&INSTANCE).expect("human signup");
     human
-        .signup_complete(&[0x45; 16], "ordinary-user", 1_800_000_000)
+        .signup_complete(
+            &[0x45; 16],
+            "ordinary-user",
+            1_800_000_000,
+            &INSTANCE_SIGNER_PUB,
+        )
         .expect("human enrollment");
     assert!(
         human
@@ -354,7 +363,7 @@ fn human_signup_cannot_adopt_bot_pending_material() {
         "E_CORE_STATE"
     );
     assert_eq!(
-        core.signup_complete(&USER, "human", 1)
+        core.signup_complete(&USER, "human", 1, &INSTANCE_SIGNER_PUB)
             .expect_err("human cannot finish bot pending")
             .code,
         "E_CORE_STATE"

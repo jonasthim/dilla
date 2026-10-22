@@ -49,8 +49,9 @@ describe('Signup', () => {
     if (userId === null) throw new Error('no user id');
     const listPath = `/v1/users/${toHex(userId)}/device-list`;
     // web3.6 C2: POST /v1/keypackages is refused while the account owes a factor; enterReady sends them past its gate.
-    expect(server.paths()).toEqual(['POST /v1/accounts', `PUT ${listPath}`]);
-    expect(server.log.map((r) => r.auth)).toEqual([null, 'tok-1']);
+    expect(server.paths()).toEqual(['POST /v1/accounts', 'GET /v1/instance', `PUT ${listPath}`]);
+    expect(server.log.map((r) => r.auth)).toEqual([null, 'tok-1', 'tok-1']);
+    expect(core.instanceSignerPub).toEqual(server.externalSenderPub);
     const steps = ['signupRequest', 'sessionStore', 'signupComplete', 'deviceListPublished', 'keyPackages'];
     expect(core.calls).not.toContain('keyPackages');
     expect(core.calls.filter((c) => steps.includes(c))).toEqual(steps.slice(0, 4));
@@ -59,7 +60,7 @@ describe('Signup', () => {
     expect(account[6]).toBeNull();
     expect(core.identity()).toEqual({ phase: 2, instanceId: INSTANCE, userId, deviceId: DEVICE, username: 'ada', listPublished: true });
     expect(core.session()).toEqual({ token: 'tok-1', expires: BigInt(NOW_S + SESSION_S), idleExpires: BigInt(NOW_S + SESSION_S) });
-    const list = arr(decode(server.log[1]?.body ?? new Uint8Array()), 4);
+    const list = arr(decode(server.log[2]?.body ?? new Uint8Array()), 4);
     expect(decode(bin(list[1] ?? null))).toEqual(['fake.list', userId, DEVICE, BigInt(NOW_S)]);
     expect(server.keyPackages).toEqual([]);
   });
@@ -77,6 +78,17 @@ describe('Signup', () => {
     expect(server.paths().filter((p) => p.startsWith('PUT'))).toEqual([]);
     await signup.submit({ ...INPUT, username: 'grace' });
     expect(core.identity()).toMatchObject({ phase: 2, username: 'grace', listPublished: true });
+  });
+
+  it('does not pin discovery for another instance after account creation', async () => {
+    const { signup, core, server } = setup();
+    signup.begin(INSTANCE);
+    server.instanceId[0] = 0xac;
+    await expect(signup.submit(INPUT)).rejects.toMatchObject({ code: 'E_CORE_STATE' });
+    expect(core.identity().phase).toBe(1);
+    expect(core.instanceSignerPub).toBeNull();
+    expect(server.paths()).toEqual(['POST /v1/accounts', 'GET /v1/instance']);
+    expect(server.log[1]?.auth).toBe('tok-1');
   });
 
   it('never repeats a registration blindly after a network failure', async () => {
@@ -100,8 +112,9 @@ describe('Signup', () => {
     })();
     expect(await signup.resume()).toBe(2);
     expect(core.identity()).toEqual({ phase: 2, instanceId: INSTANCE, userId, deviceId: DEVICE, username: 'ada', listPublished: true });
-    expect(server.paths().slice(0, 3)).toEqual([`POST /v1/devices/${DEV_HEX}/sessions/challenge`, `POST /v1/devices/${DEV_HEX}/sessions`,
-      'GET /v1/accounts/me']);
+    expect(server.paths().slice(0, 4)).toEqual([`POST /v1/devices/${DEV_HEX}/sessions/challenge`, `POST /v1/devices/${DEV_HEX}/sessions`,
+      'GET /v1/accounts/me', 'GET /v1/instance']);
+    expect(server.log[3]?.auth).toBeTruthy();
     expect(server.deviceLists.get(toHex(userId))?.version).toBe(1n);
     expect(server.keyPackages).toEqual([]);
   });

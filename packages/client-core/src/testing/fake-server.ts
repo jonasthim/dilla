@@ -86,6 +86,8 @@ const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length &&
 
 /** An in-memory model of the account routes of dillad, answering through fetch. */
 export class FakeServer {
+  readonly instanceId = new Uint8Array(16).fill(0xab);
+  readonly externalSenderPub = fromHex('db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d');
   readonly log: LoggedRequest[] = [];
   readonly invites = new Set<string>(['INVITE']);
   readonly accounts = new Map<string, Account>();
@@ -408,6 +410,10 @@ export class FakeServer {
 
   private route(r: LoggedRequest): Response {
     const line = `${r.method} ${r.path}`;
+    if (line === 'GET /v1/instance') {
+      return reply(200, [[3, 2], [1], [1], this.instanceId, 1n, 'dilla.test', 0, [0], 1n,
+        new Uint8Array(16).fill(0x17), this.externalSenderPub]);
+    }
     if (line === 'POST /v1/accounts') return this.createAccount(r.body);
     if (line === 'POST /v1/auth/password/login') {
       const body = arr(decode(r.body), 2);

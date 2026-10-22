@@ -15,9 +15,107 @@ import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
-import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
+import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('checks the persisted instance signer pin on restart before entering ready', async () => {
+    const w = world();
+    await toReady(w);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(1);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+  });
+
+  it('refuses ready when authenticated discovery reports a rotated instance signer', async () => {
+    const w = world();
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+    expect(w.gateway.starts).toBe(0);
+  });
+
+  it('stops reconnect when authenticated discovery no longer matches the pin', async () => {
+    const w = world();
+    await toReady(w);
+    const starts = w.gateway.starts;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
+    await vi.waitFor(() => expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.gateway.starts).toBe(starts);
+    expect(w.gateway.stops).toBeGreaterThan(0);
+  });
+
+  it('retries a discovery outage but rechecks the pin before restarting the socket', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      const reads = w.routes.getInstance.mock.calls.length;
+      w.routes.getInstance.mockRejectedValueOnce(new Error('offline'));
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 1));
+      expect(w.gateway.starts).toBe(starts);
+
+      w.routes.getInstance.mockResolvedValueOnce(INSTANCE);
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 2));
+      expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2);
+      expect(w.gateway.starts).toBe(starts + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed on malformed authenticated instance signer data', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      w.core.instanceSignerKeyMatches.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'weak key'); });
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs * 2);
+      expect(w.gateway.starts).toBe(starts);
+      expect(w.gateway.stops).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks the signer pin before every gateway ticket, including automatic reconnects', async () => {
+    const w = world();
+    await toReady(w);
+    const reads = w.routes.getInstance.mock.calls.length;
+    const tickets = w.routes.postTicket.mock.calls.length;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+
+    await expect(w.gatewayDeps.value!.mintTicket()).rejects.toMatchObject({ code: 'E_CORE_STATE' });
+    expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 1);
+    expect(w.routes.postTicket).toHaveBeenCalledTimes(tickets);
+    expect(w.gateway.stops).toBeGreaterThan(0);
+    expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } });
+  });
+
+  it('does not mint a reconnect ticket while signer discovery is unavailable', async () => {
+    const w = world();
+    await toReady(w);
+    const tickets = w.routes.postTicket.mock.calls.length;
+    w.routes.getInstance.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(w.gatewayDeps.value!.mintTicket()).rejects.toThrow('offline');
+    expect(w.routes.postTicket).toHaveBeenCalledTimes(tickets);
+  });
+
   it('keeps moderation case listing typed but unavailable until an authenticated interaction transport exists', async () => {
     const w = world();
     await toReady(w);

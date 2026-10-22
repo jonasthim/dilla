@@ -1003,6 +1003,9 @@ export class ModelCore implements CorePort {
   identity(): IdentityInfo {
     return { phase: 2, instanceId: null, userId: this.me.user, deviceId: this.me.device, username: 'model', listPublished: true };
   }
+  instanceSignerKeyMatches(): void {
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
   signupBegin(): string {
     throw coreError('E_CORE_STATE', 'not modelled');
   }

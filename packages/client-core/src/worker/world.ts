@@ -251,6 +251,7 @@ export function world(opts: {
     timeline: (): TimelineRow[] => state.rows,
     signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
       encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
+    instanceSignerKeyMatches: vi.fn((_key: Uint8Array): void => {}),
     threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
       const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
       return { root: t.root, rows: t.rows.filter((r) => beforeSeq === 0n || r.seq < beforeSeq).slice(0, limit) };

@@ -111,8 +111,13 @@ fn ready_candidate(user: [u8; 16], username: &str) -> support::Core {
     let mut core = ClientCore::open(conn).expect("open candidate");
     core.signup_begin(&INSTANCE)
         .expect("candidate signup begin");
-    core.signup_complete(&user, username, 1_800_000_000)
-        .expect("candidate signup complete");
+    core.signup_complete(
+        &user,
+        username,
+        1_800_000_000,
+        &support::INSTANCE_SIGNER_PUB,
+    )
+    .expect("candidate signup complete");
     let device = decode_strict(&core.identity().expect("candidate identity"), |d| {
         d.array(6)?;
         d.uint()?;

@@ -32,6 +32,10 @@ use std::sync::{Arc, Mutex};
 use tls_codec::{Deserialize as _, Serialize as _};
 
 pub const INSTANCE: [u8; 16] = [0x11; 16];
+pub const INSTANCE_SIGNER_PUB: [u8; 32] = [
+    0xdb, 0x99, 0x5f, 0xe2, 0x51, 0x69, 0xd1, 0x41, 0xca, 0xb9, 0xbb, 0xba, 0x92, 0xba, 0xa0, 0x1f,
+    0x9f, 0x2e, 0x1e, 0xce, 0x7d, 0xf4, 0xcb, 0x2a, 0xc0, 0x51, 0x90, 0xf3, 0x7f, 0xcc, 0x1f, 0x9d,
+];
 pub const COMMUNITY: [u8; 16] = [0x22; 16];
 pub const CHANNEL: [u8; 16] = [0x33; 16];
 pub const OTHER_CHANNEL: [u8; 16] = [0x99; 16];
@@ -802,7 +806,7 @@ pub fn ready_core(user: u8, username: &str) -> Core {
     let probe = Arc::clone(&conn);
     let mut core = ClientCore::open(conn).expect("open");
     core.signup_begin(&INSTANCE).expect("signup_begin");
-    core.signup_complete(&[user; 16], username, NOW)
+    core.signup_complete(&[user; 16], username, NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     let identity = core.identity().expect("identity");
     let (phase, device) = decode_strict(&identity, |d| {
@@ -2273,7 +2277,7 @@ pub fn ready_core_with_key(user: u8, username: &str) -> (Core, String) {
     let probe = Arc::clone(&conn);
     let mut core = ClientCore::open(conn).expect("open");
     let rk = core.signup_begin(&INSTANCE).expect("signup_begin");
-    core.signup_complete(&[user; 16], username, NOW)
+    core.signup_complete(&[user; 16], username, NOW, &INSTANCE_SIGNER_PUB)
         .expect("signup_complete");
     core.device_list_published().expect("device_list_published");
     let device = device_of(&core);

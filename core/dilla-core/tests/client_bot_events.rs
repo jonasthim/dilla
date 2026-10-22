@@ -3,8 +3,8 @@
 mod client_support;
 
 use client_support::{
-    Instance, MsgRow, RawPeer, Relay, dm_binding, fold_envelope, request, sec_entry, sec_next,
-    text_binding,
+    INSTANCE_SIGNER_PUB, Instance, MsgRow, RawPeer, Relay, dm_binding, fold_envelope, request,
+    sec_entry, sec_next, text_binding,
 };
 use dilla_core::cbor::{Encoder, decode_strict};
 use dilla_core::client::ClientCore;
@@ -248,7 +248,7 @@ fn decode_event_senders(body: &[u8]) -> Vec<(u64, [u8; 16], [u8; 16])> {
 fn human_identity_cannot_read_or_ack_bot_events() {
     let mut core = ClientCore::open(conn()).expect("open");
     core.signup_begin(&INSTANCE).expect("signup");
-    core.signup_complete(&USER, "human", 1_800_000_000)
+    core.signup_complete(&USER, "human", 1_800_000_000, &INSTANCE_SIGNER_PUB)
         .expect("complete");
 
     assert_eq!(

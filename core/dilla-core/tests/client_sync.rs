@@ -1643,7 +1643,7 @@ fn settings_are_bounded_ordered_and_answer_in_every_phase() {
     );
     core.signup_begin(&INSTANCE).expect("phase 1");
     core.setting_put("c", "3").expect("phase 1");
-    core.signup_complete(&[0x42; 16], "alice", NOW)
+    core.signup_complete(&[0x42; 16], "alice", NOW, &INSTANCE_SIGNER_PUB)
         .expect("phase 2");
     core.setting_delete("a").expect("delete");
     core.setting_delete("absent").expect("absent is a no-op");

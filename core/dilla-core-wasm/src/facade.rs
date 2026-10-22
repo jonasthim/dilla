@@ -302,16 +302,25 @@ impl CoreHandle {
         })
         .map(Vec::into_boxed_slice)
     }
-    /// Calls ClientCore::signup_complete; CBOR [1, blob, ssk_signature, prev_hash].
+    /// Calls ClientCore::signup_complete after authenticated instance discovery;
+    /// CBOR [1, blob, ssk_signature, prev_hash].
     pub fn signup_complete(
         &self,
         user_id: &[u8],
         username: &str,
         now: u64,
+        instance_signer_pub: &[u8],
     ) -> Result<Box<[u8]>, JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;
-        self.with_core(|c| c.signup_complete(&user_id, username, now))
+        let instance_signer_pub = js_fixed_arg::<32>("instance_signer_pub", instance_signer_pub)?;
+        self.with_core(|c| c.signup_complete(&user_id, username, now, &instance_signer_pub))
             .map(Vec::into_boxed_slice)
+    }
+    /// Checks authenticated discovery against the enrolled instance signer pin. The key remains
+    /// inside core storage; callers provide only the freshly observed public key.
+    pub fn instance_signer_key_matches(&self, observed_key: &[u8]) -> Result<(), JsError> {
+        let observed_key = js_fixed_arg::<32>("observed_key", observed_key)?;
+        self.with_core(|c| c.instance_signer_key_matches(&observed_key))
     }
     /// Calls ClientCore::signup_reset.
     pub fn signup_reset(&self) -> Result<(), JsError> {

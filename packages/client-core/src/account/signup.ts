@@ -19,7 +19,7 @@ export class Signup {
     const body = core.signupRequest(input.invite, input.username, input.display, input.password);
     const acc = await routes.postAccount(body);
     core.sessionStore({ token: acc.token, expires: acc.expires, idleExpires: acc.expires });
-    core.signupComplete(acc.userId, input.username, this.nowS());
+    core.signupComplete(acc.userId, input.username, this.nowS(), await this.authenticatedInstanceSigner());
     await publishDeviceList(core, routes);
   }
   async resume(): Promise<0 | 2 | 'revoked'> {
@@ -32,9 +32,18 @@ export class Signup {
       return 0;
     }
     const me = await routes.getAccountMe();
-    core.signupComplete(me.userId, me.username, this.nowS());
+    core.signupComplete(me.userId, me.username, this.nowS(), await this.authenticatedInstanceSigner());
     await publishDeviceList(core, routes);
     return 2;
+  }
+  private async authenticatedInstanceSigner(): Promise<Uint8Array> {
+    const { core, routes } = this.deps;
+    const identity = core.identity();
+    const instance = await routes.getInstance();
+    if (identity.instanceId === null || toHex(identity.instanceId) !== toHex(instance.instanceId)) {
+      throw new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match signup');
+    }
+    return instance.externalSenderPub;
   }
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
 }
