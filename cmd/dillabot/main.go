@@ -1,7 +1,7 @@
 //go:build linux
 
-// Command dillabot reconciles managed bot identity, authorized MLS groups and
-// paused music queue metadata. Native kind-3 interaction operations remain unavailable.
+// Command dillabot reconciles managed bot identity, authorized MLS groups,
+// paused music queue metadata, and read-only moderation case listing.
 package main
 
 import (
@@ -26,6 +26,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -34,6 +35,16 @@ import (
 
 const maxConfigBytes = 64 << 10
 const maxCredentialBytes = 4096
+
+func interactionHandlers(authority interface {
+	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
+}, community id.ID, moderationHandlers map[protocol.Operation]service.InteractionHandlerSpec) map[protocol.Operation]service.InteractionHandlerSpec {
+	handlers := service.OverviewInteractions{Authority: authority, CommunityID: community}.Handlers()
+	if cases, ok := moderationHandlers[protocol.OpModerationCases]; ok {
+		handlers[protocol.OpModerationCases] = cases
+	}
+	return handlers
+}
 
 type config struct {
 	BaseURL               string        `toml:"base_url"`
@@ -521,15 +532,24 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
-											var announcementAuthority *service.CommunityActorAuthority
-											announcementAuthority, interactionErr = service.NewCommunityActorAuthority(result.Session, installation.CommunityID, nil)
+											var caseSink *service.ModerationCaseSink
+											caseSink, interactionErr = service.NewModerationCaseSink(nativeClient, nil, time.Now)
+											var caseReader *service.ModerationCaseReader
 											if interactionErr == nil {
-												handlers := runtimeInteractionHandlers(
-													service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID},
-													service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
-												)
-												dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-													handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+												caseReader, interactionErr = service.NewModerationCaseReader(caseSink, result.Session)
+											}
+											if interactionErr == nil {
+												var announcementAuthority *service.CommunityActorAuthority
+												announcementAuthority, interactionErr = service.NewCommunityActorAuthority(result.Session, installation.CommunityID, nil)
+												if interactionErr == nil {
+													handlers := runtimeInteractionHandlers(
+														service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID},
+														service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
+													)
+													handlers[protocol.OpModerationCases] = service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID}.Handlers()[protocol.OpModerationCases]
+													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
+														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+												}
 											}
 										}
 										if interactionErr == nil {

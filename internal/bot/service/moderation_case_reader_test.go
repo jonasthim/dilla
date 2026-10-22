@@ -21,14 +21,17 @@ func (n *countedCaseState) StateScan(ctx context.Context, area uint64, after []b
 }
 
 type caseReadAuthority struct {
-	result  client.ActorAuthority
-	present bool
-	err     error
-	calls   int
+	result    client.ActorAuthority
+	present   bool
+	err       error
+	calls     int
+	community id.ID
+	actor     id.ID
 }
 
-func (a *caseReadAuthority) BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error) {
+func (a *caseReadAuthority) BotActorAuthority(_ context.Context, community, actor id.ID) (client.ActorAuthority, bool, error) {
 	a.calls++
+	a.community, a.actor = community, actor
 	return a.result, a.present, a.err
 }
 

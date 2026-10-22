@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
@@ -103,5 +104,67 @@ func TestModerationInteractionsRemainUnreachableForUnboundInteractionGroups(t *t
 	}
 	if !reader.actor.IsZero() {
 		t.Fatal("case reader was called before native interaction group binding")
+	}
+}
+
+func TestModerationCaseDispatchUsesNativeActorAndHidesExcerptWhenPermissionIsDenied(t *testing.T) {
+	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
+	state.binding.Community = interactionID(2)
+	sink, err := NewModerationCaseSink(state, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := interactionID(6)
+	authority := &caseReadAuthority{present: true} // current permission lookup denies access
+	reader, err := NewModerationCaseReader(sink, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlers := (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers()
+	d, event, binding := interactionFixture(t, handlers)
+	body := interactionBody(t, nil, interactionID(8), protocol.OpModerationCases, nil, nil, []any{uint64(0)})
+	event.Body = &body
+	event.SenderUser = actor
+	got, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionResponse(t, got)
+	if response.Status != interactionStatusInternal || len(response.Data) != 0 {
+		t.Fatalf("denied response = %+v; excerpt data leaked or unexpected status", response)
+	}
+	if authority.calls != 1 || authority.actor != actor || authority.community != binding.Community {
+		t.Fatalf("permission lookup did not use the native sender and bound community: %+v", authority)
+	}
+	if state.scans != 0 {
+		t.Fatalf("denied actor reached encrypted state scan %d times", state.scans)
+	}
+}
+
+func TestModerationCaseDispatchRejectsWrongCommunityBeforePermissionLookup(t *testing.T) {
+	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
+	state.binding.Community = interactionID(2)
+	sink, err := NewModerationCaseSink(state, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &caseReadAuthority{result: client.ActorAuthority{EffectiveBits: uint64(1 << 17)}, present: true}
+	reader, err := NewModerationCaseReader(sink, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, event, _ := interactionFixture(t, (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers())
+	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: interactionID(90), Operation: protocol.OpModerationCases, Args: []any{uint64(0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Body = &body
+	got, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionResponse(t, got)
+	if response.Status != interactionStatusForbidden || len(response.Data) != 0 || authority.calls != 0 || state.scans != 0 {
+		t.Fatalf("wrong-community response=%+v authority=%+v scans=%d", response, authority, state.scans)
 	}
 }
