@@ -715,7 +715,12 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    counts as standing and is a no-op; proposed later, it re-arms the row (no longer withdrawn, still
    withdrawable, issued now) and is fanned out again as a kind-0 row, which the members queue again.
    A device whose membership is gone by the withdrawal (a commit removed it first) gets
-   `403 E_LEAF_NOT_CURRENT` and joins afresh by external commit.
+   `403 E_LEAF_NOT_CURRENT` and joins afresh by external commit. A start that fails after the
+   withdrawal (the token mint, or the entitlement re-read after a relay credential) leaves the
+   `Remove` withdrawn and the device unadmitted; that is bounded, because the device stays absent:
+   the room sweep proposes the same `Remove` again and re-arms it once the 30 seconds have passed,
+   and a device barred meanwhile is re-proposed by the barred-device reconcile, whose `Remove` loses
+   the mark.
    The underlying action is
    retried with a fresh KeyPackage, or dropped if the target leaf is already gone. Before proposing an Add the DS also checks invariant
    4's device-list clause (the device's DSK is in its user's newest signed device list) and leaves

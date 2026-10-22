@@ -1174,8 +1174,12 @@ func (d *DS) unqueueProposal(ctx context.Context, g *mlswasi.PublicGroup, groupI
 
 // proposalRowExists reports whether SQL holds a proposal row with ref at epoch, void or not. A
 // proposal's ref covers its epoch, so the epoch the group is at is the one place to look.
+//
+// A withdrawn row counts (UP6b): the listings leave it out, but the ref stays queued in the guest
+// (correction C3). A failed re-arm of it that unqueued the ref would turn a later commit applying it
+// into a 422 from g.Process instead of the 409 `withdrawn`.
 func (d *DS) proposalRowExists(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (bool, error) {
-	row, err := d.proposalRowAt(ctx, groupID, epoch, ref)
+	row, err := d.proposalRowOrWithdrawnAt(ctx, groupID, epoch, ref)
 	return row != nil, err
 }
 

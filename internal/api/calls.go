@@ -622,6 +622,13 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	// UP6b (R-UP12, correction I2): the device's own absence Remove is withdrawn here, immediately
 	// before the mint and noteAdmission, after every check that may still refuse the start (the
 	// leaf gate, retryOwn, isPending, callFull, CreateRoom). A refused start withdraws nothing.
+	//
+	// A failure AFTER the withdrawal (the sfu.Token error below, or stillEntitled refusing once the
+	// relay credential is minted) leaves the Remove withdrawn with no admission. That is bounded:
+	// the device is still absent, so the room sweep proposes its Remove again, and after the 30 s
+	// WithdrawnStandWindow that re-proposal re-arms the row (ds.ProposeAbsenceRemove); a device that
+	// is barred meanwhile is re-proposed by the reconcile, which taints the row so no later resume can
+	// withdraw it.
 	if err := h.withdrawOwnAbsence(r.Context(), groupID, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
