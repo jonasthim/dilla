@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+func TestPCMFrameMatchesLibrespot44100Stereo20Milliseconds(t *testing.T) {
+	const want = 44100 * 2 * 2 / 50
+	if PCMBytesPerFrame != want {
+		t.Fatalf("PCM frame bytes = %d, want %d for 44.1 kHz stereo 20 ms", PCMBytesPerFrame, want)
+	}
+}
+
 func credential(t *testing.T) *os.File {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "credential")

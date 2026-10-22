@@ -19,7 +19,9 @@ import (
 
 const (
 	MaxStatusLine    = 256
-	PCMBytesPerFrame = 3840
+	// Librespot's 44.1 kHz stereo s16le output: 882 samples per channel
+	// every 20 ms, four bytes per stereo sample pair.
+	PCMBytesPerFrame = 3528
 	maxCredential    = 64 * 1024
 	startupTimeout   = 40 * time.Second
 	operationTimeout = 2 * time.Second
