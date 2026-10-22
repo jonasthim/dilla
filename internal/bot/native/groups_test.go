@@ -94,6 +94,74 @@ func TestNativeGroupRequestsValidateLocallyAndUseExactSuboperations(t *testing.T
 	}
 }
 
+func TestNativeInteractionCreateV2ResultAndExactRequest(t *testing.T) {
+	binding := testBinding()
+	expected := InteractionGroupExpected{
+		Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community,
+		BotUser: testID(4), BotDevice: testID(5), ParticipantUser: testID(6), ParticipantDevice: testID(7),
+		Group: testID(8), MinimumEligibilityRevision: 9, ServerNow: 10, PolicyVersion: 11,
+	}
+	groupBinding, err := cborx.Marshal([]any{
+		uint64(2), binding.Instance, nil, expected.BotUser, uint64(3), expected.PolicyVersion,
+		uint64(1), uint64(0), binding.Installation, binding.Community,
+		expected.ParticipantUser, expected.ParticipantDevice,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupInfo, tree, welcome := []byte{0x01, 0x02}, []byte{0x03, 0x04}, []byte{0x05, 0x06}
+	resultBody, err := cborx.Marshal([]any{expected.Group, groupBinding, groupInfo, tree, welcome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTransport{responses: [][]any{{resultBody}}}
+	c := newFakeClient(t, f)
+	operation := testID(12)
+	snapshot, err := cborx.Marshal([]any{[]byte{0x01}, make([]byte, 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPackage := []byte{0x01}
+	got, err := c.CreateInteractionGroup(context.Background(), operation, expected, snapshot, keyPackage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Group != expected.Group || got.Binding.Instance != binding.Instance || got.Binding.ParticipantDevice != expected.ParticipantDevice || got.Epoch != 1 || got.MemberCount != 2 ||
+		!reflect.DeepEqual(got.BindingBody, groupBinding) || !reflect.DeepEqual(got.GroupInfo, groupInfo) ||
+		!reflect.DeepEqual(got.RatchetTree, tree) || !reflect.DeepEqual(got.Welcome, welcome) || !reflect.DeepEqual(got.ResultBody, resultBody) {
+		t.Fatalf("interaction result = %#v", got)
+	}
+	if f.groupApplies != 1 || len(f.groupPayloads) != 1 || len(f.groupPayloads[0]) != 6 || f.groupPayloads[0][0] != uint64(21) ||
+		f.groupPayloads[0][1] != operation || f.groupPayloads[0][2] != expected.Group ||
+		!reflect.DeepEqual(f.groupPayloads[0][3], snapshot) || !reflect.DeepEqual(f.groupPayloads[0][5], keyPackage) {
+		t.Fatalf("group interaction request = %#v", f.groupPayloads)
+	}
+	wantExpected := []any{expected.Instance, expected.Installation, expected.Community, expected.BotUser, expected.BotDevice,
+		expected.ParticipantUser, expected.ParticipantDevice, expected.Group, expected.MinimumEligibilityRevision,
+		expected.ServerNow, expected.PolicyVersion}
+	if !reflect.DeepEqual(f.groupPayloads[0][4], wantExpected) {
+		t.Fatalf("expected tuple = %#v want %#v", f.groupPayloads[0][4], wantExpected)
+	}
+}
+
+func TestNativeInteractionCreateRejectsV1ProjectionAsUnknownMutationOutcome(t *testing.T) {
+	binding := testBinding()
+	expected := InteractionGroupExpected{
+		Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community,
+		BotUser: testID(4), BotDevice: testID(5), ParticipantUser: testID(6), ParticipantDevice: testID(7),
+		Group: testID(8), MinimumEligibilityRevision: 9, ServerNow: 10, PolicyVersion: 11,
+	}
+	v1, _ := cborx.Marshal([]any{uint64(1), binding.Instance, binding.Community, expected.BotUser, uint64(3), expected.PolicyVersion, uint64(1), uint64(0)})
+	malformed, _ := cborx.Marshal([]any{expected.Group, v1, []byte{1}, []byte{2}, []byte{3}})
+	f := &fakeTransport{responses: [][]any{{malformed}}}
+	c := newFakeClient(t, f)
+	snapshot, _ := cborx.Marshal([]any{[]byte{0x01}, make([]byte, 64)})
+	_, err := c.CreateInteractionGroup(context.Background(), testID(12), expected, snapshot, []byte{0x01})
+	if err == nil || !errors.Is(err, ErrOutcomeUnknown) || f.closed != 1 {
+		t.Fatalf("v1 binding accepted or mutation not quarantined: err=%v closed=%d", err, f.closed)
+	}
+}
+
 func TestNativeGroupCursorAndIntentBodyRules(t *testing.T) {
 	group := testID(14)
 	// Cursor body is a nullable cursor body inside the usual body wrapper.
@@ -127,6 +195,14 @@ func TestNativeGroupCursorAndIntentBodyRules(t *testing.T) {
 		if name != "absent" && got == nil {
 			t.Fatalf("%s intent missing", name)
 		}
+	}
+	interactionBinding, _ := cborx.Marshal([]any{uint64(2), testBinding().Instance, nil, testID(16), uint64(3), uint64(1), uint64(1), uint64(0), testBinding().Installation, testBinding().Community, testID(17), testID(18)})
+	interactionResult, _ := cborx.Marshal([]any{group, interactionBinding, []byte{1}, []byte{2}, []byte{3}})
+	interactionPending, _ := cborx.Marshal([]any{uint64(2), group, uint64(0), interactionResult})
+	f = &fakeTransport{responses: [][]any{{interactionPending}}}
+	c = newFakeClient(t, f)
+	if got, e := c.GroupIntentResult(context.Background(), testID(13)); e != nil || got == nil || got.State != 0 || !reflect.DeepEqual(got.Result, interactionResult) {
+		t.Fatalf("kind-3 pending intent=%#v err=%v", got, e)
 	}
 	bad, _ := cborx.Marshal([]any{uint64(2), group, uint64(0), nil})
 	f = &fakeTransport{responses: [][]any{{bad}}}

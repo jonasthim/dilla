@@ -76,8 +76,48 @@ pub(crate) fn dispatch(
         18 => events_read(core, bind, payload),
         19 => events_ack(core, bind, payload),
         20 => intent_result(core, bind, payload),
+        21 => interaction_create(core, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+fn interaction_create(
+    core: &mut ClientCore,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    use dilla_core::{bot::interaction_admission::Expected, ids::MsgId};
+
+    let (operation, group, snapshot, expected, key_package) = decode_strict(payload, |d| {
+        d.array(6)?;
+        let _ = d.uint()?;
+        let operation = d.bytes_exact::<16>()?;
+        let group = d.bytes_exact::<16>()?;
+        let snapshot = Zeroizing::new(d.bytes()?.to_vec());
+        d.array(11)?;
+        let expected = Expected {
+            instance: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            installation: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            community: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            bot_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            bot_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            participant_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            participant_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            group: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            minimum_eligibility_revision: d.uint()?,
+            server_now: d.uint()?,
+            policy_version: d.uint()?,
+        };
+        let key_package = Zeroizing::new(d.bytes()?.to_vec());
+        Ok((operation, group, snapshot, expected, key_package))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if operation == [0; 16] || group == [0; 16] {
+        return Err(DispatchError::Invalid);
+    }
+    let result = core
+        .bot_interaction_group_create(&operation, &group, &snapshot, &expected, &key_package)
+        .map_err(map_client)?;
+    Ok(Zeroizing::new(body(result)))
 }
 
 fn list_groups(
@@ -678,6 +718,71 @@ mod tests {
             dispatch(&mut core, BINDING, &request.into_vec()),
             Err(DispatchError::Forbidden)
         ));
+    }
+
+    #[test]
+    fn malformed_interaction_snapshot_leaves_no_group_or_intent_state() {
+        let mut core = bot();
+        let operation = [0x51; 16];
+        let group = [0x52; 16];
+        let bot_device = decode_strict(&core.identity().expect("identity"), |d| {
+            d.array(6)?;
+            d.skip()?;
+            d.skip()?;
+            d.skip()?;
+            let device =
+                d.opt_bytes_exact::<16>()?
+                    .ok_or(dilla_core::cbor::CborError::TypeMismatch {
+                        expected: "Bot device ID",
+                        offset: d.position(),
+                    })?;
+            d.skip()?;
+            d.skip()?;
+            Ok(device)
+        })
+        .expect("Bot device");
+        let mut request = Encoder::new();
+        request
+            .array(6)
+            .uint(21)
+            .bytes(&operation)
+            .bytes(&group)
+            .bytes(&[0x80]);
+        request
+            .array(11)
+            .bytes(&INSTANCE)
+            .bytes(&INSTALLATION)
+            .bytes(&COMMUNITY)
+            .bytes(&USER)
+            .bytes(&bot_device)
+            .bytes(&[0x66; 16])
+            .bytes(&[0x77; 16])
+            .bytes(&group)
+            .uint(1)
+            .uint(1)
+            .uint(1)
+            .bytes(&[0x01]);
+
+        assert!(matches!(
+            dispatch(&mut core, BINDING, &request.into_vec()),
+            Err(DispatchError::Invalid)
+        ));
+        let groups = decode_strict(&core.groups().expect("groups"), |d| {
+            let n = d.array_len()?;
+            for _ in 0..n {
+                d.skip()?;
+            }
+            Ok(n)
+        })
+        .expect("group list");
+        assert_eq!(groups, 0);
+        let intent = core.bot_intent_result(&operation).expect("intent lookup");
+        decode_strict(&intent, |d| {
+            d.array(1)?;
+            assert!(d.try_null()?);
+            Ok(())
+        })
+        .expect("no persisted intent");
     }
 
     #[test]

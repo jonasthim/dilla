@@ -15,12 +15,13 @@ import (
 )
 
 type fakeTransport struct {
-	responses    [][]any
-	statuses     []uint64
-	err          error
-	calls        []protocol.HelperOperation
-	closed       int
-	groupApplies int
+	responses     [][]any
+	statuses      []uint64
+	err           error
+	calls         []protocol.HelperOperation
+	closed        int
+	groupApplies  int
+	groupPayloads [][]any
 }
 
 func (f *fakeTransport) Open(context.Context, id.ID, id.ID, id.ID, []byte) ([]any, error) {
@@ -47,6 +48,7 @@ func (f *fakeTransport) Call(_ context.Context, op protocol.HelperOperation, _ [
 }
 func (f *fakeTransport) GroupApply(ctx context.Context, payload []any) ([]any, error) {
 	f.groupApplies++
+	f.groupPayloads = append(f.groupPayloads, append([]any(nil), payload...))
 	return f.Call(ctx, protocol.HelperGroupApply, payload)
 }
 func (f *fakeTransport) Close() error { f.closed++; return nil }

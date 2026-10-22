@@ -8,6 +8,7 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) const MAX_LOGICAL: usize = 32 * 1024 * 1024;
+const MAX_INTERACTION_SNAPSHOT: usize = 160 * 1024;
 pub(crate) const MAX_CHUNK: usize = 768 * 1024;
 const UPLOAD_TTL: Duration = Duration::from_secs(30);
 const RESULT_TTL: Duration = Duration::from_secs(30);
@@ -361,6 +362,20 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
         }
         (20, 2) => {
             id(d)?;
+            true
+        }
+        (21, 6) => {
+            id(d)?; // operation ID
+            id(d)?; // group ID
+            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?; // signed snapshot wire
+            d.array(11)?;
+            for _ in 0..8 {
+                id(d)?;
+            }
+            nonzero(d.uint()?)?; // minimum eligibility revision
+            nonzero(d.uint()?)?; // server_now
+            nonzero(d.uint()?)?; // policy version
+            bounded_bytes(d, 1, MAX_LOGICAL)?; // participant KeyPackage
             true
         }
         (2, 7) => {
@@ -736,6 +751,20 @@ mod tests {
             .bytes(&[1; 16])
             .bytes(&[0x01]);
         assert!(validate_target_payload(&wrong_nested_body.into_vec()).is_err());
+
+        let mut interaction = Encoder::new();
+        interaction
+            .array(6)
+            .uint(21)
+            .bytes(&[1; 16])
+            .bytes(&[2; 16])
+            .bytes(&[0x40]);
+        interaction.array(11);
+        for byte in 3..=10 {
+            interaction.bytes(&[byte; 16]);
+        }
+        interaction.uint(1).uint(100).uint(1).bytes(&[0x41]);
+        assert!(validate_target_payload(&interaction.into_vec()).is_ok());
     }
 
     #[test]
@@ -747,7 +776,7 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=20 {
+        for sub in 0..=21 {
             let mut e = Encoder::new();
             match sub {
                 0 | 17 => {
@@ -838,6 +867,18 @@ mod tests {
                 20 => {
                     e.array(2).uint(sub);
                     id(&mut e, 1);
+                }
+                21 => {
+                    e.array(6).uint(sub);
+                    id(&mut e, 1);
+                    id(&mut e, 2);
+                    body(&mut e);
+                    e.array(11);
+                    for byte in 3..=10 {
+                        id(&mut e, byte);
+                    }
+                    e.uint(1).uint(1).uint(1);
+                    body(&mut e);
                 }
                 _ => unreachable!(),
             }

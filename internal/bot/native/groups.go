@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	maxGroupBody = 32 << 20
-	maxEventBody = 1_047_900
+	maxGroupBody           = 32 << 20
+	maxInteractionSnapshot = 160 << 10
+	maxEventBody           = 1_047_900
 )
 
 type GroupInfo struct {
@@ -37,6 +38,26 @@ type GroupCreateResult struct {
 	Group                               id.ID
 	Binding                             GroupBinding
 	BindingBody, GroupInfo, RatchetTree []byte
+}
+type InteractionGroupExpected struct {
+	Instance, Installation, Community                      id.ID
+	BotUser, BotDevice, ParticipantUser, ParticipantDevice id.ID
+	Group                                                  id.ID
+	MinimumEligibilityRevision, ServerNow, PolicyVersion   uint64
+}
+type InteractionGroupBinding struct {
+	Instance, BotUser, Installation, Community id.ID
+	ParticipantUser, ParticipantDevice         id.ID
+	PolicyVersion, E2EEVersion, MediaVersion   uint64
+}
+type InteractionGroupCreateResult struct {
+	Group   id.ID
+	Binding InteractionGroupBinding
+	// These are invariant markers guaranteed by the native creation operation before it returns;
+	// they are not caller inputs or duplicated on the wire.
+	Epoch, MemberCount                  uint64
+	BindingBody, GroupInfo, RatchetTree []byte
+	Welcome, ResultBody                 []byte
 }
 type GroupExternalJoinResult struct{ Commit, GroupInfo []byte }
 type GroupCommitWelcome struct {
@@ -524,6 +545,148 @@ func (c *Client) CreateGroup(ctx context.Context, operation, group, channel id.I
 		return GroupCreateResult{}, e
 	}
 	return v.(GroupCreateResult), nil
+}
+
+func expectedTuple(v InteractionGroupExpected) []any {
+	return []any{
+		v.Instance, v.Installation, v.Community, v.BotUser, v.BotDevice,
+		v.ParticipantUser, v.ParticipantDevice, v.Group,
+		v.MinimumEligibilityRevision, v.ServerNow, v.PolicyVersion,
+	}
+}
+
+func validateInteractionExpected(v InteractionGroupExpected, binding Binding, group id.ID) error {
+	ids := []id.ID{v.Instance, v.Installation, v.Community, v.BotUser, v.BotDevice,
+		v.ParticipantUser, v.ParticipantDevice, v.Group}
+	for _, value := range ids {
+		if value.IsZero() {
+			return errors.New("invalid interaction group expected tuple")
+		}
+	}
+	if v.Instance != binding.Instance || v.Installation != binding.Installation || v.Community != binding.Community ||
+		v.Group != group || v.BotUser == v.ParticipantUser || v.BotDevice == v.ParticipantDevice ||
+		v.MinimumEligibilityRevision == 0 || v.MinimumEligibilityRevision > math.MaxInt64 ||
+		v.ServerNow == 0 || v.ServerNow > math.MaxInt64 || v.PolicyVersion == 0 || v.PolicyVersion > math.MaxInt64 {
+		return errors.New("interaction group expected tuple context mismatch")
+	}
+	return nil
+}
+
+func decodeInteractionGroupBinding(body []byte, binding Binding, expected *InteractionGroupExpected) (InteractionGroupBinding, error) {
+	a, err := groupBodyArray(body)
+	if err != nil || len(a) != 12 {
+		return InteractionGroupBinding{}, errors.New("interaction group binding shape")
+	}
+	version, err := groupUint(a[0])
+	if err != nil || version != 2 || a[2] != nil {
+		return InteractionGroupBinding{}, errors.New("interaction group binding version")
+	}
+	out := InteractionGroupBinding{}
+	if out.Instance, err = groupID(a[1]); err != nil || out.Instance != binding.Instance {
+		return InteractionGroupBinding{}, errors.New("interaction group binding instance")
+	}
+	if out.BotUser, err = groupID(a[3]); err != nil {
+		return InteractionGroupBinding{}, errors.New("interaction group binding Bot user")
+	}
+	kind, err := groupUint(a[4])
+	if err != nil || kind != 3 {
+		return InteractionGroupBinding{}, errors.New("interaction group binding kind")
+	}
+	if out.PolicyVersion, err = groupUint(a[5]); err != nil || out.PolicyVersion == 0 {
+		return InteractionGroupBinding{}, errors.New("interaction group binding policy")
+	}
+	if out.E2EEVersion, err = groupUint(a[6]); err != nil || out.E2EEVersion != 1 {
+		return InteractionGroupBinding{}, errors.New("interaction group binding E2EE version")
+	}
+	if out.MediaVersion, err = groupUint(a[7]); err != nil || out.MediaVersion != 0 {
+		return InteractionGroupBinding{}, errors.New("interaction group binding media version")
+	}
+	if out.Installation, err = groupID(a[8]); err != nil || out.Installation != binding.Installation {
+		return InteractionGroupBinding{}, errors.New("interaction group binding installation")
+	}
+	if out.Community, err = groupID(a[9]); err != nil || out.Community != binding.Community {
+		return InteractionGroupBinding{}, errors.New("interaction group binding community")
+	}
+	if out.ParticipantUser, err = groupID(a[10]); err != nil {
+		return InteractionGroupBinding{}, errors.New("interaction group binding participant")
+	}
+	if out.ParticipantDevice, err = groupID(a[11]); err != nil {
+		return InteractionGroupBinding{}, errors.New("interaction group binding participant device")
+	}
+	if out.BotUser == out.ParticipantUser {
+		return InteractionGroupBinding{}, errors.New("interaction group binding identities overlap")
+	}
+	if expected != nil && (out.BotUser != expected.BotUser || out.Installation != expected.Installation ||
+		out.Community != expected.Community || out.ParticipantUser != expected.ParticipantUser ||
+		out.ParticipantDevice != expected.ParticipantDevice || out.PolicyVersion != expected.PolicyVersion) {
+		return InteractionGroupBinding{}, errors.New("interaction group binding request context")
+	}
+	return out, nil
+}
+
+func decodeInteractionGroupCreate(body []byte, want id.ID, binding Binding, expected *InteractionGroupExpected) (any, error) {
+	a, err := groupBodyArray(body)
+	if err != nil || len(a) != 5 {
+		return nil, errors.New("interaction group create result shape")
+	}
+	group, err := groupID(a[0])
+	if err != nil || group != want || expected != nil && group != expected.Group {
+		return nil, errors.New("interaction group create identity")
+	}
+	bindingBody, err := groupBytes(a[1], 1, maxGroupBody)
+	if err != nil {
+		return nil, err
+	}
+	groupBinding, err := decodeInteractionGroupBinding(bindingBody, binding, expected)
+	if err != nil {
+		return nil, err
+	}
+	groupInfo, err := groupBytes(a[2], 1, maxGroupBody)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := groupBytes(a[3], 1, maxGroupBody)
+	if err != nil {
+		return nil, err
+	}
+	welcome, err := groupBytes(a[4], 1, maxGroupBody)
+	if err != nil {
+		return nil, err
+	}
+	return InteractionGroupCreateResult{
+		Group: group, Binding: groupBinding, Epoch: 1, MemberCount: 2, BindingBody: bindingBody, GroupInfo: groupInfo,
+		RatchetTree: tree, Welcome: welcome, ResultBody: append([]byte(nil), body...),
+	}, nil
+}
+
+// CreateInteractionGroup asks the native OpenMLS core to verify the signed context snapshot,
+// add the participant KeyPackage, inspect the authenticated two-leaf candidate, and persist only
+// after all admission checks pass. The Go layer transmits exact evidence but does not authorize it.
+func (c *Client) CreateInteractionGroup(ctx context.Context, operation id.ID, expected InteractionGroupExpected, snapshotWire, participantKeyPackage []byte) (InteractionGroupCreateResult, error) {
+	if operation.IsZero() || validateInteractionExpected(expected, c.binding, expected.Group) != nil ||
+		len(snapshotWire) == 0 || len(snapshotWire) > maxInteractionSnapshot || groupInputBody(snapshotWire, maxInteractionSnapshot) != nil ||
+		len(participantKeyPackage) == 0 || len(participantKeyPackage) > maxGroupBody {
+		return InteractionGroupCreateResult{}, errors.New("invalid interaction group create input")
+	}
+	var snapshot []any
+	if err := cborx.Unmarshal(snapshotWire, &snapshot); err != nil || len(snapshot) != 2 {
+		return InteractionGroupCreateResult{}, errors.New("invalid signed interaction snapshot wire")
+	}
+	payload, payloadOK := snapshot[0].([]byte)
+	signature, signatureOK := snapshot[1].([]byte)
+	if !payloadOK || len(payload) == 0 || !signatureOK || len(signature) != 64 {
+		return InteractionGroupCreateResult{}, errors.New("invalid signed interaction snapshot wire")
+	}
+	v, err := c.groupCall(ctx, []any{
+		uint64(21), operation, expected.Group, append([]byte(nil), snapshotWire...), expectedTuple(expected),
+		append([]byte(nil), participantKeyPackage...),
+	}, true, groupWrapped(func(body []byte) (any, error) {
+		return decodeInteractionGroupCreate(body, expected.Group, c.binding, &expected)
+	}))
+	if err != nil {
+		return InteractionGroupCreateResult{}, err
+	}
+	return v.(InteractionGroupCreateResult), nil
 }
 func (c *Client) GroupRegistered(ctx context.Context, operation, group id.ID, next uint64) error {
 	if operation.IsZero() || group.IsZero() || next == 0 || next > math.MaxInt64 {
@@ -1121,7 +1284,15 @@ func (c *Client) GroupIntentResult(ctx context.Context, operation id.ID) (*Group
 		if raw != nil {
 			switch kind {
 			case 2:
-				if _, e = decodeGroupCreate(raw, g, c.binding, nil); e != nil {
+				result, shapeErr := groupBodyArray(raw)
+				if shapeErr != nil {
+					return nil, shapeErr
+				}
+				if len(result) == 5 {
+					if _, e = decodeInteractionGroupCreate(raw, g, c.binding, nil); e != nil {
+						return nil, e
+					}
+				} else if _, e = decodeGroupCreate(raw, g, c.binding, nil); e != nil {
 					return nil, e
 				}
 			case 5:
