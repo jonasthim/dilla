@@ -191,6 +191,7 @@ func Register(m *server.Mux, d Deps) {
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
+	registerBotStructuralEvents(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes
 	// are the only /v1 surface a caller reaches without a bearer token, so each
