@@ -2,8 +2,11 @@ package ds_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -53,5 +56,52 @@ func TestCurrentBotInteractionContextRequiresAcceptedReceiptAndExactLiveRoster(t
 	}
 	if _, err := fixture.h.ds.CurrentBotInteractionGroupContext(ctx, fixture.request.Registration.GroupID); err == nil {
 		t.Fatal("current context accepted a group with no immutable registration receipt")
+	}
+}
+
+func TestCurrentBotInteractionContextCallbackHoldsGroupFenceThroughSigning(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	ctx := context.Background()
+	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request); err != nil {
+		t.Fatalf("register kind-3 group: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callbackDone := make(chan error, 1)
+	go func() {
+		callbackDone <- fixture.h.ds.WithCurrentBotInteractionGroupContext(ctx, fixture.request.Registration.GroupID, func(current ds.CurrentBotInteractionGroupContext) error {
+			if current.Epoch != 1 {
+				return fmt.Errorf("context epoch = %d, want 1", current.Epoch)
+			}
+			close(entered)
+			<-release // stands in for encoding and signing the proof
+			return nil
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("context callback did not start")
+	}
+
+	closeStarted := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeStarted)
+		closeDone <- fixture.h.ds.Close(ctx, fixture.request.Registration.GroupID)
+	}()
+	<-closeStarted
+	select {
+	case err := <-closeDone:
+		t.Fatalf("close passed the group fence while proof was being signed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-callbackDone; err != nil {
+		t.Fatalf("current context callback: %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("close after signing: %v", err)
 	}
 }

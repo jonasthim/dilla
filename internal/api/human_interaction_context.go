@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"net/http"
+	"reflect"
 
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -216,7 +218,17 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "current interaction context exceeds response limit"))
 		return
 	}
-	sig, err := d.SignBotCurrentInteractionContext(payload)
+	var sig []byte
+	err = h.DS.WithCurrentBotInteractionGroupContext(r.Context(), groupID, func(latest ds.CurrentBotInteractionGroupContext) error {
+		// Device lists and policy above were read in their own transaction. Bind the
+		// signature to that exact MLS state, then keep the group's lock through signing.
+		if !reflect.DeepEqual(current, latest) {
+			return errors.New("current interaction group changed before signing")
+		}
+		var signErr error
+		sig, signErr = d.SignBotCurrentInteractionContext(payload)
+		return signErr
+	})
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "current interaction context signing failed"))
 		return

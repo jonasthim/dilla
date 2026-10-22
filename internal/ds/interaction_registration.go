@@ -54,8 +54,23 @@ type CurrentBotInteractionGroupContext struct {
 // state whose public roster does not exactly match the two leaves accepted at registration.
 func (d *DS) CurrentBotInteractionGroupContext(ctx context.Context, groupID id.ID) (CurrentBotInteractionGroupContext, error) {
 	var out CurrentBotInteractionGroupContext
+	err := d.WithCurrentBotInteractionGroupContext(ctx, groupID, func(current CurrentBotInteractionGroupContext) error {
+		out = current
+		return nil
+	})
+	return out, err
+}
+
+// WithCurrentBotInteractionGroupContext runs fn while both the local group mutex and the
+// repository group fence are held. Callers that issue a proof based on this context use it to
+// revalidate and sign before a concurrent commit or close can change the group's epoch/state.
+// fn must not start another repository transaction.
+func (d *DS) WithCurrentBotInteractionGroupContext(ctx context.Context, groupID id.ID, fn func(CurrentBotInteractionGroupContext) error) error {
 	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || groupID.IsZero() {
-		return out, errors.New("ds: current kind-3 interaction context dependencies unavailable")
+		return errors.New("ds: current kind-3 interaction context dependencies unavailable")
+	}
+	if fn == nil {
+		return errors.New("ds: current kind-3 interaction context callback unavailable")
 	}
 	unlock := d.lock(groupID)
 	defer unlock()
@@ -143,16 +158,16 @@ func (d *DS) CurrentBotInteractionGroupContext(ctx context.Context, groupID id.I
 		if !containsInteractionLeaf(roster, binding.BotUserID, registration.DeviceID) || !containsInteractionLeaf(roster, binding.ParticipantUserID, binding.ParticipantDeviceID) {
 			return errors.New("ds: current kind-3 MLS roster does not match the accepted Bot and participant")
 		}
-		out = CurrentBotInteractionGroupContext{
+		out := CurrentBotInteractionGroupContext{
 			Registration: registration,
 			Binding: BotInteractionGroupBinding{InstanceID: binding.InstanceID, BotUserID: binding.BotUserID, InstallationID: binding.InstallationID,
 				CommunityID: binding.CommunityID, ParticipantUserID: binding.ParticipantUserID, ParticipantDeviceID: binding.ParticipantDeviceID,
 				PolicyVersion: binding.PolicyVersion, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion},
 			Epoch: state.Epoch, LeafCount: state.LeafCount, TreeHash: append([]byte(nil), state.TreeHash...), Roster: roster,
 		}
-		return nil
+		return fn(out)
 	})
-	return out, err
+	return err
 }
 
 func validCurrentInteractionRegistration(row store.GroupRow, receipt store.BotGroupRegistrationReceipt, instanceID id.ID) bool {
