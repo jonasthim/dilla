@@ -217,6 +217,26 @@ impl DillaInteractionBinding {
         }
     }
 
+    /// Check the locally known instance and Welcome recipient against an authenticated v2
+    /// interaction binding. This is only a recipient check: it does not authorize the Bot,
+    /// installation, community membership, or admission. Callers must still obtain and validate
+    /// the server-side admission context before storing or activating an interaction group.
+    pub fn matches_recipient(
+        &self,
+        instance_id: &InstanceId,
+        user_id: &[u8; 16],
+        device_id: &DeviceId,
+    ) -> Result<(), ProtocolError> {
+        if self.instance_id == *instance_id
+            && self.participant_user_id == *user_id
+            && self.participant_device_id == *device_id
+        {
+            Ok(())
+        } else {
+            Err(ProtocolError::Binding)
+        }
+    }
+
     /// Decode only the v2 interaction shape. Exact length, null legacy community scope, kind,
     /// protocol versions and all identity IDs are checked before returning a typed value.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
@@ -491,6 +511,43 @@ mod tests {
                 Err(ProtocolError::Binding)
             );
         }
+    }
+
+    #[test]
+    fn interaction_v2_recipient_check_requires_the_local_instance_user_and_device() {
+        let binding = interaction_v2();
+        assert_eq!(
+            binding.matches_recipient(
+                &binding.instance_id,
+                &binding.participant_user_id,
+                &binding.participant_device_id,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            binding.matches_recipient(
+                &InstanceId::from_bytes([0x91; 16]),
+                &binding.participant_user_id,
+                &binding.participant_device_id,
+            ),
+            Err(ProtocolError::Binding)
+        );
+        assert_eq!(
+            binding.matches_recipient(
+                &binding.instance_id,
+                &[0x92; 16],
+                &binding.participant_device_id,
+            ),
+            Err(ProtocolError::Binding)
+        );
+        assert_eq!(
+            binding.matches_recipient(
+                &binding.instance_id,
+                &binding.participant_user_id,
+                &DeviceId::from_bytes([0x93; 16]),
+            ),
+            Err(ProtocolError::Binding)
+        );
     }
 
     #[test]
