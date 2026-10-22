@@ -2236,18 +2236,118 @@ describe('a held call (UP6, R-UP6)', () => {
     expect(BigInt(r.epoch)).toBeGreaterThan(BigInt(w.result.epoch));
   });
 
-  it('a resume commit refused 403 (no current leaf): forgotten without a Remove, then an external join (UP6c)', async () => {
+  it('a resume commit refused 403 E_LEAF_NOT_CURRENT: forgotten without a Remove, then an external join (UP6c)', async () => {
     const w = await joined();
     await w.call(LOST);
     w.server.reset();
     w.clearPosted();
-    w.server.answer('POST commit', 403, 'E_FORBIDDEN');
+    w.server.answer('POST commit', 403, 'E_LEAF_NOT_CURRENT');
     const r = await w.call(JOIN(w)) as CallJoinResult;
     expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
     expect(count(w, 'POST proposal')).toBe(0);
     expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(1);
     expect(r.resumed).toBeUndefined();
     expect(keysPosted(w)).toHaveLength(1);
+  });
+
+  // UP6c fix round 1, I1: the instance proposes a Remove (bob's absence Remove, as when he reloads too) while this
+  // device's commit is on its way. That commit leaves the proposal out, so the instance refuses it 422 E_COMMIT_INVALID
+  // (`outstanding_proposals`). The resume catches up, which queues the proposal, and commits again with it: no leave.
+  it('a proposal that lands while the resume commit is on its way: 422, catch up, commit again with it (UP6c I1)', async () => {
+    const w = await joined();
+    const heldEpoch = BigInt(w.result.epoch);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const post = w.server.hold('POST commit');
+    const id = w.send(JOIN(w));
+    await post.reached;
+    w.ds.propose(w.callGroup, 'remove', PEER.device);
+    post.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settled(w);
+    expect(w.ret(id)).toMatchObject({ ok: true });
+    const r = (w.ret(id) as { ok: true; value: CallJoinResult }).value;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit', 'POST commit']);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'commitAbort', w.callGroup)).toBe(1);
+    expect(BigInt(r.epoch)).toBe(heldEpoch + 1n);
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([r.epoch]);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: r.epoch });
+  });
+
+  // UP6c fix round 1, I1 and M3: after an accepted start only a definitive answer gives the leaf up. Every other refusal
+  // of the commit keeps the hold: no self-Remove, no key, the group still held; the page's next try resumes.
+  for (const [status, code] of [[0, 'E_NETWORK'], [503, 'E_UNAVAILABLE'], [403, 'E_FORBIDDEN'], [400, 'E_INVALID_REQUEST']] as const) {
+    it(`a resume commit refused ${String(status)} ${code} keeps the hold with no leave and no key (UP6c)`, async () => {
+      const w = await joined();
+      await w.call(LOST);
+      w.server.reset();
+      w.clearPosted();
+      w.server.answer('POST commit', status, code);
+      expect(await codeOf(w.call(JOIN(w)))).toBe(code);
+      expect(count(w, 'POST commit')).toBe(1);
+      expect(count(w, 'POST proposal')).toBe(0);
+      expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(0);
+      expect(keysPosted(w)).toHaveLength(0);
+      expect(w.model.group(w.callGroup)?.state).toBe(2);
+      const r = await w.call(JOIN(w)) as CallJoinResult;
+      expect(r).toMatchObject({ resumed: true });
+      expect(BigInt(r.epoch)).toBeGreaterThan(BigInt(w.result.epoch));
+    });
+  }
+
+  // UP6c fix round 1, M2: a confirm that throws after the instance accepted the commit is handled as the rotation's:
+  // the pending commit is kept (never aborted), the hold is kept, and nothing reaches the page.
+  it('a resume commit whose confirm throws keeps the pending commit and the hold, with no key (UP6c M2)', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const real = w.model.commitConfirm.bind(w.model);
+    let throws = 1;
+    w.model.commitConfirm = (g: Id) => { if (throws > 0) { throws -= 1; throw new CoreError('E_CORE_STATE', 'merge failed'); } return real(g); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CORE_STATE');
+    expect(count(w, 'POST commit')).toBe(1);
+    expect(coreCalls(w, 'commitAbort', w.callGroup)).toBe(0);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+  });
+
+  // UP6c fix round 1: a trust block of the core at the resume commit leaves (the blocked phase, one self-Remove).
+  it('a resume commit the core refuses with a trust block leaves with its self-Remove (UP6c)', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    w.model.callRotate = () => { throw new CoreError('E_UMK_CHANGED', 'a changed identity'); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');
+    expect(count(w, 'POST commit')).toBe(0);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked' });
+  });
+
+  // UP6c fix round 1, M1 and M5: a leave while the resume commit is on its way posts no key; the teardown keeps `alone`,
+  // so a solo caller's call is ended conditionally (DELETE call) rather than left with a self-Remove nobody can commit.
+  it('a leave while a solo resume commit is on its way: no key, the call ended conditionally (UP6c M1)', async () => {
+    const w = await harness({ voiceChannel: true });
+    await w.call(JOIN(w));
+    await settled(w);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const post = w.server.hold('POST commit');
+    const id = w.send(JOIN(w));
+    await post.reached;
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    post.release();
+    for (let i = 0; i < 40 && (w.ret(id) === undefined || w.ret(leave) === undefined); i++) await settled(w);
+    expect(w.ret(id)).toMatchObject({ ok: false });
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(count(w, 'DELETE call')).toBe(1);
+    expect(count(w, 'POST proposal')).toBe(0);
   });
 
   it('the server removed the leaf while held: the call group is forgotten without a Remove, then an external join', async () => {

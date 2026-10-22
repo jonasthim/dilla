@@ -10,7 +10,7 @@ import { CALL_KEEP_KEY, isMuted } from '../state/settings';
 import { CALL_IDLE, type CallJoinResult, type CallKeys, type CallPhase, type CallState, type SliceTypes,
   type VoiceParticipant, type WorkerError } from '../state/types';
 import type { FromWorker } from '../worker/protocol';
-import { joinCall, JoinRefused, type JoinRoutes } from './join';
+import { CommitUnconfirmed, joinCall, JoinRefused, type JoinRoutes } from './join';
 import { Rings } from './ring';
 import { HOLD_MS, holdRuns, statusOf, sweepStaleCalls } from './sweep';
 import { VoiceBook, type VoiceRoutes } from './voice';
@@ -822,9 +822,11 @@ export class CallController {
     return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
   }
 
-  /** UP6c (protocol/05 N1): a resumed call's own-leaf Update commit, on the group's lane as the rotation's is: built,
-   *  posted, then confirmed and reported like any own commit; a refused post is aborted and thrown as it came. Answers
-   *  the epoch the commit moved the group to. A confirm that throws is thrown too, so no key of the old epoch follows. */
+  /** UP6c (protocol/05 N1): a resumed call's commit of a fresh epoch (call_rotate), on the group's lane as the
+   *  rotation's is: built, posted, then confirmed and reported like any own commit; a refused post is aborted and thrown
+   *  as it came. Answers the epoch the commit moved the group to. A confirm that throws is handled as the rotation's is
+   *  (WB client m7): the instance accepted the commit, so its pending state is kept for the engine to adopt; it is
+   *  thrown as CommitUnconfirmed, so no key of the old epoch follows and the resume keeps the hold. */
   private async commitFresh(core: CorePort, groupId: Id): Promise<bigint> {
     return this.deps.serial(groupId, async () => {
       const body = core.callRotate(groupId);
@@ -834,7 +836,9 @@ export class CallController {
         try { core.commitAbort(groupId); } catch { /* nothing pending */ }
         throw e;
       }
-      const result = core.commitConfirm(groupId);
+      let result: ApplyResult;
+      try { result = core.commitConfirm(groupId); }
+      catch (e) { throw new CommitUnconfirmed(e); }
       this.deps.onCommitted(groupId, result);
       return result.epoch;
     });

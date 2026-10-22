@@ -126,7 +126,12 @@ Stated plainly in the product's documentation and onboarding:
   instance's room sweep alone, the same as for a crashed tab: about 30 to 60 seconds after the SFU
   stops seeing the device (plus any time the SFU or the instance is down, when the sweep cannot
   run). The client's hold adds no server-side grace; a returning device whose leaf the sweep
-  removed is refused (`E_LEAF_NOT_CURRENT`), forgets the group and joins afresh.
+  removed is refused (`E_LEAF_NOT_CURRENT`), forgets the group and joins afresh. A device that
+  resumes never sends media in the held epoch: its page's media worker is new and would seal from
+  `seq` 0 again under the KID and key the earlier worker used, repeating AES-GCM nonces. So it
+  commits a fresh epoch of its own (`call_rotate`) after its start and before any media key reaches
+  the page (`05` § Sender uniqueness, N1). A refusal of that commit never hands the page the held key:
+  the device catches up and commits again, gives the leaf up, or keeps the hold with no key.
 - The instance can withdraw one of its own absence `Remove`s (`02` invariant 6, "Withdrawal",
   handshake kind 3). Only the instance withdraws, and only a `Remove` it marked `withdrawable` when it
   issued it because a device stayed out of, or left, its call's room; a revocation's, a kick's, a

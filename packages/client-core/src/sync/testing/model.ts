@@ -2229,6 +2229,8 @@ interface DsProposal {
   blob: Uint8Array;
   epoch: bigint;
   void: boolean;
+  /** The instance's own proposal (ModelDs.propose): a member commit must reference it (invariant 4, clause 1). */
+  instance?: true;
 }
 
 interface DsGroup {
@@ -2653,7 +2655,7 @@ export class ModelDs {
     this.counter += 1;
     const ref = idOf(0x5e, this.counter);
     const blob = wire.prop(ref, op, device);
-    g.proposals.push({ ref, blob, epoch: g.epoch, void: false });
+    g.proposals.push({ ref, blob, epoch: g.epoch, void: false, instance: true });
     const e: DsEntry = {
       seq: g.next, epoch: g.epoch, hs: { kind: 0, sender: null }, uploader: null, blob, commitment: null, deleted: false,
       franking: new Uint8Array(32), recvTs: this.tick(),
@@ -3066,6 +3068,17 @@ export class ModelDs {
     const c = arr(decode(commit), 5);
     const adds = arr(at(c, 3)).map((x) => bin(x, 16));
     const removes = arr(at(c, 4)).map((x) => bin(x, 16));
+    // Invariant 4, clause 1 (internal/ds/commit.go): a member commit applies every outstanding instance Remove of its
+    // epoch, or the instance refuses it 422 E_COMMIT_INVALID (`outstanding_proposals`). Adds are not checked: the
+    // instance voids an ineligible Add before the check (1a), which the model does not keep track of.
+    for (const p of g.proposals) {
+      if (p.instance !== true || p.void || p.epoch !== g.epoch) continue;
+      const q = arr(decode(p.blob), 4);
+      if (str(at(q, 2)) !== 'remove') continue;
+      if (!removes.some((x) => same(x, bin(at(q, 3), 16)))) {
+        throw httpError(422, 'E_COMMIT_INVALID', null, ['outstanding_proposals']);
+      }
+    }
     const seq = this.appendCommit(g, 1, 0n, commit, adds, removes);
     for (const w of arr(at(v, 3))) {
       const p = arr(w, 2);
