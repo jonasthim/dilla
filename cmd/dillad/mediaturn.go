@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
@@ -38,16 +39,14 @@ type mediaTURN struct {
 	peers   server.TURNPeers
 	tls     *tls.Config // the public-mode opt-in's; nil behind a proxy
 
-	stopSock func()
-
 	mu  sync.Mutex
 	srv *server.TURN
 }
 
-// newMediaTURN prepares the relay and serves media.sock; it binds nothing on turn.listen yet
-// (bind). An error is the relay's configuration (or media.sock): the SFU goes on without TURN, and
-// the API keeps serving it.
-func newMediaTURN(ctx context.Context, cfg *config.Config, log *slog.Logger) (*mediaTURN, error) {
+// newMediaTURN prepares the relay; it binds nothing on turn.listen yet (bind), and its routes are
+// served on media.sock by serveMedia (handler). An error is the relay's configuration: the SFU goes
+// on without TURN, and the API keeps serving it.
+func newMediaTURN(_ context.Context, cfg *config.Config, log *slog.Logger) (*mediaTURN, error) {
 	m := &mediaTURN{cfg: cfg, log: log, started: time.Now()}
 	keep := max(cfg.TURN.MaxAllocationAge.Value(), cfg.TURN.CredentialTTL.Value())
 	m.rev = server.NewRelayRevocations(keep, clock.System()).WithBarred(server.RemoteBarred{
@@ -62,13 +61,11 @@ func newMediaTURN(ctx context.Context, cfg *config.Config, log *slog.Logger) (*m
 			return nil, fmt.Errorf("turn: %w", err)
 		}
 	}
-	ln, err := server.ListenControl(ctx, server.ControlSocketPath(cfg.Instance.DataDir, server.MediaSocketName), log)
-	if err != nil {
-		return nil, err
-	}
-	m.stopSock = server.ServeControl(ln, server.NewRelayControl(m.rev, m.state), log)
 	return m, nil
 }
+
+// handler is the relay's media.sock routes: POST /relay/cut, PUT /relay/cuts, GET /relay/state.
+func (m *mediaTURN) handler() http.Handler { return server.NewRelayControl(m.rev, m.state) }
 
 // state is GET /relay/state on media.sock.
 func (m *mediaTURN) state() server.RelayState {
@@ -152,7 +149,7 @@ func (m *mediaTURN) keepBinding(ctx context.Context, onBound func()) {
 	}
 }
 
-// close stops the relay and media.sock.
+// close stops the relay.
 func (m *mediaTURN) close() {
 	m.mu.Lock()
 	srv := m.srv
@@ -161,5 +158,4 @@ func (m *mediaTURN) close() {
 	if srv != nil {
 		_ = srv.Close()
 	}
-	m.stopSock()
 }

@@ -91,7 +91,12 @@ media_takes_turn() {
 	media_active && media_json_current && [ ! -e "$S/api.turn" ] && turn_conf || return 0
 	[ "$(hdr caps "$R/proc/$(media_pid)/exe")" = '"turn"' ] || return 0
 	sed -i 's/"capabilities":\[\]/"capabilities":["turn"]/' "$DATA/media.json"
+	[ ! -f "$S/media.self" ] || sed -i 's/"capabilities":\[\]/"capabilities":["turn"]/' "$S/media.self"
+	return 0
 }
+# media_start: STUB_MEDIA_RUNS names the binary the new process runs instead of the installed one
+# (a restart that leaves the old SFU in place). A web3.12+ process writes media.json and answers
+# GET /media/self on media.sock, which $S/media.self stands for.
 media_start() {
 	media_active && return 0
 	n=$(($(cat "$S/pidseq" 2>/dev/null || echo 4000) + 1))
@@ -101,18 +106,20 @@ media_start() {
 	if [ -n "${FAKE_MEDIA_PROBE_FAIL:-}${STUB_MEDIA_START_FAIL:-}" ] || { [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && is_v2 "$BIN"; }; then
 		return 1
 	fi
+	runs="${STUB_MEDIA_RUNS:-$BIN}"
 	mkdir -p "$R/proc/$n"
-	ln -f "$BIN" "$R/proc/$n/exe"
+	ln -f "$runs" "$R/proc/$n/exe" 2>/dev/null || cp "$runs" "$R/proc/$n/exe"
 	echo "$n" >"$S/media.pid"
-	if [ "$(level "$BIN")" -ge 2 ]; then
+	if [ "$(level "$runs")" -ge 2 ]; then
 		printf '{"version":"%s","media_level":%s,"capabilities":[],"pid":%s,"started":"2026-10-22T08:00:00Z"}\n' \
-			"$(hdr version "$BIN")" "$(level "$BIN")" "$n" >"$DATA/media.json"
+			"$(hdr version "$runs")" "$(level "$runs")" "$n" >"$DATA/media.json"
+		cp "$DATA/media.json" "$S/media.self"
 		media_takes_turn
 	fi
 }
 media_stop() {
 	p="$(media_pid)"
-	rm -f "$S/media.pid"
+	rm -f "$S/media.pid" "$S/media.self"
 	[ "$p" -gt 0 ] || return 0
 	rm -rf "${R:?}/proc/$p"
 	# A clean stop removes its own media.json.
@@ -332,6 +339,17 @@ media)
 		# FAKE_IDLE: the exit status (0 idle, 1 busy, 69 cannot tell). web3.11 has no --idle.
 		[ "$(hdr level)" -ge 2 ] || { echo "flag provided but not defined: -idle" >&2; exit 64; }
 		exit "${FAKE_IDLE:-0}"
+		;;
+	--self)
+		# What the RUNNING media process answers on media.sock (the stub's media.self), not this
+		# binary's own idea. FAKE_SELF_DOWN: nothing answers; FAKE_SELF_BAD: a hostile answer.
+		[ "$(hdr level)" -ge 2 ] || { echo "flag provided but not defined: -self" >&2; exit 64; }
+		[ -z "${FAKE_SELF_DOWN:-}" ] || exit 69
+		if [ -n "${FAKE_SELF_BAD:-}" ]; then
+			printf '{"version":"0.1.0-web3.13;touch /pwned","media_level":"9","capabilities":["$(id)"],"pid":%s}\n' "$(cat "${DILLA_INSTALL_ROOT:-}/stub/media.pid" 2>/dev/null)"
+			exit 0
+		fi
+		cat "${DILLA_INSTALL_ROOT:-}/stub/media.self" 2>/dev/null || exit 69
 		;;
 	*) exit 64 ;;
 	esac
@@ -721,7 +739,7 @@ has "$(cat "$LOG")" "systemctl stop dilla-media" && problems="$problems|dilla-me
 has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran although the SFU stays"
 has "$(cat "$LOG")" "doctor --config=" || problems="$problems|the upgrade did not run doctor"
 has "$ERR" "decision: keep dilla-media running" || problems="$problems|the decision is not logged: $ERR"
-has "$ERR" "/exe version" || problems="$problems|the level did not come from /proc/<pid>/exe version: $ERR"
+has "$ERR" "(media level 1, from the SHA-256 of $ROOT/proc/" && has "$ERR" "which is $ROOT/usr/local/bin/dillad)" || problems="$problems|the level did not come from the running executable's SHA-256"
 has "$ERR" "keeps v0.1.0-web3.11 until its calls end" || problems="$problems|the report does not say which binary the SFU runs: $ERR"
 has "$(cat "$LOG")" "systemctl enable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer was not enabled"
 cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the media unit is not deploy/dilla-media.service"
@@ -1292,7 +1310,8 @@ cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|th
 before 'systemctl stop dilla-media' 'systemctl start dilla-media' || problems="$problems|dilla-media was not stopped and started on the previous binary"
 verdict "a release whose media server does not come up never restarts the API"
 
-# Compatible upgrade, live rooms, the level from media.json: dilla once, dilla-media never.
+# Compatible upgrade, live rooms, the level from the running SFU's own media.sock report: dilla
+# once, dilla-media never.
 fresh "$NEW"
 pid_before="$(media_pid_now)"
 FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
@@ -1301,10 +1320,31 @@ problems=""
 [ "$(count 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla restarted $(count 'systemctl restart dilla') times, want 1"
 [ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted"
 [ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
-has "$ERR" "media level 2, from its media.json" || problems="$problems|the level did not come from media.json"
+has "$ERR" "media level 2, from its media.sock" || problems="$problems|the level did not come from media.sock"
+has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad media --self --config=" || problems="$problems|media.sock was not asked as dillad"
 has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-c13" || problems="$problems|the binary was not replaced"
-verdict "a compatible upgrade from web3.12 keeps the SFU, by its media.json"
+verdict "a compatible upgrade from web3.12 keeps the SFU, by its media.sock report"
+
+# media.sock does not answer: media.json (pid = MainPID) is the second source.
+fresh "$NEW"
+FAKE_SELF_DOWN=1 KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "media level 2, from its media.json" || problems="$problems|the level did not come from media.json"
+verdict "without a media.sock answer, media.json decides"
+
+# A hostile or malformed media.sock answer, and no media.json: the level is unknown, so the SFU
+# restarts, and nothing of the answer is run or believed.
+fresh "$NEW"
+rm -f "$ROOT/var/lib/dillad/media.json"
+FAKE_SELF_BAD=1 KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0: the restart must fail its readiness against a hostile media.sock"
+has "$ERR" "decision: restart dilla-media" || problems="$problems|a malformed answer was believed"
+has "$ERR" "touch /pwned" && problems="$problems|the hostile version was printed"
+[ ! -e /pwned ] || problems="$problems|/pwned exists"
+verdict "a malformed media.sock answer means a restart, and is never believed"
 
 # Incompatible upgrade with live rooms: refused, nothing changed; --restart-sfu: one restart each,
 # dilla-media before dilla.
@@ -1369,24 +1409,71 @@ has "$ERR" "rolled back" && problems="$problems|it rolled back"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-c13" || problems="$problems|the new binary is not installed"
 verdict "a first API start that exits 69 is retried by systemd, and the upgrade waits for it"
 
-# A stale media.json (its pid is not the MainPID) is ignored; /proc/<pid>/exe version decides.
-fresh "$NEW"
-ln -f "$FAKE" "$ROOT/proc/$(media_pid_now)/exe"
-sed -i 's/"pid":[0-9]*,/"pid":99999,/' "$ROOT/var/lib/dillad/media.json"
+# A stale media.json (its pid is not the MainPID) is ignored. The SFU still runs web3.11, kept by
+# the previous upgrade, so it is dillad.prev: the SHA-256 of its executable decides.
+fresh "$REL"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+printf '{"version":"0.1.0-web3.12","media_level":2,"capabilities":[],"pid":99999,"started":"2026-10-21T08:00:00Z"}\n' >"$ROOT/var/lib/dillad/media.json"
 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
 has "$ERR" "ignoring $ROOT/var/lib/dillad/media.json: its pid 99999 is not dilla-media's MainPID" || problems="$problems|the stale file is not named"
-has "$ERR" "runs v0.1.0-web3.11 (media level 1, from $ROOT/proc/" || problems="$problems|the level did not come from /proc/<pid>/exe version"
+has "$ERR" "runs v0.1.0-web3.11 (media level 1, from the SHA-256 of $ROOT/proc/" && has "$ERR" "which is $ROOT/usr/local/bin/dillad.prev)" || problems="$problems|the level did not come from the executable's SHA-256 against dillad.prev"
 has "$ERR" "decision: keep" || problems="$problems|a level-1 SFU was not kept for a release that works with level 1"
-verdict "a stale media.json is ignored, and /proc/<pid>/exe version decides (keep)"
-ln -f "$FAKE" "$ROOT/proc/$(media_pid_now)/exe"
-sed -i 's/"pid":[0-9]*,/"pid":99999,/' "$ROOT/var/lib/dillad/media.json"
+verdict "a stale media.json is ignored, and the executable's SHA-256 decides (keep)"
+# Now dillad.prev is web3.12 too, so the running web3.11 matches nothing: unknown, so a restart,
+# whatever the stale file claims.
+printf '{"version":"0.1.0-web3.13","media_level":3,"capabilities":[],"pid":99999,"started":"2026-10-21T08:00:00Z"}\n' >"$ROOT/var/lib/dillad/media.json"
 FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
-has "$ERR" "runs v0.1.0-web3.11 (media level 1" && has "$ERR" "needs level 2 or later" || problems="$problems|the stale file's level 2 was believed"
-verdict "a stale media.json is ignored, and /proc/<pid>/exe version decides (restart)"
+has "$ERR" "media level is unknown" || problems="$problems|the stale file's level was believed"
+verdict "a stale media.json is ignored, and an executable that matches nothing means a restart"
+
+# Nothing reached through /proc is ever executed as root: a dillad process can execve a binary of
+# its own and keep its pid. Here that binary would leave a marker if anything ran it.
+cat >"$TMP/hostile-exe" <<HOSTILE
+#!/bin/sh
+touch "$TMP/hostile-ran"
+echo "dillad 0.1.0-web3.11 (go1.25 linux/amd64)"
+HOSTILE
+chmod 0755 "$TMP/hostile-exe"
+fresh "$NEW"
+rm -f "$ROOT/var/lib/dillad/media.json" "$ROOT/stub/media.self" "$TMP/hostile-ran"
+cp "$TMP/hostile-exe" "$ROOT/proc/$(media_pid_now)/exe.x"
+mv -f "$ROOT/proc/$(media_pid_now)/exe.x" "$ROOT/proc/$(media_pid_now)/exe"
+KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ ! -e "$TMP/hostile-ran" ] || problems="$problems|install.sh executed the running SFU's /proc/<pid>/exe"
+has "$ERR" "media level is unknown" || problems="$problems|the level was not unknown"
+has "$ERR" "decision: restart dilla-media" || problems="$problems|an unknown level did not mean a restart"
+verdict "install.sh never executes /proc/<pid>/exe, and an unrecognised one is level unknown"
+rm -f "$ROOT/var/lib/dillad/media.json" "$ROOT/stub/media.self" "$TMP/hostile-ran"
+cp "$TMP/hostile-exe" "$ROOT/proc/$(media_pid_now)/exe.x"
+mv -f "$ROOT/proc/$(media_pid_now)/exe.x" "$ROOT/proc/$(media_pid_now)/exe"
+refresh
+problems=""
+[ ! -e "$TMP/hostile-ran" ] || problems="$problems|the refresh executed the running SFU's /proc/<pid>/exe"
+has "$ERR" "dilla-media runs an older dillad" || problems="$problems|the restart is not logged: $ERR"
+verdict "dilla-media-refresh never executes /proc/<pid>/exe"
+
+# The readiness trap: the installed binary is new, but the process systemd runs after the restart
+# is the old one. A probe run from the installed binary would pass; asking the running process does
+# not, so the upgrade rolls back.
+fresh "$NEW"
+STUB_MEDIA_RUNS="$TMP/fake-v2" KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$I13"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0: readiness passed for an SFU that runs the old binary"
+has "$ERR" "did not become ready on v0.1.0-web3.13" || problems="$problems|the readiness failure is not named"
+[ "$(count 'systemctl restart dilla')" -eq 0 ] || problems="$problems|the API was restarted onto an SFU that never proved itself"
+has "$(cat "$LOG")" "media --probe" && problems="$problems|the installed binary's probe was asked"
+verdict "readiness asks the running SFU: a new installed binary with an old running one does not pass"
+fresh "$NEW"
+STUB_MEDIA_RUNS="$TMP/fake-v2" KEEP_ROOT=1 run --upgrade --release-url "file://$REL"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0: readiness passed for an SFU that runs the old binary"
+has "$ERR" "did not become ready on v0.1.0-web3.11" || problems="$problems|the readiness failure is not named"
+verdict "readiness for a web3.11 target checks the running executable before its probe"
 
 # A web3.10 SFU has no rule that names its level, so it is restarted.
 fresh "$W10"
@@ -1523,7 +1610,7 @@ problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
 [ "$(count 'systemctl restart dilla-media')" -eq 1 ] || problems="$problems|dilla-media restarted $(count 'systemctl restart dilla-media') times, want 1"
 [ "$(count 'systemctl restart dilla')" -eq 0 ] || problems="$problems|dilla restarted without a TURN handoff"
-has "$ERR" "dilla-media runs 0.1.0-web3.11 (pid" && has "$ERR" "its rooms are idle: restarting it" || problems="$problems|the restart is not logged"
+has "$ERR" "dilla-media runs an older dillad (pid" && has "$ERR" "its rooms are idle: restarting it" || problems="$problems|the restart is not logged"
 media_json_is 0.1.0-web3.12 || problems="$problems|dilla-media does not run the installed binary: $(media_json)"
 verdict "refresh: another inode and idle: one restart, logged"
 refresh

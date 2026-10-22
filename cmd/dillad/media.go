@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,17 +33,18 @@ func runMedia(args []string, stdout, stderr io.Writer) error {
 	probe := fs.Bool("probe", false, "check whether the media sidecar accepts RoomService requests")
 	rooms := fs.Bool("rooms", false, "list the sidecar's live rooms and their participants")
 	idle := fs.Bool("idle", false, "exit 0 when no call needs the sidecar, 1 when one does (rooms listed on stderr), 69 when it cannot tell")
+	self := fs.Bool("self", false, "print what the running dilla-media reports about itself on media.sock (version, media_level, capabilities, pid) as one JSON line; 69 when it does not answer")
 	if err := parse(fs, args, stdout); err != nil {
 		return err
 	}
 	modes := 0
-	for _, on := range []bool{*probe, *rooms, *idle} {
+	for _, on := range []bool{*probe, *rooms, *idle, *self} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return usageError(stderr, "media", "--probe, --rooms and --idle are exclusive")
+		return usageError(stderr, "media", "--probe, --rooms, --idle and --self are exclusive")
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -49,6 +52,9 @@ func runMedia(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *self {
+		return mediaSelf(ctx, cfg.Instance.DataDir, stdout)
+	}
 	if modes == 1 {
 		verb := "media probe"
 		switch {
@@ -192,6 +198,40 @@ func mediaIdle(ctx context.Context, remote roomInfoLister, mints recentMints, no
 	return err
 }
 
+// selfToken is the character set a media.sock version or capability may use: the answer comes from
+// a dillad-controlled process, and the installer reads it as root.
+var selfToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$`)
+
+// mediaSelf prints the running media process's GET /media/self answer on media.sock as one JSON
+// line, after checking it: a version and capabilities of plain tokens, a level of 0 to 999 and a
+// positive pid. Anything else, or no answer, is exit.Unavailable and prints nothing.
+func mediaSelf(ctx context.Context, dataDir string, stdout io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var st mediaState
+	c := server.ControlClient(server.ControlSocketPath(dataDir, server.MediaSocketName))
+	if err := server.FetchControl(ctx, c, "/media/self", &st); err != nil {
+		return fmt.Errorf("media self: %w: %w", err, exit.Unavailable)
+	}
+	if !selfToken.MatchString(st.Version) || st.MediaLevel < 0 || st.MediaLevel > 999 || st.PID <= 0 {
+		return fmt.Errorf("media self: media.sock answered a malformed self-description: %w", exit.Unavailable)
+	}
+	for _, c := range st.Capabilities {
+		if !selfToken.MatchString(c) {
+			return fmt.Errorf("media self: media.sock answered a malformed capability: %w", exit.Unavailable)
+		}
+	}
+	if st.Capabilities == nil {
+		st.Capabilities = []string{}
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "%s\n", raw)
+	return err
+}
+
 // recentMints asks how many call tokens the API minted within the last 60 s.
 type recentMints func(ctx context.Context) (int, error)
 
@@ -303,15 +343,43 @@ func serveMedia(ctx context.Context, cfg *config.Config, stdout, stderr io.Write
 			}
 		}
 	}
+	// media.sock: GET /media/self always (what the installer and the refresh timer ask the running
+	// process), and the relay's routes while this process serves TURN. Without media.sock the API
+	// could not feed the relay its cuts, so a relay is never run without it.
+	var self atomic.Pointer[mediaState]
+	if ln, err := server.ListenControl(ctx, server.ControlSocketPath(cfg.Instance.DataDir, server.MediaSocketName), fd.log); err != nil {
+		fd.log.Error("media.sock is not served: the installer cannot confirm this media server, and it serves no TURN", "err", err)
+		if relay != nil {
+			relay.close()
+			relay = nil
+		}
+	} else {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /media/self", func(w http.ResponseWriter, _ *http.Request) {
+			st := self.Load()
+			if st == nil {
+				http.Error(w, "not ready", http.StatusServiceUnavailable)
+				return
+			}
+			server.WriteControlJSON(w, st)
+		})
+		if relay != nil {
+			mux.Handle("/relay/", relay.handler())
+		}
+		defer server.ServeControl(ln, mux, fd.log)()
+	}
 	started := time.Now().UTC()
 	writeState := func() error {
 		caps := []string{}
 		if relay != nil && relay.bound() {
 			caps = append(caps, turnCapability)
 		}
-		return writeMediaState(cfg.Instance.DataDir, mediaState{
-			Version: Version, MediaLevel: sfu.MediaLevel, Capabilities: caps, PID: os.Getpid(), Started: started,
-		})
+		st := mediaState{Version: Version, MediaLevel: sfu.MediaLevel, Capabilities: caps, PID: os.Getpid(), Started: started}
+		if err := writeMediaState(cfg.Instance.DataDir, st); err != nil {
+			return err
+		}
+		self.Store(&st)
+		return nil
 	}
 	if err := writeState(); err != nil {
 		return err

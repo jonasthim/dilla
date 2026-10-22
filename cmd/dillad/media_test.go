@@ -172,7 +172,7 @@ func TestMediaProbeAndRoomsAreExclusive(t *testing.T) {
 	if !errors.Is(err, exit.Usage) {
 		t.Fatalf("err = %v, want exit.Usage", err)
 	}
-	if !strings.Contains(stderr.String(), "media: --probe, --rooms and --idle are exclusive") {
+	if !strings.Contains(stderr.String(), "media: --probe, --rooms, --idle and --self are exclusive") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

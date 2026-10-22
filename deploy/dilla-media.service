@@ -26,6 +26,9 @@ ConfigurationDirectory=dilla
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
+# The media server executes nothing but the (statically linked) dillad itself.
+NoExecPaths=/
+ExecPaths=/usr/local/bin
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

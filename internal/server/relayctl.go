@@ -25,8 +25,10 @@ import (
 // The control sockets of R-UP11. TURN runs in `dillad media` while the call routes run in `dillad
 // serve`, so the two talk over two local unix sockets in the state directory:
 //
-//   - media.sock, served by `dillad media` while it serves TURN: POST /relay/cut and PUT
-//     /relay/cuts feed the media relay's cut map (MergeCuts), GET /relay/state reports it.
+//   - media.sock, served by every web3.12+ `dillad media`: GET /media/self says what the running
+//     media process is (its version, media level, capabilities and pid, as media.json does), and
+//     only while it serves TURN, POST /relay/cut and PUT /relay/cuts feed the media relay's cut map
+//     (MergeCuts) and GET /relay/state reports it.
 //   - api.sock, served by `dillad serve` in sidecar mode: GET /relay/barred/{device} is the media
 //     relay's barred lookup (RemoteBarred), GET /media/recent-mints is what `dillad media --idle`
 //     asks, and GET /relay/state says whether the API serves a relay itself.
@@ -256,6 +258,12 @@ type RelayState struct {
 	Started     int64  `json:"started"`
 	// Unacked is, on api.sock, how many forwarded cuts dilla-media has not acknowledged yet.
 	Unacked int `json:"unacked"`
+}
+
+// FetchControl GETs path on a control socket and decodes its JSON answer (at most maxControlBody)
+// into out; any status but 200 is an error.
+func FetchControl(ctx context.Context, c *http.Client, path string, out any) error {
+	return controlDo(ctx, c, http.MethodGet, path, nil, out)
 }
 
 // FetchRelayState asks a control socket's GET /relay/state.
