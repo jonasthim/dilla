@@ -441,6 +441,18 @@
       "name": "keypackage_resolution permits opaque zero-valued ref",
       "kind": "keypackage_resolution",
       "hex": "8550949494949494949494949494949494948158200000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "group registration request carries exact canonical four-field body",
+      "kind": "group_registration_request",
+      "hex": "8350a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1075818845033333333333333333333333333333333410141024103",
+      "registration_body_hex": "845033333333333333333333333333333333410141024103",
+      "registration_sha256": "b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870"
+    },
+    {
+      "name": "group registration acceptance receipt preserves original generation epoch and sequence",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070401"
     }
   ],
   "rejects": [
@@ -895,6 +907,61 @@
       "name": "legacy op14 request shape",
       "kind": "keypackage_resolution",
       "hex": "825094949494949494949494949494949494815820a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "zero operation id",
+      "kind": "group_registration_request",
+      "hex": "835000000000000000000000000000000000075818845033333333333333333333333333333333410141024103"
+    },
+    {
+      "name": "generation exceeds int64",
+      "kind": "group_registration_request",
+      "hex": "8350a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11b80000000000000005818845033333333333333333333333333333333410141024103"
+    },
+    {
+      "name": "registration body is a noncanonical four-field array",
+      "kind": "group_registration_request",
+      "hex": "8350a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a107581998045033333333333333333333333333333333410141024103"
+    },
+    {
+      "name": "registration body has wrong tuple length",
+      "kind": "group_registration_request",
+      "hex": "8350a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1075683503333333333333333333333333333333341014102"
+    },
+    {
+      "name": "registration body has trailing bytes",
+      "kind": "group_registration_request",
+      "hex": "8350a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a107581984503333333333333333333333333333333341014102410300"
+    },
+    {
+      "name": "receipt zero operation id",
+      "kind": "group_registration_receipt",
+      "hex": "86500000000000000000000000000000000050333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070401"
+    },
+    {
+      "name": "receipt zero group id",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150000000000000000000000000000000005820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070401"
+    },
+    {
+      "name": "receipt wrong hash length",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15033333333333333333333333333333333581f00000000000000000000000000000000000000000000000000000000000000070401"
+    },
+    {
+      "name": "receipt generation exceeds int64",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e18701b80000000000000000401"
+    },
+    {
+      "name": "receipt epoch exceeds int64",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870071b800000000000000001"
+    },
+    {
+      "name": "receipt next sequence zero",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070400"
     },
     {
       "name": "keypackage_publication: nonminimal CBOR array head",

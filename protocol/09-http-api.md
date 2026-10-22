@@ -188,6 +188,8 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | — | `[generation,server_time,ordinary_active_count,has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]` | `201` new / `200` replay: registration receipt |
+| `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
 
 Managed Bots use this scoped publication route, with the durable retry and
 generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human
@@ -195,6 +197,51 @@ publication is unchanged. Receipts prove historical acceptance, not current
 directory availability, and remain subject to current installation authority.
 The collection GET is a read-only current inventory snapshot with server Unix
 time in seconds; it never consumes a package. Its fallback flag is uint 0 or 1.
+
+Managed Bots register groups only through the installation-scoped routes above;
+their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Human group
+registration and its four-field CBOR tuple remain unchanged. `registration_body`
+is a bstr of at most 65,505 bytes (the whole CBOR request is capped at 64 KiB)
+containing the exact deterministic-CBOR encoding of
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`; the
+server strictly decodes and validates it without reconstructing its bytes.
+`operation_id` is a nonzero bstr16 and `expected_generation` is a uint no greater
+than signed-int64 max. A fresh request is accepted only when that generation is
+current; mismatch is `409 E_INVALID_REQUEST` (`expected_generation is stale`)
+and writes nothing. New acceptance is
+`201 [operation_id,group_id,registration_sha256,accepted_generation,
+initial_epoch,next_seq]`. The hash is
+`SHA-256(ASCII("dilla bot group registration v1") || 0x00 || registration_body)`.
+`next_seq` is the exact initial registration response value (1), and
+`initial_epoch` is the registered GroupInfo epoch. The acceptance receipt and
+group row, public MLS state and initial member rows commit atomically.
+
+The durable receipt is scoped by installation and operation and binds user,
+device, community, group, body hash, acceptance generation, initial epoch and
+`next_seq`. A matching retry returns `200` with the original six-field receipt,
+even after later epochs or generation changes. Reuse with another group, body or
+expected generation is `409 E_INVALID_REQUEST`; a different operation colliding
+with a registered group is `409 E_GROUP_EXISTS`, without group metadata. Receipt
+lookup requires the current B session to match the path installation and returns
+the same receipt or `404 E_NOT_FOUND`; another installation's receipt is
+indistinguishable from absence. Receipt lookup and historical replay require a
+live installation-bound session in joining or ready state. Receipts survive
+disablement and normal backup/restore and are not deleted when an installation
+is disabled.
+
+Before native group creation, the Go coordinator durably stores the operation id
+and original `expected_generation`; retries reuse that generation, never a host
+clock or newly sampled generation. It also retains the exact canonical
+registration-body bytes returned by the native intent. After restart, the
+coordinator compares the receipt's operation, group, expected/accepted
+generation and body hash with that intent before calling
+`bot_group_registered(operation_id,group_id,next_seq)`. Absence is conclusive
+nonacceptance only when the original generation is still current, the group id
+has no registered row, and managed bots have no alternate registration path. If
+generation has changed, absence is `unknown`: pause that group and retain the
+intent for reconciliation. A retry's stale-generation refusal does not resolve
+the earlier ambiguous request. Never infer discard or create a replacement group
+from a missing receipt after restore.
 
 Managed Bot sends use the attempt and recovery contract in `10`:
 

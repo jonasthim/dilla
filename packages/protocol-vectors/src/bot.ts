@@ -1,5 +1,6 @@
 import { encode } from './cbor.ts';
 import { hex } from './bytes.ts';
+import { createHash } from 'node:crypto';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
@@ -159,6 +160,28 @@ export function botVectors() {
   ['keypackage_resolution','legacy op14 request shape',[id(0x94),refs]],
  ];
  for(const [kind,name,value] of typedRejects)rej(name,kind,value);
+ // Managed Bot first-registration receipt contract. The bstr is the exact
+ // canonical four-field body sent to POST /groups; hash it without rebuilding.
+ const registrationBody=encode([id(0x33),new Uint8Array([0x01]),new Uint8Array([0x02]),new Uint8Array([0x03])]);
+ const registrationHash=createHash('sha256').update(Buffer.from('dilla bot group registration v1\0','ascii')).update(registrationBody).digest();
+ const registrationOperation=id(0xa1), registrationGroup=id(0x33);
+ const registrationRequest=[registrationOperation,7n,registrationBody];
+ const registrationReceipt=[registrationOperation,registrationGroup,new Uint8Array(registrationHash),7n,4n,1n];
+ cases.push({name:'group registration request carries exact canonical four-field body',kind:'group_registration_request',hex:cbor(registrationRequest),registration_body_hex:hex(registrationBody),registration_sha256:registrationHash.toString('hex')});
+ cases.push({name:'group registration acceptance receipt preserves original generation epoch and sequence',kind:'group_registration_receipt',hex:cbor(registrationReceipt)});
+ const registrationRejects:[string,unknown][]=[
+  ['zero operation id',[id(0),7n,registrationBody]],
+  ['generation exceeds int64',[registrationOperation,1n<<63n,registrationBody]],
+  ['registration body is a noncanonical four-field array',[registrationOperation,7n,new Uint8Array([0x98,0x04,...registrationBody.slice(1)])]],
+  ['registration body has wrong tuple length',[registrationOperation,7n,encode([registrationGroup,new Uint8Array([1]),new Uint8Array([2])])]],
+  ['registration body has trailing bytes',[registrationOperation,7n,new Uint8Array([...registrationBody,0x00])]],
+ ];
+ for(const [name,value] of registrationRejects)rej(name,'group_registration_request',value);
+ for(const [name,index,value] of [
+  ['receipt zero operation id',0,id(0)],['receipt zero group id',1,id(0)],['receipt wrong hash length',2,new Uint8Array(31)],
+  ['receipt generation exceeds int64',3,1n<<63n],['receipt epoch exceeds int64',4,1n<<63n],
+  ['receipt next sequence zero',5,0n],
+ ] as const){const v=[...registrationReceipt];v[index]=value;rej(name,'group_registration_receipt',v);}
  const malformedOuter=[['nonminimal CBOR array head','9800'],['trailing CBOR item','8000'],['CBOR map root','a0'],['indefinite CBOR array','9fff']] as const;
  for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
   for(const [name,hexValue] of malformedOuter)rejects.push({name:`${kind}: ${name}`,kind,hex:hexValue});

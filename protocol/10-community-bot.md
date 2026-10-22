@@ -317,6 +317,16 @@ refusal. A missing response is not refusal. Group application and Welcome retrie
 instead recover through persisted source progress and group membership; successful
 late sender revalidation recovers through the event journal.
 
+For first registration, the Go service also obtains the current server generation
+and durably commits `(operation_id, expected_generation)` before it asks the native
+core to create the group. A retry or restart reuses both values exactly; it never
+substitutes a newly sampled generation or host clock. The native create intent's
+pending result is the exact deterministic-CBOR registration body
+`[group_id,binding,group_info,ratchet_tree]` as bstr. The Go service sends those
+same bytes to the scoped HTTP route and retains them until a receipt resolves the
+intent. The generation fence therefore covers the native MLS mutation that
+produced the body, even though the generation is carried outside that body.
+
 ### Authenticated event journal
 
 Only a validated native Bot identity can populate or read the journal. Accepted
@@ -559,6 +569,8 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | — | `[generation, server_time, ordinary_active_count, has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id, expected_generation, registration_body]` | `201` new / `200` replay: registration receipt |
+| `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
@@ -683,6 +695,77 @@ credential under Bot account metadata is refused. The internal WASI ABI8
 `[0,device_id,user_id,last_resort,not_after,kp_ref,signature_key,credential_identity]`;
 the final field is the validated leaf's BasicCredential identity byte string,
 bounded to 8192 bytes by the host. It contains no private key.
+
+### Managed Bot group registration and recovery
+
+Managed Bots use only `POST /v1/bot-runtime/installations/{installation}/groups`
+and `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` for
+first registration. A B session must be enrolled, wire 3, in joining or ready
+state, and bound to the path installation, its Bot account and device, and that
+installation's community. Generic human `POST /v1/groups` refuses B sessions
+with `403 E_FORBIDDEN`; its human authorization, four-field request and response
+remain unchanged.
+
+The POST tuple is `[operation_id,expected_generation,registration_body]`.
+`operation_id` is a nonzero bstr16, `expected_generation` is uint 0 through
+signed-int64 max, and `registration_body` is a bstr of at most 65,505 bytes
+(the whole CBOR request is capped at 64 KiB) containing
+the exact canonical deterministic-CBOR four-element registration array
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`. It must
+decode strictly, have no trailing bytes and be byte-for-byte canonical; malformed
+or noncanonical input is `400 E_INVALID_REQUEST`, a wrong media type is `415`,
+and an oversized request is `413 E_TOO_LARGE`. The handler hashes the supplied
+bytes directly as
+`SHA-256(ASCII("dilla bot group registration v1") || 0x00 || registration_body)`;
+operation id and generation are not in this hash.
+
+The first acceptance compares `expected_generation` with the instance generation
+under the same transaction/serialization fence as group creation. A stale value
+is `409 E_INVALID_REQUEST` and writes nothing. A fresh acceptance applies the
+current registration ACL and every existing DS group validation, then commits
+the group row, serialized public MLS state, initial member rows and immutable
+receipt in one transaction. The exact receipt tuple is
+`[operation_id,group_id,registration_sha256,accepted_generation,initial_epoch,
+next_seq]`; new acceptance returns `201`, with `next_seq = 1`, the exact value
+from the original registration response. No gateway, state-cache or hook failure
+after commit changes the receipt or its meaning.
+
+Receipt identity is `(installation_id,operation_id)` and the immutable row binds
+installation, operation, user, device, community, group, body hash, accepted
+generation, initial epoch, next sequence and acceptance time. Operation ids are
+scoped to their installation: another installation may independently use the
+same 16-byte operation id, but can never read or affect this receipt. A session
+whose binding does not match the path installation gets `404 E_NOT_FOUND`, with
+no information about another scope. For the same installation, the exact same
+operation, expected generation, group and body
+returns `200` and the original receipt before checking current epoch, generation
+or mutable ACL; any changed input for that operation is `409 E_INVALID_REQUEST`.
+A different operation colliding with an existing group is `409 E_GROUP_EXISTS`
+without group metadata. Uniqueness races roll back before the winner is read in a
+new transaction; identical requests return the winner's receipt, conflicts reveal
+no group metadata.
+
+The GET requires the same current installation-bound B authority. It returns the
+exact six-field receipt or `404 E_NOT_FOUND`; an installation cannot distinguish
+another installation's receipt from absence. Receipts survive disablement and
+normal backup/restore. A restored receipt proves original acceptance even after
+the group advances. A restored backup without the receipt and with a changed
+generation is an unknown outcome: pause the group and retain the native intent.
+Receipt absence proves nonacceptance only when the intent's original generation
+is still current, the group id has no registered row, and every bot registration
+uses this scoped route. The coordinator may call `bot_group_registered` only
+after authenticating and matching the exact body hash, operation, group and
+generation, using the receipt's original `next_seq`. It may call
+`bot_group_discard` only after a conclusive server refusal or an explicit recovery
+procedure that proves the original registration cannot be accepted. Never
+discard, regenerate or replay the MLS mutation solely because receipt lookup is
+absent.
+
+In particular, if generation changed after the intent was created, retrying its
+old expected generation may now receive `409 E_INVALID_REQUEST`; that stale
+generation refusal does not resolve the earlier ambiguous request. Without a
+matching receipt, preserve the intent as unknown until an explicit recovery
+procedure proves the original registration cannot be accepted.
 
 A missing receipt after restore cannot admit an old-generation publication.
 Requests waiting for a device lock recheck generation and expiry when admitted;
