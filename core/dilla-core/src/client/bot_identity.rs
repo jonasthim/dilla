@@ -442,16 +442,49 @@ impl ClientCore {
             .map_err(|_| ClientError::new(E_CORE_INPUT, "interaction context snapshot rejected"))?;
         for list in [&snapshot.bot, &snapshot.participant] {
             let user = list.user.as_bytes();
-            let (pin, cached): (Option<(Vec<u8>, i64, Option<Vec<u8>>)>, Option<(i64, Vec<u8>, Vec<u8>, Vec<u8>)>) = self.read(|c| {
-                let pin = c.query_row("SELECT umk_pub,verified,changed_umk FROM app_trust_pins WHERE user_id=?1", [user.as_slice()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-                let cached = c.query_row("SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1", [user.as_slice()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-                Ok((pin,cached))
+            let pin: Option<(Vec<u8>, i64, Option<Vec<u8>>)> = self.read(|c| {
+                Ok(c.query_row(
+                    "SELECT umk_pub,verified,changed_umk FROM app_trust_pins WHERE user_id=?1",
+                    [user.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?)
             })?;
             let Some((umk, verified, changed)) = pin else {
                 return Err(ClientError::new(
                     E_CORE_STATE,
                     "interaction user-key pin is unavailable",
                 ));
+            };
+            let cached: Option<(i64, Vec<u8>, Vec<u8>, Vec<u8>)> = if list.user.as_bytes()
+                == &own.user_id
+            {
+                let raw = self
+                    .read(|c| schema::meta_get(c, schema::IDENTITY))?
+                    .ok_or_else(|| {
+                        ClientError::new(E_CORE_STATE, "Bot identity record is unavailable")
+                    })?;
+                let record = identity::IdentityRecord::decode(&raw)?;
+                let current = DeviceList::decode(&record.device_list)
+                    .map_err(|_| malformed(schema::IDENTITY))?;
+                if record.instance_id != own.instance_id || record.user_id != own.user_id {
+                    return Err(binding_mismatch());
+                }
+                Some((
+                    current.unsigned.version as i64,
+                    record.device_list,
+                    record.umk_pub.to_vec(),
+                    record.ssk_pub.to_vec(),
+                ))
+            } else {
+                self.read(|c| {
+                        Ok(c.query_row(
+                            "SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
+                            [user.as_slice()],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        )
+                        .optional()?)
+                    })?
             };
             let Some((version, blob, cached_umk, cached_ssk)) = cached else {
                 return Err(ClientError::new(
@@ -753,11 +786,129 @@ impl ClientCore {
                 schema::meta_put(c, schema::STATE_LIST, &state_list(1))?;
                 schema::meta_put(c, schema::IDENTITY, &identity)?;
                 schema::meta_put(c, schema::BOT_BINDING, &binding)?;
+                super::trust::pin_own(c, user_id, &pending.umk_pub, now.min(i64::MAX as u64) as i64)?;
                 schema::meta_del(c, schema::BOT_PENDING)
             })?;
             let mut e = Encoder::new();
             e.array(2).bytes(&rec.credential).bytes(&device_list_body);
             Ok(e.into_vec())
         })
+    }
+}
+
+#[cfg(test)]
+mod interaction_snapshot_tests {
+    use super::*;
+    use crate::{
+        bot::{
+            interaction_admission::Expected,
+            interaction_snapshot::{
+                SnapshotList,
+                tests::{make_snapshot, signed_list},
+            },
+        },
+        ids::MsgId,
+        mls::ConnHandle,
+    };
+    use ed25519_dalek::SigningKey;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    const INSTANCE: [u8; 16] = [0x11; 16];
+    const COMMUNITY: [u8; 16] = [0x22; 16];
+    const INSTALLATION: [u8; 16] = [0x33; 16];
+    const BOT_USER: [u8; 16] = [0x44; 16];
+    const HUMAN_USER: [u8; 16] = [0x77; 16];
+    const HUMAN_DEVICE: [u8; 16] = [0x78; 16];
+
+    fn conn() -> ConnHandle {
+        Arc::new(Mutex::new(Connection::open_in_memory().unwrap()))
+    }
+    fn mid(bytes: [u8; 16]) -> MsgId {
+        MsgId::from_bytes(bytes)
+    }
+    fn counts(c: &Connection) -> (i64, i64, i64, i64) {
+        c.query_row("SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents),(SELECT count(*) FROM app_bot_keypackage_intents),(SELECT count(*) FROM app_meta WHERE k LIKE 'bot_welcome/v1/%')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
+    }
+
+    #[test]
+    fn signed_snapshot_uses_stored_instance_and_user_pins_without_writing() {
+        let connection = conn();
+        let instance_key = SigningKey::from_bytes(&[42; 32]);
+        let mut core = ClientCore::open(connection.clone()).unwrap();
+        core.bot_bootstrap_begin(
+            &INSTANCE,
+            &COMMUNITY,
+            &INSTALLATION,
+            &instance_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        let completion = core.bot_bootstrap_complete(&BOT_USER, "bot", 100).unwrap();
+        let (credential_bytes, list_body) = crate::cbor::decode_strict(&completion, |d| {
+            d.array(2)?;
+            Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec()))
+        })
+        .unwrap();
+        let credential = CredentialIdentity::decode(&credential_bytes).unwrap();
+        let (version, blob, _signature, _prev_hash) = crate::cbor::decode_strict(&list_body, |d| {
+            d.array(4)?;
+            Ok((
+                d.uint()?,
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+            ))
+        })
+        .unwrap();
+        let bot_list = DeviceList::decode(&blob).unwrap();
+        let bot_snapshot_list = SnapshotList {
+            user: mid(BOT_USER),
+            umk: credential.umk_pub,
+            ssk: credential.ssk_pub,
+            binding_signature: credential.sig_umk_ssk,
+            version,
+            blob: blob.clone(),
+            signature: bot_list.sig_ssk,
+            prev_hash: bot_list.unsigned.prev_hash,
+            hash: bot_list.hash(),
+        };
+        let human_snapshot_list = signed_list(mid(HUMAN_USER), mid(HUMAN_DEVICE), 91, 92);
+        {
+            let c = connection.lock().unwrap();
+            c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,1,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.umk.as_slice()]).unwrap();
+            c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.version as i64, human_snapshot_list.blob, human_snapshot_list.umk.as_slice(), human_snapshot_list.ssk.as_slice()]).unwrap();
+        }
+        let expected = Expected {
+            instance: mid(INSTANCE),
+            installation: mid(INSTALLATION),
+            community: mid(COMMUNITY),
+            bot_user: mid(BOT_USER),
+            bot_device: mid(credential.device_id.0),
+            participant_user: mid(HUMAN_USER),
+            participant_device: mid(HUMAN_DEVICE),
+            group: mid([0x99; 16]),
+            minimum_eligibility_revision: 11,
+            server_now: 100,
+            policy_version: 3,
+        };
+        let wire = make_snapshot(
+            &expected,
+            &bot_snapshot_list,
+            &human_snapshot_list,
+            &instance_key,
+            101,
+        );
+        let before = counts(&connection.lock().unwrap());
+        let accepted = core
+            .bot_verify_interaction_snapshot(&wire, &expected)
+            .unwrap();
+        assert_eq!(accepted.admission_id, mid([1; 16]));
+        let mut bad = wire.clone();
+        *bad.last_mut().unwrap() ^= 1;
+        assert!(
+            core.bot_verify_interaction_snapshot(&bad, &expected)
+                .is_err()
+        );
+        assert_eq!(counts(&connection.lock().unwrap()), before);
     }
 }

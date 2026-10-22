@@ -233,7 +233,7 @@ pub fn verify_with_pinned_instance_key(
     {
         return Err(CodecError::Context);
     }
-    if admission.not_after < expected.server_now
+    if admission.not_after <= expected.server_now
         || admission.eligibility_revision < expected.minimum_eligibility_revision
     {
         return Err(CodecError::Expired);
@@ -362,6 +362,12 @@ mod tests {
         let expected = expected();
         let proof = signed(&expected, &key, 11, 100);
         let public = key.verifying_key().to_bytes();
+        assert_eq!(
+            verify_with_pinned_instance_key(&proof, &public, &expected),
+            Err(CodecError::Expired),
+            "not_after is exclusive at the server_now boundary"
+        );
+        let proof = signed(&expected, &key, 11, 101);
         let got = verify_with_pinned_instance_key(&proof, &public, &expected).unwrap();
         assert_eq!(got.group, expected.group);
         assert_eq!(got.eligibility_revision, 11);
@@ -422,7 +428,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[42; 32]);
         let expected = expected();
         let admission = verify_with_pinned_instance_key(
-            &signed(&expected, &key, 11, 100),
+            &signed(&expected, &key, 11, 101),
             &key.verifying_key().to_bytes(),
             &expected,
         )
@@ -479,7 +485,7 @@ mod tests {
             e2ee_version: 1,
             media_version: 0,
         };
-        let proof = signed(&expected, &key, 11, 100);
+        let proof = signed(&expected, &key, 11, 101);
         assert!(
             prepare_creation(
                 &proof,

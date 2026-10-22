@@ -344,9 +344,11 @@ participant_list]`. `expected_tuple` is the eight IDs in the admission tuple ord
 Each list is `[user_id,umk_pub32,ssk_pub32,sig_umk_ssk64,version,blob,
 ssk_signature64,prev_hash32,sha256_blob32]`. The instance signs
 `ASCII("dilla bot interaction context snapshot v1") || 0x00 || payload` with
-the same pinned external-sender key. The included public key and key ID are
-descriptive and must match the client's existing pin. Each list blob is at most
-64 KiB and the snapshot payload is at most 160 KiB. This snapshot proves which
+the same pinned external-sender key. The included public key must equal the
+client's stored pin. The key ID is included in the signed payload, but this client
+version does not persist a separate key-ID pin and therefore treats that ID as
+descriptive. Each list blob is at most 64 KiB and the snapshot payload is at most
+160 KiB. This snapshot proves which
 server context was read together; it is not authorization to register a group.
 The registrar still checks current state and consumes the admission receipt
 atomically with registration.

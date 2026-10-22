@@ -83,7 +83,8 @@ identity, and both verified signed device-list records inside the same transacti
 fence. Each list record carries UMK/SSK keys, the UMK-to-SSK binding signature, list version, blob,
 SSK signature, previous hash, and SHA-256 of the blob. The response is canonical CBOR array v1 and
 is signed under `dilla bot interaction context snapshot v1\0` using the instance external-sender
-key whose public half is already pinned under the included key ID. Signed list blobs are capped at
+key whose public key is already pinned in the encrypted Bot store. The included key ID is signed
+descriptive metadata; the current store does not persist a separate key-ID pin. Signed list blobs are capped at
 64 KiB each and the payload at 160 KiB.
 
 This route only provides transport material. The native helper still must verify the snapshot

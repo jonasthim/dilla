@@ -46,6 +46,9 @@ pub struct Snapshot {
     pub e2ee: u64,
     pub media: u64,
     pub instance: MsgId,
+    /// Signed descriptive server key ID. The Bot store currently pins only the external-sender
+    /// public key, so this ID is authenticated by that key but is not compared with a separate
+    /// locally persisted ID pin.
     pub key_id: MsgId,
     pub instance_signer: [u8; 32],
     pub expected: [MsgId; 8],
@@ -251,10 +254,14 @@ fn validate_list(x: &SnapshotList) -> Result<(), CodecError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cbor::Encoder;
-    use ed25519_dalek::SigningKey;
+    use crate::identity::{
+        DeviceEntry, DeviceList, DeviceListUnsigned, SskSigner, Tier, UmkSigner,
+    };
+    use crate::ids::{DeviceId, UserId};
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn id(byte: u8) -> MsgId {
         MsgId::from_bytes([byte; 16])
@@ -279,6 +286,147 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    pub(crate) fn signed_list(
+        user: MsgId,
+        device: MsgId,
+        umk_seed: u8,
+        ssk_seed: u8,
+    ) -> SnapshotList {
+        let umk = UmkSigner::from_bytes(&[umk_seed; 32]);
+        let ssk = SskSigner::from_bytes(&[ssk_seed; 32]);
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(user.0),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![DeviceEntry {
+                device_id: DeviceId::from_bytes(device.0),
+                dsk_pub: [ssk_seed.wrapping_add(1); 32],
+                tier: Tier::Native,
+                added_at: 100,
+                revoked_at: None,
+            }],
+        };
+        let device_list = DeviceList {
+            sig_ssk: ssk.sign_device_list(&unsigned),
+            unsigned,
+        };
+        let blob = device_list.encode();
+        SnapshotList {
+            user,
+            umk: umk.public(),
+            ssk: ssk.public(),
+            binding_signature: umk.sign_ssk(&ssk.public()),
+            version: 1,
+            signature: device_list.sig_ssk,
+            prev_hash: device_list.unsigned.prev_hash,
+            hash: Sha256::digest(&blob).into(),
+            blob,
+        }
+    }
+
+    pub(crate) fn make_snapshot(
+        expected: &Expected,
+        bot: &SnapshotList,
+        participant: &SnapshotList,
+        key: &SigningKey,
+        expiry: u64,
+    ) -> Vec<u8> {
+        let mut admission = Encoder::new();
+        admission
+            .array(12)
+            .uint(1)
+            .bytes(id(1).as_bytes())
+            .bytes(expected.instance.as_bytes())
+            .bytes(expected.installation.as_bytes())
+            .bytes(expected.community.as_bytes())
+            .bytes(expected.bot_user.as_bytes())
+            .bytes(expected.bot_device.as_bytes())
+            .bytes(expected.participant_user.as_bytes())
+            .bytes(expected.participant_device.as_bytes())
+            .bytes(expected.group.as_bytes())
+            .uint(expected.minimum_eligibility_revision)
+            .uint(expiry);
+        let admission_payload = admission.into_vec();
+        let admission_sig = key
+            .sign(
+                &[
+                    b"dilla bot interaction admission v1\0".as_slice(),
+                    &admission_payload,
+                ]
+                .concat(),
+            )
+            .to_bytes();
+        let mut payload = Encoder::new();
+        payload
+            .array(16)
+            .uint(1)
+            .bytes(id(10).as_bytes())
+            .bytes(id(1).as_bytes())
+            .bytes(&admission_payload)
+            .bytes(&admission_sig)
+            .uint(expected.server_now)
+            .uint(expected.minimum_eligibility_revision)
+            .uint(expected.policy_version)
+            .uint(1)
+            .uint(0)
+            .bytes(expected.instance.as_bytes())
+            .bytes(id(11).as_bytes())
+            .bytes(&key.verifying_key().to_bytes());
+        payload
+            .array(8)
+            .bytes(expected.instance.as_bytes())
+            .bytes(expected.installation.as_bytes())
+            .bytes(expected.community.as_bytes())
+            .bytes(expected.bot_user.as_bytes())
+            .bytes(expected.bot_device.as_bytes())
+            .bytes(expected.participant_user.as_bytes())
+            .bytes(expected.participant_device.as_bytes())
+            .bytes(expected.group.as_bytes());
+        for list in [bot, participant] {
+            payload
+                .array(9)
+                .bytes(list.user.as_bytes())
+                .bytes(&list.umk)
+                .bytes(&list.ssk)
+                .bytes(&list.binding_signature)
+                .uint(list.version)
+                .bytes(&list.blob)
+                .bytes(&list.signature)
+                .bytes(&list.prev_hash)
+                .bytes(&list.hash);
+        }
+        let payload = payload.into_vec();
+        let sig = key.sign(&[DOMAIN, payload.as_slice()].concat()).to_bytes();
+        let mut wire = Encoder::new();
+        wire.array(2).bytes(&payload).bytes(&sig);
+        wire.into_vec()
+    }
+
+    fn signed_snapshot(expiry: u64) -> (Vec<u8>, SigningKey, Expected) {
+        let expected = Expected {
+            instance: id(2),
+            installation: id(3),
+            community: id(4),
+            bot_user: id(5),
+            bot_device: id(6),
+            participant_user: id(7),
+            participant_device: id(8),
+            group: id(9),
+            minimum_eligibility_revision: 11,
+            server_now: 100,
+            policy_version: 3,
+        };
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let bot = signed_list(id(5), id(6), 51, 61);
+        let participant = signed_list(id(7), id(8), 71, 81);
+        (
+            make_snapshot(&expected, &bot, &participant, &key, expiry),
+            key,
+            expected,
+        )
     }
 
     #[test]
@@ -318,5 +466,23 @@ mod tests {
         let mut wrong = expected();
         wrong.policy_version += 1;
         assert!(verify(&wire, &key.verifying_key().to_bytes(), &wrong).is_err());
+    }
+
+    #[test]
+    fn full_snapshot_accepts_real_signed_lists_and_rejects_expiry_equality() {
+        let (wire, key, expected) = signed_snapshot(101);
+        let accepted = verify(&wire, &key.verifying_key().to_bytes(), &expected).unwrap();
+        assert_eq!(accepted.bot.user, expected.bot_user);
+        assert_eq!(accepted.participant.user, expected.participant_user);
+
+        let (expired, expiry_key, expiry_expected) = signed_snapshot(100);
+        assert_eq!(
+            verify(
+                &expired,
+                &expiry_key.verifying_key().to_bytes(),
+                &expiry_expected
+            ),
+            Err(CodecError::Expired)
+        );
     }
 }
