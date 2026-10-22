@@ -84,6 +84,10 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 SELECT * FROM mls_handshakes WHERE group_id = $1 AND seq >= $2
 ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
 
+-- name: ListHandshakesWithoutWithdrawn :many
+SELECT * FROM mls_handshakes WHERE group_id = $1 AND seq >= $2 AND kind <> 3
+ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
+
 -- name: OldestHandshakeSeq :one
 SELECT seq FROM mls_handshakes WHERE group_id = $1 ORDER BY seq LIMIT 1;
 
@@ -108,19 +112,33 @@ DELETE FROM mls_handshakes WHERE created < $1;
 
 -- name: PutProposal :exec
 INSERT INTO mls_pending_proposals (group_id, ref, epoch, kind, target_leaf, target_device,
-                                   key_package, origin, action_id, issued_at, ttl, void_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                                   key_package, origin, action_id, issued_at, ttl, void_at,
+                                   withdrawable, withdrawn_at, withdrawn_seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
 
 -- name: GetProposal :one
 SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND ref = $2;
 
 -- name: ListLiveProposals :many
-SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2 AND void_at IS NULL
+SELECT * FROM mls_pending_proposals
+WHERE group_id = $1 AND epoch = $2 AND void_at IS NULL AND withdrawn_at IS NULL
 ORDER BY issued_at, ref;
 
 -- name: ListAllProposals :many
-SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2
+SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2 AND withdrawn_at IS NULL
 ORDER BY issued_at, ref;
+
+-- name: ListWithdrawnProposals :many
+SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2 AND withdrawn_at IS NOT NULL
+ORDER BY issued_at, ref;
+
+-- name: IsWithdrawn :one
+SELECT COUNT(*) FROM mls_pending_proposals
+WHERE group_id = $1 AND epoch = $2 AND ref = $3 AND withdrawn_at IS NOT NULL;
+
+-- name: WithdrawProposal :execrows
+UPDATE mls_pending_proposals SET withdrawn_at = $1, withdrawn_seq = $2
+WHERE group_id = $3 AND ref = $4 AND withdrawn_at IS NULL;
 
 -- name: VoidProposal :exec
 UPDATE mls_pending_proposals SET void_at = $1 WHERE group_id = $2 AND ref = $3;

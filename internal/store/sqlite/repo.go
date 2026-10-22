@@ -1351,6 +1351,20 @@ func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64
 	if err != nil {
 		return nil, wrap(err)
 	}
+	return handshakeRows(rows)
+}
+
+func (r *Repo) ListHandshakesWithoutWithdrawn(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	rows, err := r.r.ListHandshakesWithoutWithdrawn(ctx, sqlitedb.ListHandshakesWithoutWithdrawnParams{
+		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+	})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return handshakeRows(rows)
+}
+
+func handshakeRows(rows []sqlitedb.MlsHandshakes) ([]store.HandshakeRow, error) {
 	out := make([]store.HandshakeRow, 0, len(rows))
 	for _, m := range rows {
 		device, err := idPtr(m.SenderDevice)
@@ -1462,6 +1476,9 @@ func proposalParams(p store.ProposalRow) sqlitedb.PutProposalParams {
 		IssuedAt:     p.IssuedAt,
 		Ttl:          int64(p.TTL),
 		VoidAt:       nullInt64(p.VoidAt),
+		Withdrawable: boolInt(p.Withdrawable),
+		WithdrawnAt:  nullInt64(p.WithdrawnAt),
+		WithdrawnSeq: nullUint64(p.WithdrawnSeq),
 	}
 }
 
@@ -1483,6 +1500,9 @@ func mlsProposalRow(m sqlitedb.MlsPendingProposals) (store.ProposalRow, error) {
 		IssuedAt:     m.IssuedAt,
 		TTL:          uint64(m.Ttl),
 		VoidAt:       ptrInt64(m.VoidAt),
+		Withdrawable: m.Withdrawable != 0,
+		WithdrawnAt:  ptrInt64(m.WithdrawnAt),
+		WithdrawnSeq: ptrUint64(m.WithdrawnSeq),
 	}, nil
 }
 
@@ -1514,6 +1534,45 @@ func (r *Repo) VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at i
 	}))
 }
 
+func (r *Repo) ListWithdrawnProposals(ctx context.Context, groupID id.ID, epoch uint64) ([]store.ProposalRow, error) {
+	rows, err := r.r.ListWithdrawnProposals(ctx, sqlitedb.ListWithdrawnProposalsParams{GroupID: groupID, Epoch: int64(epoch)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ProposalRow, 0, len(rows))
+	for _, m := range rows {
+		p, err := mlsProposalRow(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// IsWithdrawn reads through the writer: the commit asks it inside the group lock, right after the
+// withdrawal may have been written.
+func (r *Repo) IsWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (bool, error) {
+	n, err := r.w.IsWithdrawn(ctx, sqlitedb.IsWithdrawnParams{GroupID: groupID, Epoch: int64(epoch), Ref: ref})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
+func (r *Repo) WithdrawProposal(ctx context.Context, groupID id.ID, ref []byte, at int64, seq uint64) (bool, error) {
+	n, err := r.w.WithdrawProposal(ctx, sqlitedb.WithdrawProposalParams{
+		WithdrawnAt:  sql.NullInt64{Int64: at, Valid: true},
+		WithdrawnSeq: sql.NullInt64{Int64: int64(seq), Valid: true}, //nolint:gosec // G115: a seq is far below 2^63
+		GroupID:      groupID,
+		Ref:          ref,
+	})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n > 0, nil
+}
+
 func (r *Repo) DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error {
 	for _, ref := range refs {
 		if err := r.w.DeleteProposal(ctx, sqlitedb.DeleteProposalParams{GroupID: groupID, Ref: ref}); err != nil {
@@ -1531,6 +1590,9 @@ func (r *Repo) ReissueProposal(ctx context.Context, oldRef []byte, p store.Propo
 	switch {
 	case err == nil:
 		p.ActionID = old.ActionID
+		// UP6b, correction C1: the flag is the replaced row's, a column this statement carries,
+		// never the column's default. A caller's own flag (a fresh absence Remove) is kept too.
+		p.Withdrawable = p.Withdrawable || old.Withdrawable != 0
 		if err := r.w.DeleteProposal(ctx, sqlitedb.DeleteProposalParams{GroupID: p.GroupID, Ref: oldRef}); err != nil {
 			return wrap(err)
 		}

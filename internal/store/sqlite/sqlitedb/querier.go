@@ -157,6 +157,7 @@ type Querier interface {
 	// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
 	// unreferenced blob's file is on disk until the sweeper collects it.
 	InstanceBlobBytes(ctx context.Context) (int64, error)
+	IsWithdrawn(ctx context.Context, arg IsWithdrawnParams) (int64, error)
 	// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
 	// channel, the time of their last accepted class-0 upload into any of its text groups from any
 	// device. Neither a tombstone nor a retention prune moves it.
@@ -213,6 +214,7 @@ type Querier interface {
 	// moment the group stops being useful.
 	ListGroupsForRetention(ctx context.Context, arg ListGroupsForRetentionParams) ([]MlsGroups, error)
 	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
+	ListHandshakesWithoutWithdrawn(ctx context.Context, arg ListHandshakesWithoutWithdrawnParams) ([]MlsHandshakes, error)
 	// web-3 (L-HTTP-105, RV-2): the idle call-group close. The open call groups (kind 1) that no live
 	// voice session names and that were created at or before the cutoff, oldest first; the caller
 	// closes at most max_rows of them per pass.
@@ -242,6 +244,7 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, error)
 	ListWebauthnCredentials(ctx context.Context, arg ListWebauthnCredentialsParams) ([]WebauthnCredentials, error)
 	ListWelcomes(ctx context.Context, arg ListWelcomesParams) ([]ListWelcomesRow, error)
+	ListWithdrawnProposals(ctx context.Context, arg ListWithdrawnProposalsParams) ([]MlsPendingProposals, error)
 	// A write claim inside Tx. SQLite's one writer already serialises every write transaction, so this
 	// only makes the claim explicit and the two engines' call sites the same.
 	LockBlob(ctx context.Context, arg LockBlobParams) error
@@ -434,6 +437,7 @@ type Querier interface {
 	// toward their quota. COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	UserReferencesBlob(ctx context.Context, arg UserReferencesBlobParams) (int64, error)
 	VoidProposal(ctx context.Context, arg VoidProposalParams) error
+	WithdrawProposal(ctx context.Context, arg WithdrawProposalParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -241,6 +241,10 @@ type MLS interface {
 	PutGroupState(ctx context.Context, groupID id.ID, epoch uint64, state, groupInfo, treeHash []byte) error
 	AppendHandshake(ctx context.Context, h HandshakeRow) error
 	ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]HandshakeRow, error)
+	// ListHandshakesWithoutWithdrawn is ListHandshakes with every kind-3 (withdrawn) row left out,
+	// limit counting only the rows served: the catch-up of a client that did not ask for kind 3
+	// (UP6b, protocol/02 § Handshake records).
+	ListHandshakesWithoutWithdrawn(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]HandshakeRow, error)
 	OldestHandshakeSeq(ctx context.Context, groupID id.ID) (uint64, error)
 	// GetCommitAtEpoch is the ONE handshake that carried a group into `epoch`:
 	// the lowest-seq row of kind 1 (commit) or 2 (external_commit) at that
@@ -255,10 +259,22 @@ type MLS interface {
 	// group's HandshakesPruned to the highest seq it lost, in one transaction.
 	PruneHandshakes(ctx context.Context, before int64) (int64, error)
 	PutProposal(ctx context.Context, p ProposalRow) error
+	// ListProposals never lists a withdrawn proposal (UP6b, correction C2): it is neither
+	// outstanding nor void, so the freeze, invariant 4's clause 1, the TTL sweep, the re-drive, the
+	// 409 and 425 lists, GET /proposals and ready's count all leave it out by construction.
 	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)
+	// ListWithdrawnProposals is the withdrawn proposals at epoch.
+	ListWithdrawnProposals(ctx context.Context, groupID id.ID, epoch uint64) ([]ProposalRow, error)
+	// IsWithdrawn reports whether ref is a withdrawn proposal at epoch: the commit's 409 `withdrawn`.
+	IsWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (bool, error)
+	// WithdrawProposal marks one unwithdrawn proposal withdrawn at `at` by the kind-3 row `seq`;
+	// it answers whether a row was marked.
+	WithdrawProposal(ctx context.Context, groupID id.ID, ref []byte, at int64, seq uint64) (bool, error)
 	VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error
 	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
-	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
+	// ReissueProposal replaces one row with p, keeping the old row's action_id and its withdrawable
+	// flag (UP6b, correction C1: a re-issue, a re-arm or a re-drive never drops the flag).
+	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
 	ListMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)
 	// ListBarredMembers is the group's live leaves whose device is quarantined or revoked: the

@@ -245,6 +245,13 @@ type ProposalRow struct {
 	IssuedAt     int64
 	TTL          uint64
 	VoidAt       *int64
+	// Withdrawable marks an instance Remove issued because a device stayed out of, or left, its
+	// call's room (UP6b, protocol/02 invariant 6 "Withdrawal"); every re-issue carries it over
+	// (ReissueProposal). WithdrawnAt and WithdrawnSeq mark one the resuming device's own call start
+	// withdrew, and the seq of the kind-3 handshake row that says so.
+	Withdrawable bool
+	WithdrawnAt  *int64
+	WithdrawnSeq *uint64
 }
 
 // MemberRow mirrors `mls_members`.

@@ -311,6 +311,9 @@ type MlsPendingProposals struct {
 	IssuedAt     int64
 	Ttl          int64
 	VoidAt       sql.NullInt64
+	Withdrawable int64
+	WithdrawnAt  sql.NullInt64
+	WithdrawnSeq sql.NullInt64
 }
 
 type MlsWelcomePayloads struct {
