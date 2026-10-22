@@ -18,6 +18,28 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('bridges self-role policy reads, configuration, and member selections', async () => {
+    const w = world();
+    const listSelfRoles = vi.fn(() => Promise.resolve([{ id: STRANGER, name: 'Readers', position: 2, selfSelected: false }]));
+    const configureSelfRoles = vi.fn(() => Promise.resolve());
+    const selectSelfRole = vi.fn(() => Promise.resolve());
+    Object.assign(w.routes, { listSelfRoles, configureSelfRoles, selectSelfRole });
+    await toReady(w);
+    const communityId = toHex(COMMUNITY);
+    const roleId = toHex(STRANGER);
+    const requestId = toHex(new Uint8Array(16).fill(0x55));
+    w.call(990, { m: 'listSelfRoles', communityId });
+    await vi.waitFor(() => expect(w.ret(990)).toMatchObject({ ok: true, value: [{ id: roleId, name: 'Readers', selfSelected: false }] }));
+    expect(listSelfRoles).toHaveBeenCalledWith(COMMUNITY);
+    w.call(991, { m: 'configureSelfRoles', communityId, requestId, roleIds: [roleId] });
+    await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true, value: null }));
+    expect(configureSelfRoles).toHaveBeenCalledWith(COMMUNITY, new Uint8Array(16).fill(0x55), [STRANGER]);
+    w.call(992, { m: 'selectSelfRole', communityId, roleId, requestId, enabled: true });
+    await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true, value: null }));
+    expect(selectSelfRole).toHaveBeenCalledWith(COMMUNITY, STRANGER, new Uint8Array(16).fill(0x55), true);
+    w.call(993, { m: 'configureSelfRoles', communityId, requestId, roleIds: [roleId, roleId] });
+    await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  });
   it('bridges member timeout reads and writes with decimal Unix seconds', async () => {
     const w = world();
     const getMemberTimeout = vi.fn(() => Promise.resolve(1_800_000_000n));

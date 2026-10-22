@@ -194,6 +194,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'listSelfRoles',
+  'configureSelfRoles',
+  'selectSelfRole',
   'configureBotInstallation',
   'disableBotInstallation',
   'beginBotSpotifyAttempt',
@@ -315,6 +318,9 @@ const UTF8 = new TextEncoder();
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  listSelfRoles: ['communityId'],
+  configureSelfRoles: ['communityId', 'requestId'],
+  selectSelfRole: ['communityId', 'roleId', 'requestId'],
   configureBotInstallation: ['communityId', 'requestId'],
   disableBotInstallation: ['communityId', 'requestId'],
   beginBotSpotifyAttempt: ['communityId'],
@@ -403,6 +409,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'listSelfRoles',
+    'configureSelfRoles',
+    'selectSelfRole',
     'configureBotInstallation',
     'disableBotInstallation',
     'beginBotSpotifyAttempt',
@@ -560,6 +569,12 @@ function invalid(command: Record<string, unknown>): string | null {
       return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
     }
   }
+  if (m === 'configureSelfRoles') {
+    if (!Array.isArray(command.roleIds) || command.roleIds.length > 250
+      || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
+      || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
+  }
+  if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
     if (!(m === 'configureBotInstallation' && revision === null)
@@ -1072,6 +1087,9 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'listSelfRoles': return this.listSelfRoles(command.communityId);
+      case 'configureSelfRoles': return this.configureSelfRoles(command);
+      case 'selectSelfRole': return this.selectSelfRole(command);
       case 'configureBotInstallation': return this.configureBotInstallation(command);
       case 'disableBotInstallation': return this.disableBotInstallation(command);
       case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
@@ -1179,6 +1197,24 @@ export class Controller {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.getBotInstallation(fromHex(communityId));
     return row === null ? null : botInstallationView(row);
+  }
+
+  private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    return (await this.routes.listSelfRoles(fromHex(communityId))).map(row => ({ id: toHex(row.id), name: row.name,
+      position: row.position, selfSelected: row.selfSelected }));
+  }
+
+  private async configureSelfRoles(command: Extract<Command, { m: 'configureSelfRoles' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.configureSelfRoles(fromHex(command.communityId), fromHex(command.requestId), command.roleIds.map(fromHex));
+    return null;
+  }
+
+  private async selectSelfRole(command: Extract<Command, { m: 'selectSelfRole' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.selectSelfRole(fromHex(command.communityId), fromHex(command.roleId), fromHex(command.requestId), command.enabled);
+    return null;
   }
 
   private async getMemberTimeout(communityId: string, userId: string): Promise<string | null> {

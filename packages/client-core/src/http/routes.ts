@@ -88,6 +88,7 @@ export interface PermissionsRow { bits: bigint; top: number }
 export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
   revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
+export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
   hoist: boolean; mentionable: boolean }
 export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
@@ -492,6 +493,32 @@ export class Routes {
     try { return botInstallationRow(decode(await this.body('GET', path, 'read', true)), communityId); }
     catch (e) { if (e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND'
       && e.detail === 'bot installation absent') return null; throw e; }
+  }
+  /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
+  async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {
+    const rows = bounded(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/self-roles`, 'read', true)), ROLES_MAX, 'self roles');
+    return rows.map(value => {
+      const a = arr(value);
+      if (a.length !== 4) throw new CborError('E_CBOR_SHAPE', 'expected four self-role fields');
+      const position = u53(a[2]);
+      if (position > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'self-role position out of range');
+      return { id: bin(a[0], 16), name: str(a[1]), position, selfSelected: oneOf(a[3], [0, 1] as const) === 1 };
+    });
+  }
+  async configureSelfRoles(communityId: Uint8Array, requestId: Uint8Array, roleIds: Uint8Array[]): Promise<void> {
+    if (roleIds.length > ROLES_MAX) throw new RangeError('E_ROUTE_INPUT: at most 250 roles');
+    const seen = new Set<string>();
+    for (const roleId of roleIds) { const hex = id('roleId', roleId); if (seen.has(hex)) throw new RangeError('E_ROUTE_INPUT: duplicate role'); seen.add(hex); }
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/self-roles/policy`, 'write', true,
+      { body: encode([inputId('requestId', requestId), roleIds]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== roleIds.length) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid self-role policy acknowledgement');
+    }
+  }
+  async selectSelfRole(communityId: Uint8Array, roleId: Uint8Array, requestId: Uint8Array, enabled: boolean): Promise<void> {
+    await this.http.request({ method: 'PUT', path: `/v1/communities/${id('communityId', communityId)}/self-roles/${id('roleId', roleId)}`,
+      bucket: 'write', idempotent: true, body: encode([inputId('requestId', requestId), enabled ? 1 : 0]), retry429: false,
+      ok: [204], maxBodyBytes: 0 });
   }
   /** Request ID is retained across HTTP retries; the server binds it to actor, payload and result. */
   async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CommunityAccess, MemberSummary } from '@dilla/client-core';
+import { PERM, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -20,11 +20,15 @@ export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: t
 const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
   banMembers: false, createInvite: false, manageRoles: false };
 
-function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null } = {}) {
+function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
+  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[]; roles?: RoleSummary[] } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
+  fake.handler = async command => command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
+    : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
+  if (over.roles !== undefined) fake.set(`roles:${SERVER}`, over.roles);
   if (over.members !== null) {
     fake.set(`members:${SERVER}`, over.members ?? [
       { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
@@ -48,15 +52,16 @@ const navNames = () => within(screen.getByRole('navigation', { name: en['admin.n
 describe('ServerSettings tabs', () => {
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'delete server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'self-service roles', 'channels', 'roles', 'invites', 'bans', 'delete server']);
   });
   it('shows the roles tab only with manageRoles, after channels', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
-    expect(navNames()).toEqual(['channels', 'roles', 'leave server']);
+    expect(navNames()).toEqual(['self-service roles', 'channels', 'roles', 'leave server']);
   });
   it('shows no roles tab without manageRoles', () => {
     setup({ ...NONE, manageChannels: true });
     expect(navNames()).not.toContain('roles');
+    expect(navNames()).toContain('self-service roles');
   });
   it('mounts the roles panel for the roles tab', () => {
     setup(FULL, { tab: 'roles' });
@@ -64,15 +69,37 @@ describe('ServerSettings tabs', () => {
   });
   it('shows only the tabs a person has the permission for; the danger tab is always there', () => {
     setup({ ...NONE, manageChannels: true, banMembers: true });
-    expect(navNames()).toEqual(['channels', 'bans', 'leave server']);
+    expect(navNames()).toEqual(['self-service roles', 'channels', 'bans', 'leave server']);
   });
   it('shows overview for manageCommunity and invites for createInvite', () => {
     setup({ ...NONE, manageCommunity: true, createInvite: true });
-    expect(navNames()).toEqual(['overview', 'bot', 'invites', 'leave server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'self-service roles', 'invites', 'leave server']);
   });
-  it('shows the bot tab only to manageCommunity members', () => {
+  it('shows the bot tab only to manageCommunity members while self-service roles are member-accessible', () => {
     setup({ ...NONE, manageChannels: true });
     expect(navNames()).not.toContain('bot');
+    expect(navNames()).toContain('self-service roles');
+  });
+  it('lets an ordinary member opt into an approved self-service role', async () => {
+    const roleId = 'c3'.repeat(16);
+    const { fake, user } = setup(NONE, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }] });
+    const checkbox = await screen.findByRole('checkbox', { name: 'Readers' });
+    await user.click(checkbox);
+    await waitFor(() => expect(fake.callsOf('selectSelfRole')).toHaveLength(1));
+    expect(fake.callsOf('selectSelfRole')[0]).toMatchObject({ communityId: SERVER, roleId, enabled: true });
+    expect(screen.getByRole('checkbox', { name: 'Readers' })).toBeChecked();
+  });
+  it('hides self-service policy choices that exceed safe bits or the manager rank', async () => {
+    const role = (id: string, name: string, position: number, allow: number): RoleSummary => ({ id, name, position, allow,
+      deny: 0, color: 0, hoist: false, mentionable: false, members: 0 });
+    setup({ ...NONE, top: 10, manageRoles: true }, { tab: 'selfRoles', roles: [
+      role('c1'.repeat(16), 'Safe', 5, PERM.viewChannel), role('c2'.repeat(16), 'Too high', 10, 0),
+      role('c3'.repeat(16), 'Unsafe', 4, PERM.manageRoles),
+    ] });
+    await screen.findByText(en['admin.bot.selfRoles.configure']);
+    expect(screen.getByRole('checkbox', { name: 'Safe' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Too high' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Unsafe' })).not.toBeInTheDocument();
   });
   it('shows no tab as forbidden while the permissions are loading', () => {
     setup({ ...NONE, loaded: false });
@@ -81,7 +108,7 @@ describe('ServerSettings tabs', () => {
   });
   it('opens the first permitted tab when the asked-for tab is not allowed', () => {
     setup(NONE, { tab: 'overview' });
-    expect(screen.getByRole('heading', { name: 'leave server', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: en['admin.bot.selfRoles.title'], level: 2 })).toBeInTheDocument();
   });
   it('asks to switch tabs through onTab', async () => {
     const { user, onTab } = setup(FULL);

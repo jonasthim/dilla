@@ -68,6 +68,19 @@ it('bounds a history page at one MiB and leaves HTTP error details worker-local'
   await expect(routes.getDeviceListHistory(USER, 0n)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE' });
 });
 
+it('reads and writes the manager-approved self-role policy and member selection', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [[ROLE, 'Readers', 4, 0]]));
+  await expect(routes.listSelfRoles(COMMUNITY)).resolves.toEqual([{ id: ROLE, name: 'Readers', position: 4, selfSelected: false }]);
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/self-roles` });
+  t.replies.push(cborReply(200, [USER, 1]));
+  await routes.configureSelfRoles(COMMUNITY, USER, [ROLE]);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/policy`, body: encode([USER, [ROLE]]) });
+  t.replies.push(noContent());
+  await routes.selectSelfRole(COMMUNITY, ROLE, USER, true);
+  expect(http.requests[2]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/${hex(ROLE)}`, body: encode([USER, 1]) });
+});
+
 function member(i: number): Uint8Array {
   const id = new Uint8Array(16);
   id[15] = i;
