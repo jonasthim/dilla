@@ -252,10 +252,42 @@ func validateHelperExecutable(path string) error {
 	f := os.NewFile(uintptr(fd), "native-helper")
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+	if err != nil || !info.Mode().IsRegular() || !trustedLocalCode(info) || !serviceCanExecute(info) {
 		return errors.New("native helper must be a regular executable file")
 	}
 	return nil
+}
+
+func trustedLocalCode(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && (st.Uid == 0 || st.Uid == uint32(os.Geteuid())) && info.Mode().Perm()&0o022 == 0
+}
+
+func serviceCanExecute(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	mode := info.Mode().Perm()
+	if os.Geteuid() == 0 {
+		return mode&0o111 != 0
+	}
+	if st.Uid == uint32(os.Geteuid()) {
+		return mode&0o100 != 0
+	}
+	if st.Gid == uint32(os.Getegid()) {
+		return mode&0o010 != 0
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		return false
+	}
+	for _, group := range groups {
+		if st.Gid == uint32(group) {
+			return mode&0o010 != 0
+		}
+	}
+	return mode&0o001 != 0
 }
 
 func main() {
@@ -285,7 +317,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		return errors.New("runtime credential could not be loaded")
 	}
 	defer clear(credential)
-	wasmBinary, err := os.ReadFile(cfg.WASIModule)
+	wasmBinary, err := readDoctorWASI(cfg.WASIModule)
 	if err != nil {
 		return errors.New("WASI identity module is unavailable")
 	}

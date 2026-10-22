@@ -56,22 +56,17 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 	} else {
 		checks = append(checks, botDoctorCheck{name: "native_helper", status: "OK: executable helper is available"})
 	}
-	if err := doctorWASIFile(cfg.WASIModule); err != nil {
+	if binary, readErr := readDoctorWASI(cfg.WASIModule); readErr != nil {
 		checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "FAIL: module is unavailable or unsafe"})
 	} else {
-		binary, readErr := readDoctorWASI(cfg.WASIModule)
-		if readErr != nil {
-			checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "FAIL: module could not be read"})
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		healthErr := doctorWASI(ctx, binary)
+		cancel()
+		clear(binary)
+		if healthErr != nil {
+			checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "FAIL: module failed startup validation"})
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			healthErr := doctorWASI(ctx, binary)
-			cancel()
-			clear(binary)
-			if healthErr != nil {
-				checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "FAIL: module failed startup validation"})
-			} else {
-				checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "OK: module compiles and initializes"})
-			}
+			checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "OK: module compiles and initializes"})
 		}
 	}
 	if err := validatePrivateStateDir(cfg.StateDir); err != nil {
@@ -93,24 +88,10 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func doctorWASIFile(path string) error {
-	if !filepath.IsAbs(path) {
-		return os.ErrInvalid
-	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	f := os.NewFile(uintptr(fd), "wasi-module")
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-		return os.ErrInvalid
-	}
-	return nil
-}
-
 func readDoctorWASI(path string) ([]byte, error) {
+	if !filepath.IsAbs(path) {
+		return nil, os.ErrInvalid
+	}
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
@@ -118,7 +99,7 @@ func readDoctorWASI(path string) ([]byte, error) {
 	f := os.NewFile(uintptr(fd), "wasi-module")
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > 64<<20 || !trustedLocalCode(info) {
 		return nil, os.ErrInvalid
 	}
 	return io.ReadAll(f)

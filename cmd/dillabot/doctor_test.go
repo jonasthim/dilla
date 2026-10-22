@@ -101,3 +101,33 @@ func TestDillabotDoctorFailsWhenARequiredDependencyIsUnavailable(t *testing.T) {
 		t.Fatalf("doctor did not report a sanitized module failure:\n%s", stdout.String())
 	}
 }
+
+func TestDillabotDoctorRejectsUntrustedOrUnexecutableCodeFiles(t *testing.T) {
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "helper")
+	module := filepath.Join(dir, "identity.wasm")
+	if err := os.WriteFile(helper, []byte("helper"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(module, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(helper, 0o601); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHelperExecutable(helper); err == nil && os.Geteuid() != 0 {
+		t.Fatal("owner without execute permission was accepted via another user's execute bit")
+	}
+	if err := os.Chmod(helper, 0o722); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHelperExecutable(helper); err == nil {
+		t.Fatal("helper writable by another user was accepted")
+	}
+	if err := os.Chmod(module, 0o620); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDoctorWASI(module); err == nil {
+		t.Fatal("group-writable WASI module was accepted")
+	}
+}
