@@ -588,8 +588,8 @@ export class CallController {
     // A leave already running (the worker's own blocked leave, or an earlier callLeave): wait for it, never a second
     // self-Remove, and its outcome stands.
     if (live.leaveRun !== null) { await live.leaveRun; return null; }
-    // UP6 (R-UP6): a room lost with E_DISCONNECTED holds the call group: no self-Remove and no forget.
-    if (lost && !blocked && !live.leaving) { this.hold(live, false); return null; }
+    // UP7 fix round 1: 'lost' leaves at once (one self-Remove). A room lost with E_DISCONNECTED is held by the page's
+    // callHold (R-UP6); 'lost' is a closed room (E_CALL_ENDED: released) or a removal (E_REMOVED: no key material kept).
     live.leaveRun = this.leaveLive(live, blocked, lost);
     await live.leaveRun;
     return null;

@@ -49,11 +49,14 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
       expect(groupBefore).toBe(2);
       const leaves: string[] = [];
       const commits: string[] = [];
+      /** The positive control: the worker's own requests are observed here (its start of the call). */
+      const starts: string[] = [];
       alice.context.on('request', (r) => {
         const path = new URL(r.url()).pathname;
         // An external join is a resync (or a new group); a commit of alice's would move the epoch on.
         if (r.method() === 'POST' && (/^\/v1\/groups\/[0-9a-f]{32}\/(resync|commit)$/.test(path) || path === '/v1/groups')) commits.push(path);
         if (r.method() === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/proposal$/.test(path)) leaves.push(path);
+        if (r.method() === 'POST' && /^\/v1\/channels\/[0-9a-f]{32}\/calls$/.test(path)) starts.push(path);
       });
       // The host's build "changes" once: the old page sees a new entry, holds and reloads; the new page sees its own.
       let served = false;
@@ -79,8 +82,10 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
       };
       // eslint-disable-next-line no-console -- the measured budget is the point of this test (UP7: measure first)
       console.log(`UP7 resume budget (ms from pagehide, ${test.info().project.name}): ${JSON.stringify(budget)} resumed=${String(marks.answer?.resumed)} externalJoin=${JSON.stringify(commits)}`);
-      // A resume needs no external commit; a lost race takes exactly one (the resync).
-      expect(commits.length, 'at most the one external join of a lost race').toBeLessThanOrEqual(marks.answer?.resumed === true ? 0 : 1);
+      // Positive control: the new page's worker requests are seen (its start of the call), so an empty `leaves` means
+      // none was sent. A resume needs no external commit; a lost race takes exactly one (the resync), seen here too.
+      expect(starts.length, 'the worker\'s start of the call is observed').toBeGreaterThan(0);
+      expect(commits.length, 'no external join for a resume, exactly one for a lost race').toBe(marks.answer?.resumed === true ? 0 : 1);
       expect(leaves, 'no self-Remove: the update reload never leaves').toEqual([]);
       // bob still lists alice's one device, and hears her again.
       await expect.poll(async () => (await callSlice(bob.page))?.roster.filter((r) => r.deviceId === a.device).length, { timeout: WAIT }).toBe(1);

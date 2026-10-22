@@ -2111,18 +2111,25 @@ describe('a hand-over is not held up by call work (wb-client m5)', () => {
 });
 
 describe('a room that ended on its own (wb-client I3)', () => {
-  // UP6 (R-UP6): a lost room holds the call group; it no longer leaves as a person's leave does.
-  it("callLeave 'lost' holds the call group: no self-Remove, no forget, and phase removed with E_DISCONNECTED", async () => {
-    const w = await joined();
-    expect(await w.call({ m: 'callLeave', reason: 'lost' })).toBeNull();
-    expect(w.server.routes()).not.toContain('POST proposal');
-    expect(w.model.calls.filter((c) => c.m === 'callGroupForget' || c.m === 'callLeaveProposal')).toEqual([]);
-    expect(w.model.group(w.callGroup)?.state).toBe(2);
-    expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_DISCONNECTED' } });
-    // A join is offered again from there.
-    await w.call(JOIN(w));
-    expect(w.slice('call').phase).toBe('in');
-  });
+  // UP7 fix round 1: 'lost' is a room that ended on its own other than by a lost connection (E_CALL_ENDED, E_REMOVED; the
+  // page holds E_DISCONNECTED with callHold). It leaves at once: exactly one self-Remove, the group forgotten, no hold, so
+  // a closed call is released and a removal leaves no key material behind.
+  for (const code of ['E_CALL_ENDED', 'E_REMOVED'] as const) {
+    it(`callLeave 'lost' (the page's ${code}) leaves at once: one self-Remove, the group forgotten, no hold`, async () => {
+      const w = await joined();
+      expect(await w.call({ m: 'callLeave', reason: 'lost' })).toBeNull();
+      expect(w.server.routes().filter((r) => r === 'POST proposal')).toHaveLength(1);
+      expect(w.model.calls.filter((c) => c.m === 'callGroupForget' && c.g === toHex(w.callGroup))).toHaveLength(1);
+      expect(w.model.group(w.callGroup)?.state).not.toBe(2);
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_DISCONNECTED' } });
+      // Nothing is held: a later callRelease sends nothing more, and a join of the channel is no resume.
+      await w.call({ m: 'callRelease' });
+      expect(w.server.routes().filter((r) => r === 'POST proposal')).toHaveLength(1);
+      const r = await w.call(JOIN(w)) as CallJoinResult;
+      expect(r.resumed).toBeUndefined();
+      expect(w.slice('call').phase).toBe('in');
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -2131,7 +2138,8 @@ describe('a room that ended on its own (wb-client I3)', () => {
 // ---------------------------------------------------------------------------------------------
 
 describe('a held call (UP6, R-UP6)', () => {
-  const LOST = { m: 'callLeave', reason: 'lost' } as const;
+  /** UP7: a lost connection is held by the page's callHold (a 'lost' leave no longer holds). */
+  const LOST = { m: 'callHold', channelId: toHex(VOICE) } as const;
   /** The harness's clocks start here (ManualClock). */
   const START = 1_700_000_000_000;
   const callRoutes = (w: World): string[] => w.server.routes().filter((r) => r !== 'GET device list' && r !== 'GET members');

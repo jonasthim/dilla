@@ -1018,6 +1018,12 @@ export function useCall(o: UseCallOptions): CallView {
    * inside the 5 s target. In both runs the worker's resume lost the race with the absence Remove (see the spec) and
    * joined afresh, which this budget includes.
    */
+  /** UP7 fix round 1: a held restore whose hold has expired becomes an ordinary restore with the saved absence. */
+  const dropHeld = useCallback((id: string, held: HeldRestore): void => {
+    if (recoveryRef.current !== id || recoveryHeld.current !== held) return;
+    recoveryHeld.current = null;
+    recoveryGoneFrom.current = { at: stampOfWall(held.gone), suspend: false };
+  }, []);
   const resumeOf = useCallback((id: string, held: HeldRestore): HeldResume => {
     const read = afkFreshRef.current(id, null, instanceGone({ at: stampOfWall(held.gone), suspend: false }));
     const gate: HeldResume = {
@@ -1025,7 +1031,12 @@ export function useCall(o: UseCallOptions): CallView {
       gate: async (answer) => {
         resumeMark('answer', answer);
         let verdict = await read;
+        // A group the worker no longer had (forgotten, or swept after its own expiry) is judged by the wall clock alone:
+        // it only decides whether late-rejoin applies, and the instance's leaf check already decided the group.
         const expired = answer.resumed ? answer.expired : Date.now() - held.at > HOLD_MS;
+        // UP7 fix round 1: an expired hold leaves the fast path for good. Later attempts read first and join only on a
+        // clear read (the ordinary restore), from the saved absence, so an unknown read never churns joins.
+        if (expired) dropHeld(id, held);
         if (!expired && verdict === 'leftAway') verdict = awayAfter(id, null) ? 'away' : 'clear';
         if (verdict === 'clear' || (verdict === 'unknown' && !expired)) return;
         gate.refused = verdict;
@@ -1035,7 +1046,9 @@ export function useCall(o: UseCallOptions): CallView {
       mark: (name) => { resumeMark(name); },
     };
     return gate;
-  }, [instanceGone, awayAfter]);
+  }, [instanceGone, awayAfter, dropHeld]);
+  const dropHeldRef = useRef(dropHeld);
+  dropHeldRef.current = dropHeld;
   const resumeOfRef = useRef(resumeOf);
   resumeOfRef.current = resumeOf;
   const restore = useCallback((id: string, camera: boolean, sharing: boolean, held: HeldRestore | null = null) => {
@@ -1319,15 +1332,18 @@ export function useCall(o: UseCallOptions): CallView {
   }, [session, tickAlive]);
   // UP7 (R-UP8, R-UP9): the instance's outages, from the worker's connection slice (see `outages`).
   useEffect(() => {
+    // UP7 fix round 1: an outage is the instance's only while this device is online itself (navigator.onLine); a loss of
+    // its own network is the device's absence, which late-rejoin counts.
+    const deviceOnline = (): boolean => typeof navigator === 'undefined' || navigator.onLine;
     let online = instanceOnline();
-    if (!online) outages.current.push({ from: stampNow(), to: null });
+    if (!online && deviceOnline()) outages.current.push({ from: stampNow(), to: null });
     return client.subscribe('connection', () => {
       const now = instanceOnline();
       if (now === online) return;
       online = now;
       const last = outages.current.at(-1);
       if (now) { if (last !== undefined && last.to === null) last.to = stampNow(); }
-      else {
+      else if (deviceOnline()) {
         outages.current.push({ from: stampNow(), to: null });
         // Only outages around a recent loss matter; the oldest go.
         if (outages.current.length > 32) outages.current.shift();
@@ -1383,7 +1399,9 @@ export function useCall(o: UseCallOptions): CallView {
       if (!navigator.onLine || sessionRef.current !== null || starting.current) return;
       // UP7 (Q1 = B): a held restore's attempts resume through the gate, its AFK read in parallel with the resume.
       const held = recoveryHeld.current;
-      if (held !== null) { joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
+      // UP7 fix round 1: past HOLD_MS by the page's clock the hold is expired whatever the worker would say: read first.
+      if (held !== null && Date.now() - held.at > HOLD_MS) dropHeldRef.current(recoveryChannelId, held);
+      else if (held !== null) { joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
       // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
       // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
       // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the

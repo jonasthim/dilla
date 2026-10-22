@@ -1189,3 +1189,55 @@ describe('UP7: calls survive an upgrade (Q1 = B, R-UP6 to R-UP9)', () => {
     expect(h.client.callsOf('callRelease')).toEqual([{ m: 'callRelease' }]);
   });
 });
+
+describe('UP7 fix round 1', () => {
+  type H = ReturnType<typeof harness>;
+  const failReads = (h: H) => {
+    const base = h.client.handler;
+    let failing = true;
+    h.client.handler = (c) => (c.m === 'afkRead' && failing ? Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' })) : base(c));
+    return { stop: () => { failing = false; } };
+  };
+
+  for (const by of ['the worker', 'the page clock'] as const) {
+    it(`an expired hold (by ${by}) with failing AFK reads makes at most one join attempt before a definite read`, async () => {
+      fakeClocks();
+      const h = harness();
+      if (by === 'the worker') { h.answer.expired = true; } else { h.answer.resumed = false; h.answer.expired = false; }
+      const reads = failReads(h);
+      const at = by === 'the worker' ? Date.now() : Date.now() - 200_000;
+      act(() => h.v.restore(GENV, false, false, { at, gone: Date.now() }));
+      await advance(20_000);
+      // The resume's gate refused once (its one self-Remove); later attempts read first and join nothing on an unknown read.
+      expect(h.started.length).toBeLessThanOrEqual(1);
+      expect(h.client.callsOf('callLeave').length).toBeLessThanOrEqual(1);
+      expect(h.v.recoveryChannelId).toBe(GENV);
+      // A definite clear read joins, through the ordinary path (no gate).
+      reads.stop();
+      await until(() => h.v.session !== null, 3_000);
+      expect(h.started.at(-1)?.opts.resume).toBeUndefined();
+    });
+  }
+
+  it("R-UP9: the device's own network loss is no instance outage: offline longer than the AFK timeout ends leftAway", async () => {
+    fakeClocks();
+    const h = harness();
+    h.setAfk(A, { timeoutSeconds: 60 });
+    act(() => h.v.join(GENV));
+    await until(() => h.v.session !== null);
+    await advance(1_000);
+    const general = h.sessions[0];
+    // The device loses its network (awake): the browser says offline, and the worker's connection goes with it.
+    const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    await advance(30_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await advance(100_000);
+    expect(h.started).toHaveLength(1);
+    onLine.mockReturnValue(true);
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    await until(() => h.v.recoveryChannelId === null);
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.started).toHaveLength(1);
+  });
+});

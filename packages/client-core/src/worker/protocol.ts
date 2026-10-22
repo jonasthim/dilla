@@ -106,11 +106,11 @@ export type Command =
   // web-3 (L-TS-50). The page never sends callJoin directly: startPageCall (L-WEB-50) sends it after subscribing to
   // onCallKeys. "Answer" is callJoin with the DM's channel id. vdec: '' or up to three of vp8, h264, vp9, no repeats.
   | { m: 'callJoin'; channelId: string; vdec: string }                                   // → CallJoinResult (no key bytes)
-  // 'lost' (WB client I3): the page's room ended on its own (its connection gave up, or the room closed); the worker
-  // ends in phase removed with E_DISCONNECTED rather than a silent idle, holding the call group (UP6, below).
+  // 'lost' (WB client I3): the page's room ended on its own (the room closed, or this device was removed from it); the
+  // worker leaves at once (one self-Remove) and ends in phase removed with E_DISCONNECTED rather than a silent idle.
   | { m: 'callLeave'; reason: 'user' | 'pagehide' | 'switch' | 'lost' }                  // → null
-  // UP6 (R-UP6): 'lost' above holds the call group (no self-Remove) for a resume by the next callJoin of the channel.
-  // callHold: the update reload; the live call of the channel is held the same way and the callKeep marker persisted,
+  // UP6 (R-UP6), UP7: a room whose connection was lost (E_DISCONNECTED) is held with callHold (no self-Remove) for a
+  // resume by the next callJoin of the channel, as is the update reload; the callKeep marker is persisted,
   // so the next page's boot sweep spares the group. callRelease: the hold is abandoned (its self-Remove and forget);
   // the page sends it when it gives up on the restore. A callLeave 'user' or 'switch' with no live call abandons a hold
   // the same way (the person's leave in phase removed); 'pagehide' never does.
