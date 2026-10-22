@@ -44,7 +44,7 @@ fn credential(user: u8, device: u8, signer: &SignatureKeyPair) -> CredentialWith
 
 #[test]
 fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
-    let provider = provider();
+    let bot_provider = provider();
     let bot_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("Bot DSK");
     let participant_signer =
         SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("participant DSK");
@@ -72,16 +72,16 @@ fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
         media_version: 0,
     };
 
-    let rejected = provider.storage().unit(|_| {
+    let rejected: Result<(), TxError<MlsError>> = bot_provider.storage().unit(|_| {
         let mut group = DillaGroup::create_interaction(
-            &provider,
+            &bot_provider,
             &bot_signer,
             bot_credential,
             GroupId::from_slice(&[0x61; 16]),
             binding,
         )?;
-        group.add_members(&provider, &bot_signer, &[package.key_package().clone()])?;
-        group.merge_pending_commit(&provider)?;
+        group.add_members(&bot_provider, &bot_signer, &[package.key_package().clone()])?;
+        group.merge_pending_commit(&bot_provider)?;
         assert_eq!(group.epoch(), 1);
         assert_eq!(group.members().len(), 2);
 
@@ -92,7 +92,7 @@ fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
         ))
     });
     assert!(matches!(rejected, Err(TxError::RolledBack(_))));
-    let persisted: i64 = provider
+    let persisted: i64 = bot_provider
         .storage()
         .unit(|unit| {
             unit.with_conn(|connection| {

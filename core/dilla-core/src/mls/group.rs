@@ -7,8 +7,8 @@
 
 use super::{
     DillaBinding, DillaInteractionBinding, DillaProvider, DillaStorage, GroupKind, StorageError,
-    TxError, create_config, join_config, past_epoch_sweep, proposal_credential_verdict,
-    proposal_extensions_unchanged, validate_staged_commit,
+    TxError, create_config, create_interaction_config, join_config, past_epoch_sweep,
+    proposal_credential_verdict, proposal_extensions_unchanged, validate_staged_commit,
 };
 use crate::envelope::Envelope;
 use crate::error::ProtocolError;
@@ -266,6 +266,27 @@ thread_local! {
 }
 
 impl DillaGroup {
+    /// Create the Bot-only epoch-zero state for a kind-3 interaction. The caller must Add the
+    /// participant KeyPackage and inspect the merged candidate inside one outer storage unit
+    /// before persisting any app group or intent state.
+    pub(crate) fn create_interaction(
+        provider: &DillaProvider,
+        signer: &SignatureKeyPair,
+        credential: CredentialWithKey,
+        group_id: GroupId,
+        binding: DillaInteractionBinding,
+    ) -> Result<Self, MlsError> {
+        let config = create_interaction_config(&binding)?;
+        let group = provider.storage().transaction(|| {
+            MlsGroup::new_with_group_id(provider, signer, &config, group_id, credential)
+                .map_err(mls_err)
+        })?;
+        Ok(Self {
+            group,
+            binding: binding.group_binding(),
+        })
+    }
+
     /// T1 create: 8 writes in one transaction.
     pub fn create(
         provider: &DillaProvider,

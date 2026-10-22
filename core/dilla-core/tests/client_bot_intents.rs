@@ -35,6 +35,28 @@ fn conn() -> ConnHandle {
     ))
 }
 
+fn openmls_row_count(connection: &rusqlite::Connection) -> i64 {
+    let mut statement = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'openmls_%'")
+        .expect("OpenMLS table query");
+    let tables = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("OpenMLS tables")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("OpenMLS table names");
+    tables
+        .into_iter()
+        .try_fold(0_i64, |total, table| {
+            let quoted = table.replace('"', "\"\"");
+            let count =
+                connection.query_row(&format!("SELECT count(*) FROM \"{quoted}\""), [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            Ok::<_, rusqlite::Error>(total + count)
+        })
+        .expect("OpenMLS state count")
+}
+
 fn file_conn() -> (PathBuf, ConnHandle) {
     let id = FILE_ID.fetch_add(1, Ordering::Relaxed);
     let path =
@@ -672,12 +694,16 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
 fn rejected_interaction_snapshot_leaves_no_group_or_create_intent() {
     let connection = conn();
     let mut bot = ready_bot(connection.clone());
+    let openmls_before = openmls_row_count(&connection.lock().expect("connection lock"));
     let bot_device = decode_strict(&bot.identity().expect("Bot identity"), |d| {
         d.array(6)?;
         d.uint()?;
         d.opt_bytes_exact::<16>()?;
         d.opt_bytes_exact::<16>()?;
-        d.opt_bytes_exact::<16>()
+        let device = d.opt_bytes_exact::<16>()?;
+        d.text()?;
+        d.uint()?;
+        Ok(device)
     })
     .expect("Bot identity shape")
     .expect("Bot device");
@@ -704,16 +730,17 @@ fn rejected_interaction_snapshot_leaves_no_group_or_create_intent() {
         )
         .is_err()
     );
-    let counts: (i64, i64, i64) = connection
-        .lock()
-        .expect("connection lock")
+    let connection = connection.lock().expect("connection lock");
+    let app_counts: (i64, i64) = connection
         .query_row(
-            "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents),(SELECT count(*) FROM openmls_groups)",
+            "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents)",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .expect("stored state counts");
-    assert_eq!(counts, (0, 0, 0));
+        .expect("app state counts");
+    let openmls_after = openmls_row_count(&connection);
+    assert_eq!(app_counts, (0, 0));
+    assert_eq!(openmls_after, openmls_before);
 }
 
 #[test]
