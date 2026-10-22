@@ -264,7 +264,7 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
 
   it('the reset chain: a socket closed 4003 reconnects once, the ticket answers E_FACTOR_REQUIRED, and the hook fires', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const { w, tickets } = socketWorld((n) => (n === 1 ? minted() : owedTicket()));
+    const { w, tickets } = socketWorld((n) => (n === 2 ? owedTicket() : minted()));
     w.call(1, { m: 'start' });
     await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
     const socket = Sock.all[0];
@@ -576,6 +576,7 @@ describe('C2 review: an owed account on a new browser, the double submit, the ho
 
 // S2 review M5: under instance.discovery = "session", GET /v1/instance is E, F; an owed client reads auth_methods with its
 // session. The start's read precedes any session (it names the store), so it carries no bearer.
+// Ready-phase pin continuity adds a separate authenticated discovery read.
 describe('the instance read with a session (S2 review M5)', () => {
   it('an owed client re-reads the instance with its bearer at factor-setup and publishes the methods it answers', async () => {
     const seen: (string | null)[] = [];
@@ -592,10 +593,10 @@ describe('the instance read with a session (S2 review M5)', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
     await vi.waitFor(() => expect(w.account()?.instance).toMatchObject({ totp: true, passkeys: true }));
-    expect(seen).toEqual([null, 'Bearer session-token']);
+    expect(seen).toEqual([null, 'Bearer session-token', 'Bearer session-token']);
   });
 
-  it('an account that owes nothing does not read the instance again (control)', async () => {
+  it('an account that owes nothing reads the instance only to check its signing-key pin', async () => {
     const seen: (string | null)[] = [];
     const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       seen.push(new Request(input, init).headers.get('authorization'));
@@ -603,7 +604,7 @@ describe('the instance read with a session (S2 review M5)', () => {
     }) as typeof globalThis.fetch;
     const w = world({ httpInstance: true, fetch });
     await toReady(w);
-    expect(seen).toEqual([null]);
+    expect(seen).toEqual([null, 'Bearer session-token']);
     expect(w.account()?.instance).toMatchObject({ totp: false, passkeys: false });
   });
 });
