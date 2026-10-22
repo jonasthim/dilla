@@ -46,6 +46,8 @@ export const REQUIRED_JOBS = [
   'chromium-web',
   'firefox-web',
   'webkit-web',
+  // UP4 (calls survive an upgrade): the previous release's media server under this tree's API.
+  'sfu-compat',
 ];
 
 /**
@@ -272,6 +274,24 @@ const REQUIRED_STEPS = {
   // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
   ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
+  // UP4. Which pairing is promised is decided by scripts/release-meta.mjs, shared with release.yml and check-release-meta;
+  // checkSfuCompatSteps holds the order and the env of the steps.
+  'sfu-compat': [
+    'timeout-minutes: 25',
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'go build -o target/dillad ./cmd/dillad',
+    'target/dillad version --json',
+    'bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary',
+    'node scripts/release-meta.mjs compat --version-json "$RUNNER_TEMP/new-version.json" --previous-dir "$RUNNER_TEMP/previous"',
+    'node scripts/release-meta.mjs notes-required docs/deploy/releases',
+    'npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat',
+    'name: sfu-compat-results',
+    'path: e2e/test-results',
+  ],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
   // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
   // green having proved nothing. The third is the only compile of the pinned LiveKit/wazero/sqlite
@@ -636,6 +656,33 @@ function checkVoiceSteps(jobs, problems) {
   }
 }
 
+/**
+ * UP4: the compat leg is a `run:` step of its own, gated on the plan step's answer, whose env points DILLA_SFU_BIN at the
+ * downloaded previous binary (without it the spec would test this tree's own SFU against itself and prove nothing) and
+ * carries the testkit. The fetch comes before the plan and the plan before both users; the skip path checks the notes.
+ */
+function checkSfuCompatSteps(jobs, problems) {
+  if (!('sfu-compat' in jobs)) return;
+  const steps = jobSteps(jobs['sfu-compat']);
+  const at = (prefix) => steps.findIndex((s) => s.some((l) => l.startsWith(prefix)));
+  const fetchAt = at('run: bash scripts/fetch-previous-release.sh');
+  const planAt = at('run: node scripts/release-meta.mjs compat');
+  const notesAt = at('run: node scripts/release-meta.mjs notes-required');
+  const specAt = at('run: npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat');
+  for (const [what, i] of [['the fetch of the previous release', fetchAt], ['the compat plan', planAt], ['the notes check for an incompatible release', notesAt], ['the compat spec', specAt]]) {
+    if (i < 0) problems.push(`ci.yml: job "sfu-compat" is missing ${what} (a run step of its own)`);
+  }
+  if (fetchAt >= 0 && planAt >= 0 && fetchAt > planAt) problems.push('ci.yml: job "sfu-compat" must fetch the previous release before it plans');
+  if (planAt >= 0 && specAt >= 0 && planAt > specAt) problems.push('ci.yml: job "sfu-compat" must plan before it runs the compat spec');
+  if (planAt >= 0 && !steps[planAt].some((l) => l === 'id: plan')) problems.push('ci.yml: job "sfu-compat"\'s plan step must be id: plan');
+  if (notesAt >= 0 && !steps[notesAt].includes("if: steps.plan.outputs.run == 'false'")) problems.push('ci.yml: job "sfu-compat" must check the notes only when the plan says run == false');
+  if (specAt >= 0) {
+    if (!steps[specAt].includes("if: steps.plan.outputs.run == 'true'")) problems.push('ci.yml: job "sfu-compat" must run the compat spec only when the plan says run == true');
+    if (!steps[specAt].includes('DILLA_SFU_BIN: ${{ runner.temp }}/previous/dillad-linux-amd64')) problems.push('ci.yml: job "sfu-compat" must run the compat spec with DILLA_SFU_BIN set to the previous release\'s dillad');
+    if (!steps[specAt].includes(TESTKIT_ENV)) problems.push(`ci.yml: job "sfu-compat" runs the compat spec without its own env ${TESTKIT_ENV}`);
+  }
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -833,6 +880,7 @@ export function checkWorkflow(root) {
   }
 
   checkVoiceSteps(jobs, problems);
+  checkSfuCompatSteps(jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
@@ -869,7 +917,7 @@ export function checkWorkflow(root) {
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
 export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'release.json'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -906,6 +954,14 @@ const RELEASE_STEPS = {
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
+    // UP4: release.json is generated from the built binary and the previous release (scripts/release-meta.mjs), never by hand;
+    // five assets; ci.yml's sfu-compat job must have passed on this commit (checkReleaseGate holds the order).
+    'release/dillad-linux-amd64 version --json',
+    'node scripts/release-meta.mjs write --tag "$TAG"',
+    '--previous-dir "$RUNNER_TEMP/previous"',
+    'bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --exclude-from "$TAG"',
+    'bash scripts/check-sfu-compat-gate.sh',
+    'test "$(ls | wc -l)" -eq 5',
     'gh release create "$TAG" --verify-tag',
     'flags="--prerelease"',
     `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,

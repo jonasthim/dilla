@@ -367,6 +367,43 @@ jobs:
           path: e2e/test-results
           if-no-files-found: error
 
+  sfu-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: |
+          go build -o target/dillad ./cmd/dillad
+          target/dillad version --json > "$RUNNER_TEMP/new-version.json"
+      - run: bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary
+      - id: plan
+        run: node scripts/release-meta.mjs compat --version-json "$RUNNER_TEMP/new-version.json" --previous-dir "$RUNNER_TEMP/previous"
+      - if: steps.plan.outputs.run == 'false'
+        run: node scripts/release-meta.mjs notes-required docs/deploy/releases
+      - if: steps.plan.outputs.run == 'true'
+        run: npm run test:e2e:voice:chromium -w @dilla/e2e -- upgrade.spec.ts --grep compat
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_SFU_BIN: \${{ runner.temp }}/previous/dillad-linux-amd64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: sfu-compat-results
+          path: e2e/test-results
+          if-no-files-found: error
+
   go-ds:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -1607,12 +1644,12 @@ test('a release workflow without the release job is reported', () => {
 });
 
 test('a release that no longer attaches install.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/release.json release/SHA256SUMS', 'release/release.json release/SHA256SUMS')), 'release/install.sh');
 });
 
 test('SHA256SUMS that leaves an asset out is reported', () => {
   assertReported(
-    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
+    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh release.json > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
     '> SHA256SUMS',
   );
 });
@@ -1769,7 +1806,7 @@ test('a ci.yml build that stamps a quoted version is reported', () => {
 });
 
 test('the CLI checks release.yml too', () => {
-  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
+  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/release.json release/SHA256SUMS', 'release/release.json release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -1838,4 +1875,59 @@ test('the docs job must run the real checks, not only their unit tests', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
   }
+});
+
+// UP4: the compat job's steps, and the release's UP4 steps.
+const PLAN_FALSE = "      - if: steps.plan.outputs.run == 'false'\n";
+const COMPAT_ENV_LINE = '          DILLA_SFU_BIN: ${{ runner.temp }}/previous/dillad-linux-amd64\n';
+const FETCH_STEP = '      - run: bash scripts/fetch-previous-release.sh "$RUNNER_TEMP/previous" --binary\n';
+
+test('the fixture sfu-compat job passes', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+test('sfu-compat without DILLA_SFU_BIN on the spec step is reported: it would test the tree against itself', () => {
+  assert.ok(GOOD.includes(COMPAT_ENV_LINE));
+  const problems = checkWorkflow(fixture(GOOD.replace(COMPAT_ENV_LINE, '')));
+  assert.ok(problems.some((p) => p.includes('DILLA_SFU_BIN')), problems.join('\n'));
+});
+
+test('sfu-compat that runs the spec whatever the plan said, or skips the notes check, is reported', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("      - if: steps.plan.outputs.run == 'true'\n", '      - name: spec\n')));
+  assert.ok(problems.some((p) => p.includes('only when the plan says run == true')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace(`${PLAN_FALSE}        run: node scripts/release-meta.mjs notes-required docs/deploy/releases\n`, '')));
+  assert.ok(problems.some((p) => p.includes('notes check for an incompatible release')), problems.join('\n'));
+});
+
+test('sfu-compat that plans before it fetches the previous release is reported', () => {
+  assert.ok(GOOD.includes(FETCH_STEP));
+  const reordered = GOOD.replace(FETCH_STEP, '').replace(PLAN_FALSE, `${FETCH_STEP}${PLAN_FALSE}`);
+  assert.notEqual(reordered, GOOD);
+  const problems = checkWorkflow(fixture(reordered));
+  assert.ok(problems.some((p) => p.includes('fetch the previous release before it plans')), problems.join('\n'));
+});
+
+test('a ci.yml without the sfu-compat job is reported, and ci-ok must need it', () => {
+  const without = GOOD.replace(/  sfu-compat:\n[\s\S]*?\n  go-ds:/, '  go-ds:');
+  assert.notEqual(without, GOOD);
+  assert.ok(checkWorkflow(fixture(without)).some((p) => p.includes('missing job "sfu-compat"')));
+  assert.ok(checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), sfu-compat/, '$1'))).some((p) => p.includes('"ci-ok"') && p.includes('"sfu-compat"')));
+});
+
+test('the real release workflow ships release.json as the fifth asset, generated, and gated on sfu-compat', () => {
+  assert.match(REAL_RELEASE, /test "\$\(ls \| wc -l\)" -eq 5/);
+  assert.match(REAL_RELEASE, /sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi\.wasm install\.sh release\.json > SHA256SUMS/);
+  assert.ok(REAL_RELEASE.indexOf('bash scripts/check-sfu-compat-gate.sh') < REAL_RELEASE.indexOf('gh release create'));
+});
+
+test('a release without the release.json generation step is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('node scripts/release-meta.mjs write --tag "$TAG"', 'echo skip')), 'release-meta.mjs write');
+});
+
+test('a release without the sfu-compat gate is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('bash scripts/check-sfu-compat-gate.sh', 'echo skip')), 'check-sfu-compat-gate.sh');
+});
+
+test('a release that counts four assets is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('-eq 5', '-eq 4')), '-eq 5');
 });

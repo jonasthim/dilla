@@ -85,6 +85,8 @@ export const JOB_GATES = {
   'chromium-web': ['e2e'],
   'firefox-web': ['e2e'],
   'webkit-web': ['e2e'],
+  // UP4: the previous release's media server under this tree's API (e2e/voice/upgrade.spec.ts, compat leg).
+  'sfu-compat': ['e2e'],
   deny: ['core'],
   go: ['go'],
   'go-ds': ['go'],

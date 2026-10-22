@@ -74,7 +74,8 @@ async function publishedAt(page: Page): Promise<number> {
   });
 }
 
-test('calls survive an upgrade: API-only restarts, an update reload, everyone dropped at once, a full restart', async ({ peerBrowser, playwright, browserName }) => {
+// The compat run (DILLA_SFU_BIN set) carries "compat" in its title, so UP4's `--grep compat` selects it and never the full run.
+test(`${COMPAT ? 'compat: ' : ''}calls survive an upgrade: API-only restarts, an update reload, everyone dropped at once, a full restart`, async ({ peerBrowser, playwright, browserName }) => {
   test.setTimeout(25 * 60_000);
   const env = { host: process.env.DILLA_TEST_HOST, control: process.env.DILLA_TESTKIT_CONTROL, invite: process.env.DILLA_TESTKIT_INVITE };
   const timings: Record<string, unknown> = { project: test.info().project.name, compat: COMPAT };
