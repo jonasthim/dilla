@@ -133,6 +133,28 @@ func TestReadReportsFailureWhenHelperExitsNonzero(t *testing.T) {
 	_ = p.Close()
 }
 
+func TestReadReportsEOFWhenTrackCompletesNormally(t *testing.T) {
+	helper, _ := fakeProtocolHelper(t, true, true)
+	a, err := New(Config{HelperPath: helper, StateDir: t.TempDir(), Credential: credential(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.Start(t.Context(), "spotify:track:0123456789012345678901")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, PCMBytesPerFrame)
+	if _, err := io.ReadFull(p, buf); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := p.Read(buf); n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("completed track Read = (%d, %v), want EOF", n, err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlaybackControlsAreFramedAndStopWaitsForChild(t *testing.T) {
 	helper, controlFile := fakeProtocolHelper(t, true)
 	a, err := New(Config{HelperPath: helper, StateDir: t.TempDir(), Credential: credential(t)})

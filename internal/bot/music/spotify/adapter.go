@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	MaxStatusLine    = 256
+	MaxStatusLine = 256
 	// Librespot's 44.1 kHz stereo s16le output: 882 samples per channel
 	// every 20 ms, four bytes per stereo sample pair.
 	PCMBytesPerFrame = 3528
@@ -207,25 +207,26 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 }
 
 type Playback struct {
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stdout      io.ReadCloser
-	stderr      io.ReadCloser
-	frames      chan []byte
-	statuses    chan Status
-	readErr     chan error
-	done        chan struct{}
-	mu          sync.Mutex
-	stopOnce    sync.Once
-	stopErr     error
-	waitErr     error
-	pending     []byte
-	frame       []byte
-	lastPCM     atomic.Int64
-	paused      atomic.Bool
-	pipeReaders sync.WaitGroup
-	discard     chan struct{}
-	discardOnce sync.Once
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       io.ReadCloser
+	stderr       io.ReadCloser
+	frames       chan []byte
+	statuses     chan Status
+	readErr      chan error
+	done         chan struct{}
+	mu           sync.Mutex
+	stopOnce     sync.Once
+	stopErr      error
+	waitErr      error
+	pending      []byte
+	frame        []byte
+	lastPCM      atomic.Int64
+	paused       atomic.Bool
+	explicitStop atomic.Bool
+	pipeReaders  sync.WaitGroup
+	discard      chan struct{}
+	discardOnce  sync.Once
 }
 
 // Wait only after both StdoutPipe and StderrPipe readers have consumed EOF.
@@ -463,7 +464,10 @@ func (p *Playback) processErrorOrStopped() error {
 	if p.processError() != nil {
 		return ErrPlaybackFailed
 	}
-	return ErrStopped
+	if p.explicitStop.Load() {
+		return ErrStopped
+	}
+	return io.EOF
 }
 
 func (p *Playback) control(ctx context.Context, value string) error {
@@ -546,6 +550,7 @@ func (p *Playback) Stop(ctx context.Context) error {
 			return
 		default:
 		}
+		p.explicitStop.Store(true)
 		p.stopErr = p.control(ctx, `{"op":"stop"}`)
 		_ = p.stdin.Close()
 		select {
