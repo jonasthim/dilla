@@ -35,7 +35,9 @@ fn dm_text_id(
     group: &DillaGroup,
     id: &[u8; 16],
 ) -> Result<Result<Option<[u8; 16]>, &'static str>, StorageError> {
-    let binding = group.binding();
+    let Ok(binding) = group.binding() else {
+        return Ok(Err(E_BINDING));
+    };
     let Some(text_id) = holder(c, &binding.target_id, 0, id)? else {
         return Ok(Ok(None));
     };

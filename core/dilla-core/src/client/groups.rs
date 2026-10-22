@@ -836,17 +836,21 @@ impl ClientCore {
                         if row.as_ref().is_some_and(|r| r.state == STATE_ACTIVE) {
                             let actual = self.take_group(id)?;
                             if let Some(group) = actual {
-                                let actual_binding = group.binding();
-                                let binding_matches = actual_binding.instance_id.0
-                                    == own.instance_id
-                                    && actual_binding.community_id.as_ref().map(|c| c.0)
-                                        == Some(bot.community_id)
-                                    && actual_binding.target_id == want.channel_id
-                                    && actual_binding.kind == group_kind
-                                    && actual_binding.e2ee_version == 1
-                                    && actual_binding.media_version == group_kind.media_version();
-                                let expected_receipt = binding_matches
-                                    .then(|| bot_welcome_receipt(bot, id, &item, actual_binding));
+                                let expected_receipt =
+                                    group.binding().ok().and_then(|actual_binding| {
+                                        let binding_matches = actual_binding.instance_id.0
+                                            == own.instance_id
+                                            && actual_binding.community_id.as_ref().map(|c| c.0)
+                                                == Some(bot.community_id)
+                                            && actual_binding.target_id == want.channel_id
+                                            && actual_binding.kind == group_kind
+                                            && actual_binding.e2ee_version == 1
+                                            && actual_binding.media_version
+                                                == group_kind.media_version();
+                                        binding_matches.then(|| {
+                                            bot_welcome_receipt(bot, id, &item, actual_binding)
+                                        })
+                                    });
                                 let key = bot_welcome_receipt_key(id);
                                 let stored = self.read(|c| super::schema::meta_get(c, &key))?;
                                 self.keep_group(*id, group);

@@ -299,6 +299,30 @@ impl DillaInteractionBinding {
         Extension::Unknown(DILLA_BINDING_ID, UnknownExtension(self.encode()))
     }
 
+    /// Decode the typed v2 interaction binding carried by the authenticated GroupContext.
+    pub fn from_group_context(ctx: &GroupContext) -> Result<Self, ProtocolError> {
+        let raw = ctx
+            .extensions()
+            .unknown(DILLA_BINDING_ID)
+            .ok_or(ProtocolError::Binding)?;
+        Self::decode(&raw.0)
+    }
+
+    /// The v1 projection retained by native group bookkeeping. The v2 value remains the
+    /// authority for the interaction participant and installation scope.
+    pub(crate) fn group_binding(&self) -> DillaBinding {
+        DillaBinding {
+            v: 1,
+            instance_id: self.instance_id,
+            community_id: None,
+            target_id: self.bot_user_id,
+            kind: GroupKind::Interaction,
+            policy_version: self.policy_version,
+            e2ee_version: self.e2ee_version,
+            media_version: self.media_version,
+        }
+    }
+
     pub fn from_extensions<T>(exts: &Extensions<T>) -> Result<Self, ProtocolError> {
         let raw = exts
             .unknown(DILLA_BINDING_ID)

@@ -265,7 +265,9 @@ impl ClientCore {
 /// Whether a loaded group is the one its row describes: its MLS group id, and its binding's kind
 /// (text or call), target and community, equal the row's.
 fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) -> bool {
-    let binding = group.binding();
+    let Ok(binding) = group.binding() else {
+        return false;
+    };
     matches!(
         binding.kind,
         crate::mls::GroupKind::Text | crate::mls::GroupKind::Call

@@ -11,7 +11,8 @@ use crate::identity::{
     Tier, UmkSigner,
 };
 use crate::ids::{DeviceId, UserId};
-use crate::mls::CIPHERSUITE;
+use crate::mls::{CIPHERSUITE, DillaGroup, GroupKind};
+use openmls::prelude::{BasicCredential, GroupId};
 use openmls_basic_credential::SignatureKeyPair;
 use rusqlite::OptionalExtension;
 use zeroize::Zeroizing;
@@ -303,6 +304,144 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 }
 
 impl ClientCore {
+    /// Inspect an already-persisted interaction group using OpenMLS's authenticated GroupContext
+    /// and member view, then bind that evidence to a verified signed snapshot. This is read-only
+    /// and diagnostic: it creates no group, intent, or Welcome state and does not authorize
+    /// creation. It cannot inspect transaction-local state before persistence, and never treats a
+    /// caller-provided roster as authority.
+    pub fn bot_inspect_stored_interaction_group(
+        &self,
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<crate::bot::interaction_admission::Admission, ClientError> {
+        if group_id != expected.group.as_bytes() {
+            return Err(binding_mismatch());
+        }
+        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        let group = DillaGroup::load(&self.provider, &GroupId::from_slice(group_id))
+            .map_err(|_| ClientError::new(E_CORE_STATE, "candidate MLS group could not be loaded"))?
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "candidate MLS group is unavailable"))?;
+        let own = self.own()?;
+        let admission = verify_interaction_group_snapshot(
+            &group,
+            &snapshot,
+            expected,
+            &own.user_id,
+            &own.device_id,
+        )?;
+        let row = self.read(|c| super::groups::group_row(c, group_id))?;
+        let Some(row) = row else {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "stored interaction group row is unavailable",
+            ));
+        };
+        if row.kind != GroupKind::Interaction.as_u8() as i64
+            || row.state < super::groups::STATE_REGISTERING
+            || row.state >= super::groups::STATE_GONE
+            || row.community_id.as_deref() != Some(expected.community.as_bytes().as_slice())
+            || row.target_id.as_slice() != admission.participant_user.as_bytes()
+        {
+            return Err(binding_mismatch());
+        }
+        Ok(admission)
+    }
+
+    /// Verify an already-authenticated snapshot against an OpenMLS group object. Creation code
+    /// may call this inside its outer storage transaction before writing app rows or intents.
+    /// `snapshot` must come from `bot_verify_interaction_snapshot`; this helper derives all member
+    /// evidence from the group and accepts no caller roster.
+    fn bot_verify_interaction_group(
+        group: &DillaGroup,
+        snapshot: &crate::bot::interaction_snapshot::Snapshot,
+        expected: &crate::bot::interaction_admission::Expected,
+        bot_user_id: &[u8; 16],
+        bot_device_id: &[u8; 16],
+    ) -> Result<crate::bot::interaction_admission::Admission, ClientError> {
+        if group.group_id().as_slice() != expected.group.as_bytes()
+            || bot_user_id.as_slice() != expected.bot_user.as_bytes()
+            || bot_device_id.as_slice() != expected.bot_device.as_bytes()
+        {
+            return Err(binding_mismatch());
+        }
+        if group.kind() != GroupKind::Interaction || group.member_count() != 2 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "candidate interaction group must have exactly two members",
+            ));
+        }
+        let interaction_binding = group.interaction_binding().map_err(|_| {
+            ClientError::new(E_CORE_INPUT, "candidate interaction binding rejected")
+        })?;
+        let bot_list = DeviceList::decode(&snapshot.bot.blob)
+            .map_err(|_| ClientError::new(E_CORE_INPUT, "snapshot Bot device list rejected"))?;
+        let participant_list = DeviceList::decode(&snapshot.participant.blob).map_err(|_| {
+            ClientError::new(E_CORE_INPUT, "snapshot participant device list rejected")
+        })?;
+
+        let own_leaf = group.own_leaf_index().u32();
+        let mut leaves = Vec::with_capacity(2);
+        for member in group.members() {
+            let basic = BasicCredential::try_from(member.credential).map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "candidate member credential rejected")
+            })?;
+            let credential = CredentialIdentity::decode(basic.identity()).map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "candidate member credential rejected")
+            })?;
+            let dsk: [u8; 32] = member.signature_key.as_slice().try_into().map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "candidate member signature key rejected")
+            })?;
+            credential.verify_signatures(&dsk).map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "candidate member credential rejected")
+            })?;
+            if member.index.u32() == own_leaf
+                && (credential.user_id.as_bytes().as_slice() != bot_user_id.as_slice()
+                    || credential.device_id.as_bytes().as_slice() != bot_device_id.as_slice())
+            {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "candidate own leaf does not match the enrolled Bot",
+                ));
+            }
+            if (credential.user_id.as_bytes() == expected.bot_user.as_bytes()
+                && (credential.kind != Kind::Bot
+                    || credential.tier != Tier::Native
+                    || credential.signer_tier != SignerTier::Native))
+                || (credential.user_id.as_bytes() == expected.participant_user.as_bytes()
+                    && credential.kind != Kind::User)
+            {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "candidate member identity rejected",
+                ));
+            }
+            leaves.push(crate::bot::interaction_admission::AuthenticatedRosterLeaf {
+                user: credential.user_id,
+                device: credential.device_id,
+                dsk_pub: dsk,
+                tier: credential.tier,
+            });
+        }
+        let mut proof = Encoder::new();
+        proof
+            .array(2)
+            .bytes(&snapshot.admission_payload)
+            .bytes(&snapshot.admission_signature);
+        crate::bot::interaction_admission::prepare_creation(
+            &proof.into_vec(),
+            &snapshot.instance_signer,
+            expected,
+            &interaction_binding,
+            &leaves,
+            &bot_list,
+            &snapshot.bot.ssk,
+            &participant_list,
+            &snapshot.participant.ssk,
+        )
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "candidate interaction admission rejected"))
+    }
+
     /// Verify proof, v2 binding and exact signed-device-list roster evidence using the instance
     /// key already pinned in this encrypted Bot store. This only prepares admission evidence; it
     /// does not mutate an MLS group or persist an admission outcome. The caller must obtain
@@ -786,7 +925,12 @@ impl ClientCore {
                 schema::meta_put(c, schema::STATE_LIST, &state_list(1))?;
                 schema::meta_put(c, schema::IDENTITY, &identity)?;
                 schema::meta_put(c, schema::BOT_BINDING, &binding)?;
-                super::trust::pin_own(c, user_id, &pending.umk_pub, now.min(i64::MAX as u64) as i64)?;
+                super::trust::pin_own(
+                    c,
+                    user_id,
+                    &pending.umk_pub,
+                    now.min(i64::MAX as u64) as i64,
+                )?;
                 schema::meta_del(c, schema::BOT_PENDING)
             })?;
             let mut e = Encoder::new();
@@ -794,6 +938,20 @@ impl ClientCore {
             Ok(e.into_vec())
         })
     }
+}
+
+/// Transaction-local verifier shared with the Bot interaction creation path. The caller must
+/// verify `snapshot` against persisted instance and user pins before invoking it, and must supply
+/// the Bot identity IDs read from the encrypted store. This function reads no storage and accepts
+/// no roster input, so it is safe to run against a transient `DillaGroup` inside the write unit.
+pub(crate) fn verify_interaction_group_snapshot(
+    group: &DillaGroup,
+    snapshot: &crate::bot::interaction_snapshot::Snapshot,
+    expected: &crate::bot::interaction_admission::Expected,
+    bot_user_id: &[u8; 16],
+    bot_device_id: &[u8; 16],
+) -> Result<crate::bot::interaction_admission::Admission, ClientError> {
+    ClientCore::bot_verify_interaction_group(group, snapshot, expected, bot_user_id, bot_device_id)
 }
 
 #[cfg(test)]
@@ -908,6 +1066,11 @@ mod interaction_snapshot_tests {
         assert!(
             core.bot_verify_interaction_snapshot(&bad, &expected)
                 .is_err()
+        );
+        assert!(
+            core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
+                .is_err(),
+            "inspection requires a pre-existing candidate group"
         );
         assert_eq!(counts(&connection.lock().unwrap()), before);
     }

@@ -6,9 +6,9 @@
 //! wrapper returns `MlsError::NeedsReload` and the caller reloads.
 
 use super::{
-    DillaBinding, DillaProvider, DillaStorage, GroupKind, StorageError, TxError, create_config,
-    join_config, past_epoch_sweep, proposal_credential_verdict, proposal_extensions_unchanged,
-    validate_staged_commit,
+    DillaBinding, DillaInteractionBinding, DillaProvider, DillaStorage, GroupKind, StorageError,
+    TxError, create_config, join_config, past_epoch_sweep, proposal_credential_verdict,
+    proposal_extensions_unchanged, validate_staged_commit,
 };
 use crate::envelope::Envelope;
 use crate::error::ProtocolError;
@@ -297,8 +297,13 @@ impl DillaGroup {
         let Some(group) = MlsGroup::load(storage, group_id).map_err(MlsError::Storage)? else {
             return Ok(None);
         };
-        let binding = DillaBinding::from_group_context(group.public_group().group_context())
-            .map_err(MlsError::Protocol)?;
+        let context = group.public_group().group_context();
+        let binding = match DillaBinding::from_group_context(context) {
+            Ok(binding) => binding,
+            Err(_) => DillaInteractionBinding::from_group_context(context)
+                .map_err(MlsError::Protocol)?
+                .group_binding(),
+        };
         Ok(Some(Self { group, binding }))
     }
 
@@ -933,8 +938,21 @@ impl DillaGroup {
         Ok(())
     }
 
-    pub fn binding(&self) -> &DillaBinding {
-        &self.binding
+    /// Return a legacy/v1 binding only when the authenticated context actually carries v1.
+    /// A v2 interaction context has a separate typed accessor and cannot be projected into
+    /// encodable v1 authority through this method.
+    pub fn binding(&self) -> Result<&DillaBinding, MlsError> {
+        if self.interaction_binding().is_ok() {
+            return Err(MlsError::Protocol(ProtocolError::Binding));
+        }
+        Ok(&self.binding)
+    }
+
+    /// Return a strict typed v2 interaction binding from this group's authenticated
+    /// GroupContext, if it carries one.
+    pub fn interaction_binding(&self) -> Result<DillaInteractionBinding, MlsError> {
+        DillaInteractionBinding::from_group_context(self.group.public_group().group_context())
+            .map_err(MlsError::Protocol)
     }
 
     pub fn kind(&self) -> GroupKind {
@@ -1144,6 +1162,71 @@ mod media_tests {
             e2ee_version: 1,
             media_version: GroupKind::Call.media_version(),
         }
+    }
+
+    #[test]
+    fn stored_v2_interaction_group_loads_binding_and_openmls_roster() {
+        use crate::ids::{CommunityId, DeviceId};
+        use crate::mls::{DILLA_BINDING, leaf_capabilities};
+        use openmls::extensions::{Extension, RequiredCapabilitiesExtension};
+
+        let (provider, bot_signer, bot_credential) = member(0x21, 0x22);
+        let (participant_provider, participant_signer, participant_credential) = member(0x31, 0x32);
+        let binding = DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            bot_user_id: [0x21; 16],
+            installation_id: [0x33; 16],
+            community_id: CommunityId::from_bytes([0x44; 16]),
+            participant_user_id: [0x31; 16],
+            participant_device_id: DeviceId::from_bytes([0x32; 16]),
+            policy_version: 7,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        let extensions = Extensions::<GroupContext>::try_from(vec![
+            Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                &[DILLA_BINDING],
+                &[],
+                &[CredentialType::Basic],
+            )),
+            binding.to_extension(),
+        ])
+        .unwrap();
+        let config = MlsGroupCreateConfig::builder()
+            .ciphersuite(CIPHERSUITE)
+            .use_ratchet_tree_extension(false)
+            .with_group_context_extensions(extensions)
+            .capabilities(leaf_capabilities())
+            .build();
+        let group_id = GroupId::from_slice(&[0x55; 16]);
+        let mut raw = MlsGroup::new_with_group_id(
+            &provider,
+            &bot_signer,
+            &config,
+            group_id.clone(),
+            bot_credential,
+        )
+        .unwrap();
+        let kp = build_key_package(
+            &participant_provider,
+            &participant_signer,
+            participant_credential,
+            false,
+        )
+        .unwrap();
+        raw.add_members(&provider, &bot_signer, &[kp.key_package().clone()])
+            .unwrap();
+        raw.merge_pending_commit(&provider).unwrap();
+        drop(raw);
+
+        let loaded = DillaGroup::load(&provider, &group_id).unwrap().unwrap();
+        assert_eq!(loaded.kind(), GroupKind::Interaction);
+        assert_eq!(loaded.member_count(), 2);
+        assert!(loaded.binding().is_err(), "v2 cannot be projected into v1");
+        assert_eq!(loaded.interaction_binding().unwrap(), binding);
+        let members = loaded.members();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|m| m.signature_key.len() == 32));
     }
 
     fn wire(message: MlsMessageOut) -> MlsMessageBodyIn {

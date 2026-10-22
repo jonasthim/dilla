@@ -279,19 +279,19 @@ impl ClientCore {
                 )?;
                 let mut valid = false;
                 if let Some(group) = group {
-                    let binding = group.binding();
-                    let binding_matches = binding.kind == GroupKind::Text
-                        && binding
-                            .community_id
-                            .as_ref()
-                            .is_some_and(|id| id.as_bytes() == community.as_slice())
-                        && binding.target_id == row.channel_id.as_slice();
-                    let signature_matches = binding_matches
-                        && group
-                            .member_at(row.sender_leaf as u32)
-                            .is_some_and(|member| {
-                                member.signature_key.as_slice() == row.sender_sig_key.as_slice()
-                            });
+                    let signature_matches = group.binding().is_ok_and(|binding| {
+                        binding.kind == GroupKind::Text
+                            && binding
+                                .community_id
+                                .as_ref()
+                                .is_some_and(|id| id.as_bytes() == community.as_slice())
+                            && binding.target_id == row.channel_id.as_slice()
+                            && group
+                                .member_at(row.sender_leaf as u32)
+                                .is_some_and(|member| {
+                                    member.signature_key.as_slice() == row.sender_sig_key.as_slice()
+                                })
+                    });
                     if signature_matches {
                         let state = self.write(|_, u| {
                             Ok(u.with_conn(|c| {
