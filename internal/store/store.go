@@ -72,6 +72,22 @@ type Repository interface {
 	ModerationRemovals
 }
 
+// BotJoinRolePolicy stores the single human-approved role a ready bot may
+// assign when a member joins. It only configures policy; assignment is a
+// separate capability and must enforce membership episode binding.
+type BotJoinRolePolicy interface {
+	SetBotJoinRolePolicy(ctx context.Context, installationID, roleID, approverID id.ID, approvedAt int64) error
+	GetBotJoinRolePolicy(ctx context.Context, installationID id.ID) (BotJoinRolePolicyRow, error)
+}
+
+type BotJoinRolePolicyRow struct {
+	InstallationID id.ID
+	CommunityID    id.ID
+	RoleID         id.ID
+	ApprovedBy     id.ID
+	ApprovedAt     int64
+}
+
 // ModerationRemovalRow is a permanent signed deletion marker. The feed retains
 // the canonical unsigned proof and detached signature independently of message
 // and structural-event retention.

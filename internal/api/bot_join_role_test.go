@@ -1,0 +1,64 @@
+package api_test
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"testing"
+
+	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	h := api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler))
+	h.Register(e.Mux)
+	role := createRole(t, e, cid, ownerTok, "newcomer", 2, api.PermViewChannel|api.PermSendMessages)
+	community, err := e.Repo.GetCommunity(t.Context(), cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot := store.UserRow{ID: id.New(), Username: "joinbot" + id.New().String()[:8], Display: "Join bot", Kind: 1,
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: e.Clk.Now().Unix()}
+	device := store.DeviceRow{ID: id.New(), UserID: bot.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: e.Clk.Now().Unix()}
+	dsk := id.New()
+	copy(device.DSKPub, dsk[:])
+	installation := store.BotInstallationRow{ID: id.New(), CommunityID: cid, UserID: &bot.ID, DeviceID: &device.ID,
+		State: store.BotInstallationReady, Revision: 1, ApprovedBy: community.Owner, ApprovedAt: e.Clk.Now().Unix(), Created: e.Clk.Now().Unix(), Updated: e.Clk.Now().Unix()}
+	if err := e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+		if err := tx.CreateUser(t.Context(), bot); err != nil {
+			return fmt.Errorf("create bot user: %w", err)
+		}
+		if err := tx.CreateBotDevice(t.Context(), device); err != nil {
+			return fmt.Errorf("create bot device: %w", err)
+		}
+		if err := tx.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: bot.ID, Joined: e.Clk.Now().Unix()}); err != nil {
+			return fmt.Errorf("add bot member: %w", err)
+		}
+		if err := tx.CreateBotInstallation(t.Context(), installation); err != nil {
+			return fmt.Errorf("create installation: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + cid.String() + "/bot-join-role"
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), role}); status != http.StatusOK {
+		t.Fatalf("configure approved role = %d (%x), want 200", status, body)
+	}
+	policy, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID)
+	if err != nil || policy.RoleID != role || policy.ApprovedBy != community.Owner {
+		t.Fatalf("policy = %+v, %v", policy, err)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, bot.ID); err != nil || len(held) != 0 {
+		t.Fatalf("configuration assigned a role immediately: %v, %v", held, err)
+	}
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), id.ID{}}); status != http.StatusOK {
+		t.Fatalf("clear approved role = %d (%x), want 200", status, body)
+	}
+	if _, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID); err != store.ErrNotFound {
+		t.Fatalf("policy after clear = %v, want not found", err)
+	}
+}
