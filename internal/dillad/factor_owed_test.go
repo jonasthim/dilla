@@ -160,7 +160,7 @@ func classify(t *testing.T, r docRoute) sweepClass {
 		return sweepRefused // bot-scoped routes still require an enrolled human session here
 	case auth == "E, F", auth == "E or P":
 		return sweepAllowed
-	case auth == "E", auth == "E or V", auth == "A":
+	case auth == "E", auth == "E or V", auth == "E or B", auth == "A":
 		return sweepRefused
 	}
 	t.Fatalf("protocol/%s: %s %s has an Auth the sweep does not know: %q", r.doc, r.method, r.path, r.auth)
@@ -174,7 +174,7 @@ func concrete(t *testing.T, r docRoute) string {
 	const hex32 = "0102030405060708090a0b0c0d0e0f10"
 	return pathParameter.ReplaceAllStringFunc(path, func(p string) string {
 		switch p {
-		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}", "{operation}":
+		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{attempt}":
 			return hex32
 		case "{blob_id}":
 			return hex32 + hex32
