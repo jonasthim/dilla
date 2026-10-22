@@ -1560,6 +1560,12 @@ func (r *Repo) IsWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, ref
 	return n > 0, nil
 }
 
+// ClearWithdrawable takes the withdrawable flag off one row for good (UP6b): a deliberate Remove
+// of the same leaf met it, so no resume may withdraw it.
+func (r *Repo) ClearWithdrawable(ctx context.Context, groupID id.ID, ref []byte) error {
+	return wrap(r.w.ClearWithdrawable(ctx, sqlitedb.ClearWithdrawableParams{GroupID: groupID, Ref: ref}))
+}
+
 func (r *Repo) WithdrawProposal(ctx context.Context, groupID id.ID, ref []byte, at int64, seq uint64) (bool, error) {
 	n, err := r.w.WithdrawProposal(ctx, sqlitedb.WithdrawProposalParams{
 		WithdrawnAt:  sql.NullInt64{Int64: at, Valid: true},
@@ -1591,8 +1597,9 @@ func (r *Repo) ReissueProposal(ctx context.Context, oldRef []byte, p store.Propo
 	case err == nil:
 		p.ActionID = old.ActionID
 		// UP6b, correction C1: the flag is the replaced row's, a column this statement carries,
-		// never the column's default. A caller's own flag (a fresh absence Remove) is kept too.
-		p.Withdrawable = p.Withdrawable || old.Withdrawable != 0
+		// never the column's default and never the caller's: a re-issue cannot make a deliberate
+		// Remove withdrawable, and a taint (ClearWithdrawable) is kept for good.
+		p.Withdrawable = old.Withdrawable != 0
 		if err := r.w.DeleteProposal(ctx, sqlitedb.DeleteProposalParams{GroupID: p.GroupID, Ref: oldRef}); err != nil {
 			return wrap(err)
 		}

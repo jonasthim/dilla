@@ -267,13 +267,17 @@ type MLS interface {
 	ListWithdrawnProposals(ctx context.Context, groupID id.ID, epoch uint64) ([]ProposalRow, error)
 	// IsWithdrawn reports whether ref is a withdrawn proposal at epoch: the commit's 409 `withdrawn`.
 	IsWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, ref []byte) (bool, error)
+	// ClearWithdrawable takes the withdrawable flag off one row for good: a deliberate Remove (a
+	// kick, a ban, a revocation, a device removal) of the same leaf met it (UP6b).
+	ClearWithdrawable(ctx context.Context, groupID id.ID, ref []byte) error
 	// WithdrawProposal marks one unwithdrawn proposal withdrawn at `at` by the kind-3 row `seq`;
 	// it answers whether a row was marked.
 	WithdrawProposal(ctx context.Context, groupID id.ID, ref []byte, at int64, seq uint64) (bool, error)
 	VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error
 	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
 	// ReissueProposal replaces one row with p, keeping the old row's action_id and its withdrawable
-	// flag (UP6b, correction C1: a re-issue, a re-arm or a re-drive never drops the flag).
+	// flag exactly (UP6b, correction C1: a re-issue or a re-drive neither drops the flag nor sets
+	// it; p's own flag is ignored).
 	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
 	ListMembers(ctx context.Context, groupID id.ID) ([]MemberRow, error)

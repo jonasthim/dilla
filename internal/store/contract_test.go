@@ -97,7 +97,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListIdleCallGroups",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
 			// UP6b (R-UP12): the withdrawal of an absence Remove (migration 00024).
-			"IsWithdrawn", "ListHandshakesWithoutWithdrawn", "ListWithdrawnProposals", "WithdrawProposal",
+			"ClearWithdrawable", "IsWithdrawn", "ListHandshakesWithoutWithdrawn", "ListWithdrawnProposals", "WithdrawProposal",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",

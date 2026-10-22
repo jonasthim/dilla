@@ -72,6 +72,20 @@ func (q *Queries) ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownPa
 	return err
 }
 
+const clearWithdrawable = `-- name: ClearWithdrawable :exec
+UPDATE mls_pending_proposals SET withdrawable = 0 WHERE group_id = ? AND ref = ?
+`
+
+type ClearWithdrawableParams struct {
+	GroupID id.ID
+	Ref     []byte
+}
+
+func (q *Queries) ClearWithdrawable(ctx context.Context, arg ClearWithdrawableParams) error {
+	_, err := q.db.ExecContext(ctx, clearWithdrawable, arg.GroupID, arg.Ref)
+	return err
+}
+
 const closeGroup = `-- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = ? WHERE group_id = ?
 `

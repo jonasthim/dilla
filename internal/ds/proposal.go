@@ -186,7 +186,7 @@ func (d *DS) ProposeRemove(ctx context.Context, groupID id.ID, leaf uint32, acti
 	if err != nil {
 		return err
 	}
-	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	standing, err := d.deliberateRemoveStanding(ctx, groupID, row.Epoch, leaf)
 	if err != nil || standing {
 		return err
 	}
@@ -209,7 +209,7 @@ func (d *DS) ProposeRemoveOf(ctx context.Context, groupID id.ID, leaf uint32, de
 	if err != nil {
 		return err
 	}
-	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	standing, err := d.deliberateRemoveStanding(ctx, groupID, row.Epoch, leaf)
 	if err != nil || standing {
 		return err
 	}
@@ -253,7 +253,7 @@ func (d *DS) ProposeRemoveOfMember(ctx context.Context, groupID id.ID, leaf uint
 		gone.cause = ErrRemoveTargetGone
 		return gone
 	}
-	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	standing, err := d.deliberateRemoveStanding(ctx, groupID, row.Epoch, leaf)
 	if err != nil || standing {
 		return err
 	}
@@ -400,7 +400,7 @@ func (d *DS) ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionI
 		}
 		return err
 	}
-	standing, err := d.instanceRemoveOutstanding(ctx, groupID, row.Epoch, leaf)
+	standing, err := d.deliberateRemoveStanding(ctx, groupID, row.Epoch, leaf)
 	if err != nil || standing {
 		return err
 	}
@@ -427,6 +427,31 @@ func (d *DS) instanceRemoveOutstanding(ctx context.Context, groupID id.ID, epoch
 		}
 	}
 	return false, nil
+}
+
+// deliberateRemoveStanding is instanceRemoveOutstanding for a deliberate Remove (a kick, a ban, a
+// revocation, a device removal, the election's or the reconcile's): when an instance Remove of leaf
+// already stands, the new intent is folded into it, so the standing row loses its withdrawable flag
+// for good (UP6b, security fix). Otherwise a kicked device that resumes would withdraw its own kick
+// through the absence Remove that absorbed it.
+func (d *DS) deliberateRemoveStanding(ctx context.Context, groupID id.ID, epoch uint64, leaf uint32) (bool, error) {
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return false, err
+	}
+	standing := false
+	for _, r := range rows {
+		if !isInstanceRemoveOf(r, leaf) {
+			continue
+		}
+		standing = true
+		if r.Withdrawable {
+			if err := d.opts.Store.ClearWithdrawable(ctx, groupID, r.Ref); err != nil {
+				return true, err
+			}
+		}
+	}
+	return standing, nil
 }
 
 // isInstanceRemoveOf is a non-void instance Remove of leaf.
@@ -705,12 +730,18 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 			switch {
 			case supersedes != nil && rearm && !bytes.Equal(supersedes, ref):
 				// A re-issue onto an epoch that already holds this very proposal under a row of its
-				// own: that row goes, and the re-issue carries the superseded action.
+				// own: that row goes, and the re-issue carries the superseded action. Both rows are
+				// the one Remove now, so a taint on either stays (UP6b).
 				if err := tx.DeleteProposals(ctx, groupID, [][]byte{ref}); err != nil {
 					return err
 				}
 				if err := tx.ReissueProposal(ctx, supersedes, p); err != nil {
 					return err
+				}
+				if !existing.Withdrawable {
+					if err := tx.ClearWithdrawable(ctx, groupID, ref); err != nil {
+						return err
+					}
 				}
 			case supersedes != nil:
 				if err := tx.ReissueProposal(ctx, supersedes, p); err != nil {
@@ -721,6 +752,8 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 				// now, its action kept). The withdrawable flag is this caller's own (UP6b): an absence
 				// Remove proposed again keeps it, while a kick or a revocation that re-arms the same
 				// Remove makes it a Remove no resume can withdraw.
+				// The re-armed flag is existing.Withdrawable && p.Withdrawable: a non-withdrawable
+				// Remove never becomes withdrawable, and a deliberate caller taints it for good.
 				if existing.Withdrawable && !p.Withdrawable {
 					// ReissueProposal would carry the old flag over (C1, for a re-issue of the same
 					// action); a different action re-arming the same Remove must not inherit it.

@@ -32,6 +32,7 @@ type Querier interface {
 	// leaves a row this clears.
 	ClearFactorOwedWithFactor(ctx context.Context, arg ClearFactorOwedWithFactorParams) (int64, error)
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
+	ClearWithdrawable(ctx context.Context, arg ClearWithdrawableParams) error
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConfirmBlobRef(ctx context.Context, arg ConfirmBlobRefParams) (int64, error)
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) (int64, error)

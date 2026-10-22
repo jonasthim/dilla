@@ -132,6 +132,9 @@ ORDER BY issued_at, ref;
 SELECT * FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2 AND withdrawn_at IS NOT NULL
 ORDER BY issued_at, ref;
 
+-- name: ClearWithdrawable :exec
+UPDATE mls_pending_proposals SET withdrawable = 0 WHERE group_id = $1 AND ref = $2;
+
 -- name: IsWithdrawn :one
 SELECT COUNT(*) FROM mls_pending_proposals
 WHERE group_id = $1 AND epoch = $2 AND ref = $3 AND withdrawn_at IS NOT NULL;

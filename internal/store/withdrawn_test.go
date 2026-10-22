@@ -123,12 +123,13 @@ func TestReissueCarriesWithdrawableAndRearmClearsTheMark(t *testing.T) {
 			if err != nil || len(rows) != 1 || !rows[0].Withdrawable || rows[0].WithdrawnAt != nil || rows[0].WithdrawnSeq != nil || rows[0].IssuedAt != 90 {
 				t.Fatalf("after the re-arm: %+v, %v; want live, withdrawable, unmarked, issued at 90", rows, err)
 			}
-			// A row that never was withdrawable stays so through a re-issue.
+			// A row that never was withdrawable stays so through a re-issue, whatever the caller
+			// sets (security fix: a deliberate Remove never becomes withdrawable).
 			plain := absenceRemove(g.GroupID, "ref-plain", false)
 			if err := repo.PutProposal(ctx, plain); err != nil {
 				t.Fatal(err)
 			}
-			if err := repo.ReissueProposal(ctx, []byte("ref-plain"), absenceRemove(g.GroupID, "ref-plain2", false)); err != nil {
+			if err := repo.ReissueProposal(ctx, []byte("ref-plain"), absenceRemove(g.GroupID, "ref-plain2", true)); err != nil {
 				t.Fatal(err)
 			}
 			rows, _ = repo.ListProposals(ctx, g.GroupID, 0, false)
@@ -271,4 +272,27 @@ func proposalRefs(ctx context.Context, t *testing.T, db *sql.DB) []string {
 		t.Fatal(err)
 	}
 	return refs
+}
+
+// ClearWithdrawable takes the flag off for good: a re-issue of the tainted row carries false.
+func TestClearWithdrawableIsATaintForGood(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGroup(ctx, t, repo, 1)
+			if err := repo.PutProposal(ctx, absenceRemove(g.GroupID, "ref-t", true)); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ClearWithdrawable(ctx, g.GroupID, []byte("ref-t")); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ReissueProposal(ctx, []byte("ref-t"), absenceRemove(g.GroupID, "ref-t2", true)); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := repo.ListProposals(ctx, g.GroupID, 0, false)
+			if err != nil || len(rows) != 1 || rows[0].Withdrawable {
+				t.Fatalf("after the taint and a re-issue: %+v, %v; want one row, not withdrawable", rows, err)
+			}
+		})
+	}
 }
