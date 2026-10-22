@@ -173,7 +173,8 @@ export class Gateway {
     try { ticket = await this.deps.mintTicket(); }
     catch (err) {
       if (id !== this.attempt) return;
-      if (err instanceof DillaHttpError && err.status === 401) {
+      // UP7c: only the instance's own 401 (X-Dilla-Generation) is a revocation; a proxy's falls through to out of reach.
+      if (err instanceof DillaHttpError && err.status === 401 && err.fromInstance === true) {
         this.goIdle();
         this.setStatus('idle', null);
         this.emit({ type: 'revoked' });

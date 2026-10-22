@@ -27,8 +27,11 @@ export const INSTANCE_DOC: CborInput = [[1], [1], [1], INSTANCE_ID, 7, 'dilla.te
 // GET /v1/instance/limits, eleven elements.
 export const LIMITS: CborInput = [131_072, 104_857_600, 4, 2, 32, 8, 10_737_418_240, 30_000, 131_584, 30, 30];
 
+/** The instance stamps X-Dilla-Generation on its refusals (UP7c: a 401 without it is a proxy's, not a revocation). */
 export function cbor(value: CborInput, status = 200): Response {
-  return new Response(encode(value).slice(), { status, headers: { 'content-type': 'application/cbor' } });
+  const headers: Record<string, string> = { 'content-type': 'application/cbor' };
+  if (status >= 400) headers['X-Dilla-Generation'] = '7';
+  return new Response(encode(value).slice(), { status, headers });
 }
 
 export function fakeFetch(paths: string[]): typeof fetch {

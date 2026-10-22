@@ -701,6 +701,7 @@ describe('Gateway revocation and stop', () => {
       if (m.refuseWith === null) return Promise.resolve(`t${m.calls}`);
       return Promise.reject(new DillaHttpError({
         status: m.refuseWith, code: m.refuseWith === 401 ? 'E_UNAUTHENTICATED' : 'E_HTTP', detail: '', retryAfterMs: null, extra: [],
+        fromInstance: m.refuseWith === 401,
       }));
     };
     return { m, mint };
@@ -959,6 +960,39 @@ describe('UP7b: the outage probe', () => {
       expect(n > 0).toBe(probes);
     });
   }
+
+  // UP7c: a 401 is "signed out or revoked" only when the instance said it (X-Dilla-Generation). A reverse proxy's login
+  // page or its error while dillad is down is a 401 too, and it is an outage, not a revocation.
+  it("a proxy's 401 on the ticket mint is out of reach: the gateway probes, and is neither idle nor revoked", async () => {
+    let probes = 0;
+    const h = harness({ mint: () => Promise.reject(proxy(401)), probe: () => { probes += 1; return Promise.resolve(false); } });
+    h.gw.start();
+    await run(h, 20_000);
+    expect(h.gw.status).toBe('waiting');
+    expect(probes).toBeGreaterThan(0);
+    expect(h.events.some((e) => e.type === 'revoked')).toBe(false);
+    expect(h.events.some((e) => e.type === 'status' && e.status === 'idle')).toBe(false);
+  });
+
+  it("a 401 whose origin is unknown (made here) is out of reach too", async () => {
+    let probes = 0;
+    const h = harness({
+      mint: () => Promise.reject(new DillaHttpError({ status: 401, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [] })),
+      probe: () => { probes += 1; return Promise.resolve(false); },
+    });
+    h.gw.start();
+    await run(h, 20_000);
+    expect(probes).toBeGreaterThan(0);
+    expect(h.events.some((e) => e.type === 'revoked')).toBe(false);
+  });
+
+  it("control: the instance's own 401 on the mint still revokes", async () => {
+    const h = harness({ mint: () => Promise.reject(instance(401, 'E_UNAUTHENTICATED')) });
+    h.gw.start();
+    await flush();
+    expect(h.events.at(-1)).toEqual({ type: 'revoked' });
+    expect(h.gw.status).toBe('idle');
+  });
 
   // M3: the probe in flight against stop(), against the reconnect timer, and a stalled mint.
   const slowProbe = () => {

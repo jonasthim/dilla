@@ -91,7 +91,8 @@ export class HttpClient {
         error = new DillaHttpError({ status: 0, code: 'E_NETWORK',
           detail: timedOut ? 'the request timed out' : e instanceof Error ? e.message : 'network failure', retryAfterMs: null, extra: [] });
       }
-      if (error.status === 401 && r.auth !== false && !reauthenticated) {
+      // UP7c: a proxy's 401 (no X-Dilla-Generation) says nothing about the session: no re-authentication.
+      if (error.status === 401 && error.fromInstance !== false && r.auth !== false && !reauthenticated) {
         reauthenticated = true;
         const renewed = await this.deps.reauthenticate();
         if (renewed && attempt < RETRY.maxAttempts) continue;

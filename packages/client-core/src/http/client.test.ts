@@ -177,6 +177,17 @@ describe('401', () => {
     expect(t.seen).toHaveLength(2);
   });
 
+  // UP7c: a reverse proxy's 401 (a login page, an error while dillad is down) carries no X-Dilla-Generation. It says nothing
+  // about the session, so no re-authentication is attempted and the 401 reaches the caller as an unstamped refusal.
+  it("does not re-authenticate on a proxy's 401 (no X-Dilla-Generation)", async () => {
+    const t = fakeTransport({ reauth: () => ({ ok: true, token: 'tok-2' }) });
+    t.replies.push(new Response('login', { status: 401, headers: { 'Content-Type': 'text/html' } }));
+    const err = await failure(new HttpClient(t.deps).request(GET_READ));
+    expect(err).toMatchObject({ status: 401, fromInstance: false });
+    expect(t.reauthCalls).toBe(0);
+    expect(t.seen).toHaveLength(1);
+  });
+
   it('never re-authenticates a request sent without auth', async () => {
     const t = fakeTransport({ reauth: () => ({ ok: true, token: 'tok-2' }) });
     t.replies.push(refusal(401, 'E_UNAUTHENTICATED'), cborReply(201, ['token']));

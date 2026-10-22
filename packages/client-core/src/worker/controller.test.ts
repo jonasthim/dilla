@@ -2448,6 +2448,27 @@ describe('Controller in the ready phase', () => {
     expect(phases).not.toContain('error');
   });
 
+  it("a proxy's 401 (no X-Dilla-Generation) is no revocation: no re-authentication, no revoked", async () => {
+    const paths: string[] = [];
+    const instanceAndLimits = fakeFetch(paths);
+    const proxy401 = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path === '/v1/communities') {
+        paths.push(path);
+        return Promise.resolve(new Response('sign in', { status: 401, headers: { 'content-type': 'text/html' } }));
+      }
+      return instanceAndLimits(input, init);
+    }) as typeof fetch;
+    const w = world({ realRoutes: true, fetch: proxy401 });
+    w.session.establish.mockImplementation(() => Promise.resolve(false));
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(paths).toContain('/v1/communities'));
+    await settle();
+    expect(w.session.establish).not.toHaveBeenCalled();
+    expect(w.account()?.phase).not.toBe('revoked');
+    expect(w.gateway.stops).toBe(0);
+  });
+
   it('a resumed signup whose device is refused shows revoked and deletes nothing', async () => {
     const w = world({ phase: 1 });
     w.signup.resume.mockImplementationOnce(() => Promise.resolve('revoked' as const));

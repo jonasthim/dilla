@@ -3,7 +3,9 @@ import { arr, decode } from '../cbor';
 import { toHex } from '../hex';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, IDLE_S, NONCE, nonceAt, NOW_S, SESSION_S, sessionFor } from '../testing/fake-server';
-import { RENEW_MARGIN_S } from './session';
+import { DillaHttpError } from '../http/errors';
+import type { Routes } from '../http/routes';
+import { RENEW_MARGIN_S, Session } from './session';
 
 const INSTANCE = new Uint8Array(16).fill(0xab);
 const DEVICE = new Uint8Array(16).fill(0xa1);
@@ -47,6 +49,21 @@ describe('Session', () => {
     expect(core.calls.filter((c) => c === 'sessionSign')).toHaveLength(2);
     expect(core.session()).toEqual({ token: 'tok-1', expires: BigInt(NOW_S + SESSION_S), idleExpires: BigInt(NOW_S + IDLE_S) });
     expect(core.calls).not.toContain('sessionClear');
+  });
+
+  // UP7c: only the instance's 401 is a refusal. A proxy's 401 (no X-Dilla-Generation) on the session POST is an outage:
+  // it throws, signs nothing out and clears nothing.
+  it("a proxy's 401 on the session POST does not sign the browser out", async () => {
+    const { core, routes } = setup();
+    core.sessionStore({ token: 'kept', expires: BigInt(NOW_S + 10), idleExpires: BigInt(NOW_S + 10) });
+    const proxy = new DillaHttpError({ status: 401, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [], fromInstance: false });
+    let posts = 0;
+    const stub = { ...routes, postChallenge: routes.postChallenge.bind(routes), postSession: () => { posts += 1; return Promise.reject(proxy); } } as unknown as Routes;
+    const session = new Session({ core, routes: stub, now: () => NOW_S * 1000 });
+    await expect(session.establish()).rejects.toBe(proxy);
+    expect(posts).toBe(1);
+    expect(core.calls).not.toContain('sessionClear');
+    expect(core.session()).not.toBeNull();
   });
 
   it('two refusals in a row are a confirmed refusal', async () => {
