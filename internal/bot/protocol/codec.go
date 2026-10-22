@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	BodyPrefix       = "dilla.bot/1:"
-	MaxBodyBytes     = 4000
-	MaxEventBytes    = 4096
-	MaxHelperBytes   = 1 << 20
-	MaxHelperPayload = 1048480
+	BodyPrefix               = "dilla.bot/1:"
+	MaxBodyBytes             = 4000
+	MaxEventBytes            = 4096
+	MaxHelperBytes           = 1 << 20
+	MaxHelperPayload         = 1048480
+	MaxModerationCursorBytes = 256
 )
 
 var (
@@ -280,8 +281,14 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(str(0, 1, 200, true))
 	case OpMusicEnqueue:
 		return boolErr(str(0, 1, 2048, true))
-	case OpMusicSeek, OpRolesList, OpAnnouncementsList, OpModerationCases:
+	case OpMusicSeek, OpRolesList, OpAnnouncementsList:
 		return boolErr(isUint(a[0]))
+	case OpModerationCases:
+		if a[0] == nil {
+			return nil
+		}
+		cursor, ok := a[0].([]byte)
+		return boolErr(ok && len(cursor) > 0 && len(cursor) <= MaxModerationCursorBytes)
 	case OpMusicVolume:
 		return boolErr(u(0, 100))
 	case OpMusicRepeat:

@@ -224,8 +224,8 @@
     {
       "name": "moderation.cases",
       "kind": "request",
-      "hex": "8801503d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d5022222222222222222222222222222222f6183cf6f68100",
-      "body": "dilla.bot/1:iAFQPT09PT09PT09PT09PT09PVAiIiIiIiIiIiIiIiIiIiIi9hg89vaBAA",
+      "hex": "8801503d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d5022222222222222222222222222222222f6183cf6f681f6",
+      "body": "dilla.bot/1:iAFQPT09PT09PT09PT09PT09PVAiIiIiIiIiIiIiIiIiIiIi9hg89vaB9g",
       "context": {
         "community": "22222222222222222222222222222222",
         "now": "100"

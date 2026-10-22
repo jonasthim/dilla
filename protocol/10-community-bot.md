@@ -50,7 +50,7 @@ Operation, arguments, channel requirement, mutation:
 - 50 announcements.list: [cursor uint], no channel, read
 - 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation
 - 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; the revision must be positive and match the stored schedule when the encrypted state transaction commits
-- 60 moderation.cases: [cursor uint], no channel, read
+- 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 61 moderation.evidence: [action_request_id, reason tstr(0..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)], no channel, mutation
 
 For no-channel operations channel MUST be null. For reads revision/expires MUST
@@ -66,6 +66,12 @@ control characters U+0000..001F and U+007F disallowed in those two inputs only.
 
 Response CBOR (same body-prefix and encoded byte limit):
 `[1, request_id, community_id, status uint0..9, revision|null, data bstr(0..2400)]`.
+For `moderation.cases`, data is `[1, rows, next_cursor|null]`; each row is
+`[source_community, group_id, channel_id, actor_id, message_id, source_revision,
+reason, action, excerpt, received_at_unix]`. The cursor is opaque deterministic
+CBOR bound to the installation community. Clients MUST pass it unchanged to the
+next request and MUST stop when it is null. Each page rechecks current
+`view_audit_log` permission before scanning encrypted case state.
 Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 0 ok,1 invalid,2 forbidden,3 expired,4 conflict,5 unavailable,6 busy,7 not_found,
 8 upgrade_required,9 internal. Validate expected community on response separately;

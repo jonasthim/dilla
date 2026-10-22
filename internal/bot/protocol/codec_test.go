@@ -728,7 +728,8 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"announcements_list", OpAnnouncementsList, []any{uint64(0)}, false, false},
 		{"announcements_put", OpAnnouncementsPut, []any{nil, []byte{0x80}}, true, false},
 		{"announcements_delete", OpAnnouncementsDelete, []any{fixtureID(8), uint64(2)}, true, false},
-		{"moderation_cases", OpModerationCases, []any{uint64(0)}, false, false},
+		{"moderation_cases_first_page", OpModerationCases, []any{nil}, false, false},
+		{"moderation_cases_next_page", OpModerationCases, []any{[]byte{0x01, 0x02}}, false, false},
 		{"moderation_evidence", OpModerationEvidence, []any{fixtureID(9), "", "excerpt"}, true, false},
 	}
 	for _, tt := range tests {
@@ -750,6 +751,30 @@ func TestEveryRequestOperationShape(t *testing.T) {
 			}
 			if got.Operation != tt.op {
 				t.Fatalf("operation = %d", got.Operation)
+			}
+		})
+	}
+}
+
+func TestModerationCasesCursorBounds(t *testing.T) {
+	base := Request{RequestID: fixtureID(1), CommunityID: fixtureID(2), Operation: OpModerationCases}
+	for _, tc := range []struct {
+		name   string
+		cursor any
+		valid  bool
+	}{
+		{name: "first page", cursor: nil, valid: true},
+		{name: "opaque cursor", cursor: []byte{0xff}, valid: true},
+		{name: "empty cursor", cursor: []byte{}, valid: false},
+		{name: "legacy numeric offset", cursor: uint64(0), valid: false},
+		{name: "oversized cursor", cursor: make([]byte, MaxModerationCursorBytes+1), valid: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := base
+			request.Args = []any{tc.cursor}
+			_, err := EncodeRequest(request)
+			if (err == nil) != tc.valid {
+				t.Fatalf("EncodeRequest error = %v, valid=%t", err, tc.valid)
 			}
 		})
 	}
