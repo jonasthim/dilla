@@ -174,6 +174,38 @@ func TestInteractionRegistrationSnapshotProviderUsesPersistedBinding(t *testing.
 	}
 }
 
+func TestInteractionRegistrationSnapshotProviderRequiresAdmissionAndExactTuple(t *testing.T) {
+	t.Run("admission failure prevents context lookup", func(t *testing.T) {
+		f := newInteractionRegistrationFixture(t)
+		if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		f.s.admissionErr = errors.New("admission unavailable")
+		event := native.GroupEvent{Group: f.request.Group, Community: f.community, SenderUser: f.request.ParticipantUser, SenderDevice: f.request.ParticipantDevice}
+		if _, _, err := f.coordinator.InteractionSnapshot(context.Background(), event); err == nil {
+			t.Fatal("InteractionSnapshot succeeded without a fresh admission")
+		}
+		if len(f.s.requestIDs) != 4 {
+			t.Fatalf("admission/context calls=%d; failed admission must stop before context lookup", len(f.s.requestIDs))
+		}
+	})
+
+	t.Run("wrong tuple is refused", func(t *testing.T) {
+		f := newInteractionRegistrationFixture(t)
+		if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		f.s.expected[3] = id.New() // signed snapshot names a different Bot user
+		event := native.GroupEvent{Group: f.request.Group, Community: f.community, SenderUser: f.request.ParticipantUser, SenderDevice: f.request.ParticipantDevice}
+		if _, _, err := f.coordinator.InteractionSnapshot(context.Background(), event); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+			t.Fatalf("InteractionSnapshot error=%v, want exact-tuple refusal", err)
+		}
+		if len(f.s.requestIDs) != 5 || f.s.requestIDs[3] != f.s.requestIDs[4] {
+			t.Fatalf("snapshot did not use the fresh admission request consistently: %v", f.s.requestIDs)
+		}
+	})
+}
+
 func TestInteractionRegistrationSnapshotProviderRenewsExpiredAdmission(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {

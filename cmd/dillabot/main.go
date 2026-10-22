@@ -500,9 +500,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									outbox, interactionErr = service.NewInteractionResponseOutbox(nativeClient, coordinator, result.Session)
 									if interactionErr == nil {
 										var dispatcher *service.InteractionDispatcher
-										dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-											map[protocol.Operation]service.InteractionHandlerSpec{}, func() uint64 { return uint64(time.Now().Unix()) },
-											nativeInteractionSnapshots{native: nativeClient, session: result.Session, installation: installation.ID})
+										var snapshots *service.InteractionRegistrationCoordinator
+										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
+										if interactionErr == nil {
+											dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
+												map[protocol.Operation]service.InteractionHandlerSpec{}, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+										}
 										if interactionErr == nil {
 											runtime := newInteractionEventRuntime(interactionPoller, newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
 											var result service.GroupEventPollResult
