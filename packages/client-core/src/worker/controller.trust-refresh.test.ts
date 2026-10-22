@@ -8,7 +8,8 @@ import { expect, it, vi } from 'vitest';
 import { decode, encode } from '../cbor';
 import { CoreError } from '../core-port';
 import { toHex } from '../hex';
-import { GROUP, STRANGER, world, toReady, type World } from './world';
+import { GROUP, READY_INFO, STRANGER, world, toReady, type World } from './world';
+import type { TrustSummary } from '../state/types';
 
 const row = (v: number) => [v, new Uint8Array([v]), new Uint8Array(64), new Uint8Array(32)];
 const ROGUE = 1;
@@ -105,4 +106,41 @@ it('refuses, and on retry refuses again, a leaf whose slice is empty after its s
   expect(w.routes.getDeviceList.mock.calls.length).toBeGreaterThan(reads);
   expect(seen).toHaveLength(2);
   expect(released(w)).toEqual([0]);
+});
+
+// privacy.unlistedMessage promises "the message opens once they do": the leaf refused unlisted is read again at the
+// reader's next ready (also at an epoch change of its group, a verify of the contact, or a send its verdict refuses), and
+// once the sender's list names the device the core accepts it and the held rows are released.
+it('ingests a leaf refused unlisted again at the next ready, and releases it once the list names the device', async () => {
+  const w = world();
+  await toReady(w);
+  serve(w);
+  let listed = false;
+  w.core.deviceListIngest.mockImplementation(() => {
+    if (!listed) throw new CoreError('E_DEVICE_UNLISTED', '');
+    return { version: 2n, changed: false, quarantined: 0 };
+  });
+  pending(w, [ROGUE]);
+  await pass(w, 1206);
+  expect(released(w)).toEqual([]);
+  // The same pass again in this ready does not read it again: nothing has changed for the worker to know.
+  await pass(w, 1207);
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  listed = true;
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(released(w)).toEqual([ROGUE]));
+});
+
+// A revoked device is a leaf verdict like an unlisted one: the contact is called unlisted while the worker holds it.
+it('calls a contact unlisted while a leaf of theirs is refused as revoked', async () => {
+  const w = world();
+  await toReady(w);
+  serve(w);
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: new Uint8Array(32).fill(0xbb), firstSeen: 1n, verified: false, changedUmk: null, blocked: null }]);
+  w.core.deviceListIngest.mockImplementation(() => { throw new CoreError('E_DEVICE_REVOKED', ''); });
+  // A known contact (a list cached), so only the refused verdict can call them unlisted, not a history still unknown.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: ROGUE, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  await pass(w, 1208);
+  expect(released(w)).toEqual([]);
+  expect(w.last<TrustSummary[]>('trust')?.find((t) => t.userId === toHex(STRANGER))).toMatchObject({ unlisted: true });
 });

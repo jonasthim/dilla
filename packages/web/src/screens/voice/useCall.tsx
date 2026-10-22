@@ -727,7 +727,7 @@ export function useCall(o: UseCallOptions): CallView {
         // A disconnected room may come back after a network or media restart. A refusal that
         // cannot improve by waiting ends the automatic attempt and leaves its reason visible.
         if (recoveryRef.current === id && ['E_FORBIDDEN', 'E_REMOVED', 'E_CALL_FULL', 'E_CALL_IN_OTHER_TAB',
-          'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_BINDING'].includes(code)) {
+          'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED', 'E_TIER_MISMATCH', 'E_BINDING'].includes(code)) {
           recoveryRef.current = null;
           setRecoveryChannelId(null);
           recoveryCameraRef.current = false;

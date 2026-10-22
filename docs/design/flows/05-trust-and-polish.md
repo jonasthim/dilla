@@ -9,7 +9,7 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | First seen here — not verified | `privacy.firstSeen` under the state; Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
 | changed | Compare with {name}; alert cannot dismiss; the composer of each conversation with that contact is blocked with the same text | changedUmk is validated pending key; sendBlocks[channel] is E_UMK_CHANGED, not own | `privacy.changed` |
 | changed, no key to compare | alert cannot dismiss, no Compare; the composer is blocked with the same text; a validated Remove of the changed device ends it per conversation | blocked=E_UMK_CHANGED, changedUmk=null; sendBlocks[channel] is E_UMK_CHANGED, not own, and no changed member of the conversation has a key | `privacy.changedNoKey` |
-| failed device in a conversation | composer blocked with the reason; no Verify; a refused edit, reaction, delete or pin shows the same reason | sendBlocks[channel] is E_DEVICE_UNLISTED, E_TIER_MISMATCH or E_CREDENTIAL, not own | `privacy.leafFailed` |
+| failed device in a conversation | composer blocked with the reason; no Verify; a refused edit, reaction, delete or pin shows the same reason | sendBlocks[channel] is E_DEVICE_UNLISTED, E_DEVICE_REVOKED, E_TIER_MISMATCH or E_CREDENTIAL, not own | `privacy.leafFailed` |
 | own account: other identity or unlisted device | danger banner in the shell and Devices, no dismiss; its action opens Devices (no compare); the composer of a conversation only own devices block says the same text | account.ownTrust is changed or unlisted; sendBlocks[channel].own (E_UMK_CHANGED: ownChanged, else ownUnlisted) | `privacy.ownChanged` / `privacy.ownUnlisted` |
 | unlisted | no Verify | leaf is quarantined | `privacy.unlisted` |
 | verified | show the compared key and date | exact current pin verified=1 | Privacy heading |
@@ -163,7 +163,8 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.verifiedLabel | verified | verified state label beside the compared key |
 | privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert; reason under the blocked composer of that conversation |
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
-| privacy.unlistedMessage | Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do. | under a message that could not be read because its device is unlisted (E_DEVICE_UNLISTED), also one held for the list before the verdict |
+| privacy.unlistedMessage | Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do. | under a message that could not be read because its device is unlisted (E_DEVICE_UNLISTED), also a row that was held for the list and then took the verdict |
+| privacy.revokedMessage | Sent from a device the sender removed from their account. It will not open. | under a message from a device its sender revoked (E_DEVICE_REVOKED); final, it never opens |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
 | privacy.removed | You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere. | group recovery |
 | privacy.changedNoKey | This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed. | changed alert without Compare (no pending key); reason under the blocked composer when no changed member has a key |

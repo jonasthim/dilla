@@ -15,7 +15,7 @@
 
 use super::error::{
     E_CORE_LIMIT, E_CORE_NOT_FOUND, E_CORE_STORAGE, E_CREDENTIAL, E_DEVICE_LIST_STALE,
-    E_DEVICE_UNLISTED, E_TIER_MISMATCH, E_UMK_CHANGED,
+    E_DEVICE_REVOKED, E_DEVICE_UNLISTED, E_TIER_MISMATCH, E_UMK_CHANGED,
 };
 use super::{ClientCore, ClientError, schema, wire};
 use crate::cbor::{Decoder, Encoder};
@@ -497,8 +497,13 @@ fn record_quarantine(
 /// rows still held for the list from that leaf (`app_pending_history`, the scope
 /// `revalidate_pending` releases) the verdict as their reason: a row held "waiting for the list"
 /// whose device the list then refused is no longer waiting, and the two call for opposite actions.
-/// The rows stay held, so a later list that validates the leaf still releases them. Answers
-/// whether stored state changed.
+/// The rows stay held, so a later list that validates the leaf still releases them (the reader's
+/// worker reads the leaf again at its next ready, an epoch change of the group, a verify of the
+/// contact, or a send the verdict refuses). A revoked device (`E_DEVICE_REVOKED`) is final instead:
+/// its user removed it, so its held rows, also those held as unlisted before, take that reason
+/// and lose their retained evidence, as its accepted rows lose theirs to the retraction, and
+/// nothing releases them, not even a later list that names the device unrevoked. Answers whether
+/// stored state changed.
 fn apply_verdict(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
@@ -526,18 +531,32 @@ fn apply_verdict(
     };
     let recorded = record_quarantine(c, group_id, user, device, signature_key, code)?;
     let retracted = retract_signature(c, group_id, signature_key, code)?;
+    let held = params![
+        group_id.as_slice(),
+        user.as_slice(),
+        device.as_slice(),
+        i64::from(leaf_index),
+        code
+    ];
     let relabelled = c.execute(
         "UPDATE app_messages SET reason=?5 WHERE group_id=?1 AND status=1 \
-         AND reason='E_DEVICE_LIST_STALE' AND seq IN (SELECT seq FROM app_pending_history \
+         AND (reason='E_DEVICE_LIST_STALE' OR (?5='E_DEVICE_REVOKED' AND reason='E_DEVICE_UNLISTED')) \
+         AND seq IN (SELECT seq FROM app_pending_history \
          WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND sender_leaf=?4)",
-        params![
-            group_id.as_slice(),
-            user.as_slice(),
-            device.as_slice(),
-            i64::from(leaf_index),
-            code
-        ],
+        held,
     )?;
+    if code == E_DEVICE_REVOKED {
+        c.execute(
+            "DELETE FROM app_pending_history WHERE group_id=?1 AND user_id=?2 AND device_id=?3 \
+             AND sender_leaf=?4",
+            params![
+                group_id.as_slice(),
+                user.as_slice(),
+                device.as_slice(),
+                i64::from(leaf_index)
+            ],
+        )?;
+    }
     Ok(recorded || retracted > 0 || relabelled > 0)
 }
 
@@ -703,10 +722,15 @@ fn stored_blocks(
 }
 
 fn block_code(code: &str) -> &'static str {
-    [E_UMK_CHANGED, E_DEVICE_UNLISTED, E_TIER_MISMATCH]
-        .into_iter()
-        .find(|known| *known == code)
-        .unwrap_or(E_CREDENTIAL)
+    [
+        E_UMK_CHANGED,
+        E_DEVICE_UNLISTED,
+        E_DEVICE_REVOKED,
+        E_TIER_MISMATCH,
+    ]
+    .into_iter()
+    .find(|known| *known == code)
+    .unwrap_or(E_CREDENTIAL)
 }
 
 pub(super) fn member_devices(group: &DillaGroup) -> Vec<([u8; 16], [u8; 16], [u8; 32])> {
@@ -830,7 +854,8 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
 ///   list signed under an unverified key neither revokes it nor vouches for it;
 /// - any other key is `E_CREDENTIAL` (D1-prime: a leaf not backed by its user's verified signed
 ///   list only ever fails itself);
-/// - otherwise the newest signed list decides (`E_DEVICE_UNLISTED`, `E_TIER_MISMATCH`).
+/// - otherwise the newest signed list decides (`E_DEVICE_UNLISTED`, `E_DEVICE_REVOKED`,
+///   `E_TIER_MISMATCH`).
 #[inline(never)]
 fn leaf_verdict(
     c: &rusqlite::Connection,
@@ -1242,6 +1267,7 @@ impl ClientCore {
             let verdict = [
                 E_CREDENTIAL,
                 E_DEVICE_UNLISTED,
+                E_DEVICE_REVOKED,
                 E_TIER_MISMATCH,
                 E_UMK_CHANGED,
             ]
@@ -2088,7 +2114,7 @@ mod tests {
             validate_history(&leaf, &requested, &[revoked.clone()], &revoked)
                 .unwrap_err()
                 .code,
-            "E_DEVICE_UNLISTED"
+            "E_DEVICE_REVOKED"
         );
     }
 

@@ -67,7 +67,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const label = STATE_LABEL[item.state];
   const cannotReadDetail = item.state !== 'cannot-read' ? undefined
     : item.reason === 'E_UMK_CHANGED' ? t('privacy.changed')
-      : item.reason === 'E_DEVICE_UNLISTED' ? t('privacy.unlistedMessage') : undefined;
+      : item.reason === 'E_DEVICE_UNLISTED' ? t('privacy.unlistedMessage')
+        : item.reason === 'E_DEVICE_REVOKED' ? t('privacy.revokedMessage') : undefined;
   const shown = item.state === 'ok' || item.state === 'pending' || item.state === 'failed';
   const gone = item.state === 'failed' && item.reason === 'E_ATTACHMENT_MISSING' && item.msgId !== null;
   const action = item.actions.find(a => a.state === 'failed') ?? item.actions.find(a => a.state === 'pending');
