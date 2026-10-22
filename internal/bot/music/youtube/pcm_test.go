@@ -28,6 +28,27 @@ func TestPCMStarterFailsClosedWithoutBubblewrap(t *testing.T) {
 	}
 }
 
+func TestSandboxCommandPointsTLSAtMountedResolvedCABundle(t *testing.T) {
+	if !strings.Contains(sandboxWorker, `"SSL_CERT_FILE": "/etc/ssl/cert.pem"`) {
+		t.Fatal("embedded worker does not point child tools at the mounted resolved CA bundle")
+	}
+	cmd, stdout, err := sandboxCommand(context.Background(), "/usr/bin/bwrap", "/usr/bin/python3", nil, nil, "/tmp/youtube-test/e.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stdout.Close()
+	args := cmd.Args
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "SSL_CERT_FILE" {
+			if args[i+2] != "/etc/ssl/cert.pem" {
+				t.Fatalf("SSL_CERT_FILE = %q, want mounted resolved bundle /etc/ssl/cert.pem", args[i+2])
+			}
+			return
+		}
+	}
+	t.Fatal("sandbox command does not set SSL_CERT_FILE")
+}
+
 func TestPCMChildCannotReachPublicNetworkDirectly(t *testing.T) {
 	dir := t.TempDir()
 	ytdlp := filepath.Join(dir, "direct-network-probe")

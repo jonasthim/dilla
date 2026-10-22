@@ -345,6 +345,39 @@ After the final entry-kind fix, the coordinator repeated live video/search/playl
 resolution and sample extraction successfully. The browser test and media peer
 were unchanged by that metadata fix. Full production acceptance remains pending.
 
+## Go YouTube adapter live smoke (2026-10-22)
+
+The new Go provider adapter was exercised against the same public video,
+`https://www.youtube.com/watch?v=aqz-KE-bpKQ`, on the Linux development
+workstation. The pinned tools were yt-dlp 2026.08.19 and yt-dlp-ejs 0.8.0 from
+`experiments/bot-providers/.youtube-venv`, Node 24.15.0 from the pinned nvm
+installation, Python 3, bubblewrap 0.13.1, and FFmpeg 9.0.2. The dependency
+doctor was run with explicit paths for those tools and the built
+`dilla-librespot-probe`; each dependency reported available and the doctor
+correctly retained `provider qualification: unverified`.
+
+The first Go run failed because the sandbox mounted the resolved system CA bundle
+as `/etc/ssl/cert.pem` but set `SSL_CERT_FILE` to
+`/etc/ssl/certs/ca-certificates.crt`. On this host that path resolves outside
+the mounted certificate directory, so yt-dlp rejected YouTube's TLS certificate.
+The bubblewrap command and embedded worker now both direct child tools to the
+mounted bundle; a regression test covers both settings.
+
+A bounded temporary Go smoke used `NewMetadataResolver` and `OpusStarter` with
+that URL, a 90-second overall deadline, a 30-second PCM duration cap, a 16 MiB
+PCM cap, and an eight-sample queue. Resolution returned the expected title
+("Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film") and 635 s
+duration. The PCM-to-Opus bridge emitted ten 240-byte Opus packets, each marked
+20 ms, in 3.19 s. It created no LiveKit publisher or voice call. The temporary
+smoke source was removed after completion.
+
+This proves unauthenticated public extraction and local PCM-to-Opus operation
+through the Go adapter on this workstation. It does not qualify the intended
+Dilla service host/account, the bot lifecycle, browser SFrame decryption, or
+continuous playback. The earlier Python probe's Chromium/Firefox evidence is a
+separate file-based path and is not evidence that the Go output was played in a
+browser.
+
 ## User correction: connect Spotify in server settings
 
 The user clarified that the bot belongs on the existing Dilla server and that

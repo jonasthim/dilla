@@ -170,7 +170,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 		"--bind", socketPath, "/run/egress.sock",
 		"--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
 		"--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
-		"--setenv", "LC_ALL", "C.UTF-8", "--setenv", "SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt",
+		"--setenv", "LC_ALL", "C.UTF-8", "--setenv", "SSL_CERT_FILE", "/etc/ssl/cert.pem",
 		"--", python, "-I", "-c", sandboxWorker,
 	)
 	args = append(args, workerArgs...)

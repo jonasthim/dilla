@@ -146,7 +146,7 @@ def main(argv):
         "NO_PROXY": "",
         "no_proxy": "",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
     }
     if command is not None:
         try:
