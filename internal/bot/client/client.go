@@ -564,6 +564,18 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 3 && parts[0] == "communities" && parts[2] == "channels" && method == http.MethodGet {
 		return 200, true
 	}
+	if len(parts) == 3 && parts[0] == "channels" && parts[2] == "permissions" && method == http.MethodGet {
+		return 200, true
+	}
+	if len(parts) == 3 && parts[0] == "channels" && parts[2] == "calls" && method == http.MethodPost {
+		return http.StatusCreated, true
+	}
+	if len(parts) == 3 && parts[0] == "channels" && parts[2] == "call" && method == http.MethodGet {
+		return http.StatusOK, true
+	}
+	if len(parts) == 2 && parts[0] == "calls" && method == http.MethodDelete {
+		return http.StatusNoContent, true
+	}
 	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "members" && method == http.MethodGet {
 		return 200, true
 	}
@@ -596,6 +608,10 @@ func statusAllowed(method, path string, got, want int) bool {
 	if got == http.StatusOK && want == http.StatusCreated && method == http.MethodPost && len(parts) == 4 &&
 		parts[0] == "bot-runtime" && parts[1] == "installations" &&
 		(parts[3] == "enroll" || parts[3] == "groups") {
+		return true
+	}
+	if got == http.StatusOK && want == http.StatusCreated && method == http.MethodPost && len(parts) == 3 &&
+		parts[0] == "channels" && parts[2] == "calls" {
 		return true
 	}
 	return false

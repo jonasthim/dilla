@@ -130,8 +130,28 @@ func (c *Channels) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities/{id}/channels", c.create)
 	mux.HandleFunc("GET /v1/communities/{id}/channels", c.list)
 	mux.HandleFunc("GET /v1/channels/{id}", c.get)
+	mux.HandleFunc("GET /v1/channels/{id}/permissions", c.permissions)
 	mux.HandleFunc("PATCH /v1/channels/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/channels/{id}", c.delete)
+}
+
+// permissions returns the caller's effective channel permissions after role
+// and member overwrites. A channel the caller cannot view remains indistinguishable
+// from an unknown channel through visible.
+func (c *Channels) permissions(w http.ResponseWriter, r *http.Request) {
+	row, s, err := c.visible(r)
+	if err != nil {
+		c.fail(w, r, "read channel permissions", err)
+		return
+	}
+	bits, err := c.res.Resolve(r.Context(), s.UserID, row)
+	if err != nil {
+		c.fail(w, r, "read channel permissions", err)
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, uint64(bits)); err != nil {
+		c.log.Error("encode channel permissions", "err", err)
+	}
 }
 
 // RegisterMembers registers the three channel-membership routes of §5.2. They are

@@ -96,3 +96,27 @@ func TestMemberResolverPropagatesAPIError(t *testing.T) {
 		t.Fatalf("ResolveCurrentMember = (%v, %q, %v), want propagated API error", present, name, err)
 	}
 }
+
+func TestSessionChannelPermissionsUsesAuthenticatedChannelRoute(t *testing.T) {
+	channelID := testID(27)
+	var gotPath, gotAuth string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, http.StatusOK, discovery(testID(99)))
+			return
+		}
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		reply(w, http.StatusOK, uint64(65))
+	}, 0)
+	session, err := c.Session("member-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, err := session.ChannelPermissions(context.Background(), channelID)
+	if err != nil || bits != 65 {
+		t.Fatalf("ChannelPermissions = (%d, %v), want (65, nil)", bits, err)
+	}
+	if gotPath != "/v1/channels/"+channelID.String()+"/permissions" || gotAuth != "Bearer member-session" {
+		t.Fatalf("request = %q with authorization %q", gotPath, gotAuth)
+	}
+}

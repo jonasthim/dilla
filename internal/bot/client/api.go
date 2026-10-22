@@ -1469,6 +1469,24 @@ func (s *Session) Channels(ctx context.Context, community id.ID) ([]Channel, err
 	return out, nil
 }
 
+// ChannelPermissions returns the session user's effective permission bits in
+// one channel, after community roles and channel overwrites are resolved.
+func (s *Session) ChannelPermissions(ctx context.Context, channelID id.ID) (uint64, error) {
+	c, err := pathID(channelID)
+	if err != nil {
+		return 0, err
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "channels/"+c+"/permissions", nil, nil, MaxSmallBody, false)
+	if err != nil {
+		return 0, err
+	}
+	var bits uint64
+	if err := cborx.Unmarshal(raw, &bits); err != nil {
+		return 0, ErrProtocol
+	}
+	return bits, nil
+}
+
 func nullableID(v any) (*id.ID, bool) {
 	if v == nil {
 		return nil, true
