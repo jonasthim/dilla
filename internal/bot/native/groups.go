@@ -59,6 +59,12 @@ type InteractionGroupCreateResult struct {
 	BindingBody, GroupInfo, RatchetTree []byte
 	Welcome, ResultBody                 []byte
 }
+type InteractionGroupInspectResult struct {
+	Binding   InteractionGroupBinding
+	BotDevice id.ID
+	Epoch     uint64
+	State     uint64
+}
 type GroupExternalJoinResult struct{ Commit, GroupInfo []byte }
 type GroupCommitWelcome struct {
 	Device  id.ID
@@ -688,6 +694,90 @@ func (c *Client) CreateInteractionGroup(ctx context.Context, operation id.ID, ex
 	}
 	return v.(InteractionGroupCreateResult), nil
 }
+
+func decodeInteractionGroupInspect(body []byte, binding Binding, expected InteractionGroupExpected) (any, error) {
+	a, err := groupBodyArray(body)
+	if err != nil || len(a) != 13 {
+		return nil, errors.New("interaction group inspect result shape")
+	}
+	version, err := groupUint(a[0])
+	if err != nil || version != 2 {
+		return nil, errors.New("interaction group inspect binding version")
+	}
+	readID := func(value any, want id.ID, field string) (id.ID, error) {
+		got, e := groupID(value)
+		if e != nil || got != want {
+			return id.ID{}, errors.New("interaction group inspect " + field)
+		}
+		return got, nil
+	}
+	out := InteractionGroupInspectResult{}
+	if out.Binding.Instance, err = readID(a[1], expected.Instance, "instance"); err != nil {
+		return nil, err
+	}
+	if out.Binding.BotUser, err = readID(a[2], expected.BotUser, "Bot user"); err != nil {
+		return nil, err
+	}
+	if out.BotDevice, err = readID(a[3], expected.BotDevice, "Bot device"); err != nil {
+		return nil, err
+	}
+	if out.Binding.Installation, err = readID(a[4], expected.Installation, "installation"); err != nil {
+		return nil, err
+	}
+	if out.Binding.Community, err = readID(a[5], expected.Community, "community"); err != nil {
+		return nil, err
+	}
+	if out.Binding.ParticipantUser, err = readID(a[6], expected.ParticipantUser, "participant"); err != nil {
+		return nil, err
+	}
+	if out.Binding.ParticipantDevice, err = readID(a[7], expected.ParticipantDevice, "participant device"); err != nil {
+		return nil, err
+	}
+	if out.Binding.PolicyVersion, err = groupUint(a[8]); err != nil || out.Binding.PolicyVersion != expected.PolicyVersion {
+		return nil, errors.New("interaction group inspect policy")
+	}
+	if out.Binding.E2EEVersion, err = groupUint(a[9]); err != nil || out.Binding.E2EEVersion != 1 {
+		return nil, errors.New("interaction group inspect E2EE version")
+	}
+	if out.Binding.MediaVersion, err = groupUint(a[10]); err != nil || out.Binding.MediaVersion != 0 {
+		return nil, errors.New("interaction group inspect media version")
+	}
+	if out.Epoch, err = groupUint(a[11]); err != nil {
+		return nil, errors.New("interaction group inspect epoch")
+	}
+	if out.State, err = groupUint(a[12]); err != nil || out.State >= 4 {
+		return nil, errors.New("interaction group inspect state")
+	}
+	if out.Binding.BotUser == out.Binding.ParticipantUser || out.BotDevice == out.Binding.ParticipantDevice || out.Epoch == 0 {
+		return nil, errors.New("interaction group inspect roster or epoch")
+	}
+	return out, nil
+}
+
+// InspectInteractionGroup verifies the current server-signed snapshot against the authenticated
+// persisted MLS group. The native core derives the exact Bot and participant leaves itself.
+func (c *Client) InspectInteractionGroup(ctx context.Context, expected InteractionGroupExpected, snapshotWire []byte) (InteractionGroupInspectResult, error) {
+	if validateInteractionExpected(expected, c.binding, expected.Group) != nil || len(snapshotWire) == 0 ||
+		len(snapshotWire) > maxInteractionSnapshot || groupInputBody(snapshotWire, maxInteractionSnapshot) != nil {
+		return InteractionGroupInspectResult{}, errors.New("invalid interaction group inspect input")
+	}
+	var snapshot []any
+	if err := cborx.Unmarshal(snapshotWire, &snapshot); err != nil || len(snapshot) != 2 {
+		return InteractionGroupInspectResult{}, errors.New("invalid signed interaction snapshot wire")
+	}
+	payload, payloadOK := snapshot[0].([]byte)
+	signature, signatureOK := snapshot[1].([]byte)
+	if !payloadOK || len(payload) == 0 || !signatureOK || len(signature) != 64 {
+		return InteractionGroupInspectResult{}, errors.New("invalid signed interaction snapshot wire")
+	}
+	v, err := c.groupCall(ctx, []any{uint64(22), expected.Group, append([]byte(nil), snapshotWire...), expectedTuple(expected)}, false,
+		groupWrapped(func(body []byte) (any, error) { return decodeInteractionGroupInspect(body, c.binding, expected) }))
+	if err != nil {
+		return InteractionGroupInspectResult{}, err
+	}
+	return v.(InteractionGroupInspectResult), nil
+}
+
 func (c *Client) GroupRegistered(ctx context.Context, operation, group id.ID, next uint64) error {
 	if operation.IsZero() || group.IsZero() || next == 0 || next > math.MaxInt64 {
 		return errors.New("invalid group registration input")

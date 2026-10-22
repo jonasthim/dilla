@@ -66,6 +66,14 @@ func TestCompiledHelperNativeGroupsIntegration(t *testing.T) {
 	if _, err = c.CreateInteractionGroup(ctx, interactionOperation, interactionExpected, badSnapshot, []byte{0x01}); err == nil {
 		t.Fatal("malformed signed context was accepted by real helper")
 	}
+	if _, err = c.InspectInteractionGroup(ctx, interactionExpected, badSnapshot); err == nil {
+		t.Fatal("malformed signed context was accepted by real inspect operation")
+	}
+	wrongInstallation := interactionExpected
+	wrongInstallation.Installation = integrationID(96)
+	if _, err = c.InspectInteractionGroup(ctx, wrongInstallation, badSnapshot); err == nil {
+		t.Fatal("cross-installation context reached real helper")
+	}
 	groupsAfterRefusal, err := c.Groups(ctx)
 	if err != nil || len(groupsAfterRefusal) != 0 {
 		t.Fatalf("refused interaction left group state: %#v %v", groupsAfterRefusal, err)

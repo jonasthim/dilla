@@ -77,8 +77,87 @@ pub(crate) fn dispatch(
         19 => events_ack(core, bind, payload),
         20 => intent_result(core, bind, payload),
         21 => interaction_create(core, payload),
+        22 => interaction_inspect(core, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+/// Inspect a persisted interaction group from its authenticated OpenMLS state and a fresh
+/// server-signed context snapshot. The caller supplies no roster authority.
+fn interaction_inspect(
+    core: &ClientCore,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    use dilla_core::{bot::interaction_admission::Expected, ids::MsgId};
+
+    let (group, snapshot, expected) = decode_strict(payload, |d| {
+        d.array(4)?;
+        let _ = d.uint()?;
+        let group = d.bytes_exact::<16>()?;
+        let snapshot = Zeroizing::new(d.bytes()?.to_vec());
+        d.array(11)?;
+        let expected = Expected {
+            instance: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            installation: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            community: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            bot_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            bot_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            participant_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            participant_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            group: MsgId::from_bytes(d.bytes_exact::<16>()?),
+            minimum_eligibility_revision: d.uint()?,
+            server_now: d.uint()?,
+            policy_version: d.uint()?,
+        };
+        Ok((group, snapshot, expected))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if group == [0; 16] || group != *expected.group.as_bytes() || snapshot.is_empty() {
+        return Err(DispatchError::Invalid);
+    }
+
+    let admission = core
+        .bot_inspect_stored_interaction_group(&group, &snapshot, &expected)
+        .map_err(map_client)?;
+    let row = core.group_row(&group).map_err(map_client)?;
+    let (state, epoch) = decode_strict(&row, |d| {
+        d.array(9)?;
+        let id = d.bytes_exact::<16>()?;
+        let kind = d.uint()?;
+        let _community = d.opt_bytes()?;
+        let _target = d.bytes_exact::<16>()?;
+        let state = d.uint()?;
+        let epoch = d.uint()?;
+        d.skip()?;
+        d.skip()?;
+        d.skip()?;
+        if id != group || kind != 3 {
+            return Err(dilla_core::cbor::CborError::TypeMismatch {
+                expected: "interaction group row",
+                offset: 0,
+            });
+        }
+        Ok((state, epoch))
+    })
+    .map_err(|_| DispatchError::Internal)?;
+
+    let mut e = Encoder::new();
+    // v2 binding, the exact two authenticated devices, then persisted MLS epoch and app state.
+    e.array(13)
+        .uint(2)
+        .bytes(admission.instance.as_bytes())
+        .bytes(admission.bot_user.as_bytes())
+        .bytes(admission.bot_device.as_bytes())
+        .bytes(admission.installation.as_bytes())
+        .bytes(admission.community.as_bytes())
+        .bytes(admission.participant_user.as_bytes())
+        .bytes(admission.participant_device.as_bytes())
+        .uint(expected.policy_version)
+        .uint(1)
+        .uint(0)
+        .uint(epoch)
+        .uint(state);
+    Ok(Zeroizing::new(body(e.into_vec())))
 }
 
 fn interaction_create(

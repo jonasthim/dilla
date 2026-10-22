@@ -162,6 +162,70 @@ func TestNativeInteractionCreateRejectsV1ProjectionAsUnknownMutationOutcome(t *t
 	}
 }
 
+func TestNativeInteractionInspectReturnsAuthenticatedDevicesAndPersistedState(t *testing.T) {
+	binding := testBinding()
+	expected := InteractionGroupExpected{
+		Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community,
+		BotUser: testID(4), BotDevice: testID(5), ParticipantUser: testID(6), ParticipantDevice: testID(7),
+		Group: testID(8), MinimumEligibilityRevision: 9, ServerNow: 10, PolicyVersion: 11,
+	}
+	resultBody, err := cborx.Marshal([]any{uint64(2), expected.Instance, expected.BotUser, expected.BotDevice,
+		expected.Installation, expected.Community, expected.ParticipantUser, expected.ParticipantDevice,
+		expected.PolicyVersion, uint64(1), uint64(0), uint64(4), uint64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := cborx.Marshal([]any{[]byte{0x01}, make([]byte, 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTransport{responses: [][]any{{resultBody}}}
+	c := newFakeClient(t, f)
+	got, err := c.InspectInteractionGroup(context.Background(), expected, snapshot)
+	if err != nil || got.Binding.ParticipantDevice != expected.ParticipantDevice || got.BotDevice != expected.BotDevice || got.Epoch != 4 || got.State != 2 {
+		t.Fatalf("interaction inspect=%#v err=%v", got, err)
+	}
+	if f.groupApplies != 1 || len(f.groupPayloads) != 1 || f.groupPayloads[0][0] != uint64(22) ||
+		f.groupPayloads[0][1] != expected.Group || !reflect.DeepEqual(f.groupPayloads[0][2], snapshot) ||
+		!reflect.DeepEqual(f.groupPayloads[0][3], expectedTuple(expected)) {
+		t.Fatalf("interaction inspect request=%#v", f.groupPayloads)
+	}
+
+	for name, mutate := range map[string]func([]any){
+		"wrong version":            func(a []any) { a[0] = uint64(1) },
+		"wrong Bot device":         func(a []any) { a[3] = testID(99) },
+		"wrong participant device": func(a []any) { a[7] = testID(99) },
+		"wrong policy":             func(a []any) { a[8] = uint64(12) },
+		"gone state":               func(a []any) { a[12] = uint64(4) },
+	} {
+		var values []any
+		if e := cborx.Unmarshal(resultBody, &values); e != nil {
+			t.Fatal(e)
+		}
+		mutate(values)
+		malformed, e := cborx.Marshal(values)
+		if e != nil {
+			t.Fatal(e)
+		}
+		f = &fakeTransport{responses: [][]any{{malformed}}}
+		c = newFakeClient(t, f)
+		if _, e = c.InspectInteractionGroup(context.Background(), expected, snapshot); e == nil || errors.Is(e, ErrOutcomeUnknown) || f.closed != 0 {
+			t.Fatalf("%s result was accepted or read quarantined: err=%v closed=%d", name, e, f.closed)
+		}
+	}
+
+	f = &fakeTransport{}
+	c = newFakeClient(t, f)
+	wrongInstall := expected
+	wrongInstall.Installation = testID(77)
+	if _, err = c.InspectInteractionGroup(context.Background(), wrongInstall, snapshot); err == nil || len(f.calls) != 0 {
+		t.Fatalf("cross-installation inspect dispatched: err=%v calls=%v", err, f.calls)
+	}
+	if _, err = c.InspectInteractionGroup(context.Background(), expected, []byte{0x80}); err == nil || len(f.calls) != 0 {
+		t.Fatalf("malformed signed snapshot dispatched: err=%v calls=%v", err, f.calls)
+	}
+}
+
 func TestNativeGroupCursorAndIntentBodyRules(t *testing.T) {
 	group := testID(14)
 	// Cursor body is a nullable cursor body inside the usual body wrapper.

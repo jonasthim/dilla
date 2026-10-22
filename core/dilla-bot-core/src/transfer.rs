@@ -378,6 +378,18 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
             bounded_bytes(d, 1, MAX_LOGICAL)?; // participant KeyPackage
             true
         }
+        (22, 4) => {
+            id(d)?; // group ID
+            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?; // signed context snapshot
+            d.array(11)?;
+            for _ in 0..8 {
+                id(d)?;
+            }
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            true
+        }
         (2, 7) => {
             id(d)?;
             id(d)?;
@@ -776,7 +788,7 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=21 {
+        for sub in 0..=22 {
             let mut e = Encoder::new();
             match sub {
                 0 | 17 => {
@@ -879,6 +891,16 @@ mod tests {
                     }
                     e.uint(1).uint(1).uint(1);
                     body(&mut e);
+                }
+                22 => {
+                    e.array(4).uint(sub);
+                    id(&mut e, 1);
+                    body(&mut e);
+                    e.array(11);
+                    for byte in 2..=9 {
+                        id(&mut e, byte);
+                    }
+                    e.uint(1).uint(1).uint(1);
                 }
                 _ => unreachable!(),
             }
