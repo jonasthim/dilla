@@ -35,6 +35,7 @@ type interactionRegistrationNativeAPI interface {
 	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	Identity(context.Context) (native.Identity, error)
 	CreateInteractionGroup(context.Context, id.ID, native.InteractionGroupExpected, []byte, []byte) (native.InteractionGroupCreateResult, error)
+	DiscardGroup(context.Context, id.ID, id.ID) error
 	GroupRegistered(context.Context, id.ID, id.ID, uint64) error
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
@@ -225,6 +226,12 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		return InteractionRegistrationResult{}, err
 	}
 	if in.Submitted {
+		// The native create already owns staged MLS group state. Server absence
+		// alone is insufficient to rebuild under a new operation until this exact
+		// native intent has been discarded.
+		if err := c.native.DiscardGroup(ctx, in.Operation, in.Group); err != nil {
+			return InteractionRegistrationResult{}, fmt.Errorf("%w: native pending create could not be discarded: %v", ErrInteractionRegistrationRecovery, err)
+		}
 		in.Operation = id.New()
 		in.AdmissionRequest = id.New()
 		in.Admission = nil

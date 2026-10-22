@@ -65,6 +65,9 @@ func TestInteractionRegistrationRenewsExpiredAdmissionAfterProvenLostResponse(t 
 	if err != nil || renewed.Operation == oldOperation || renewed.AdmissionRequest == oldAdmission || renewed.Submitted {
 		t.Fatalf("renewal did not stage fresh operation/admission: intent=%+v err=%v", renewed, err)
 	}
+	if len(f.n.discarded) != 1 || f.n.discarded[0] != oldOperation {
+		t.Fatalf("renewal did not discard exact prior native intent: %v", f.n.discarded)
+	}
 	f.s.dropRegistrationResponse = false
 	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
 		t.Fatalf("Register renewed intent: %v", err)
@@ -375,6 +378,7 @@ type interactionRegistrationNativeFake struct {
 	identity                native.Identity
 	values                  map[string]native.StateValue
 	createCalls, registered uint64
+	discarded               []id.ID
 	createErr               error
 	createdExpected         native.InteractionGroupExpected
 	createdKeyPackage       []byte
@@ -396,6 +400,11 @@ func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Con
 	}
 	return native.InteractionGroupCreateResult{Group: e.Group, Binding: native.InteractionGroupBinding{Instance: e.Instance, BotUser: e.BotUser, Installation: e.Installation, Community: e.Community, ParticipantUser: e.ParticipantUser, ParticipantDevice: e.ParticipantDevice, PolicyVersion: e.PolicyVersion, E2EEVersion: 1, MediaVersion: 0}, BindingBody: []byte{1}, GroupInfo: []byte{2}, RatchetTree: []byte{3}, Welcome: []byte{4}, Epoch: 1, MemberCount: 2}, nil
 }
+func (n *interactionRegistrationNativeFake) DiscardGroup(_ context.Context, operation, _ id.ID) error {
+	n.discarded = append(n.discarded, operation)
+	return nil
+}
+
 func (n *interactionRegistrationNativeFake) GroupRegistered(context.Context, id.ID, id.ID, uint64) error {
 	n.registered++
 	return nil

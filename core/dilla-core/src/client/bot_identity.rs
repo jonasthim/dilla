@@ -1278,6 +1278,45 @@ mod interaction_snapshot_tests {
         assert_eq!(group.epoch().as_u64(), 1);
         assert_eq!(group.members().count(), 2);
 
+        // The server can prove the old registration absent while the native side
+        // still owns a staged create. Discard that exact pending native operation
+        // before rebuilding with a fresh admission snapshot and operation ID.
+        core.bot_group_discard(&operation, expected.group.as_bytes())
+            .expect("discard proven-absent pending registration");
+        let discarded_state: (i64, i64) = connection.lock().unwrap().query_row(
+            "SELECT (SELECT count(*) FROM app_groups),(SELECT state FROM app_bot_intents WHERE operation_id=?1)",
+            rusqlite::params![operation.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(discarded_state, (0, 2));
+        let renewed_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut renewed_expected = expected.clone();
+        renewed_expected.server_now = renewed_now;
+        let renewed_wire = make_snapshot(
+            &renewed_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            renewed_now + 8,
+        );
+        let renewed_operation = [0x97; 16];
+        core.bot_interaction_group_create(
+            &renewed_operation,
+            renewed_expected.group.as_bytes(),
+            &renewed_wire,
+            &renewed_expected,
+            &kp_wire,
+        ).expect("fresh native create after proven absence");
+        let rebuilt_state: (i64, i64) = connection.lock().unwrap().query_row(
+            "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents WHERE group_id=?1 AND state=0)",
+            rusqlite::params![expected.group.as_bytes().as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(rebuilt_state, (1, 1));
+
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
