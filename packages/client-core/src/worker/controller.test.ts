@@ -1681,6 +1681,76 @@ describe('incoming typing keeps one sweep timer per channel', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  // Only an earlier deadline may move the timer. Always re-arming to the latest frame would leave the earlier row on
+  // screen until the later one is due.
+  it('a later or equal deadline keeps the pending timer and does not re-arm', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      const armed = vi.spyOn(globalThis, 'setTimeout');
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      expect(armed).toHaveBeenCalledTimes(1);
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));       // later
+      w.gateway.emit(typingFrame(user(3), NOW_S + 3n));       // equal
+      expect(armed).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);             // the 3 s rows went on time, the 8 s one stays
+      expect(vi.getTimerCount() - before).toBe(1);
+      armed.mockRestore();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a stop frame for a channel with no rows arms nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit({ type: 'frame', frame: { op: 49, n: 0n, groupId: null, payload: [CHANNEL, user(1), OTHER_DEVICE, 0n, NOW_S + 3n] } });
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('losing the channel view clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.sync.deps!.onMembership(GROUP, 'not-member');
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a worker reset (sign-out wipe) clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.call(961, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(961)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('cleared');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an earlier row is swept on time when a later deadline arrives after it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('closing the channel clears the pending timer', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

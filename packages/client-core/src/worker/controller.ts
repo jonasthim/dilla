@@ -1717,7 +1717,7 @@ export class Controller {
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
     this.incomingTyping.set(channelId, rows);
     this.publishTyping(channelId);
-    this.armTypingSweep(channelId, expiry);
+    if (on === 1n) this.armTypingSweep(channelId, expiry);          // a stop frame has nothing to expire
   }
 
   /** One sweep timer per channel, however many frames arrive: a frame moves it only when its deadline is earlier. */
@@ -1745,7 +1745,10 @@ export class Controller {
     this.typingSweeps.delete(channelId);
     this.publishTyping(channelId);
     const rows = this.incomingTyping.get(channelId);
-    if (rows !== undefined && rows.size > 0) this.armTypingSweep(channelId, Math.min(...rows.values()));
+    if (rows === undefined) return;
+    let nearest = Infinity;
+    for (const expiry of rows.values()) if (expiry < nearest) nearest = expiry;
+    if (nearest !== Infinity) this.armTypingSweep(channelId, nearest);
   }
 
   private publishTyping(channelId: string): void {
