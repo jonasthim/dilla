@@ -38,6 +38,7 @@ export const moderation = {
   'mod.timeout.done': 'Text timeout updated for {name}.',
   'mod.timeout.error.forbidden': 'You cannot time out {name}. Check your moderator permission and role rank.',
   'mod.timeout.error.clock': 'The timeout expiry was refused. Check this device’s clock and try again.',
+  'shell.composer.timedOut': 'You cannot post messages in this community until {time}.',
   'mod.error.other': 'That did not work ({code}). Try again.',
   'removed.notice': 'You are no longer in {server}.',
 } as const;

@@ -22,7 +22,7 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
+function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -33,7 +33,7 @@ function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraf
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
     <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce}
-      initialDraft={over.initialDraft} onDraftChange={over.onDraftChange} onOpenProfile={over.onOpenProfile} />
+      initialDraft={over.initialDraft} blocked={over.blocked} onDraftChange={over.onDraftChange} onOpenProfile={over.onOpenProfile} />
   </CoreProvider></div>);
   return { fake, user, view, onClose, announce };
 }
@@ -56,6 +56,11 @@ describe('ThreadView profile opens (MP7)', () => {
 });
 
 describe('ThreadView (web3.7)', () => {
+  it('blocks thread replies when the community timeout is active', () => {
+    setup({ blocked: 'You cannot post messages in this community until 11:20 AM.' });
+    expect(box()).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('You cannot post messages in this community until 11:20 AM.')).toBeInTheDocument();
+  });
   it('restores a thread draft and reports later edits for update recovery', async () => {
     const onDraftChange = vi.fn();
     const { user } = setup({ initialDraft: 'before refresh', onDraftChange });

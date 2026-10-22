@@ -24,6 +24,7 @@ export function ThreadView(p: {
   /** Where focus goes when the thread closes, when the shell knows better than the element focused at opening. */
   returnFocus?: () => HTMLElement | null;
   initialDraft?: string;
+  blocked?: string | null;
   onDraftChange?: (text: string) => void;
   onEditingChange?: (editing: boolean) => void;
   /** Opens a profile card for a mentioned user or a row's author (MP7); without it neither is a button. */
@@ -166,7 +167,7 @@ export function ThreadView(p: {
     }} onKeyDown={rowKey}>
       <ThreadPane title={t('thread.title')} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
-          <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={null}
+          <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={p.blocked ?? null}
             broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}
             book={book} draft={draft} onDraft={setDraft} ui={ui} dispatch={dispatch} onSend={send} onError={report}
             threadId={p.rootMsgId} />
