@@ -14,13 +14,13 @@ How to read it:
 - §1–§11 are the design: intent, goals, the decisions and who made them, what main has today, how it works end to
   end, the one registry of names, what the server learns, the threat model and copy in brief, and compatibility.
 - §12 is release, docs and gates. §13 is the one task list, in dependency order, with lanes, tiers and tests.
-- §14 is the open questions (only Jonas can decide them; each has a recommendation). §15 is the three biggest risks.
+- §14 is the open questions (none: Jonas answered them as J7–J10). §15 is the three biggest risks.
 - Appendix K (Rust core), Appendix S (server), Appendix C (client-core), Appendix U (web, ui and copy) and Appendix P
   (protocol text to paste) hold the per-layer recipes: signatures, SQL, CBOR shapes, truth tables, copy and test lists.
   References into them read `§K.4`, `§S.3.2`, `§C.5`, `§U.2`, `§P.3`.
 
 Markers: **(Jonas)** is Jonas's decision. **(my call)** is the designer's call; each is listed in §5.2 so it can be
-reviewed, and the ones only Jonas can overturn are repeated in §14.
+reviewed.
 
 ## Contents
 
@@ -103,7 +103,7 @@ feature is: a leaked recovery key now also opens your stored history.
 
 - Any server-side value that names a group, channel, DM, sender, message id, sequence number or message time next to
   a saved entry.
-- A browser that keeps the history's **read** key after its restore finished (my call, §5.2 D4; §14 Q1).
+- A browser that keeps the history's **read** key after its restore finished (Jonas, J7; built as D4).
 - A deleted-for-everyone message that a later browser restores and shows.
 - A restored message raising an unread badge, a mention badge, a desktop notification or a sound.
 - A restored row that replaces or duplicates a row the browser received live.
@@ -123,6 +123,10 @@ feature is: a leaked recovery key now also opens your stored history.
 | J4 | **On for everyone by default.** Settings → Privacy can turn it off and delete the archive. |
 | J5 | **Out of scope:** history for new members of a channel. |
 | J6 | **Built by cheap models from recipes:** sonnet for specified tasks, haiku for strings and docs, opus only for the E2EE-critical implementation and all key reviews. |
+| J7 | **The read key is erased after a restore** (2026-10-22, answering open question 1). "Restore again" in Settings → Privacy, with the recovery key, picks up history saved later. Built as D4. |
+| J8 | **Browsers from before this release get one banner** pointing to Settings → Privacy, shown until that section has been opened (open question 2). Built as D16 and §U.3. |
+| J9 | **The quota is 1 GiB per person, settable by the operator in dilla.toml** (`history.quota_bytes_per_user`). When it is full, new messages stop being saved and the person is told; nothing old is dropped (open question 3). Built as D18. |
+| J10 | **Turning history off needs a step-up**, the same check as account deletion (open question 4). Built as D15. |
 
 ### 5.2 My calls
 
@@ -131,7 +135,7 @@ feature is: a leaked recovery key now also opens your stored history.
 | D1 | **Four new keys from the recovery key**, by protocol/03's derivation (`HKDF-SHA256(salt = "", IKM = RK, info, L = 32)`): `info = "dilla history key v1"` seeds an X25519 HPKE key pair (`SK_hist`, `PK_hist`, RFC 9180 `DeriveKeyPair`); `"dilla history auth v1"` gives `K_hauth`; `"dilla history id v1"` gives `K_hid`; `"dilla history delete v1"` gives `K_hdel`. `K_header` and `K_backup` are unchanged and not used by history: `K_backup` seals the state object, the device-list rollback floor, and must not spread to every browser. |
 | D2 | **Write keys and a read key.** The **write keys** (`PK_hist`, `K_hauth`, `K_hid`, `K_hdel`) live in every browser that entered the recovery key, in its encrypted store; they seal, name and delete entries but cannot open one. The **read key** `SK_hist` exists only while a restore that this browser started is running (§7.4), then is erased. A stolen browser store therefore opens only that browser's own messages, never the saved history of all your browsers. |
 | D3 | **One sealing per upload, a key per batch.** Each upload is one HPKE base-mode setup to `PK_hist` (suite X25519 / HKDF-SHA256 / AES-256-GCM), whose exported secret, salted with `K_hauth`, is the batch's AES-256-GCM key. Rows carry their batch's `enc`. Only a holder of `SK_hist` opens a row; only a holder of `K_hauth` makes one that opens (the server, which may learn `PK_hist`, cannot forge one). |
-| D4 | **The read key is erased when the restore finishes**, or 7 days after it started, or when history is turned off, or at sign-out. A later "restore again" asks for the recovery key again. (§14 Q1 asks Jonas to confirm.) |
+| D4 | **The read key is erased when the restore finishes**, or 7 days after it started, or when history is turned off, or at sign-out. A later "restore again" asks for the recovery key again. Confirmed by Jonas (J7). |
 | D5 | **One entry per message, not segments.** The unit is one DS row: one `(group_id, seq)`, one entry, immutable. Posts and every fold (edit, delete, reaction add/remove, pin, unpin) are their own entries, exactly as the local store keeps them. Dedupe, delete and "append" need no read-modify-write and no conflict resolution. Rejected: per-conversation or time segments (they need the read key on every writer to rewrite a segment for a delete, and a merge protocol between browsers writing the same segment; they also tell the server which entries are one conversation). |
 | D6 | **Entry ids are keyed hashes.** `entry_id = HMAC-SHA256(K_hid, "dilla history entry id v1" ‖ group_id ‖ seq_be8)[0..16]`. Every browser of the account computes the same id for the same DS row, so the server dedupes without learning the group or the sequence number. |
 | D7 | **Append-only, first writer wins, deletes are final.** The server keeps the first row stored for an id and drops later ones; a delete removes the row and keeps the id as deleted for ever (per generation, §7.5), so a late browser cannot put it back. A saved entry is never rewritten. |
@@ -142,10 +146,10 @@ feature is: a leaked recovery key now also opens your stored history.
 | D12 | **Entries of groups this browser does not hold yet are parked** (in its encrypted store) and merged when the group arrives; parked rows older than 30 days are dropped (they belong to conversations you left). |
 | D13 | **Restore runs newest first**, then catches up what was saved while it ran, then finishes. A restore is resumable across reloads from a cursor in the store. |
 | D14 | **The account switch lives on the server** (`history_state`: enabled and a generation). Turning off deletes every entry and every deleted-id record and bumps the generation; turning on bumps it again. A browser that sees a new generation drops its queue and, when history is on, queues everything it holds (a backfill). Uploads name the generation; a stale one is `409 E_HISTORY_STALE`. |
-| D15 | **Turning history off needs a step-up**, as account deletion does: it deletes data of every browser of the account. Turning it on does not. |
-| D16 | **Existing browsers save once their person enters the recovery key** in Settings → Privacy ("enter recovery key"), which also restores. A banner tells them until they have seen that section once (§14 Q2). New sign-ups get the write keys at sign-up; every sign-in gets them at the key step. |
+| D15 | **Turning history off needs a step-up**, as account deletion does: it deletes data of every browser of the account. Turning it on does not. Confirmed by Jonas (J10). |
+| D16 | **Existing browsers save once their person enters the recovery key** in Settings → Privacy ("enter recovery key"), which also restores. A banner tells them until they have opened that section once (J8). New sign-ups get the write keys at sign-up; every sign-in gets them at the key step. |
 | D17 | **No store schema bump.** The new client tables and triggers are additive and created on every open, as web-3.5's three tables were; schema stays 5, so a client rollback opens the store (§11). |
-| D18 | **Quotas.** `history.quota_bytes_per_user` (default 1 GiB; 0 turns history off on the instance) and `history.upload_bytes_per_day` per device (default 256 MiB). A full history stops saving new entries (`507`) and says so; nothing old is dropped (§14 Q3). |
+| D18 | **Quotas.** `history.quota_bytes_per_user` (default 1 GiB; 0 turns history off on the instance) and `history.upload_bytes_per_day` per device (default 256 MiB). A full history stops saving new entries (`507`) and says so; nothing old is dropped (J9). |
 | D19 | **Padding.** Each entry's plaintext is padded with zero bytes to a multiple of 256, as message ciphertexts are, so a short post and a reaction are the same size. |
 | D20 | **No time is stored with an entry.** The server orders rows by an upload counter `n` and keeps no timestamp per entry. |
 | D21 | **The history's vectors are frozen from the Rust core** (`protocol/vectors/history.json`), as `permissions.json` is frozen from Go: the TS generator has no X25519 HPKE. |
@@ -319,7 +323,7 @@ reloads.
 
 A browser that signed up or signed in before this release holds no write keys. Its triggers do not queue
 (`history_on` is absent until keys exist). Privacy shows "This browser is not saving its messages yet…" with **enter
-recovery key**; a banner points there until the person has seen the section once (§14 Q2, §U.3). Entering the key stores the write keys, queues a
+recovery key**; a banner points there until the person has opened the section once (J8, §U.3). Entering the key stores the write keys, queues a
 backfill of everything the browser holds, and restores what other browsers saved.
 
 ### 7.7 Account deletion and the operator
@@ -797,22 +801,9 @@ below.
 
 ## 14. Open questions
 
-Only Jonas can decide these. Each has a recommendation; the design is built on it and changes in one named place if he
-decides otherwise.
-
-1. **Keep the read key after a restore?** Recommended: **no, erase it** (D4). A browser then cannot open the saved
-   history of other browsers if its store is stolen. The cost: a browser does not pick up what another browser saves
-   later from its own backlog (an old browser entering its key after this one restored); "restore again" in Privacy
-   (with the key) does. If yes: `history_restore_page` keeps the record after "done" and the runner polls `after=top`
-   at every ready (§C.5 step 5).
-2. **Tell browsers from before this release?** Recommended: **yes, one banner** ("This browser is not saving your
-   messages for your other browsers yet." with **open privacy**), shown until the person has seen the history section
-   once or entered the key. If no: drop `HistoryBanner` from W3; Privacy alone says it.
-3. **Quota and what happens when it is full.** Recommended: **1 GiB per person by default, and a full history stops
-   saving new messages and says so** (D18), never dropping old ones silently. Alternative: drop the oldest entries to
-   make room (needs a server-side order the browsers can trust; not designed).
-4. **Step-up to turn history off.** Recommended: **yes** (D15): turning off deletes every browser's saved history, so
-   it is guarded like account deletion. If no: `PUT /v1/history [0, null]` is accepted without a token.
+None. Jonas answered all four on 2026-10-22, each with the recommendation: J7 (erase the read key after a restore),
+J8 (one banner for older browsers), J9 (1 GiB per person, operator-settable, stop saving when full) and J10 (step-up
+to turn history off).
 
 ## 15. Risks
 
@@ -1863,7 +1854,7 @@ export class HistoryRestore {
    `429`: wait `retry_after_ms`. Anything else: `state = 'failed'`, `changed()`, return (the next ready runs it again
    from the stored cursor).
 
-If Jonas keeps the read key (§14 Q1): step 5's `res.done` keeps the record and every ready runs only the up phase.
+The read key is not kept after `res.done` (J7): later history comes only through `historyUseKey` ("restore again").
 
 ### C.6 The slice (task C2), `history/slice.ts` and `state/types.ts`
 
