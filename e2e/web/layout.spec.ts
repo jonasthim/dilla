@@ -1159,3 +1159,38 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
   await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
   await measure('1024 with the members aside');
 });
+
+test('a grouped row from an earlier day shows only its time of day in the gutter, which stays left of the content', async ({ page }) => {
+  const h = started();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Gry', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Midgard');
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  const first = `one ${String(Date.now())}`;
+  const second = `two ${String(Date.now())}`;
+  await sendText(page, 'general', first);
+  await expect(messageRow(page, 'general', first)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  await sendText(page, 'general', second);
+  await expect(messageRow(page, 'general', second)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  // The page clock moves two days on, so both rows are from an earlier day; the next render shows them so.
+  await page.evaluate(() => { const real = Date.now.bind(Date); Date.now = () => real() + 2 * 86_400_000; });
+  const third = `three ${String(Date.now())}`;
+  await sendText(page, 'general', third);
+  await expect(messageRow(page, 'general', third)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  const row = messageRow(page, 'general', second);
+  await expect(row).toHaveAttribute('data-grouped', 'true');
+  await row.hover();
+  const m = await row.evaluate(el => {
+    const g = el.querySelector('.d-message-row__gutter')!;
+    const main = el.querySelector('.d-message-row__main')!.getBoundingClientRect();
+    return { right: g.getBoundingClientRect().right, mainLeft: main.left, text: g.textContent ?? '', title: g.getAttribute('title') ?? '', sw: g.scrollWidth, cw: g.clientWidth };
+  });
+  expect(m.text, 'the gutter shows a time of day with no year').not.toMatch(/\d{4}/);
+  expect(m.title.length, 'the title carries the longer, dated time').toBeGreaterThan(m.text.length);
+  expect(m.right, `the gutter's right edge (${m.text}) is not past the content column`).toBeLessThanOrEqual(m.mainLeft + 0.5);
+  expect(m.sw, 'the gutter text is not clipped').toBeLessThanOrEqual(m.cw);
+});
