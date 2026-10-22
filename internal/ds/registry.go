@@ -66,6 +66,9 @@ func (d *DS) Register(ctx context.Context, r RegisterRequest) (RegisterResult, e
 
 // RegisterWithBotReceipt admits a managed Bot's first group only through its installation-scoped
 // operation. The immutable receipt is coupled to the group, public MLS state and initial members.
+// The kind-3 interaction preflight remains an independent fail-closed check: do not use it to
+// admit registrations until current authorization, receipt-consumption and restore-recovery
+// checks are connected to this transaction.
 func (d *DS) RegisterWithBotReceipt(ctx context.Context, r BotRegisterRequest) (BotRegisterReceipt, bool, error) {
 	if r.OperationID.IsZero() || r.InstallationID.IsZero() || r.ExpectedGeneration > math.MaxInt64 || len(r.RegistrationBody) == 0 {
 		return BotRegisterReceipt{}, false, errInvalid("invalid managed group registration intent")
