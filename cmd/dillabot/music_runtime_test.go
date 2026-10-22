@@ -365,7 +365,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 		t.Fatal(err)
 	}
 	epochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: instance, Community: community, Installation: installation}}
-	starter, err := newInstallationYouTubeQueueStarter(installation, community, channel, callSession, epochs)
+	starter, err := newInstallationYouTubeQueueStarter(instance, installation, community, channel, callSession, epochs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,8 +392,12 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	}
 
 	badEpochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: instance, Community: community, Installation: id.New()}}
-	if _, err := newInstallationYouTubeQueueStarter(installation, community, channel, callSession, badEpochs); err == nil {
+	if _, err := newInstallationYouTubeQueueStarter(instance, installation, community, channel, callSession, badEpochs); err == nil {
 		t.Fatal("cross-installation native epoch source was accepted")
+	}
+	badInstanceEpochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}}
+	if _, err := newInstallationYouTubeQueueStarter(instance, installation, community, channel, callSession, badInstanceEpochs); err == nil {
+		t.Fatal("cross-instance native epoch source was accepted")
 	}
 	if calls != 1 {
 		t.Fatalf("binding rejection made an HTTP call, count=%d", calls)
