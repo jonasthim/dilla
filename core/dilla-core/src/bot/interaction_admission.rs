@@ -49,7 +49,7 @@ pub struct Expected {
 /// Constructing this value does not authenticate the source; callers must use the OpenMLS
 /// authenticated member view and verify its dilla credential before passing it here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthenticatedRosterLeaf {
+pub(crate) struct AuthenticatedRosterLeaf {
     pub user: UserId,
     pub device: DeviceId,
     pub dsk_pub: [u8; 32],
@@ -59,7 +59,7 @@ pub struct AuthenticatedRosterLeaf {
 /// Check that the authenticated group has exactly the bot device and admitted participant device,
 /// and that each leaf is present in a valid signed device list. Callers must establish the MLS
 /// leaf authentication, device-list freshness and trust pins for both SSKs before relying on this.
-pub fn verify_exact_authenticated_roster(
+pub(crate) fn verify_exact_authenticated_roster(
     admission: &Admission,
     leaves: &[AuthenticatedRosterLeaf],
     bot_list: &DeviceList,
@@ -115,7 +115,7 @@ pub fn verify_exact_authenticated_roster(
 /// Verify the client-side evidence needed before an interaction group could be prepared. The
 /// caller supplies the inspected v2 binding and roster from authenticated MLS state; this does
 /// not create or persist a group.
-pub fn prepare_creation(
+pub(crate) fn prepare_creation(
     proof: &[u8],
     pinned_instance_key: &[u8; 32],
     expected: &Expected,
