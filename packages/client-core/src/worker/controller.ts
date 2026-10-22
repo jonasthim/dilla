@@ -1046,7 +1046,12 @@ export class Controller {
   private async checkInstanceSignerPin(): Promise<void> {
     const core = this.requireCore();
     const identity = core.identity();
-    const read = await this.routes.getInstance();
+    let read: Instance;
+    try { read = await this.routes.getInstance(); }
+    catch (e) {
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
+      throw e;
+    }
     if (identity.instanceId === null || toHex(read.instanceId) !== toHex(identity.instanceId)) {
       const error = new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
       this.failInstanceSignerPin(error);
@@ -1055,16 +1060,44 @@ export class Controller {
     try {
       core.instanceSignerKeyMatches(read.externalSenderPub);
     } catch (e) {
-      if (e instanceof CoreError && e.code === 'E_CORE_STATE') this.failInstanceSignerPin(e);
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
       throw e;
     }
   }
 
-  private failInstanceSignerPin(error: CoreError): void {
+  private isInvalidInstancePin(error: unknown): boolean {
+    return error instanceof CborError || error instanceof CoreError && (error.code === 'E_CORE_STATE' || error.code === 'E_CORE_INPUT');
+  }
+
+  private failInstanceSignerPin(cause: unknown): void {
+    const error = cause instanceof CoreError && cause.code === 'E_CORE_STATE'
+      ? cause : new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match the pinned identity');
     this.gateway?.stop();
     if (!this.revoked() && !this.wiping && !this.storeCleared) {
       this.setAccount({ phase: 'error', error: errorOf(error) });
     }
+  }
+
+  private scheduleSocketPinRetry(gateway: Gateway | null): void {
+    this.clearReauthTimer();
+    this.reauthTimer = this.deps.setTimeout(() => {
+      this.reauthTimer = null;
+      void this.restartAfterPinCheck(gateway);
+    }, GATEWAY.reconnectCapMs);
+  }
+
+  private async restartAfterPinCheck(gateway: Gateway | null): Promise<void> {
+    if (this.revoked() || this.wiping || this.leadership === null || this.phase !== 'ready' || this.gateway !== gateway) return;
+    try {
+      if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
+    } catch (e) {
+      if (this.isInvalidInstancePin(e)) this.failInstanceSignerPin(e);
+      else if (!this.revoked() && !this.wiping && this.phase === 'ready' && this.gateway === gateway) {
+        this.scheduleSocketPinRetry(gateway);
+      }
+      return;
+    }
+    if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
   }
 
   handle(data: unknown): void {
@@ -1842,21 +1875,15 @@ export class Controller {
       else this.enterRevoked();
     } catch (e) {
       if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return; }
-      if (e instanceof CoreError && e.code === 'E_CORE_STATE') {
-        this.gateway?.stop();
-        this.setAccount({ phase: 'error', error: errorOf(e) });
+      if (this.isInvalidInstancePin(e)) {
+        this.failInstanceSignerPin(e);
         return;
       }
       // Not a refusal (a network failure, a 5xx): try the socket again later; a refused ticket comes back here.
       if (this.revoked() || this.wiping) return;
       // I4: the handle is kept and cleared by resign, quiesce and enterRevoked; a timer that fires anyway starts only the
       // socket of the leadership that armed it.
-      const gateway = this.gateway;
-      this.clearReauthTimer();
-      this.reauthTimer = this.deps.setTimeout(() => {
-        this.reauthTimer = null;
-        if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
-      }, GATEWAY.reconnectCapMs);
+      this.scheduleSocketPinRetry(this.gateway);
     }
   }
 

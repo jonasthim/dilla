@@ -51,6 +51,45 @@ describe('Controller', () => {
     expect(w.gateway.stops).toBeGreaterThan(0);
   });
 
+  it('retries a discovery outage but rechecks the pin before restarting the socket', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      const reads = w.routes.getInstance.mock.calls.length;
+      w.routes.getInstance.mockRejectedValueOnce(new Error('offline'));
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 1));
+      expect(w.gateway.starts).toBe(starts);
+
+      w.routes.getInstance.mockResolvedValueOnce(INSTANCE);
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
+      await vi.waitFor(() => expect(w.routes.getInstance).toHaveBeenCalledTimes(reads + 2));
+      expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2);
+      expect(w.gateway.starts).toBe(starts + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed on malformed authenticated instance signer data', async () => {
+    const w = world();
+    await toReady(w);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const starts = w.gateway.starts;
+      w.core.instanceSignerKeyMatches.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'weak key'); });
+      w.gateway.emit({ type: 'revoked' });
+      await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+      await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs * 2);
+      expect(w.gateway.starts).toBe(starts);
+      expect(w.gateway.stops).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps moderation case listing typed but unavailable until an authenticated interaction transport exists', async () => {
     const w = world();
     await toReady(w);
