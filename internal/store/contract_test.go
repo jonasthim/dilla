@@ -131,12 +131,12 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"GetCursor", "MinCursor", "PutCursor",
 		}},
 		{"Structure", reflect.TypeOf((*store.Structure)(nil)).Elem(), []string{
-			"CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
+			"AddMemberRoleGrant", "CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
 			"DeleteChannelMember", "DeleteMember", "DeleteMemberRole", "EndVoiceSession",
 			"GetBan", "GetChannel", "GetCommunity", "ListChannelMembers", "ListChannels",
 			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
-			"PutRole", "PutVoiceSession", "UpdateChannel", "UpdateCommunityPolicy",
+			"PutRole", "PutVoiceSession", "RemoveMemberRoleGrant", "RevokeMemberRole", "UpdateChannel", "UpdateCommunityPolicy",
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
@@ -203,10 +203,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// Communities is the slice of Structure Plan 2 task 1's tables support; it
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
-			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
+			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
 			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SetCommunityAFK", "SetCommunityOwner",
+			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{

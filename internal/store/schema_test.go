@@ -273,7 +273,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 var wantTables = []string{
 	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_event_acks", "bot_event_streams", "bot_group_registration_receipts", "bot_installations", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_structural_events", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
-	"member_roles", "members",
+	"member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
 	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",

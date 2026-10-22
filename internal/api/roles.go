@@ -943,7 +943,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 		if err := requireCommunityWire(r.Context(), tx, locked.a.s.WireVersion, &locked.cid); err != nil {
 			return err
 		}
-		if err := tx.PutMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
+		if err := tx.AddMemberRoleGrant(r.Context(), g.cid, g.target, g.role.ID, store.RoleGrantManual); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{
@@ -988,7 +988,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 		if err := requireCommunityWire(r.Context(), tx, g.a.s.WireVersion, &g.cid); err != nil {
 			return err
 		}
-		if err := tx.DeleteMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
+		if err := tx.RevokeMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
 			return notFound(err)
 		}
 		return tx.Audit(r.Context(), store.AuditRow{

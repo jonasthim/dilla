@@ -39,6 +39,43 @@ func TestARoleCannotBeGrantedAboveTheGrantersHighest(t *testing.T) {
 	grant(t, e, cid, memberTok, victim, staff, http.StatusForbidden)
 }
 
+func TestManualRoleRoutesPreserveOtherGrantSources(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	role := createRole(t, e, cid, ownerTok, "member", 5, api.PermViewChannel)
+	target, targetTok := e.NewUser("target")
+	joinCommunity(t, e, cid, targetTok)
+	path := "/v1/communities/" + cid.String() + "/members/" + target.String() + "/roles/" + role.String()
+
+	if err := e.Repo.AddMemberRoleGrant(t.Context(), cid, target, role, store.RoleGrantSelf); err != nil {
+		t.Fatalf("add self grant: %v", err)
+	}
+	if status, body := e.Do(http.MethodPut, path, ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("manual grant = %d (%x), want 204", status, body)
+	}
+	if err := e.Repo.RemoveMemberRoleGrant(t.Context(), cid, target, role, store.RoleGrantSelf); err != nil {
+		t.Fatalf("remove self grant: %v", err)
+	}
+	held, err := e.Repo.ListMemberRoles(t.Context(), cid, target)
+	if err != nil || !slices.Contains(held, role) {
+		t.Fatalf("manual route grant after self removal = %v, %v; want role retained", held, err)
+	}
+
+	if err := e.Repo.AddMemberRoleGrant(t.Context(), cid, target, role, store.RoleGrantSelf); err != nil {
+		t.Fatalf("add self grant again: %v", err)
+	}
+	if err := e.Repo.AddMemberRoleGrant(t.Context(), cid, target, role, store.RoleGrantReaction); err != nil {
+		t.Fatalf("add reaction grant: %v", err)
+	}
+	if status, body := e.Do(http.MethodDelete, path, ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("manual revoke = %d (%x), want 204", status, body)
+	}
+	held, err = e.Repo.ListMemberRoles(t.Context(), cid, target)
+	if err != nil || slices.Contains(held, role) {
+		t.Fatalf("all sources after manual revoke = %v, %v; want role absent", held, err)
+	}
+}
+
 func TestOverwriteRoutesRoundTrip(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)

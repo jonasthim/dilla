@@ -587,11 +587,26 @@ type Communities interface {
 	DeleteRole(ctx context.Context, communityID, roleID id.ID) error
 	PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
+	// AddMemberRoleGrant and RemoveMemberRoleGrant track the reason a role is held.
+	// The effective member_roles row remains while any source grant exists.
+	AddMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
+	RemoveMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
+	// RevokeMemberRole atomically removes the effective role and all of its sources.
+	RevokeMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
 	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
 }
+
+// RoleGrantSource identifies an independent reason a member holds a role.
+type RoleGrantSource string
+
+const (
+	RoleGrantManual   RoleGrantSource = "manual"
+	RoleGrantSelf     RoleGrantSource = "self"
+	RoleGrantReaction RoleGrantSource = "reaction"
+)
 
 // Channels is the part of Structure whose table is 00005_channels.sql (Plan 2
 // task 2): §4.1's five channel methods plus P2-D8's two.

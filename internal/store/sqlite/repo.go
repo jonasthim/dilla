@@ -2446,17 +2446,79 @@ func (r *Repo) ListRoles(ctx context.Context, communityID id.ID) ([]store.RoleRo
 }
 
 func (r *Repo) PutMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
-	return wrap(r.w.PutMemberRole(ctx, sqlitedb.PutMemberRoleParams{
-		CommunityID: communityID, UserID: userID, RoleID: roleID,
-	}))
+	return r.AddMemberRoleGrant(ctx, communityID, userID, roleID, store.RoleGrantManual)
 }
 
 func (r *Repo) DeleteMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
-	n, err := r.w.DeleteMemberRole(ctx, sqlitedb.DeleteMemberRoleParams{
-		CommunityID: communityID, UserID: userID, RoleID: roleID,
-	})
+	return r.RemoveMemberRoleGrant(ctx, communityID, userID, roleID, store.RoleGrantManual)
+}
+
+func validRoleGrantSource(source store.RoleGrantSource) bool {
+	return source == store.RoleGrantManual || source == store.RoleGrantSelf || source == store.RoleGrantReaction
+}
+
+func (r *Repo) AddMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source store.RoleGrantSource) error {
+	if !validRoleGrantSource(source) {
+		return fmt.Errorf("store: invalid role grant source %q", source)
+	}
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.AddMemberRoleGrant(ctx, communityID, userID, roleID, source)
+		})
+	}
+	if _, err := r.tx.ExecContext(ctx, `INSERT INTO member_roles(community_id,user_id,role_id) VALUES(?,?,?) ON CONFLICT DO NOTHING`, communityID, userID, roleID); err != nil {
+		return wrap(err)
+	}
+	if _, err := r.tx.ExecContext(ctx, `INSERT INTO member_role_grant_sources(community_id,user_id,role_id,source) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, communityID, userID, roleID, string(source)); err != nil {
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) RemoveMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source store.RoleGrantSource) error {
+	if !validRoleGrantSource(source) {
+		return fmt.Errorf("store: invalid role grant source %q", source)
+	}
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.RemoveMemberRoleGrant(ctx, communityID, userID, roleID, source)
+		})
+	}
+	res, err := r.tx.ExecContext(ctx, `DELETE FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=? AND source=?`, communityID, userID, roleID, string(source))
 	if err != nil {
 		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	var remaining int64
+	if err := r.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?`, communityID, userID, roleID).Scan(&remaining); err != nil {
+		return err
+	}
+	if remaining == 0 {
+		_, err = r.tx.ExecContext(ctx, `DELETE FROM member_roles WHERE community_id=? AND user_id=? AND role_id=?`, communityID, userID, roleID)
+		return wrap(err)
+	}
+	return nil
+}
+
+func (r *Repo) RevokeMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error {
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error {
+			return tx.RevokeMemberRole(ctx, communityID, userID, roleID)
+		})
+	}
+	res, err := r.tx.ExecContext(ctx, `DELETE FROM member_roles WHERE community_id=? AND user_id=? AND role_id=?`, communityID, userID, roleID)
+	if err != nil {
+		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return store.ErrNotFound

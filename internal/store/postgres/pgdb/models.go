@@ -263,6 +263,13 @@ type LoginAttempts struct {
 	At     int64
 }
 
+type MemberRoleGrantSources struct {
+	CommunityID id.ID
+	UserID      id.ID
+	RoleID      id.ID
+	Source      string
+}
+
 type MemberRoles struct {
 	CommunityID id.ID
 	UserID      id.ID
