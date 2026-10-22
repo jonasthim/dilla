@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -85,6 +86,55 @@ func TestInteractionRegistrationCompletedRetryDoesNotRecreate(t *testing.T) {
 	}
 }
 
+func TestInteractionRegistrationObtainsExactPackageAfterServerContext(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.request.MinimumEligibilityRevision = 0
+	f.request.ParticipantKeyPackage = nil
+	f.s.keyPackage = []byte{9, 8, 7}
+
+	got, err := f.coordinator.Register(context.Background(), f.request)
+	if err != nil {
+		t.Fatalf("Register without caller-supplied package: %v", err)
+	}
+	if got.Usable || f.s.keyPackageCalls != 1 || f.n.createCalls != 1 || !bytes.Equal(f.n.createdKeyPackage, f.s.keyPackage) {
+		t.Fatalf("registration did not use the exact fetched package: result=%+v keypackage_calls=%d create_calls=%d", got, f.s.keyPackageCalls, f.n.createCalls)
+	}
+	if f.n.createdExpected.MinimumEligibilityRevision != 4 {
+		t.Fatalf("native create minimum eligibility revision = %d, want server snapshot revision 4", f.n.createdExpected.MinimumEligibilityRevision)
+	}
+}
+
+func TestInteractionRegistrationFailsClosedWhenPackageReadFails(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.request.MinimumEligibilityRevision = 0
+	f.request.ParticipantKeyPackage = nil
+	f.s.keyPackageErr = errors.New("package unavailable")
+
+	if _, err := f.coordinator.Register(context.Background(), f.request); err == nil {
+		t.Fatal("Register succeeded without an exact participant KeyPackage")
+	}
+	if f.s.keyPackageCalls != 1 || f.n.createCalls != 0 || f.s.registerCalls != 0 {
+		t.Fatalf("missing package did not fail closed: keypackage_calls=%d create_calls=%d register_calls=%d", f.s.keyPackageCalls, f.n.createCalls, f.s.registerCalls)
+	}
+}
+
+func TestInteractionRegistrationSnapshotProviderUsesPersistedBinding(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	event := native.GroupEvent{Group: f.request.Group, Community: f.community, SenderUser: f.request.ParticipantUser, SenderDevice: f.request.ParticipantDevice}
+	expected, wire, err := f.coordinator.InteractionSnapshot(context.Background(), event)
+	if err != nil {
+		t.Fatalf("InteractionSnapshot: %v", err)
+	}
+	if expected.Group != event.Group || expected.Instance != f.instance || expected.Installation != f.install || expected.Community != f.community ||
+		expected.BotUser != f.botUser || expected.BotDevice != f.botDevice || expected.ParticipantUser != event.SenderUser || expected.ParticipantDevice != event.SenderDevice ||
+		expected.MinimumEligibilityRevision != 4 || expected.PolicyVersion != 3 || expected.ServerNow != 100 || len(wire) == 0 {
+		t.Fatalf("snapshot binding did not match the durable registration: expected=%+v wire=%d", expected, len(wire))
+	}
+}
+
 type interactionRegistrationFixture struct {
 	coordinator                                      *InteractionRegistrationCoordinator
 	n                                                *interactionRegistrationNativeFake
@@ -101,6 +151,7 @@ func newInteractionRegistrationFixture(t *testing.T) *interactionRegistrationFix
 	f.d = &interactionRegistrationDiscoveryFake{value: client.Discovery{InstanceID: f.instance, Generation: 8, PolicyVersion: 3, ExternalSenderPub: append([]byte{1}, make([]byte, 31)...), E2EEVersions: []uint64{1}, MediaVersions: []uint64{0}}}
 	f.s = &interactionRegistrationSessionFake{admission: []byte{0x41}}
 	f.request = InteractionRegistrationRequest{Group: id.New(), ParticipantUser: id.New(), ParticipantDevice: id.New(), MinimumEligibilityRevision: 4, ParticipantKeyPackage: []byte{1, 2, 3}}
+	f.s.expected = []any{f.instance, f.install, f.community, f.botUser, f.botDevice, f.request.ParticipantUser, f.request.ParticipantDevice, f.request.Group}
 	var err error
 	f.coordinator, err = NewInteractionRegistrationCoordinator(f.instance, f.community, f.install, f.n, f.d, f.s)
 	if err != nil {
@@ -119,7 +170,11 @@ func signedSnapshotFixture(t *testing.T, request id.ID) []byte {
 }
 
 func makeSignedSnapshotFixture(request id.ID) ([]byte, error) {
-	payload, err := cborx.Marshal([]any{uint64(1), request, id.New(), []byte{1}, make([]byte, 64), uint64(100), uint64(200), uint64(4), uint64(1), uint64(0), id.New(), id.New(), make([]byte, 32), []any{}, []any{}, []any{}})
+	return makeSignedSnapshotFixtureFor(request, []any{id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New()})
+}
+
+func makeSignedSnapshotFixtureFor(request id.ID, expected []any) ([]byte, error) {
+	payload, err := cborx.Marshal([]any{uint64(1), request, id.New(), []byte{1}, make([]byte, 64), uint64(100), uint64(4), uint64(3), uint64(1), uint64(0), id.New(), id.New(), make([]byte, 32), expected, []any{}, []any{}})
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +187,8 @@ type interactionRegistrationNativeFake struct {
 	values                  map[string]native.StateValue
 	createCalls, registered uint64
 	createErr               error
+	createdExpected         native.InteractionGroupExpected
+	createdKeyPackage       []byte
 }
 
 func (n *interactionRegistrationNativeFake) Binding() native.Binding { return n.binding }
@@ -141,8 +198,10 @@ func (n *interactionRegistrationNativeFake) Bootstrap(context.Context, [32]byte)
 func (n *interactionRegistrationNativeFake) Identity(context.Context) (native.Identity, error) {
 	return n.identity, nil
 }
-func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, _ id.ID, e native.InteractionGroupExpected, _ []byte, _ []byte) (native.InteractionGroupCreateResult, error) {
+func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, _ id.ID, e native.InteractionGroupExpected, _ []byte, keyPackage []byte) (native.InteractionGroupCreateResult, error) {
 	n.createCalls++
+	n.createdExpected = e
+	n.createdKeyPackage = append([]byte(nil), keyPackage...)
 	if n.createErr != nil {
 		return native.InteractionGroupCreateResult{}, n.createErr
 	}
@@ -190,15 +249,24 @@ type interactionRegistrationSessionFake struct {
 	hideReceiptCalls            uint64
 	receipt                     *client.BotGroupRegistrationReceipt
 	requestIDs                  []id.ID
+	expected                    []any
+	keyPackage                  []byte
+	keyPackageErr               error
+	keyPackageCalls             uint64
+}
+
+func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
+	s.keyPackageCalls++
+	return append([]byte(nil), s.keyPackage...), s.keyPackageErr
 }
 
 func (s *interactionRegistrationSessionFake) IssueBotInteractionAdmission(_ context.Context, _ id.ID, request id.ID, _ id.ID, _ id.ID, _ id.ID) ([]byte, error) {
 	s.requestIDs = append(s.requestIDs, request)
 	return append([]byte(nil), s.admission...), nil
 }
-func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request id.ID, _ id.ID, _ id.ID, _ id.ID) ([]byte, error) {
+func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request id.ID, _, _, _ id.ID) ([]byte, error) {
 	s.requestIDs = append(s.requestIDs, request)
-	return makeSignedSnapshotFixture(request)
+	return makeSignedSnapshotFixtureFor(request, s.expected)
 }
 func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionRequest(_ context.Context, _ id.ID, op id.ID, generation uint64, body []byte, admissionRequest id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.requestIDs = append(s.requestIDs, admissionRequest)

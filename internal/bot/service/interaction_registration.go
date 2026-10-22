@@ -26,6 +26,7 @@ const (
 var (
 	ErrInteractionRegistrationRecovery       = errors.New("bot interaction registration requires recovery")
 	ErrInteractionRegistrationOutcomeUnknown = errors.New("bot interaction registration outcome is unknown")
+	ErrInteractionNotEligible                = errors.New("member is not eligible for bot interaction registration")
 )
 
 type interactionRegistrationNativeAPI interface {
@@ -47,6 +48,7 @@ type interactionRegistrationSessionAPI interface {
 	RegisterBotGroupWithAdmissionRequest(context.Context, id.ID, id.ID, uint64, []byte, id.ID) (client.BotGroupRegistrationReceipt, error)
 	BotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (client.BotGroupRegistrationReceipt, error)
 	GroupInfo(context.Context, id.ID) (client.GroupInfo, error)
+	KeyPackage(context.Context, id.ID) ([]byte, error)
 }
 
 type InteractionRegistrationCoordinator struct {
@@ -89,13 +91,19 @@ type interactionRegistrationIntent struct {
 	Receipt                                                                client.BotGroupRegistrationReceipt
 }
 
+type interactionSnapshotDetails struct {
+	Request, Instance, Installation, Community                     id.ID
+	BotUser, BotDevice, ParticipantUser, ParticipantDevice, Group  id.ID
+	Now, MinimumRevision, PolicyVersion, E2EEVersion, MediaVersion uint64
+}
+
 func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req InteractionRegistrationRequest) (InteractionRegistrationResult, error) {
 	if c == nil {
 		return InteractionRegistrationResult{}, errors.New("invalid interaction registration request")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if req.Group.IsZero() || req.ParticipantUser.IsZero() || req.ParticipantDevice.IsZero() || req.MinimumEligibilityRevision == 0 || req.MinimumEligibilityRevision > math.MaxInt64 || len(req.ParticipantKeyPackage) == 0 || len(req.ParticipantKeyPackage) > 65505 {
+	if req.Group.IsZero() || req.ParticipantUser.IsZero() || req.ParticipantDevice.IsZero() || req.MinimumEligibilityRevision > math.MaxInt64 || len(req.ParticipantKeyPackage) > 65505 {
 		return InteractionRegistrationResult{}, errors.New("invalid interaction registration request")
 	}
 	d, err := c.discovery.Discover(ctx)
@@ -133,7 +141,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 	} else {
 		in, err = decodeInteractionRegistrationIntent(v.Value)
-		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || in.MinimumRevision != req.MinimumEligibilityRevision || in.BotUser != *identity.User || in.BotDevice != *identity.Device || in.Policy != d.PolicyVersion || !equalBytes(in.KeyPackage, req.ParticipantKeyPackage) {
+		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || in.Policy != d.PolicyVersion || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
 		if in.Phase == 2 {
@@ -144,6 +152,10 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		if len(in.Admission) == 0 {
 			in.Admission, err = c.session.IssueBotInteractionAdmission(ctx, c.installation, in.AdmissionRequest, in.Group, in.ParticipantUser, in.ParticipantDevice)
 			if err != nil {
+				var apiErr *client.APIError
+				if errors.As(err, &apiErr) && apiErr.Status == 403 {
+					return InteractionRegistrationResult{}, fmt.Errorf("%w: %v", ErrInteractionNotEligible, err)
+				}
 				return InteractionRegistrationResult{}, fmt.Errorf("%w: admission request remains pending: %v", ErrInteractionRegistrationRecovery, err)
 			}
 			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
@@ -161,11 +173,23 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 				return InteractionRegistrationResult{}, err
 			}
 		}
-		snapshotRequest, now, err := interactionSnapshotCorrelation(in.Snapshot)
-		if err != nil || snapshotRequest != in.AdmissionRequest {
+		snapshot, err := interactionSnapshotDetailsFromWire(in.Snapshot)
+		if err != nil || snapshot.Request != in.AdmissionRequest || snapshot.PolicyVersion != d.PolicyVersion || (in.MinimumRevision != 0 && in.MinimumRevision != snapshot.MinimumRevision) || (req.MinimumEligibilityRevision != 0 && req.MinimumEligibilityRevision != snapshot.MinimumRevision) ||
+			snapshot.Instance != c.instance || snapshot.Installation != c.installation || snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice || snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice || snapshot.Group != in.Group {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
-		expected := native.InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community, BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice, Group: in.Group, MinimumEligibilityRevision: in.MinimumRevision, ServerNow: now, PolicyVersion: in.Policy}
+		in.MinimumRevision = snapshot.MinimumRevision
+		if len(in.KeyPackage) == 0 {
+			in.KeyPackage, err = c.session.KeyPackage(ctx, in.ParticipantDevice)
+			if err != nil || len(in.KeyPackage) == 0 || len(in.KeyPackage) > 65505 {
+				return InteractionRegistrationResult{}, fmt.Errorf("%w: exact participant KeyPackage unavailable: %v", ErrInteractionRegistrationRecovery, err)
+			}
+			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
+			if err != nil {
+				return InteractionRegistrationResult{}, err
+			}
+		}
+		expected := native.InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community, BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice, Group: in.Group, MinimumEligibilityRevision: in.MinimumRevision, ServerNow: snapshot.Now, PolicyVersion: in.Policy}
 		created, err := c.native.CreateInteractionGroup(ctx, in.Operation, expected, in.Snapshot, in.KeyPackage)
 		if err != nil {
 			return InteractionRegistrationResult{}, fmt.Errorf("%w: native create remains pending: %v", ErrInteractionRegistrationRecovery, err)
@@ -217,6 +241,44 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrInteractionRegistrationOutcomeUnknown, err)
 	}
 	return InteractionRegistrationResult{}, fmt.Errorf("%w: registration response lost: %v", ErrInteractionRegistrationOutcomeUnknown, postErr)
+}
+
+// InteractionSnapshot reloads the durable registration binding and asks the
+// server for a fresh signed context. The native dispatcher remains responsible
+// for authenticating the complete snapshot and the group's current state.
+func (c *InteractionRegistrationCoordinator) InteractionSnapshot(ctx context.Context, event native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+	var expected native.InteractionGroupExpected
+	if c == nil || event.Group.IsZero() || event.Community != c.community || event.SenderUser.IsZero() || event.SenderDevice.IsZero() {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value, err := c.native.StateGet(ctx, interactionRegistrationStateArea, interactionRegistrationKey(event.Group))
+	if err != nil || value.Revision == 0 || value.Tombstone {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	in, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || in.Group != event.Group || in.Phase != 2 || in.ParticipantUser != event.SenderUser || in.ParticipantDevice != event.SenderDevice {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	identity, err := c.native.Identity(ctx)
+	if err != nil || identity.Phase != 2 || identity.Instance == nil || *identity.Instance != c.instance || identity.User == nil || *identity.User != in.BotUser || identity.Device == nil || *identity.Device != in.BotDevice {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	discovery, err := c.discovery.Discover(ctx)
+	if err != nil || discovery.InstanceID != c.instance || discovery.PolicyVersion != in.Policy {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	wire, err := c.session.BotInteractionContextSnapshot(ctx, c.installation, in.AdmissionRequest, in.Group, in.ParticipantUser, in.ParticipantDevice)
+	if err != nil {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	snapshot, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil || snapshot.Request != in.AdmissionRequest || snapshot.Instance != c.instance || snapshot.Installation != c.installation || snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice || snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice || snapshot.Group != in.Group || snapshot.MinimumRevision != in.MinimumRevision || snapshot.PolicyVersion != in.Policy || !containsVersion(discovery.E2EEVersions, snapshot.E2EEVersion) || !containsVersion(discovery.MediaVersions, snapshot.MediaVersion) {
+		return expected, nil, ErrInteractionRegistrationRecovery
+	}
+	expected = native.InteractionGroupExpected{Instance: snapshot.Instance, Installation: snapshot.Installation, Community: snapshot.Community, BotUser: snapshot.BotUser, BotDevice: snapshot.BotDevice, ParticipantUser: snapshot.ParticipantUser, ParticipantDevice: snapshot.ParticipantDevice, Group: snapshot.Group, MinimumEligibilityRevision: snapshot.MinimumRevision, ServerNow: snapshot.Now, PolicyVersion: snapshot.PolicyVersion}
+	return expected, wire, nil
 }
 
 func (c *InteractionRegistrationCoordinator) proveInteractionRetrySafe(ctx context.Context, in interactionRegistrationIntent) error {
@@ -309,33 +371,58 @@ func containsVersion(v []uint64, want uint64) bool {
 	return false
 }
 
-// The snapshot envelope and signed payload are parsed only to pass the signed
-// server time into native verification. No signature or admission is trusted
-// here; the native helper verifies the complete wire against pinned keys.
-func interactionSnapshotCorrelation(wire []byte) (id.ID, uint64, error) {
+// The snapshot envelope and signed payload are parsed only to correlate the
+// durable intent. No signature or admission is trusted here; the native helper
+// verifies the complete wire against pinned keys before creating the group.
+func interactionSnapshotDetailsFromWire(wire []byte) (interactionSnapshotDetails, error) {
+	var details interactionSnapshotDetails
 	if cborx.CheckDeterministic(wire) != nil {
-		return id.ID{}, 0, ErrInteractionRegistrationRecovery
+		return details, ErrInteractionRegistrationRecovery
 	}
 	var envelope []any
 	if cborx.Unmarshal(wire, &envelope) != nil || len(envelope) != 2 {
-		return id.ID{}, 0, ErrInteractionRegistrationRecovery
+		return details, ErrInteractionRegistrationRecovery
 	}
 	payload, ok := envelope[0].([]byte)
 	sig, sok := envelope[1].([]byte)
 	if !ok || !sok || len(sig) != 64 || cborx.CheckDeterministic(payload) != nil {
-		return id.ID{}, 0, ErrInteractionRegistrationRecovery
+		return details, ErrInteractionRegistrationRecovery
 	}
 	var a []any
 	if cborx.Unmarshal(payload, &a) != nil || len(a) != 16 {
-		return id.ID{}, 0, ErrInteractionRegistrationRecovery
+		return details, ErrInteractionRegistrationRecovery
 	}
 	version, vok := a[0].(uint64)
-	request, rok := registrationID(a[1])
-	now, nok := a[5].(uint64)
-	if !vok || version != 1 || !rok || request.IsZero() || !nok || now == 0 || now > math.MaxInt64 {
-		return id.ID{}, 0, ErrInteractionRegistrationRecovery
+	var ids [8]id.ID
+	var idOK [8]bool
+	expected, eok := a[13].([]any)
+	if !eok || len(expected) != 8 {
+		return details, ErrInteractionRegistrationRecovery
 	}
-	return request, now, nil
+	for i := range ids {
+		ids[i], idOK[i] = registrationID(expected[i])
+	}
+	var request id.ID
+	var rok bool
+	request, rok = registrationID(a[1])
+	var nums [5]uint64
+	var numOK [5]bool
+	for i, idx := range []int{5, 6, 7, 8, 9} {
+		nums[i], numOK[i] = a[idx].(uint64)
+	}
+	if !vok || version != 1 || !rok || request.IsZero() || !allIDsPresent(idOK[:]) || !numOK[0] || nums[0] == 0 || nums[0] > math.MaxInt64 || !numOK[1] || nums[1] == 0 || nums[1] > math.MaxInt64 || !numOK[2] || nums[2] == 0 || nums[2] > math.MaxInt64 || !numOK[3] || nums[3] != 1 || !numOK[4] || nums[4] != 0 {
+		return details, ErrInteractionRegistrationRecovery
+	}
+	return interactionSnapshotDetails{Request: request, Now: nums[0], MinimumRevision: nums[1], PolicyVersion: nums[2], E2EEVersion: nums[3], MediaVersion: nums[4], Instance: ids[0], Installation: ids[1], Community: ids[2], BotUser: ids[3], BotDevice: ids[4], ParticipantUser: ids[5], ParticipantDevice: ids[6], Group: ids[7]}, nil
+}
+
+func allIDsPresent(values []bool) bool {
+	for _, value := range values {
+		if !value {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeInteractionRegistrationIntent(i interactionRegistrationIntent) ([]byte, error) {

@@ -465,14 +465,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								if handlerErr != nil {
 									ensureErr = handlerErr
 								} else {
-									pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
-										return poller.PollOnce(pollCtx, result.Session, handler)
-									})
-									if pollErr != nil {
-										logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
-										ensureErr = pollErr
-									} else if pollResult.More {
-										logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
+									registration, registrationErr := service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
+									if registrationErr != nil {
+										ensureErr = registrationErr
+									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID); registrationHandlerErr != nil {
+										ensureErr = registrationHandlerErr
+									} else {
+										handler = composeStructuralEventHandlers(registrationHandler, handler)
+										pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
+											return poller.PollOnce(pollCtx, result.Session, handler)
+										})
+										if pollErr != nil {
+											logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
+											ensureErr = pollErr
+										} else if pollResult.More {
+											logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
+										}
 									}
 								}
 							}
