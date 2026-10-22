@@ -57,9 +57,11 @@ func (runtimePublisher) Start(context.Context, client.Call, id.ID, livekit.Epoch
 type runtimeStateNative struct {
 	binding native.Binding
 	rows    map[string]native.StateValue
+	closed  bool
 }
 
 func (n *runtimeStateNative) Binding() native.Binding { return n.binding }
+func (n *runtimeStateNative) Close() error            { n.closed = true; return nil }
 func (n *runtimeStateNative) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
 	return n.rows[string(key)], nil
 }
@@ -266,5 +268,54 @@ func TestMusicRuntimeWithoutApprovedCapabilityDoesNotLoadOrRestore(t *testing.T)
 	}
 	if runtime != nil || loads != 0 {
 		t.Fatalf("runtime=%v inventory loads=%d; disabled music capability must skip restoration", runtime, loads)
+	}
+}
+
+func TestMusicQueueRegistryRetainsSupervisorsUntilCapabilityIsDisabled(t *testing.T) {
+	community, installation, voice := id.New(), id.New(), id.New()
+	nativeClient := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	registry := newMusicQueueRegistry()
+	channels := []client.Channel{{ID: voice, CommunityID: community, Kind: musicVoiceChannelKind}}
+	owned, err := registry.Reconcile(context.Background(), installation, community, botMusicCapability, channels, nativeClient, unavailableMusicQueueStarter())
+	if err != nil || !owned {
+		t.Fatalf("first reconcile owned=%v err=%v, want ownership transfer", owned, err)
+	}
+	first := registry.runtimes[installation].queues.supervisors[voice]
+	owned, err = registry.Reconcile(context.Background(), installation, community, botMusicCapability, channels, &runtimeStateNative{binding: nativeClient.binding, rows: map[string]native.StateValue{}}, unavailableMusicQueueStarter())
+	if err != nil || owned {
+		t.Fatalf("second reconcile owned=%v err=%v, want retained native client", owned, err)
+	}
+	if got := registry.runtimes[installation].queues.supervisors[voice]; got != first {
+		t.Fatal("supervisor was reconstructed between polling iterations")
+	}
+	currentNative := &runtimeStateNative{binding: nativeClient.binding, rows: map[string]native.StateValue{}}
+	owned, err = registry.Reconcile(context.Background(), installation, community, 0, channels, currentNative, unavailableMusicQueueStarter())
+	if err != nil || owned {
+		t.Fatalf("disabled reconcile owned=%v err=%v, want no ownership transfer", owned, err)
+	}
+	if !nativeClient.closed {
+		t.Fatal("retained native client was not closed on capability loss")
+	}
+	if currentNative.closed {
+		t.Fatal("caller-owned native client was closed by disabled reconcile")
+	}
+	if _, err := first.Apply(context.Background(), first.State().Revision, music.Operation{Kind: music.OpPause}); !errors.Is(err, music.ErrSupervisorClosed) {
+		t.Fatalf("supervisor after capability loss error=%v, want closed", err)
+	}
+}
+
+func TestMusicQueueRegistryClosesRuntimesForRemovedInstallations(t *testing.T) {
+	community, installation, voice := id.New(), id.New(), id.New()
+	nativeClient := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	registry := newMusicQueueRegistry()
+	_, err := registry.Reconcile(context.Background(), installation, community, botMusicCapability, []client.Channel{{ID: voice, CommunityID: community, Kind: musicVoiceChannelKind}}, nativeClient, unavailableMusicQueueStarter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.RetainOnly(nil); err != nil {
+		t.Fatal(err)
+	}
+	if !nativeClient.closed || len(registry.runtimes) != 0 {
+		t.Fatalf("removed installation cleanup closed=%v retained=%d", nativeClient.closed, len(registry.runtimes))
 	}
 }

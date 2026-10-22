@@ -22,7 +22,11 @@ const (
 
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 
-type musicQueueRuntime struct{ supervisors map[id.ID]*music.Supervisor }
+type musicQueueRuntime struct {
+	supervisors map[id.ID]*music.Supervisor
+	community   id.ID
+	store       *persistence.Store
+}
 
 func (r *musicQueueRuntime) Close() error {
 	if r != nil {
@@ -137,7 +141,7 @@ func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []cl
 	if ctx == nil || community.IsZero() || store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
-	runtime := &musicQueueRuntime{supervisors: make(map[id.ID]*music.Supervisor)}
+	runtime := &musicQueueRuntime{supervisors: make(map[id.ID]*music.Supervisor), community: community, store: store}
 	seen := make(map[id.ID]struct{}, len(channels))
 	for _, channel := range channels {
 		if channel.ID.IsZero() || channel.CommunityID != community {
@@ -164,6 +168,150 @@ func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []cl
 		runtime.supervisors[channel.ID] = supervisor
 	}
 	return runtime, nil
+}
+
+type musicRuntimeNative interface {
+	persistence.Native
+	Close() error
+}
+
+type retainedMusicRuntime struct {
+	community id.ID
+	queues    *musicQueueRuntime
+	native    musicRuntimeNative
+}
+
+// musicQueueRegistry keeps queue supervisors attached to the native helper
+// that backs their persistence store across reconciliation iterations.
+type musicQueueRegistry struct {
+	runtimes map[id.ID]*retainedMusicRuntime
+}
+
+func newMusicQueueRegistry() *musicQueueRegistry {
+	return &musicQueueRegistry{runtimes: make(map[id.ID]*retainedMusicRuntime)}
+}
+
+// Reconcile returns true only when ownership of nativeClient transfers to the
+// registry. A capability loss closes both the retained supervisors and helper.
+func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, community id.ID, capabilities uint64, channels []client.Channel, nativeClient musicRuntimeNative, starter session.QueueStarter) (bool, error) {
+	if r == nil || installation.IsZero() || community.IsZero() || nativeClient == nil {
+		return false, errors.New("music runtime dependencies unavailable")
+	}
+	if capabilities&botMusicCapability == 0 {
+		return false, r.Disable(installation)
+	}
+	if binding := nativeClient.Binding(); binding.Installation != installation || binding.Community != community {
+		_ = r.Disable(installation)
+		return false, errors.New("music native binding does not match installation")
+	}
+	if existing := r.runtimes[installation]; existing != nil {
+		if existing.community != community {
+			_ = r.Disable(installation)
+		} else {
+			if err := syncMusicSupervisors(ctx, existing.queues, channels, starter); err != nil {
+				_ = r.Disable(installation)
+				return false, err
+			}
+			return false, nil
+		}
+	}
+	queues, err := restoreMusicQueuesIfEnabled(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, nativeClient, starter)
+	if err != nil {
+		return false, err
+	}
+	if queues == nil {
+		return false, nil
+	}
+	r.runtimes[installation] = &retainedMusicRuntime{community: community, queues: queues, native: nativeClient}
+	return true, nil
+}
+
+func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starter session.QueueStarter) error {
+	if ctx == nil || runtime == nil || runtime.store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
+		return errors.New("music runtime dependencies unavailable")
+	}
+	desired := make(map[id.ID]struct{}, len(channels))
+	seen := make(map[id.ID]struct{}, len(channels))
+	for _, channel := range channels {
+		if channel.ID.IsZero() || channel.CommunityID != runtime.community {
+			return errors.New("music channel inventory is invalid")
+		}
+		if _, ok := seen[channel.ID]; ok {
+			return errors.New("music channel inventory is invalid")
+		}
+		seen[channel.ID] = struct{}{}
+		if channel.Kind == musicVoiceChannelKind {
+			desired[channel.ID] = struct{}{}
+		}
+	}
+	if len(desired) > maxMusicSupervisors {
+		return errors.New("music voice channel limit exceeded")
+	}
+	for channel, supervisor := range runtime.supervisors {
+		if _, ok := desired[channel]; !ok {
+			_ = supervisor.Close()
+			delete(runtime.supervisors, channel)
+		}
+	}
+	for _, channel := range channels {
+		if _, ok := desired[channel.ID]; !ok {
+			continue
+		}
+		if runtime.supervisors[channel.ID] != nil {
+			delete(desired, channel.ID)
+			continue
+		}
+		supervisor, err := newMusicSupervisor(ctx, channel.ID, runtime.store, starter)
+		if err != nil {
+			closeMusicSupervisors(runtime.supervisors)
+			runtime.supervisors = make(map[id.ID]*music.Supervisor)
+			return err
+		}
+		runtime.supervisors[channel.ID] = supervisor
+	}
+	return nil
+}
+
+func (r *musicQueueRegistry) Disable(installation id.ID) error {
+	if r == nil || r.runtimes[installation] == nil {
+		return nil
+	}
+	retained := r.runtimes[installation]
+	delete(r.runtimes, installation)
+	_ = retained.queues.Close()
+	return retained.native.Close()
+}
+
+func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
+	if r == nil {
+		return nil
+	}
+	active := make(map[id.ID]struct{}, len(installations))
+	for _, installation := range installations {
+		active[installation] = struct{}{}
+	}
+	var errs []error
+	for installation := range r.runtimes {
+		if _, ok := active[installation]; !ok {
+			if err := r.Disable(installation); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *musicQueueRegistry) Close() error {
+	if r == nil {
+		return nil
+	}
+	var errs []error
+	for installation := range r.runtimes {
+		if err := r.Disable(installation); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func restoreMusicQueuesIfEnabled(ctx context.Context, community id.ID, capabilities uint64, loadChannels func(context.Context, id.ID) ([]client.Channel, error), stateNative persistence.Native, starter session.QueueStarter) (*musicQueueRuntime, error) {

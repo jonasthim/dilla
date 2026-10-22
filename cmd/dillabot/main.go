@@ -321,8 +321,9 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		return errors.New("runtime credential could not be bound to the client")
 	}
 	logger.Info("bot service healthy", "instance_id", discovery.InstanceID.String(), "generation", discovery.Generation, "discovery", "ok")
+	musicRegistry := newMusicQueueRegistry()
 	for {
-		if err := reconcile(ctx, cfg, api, runtime, wasm, logger); err != nil && !errors.Is(err, context.Canceled) {
+		if err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, logger); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("bot identity reconciliation degraded", "error", err.Error())
 		} else if err == nil {
 			logger.Info("bot identity reconciliation healthy")
@@ -331,13 +332,16 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			if err := musicRegistry.Close(); err != nil {
+				logger.Error("bot music queue shutdown incomplete", "error", err.Error())
+			}
 			return nil
 		case <-timer.C:
 		}
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, logger *slog.Logger) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, logger *slog.Logger) error {
 	var spotifyGuard *service.SpotifyAccountGuard
 	if cfg.SpotifyClientID != "" {
 		var err error
@@ -350,33 +354,45 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	if err != nil {
 		return errors.New("installation discovery failed")
 	}
+	activeInstallations := make([]id.ID, 0, len(installations))
+	for _, installation := range installations {
+		activeInstallations = append(activeInstallations, installation.ID)
+	}
+	if err := musicRegistry.RetainOnly(activeInstallations); err != nil {
+		logger.Error("stale bot music runtime cleanup incomplete", "error", err.Error())
+	}
 	var eligible, succeeded int
 	for _, installation := range installations {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if installation.State >= 4 {
+			_ = musicRegistry.Disable(installation.ID)
 			continue
 		}
 		eligible++
 		key, _, err := loadDatabaseKey(cfg.StateDir, installation.ID.String())
 		if err != nil {
+			_ = musicRegistry.Disable(installation.ID)
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
 			continue
 		}
 		nativeClient, err := native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
 		clear(key)
 		if err != nil {
+			_ = musicRegistry.Disable(installation.ID)
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start")
 			continue
 		}
 		lifecycle, err := service.NewIdentityLifecycle(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, runtime, api, service.LifecycleOptions{})
 		if err != nil {
 			_ = nativeClient.Close()
+			_ = musicRegistry.Disable(installation.ID)
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
-		var musicQueues *musicQueueRuntime
+		var musicOwnedNative bool
+		var musicQueueCount int
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
 		membershipReady := false
@@ -422,12 +438,20 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
-							musicQueues, channelsErr := restoreMusicQueuesIfEnabled(ctx, installation.CommunityID, result.Installation.Capabilities, result.Session.Channels, nativeClient, unavailableMusicQueueStarter())
+							channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
+							if channelsErr == nil {
+								musicOwnedNative, channelsErr = musicRegistry.Reconcile(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, unavailableMusicQueueStarter())
+							} else {
+								_ = musicRegistry.Disable(installation.ID)
+							}
 							if channelsErr != nil {
 								logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
 								ensureErr = errors.Join(ensureErr, channelsErr)
 							} else {
-								logger.Info("bot music queue metadata restored paused", "installation_id", installation.ID.String(), "voice_channels", musicQueues.Len(), "providers", "unavailable_pcm")
+								if retained := musicRegistry.runtimes[installation.ID]; retained != nil {
+									musicQueueCount = retained.queues.Len()
+								}
+								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "providers", "unavailable_pcm")
 							}
 							var scheduler *announcements.Scheduler
 							scheduler, scheduleErr := service.NewAnnouncementScheduler(nativeClient, result.Session, api)
@@ -444,6 +468,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 			}
 		}
+		if !membershipReady {
+			_ = musicRegistry.Disable(installation.ID)
+		}
 		if membershipReady && cfg.SpotifyClientID != "" {
 			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
 			if linkErr == nil {
@@ -457,11 +484,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				ensureErr = errors.Join(ensureErr, linkErr)
 			}
 		}
-		var musicCloseErr error
-		if musicQueues != nil {
-			musicCloseErr = musicQueues.Close()
+		var closeErr error
+		if !musicOwnedNative {
+			closeErr = nativeClient.Close()
 		}
-		closeErr := errors.Join(nativeClient.Close(), musicCloseErr)
 		if ensureErr != nil || closeErr != nil {
 			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_service")
 			continue
