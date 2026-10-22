@@ -68,6 +68,9 @@ type Session struct {
 	token string
 }
 
+func (Session) String() string   { return "bot client.Session{token:[redacted]}" }
+func (Session) GoString() string { return "client.Session{token:[redacted]}" }
+
 func New(cfg Config) (*Client, error) {
 	u, err := url.Parse(cfg.BaseURL)
 	if err != nil || u == nil || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || u.Path != "" && u.Path != "/" || u.RawPath != "" || u.Hostname() == "" {
@@ -110,6 +113,21 @@ func (c *Client) Runtime(token string) (*Runtime, error) {
 	}
 	return &Runtime{c: c, token: token}, nil
 }
+
+// InstanceID and Origin expose only the pinned target of this runtime-scoped
+// credential, allowing coordinators to reject cross-instance client wiring.
+func (r *Runtime) InstanceID() id.ID {
+	if r == nil || r.c == nil {
+		return id.ID{}
+	}
+	return r.c.InstanceID()
+}
+func (r *Runtime) Origin() string {
+	if r == nil || r.c == nil {
+		return ""
+	}
+	return r.c.Origin()
+}
 func (c *Client) Session(token string) (*Session, error) {
 	if c == nil || strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") {
 		return nil, ErrInvalidConfig
@@ -132,6 +150,16 @@ const (
 	OutcomeDefinitive Outcome = iota + 1
 	OutcomeUnknown
 )
+
+// ResponseObservation records authority carried by one pinned /v1 response.
+// ServerTime is usable only when Date was present and parsed successfully;
+// Generation is usable only when the response header was a valid uint.
+type ResponseObservation struct {
+	ServerTime    uint64
+	HasServerTime bool
+	Generation    uint64
+	HasGeneration bool
+}
 
 // APIError contains stable refusal data needed for recovery. Free-form server
 // details and opaque response bytes are omitted from Error() to avoid leaking
@@ -158,11 +186,17 @@ func (c *Client) endpoint(path string, q url.Values) *url.URL {
 }
 
 func (c *Client) do(ctx context.Context, token, method, path string, query url.Values, body []byte, max int64, mutation bool) ([]byte, int, error) {
+	b, status, _, err := c.doObserved(ctx, token, method, path, query, body, max, mutation)
+	return b, status, err
+}
+
+func (c *Client) doObserved(ctx context.Context, token, method, path string, query url.Values, body []byte, max int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+	var observation ResponseObservation
 	if path != "instance" && !c.discovered.Load() {
-		return nil, 0, errors.New("bot client: discovery required before API use")
+		return nil, 0, observation, errors.New("bot client: discovery required before API use")
 	}
 	if len(body) > MaxBody || max > 0 && int64(len(body)) > max {
-		return nil, 0, ErrProtocol
+		return nil, 0, observation, ErrProtocol
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -175,7 +209,7 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.endpoint(path, query).String(), reader)
 	if err != nil {
-		return nil, 0, ErrInvalidConfig
+		return nil, 0, observation, ErrInvalidConfig
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -187,38 +221,46 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if mutation {
-			return nil, 0, &APIError{Status: 0, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+			return nil, 0, observation, &APIError{Status: 0, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
-		return nil, 0, errors.New("bot client: request failed")
+		return nil, 0, observation, errors.New("bot client: request failed")
 	}
 	defer resp.Body.Close()
+	if n, parseErr := strconv.ParseUint(resp.Header.Get("X-Dilla-Generation"), 10, 63); parseErr == nil && n > 0 {
+		observation.Generation, observation.HasGeneration = n, true
+	}
+	if rawDate := resp.Header.Get("Date"); rawDate != "" {
+		if parsed, parseErr := http.ParseTime(rawDate); parseErr == nil && parsed.Unix() >= 0 {
+			observation.ServerTime, observation.HasServerTime = uint64(parsed.Unix()), true
+		}
+	}
 	wantStatus, routeOK := expectedStatus(method, path)
 	if !routeOK {
 		if mutation {
-			return nil, resp.StatusCode, unknown()
+			return nil, resp.StatusCode, observation, unknown()
 		}
-		return nil, resp.StatusCode, ErrProtocol
+		return nil, resp.StatusCode, observation, ErrProtocol
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != wantStatus {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && !statusAllowed(method, path, resp.StatusCode, wantStatus) {
 		if mutation {
-			return nil, resp.StatusCode, unknown()
+			return nil, resp.StatusCode, observation, unknown()
 		}
-		return nil, resp.StatusCode, ErrProtocol
+		return nil, resp.StatusCode, observation, ErrProtocol
 	}
 	if resp.StatusCode != http.StatusNoContent {
 		mediaType, _, parseErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 		if parseErr != nil || mediaType != "application/cbor" {
 			if mutation {
-				return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+				return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 			}
-			return nil, resp.StatusCode, ErrProtocol
+			return nil, resp.StatusCode, observation, ErrProtocol
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errorLimit := errorBodyLimit(path)
 		b, readErr := io.ReadAll(io.LimitReader(resp.Body, errorLimit+1))
 		if mutation && resp.StatusCode >= 500 || mutation && (resp.StatusCode >= 300 && resp.StatusCode < 400) || readErr != nil || int64(len(b)) > errorLimit {
-			return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
 		code := "E_HTTP_ERROR"
 		var a []any
@@ -231,11 +273,11 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 		} else if resp.StatusCode >= 500 {
 			code = "E_INTERNAL"
 		} else if mutation {
-			return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		} else {
-			return nil, resp.StatusCode, ErrProtocol
+			return nil, resp.StatusCode, observation, ErrProtocol
 		}
-		return nil, resp.StatusCode, parseAPIError(resp.StatusCode, code, a)
+		return nil, resp.StatusCode, observation, parseAPIError(resp.StatusCode, code, a)
 	}
 	if max <= 0 || max > MaxBody {
 		max = MaxBody
@@ -243,26 +285,26 @@ func (c *Client) do(ctx context.Context, token, method, path string, query url.V
 	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 	if err != nil || int64(len(b)) > max {
 		if mutation {
-			return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
-		return nil, resp.StatusCode, ErrProtocol
+		return nil, resp.StatusCode, observation, ErrProtocol
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		if len(b) != 0 {
 			if mutation {
-				return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+				return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 			}
-			return nil, resp.StatusCode, ErrProtocol
+			return nil, resp.StatusCode, observation, ErrProtocol
 		}
-		return nil, resp.StatusCode, nil
+		return nil, resp.StatusCode, observation, nil
 	}
 	if len(b) == 0 || cborx.CheckDeterministic(b) != nil {
 		if mutation {
-			return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
-		return nil, resp.StatusCode, ErrProtocol
+		return nil, resp.StatusCode, observation, ErrProtocol
 	}
-	return b, resp.StatusCode, nil
+	return b, resp.StatusCode, observation, nil
 }
 
 func errorBodyLimit(path string) int64 {
@@ -424,6 +466,9 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodPost {
 			return 201, true
 		}
+		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodGet {
+			return 200, true
+		}
 		if len(parts) == 5 && parts[3] == "keypackages" && method == http.MethodGet {
 			return 200, true
 		}
@@ -492,6 +537,22 @@ func expectedStatus(method, path string) (int, bool) {
 		return 200, true
 	}
 	return 0, false
+}
+
+func statusAllowed(method, path string, got, want int) bool {
+	if got == want {
+		return true
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	// Enrollment returns 201 for first acceptance and 200 when the same
+	// durable request is replayed after a lost reply. KeyPackage publication
+	// keeps 201 for both first acceptance and exact operation replay.
+	if got == http.StatusOK && want == http.StatusCreated && method == http.MethodPost && len(parts) == 4 &&
+		parts[0] == "bot-runtime" && parts[1] == "installations" &&
+		parts[3] == "enroll" {
+		return true
+	}
+	return false
 }
 
 func decode(raw []byte, n int) ([]any, error) {

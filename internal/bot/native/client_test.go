@@ -15,11 +15,12 @@ import (
 )
 
 type fakeTransport struct {
-	responses [][]any
-	statuses  []uint64
-	err       error
-	calls     []protocol.HelperOperation
-	closed    int
+	responses    [][]any
+	statuses     []uint64
+	err          error
+	calls        []protocol.HelperOperation
+	closed       int
+	groupApplies int
 }
 
 func (f *fakeTransport) Open(context.Context, id.ID, id.ID, id.ID, []byte) ([]any, error) {
@@ -43,6 +44,10 @@ func (f *fakeTransport) Call(_ context.Context, op protocol.HelperOperation, _ [
 	out := f.responses[0]
 	f.responses = f.responses[1:]
 	return out, nil
+}
+func (f *fakeTransport) GroupApply(ctx context.Context, payload []any) ([]any, error) {
+	f.groupApplies++
+	return f.Call(ctx, protocol.HelperGroupApply, payload)
 }
 func (f *fakeTransport) Close() error { f.closed++; return nil }
 
@@ -125,6 +130,18 @@ func TestSessionFormattingRedactsToken(t *testing.T) {
 	}
 	if s.Token() != "secret-bearer" {
 		t.Fatal("explicit token accessor lost token")
+	}
+}
+
+func TestSessionAcceptsCanonicalNullForEmptyStore(t *testing.T) {
+	f := &fakeTransport{responses: [][]any{{[]byte{0xf6}}}}
+	c := newFakeClient(t, f)
+	s, err := c.Session(context.Background())
+	if err != nil || s.Token() != "" || s.Expires != 0 || s.IdleExpires != 0 {
+		t.Fatalf("empty session: %#v, %v", s, err)
+	}
+	if len(f.calls) != 1 || f.calls[0] != protocol.HelperSession {
+		t.Fatalf("unexpected helper calls: %v", f.calls)
 	}
 }
 

@@ -28,6 +28,7 @@ type Binding struct{ Instance, Community, Installation id.ID }
 type transport interface {
 	Open(context.Context, id.ID, id.ID, id.ID, []byte) ([]any, error)
 	Call(context.Context, protocol.HelperOperation, []any) ([]any, error)
+	GroupApply(context.Context, []any) ([]any, error)
 	Close() error
 }
 
@@ -38,6 +39,14 @@ type Client struct {
 	binding Binding
 	usable  bool
 	closed  bool
+}
+
+// Binding reports the immutable identity tuple this helper was opened for.
+func (c *Client) Binding() Binding {
+	if c == nil {
+		return Binding{}
+	}
+	return c.binding
 }
 
 // Start starts one compiled native helper and opens the encrypted store for
@@ -105,6 +114,9 @@ func (b Binding) valid() bool {
 }
 
 func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload []any, mutation bool, decode func([]any) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	select {
 	case c.gate <- struct{}{}:
 		defer func() { <-c.gate }()
@@ -117,7 +129,13 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 		return nil, helper.ErrClosed
 	}
 	c.mu.Unlock()
-	result, err := c.t.Call(ctx, op, payload)
+	var result []any
+	var err error
+	if op == protocol.HelperGroupApply {
+		result, err = c.t.GroupApply(ctx, payload)
+	} else {
+		result, err = c.t.Call(ctx, op, payload)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -525,12 +543,12 @@ func decodeSessionSignature(b []byte, nonce [32]byte, purpose uint64) (SessionSi
 	return out, nil
 }
 func decodeSession(b []byte) (Session, error) {
+	if len(b) == 1 && b[0] == 0xf6 { // canonical CBOR null: no bearer stored yet.
+		return Session{}, nil
+	}
 	a, e := decodeArray(b)
 	if e != nil {
 		return Session{}, e
-	}
-	if len(a) == 1 && a[0] == nil {
-		return Session{}, nil
 	}
 	if len(a) != 3 {
 		return Session{}, errors.New("session shape")

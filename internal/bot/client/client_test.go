@@ -518,6 +518,17 @@ func TestRepresentativeTypedRoutesMatchWireStatusesAndShapes(t *testing.T) {
 	}
 }
 
+func TestOnlyEnrollmentAllowsIdempotentHTTP200Replay(t *testing.T) {
+	enroll := "bot-runtime/installations/" + testID(9).String() + "/enroll"
+	keypackages := "bot-runtime/installations/" + testID(9).String() + "/keypackages"
+	if !statusAllowed(http.MethodPost, enroll, http.StatusOK, http.StatusCreated) {
+		t.Fatal("exact enrollment replay status 200 was rejected")
+	}
+	if statusAllowed(http.MethodPost, keypackages, http.StatusOK, http.StatusCreated) {
+		t.Fatal("unexpected KeyPackage status 200 was accepted")
+	}
+}
+
 func TestRedirectDoesNotForwardCredentials(t *testing.T) {
 	var leaked atomic.Bool
 	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

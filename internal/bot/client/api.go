@@ -15,75 +15,83 @@ import (
 const maxStoredSequence uint64 = 1<<63 - 1
 
 func (c *Client) Discover(ctx context.Context) (Discovery, error) {
-	raw, _, err := c.do(ctx, "", http.MethodGet, "instance", nil, nil, MaxSmallBody, false)
+	d, _, err := c.DiscoverObserved(ctx)
+	return d, err
+}
+
+// DiscoverObserved returns Date and generation observed on the exact response
+// that supplied the discovery document. An invalid or absent Date is marked
+// unavailable; callers must not substitute their local clock for server time.
+func (c *Client) DiscoverObserved(ctx context.Context) (Discovery, ResponseObservation, error) {
+	raw, _, observation, err := c.doObserved(ctx, "", http.MethodGet, "instance", nil, nil, MaxSmallBody, false)
 	if err != nil {
-		return Discovery{}, err
+		return Discovery{}, observation, err
 	}
 	a, err := decode(raw, 11)
 	if err != nil {
-		return Discovery{}, err
+		return Discovery{}, observation, err
 	}
 	var d Discovery
 	d.WireVersions, err = uints(a[0])
 	if err != nil {
-		return d, err
+		return d, observation, err
 	}
 	if !distinctVersions(d.WireVersions) {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	d.E2EEVersions, err = uints(a[1])
 	if err != nil {
-		return d, err
+		return d, observation, err
 	}
 	if !distinctVersions(d.E2EEVersions) {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	d.MediaVersions, err = uints(a[2])
 	if err != nil {
-		return d, err
+		return d, observation, err
 	}
 	if !distinctVersions(d.MediaVersions) {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.InstanceID, _ = asID(a[3]); d.InstanceID.IsZero() {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.Generation, _ = asUint(a[4]); d.Generation == 0 {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	var ok bool
 	d.Name, ok = a[5].(string)
 	if !ok || d.Name == "" {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.RegistrationMode, ok = asUint(a[6]); !ok || d.RegistrationMode > 2 {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	d.AuthMethods, err = uints(a[7])
 	if err != nil {
-		return d, err
+		return d, observation, err
 	}
 	if !strictlyIncreasing(d.AuthMethods) {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.PolicyVersion, ok = asUint(a[8]); !ok {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.ExternalSenderKeyID, ok = asID(a[9]); !ok {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	if d.ExternalSenderPub, ok = asBytes(a[10], 32); !ok {
-		return d, ErrProtocol
+		return d, observation, ErrProtocol
 	}
 	d.ExternalSenderPub = append([]byte(nil), d.ExternalSenderPub...)
 	if !equalID(d.InstanceID, c.instance) {
-		return Discovery{}, ErrInstanceChanged
+		return Discovery{}, observation, ErrInstanceChanged
 	}
 	if !slices.Contains(d.WireVersions, uint64(3)) || !slices.Contains(d.E2EEVersions, uint64(1)) || !slices.Contains(d.MediaVersions, uint64(1)) {
-		return Discovery{}, ErrProtocol
+		return Discovery{}, observation, ErrProtocol
 	}
 	c.discovered.Store(true)
-	return d, nil
+	return d, observation, nil
 }
 func strictlyIncreasing(a []uint64) bool {
 	for i := 1; i < len(a); i++ {
@@ -235,71 +243,85 @@ func parseInstallation(a []any) (Installation, error) {
 	return x, nil
 }
 func (r *Runtime) Claim(ctx context.Context, installation, request id.ID) (Claim, error) {
+	c, _, err := r.ClaimObserved(ctx, installation, request)
+	return c, err
+}
+
+// ClaimObserved returns the authority headers from the response that carries
+// the claim receipt.
+func (r *Runtime) ClaimObserved(ctx context.Context, installation, request id.ID) (Claim, ResponseObservation, error) {
 	var out Claim
 	i, e := pathID(installation)
 	if e != nil {
-		return out, e
+		return out, ResponseObservation{}, e
 	}
 	if request.IsZero() {
-		return out, ErrInvalidConfig
+		return out, ResponseObservation{}, ErrInvalidConfig
 	}
 	b, e := encode([]any{request})
 	if e != nil {
-		return out, e
+		return out, ResponseObservation{}, e
 	}
-	raw, _, e := r.c.do(ctx, r.token, http.MethodPost, "bot-runtime/installations/"+i+"/claim", nil, b, MaxSmallBody, true)
+	raw, _, observation, e := r.c.doObserved(ctx, r.token, http.MethodPost, "bot-runtime/installations/"+i+"/claim", nil, b, MaxSmallBody, true)
 	if e != nil {
-		return out, e
+		return out, observation, e
 	}
 	a, e := decode(raw, 3)
 	if e != nil {
-		return out, &APIError{Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
+		return out, observation, &APIError{Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 	}
 	var ok bool
 	if out.InstallationID, ok = asID(a[0]); !ok {
-		return out, unknown()
+		return out, observation, unknown()
 	}
 	if out.ClaimID, ok = asID(a[1]); !ok {
-		return out, unknown()
+		return out, observation, unknown()
 	}
 	if out.Expires, ok = asUint(a[2]); !ok || !equalID(out.InstallationID, installation) {
-		return out, unknown()
+		return out, observation, unknown()
 	}
-	return out, nil
+	return out, observation, nil
 }
 func (r *Runtime) Enroll(ctx context.Context, installation, request, claim id.ID, umk, ssk, sig []byte, device DeviceRegistration) (Enrollment, error) {
+	e, _, err := r.EnrollObserved(ctx, installation, request, claim, umk, ssk, sig, device)
+	return e, err
+}
+
+// EnrollObserved returns the authenticated server time and generation from the
+// same runtime response as the enrollment result.
+func (r *Runtime) EnrollObserved(ctx context.Context, installation, request, claim id.ID, umk, ssk, sig []byte, device DeviceRegistration) (Enrollment, ResponseObservation, error) {
 	var out Enrollment
 	i, e := pathID(installation)
 	if e != nil {
-		return out, e
+		return out, ResponseObservation{}, e
 	}
 	if request.IsZero() || claim.IsZero() || len(umk) != 32 || len(ssk) != 32 || len(sig) != 64 || device.DeviceID.IsZero() || len(device.DSKPub) != 32 || device.Tier != 0 || device.SignerTier != 0 || len(device.Credential) == 0 || len(device.Credential) > 2048 {
-		return out, ErrInvalidConfig
+		return out, ResponseObservation{}, ErrInvalidConfig
 	}
 	b, e := encode([]any{request, claim, umk, ssk, sig, []any{device.DeviceID, device.DSKPub, device.Tier, device.SignerTier, device.Credential}})
 	if e != nil {
-		return out, e
+		return out, ResponseObservation{}, e
 	}
-	raw, _, e := r.c.do(ctx, r.token, http.MethodPost, "bot-runtime/installations/"+i+"/enroll", nil, b, MaxRuntimeBody, true)
+	raw, _, observation, e := r.c.doObserved(ctx, r.token, http.MethodPost, "bot-runtime/installations/"+i+"/enroll", nil, b, MaxRuntimeBody, true)
 	if e != nil {
-		return out, e
+		return out, observation, e
 	}
 	a, e := decode(raw, 3)
 	if e != nil {
-		return out, unknown()
+		return out, observation, unknown()
 	}
 	var ok bool
 	if out.BotUser, ok = asID(a[0]); !ok {
-		return out, unknown()
+		return out, observation, unknown()
 	}
 	if out.BotDevice, ok = asID(a[1]); !ok || !equalID(out.BotDevice, device.DeviceID) {
-		return out, unknown()
+		return out, observation, unknown()
 	}
 	out.Username, ok = a[2].(string)
 	if !ok || out.Username == "" {
-		return Enrollment{}, unknown()
+		return Enrollment{}, observation, unknown()
 	}
-	return out, nil
+	return out, observation, nil
 }
 
 func (c *Client) Challenge(ctx context.Context, device id.ID) (SessionChallenge, error) {
@@ -461,25 +483,32 @@ func (s *Session) PublishKeyPackages(ctx context.Context, installation, operatio
 }
 
 func (s *Session) KeyPackagePublicationReceipt(ctx context.Context, installation, operation id.ID) (KeyPackagePublicationReceipt, error) {
+	r, _, err := s.KeyPackagePublicationReceiptObserved(ctx, installation, operation)
+	return r, err
+}
+
+// KeyPackagePublicationReceiptObserved returns the authenticated historical
+// receipt and authority headers from that same pinned response.
+func (s *Session) KeyPackagePublicationReceiptObserved(ctx context.Context, installation, operation id.ID) (KeyPackagePublicationReceipt, ResponseObservation, error) {
 	var out KeyPackagePublicationReceipt
 	inst, err := pathID(installation)
 	if err != nil {
-		return out, err
+		return out, ResponseObservation{}, err
 	}
 	op, err := pathID(operation)
 	if err != nil {
-		return out, err
+		return out, ResponseObservation{}, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/keypackages/"+op, nil, nil, MaxSmallBody, false)
+	raw, _, observation, err := s.c.doObserved(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/keypackages/"+op, nil, nil, MaxSmallBody, false)
 	if err != nil {
-		return out, err
+		return out, observation, err
 	}
 	receipt, err := botprotocol.DecodeKeyPackagePublicationReceipt(raw)
 	if err != nil {
-		return out, ErrProtocol
+		return out, observation, ErrProtocol
 	}
 	out.Generation, out.Count, out.UploadSHA256 = receipt.ExpectedGeneration, receipt.Count, receipt.UploadSHA256
-	return out, nil
+	return out, observation, nil
 }
 
 func (s *Session) installationMutation(ctx context.Context, installation id.ID, action string, request id.ID, revision uint64, credential []byte, put bool) (Installation, error) {

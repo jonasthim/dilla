@@ -76,6 +76,10 @@ func TestCompiledHelperNativeLifecycleIntegration(t *testing.T) {
 	if _, err = c.CompleteEnrollment(ctx, integrationID(4), "synthetic bot", uint64(time.Now().Unix())); err != nil {
 		t.Fatal(err)
 	}
+	emptySession, err := c.Session(ctx)
+	if err != nil || emptySession.Token() != "" {
+		t.Fatalf("session before first bearer should be empty: %v", err)
+	}
 	identity, err := c.Identity(ctx)
 	if err != nil || identity.Phase != 2 || identity.Device == nil {
 		t.Fatalf("identity %#v: %v", identity, err)
