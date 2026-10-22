@@ -24,7 +24,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
-  type BotInstallationRow, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -196,6 +196,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getBotInstallation',
   'configureBotInstallation',
   'disableBotInstallation',
+  'beginBotSpotifyAttempt',
+  'callbackBotSpotifyAttempt',
+  'cancelBotSpotifyAttempt',
   'openChannel',
   'closeChannel',
   'loadEarlier',
@@ -309,11 +312,14 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   configureBotInstallation: ['communityId', 'requestId'],
   disableBotInstallation: ['communityId', 'requestId'],
+  beginBotSpotifyAttempt: ['communityId'],
+  callbackBotSpotifyAttempt: ['communityId', 'attemptId'],
+  cancelBotSpotifyAttempt: ['communityId', 'attemptId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
   updateRole: ['communityId', 'roleId'],
@@ -399,6 +405,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getBotInstallation',
     'configureBotInstallation',
     'disableBotInstallation',
+    'beginBotSpotifyAttempt',
+    'callbackBotSpotifyAttempt',
+    'cancelBotSpotifyAttempt',
     'openChannel',
     'closeChannel',
     'loadEarlier',
@@ -562,6 +571,15 @@ function invalid(command: Record<string, unknown>): string | null {
       if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
+  }
+  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096)) {
+    return 'stepUp is invalid';
+  }
+  if (m === 'callbackBotSpotifyAttempt') {
+    if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
+      || /\p{Cc}/u.test(command.state)) return 'state is invalid';
+    if (typeof command.code !== 'string' || UTF8.encode(command.code).length < 1 || UTF8.encode(command.code).length > 2048
+      || /[\r\n\0]/u.test(command.code)) return 'code is invalid';
   }
   if (m === 'setMemberTimeout') {
     const expires = command.expires;
@@ -1056,6 +1074,9 @@ export class Controller {
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'configureBotInstallation': return this.configureBotInstallation(command);
       case 'disableBotInstallation': return this.disableBotInstallation(command);
+      case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
+      case 'callbackBotSpotifyAttempt': return this.callbackBotSpotifyAttempt(command);
+      case 'cancelBotSpotifyAttempt': return this.cancelBotSpotifyAttempt(command);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1189,6 +1210,26 @@ export class Controller {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.disableBotInstallation(fromHex(command.communityId), fromHex(command.requestId), BigInt(command.expectedRevision));
     return botInstallationView(row);
+  }
+
+  private async beginBotSpotifyAttempt(command: Extract<Command, { m: 'beginBotSpotifyAttempt' }>): Promise<{
+    attemptId: string; authorizeUrl: string; expires: string;
+  }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp);
+    return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
+  }
+
+  private async callbackBotSpotifyAttempt(command: Extract<Command, { m: 'callbackBotSpotifyAttempt' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.callbackBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId), command.state, command.code);
+    return null;
+  }
+
+  private async cancelBotSpotifyAttempt(command: Extract<Command, { m: 'cancelBotSpotifyAttempt' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.cancelBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId));
+    return null;
   }
 
   // ---- slices ----

@@ -22,6 +22,9 @@ export type Command =
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
+  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string }
+  | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
+  | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
