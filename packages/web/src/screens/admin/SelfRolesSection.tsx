@@ -40,7 +40,8 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
       if (read !== generation.current) return;
       setError(errorMessage(errorOf(e))); setLoadedFor(communityId);
     });
-    return () => { generation.current++; };
+    const revision = generation;
+    return () => { revision.current++; };
   }, [client, communityId]);
 
   const configure = (roleIds: string[]) => {

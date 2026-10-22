@@ -27,7 +27,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
     w.state.groups.push(textGroup(2));
     w.state.rows.push(strangerRow(3));
-    const msgId = toHex(w.state.rows[0]!.msgId!);
+    const msgId = toHex(w.state.rows[0].msgId!);
     w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3' });
     await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: null }));
     expect(w.core.signRemoval).toHaveBeenCalledWith(expect.any(Uint8Array), GROUP, 3n, 1_700_000_030n, 1_700_000_000n);
@@ -51,7 +51,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.ret(10_210)).toMatchObject({ ok: true, value: null }));
     w.state.groups.push(textGroup(2));
     w.state.rows.push(strangerRow(3));
-    const actualMsgId = toHex(w.state.rows[0]!.msgId!);
+    const actualMsgId = toHex(w.state.rows[0].msgId!);
     const request = label === 'mismatched sequence' ? { channelId: toHex(channelId), msgId: actualMsgId, seq: '4' }
       : { channelId: toHex(channelId), msgId: label === 'mismatched message id' ? 'ff'.repeat(16) : actualMsgId, seq: '3' };
     w.call(10_211, { m: 'moderateRemoveMessage', ...request });
@@ -73,7 +73,7 @@ describe('Controller', () => {
       w.call(10_220, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
       await vi.waitFor(() => expect(w.ret(10_220)).toMatchObject({ ok: true, value: null }));
     }
-    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0]!.msgId!), seq: '3' });
+    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3' });
     await vi.waitFor(() => expect(w.ret(10_221)).toMatchObject({ ok: false,
       error: { code: label === 'denied ManageMessages' ? 'E_FORBIDDEN' : 'E_NOT_READY' } }));
     expect(w.core.signRemoval).not.toHaveBeenCalled();

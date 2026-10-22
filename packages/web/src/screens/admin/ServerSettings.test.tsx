@@ -25,8 +25,8 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
-  fake.handler = async command => command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
-    : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+  fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
+    : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
   if (over.roles !== undefined) fake.set(`roles:${SERVER}`, over.roles);
   if (over.members !== null) {

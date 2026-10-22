@@ -229,7 +229,7 @@ export class FakeCore implements CorePort {
     if (nonce.length !== 32 || (purpose !== 0 && purpose !== 1)) throw new CoreError('E_CORE_INPUT');
     return encode([nonce, purpose, new Uint8Array(64).fill(6), null, null]);
   }
-  signRemoval(_requestId: Uint8Array, _groupId: Uint8Array, _targetSeq: bigint, _expires: bigint, _now: bigint): Uint8Array {
+  signRemoval(): Uint8Array {
     this.enter('signRemoval'); return new Uint8Array([0x82, 0x40, 0x40]);
   }
   sessionStore(s: SessionRecord): void {

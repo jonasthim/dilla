@@ -18,26 +18,27 @@ describe('moderation removal recovery', () => {
   it('refreshes the proof actor history and persists tombstones before returning for timeline publication', async () => {
     const order: string[] = [];
     const entry = { revision: 1n, proof, signature: SIG, acceptedAt: 20n };
+    const ingest = vi.fn((_group: Uint8Array, value: { revision: bigint }) => { order.push('ingest'); return value.revision; });
     const core = {
       removalCursor: vi.fn(() => 0n),
       removalActorHistoryVersion: vi.fn(() => 1n),
       refreshRemovalActorHistory: vi.fn(() => { order.push('refresh'); return 2n; }),
-      ingestRemoval: vi.fn((_group: Uint8Array, value: { revision: bigint }) => { order.push('ingest'); return value.revision; }),
+      ingestRemoval: ingest,
     } as unknown as CorePort;
     const routes = {
-      getModerationRemovals: vi.fn(async () => ({ rows: [entry], nextRevision: 1n })),
-      getDeviceList: vi.fn(async () => ({ version: 1n, blob: LIST, raw: rawList })),
+      getModerationRemovals: vi.fn(() => Promise.resolve({ rows: [entry], nextRevision: 1n })),
+      getDeviceList: vi.fn(() => Promise.resolve({ version: 1n, blob: LIST, raw: rawList })),
       getDeviceListHistory: vi.fn(),
     } as never;
     await recoverModerationRemovals(core, routes, GROUP);
     order.push('publish');
     expect(order).toEqual(['refresh', 'ingest', 'publish']);
-    expect(core.ingestRemoval).toHaveBeenCalledWith(GROUP, entry);
+    expect(ingest).toHaveBeenCalledWith(GROUP, entry);
   });
 
   it('refuses to publish when the feed has a revision gap', async () => {
     const core = { removalCursor: () => 0n } as unknown as CorePort;
-    const routes = { getModerationRemovals: async () => ({ rows: [{ revision: 2n, proof, signature: SIG, acceptedAt: 20n }], nextRevision: 2n }) } as never;
+    const routes = { getModerationRemovals: () => Promise.resolve({ rows: [{ revision: 2n, proof, signature: SIG, acceptedAt: 20n }], nextRevision: 2n }) } as never;
     await expect(recoverModerationRemovals(core, routes, GROUP)).rejects.toThrow(/revision range/);
   });
 });

@@ -172,15 +172,15 @@ describe('ThreadView (web3.7)', () => {
     const everyone = 'e0'.repeat(16);
     const moderators = 'a0'.repeat(16);
     const self = account().user?.id ?? 'bb'.repeat(16);
-    fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }] as never);
-    fake.set(`members:${A}`, [{ userId: self, username: 'ada', display: '', kind: 0, roleIds: [moderators] }] as never);
+    fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`members:${A}`, [{ userId: self, username: 'ada', display: '', kind: 0, roleIds: [moderators] }]);
     fake.set(`roles:${A}`, [
       { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: PERM.viewChannel, deny: 0, members: 1 },
       { id: moderators, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: PERM.manageMessages, deny: 0, members: 1 },
     ] as never);
     fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
-      banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true } as never);
-    fake.set(`overwrites:${A}`, {} as never);
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true });
+    fake.set(`overwrites:${A}`, {});
     const action = await waitFor(() => within(toolbar(P2)).getByRole('button', { name: en['shell.message.moderateRemove'] }));
     await user.click(action);
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
