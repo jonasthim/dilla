@@ -69,4 +69,5 @@ pub const WIRE_VERSION: u64 = 3;
 /// and passes those bytes to the managed Bot admission check; public wire versions do not change.
 /// **9** adds `public_group_roster_extract`, a bounded export that verifies GroupInfo/tree
 /// authentication and every member credential before returning roster descriptors.
-pub const ABI_VERSION: u64 = 9;
+/// **10** adds strict MLS Welcome recipient KeyPackageRef inspection.
+pub const ABI_VERSION: u64 = 10;

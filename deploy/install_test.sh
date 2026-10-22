@@ -172,7 +172,7 @@ doctor)
 	if [ -n "${FAKE_DOCTOR:-}" ]; then
 		cat "$FAKE_DOCTOR"
 	else
-		printf 'OK    config       parsed and validated\nOK    wasi         abi_version=9\nWARN  udp          not probed\n'
+		printf 'OK    config       parsed and validated\nOK    wasi         abi_version=10\nWARN  udp          not probed\n'
 	fi
 	exit "${FAKE_DOCTOR_EXIT:-0}"
 	;;

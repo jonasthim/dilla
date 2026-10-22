@@ -534,6 +534,38 @@ func (i *Instance) ValidateKeyPackage(ctx context.Context, keyPackage []byte) (K
 	return decodeKeyPackageInfo(elems)
 }
 
+// WelcomeKeyPackageRefs strictly parses an MLS Welcome and returns every KeyPackageRef it names.
+// The caller must enforce the expected recipient count and bind each ref to a target device.
+func (i *Instance) WelcomeKeyPackageRefs(ctx context.Context, welcome []byte) ([][]byte, error) {
+	elems, err := i.call(ctx, "welcome_key_package_refs", welcome)
+	if err != nil {
+		return nil, err
+	}
+	return decodeWelcomeKeyPackageRefs(elems)
+}
+
+func decodeWelcomeKeyPackageRefs(elems []cbor.RawMessage) ([][]byte, error) {
+	if err := expectLen(elems, 2, "welcome_key_package_refs"); err != nil {
+		return nil, err
+	}
+	rows, err := rawArray(elems[1])
+	if err != nil {
+		return nil, fmt.Errorf("mlswasi: welcome_key_package_refs recipients: %w", err)
+	}
+	if len(rows) > 4096 {
+		return nil, fmt.Errorf("mlswasi: welcome_key_package_refs has %d recipients, maximum is 4096", len(rows))
+	}
+	refs := make([][]byte, 0, len(rows))
+	for index, row := range rows {
+		ref, err := rawBytesExact(row, 32, "welcome recipient KeyPackageRef")
+		if err != nil {
+			return nil, fmt.Errorf("mlswasi: welcome_key_package_refs recipient %d: %w", index, err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
 func decodeKeyPackageInfo(elems []cbor.RawMessage) (KeyPackageInfo, error) {
 	if err := expectLen(elems, 8, "validate_key_package"); err != nil {
 		return KeyPackageInfo{}, err

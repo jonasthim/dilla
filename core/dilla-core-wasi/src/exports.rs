@@ -60,6 +60,7 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "device_list_entries" => device_list_entries_export(req, t),
         "verify_credential" => verify_credential_export(req),
         "public_group_roster_extract" => public_group_roster_extract(req),
+        "welcome_key_package_refs" => welcome_key_package_refs_export(req),
         other => Err(AbiError::shape(format!("unknown export {other}"))),
     });
     match result {
@@ -785,6 +786,43 @@ fn validate_key_package_export(req: &[u8], _t: &mut Table) -> Result<Vec<u8>, Ab
         .bytes(kp_ref.as_slice())
         .bytes(&leaf_signature_key(&kp))
         .bytes(&leaf_credential_bytes(&kp)?);
+    Ok(e.into_vec())
+}
+
+/// Returns the KeyPackageRefs named by a strictly TLS-decoded MLS Welcome.
+/// This is a framing/type inspection only; the caller must bind each ref to its target device.
+fn welcome_key_package_refs_export(req: &[u8]) -> Result<Vec<u8>, AbiError> {
+    const MAX_WELCOME_BYTES: usize = 1024 * 1024;
+    const MAX_RECIPIENTS: usize = 4096;
+
+    let mut d = abi::open(req, 2)?;
+    let bytes = d.bytes()?;
+    d.finish()?;
+    if bytes.is_empty() || bytes.len() > MAX_WELCOME_BYTES {
+        return Err(AbiError::shape(
+            "Welcome size is outside the accepted bounds",
+        ));
+    }
+    let message = tls::mls_message_in(bytes)?;
+    let MlsMessageBodyIn::Welcome(welcome) = message.extract() else {
+        return Err(AbiError::shape("MLS message is not a Welcome"));
+    };
+    let secrets = welcome.secrets();
+    if secrets.len() > MAX_RECIPIENTS {
+        return Err(AbiError::shape("Welcome has too many recipients"));
+    }
+
+    let mut e = Encoder::new();
+    e.array(2).uint(0).array(secrets.len());
+    for secret in secrets {
+        let reference = secret.new_member();
+        if reference.as_slice().len() != 32 {
+            return Err(AbiError::shape(
+                "Welcome recipient KeyPackageRef is not 32 bytes",
+            ));
+        }
+        e.bytes(reference.as_slice());
+    }
     Ok(e.into_vec())
 }
 
@@ -1605,9 +1643,9 @@ mod tests {
     /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
     /// (DS-MEMBERSHIP-01); 7 since `verify_credential` was exported (DILLA-BOT-04); 8 since
     /// `validate_key_package` appended the leaf credential identity (DILLA-BOT-04 Task5); 9 since
-    /// `public_group_roster_extract` was exported.
+    /// `public_group_roster_extract` was exported; 10 adds strict Welcome recipient-ref inspection.
     #[test]
-    fn dilla_abi_reports_version_nine() {
+    fn dilla_abi_reports_version_ten() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1624,24 +1662,24 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 9,
-            "ABI v9: public_group_roster_extract exports authenticated roster descriptors"
+            abi, 10,
+            "ABI v10: welcome_key_package_refs exports strict Welcome recipient refs"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 9);
+        assert_eq!(dilla_core::ABI_VERSION, 10);
     }
 
     /// An older ABI request must now be refused outright — there is no compatibility
     /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3, 4, 5, 6, 7, 8] {
+        for old in [2u64, 3, 4, 5, 6, 7, 8, 9] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('9'),
+                detail.contains(&old.to_string()) && detail.contains("10"),
                 "detail: {detail}"
             );
         }
@@ -2484,6 +2522,19 @@ mod tests {
             hex_bytes(&fixture_manifest_field("key_package_ref_hex")),
             "kp_ref must equal KeyPackage::hash_ref computed natively for the same fixture"
         );
+    }
+
+    #[test]
+    fn welcome_key_package_refs_rejects_malformed_and_non_welcome_inputs() {
+        for bytes in [&[0u8, 1][..], FIXTURE_KEY_PACKAGE] {
+            let (code, _) = failure(&dispatch(
+                "welcome_key_package_refs",
+                &req(|e| {
+                    e.array(2).uint(dilla_core::ABI_VERSION).bytes(bytes);
+                }),
+            ));
+            assert_eq!(code, crate::abi::E_ABI_SHAPE);
+        }
     }
 
     /// §3.4: exactly 32 bytes of `authenticated_data` is the franking commitment; anything else

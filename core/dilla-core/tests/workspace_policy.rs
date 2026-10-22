@@ -43,6 +43,7 @@ fn version_constants_are_the_wire_values() {
     // 7 since 2026-10-21 (DILLA-BOT-04): WASI adds strict `verify_credential`.
     // 8 since 2026-10-21 (DILLA-BOT-04 Task5): validated KeyPackages return the leaf credential.
     // 9 since 2026-10-22 (DILLA-BOT): authenticated public-group roster extraction.
-    assert_eq!(dilla_core::ABI_VERSION, 9);
+    // 10 since 2026-10-22 (DILLA-BOT): strict Welcome recipient-ref inspection.
+    assert_eq!(dilla_core::ABI_VERSION, 10);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }
