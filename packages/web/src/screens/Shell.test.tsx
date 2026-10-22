@@ -772,7 +772,8 @@ describe('timeline', () => {
     ] })));
     const log = screen.getByRole('log', { name: 'messages in #general' });
     expect(log).toHaveTextContent('This contact’s identity changed. Compare the number before sending.');
-    expect(log).toHaveTextContent('This device is not on the contact’s list.');
+    // A message from an unlisted device names the action that makes it readable, not only the state.
+    expect(log).toHaveTextContent('Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do.');
     expect(log).not.toHaveTextContent('E_UMK_CHANGED');
     expect(log).not.toHaveTextContent('E_DEVICE_UNLISTED');
   });

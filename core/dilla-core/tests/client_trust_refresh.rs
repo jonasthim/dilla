@@ -167,16 +167,16 @@ fn cache_v2(w: &mut World) -> CachedRow {
 }
 
 /// The rogue leaf's verdict is E_DEVICE_UNLISTED (Alice's quarantine row for exactly that leaf),
-/// and its held message stays unreadable. The held row keeps the reason it was held under
-/// (E_DEVICE_LIST_STALE: held for Bob's list), which the core does not rewrite; a message the
-/// leaf sends once the list is cached is refused E_DEVICE_UNLISTED outright
+/// and its held message stays unreadable. The row was held for Bob's list (E_DEVICE_LIST_STALE:
+/// wait for the list); once the leaf is judged, it carries the verdict (E_DEVICE_UNLISTED: the
+/// device must be added to the list), as a message the leaf sends after the verdict does
 /// (`assert_rogue_refused_now`).
 fn assert_rogue_unreadable(w: &World) {
     let row = w.alice.row_at(&GROUP, w.rogue_seq);
     assert_eq!(
         (row.status, row.reason.as_str(), row.body.as_str()),
-        (1, "E_DEVICE_LIST_STALE", ""),
-        "the unlisted device's held message stays unreadable"
+        (1, "E_DEVICE_UNLISTED", ""),
+        "the unlisted device's held message stays unreadable, for the reason it is unreadable"
     );
     let verdict: Vec<String> = {
         let db = w.alice.probe.lock().unwrap();
@@ -454,4 +454,40 @@ fn an_empty_history_is_refused_with_and_without_a_cached_list() {
         Err("E_DEVICE_LIST_STALE")
     );
     assert_eq!(cached(&w), Some(before));
+}
+
+// The held row's reason after the verdict.
+
+/// A row held for the list and re-labelled E_DEVICE_UNLISTED when its leaf was judged is still
+/// held, not retracted: once a later signed list names the device, it is released.
+#[test]
+fn a_held_row_labelled_unlisted_is_released_once_a_later_list_names_the_device() {
+    let mut w = world();
+    cache_v2(&mut w);
+    assert_rogue_unreadable(&w);
+    let v2 = w.v2.clone();
+    let mut entries = v2.unsigned.entries.clone();
+    entries.push(sec_entry(&w.rogue));
+    let v3 = sec_next(&v2, entries, 0xf2);
+    assert_eq!(ingest(&mut w, ROGUE, &[&v2, &v3]), Ok((3, 0, 2)));
+    assert_eq!(revalidate(&mut w, ROGUE), 1);
+    let row = w.alice.row_at(&GROUP, w.rogue_seq);
+    assert_eq!((row.status, row.body.as_str()), (0, "rogue comet"));
+}
+
+/// The re-label is the judged leaf's only: a sibling's row held for the same list, whose leaf the
+/// same ingest found valid, keeps waiting for its own revalidation.
+#[test]
+fn only_the_judged_leafs_held_rows_take_its_verdict() {
+    let mut w = world();
+    cache_v2(&mut w);
+    let bob2_row = w.alice.row_at(&GROUP, w.bob2_seq);
+    assert_eq!(
+        (bob2_row.status, bob2_row.reason.as_str()),
+        (1, "E_DEVICE_LIST_STALE"),
+        "a valid leaf's held row waits for its revalidation, not a failure"
+    );
+    assert_eq!(revalidate(&mut w, BOB2), 1);
+    assert_bob2_readable(&w);
+    assert_rogue_unreadable(&w);
 }

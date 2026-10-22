@@ -81,6 +81,29 @@ fn bounded_list(bytes: &[u8]) -> Result<DeviceList, ClientError> {
     DeviceList::decode(bytes).map_err(|_| failure(E_DEVICE_LIST_STALE))
 }
 
+// The anchor checks of an ingest against the cached list (`ingest_leaf`). Each one alone refuses a
+// rollback, a history whose first row or head is below the cached version
+// (`each_anchor_check_alone_refuses_a_rollback`); none of them is only a backstop of another.
+// Beyond rollback, the version check also refuses a cache row whose version column disagrees with
+// its own signed bytes, the byte check a correctly signed fork of the cached version, and the head
+// check refuses before any signature is verified (the final head equality of
+// `validate_history_from` would refuse a head below the cached version too, later).
+
+/// The first served row is not at the cached version.
+fn anchor_version_differs(cached_version: i64, first: &DeviceList) -> bool {
+    first.unsigned.version != cached_version as u64
+}
+
+/// The first served row is not, byte for byte, the cached signed list.
+fn anchor_bytes_differ(cached_blob: &[u8], first: &DeviceList) -> bool {
+    first.encode() != cached_blob
+}
+
+/// The candidate head is older than the cached version.
+fn head_below_cached(cached_version: i64, head: &DeviceList) -> bool {
+    head.unsigned.version < cached_version as u64
+}
+
 /// Verify every signed link against the authenticated leaf and the exact candidate head.
 #[allow(dead_code)] // L-CORE-44 direct-verifier test seam.
 pub(crate) fn validate_history(
@@ -470,14 +493,18 @@ fn record_quarantine(
 /// The one way a leaf verdict reaches storage. A pending verdict (`E_DEVICE_LIST_STALE`) writes
 /// nothing and retracts nothing. A valid leaf ends its own earlier failed verdict (a device that
 /// joined before the list naming it was ingested), never a changed-key block. Any other failure
-/// quarantines the leaf by its authenticated key and retracts that key's accepted rows. Answers
+/// quarantines the leaf by its authenticated key, retracts that key's accepted rows, and gives the
+/// rows still held for the list from that leaf (`app_pending_history`, the scope
+/// `revalidate_pending` releases) the verdict as their reason: a row held "waiting for the list"
+/// whose device the list then refused is no longer waiting, and the two call for opposite actions.
+/// The rows stay held, so a later list that validates the leaf still releases them. Answers
 /// whether stored state changed.
 fn apply_verdict(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
     user: &[u8; 16],
     device: &[u8; 16],
-    signature_key: &[u8],
+    (leaf_index, signature_key): (u32, &[u8]),
     verdict: Result<(), &str>,
 ) -> Result<bool, StorageError> {
     let code = match verdict {
@@ -499,7 +526,19 @@ fn apply_verdict(
     };
     let recorded = record_quarantine(c, group_id, user, device, signature_key, code)?;
     let retracted = retract_signature(c, group_id, signature_key, code)?;
-    Ok(recorded || retracted > 0)
+    let relabelled = c.execute(
+        "UPDATE app_messages SET reason=?5 WHERE group_id=?1 AND status=1 \
+         AND reason='E_DEVICE_LIST_STALE' AND seq IN (SELECT seq FROM app_pending_history \
+         WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND sender_leaf=?4)",
+        params![
+            group_id.as_slice(),
+            user.as_slice(),
+            device.as_slice(),
+            i64::from(leaf_index),
+            code
+        ],
+    )?;
+    Ok(recorded || retracted > 0 || relabelled > 0)
 }
 
 pub(super) fn bump_generation(c: &rusqlite::Connection) -> Result<(), StorageError> {
@@ -926,7 +965,14 @@ fn audit_member(
             }
             match leaf_verdict(c, &leaf)? {
                 Ok(()) => {
-                    if apply_verdict(c, group_id, &user, &device, &fingerprint.1, Ok(()))? {
+                    if apply_verdict(
+                        c,
+                        group_id,
+                        &user,
+                        &device,
+                        (fingerprint.0, &fingerprint.1),
+                        Ok(()),
+                    )? {
                         bump_generation(c)?;
                     }
                     return Ok(());
@@ -953,7 +999,14 @@ fn audit_member(
     if code == E_DEVICE_LIST_STALE {
         return Ok(());
     }
-    if apply_verdict(c, group_id, &user, &device, &fingerprint.1, Err(code))? {
+    if apply_verdict(
+        c,
+        group_id,
+        &user,
+        &device,
+        (fingerprint.0, &fingerprint.1),
+        Err(code),
+    )? {
         bump_generation(c)?;
     }
     audit_failed_leaf(
@@ -1448,9 +1501,9 @@ impl ClientCore {
                 .first()
                 .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
             if *version < 1
-                || first_list.unsigned.version != *version as u64
-                || first_list.encode() != *blob
-                || head.unsigned.version < *version as u64
+                || anchor_version_differs(*version, first_list)
+                || anchor_bytes_differ(blob, first_list)
+                || head_below_cached(*version, &head)
             {
                 return Err(failure(E_DEVICE_LIST_STALE));
             }
@@ -1535,7 +1588,7 @@ impl ClientCore {
                 for leaf in user_leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, &leaf.dsk_pub, verdict)?;
+                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
                     quarantined += u64::from(verdict.is_err_and(|code| code != E_DEVICE_LIST_STALE));
                 }
                 // Only a list under the pinned key is the user's own word on its devices; a list
@@ -1692,7 +1745,7 @@ impl ClientCore {
                 for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    apply_verdict(c, &leaf.group_id, user_id, device, &leaf.dsk_pub, verdict)?;
+                    apply_verdict(c, &leaf.group_id, user_id, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
                 }
                 bump_generation(c)
             })
@@ -1967,6 +2020,53 @@ mod tests {
             .code,
             "E_CREDENTIAL"
         );
+    }
+
+    /// v1 and v2 of the fixture user; v2 is the cached list in the anchor-check tests.
+    fn v1_v2() -> (DeviceList, DeviceList) {
+        let (_, v1) = fixture();
+        let mut v2 = v1.clone();
+        v2.unsigned.version = 2;
+        v2.unsigned.prev_hash = v1.hash();
+        v2.sig_ssk = SskSigner::from_bytes(&[0x42; 32]).sign_device_list(&v2.unsigned);
+        (v1, v2)
+    }
+
+    // Each anchor check of `ingest_leaf` refuses a rollback below the cached v2 by itself: a test
+    // per check, with the other two out of the picture, and the no-op refresh (the cached v2
+    // served again) as the control every check must let through.
+
+    #[test]
+    fn the_anchor_version_check_alone_refuses_a_rollback() {
+        let (v1, v2) = v1_v2();
+        assert!(
+            anchor_version_differs(2, &v1),
+            "first row v1 under a cached v2"
+        );
+        assert!(!anchor_version_differs(2, &v2));
+    }
+
+    #[test]
+    fn the_anchor_byte_check_alone_refuses_a_rollback() {
+        let (v1, v2) = v1_v2();
+        let cached = v2.encode();
+        assert!(
+            anchor_bytes_differ(&cached, &v1),
+            "first row v1 under a cached v2"
+        );
+        assert!(!anchor_bytes_differ(&cached, &v2));
+    }
+
+    #[test]
+    fn the_head_check_alone_refuses_a_rollback() {
+        let (v1, v2) = v1_v2();
+        assert!(head_below_cached(2, &v1), "head v1 under a cached v2");
+        assert!(
+            !head_below_cached(2, &v2),
+            "a head at the cached version is no rollback"
+        );
+        // The rollback only this check of the three sees: the cached v2 as the first row, head v1.
+        assert!(!anchor_version_differs(2, &v2) && !anchor_bytes_differ(&v2.encode(), &v2));
     }
 
     #[test]

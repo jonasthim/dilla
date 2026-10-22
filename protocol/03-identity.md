@@ -202,7 +202,9 @@ rollback, gap, invalid `prev_hash` or signature. The requested user and the `use
 signed list in the history must equal the user extracted from the current authenticated MLS leaf.
 The list entry must bind that leaf's `device_id`, DSK and tier. A leaf whose `device_id` is absent
 or has `revoked_at` set in the newest list is `E_DEVICE_UNLISTED` and no message from it is
-rendered. Revocation is therefore cryptographic and does not depend on the instance. A later
+rendered. A message held for the sender's list (`E_DEVICE_LIST_STALE`) takes its leaf's failed
+verdict as its reason once the leaf is judged, and stays held: a later list that validates the
+leaf still releases it. Revocation is therefore cryptographic and does not depend on the instance. A later
 quarantine (including a pinned UMK's leaf that a verified changed UMK's list does not hold)
 retracts every previously accepted display row attributable to that leaf in that group, refolds
 dependent edits, reactions and replies, removes derived search rows, and

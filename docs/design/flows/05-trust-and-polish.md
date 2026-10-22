@@ -163,6 +163,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.verifiedLabel | verified | verified state label beside the compared key |
 | privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert; reason under the blocked composer of that conversation |
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
+| privacy.unlistedMessage | Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do. | under a message that could not be read because its device is unlisted (E_DEVICE_UNLISTED), also one held for the list before the verdict |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
 | privacy.removed | You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere. | group recovery |
 | privacy.changedNoKey | This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed. | changed alert without Compare (no pending key); reason under the blocked composer when no changed member has a key |
