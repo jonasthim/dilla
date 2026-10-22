@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -17,7 +19,9 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
+	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -36,6 +40,13 @@ type runtimeEpochs struct{}
 
 func (runtimeEpochs) CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error) {
 	return native.CallMediaEpoch{}, nil
+}
+
+type runtimeBoundEpochSource struct{ binding native.Binding }
+
+func (n *runtimeBoundEpochSource) Binding() native.Binding { return n.binding }
+func (*runtimeBoundEpochSource) CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error) {
+	return native.CallMediaEpoch{}, errors.New("unused")
 }
 
 type runtimePCM struct{}
@@ -311,6 +322,81 @@ func TestMusicQueueStarterIsolatesUnavailableProvider(t *testing.T) {
 	}
 	if _, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"}); err != nil {
 		t.Fatalf("configured YouTube provider unavailable: %v", err)
+	}
+}
+
+func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *testing.T) {
+	installation, community, channel, group, instance := id.New(), id.New(), id.New(), id.New(), id.New()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		var response any
+		switch r.URL.Path {
+		case "/v1/instance":
+			response = []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
+		case "/v1/channels/" + channel.String() + "/calls":
+			calls++
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer installation-session" {
+				t.Errorf("call request = %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+			}
+			response = []any{channel, group, "wss://media.example/rtc", "short-lived-call-secret", []any{}, []any{uint64(64000), uint64(1000000), uint64(1)}}
+		default:
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, err := cborx.Marshal(response)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instance, AllowLoopbackHTTP: true, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	callSession, err := api.Session("installation-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: instance, Community: community, Installation: installation}}
+	starter, err := newInstallationYouTubeQueueStarter(installation, community, channel, callSession, epochs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || options.Call.CallID != channel || options.Call.GroupID != group || options.Call.Token != "short-lived-call-secret" {
+		t.Fatalf("scoped call credentials = %#v; calls=%d", options.Call, calls)
+	}
+	pcm, ok := options.PCM.(session.YouTubePCM)
+	if !ok {
+		t.Fatalf("YouTube PCM = %T", options.PCM)
+	}
+	if _, ok := pcm.Source.(youtube.PCMStarter); !ok {
+		t.Fatalf("YouTube source = %T, want sandboxed PCMStarter", pcm.Source)
+	}
+	encoder, ok := options.Encoder.(session.RuntimeEncoder)
+	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {
+		t.Fatalf("encoder = %#v", options.Encoder)
+	}
+	if _, ok := options.Publisher.(session.LiveKitPublisher); !ok || options.Epochs != epochs || options.Acquire != nil {
+		t.Fatalf("publisher/epoch/lease dependencies = %#v", options)
+	}
+
+	badEpochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: instance, Community: community, Installation: id.New()}}
+	if _, err := newInstallationYouTubeQueueStarter(installation, community, channel, callSession, badEpochs); err == nil {
+		t.Fatal("cross-installation native epoch source was accepted")
+	}
+	if calls != 1 {
+		t.Fatalf("binding rejection made an HTTP call, count=%d", calls)
 	}
 }
 

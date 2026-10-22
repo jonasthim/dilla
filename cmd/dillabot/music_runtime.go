@@ -9,6 +9,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
@@ -107,6 +108,11 @@ type musicCallStarter interface {
 	StartCall(context.Context, id.ID) (client.Call, error)
 }
 
+type installationMusicNative interface {
+	Binding() native.Binding
+	livekit.EpochSource
+}
+
 // musicRuntimeDeps contains the process-wide dependencies and the channel
 // identity for one supervisor. Each supervisor gets its own queue/session
 // state; SpotifyLease is shared by all supervisors in this service process.
@@ -174,6 +180,29 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		}, nil
 	}
 	return session.QueueStarter{OptionsFor: options}, nil
+}
+
+// newInstallationYouTubeQueueStarter constructs the production YouTube track
+// path for one already-enrolled installation. It obtains fresh, channel-bound
+// call credentials only when a track is explicitly started. Queue restoration
+// continues to use unavailableMusicQueueStarter until an authorized interaction
+// dispatcher is connected; constructing this value does not start audio.
+func newInstallationYouTubeQueueStarter(installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
+	if installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil {
+		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
+	}
+	binding := source.Binding()
+	if binding.Instance.IsZero() || binding.Installation != installation || binding.Community != community {
+		return session.QueueStarter{}, errors.New("music native binding does not match installation")
+	}
+	return newMusicQueueStarter(musicRuntimeDeps{
+		Community: community, Channel: channel, Calls: calls,
+		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg"},
+		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
+			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
+		}},
+		Epochs: source, Lifetime: 30 * time.Minute,
+	})
 }
 
 type persistedMusicQueue struct{ store *persistence.Store }
