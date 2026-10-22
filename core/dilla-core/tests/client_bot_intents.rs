@@ -600,6 +600,19 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
         None,
         "refused creates create no intent"
     );
+    let persisted_groups: i64 = connection
+        .lock()
+        .expect("connection lock")
+        .query_row(
+            "SELECT count(*) FROM app_groups WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get(0),
+        )
+        .expect("group count");
+    assert_eq!(
+        persisted_groups, 0,
+        "refused interaction admission must not persist an MLS group"
+    );
 
     let mut incomplete = ClientCore::open(conn()).expect("open incomplete Bot");
     incomplete
