@@ -345,6 +345,25 @@ impl ClientCore {
         {
             return Err(binding_mismatch());
         }
+        // Expected.server_now is merely bound to the signed snapshot; it is caller supplied.
+        // Recheck against the shared host clock immediately before returning authenticated
+        // inspection evidence so an old or future signed snapshot cannot be replayed.
+        let local_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "interaction snapshot clock is unavailable")
+            })?
+            .as_secs();
+        if !super::bot_interaction_create::snapshot_is_fresh(
+            snapshot.now,
+            snapshot.not_after,
+            local_now,
+        ) {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction snapshot is stale or from the future",
+            ));
+        }
         Ok(admission)
     }
 
@@ -1296,19 +1315,61 @@ mod interaction_snapshot_tests {
             );
         }
 
+        let inspect_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut inspect_expected = expected.clone();
+        inspect_expected.server_now = inspect_now;
+        let inspect_wire = make_snapshot(
+            &inspect_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            inspect_now + 8,
+        );
         let before = counts(&connection.lock().unwrap());
         let admission = core
-            .bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
+            .bot_inspect_stored_interaction_group(
+                inspect_expected.group.as_bytes(),
+                &inspect_wire,
+                &inspect_expected,
+            )
             .unwrap();
         assert_eq!(admission.participant_user, mid(HUMAN_USER));
         assert_eq!(counts(&connection.lock().unwrap()), before);
 
-        let mut wrong_participant = expected.clone();
+        for (snapshot_now, expiry) in [
+            (inspect_now - 100, inspect_now - 99),
+            (inspect_now + 100, inspect_now + 200),
+        ] {
+            let mut stale_expected = inspect_expected.clone();
+            stale_expected.server_now = snapshot_now;
+            let stale_wire = make_snapshot(
+                &stale_expected,
+                &bot_snapshot_list,
+                &participant_snapshot_list,
+                &instance_key,
+                expiry,
+            );
+            assert!(
+                core.bot_inspect_stored_interaction_group(
+                    stale_expected.group.as_bytes(),
+                    &stale_wire,
+                    &stale_expected,
+                )
+                .is_err(),
+                "inspection must reject snapshots outside local clock tolerance"
+            );
+            assert_eq!(counts(&connection.lock().unwrap()), before);
+        }
+
+        let mut wrong_participant = inspect_expected.clone();
         wrong_participant.participant_user = mid([0x79; 16]);
         assert!(
             core.bot_inspect_stored_interaction_group(
                 wrong_participant.group.as_bytes(),
-                &wire,
+                &inspect_wire,
                 &wrong_participant,
             )
             .is_err()
@@ -1323,9 +1384,26 @@ mod interaction_snapshot_tests {
                 rusqlite::params![expected.group.as_bytes().as_slice(), BOT_USER.as_slice()],
             )
             .unwrap();
+        let target_check_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut target_check_expected = inspect_expected.clone();
+        target_check_expected.server_now = target_check_now;
+        let target_check_wire = make_snapshot(
+            &target_check_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            target_check_now + 8,
+        );
         assert!(
-            core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
-                .is_err(),
+            core.bot_inspect_stored_interaction_group(
+                target_check_expected.group.as_bytes(),
+                &target_check_wire,
+                &target_check_expected,
+            )
+            .is_err(),
             "the app row must target the authenticated participant"
         );
         connection
@@ -1372,9 +1450,26 @@ mod interaction_snapshot_tests {
             .unwrap();
         group.merge_pending_commit(&core.provider).unwrap();
         assert_eq!(group.members().count(), 3);
+        let roster_check_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut roster_check_expected = inspect_expected.clone();
+        roster_check_expected.server_now = roster_check_now;
+        let roster_check_wire = make_snapshot(
+            &roster_check_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            roster_check_now + 8,
+        );
         assert!(
-            core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
-                .is_err(),
+            core.bot_inspect_stored_interaction_group(
+                roster_check_expected.group.as_bytes(),
+                &roster_check_wire,
+                &roster_check_expected,
+            )
+            .is_err(),
             "a third OpenMLS leaf must be refused"
         );
         assert_eq!(counts(&connection.lock().unwrap()), before);

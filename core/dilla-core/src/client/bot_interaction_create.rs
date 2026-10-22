@@ -17,7 +17,7 @@ fn rejected() -> ClientError {
     ClientError::new(E_CORE_INPUT, "interaction group creation evidence rejected")
 }
 
-fn snapshot_is_fresh(snapshot_now: u64, not_after: u64, local_now: u64) -> bool {
+pub(super) fn snapshot_is_fresh(snapshot_now: u64, not_after: u64, local_now: u64) -> bool {
     snapshot_now <= local_now.saturating_add(INTERACTION_CLOCK_TOLERANCE_SECS)
         && not_after > local_now.saturating_sub(INTERACTION_CLOCK_TOLERANCE_SECS)
 }
