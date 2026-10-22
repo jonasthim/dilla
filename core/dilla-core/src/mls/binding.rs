@@ -197,6 +197,26 @@ impl DillaInteractionBinding {
         e.into_vec()
     }
 
+    /// Compare an inspected v2 binding with an expected admission tuple. The caller must source
+    /// `expected` from an authenticated server admission result; this comparison is structural
+    /// and does not authenticate either value or authorize group admission by itself.
+    pub fn matches_admission(&self, expected: &Self) -> Result<(), ProtocolError> {
+        let same = self.instance_id == expected.instance_id
+            && self.bot_user_id == expected.bot_user_id
+            && self.installation_id == expected.installation_id
+            && self.community_id == expected.community_id
+            && self.participant_user_id == expected.participant_user_id
+            && self.participant_device_id == expected.participant_device_id
+            && self.policy_version == expected.policy_version
+            && self.e2ee_version == expected.e2ee_version
+            && self.media_version == expected.media_version;
+        if same {
+            Ok(())
+        } else {
+            Err(ProtocolError::Binding)
+        }
+    }
+
     /// Decode only the v2 interaction shape. Exact length, null legacy community scope, kind,
     /// protocol versions and all identity IDs are checked before returning a typed value.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
@@ -377,6 +397,12 @@ mod tests {
         let bytes = b.encode();
         assert_eq!(bytes[0], 0x8c, "a 12-element array head");
         assert_eq!(DillaInteractionBinding::decode(&bytes).unwrap(), b);
+        assert_eq!(
+            DillaInteractionBinding::decode(&bytes)
+                .unwrap()
+                .matches_admission(&b),
+            Ok(())
+        );
 
         // The earlier in-development 11-field v2 shape did not bind a device. It must not be
         // accepted as an authenticated participant-device binding.
@@ -416,6 +442,31 @@ mod tests {
             DillaInteractionBinding::decode(&legacy.encode()),
             Err(ProtocolError::Binding)
         );
+    }
+
+    #[test]
+    fn interaction_v2_admission_comparison_fails_closed_on_every_tuple_field() {
+        let actual = interaction_v2();
+        for mutate in [
+            |x: &mut DillaInteractionBinding| x.instance_id = InstanceId::from_bytes([0x91; 16]),
+            |x: &mut DillaInteractionBinding| x.bot_user_id = [0x92; 16],
+            |x: &mut DillaInteractionBinding| x.installation_id = [0x93; 16],
+            |x: &mut DillaInteractionBinding| x.community_id = CommunityId::from_bytes([0x94; 16]),
+            |x: &mut DillaInteractionBinding| x.participant_user_id = [0x95; 16],
+            |x: &mut DillaInteractionBinding| {
+                x.participant_device_id = DeviceId::from_bytes([0x96; 16])
+            },
+            |x: &mut DillaInteractionBinding| x.policy_version += 1,
+            |x: &mut DillaInteractionBinding| x.e2ee_version += 1,
+            |x: &mut DillaInteractionBinding| x.media_version += 1,
+        ] {
+            let mut expected = actual.clone();
+            mutate(&mut expected);
+            assert_eq!(
+                actual.matches_admission(&expected),
+                Err(ProtocolError::Binding)
+            );
+        }
     }
 
     #[test]
