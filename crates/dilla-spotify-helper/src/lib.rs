@@ -76,6 +76,31 @@ pub fn read_credential(mut input: impl Read, max_bytes: usize) -> io::Result<Sec
     Ok(Secret(bytes))
 }
 
+/// The runtime sends only the current OAuth access token through FD 3. Keep
+/// provider refresh tokens outside the player process.
+pub fn parse_access_token(input: &[u8]) -> io::Result<String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AccessToken {
+        access_token: String,
+    }
+    let value: AccessToken = serde_json::from_slice(input)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid credential"))?;
+    if value.access_token.is_empty()
+        || value.access_token.len() > 8192
+        || !value
+            .access_token
+            .bytes()
+            .all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid credential",
+        ));
+    }
+    Ok(value.access_token)
+}
+
 pub fn write_control(mut output: impl Write, json: &[u8]) -> io::Result<()> {
     if json.is_empty() || json.len() > MAX_CONTROL_BYTES {
         return Err(io::Error::new(
@@ -315,6 +340,22 @@ mod tests {
         assert!(!format!("{value:?}").contains("sensitive-token"));
         assert!(read_credential(Cursor::new(vec![b'x'; 65]), 64).is_err());
         assert!(read_credential(Cursor::new([]), 64).is_err());
+    }
+
+    #[test]
+    fn access_token_credential_is_strict_and_carries_no_refresh_token() {
+        assert_eq!(
+            parse_access_token(br#"{"access_token":"BQD_abc-123"}"#).unwrap(),
+            "BQD_abc-123"
+        );
+        for invalid in [
+            br#"{"access_token":""}"#.as_slice(),
+            br#"{"access_token":"a b"}"#,
+            br#"{"access_token":"abc","refresh_token":"secret"}"#,
+            br#"{"access_token":"abc"} {}"#,
+        ] {
+            assert!(parse_access_token(invalid).is_err());
+        }
     }
 
     #[test]

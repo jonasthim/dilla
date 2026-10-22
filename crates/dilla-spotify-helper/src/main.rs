@@ -1,6 +1,6 @@
 use dilla_spotify_helper::{
-    Control, ErrorCode, PCM_BYTES_PER_FRAME, PcmFrame, Phase, Status, read_control,
-    read_inherited_credential, write_pcm,
+    Control, ErrorCode, PCM_BYTES_PER_FRAME, PcmFrame, Phase, Status, parse_access_token,
+    read_control, read_inherited_credential, write_pcm,
 };
 use librespot::{
     core::{Session, SpotifyUri, authentication::Credentials, config::SessionConfig},
@@ -194,8 +194,9 @@ async fn run() -> Result<(), (Phase, ErrorCode)> {
     let uri = parse_track(&target).map_err(|e| (Phase::Startup, e))?;
     let secret = read_inherited_credential()
         .map_err(|_| (Phase::Authorization, ErrorCode::CredentialUnavailable))?;
-    let credentials: Credentials = serde_json::from_slice(secret.expose())
+    let access_token = parse_access_token(secret.expose())
         .map_err(|_| (Phase::Authorization, ErrorCode::CredentialUnavailable))?;
+    let credentials = Credentials::with_access_token(access_token);
     drop(secret);
     let session = SessionGuard(Session::new(SessionConfig::default(), None));
     match tokio::time::timeout(
