@@ -138,14 +138,15 @@ func TestInteractionDispatcherAcceptsKind3OnlyAfterSnapshotMatchesNativeParticip
 	d, event, binding := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpOverviewGet: {Handle: func(_ context.Context, actor InteractionActor, _ protocol.Request) (InteractionResult, error) {
 			called = true
-			if actor.User != interactionID(6) || actor.Device != interactionID(7) {
-				t.Errorf("actor = %+v, want authenticated participant", actor)
+			if actor.User != interactionID(6) || actor.Device != interactionID(7) || actor.Tier != 1 {
+				t.Errorf("actor = %+v, want authenticated browser-tier participant", actor)
 			}
 			return InteractionResult{Status: 0}, nil
 		}},
 	})
 	body := interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil)
 	event.Body = &body
+	event.SenderTier = 1
 	participant := interactionID(6)
 	device := interactionID(7)
 	n := d.native.(*interactionNativeFake)
@@ -170,6 +171,11 @@ func TestInteractionDispatcherAcceptsKind3OnlyAfterSnapshotMatchesNativeParticip
 		t.Fatalf("kind-3 result = %s, handler called=%v", got, called)
 	}
 	called = false
+	unknownTier := event
+	unknownTier.SenderTier = 2
+	if _, err := d.Dispatch(context.Background(), unknownTier); !errors.Is(err, protocol.ErrInvalid) || called {
+		t.Fatalf("unknown event tier error=%v handler called=%v; want invalid event refusal", err, called)
+	}
 	forged := event
 	forged.SenderUser = interactionID(99)
 	if _, err := d.Dispatch(context.Background(), forged); !errors.Is(err, protocol.ErrContext) || called {

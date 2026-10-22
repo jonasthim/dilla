@@ -159,7 +159,7 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		return "", protocol.ErrContext
 	}
 	if group.Kind == 3 {
-		if d.snapshots == nil || event.SenderKind != 0 || event.SenderTier != 0 {
+		if d.snapshots == nil || event.SenderKind != 0 {
 			return "", protocol.ErrContext
 		}
 		expected, snapshot, snapshotErr := d.snapshots.InteractionSnapshot(ctx, event)
