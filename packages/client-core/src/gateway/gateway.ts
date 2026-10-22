@@ -42,6 +42,9 @@ export const GATEWAY = {
   /** UP7b (R-UP8): while the instance cannot be reached, a probe every probeMs plus up to probeJitterMs (so a returning
    *  instance is noticed within 2 s, and clients do not probe in step); its first answer reconnects at once. */
   probeMs: 1500, probeJitterMs: 500,
+  /** UP7b fix round 1 (M2): after probeSlowAfterMs of continuous probing the interval doubles from 2 × probeMs up to
+   *  probeCapMs, with up to 20 % jitter; an answer (or a ready) starts the next outage at the fast interval again. */
+  probeSlowAfterMs: 120_000, probeCapMs: 10_000,
 } as const;
 
 export const CLIENT_CLOSE = {
@@ -102,6 +105,11 @@ export class Gateway {
   private heartbeatTimer: number | null = null;
   private ackTimer: number | null = null;
   private probeTimer: number | null = null;
+  /** When the current run of probes began (null: none), and the slowed interval it has reached (M2). */
+  private probeSince: number | null = null;
+  private probeSlowMs = 0;
+  /** When the next probe is due (null: none armed): a failed connect in between keeps it, so probes stay evenly spaced. */
+  private probeAt: number | null = null;
   private readonly lastTyping = new Map<string, number>();
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
@@ -170,9 +178,10 @@ export class Gateway {
         this.emit({ type: 'revoked' });
         return;
       }
-      // UP7b: no answer from the instance (status 0, or no HTTP answer at all) means it is out of reach; a refusal it
-      // answered (a 503, a 429) keeps the ordinary backoff.
-      this.fail(null, !(err instanceof DillaHttpError) || err.status === 0);
+      // UP7b: no answer from the instance means it is out of reach: no HTTP answer (status 0), an answer that is not the
+      // instance's (fix round 1, I1: a reverse proxy's 502/503/504 or its own page, without X-Dilla-Generation), or a body
+      // that is not the instance's (a decode error). A refusal the instance answered (a 503, a 429) keeps the backoff.
+      this.fail(null, !(err instanceof DillaHttpError) || err.status === 0 || err.fromInstance === false);
       return;
     }
     if (id !== this.attempt) return;
@@ -233,6 +242,7 @@ export class Gateway {
         catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
         this.cancel('handshakeTimer');
         this.failures = 0;
+        this.resetProbe();
         this.phase = 'ready';
         this.setStatus('ready', null);
         this.emit({ type: 'ready', info });
@@ -328,12 +338,26 @@ export class Gateway {
   private armProbe(): void {
     const deps = this.deps;
     if (deps.probe === undefined) return;
-    this.arm('probeTimer', GATEWAY.probeMs + Math.floor(this.deps.random() * GATEWAY.probeJitterMs), () => {
+    const now = deps.now();
+    this.probeSince ??= now;
+    let wait: number;
+    // A probe that was due while a connect ran (it cancelled the timer) runs now.
+    if (this.probeAt !== null) wait = Math.max(0, this.probeAt - now);
+    else if (now - this.probeSince < GATEWAY.probeSlowAfterMs) wait = GATEWAY.probeMs + Math.floor(deps.random() * GATEWAY.probeJitterMs);
+    else {
+      // M2: a long outage is probed ever less often, up to probeCapMs, still jittered.
+      this.probeSlowMs = Math.min(GATEWAY.probeCapMs, this.probeSlowMs === 0 ? 2 * GATEWAY.probeMs : 2 * this.probeSlowMs);
+      wait = this.probeSlowMs + Math.floor(deps.random() * 0.2 * this.probeSlowMs);
+    }
+    this.probeAt = now + wait;
+    this.arm('probeTimer', wait, () => {
+      this.probeAt = null;
       const id = this.attempt;
       const still = (): boolean => id === this.attempt && this.current === 'waiting' && this.reconnectTimer !== null;
       void (deps.probe?.() ?? Promise.resolve(false)).catch(() => false).then((answered) => {
         if (!still()) return;
         if (!answered) { this.armProbe(); return; }
+        this.resetProbe();
         this.cancel('reconnectTimer');
         this.setStatus('connecting', null);
         this.connect();
@@ -341,10 +365,13 @@ export class Gateway {
     });
   }
 
+  private resetProbe(): void { this.probeSince = null; this.probeSlowMs = 0; this.probeAt = null; }
+
   private goIdle(): void {
     this.attempt += 1;
     this.cancel('reconnectTimer');
     this.cancel('probeTimer');
+    this.resetProbe();
     this.cancel('handshakeTimer');
     this.cancel('heartbeatTimer');
     this.cancel('ackTimer');

@@ -506,6 +506,20 @@ func TestEveryResponseCarriesTheGenerationHeader(t *testing.T) {
 			t.Fatalf("%s carries no X-Dilla-Generation header (status %d)", path, rec.Code)
 		}
 	}
+	// UP7b fix round 1: the web client's outage probe counts an answer as the instance's only by this header, so the
+	// refusals carry it too: an unauthenticated ticket mint (401), an unknown API route (404), a wrong method (405).
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/gateway/ticket"}, {http.MethodGet, "/v1/no-such-route"}, {http.MethodDelete, "/v1/instance"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), c.method, c.path, nil))
+		if rec.Code < 400 {
+			t.Fatalf("%s %s = %d, want a refusal", c.method, c.path, rec.Code)
+		}
+		if rec.Header().Get("X-Dilla-Generation") == "" {
+			t.Fatalf("the refusal of %s %s carries no X-Dilla-Generation header (status %d)", c.method, c.path, rec.Code)
+		}
+	}
 }
 
 func TestDiscoverySessionMakesTheInstanceDocumentAuthenticated(t *testing.T) {

@@ -63,14 +63,18 @@ const OUTAGE_LINES: RegExp[] = [
   /^(Failed to fetch \{room: .*ConnectionError: Failed to fetch|NetworkError when attempting to fetch resource\. JSHandle@object$)/s,
   /^room connection has timed out \(signal\) (\{room: |JSHandle@object$)/,
   /^requested room does not exist (\{room: .*ConnectionError: requested room does not exist|JSHandle@object$)/s,
-  // UP7b: a reconnect that reaches the restarted API (or SFU) sooner can be told to leave by the SFU, which no longer holds
-  // that participant; livekit-client logs it and ends the room, and the page rejoins through a start.
-  /^Received leave request while trying to \(re\)connect (\{room: .*ConnectionError: Received leave request|JSHandle@object$)/s,
+  // UP7b fix round 1 (I3): a reconnect told to leave by the SFU, tolerated only for the reason an outage gives
+  // (tagLeaveReasons appends it): PARTICIPANT_REMOVED (4), seen only in case A (the SFU restarted, then the API with a new
+  // build: a reconnect reaches a participant the instance has removed). A DUPLICATE_IDENTITY (2), which a page's double start would
+  // give, is never tolerated; each page's starts are counted below as well.
+  /^Received leave request while trying to \(re\)connect (\{room: .*ConnectionError: Received leave request|JSHandle@object).* \[leave reason 4\]$/s,
   // The peer connection an outage or the SFU's restart closed takes its data channels with it.
   /^DataChannel error on (lossy|reliable): User-Initiated Abort, reason= ?(\{room: |JSHandle@object$)/,
   /^publisher data channel '[A-Z_]+' closed unexpectedly ?(\{room: |JSHandle@object$)/,
   // UP7b: with the instance noticed within 2 s, the peers come back almost together, and livekit-client logs a track whose
-  // publication reached it before that participant's own join update (it adds the track once the participant arrives).
+  // publication reached it before that participant's own join update. In 2.22.3 a connected room DROPS that track
+  // (esm.mjs:35227-35234; only a room still connecting defers it), so nothing recovers it by itself: every step that can
+  // log this ends in allHear(), which fails if a remote track was lost.
   /^Tried to add a track for a participant, that's not present\. Sid: PA_[A-Za-z0-9]+ ?(\{room: |JSHandle@object$)/,
 ];
 
@@ -79,6 +83,20 @@ interface Peer { name: typeof NAMES[number]; person: Person; device: string; req
 async function postControl(control: string, path: string, body?: unknown): Promise<void> {
   const res = await fetch(`${control}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   expect(res.status, `POST ${path}: ${await res.text()}`).toBe(204);
+}
+
+/** UP7b fix round 1 (I3): livekit-client logs "Received leave request while trying to (re)connect" with the leave's reason
+ *  only inside the error object; this appends it as `[leave reason N]`, so OUTAGE_LINES can tolerate one reason only. */
+function tagLeaveReasons(): void {
+  const original = console.error.bind(console);
+  console.error = (...args: unknown[]): void => {
+    if (typeof args[0] === 'string' && args[0].startsWith('Received leave request while trying to (re)connect')) {
+      const reason = (args[1] as { error?: { reason?: unknown } } | undefined)?.error?.reason;
+      original(...args, `[leave reason ${String(reason)}]`);
+      return;
+    }
+    original(...args);
+  };
 }
 
 /** The page's own pagehide time, kept in sessionStorage across its reload (performance time, never the moved Date.now). */
@@ -121,6 +139,7 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
     const rest = guard.consoleErrors.splice(from);
     const kept = rest.filter((l) => !OUTAGE_LINES.some((r) => r.test(l)));
     guard.consoleErrors.push(...kept);
+    timings[`${what}.leaveReasons`] = rest.flatMap((l) => /\[leave reason (\S+)\]$/.exec(l)?.[1] ?? []);
     timings[`${what}.outageLines`] = rest.length - kept.length;
   };
   const peers: Peer[] = [];
@@ -140,6 +159,7 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const person = await peerBrowser.open(name, ownBrowser === undefined ? undefined : { browser: ownBrowser });
       await person.context.addInitScript(installUpgradeRecorder, name === 'carol');
       await person.context.addInitScript(rememberPagehide);
+      await person.context.addInitScript(tagLeaveReasons);
       const requests: UpgradeRecord['requests'] = [];
       recordRequests(person.context, requests);
       sampleFrames(person.page);
@@ -294,8 +314,11 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       }
       const joins = await Promise.all(pages.map(async (page) => (await history(page)).joins.at(-1)?.resumed ?? null));
       const external = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/resync$/.test(r.path)).length);
+      const startsB2 = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls` && r.status >= 200 && r.status < 300).length);
       for (const [i, p] of peers.entries()) {
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === '/v1/groups'), `${p.name}: no new call group`).toEqual([]);
+        // UP7b fix round 1 (I3): exactly one call start per page for its one resume.
+        expect(startsB2[i], `${p.name}: back through exactly one start`).toBe(1);
       }
       // UP6c: each resume commits a fresh epoch (an own-leaf Update) before it publishes.
       const commitsB2 = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /\/commit$/.test(r.path)).map((r) => r.status));
@@ -393,8 +416,9 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
         const calls = (await history(pages[i])).calls.slice(callsFrom[i]);
         expect(calls.filter((c) => c.code === 'E_REMOVE_PENDING' || c.error === 'E_REMOVE_PENDING' || c.rejoining), `${p.name}: no E_REMOVE_PENDING`).toEqual([]);
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === '/v1/groups'), `${p.name}: no new call group`).toEqual([]);
+        // UP7b fix round 1 (I3): exactly one call start per page for its one resume; a double start fails here.
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls` && r.status >= 200 && r.status < 300).length,
-          `${p.name}: back through a real start`).toBeGreaterThan(0);
+          `${p.name}: back through exactly one start`).toBe(1);
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'PUT' && /\/afk\/away$/.test(r.path)), `${p.name}: no leftAway`).toEqual([]);
       }
       const settled = groupRows(DB, voice);
@@ -430,6 +454,7 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
         backSinceAnswerMs: Object.fromEntries(peers.map((p, i) => [p.name, sinceAnswer[i]])),
         resumed: Object.fromEntries(peers.map((p, i) => [p.name, joined[i].map((j) => j.resumed)])),
         kind3: settled.withdrawnRows - kind3Before, rotatedBy: rotated,
+        starts: Object.fromEntries(peers.map((p, i) => [p.name, p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls`).map((r) => r.status)])),
       };
       tolerate(lines, 'A2');
     });

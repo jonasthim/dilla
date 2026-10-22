@@ -82,7 +82,7 @@ export class HttpClient {
         }
         const responseBody = await readBody(response, r.maxBodyBytes);
         if ((r.ok ?? [200, 201, 204]).includes(response.status)) return { status: response.status, body: responseBody };
-        error = decodeErrorBody(response.status, responseBody, response.headers.get('Retry-After'));
+        error = decodeErrorBody(response.status, responseBody, response.headers.get('Retry-After'), generation !== null);
       } catch (e) {
         if (r.signal?.aborted) throw abort();
         if (e instanceof DillaHttpError) throw e;

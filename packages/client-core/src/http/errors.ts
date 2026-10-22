@@ -7,8 +7,11 @@ export class DillaHttpError extends Error {
   readonly detail: string;
   readonly retryAfterMs: number | null;
   readonly extra: CborValue[];
+  /** UP7b fix round 1: whether the answer came from the instance itself (it stamps X-Dilla-Generation on every response),
+   *  not from a reverse proxy in front of it; null when not known (no HTTP answer, or an error made here). */
+  readonly fromInstance: boolean | null;
 
-  constructor(init: { status: number; code: string; detail: string; retryAfterMs: number | null; extra: CborValue[] }) {
+  constructor(init: { status: number; code: string; detail: string; retryAfterMs: number | null; extra: CborValue[]; fromInstance?: boolean | null }) {
     super(`${init.code} (${init.status})${init.detail ? `: ${init.detail}` : ''}`);
     this.name = 'DillaHttpError';
     this.status = init.status;
@@ -16,10 +19,11 @@ export class DillaHttpError extends Error {
     this.detail = init.detail;
     this.retryAfterMs = init.retryAfterMs;
     this.extra = init.extra;
+    this.fromInstance = init.fromInstance ?? null;
   }
 }
 
-export function decodeErrorBody(status: number, body: Uint8Array, retryAfterHeader: string | null): DillaHttpError {
+export function decodeErrorBody(status: number, body: Uint8Array, retryAfterHeader: string | null, fromInstance: boolean | null = null): DillaHttpError {
   let value: CborValue;
   try { value = decode(body); }
   catch (e) {
@@ -40,5 +44,5 @@ export function decodeErrorBody(status: number, body: Uint8Array, retryAfterHead
   }
   const retryAfterMs = delay !== null ? Number(delay > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : delay)
     : retryAfterHeader !== null && /^[0-9]{1,9}$/.test(retryAfterHeader) ? Number(retryAfterHeader) * 1000 : null;
-  return new DillaHttpError({ status, code, detail, retryAfterMs, extra });
+  return new DillaHttpError({ status, code, detail, retryAfterMs, extra, fromInstance });
 }

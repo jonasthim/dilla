@@ -1565,15 +1565,18 @@ it('ignores incoming typing frames after an open channel loses membership', asyn
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
 });
 
-// UP7b (R-UP8): the gateway's outage probe is one plain GET /v1/instance, no retry: any answer from the instance counts
-// (a 401 too), while a proxy's 502, 503 or 504 and a network failure do not.
-it('the outage probe asks /v1/instance once and counts any answer of the instance', async () => {
+// UP7b (R-UP8), fix round 1 (I1, I2): the gateway's outage probe is one plain GET /v1/instance, no retry. Only an answer
+// of the instance counts: one that carries X-Dilla-Generation, which dillad stamps on every response (a 401 or its own
+// 503 too). A reverse proxy's 502/503/504 or its own 200 page carries none, and neither does a network failure.
+it('the outage probe asks /v1/instance once and counts only an answer that carries X-Dilla-Generation', async () => {
   let status = 200;
+  let stamped = true;
   let fail = false;
   const asked: string[] = [];
   const fetchFn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     asked.push(`${init?.method ?? 'GET'} ${input instanceof Request ? input.url : input.toString()}`);
-    return fail ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(new Response(null, { status }));
+    return fail ? Promise.reject(new TypeError('Failed to fetch'))
+      : Promise.resolve(new Response(null, { status, headers: stamped ? { 'X-Dilla-Generation': '1' } : {} }));
   }) as unknown as typeof fetch;
   const w = world({ fetch: fetchFn });
   await toReady(w);
@@ -1583,12 +1586,12 @@ it('the outage probe asks /v1/instance once and counts any answer of the instanc
   expect(await probe()).toBe(true);
   expect(asked).toHaveLength(1);
   expect(asked[0]).toMatch(/^GET .*\/v1\/instance$/);
-  status = 401;
-  expect(await probe()).toBe(true);
-  for (const s of [502, 503, 504]) { status = s; expect(await probe()).toBe(false); }
+  for (const s of [401, 404, 503]) { status = s; expect(await probe(), `the instance's ${String(s)}`).toBe(true); }
+  stamped = false;
+  for (const s of [200, 502, 503, 504]) { status = s; expect(await probe(), `a proxy's ${String(s)}`).toBe(false); }
   fail = true;
   expect(await probe()).toBe(false);
-  expect(asked).toHaveLength(6);
+  expect(asked).toHaveLength(9);
 });
 
 // expires_ts is on the instance's clock (L-HTTP-96: now + 10 s there). Read against this browser's clock, a lagging

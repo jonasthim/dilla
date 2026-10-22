@@ -486,3 +486,18 @@ describe('onRefusal', () => {
     expect(await failure(client.request(GET_READ))).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
   });
 });
+
+// UP7b fix round 1 (I1): a refusal says whether the instance itself answered (X-Dilla-Generation, which dillad stamps on
+// every response) or something in front of it did (a reverse proxy's 502 page), so the gateway can tell an outage behind
+// a proxy from the instance's own refusal.
+describe('UP7b: who answered a refusal', () => {
+  it("a refusal with X-Dilla-Generation is the instance's; a proxy page without it is not; no answer is unknown", async () => {
+    const t = fakeTransport();
+    t.replies.push(refusal(409, 'E_CONFLICT', '', null, [], { 'X-Dilla-Generation': '3' }), new Response('<html>Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } }));
+    const own = await failure(new HttpClient(t.deps).request(POST_WRITE));
+    expect(own).toMatchObject({ status: 409, code: 'E_CONFLICT', fromInstance: true });
+    const front = await failure(new HttpClient(t.deps).request(POST_WRITE));
+    expect(front).toMatchObject({ status: 502, code: 'E_HTTP', fromInstance: false });
+    expect(new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: '', retryAfterMs: null, extra: [] }).fromInstance).toBeNull();
+  });
+});
