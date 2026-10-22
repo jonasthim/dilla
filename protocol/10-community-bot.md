@@ -78,8 +78,9 @@ Unsigned proof: `[1, request_id, actor_user, actor_device, community_id, group_i
 `dilla moderation removal v1` (NO NUL) concatenated with canonical encoded proof.
 Detached Ed25519 signature64; signer is registered device key. Core signs; server
 checks current session user/device, matching community/group, hierarchy/permission,
-and now < expires <= now+30 on new acceptance. Codec exposes preimage and context
-validation; signature crypto functions can follow in native-helper/moderation tasks.
+and now < expires <= now+30 on new acceptance. The native core signs this
+preimage with its device key; the server verifies it against the authenticated
+session and current authority.
 Accepted stored proofs remain evidence after expiry; decoding never applies time.
 
 ## Durable structural event
@@ -132,13 +133,14 @@ receipt without changing wire 3, E2EE or media versions.
 ## Helper transport envelope
 
 Private inherited Unix socket; 4-byte BIG-ENDIAN unsigned length (excluding prefix),
-1..1048576 bytes. No network listener. Request `[1, request_id, operation uint1..16,
+1..1048576 bytes. No network listener. Request `[1, request_id, operation uint1..18,
  payload bstr]`; response `[1, request_id, status uint0..9, payload bstr]`.
 Payload is encoded strict deterministic CBOR array (possibly empty array), maximum
 1048480 bytes and total encoded body<=1048576. No empty raw bstr. Request operations:
 1open,2bootstrap,3enroll_complete,4session,5key_packages,6group_apply,7prepare_send,
 8send_receipt,9call_epoch,10sign_removal,11state_get,12state_transaction,
-13cursor_ack,14key_packages_uploaded,15shutdown,16group_transfer. No generic SQL or identity-key
+13cursor_ack,14key_packages_uploaded,15shutdown,16group_transfer,
+17ingest_removals,18refresh_removal_actor_history. No generic SQL or identity-key
 export. The open key arrives only in this private channel or a protected
 descriptor. Truncated, mismatched and oversized lengths close the connection
 without allocating the announced body. Request and response decoders are distinct.
@@ -180,6 +182,8 @@ never contain database, provider or decrypted-message error text.
 | 14 key_packages_uploaded | `[operation_id, package_refs, outcome, now, current_generation]`, outcome0 accepted /1 obsolete | `[]` |
 | 15 shutdown | `[]` | `[]`, then close |
 | 16 group_transfer | `[suboperation, ...arguments]`, below | transfer result |
+| 17 ingest_removals | `[group_id, entries]`, entries are 0..256 ordered `[revision, proof_bstr, signature64, accepted_at]` rows | `[persisted_cursor]` |
+| 18 refresh_removal_actor_history | `[group_id, [proof_bstr, signature64, accepted_at], history_bstr\|null, head_list_bstr\|null]` | `[trusted_list_version]` |
 
 Bootstrap is repeatable across restarts and returns the same pending identity.
 It fixes Bot/Native/Native together and cannot adopt a human identity or overwrite
@@ -189,6 +193,25 @@ human signup. The helper verifies the final credential and signed device list
 before any KeyPackage or group operation. Signing removal derives actor/account,
 device and community from this identity and the bound group, never caller fields.
 It signs the exact removal preimage above after validating the 30-second window.
+
+Op17 accepts only a text group bound to the installation's community. Empty
+entries query its durable cursor. Nonempty entries must have contiguous revisions
+after that cursor; an exact replay is allowed, while a conflicting replay or gap
+fails without a partial write. The core checks each proof's group and community,
+server acceptance window, signed device-list chain anchored to the pinned user
+key, device validity at acceptance and detached signature. An actor whose
+authenticated signing history is unavailable fails closed. Each successful page
+atomically stores tombstones and its cursor, and suppresses late message content.
+
+Op18 requires an active text group in the installation's community and an
+existing pinned, signed device-list cache for the proof actor. With both history
+and head null, it returns the cached version as a fetch hint without accepting
+the proof. With both byte strings present, it validates the complete forward
+history chain from that anchor under the pinned signing key, then checks the
+proof signature and device validity at server acceptance time before updating
+the cache. Mixed null/bytes arguments fail. Combined history and head bytes are
+bounded below the 1 MiB helper frame. An unknown actor cannot be bootstrapped by
+this operation and must fail closed.
 
 Session suboperations are: 0 identity `[]`; 1 sign `[nonce32,purpose0..1]`;
 2 store `[token,expires,idle_expires]`; 3 read `[]`; 4 clear `[]`;
