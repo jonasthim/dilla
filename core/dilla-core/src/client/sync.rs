@@ -394,7 +394,7 @@ impl ClientCore {
                                     && mentions_me_gated(&envelope.body, &own.user_id, &roles, &mentionable, broadcast),
                             })?;
                             super::bot_events::record_accepted(
-                                c, id, *seq, &own,
+                                c, &group, id, *seq, &own,
                                 &sender, *leaf, &member.signature_key, *epoch, *recv_ts,
                                 envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
                                 envelope.reply_to.as_ref().map(|v| v.as_bytes()),
@@ -992,7 +992,7 @@ impl ClientCore {
                                             && let Some(member) = sender_member.as_ref()
                                         {
                                             super::bot_events::record_accepted(
-                                                c, id, m.seq, &own,
+                                                c, &group, id, m.seq, &own,
                                                 &r.sender, r.sender_leaf, &member.signature_key,
                                                 r.epoch, m.recv_ts, r.envelope.msg_id.as_bytes(),
                                                 r.envelope.kind.as_u8(), &r.envelope.body,

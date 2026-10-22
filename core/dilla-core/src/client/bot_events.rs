@@ -4,7 +4,7 @@ use super::error::{E_CORE_INPUT, E_CORE_LIMIT, E_CORE_RELOAD, E_CORE_STATE, E_CO
 use super::{ClientCore, ClientError, bot_identity, schema, trust};
 use crate::cbor::Encoder;
 use crate::identity::CredentialIdentity;
-use crate::mls::{DillaGroup, GroupKind, StorageError};
+use crate::mls::{DillaGroup, DillaInteractionBinding, GroupKind, StorageError};
 use rusqlite::{OptionalExtension, params};
 
 const PAGE_LIMIT: u64 = 100;
@@ -35,7 +35,7 @@ struct EventRow {
     disposition: i64,
 }
 
-fn bot_community(core: &ClientCore) -> Result<[u8; 16], ClientError> {
+fn bot_binding(core: &ClientCore) -> Result<bot_identity::BotBinding, ClientError> {
     let own = core.own()?;
     if own.kind != 1 || own.tier != 0 {
         return Err(ClientError::new(
@@ -57,7 +57,70 @@ fn bot_community(core: &ClientCore) -> Result<[u8; 16], ClientError> {
             "native Bot binding mismatch",
         ));
     }
-    Ok(binding.community_id)
+    Ok(binding)
+}
+
+fn bot_community(core: &ClientCore) -> Result<[u8; 16], ClientError> {
+    Ok(bot_binding(core)?.community_id)
+}
+
+fn interaction_binding_matches_event(
+    binding: &DillaInteractionBinding,
+    instance: &[u8],
+    installation: &[u8],
+    community: &[u8],
+    sender_user: &[u8],
+    sender_device: &[u8],
+) -> bool {
+    binding.instance_id.as_bytes() == instance
+        && binding.installation_id.as_slice() == installation
+        && binding.community_id.as_bytes() == community
+        && binding.participant_user_id.as_slice() == sender_user
+        && binding.participant_device_id.as_bytes() == sender_device
+}
+
+#[cfg(test)]
+mod interaction_event_binding_tests {
+    use super::interaction_binding_matches_event;
+    use crate::ids::{CommunityId, DeviceId, InstanceId};
+    use crate::mls::DillaInteractionBinding;
+
+    fn binding() -> DillaInteractionBinding {
+        DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([1; 16]),
+            bot_user_id: [2; 16],
+            installation_id: [3; 16],
+            community_id: CommunityId::from_bytes([4; 16]),
+            participant_user_id: [5; 16],
+            participant_device_id: DeviceId::from_bytes([6; 16]),
+            policy_version: 7,
+            e2ee_version: 1,
+            media_version: 0,
+        }
+    }
+
+    #[test]
+    fn interaction_event_binding_requires_exact_native_scope_and_participant() {
+        let b = binding();
+        assert!(interaction_binding_matches_event(
+            &b, &[1; 16], &[3; 16], &[4; 16], &[5; 16], &[6; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[9; 16], &[3; 16], &[4; 16], &[5; 16], &[6; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[1; 16], &[9; 16], &[4; 16], &[5; 16], &[6; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[1; 16], &[3; 16], &[9; 16], &[5; 16], &[6; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[1; 16], &[3; 16], &[4; 16], &[9; 16], &[6; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[1; 16], &[3; 16], &[4; 16], &[5; 16], &[9; 16]
+        ));
+    }
 }
 
 /// Persist one accepted application snapshot in the source row's write unit. The authenticated
@@ -65,6 +128,7 @@ fn bot_community(core: &ClientCore) -> Result<[u8; 16], ClientError> {
 #[allow(clippy::too_many_arguments)] // Each field is authenticated MLS/envelope provenance for one atomic snapshot.
 pub(super) fn record_accepted(
     c: &rusqlite::Connection,
+    group: &DillaGroup,
     group_id: &[u8; 16],
     source_seq: u64,
     own: &super::Own,
@@ -94,17 +158,45 @@ pub(super) fn record_accepted(
     if !bot_identity::nonzero_ids(&bot_binding) || bot_binding.instance_id != own.instance_id {
         return Ok(());
     }
-    let binding: Option<(i64, Option<Vec<u8>>, Vec<u8>)> = c
+    let binding: Option<(i64, Option<Vec<u8>>, Vec<u8>, i64)> = c
         .query_row(
-            "SELECT kind,community_id,target_id FROM app_groups WHERE group_id=?1 AND state=2",
+            "SELECT kind,community_id,target_id,state FROM app_groups WHERE group_id=?1",
             [group_id.as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((kind, Some(community), channel)) = binding else {
+    let Some((kind, Some(community), channel, state)) = binding else {
         return Ok(());
     };
-    if kind != 0 || community.as_slice() != bot_binding.community_id {
+    if state != 2 || community.as_slice() != bot_binding.community_id {
+        return Ok(());
+    }
+    let eligible = if kind == 0 {
+        group.kind() == GroupKind::Text
+            && group.binding().is_ok_and(|b| {
+                b.community_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_bytes().as_slice() == community.as_slice())
+                    && b.target_id.as_slice() == channel.as_slice()
+            })
+    } else if kind == 3 {
+        sender.kind.as_u8() == 0
+            && group.kind() == GroupKind::Interaction
+            && group.interaction_binding().is_ok_and(|b| {
+                interaction_binding_matches_event(
+                    &b,
+                    &bot_binding.instance_id,
+                    &bot_binding.installation_id,
+                    &bot_binding.community_id,
+                    sender.user_id.as_bytes(),
+                    sender.device_id.as_bytes(),
+                ) && b.bot_user_id.as_slice() != sender.user_id.as_bytes()
+                    && channel.as_slice() == b.participant_user_id
+            })
+    } else {
+        false
+    };
+    if !eligible {
         return Ok(());
     }
     let source_live: bool = c.query_row(
@@ -242,7 +334,8 @@ impl ClientCore {
         after_delivery_id: u64,
         limit: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        let community = bot_community(self)?;
+        let scope = bot_binding(self)?;
+        let community = scope.community_id;
         if !(1..=PAGE_LIMIT).contains(&limit) || after_delivery_id > i64::MAX as u64 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
@@ -279,24 +372,43 @@ impl ClientCore {
                 )?;
                 let mut valid = false;
                 if let Some(group) = group {
-                    let signature_matches = group.binding().is_ok_and(|binding| {
-                        binding.kind == GroupKind::Text
-                            && binding
-                                .community_id
-                                .as_ref()
-                                .is_some_and(|id| id.as_bytes() == community.as_slice())
-                            && binding.target_id == row.channel_id.as_slice()
-                            && group
-                                .member_at(row.sender_leaf as u32)
-                                .is_some_and(|member| {
-                                    member.signature_key.as_slice() == row.sender_sig_key.as_slice()
-                                })
-                    });
+                    let member_matches =
+                        group
+                            .member_at(row.sender_leaf as u32)
+                            .is_some_and(|member| {
+                                member.signature_key.as_slice() == row.sender_sig_key.as_slice()
+                            });
+                    let binding_matches = row.sender_kind == 0
+                        && group.binding().is_ok_and(|binding| {
+                            binding.kind == GroupKind::Text
+                                && binding
+                                    .community_id
+                                    .as_ref()
+                                    .is_some_and(|id| id.as_bytes() == community.as_slice())
+                                && binding.target_id == row.channel_id.as_slice()
+                        })
+                        || (row.sender_kind == 0
+                            && group.kind() == GroupKind::Interaction
+                            && group.interaction_binding().is_ok_and(|binding| {
+                                interaction_binding_matches_event(
+                                    &binding,
+                                    &scope.instance_id,
+                                    &scope.installation_id,
+                                    &scope.community_id,
+                                    &row.sender_user,
+                                    &row.sender_device,
+                                ) && binding.bot_user_id.as_slice() != row.sender_user.as_slice()
+                                    && binding.community_id.as_bytes()
+                                        == row.community_id.as_slice()
+                                    && binding.participant_user_id.as_slice()
+                                        == row.channel_id.as_slice()
+                            }));
+                    let signature_matches = binding_matches && member_matches;
                     if signature_matches {
                         let state = self.write(|_, u| {
                             Ok(u.with_conn(|c| {
                                 let live: bool = c.query_row(
-                                    "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND g.state=2 AND g.kind=0 AND g.community_id=?7 AND g.target_id=?8)",
+                                    "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND g.state=2 AND g.kind IN (0,3) AND g.community_id=?7 AND g.target_id=?8)",
                                     params![row.group_id, row.source_seq, row.sender_user, row.sender_device, row.sender_leaf, row.sender_sig_key, community.as_slice(), row.channel_id],
                                     |r| r.get(0),
                                 )?;
