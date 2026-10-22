@@ -7,19 +7,24 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
 const removalSyncPageLimit = uint64(250)
 const removalSyncPageBudget = 4
+const removalHistoryHelperBudget = 900 << 10
 
 type removalSyncNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
 	IngestRemovals(context.Context, id.ID, []native.RemovalFeedEntry) (uint64, error)
+	RemovalActorHistoryVersion(context.Context, id.ID, native.RemovalFeedEntry) (uint64, error)
+	RefreshRemovalActorHistory(context.Context, id.ID, native.RemovalFeedEntry, []byte, []byte) (uint64, error)
 }
 
 type removalSyncSession interface {
+	senderHistorySession
 	ModerationRemovals(context.Context, id.ID, uint64, uint64) (client.ModerationRemovalPage, error)
 }
 
@@ -92,6 +97,9 @@ func (s *RemovalSync) sync(ctx context.Context, session removalSyncSession, grou
 			}
 			entries[i] = native.RemovalFeedEntry{Revision: row.Revision, Proof: row.Proof, Signature: row.Signature, AcceptedAt: row.AcceptedAt}
 		}
+		if err := s.refreshActors(ctx, session, group, entries); err != nil {
+			return cursor, false, err
+		}
 		persisted, err := s.native.IngestRemovals(ctx, group, entries)
 		if err != nil {
 			return cursor, false, err
@@ -105,4 +113,36 @@ func (s *RemovalSync) sync(ctx context.Context, session removalSyncSession, grou
 		}
 	}
 	return cursor, true, nil
+}
+
+// refreshActors extends only an existing native trust anchor. The server's
+// history response is untrusted until the core validates its complete signed
+// chain and the proof. A missing anchor therefore blocks the page.
+func (s *RemovalSync) refreshActors(ctx context.Context, session removalSyncSession, group id.ID, entries []native.RemovalFeedEntry) error {
+	seen := make(map[id.ID]bool, len(entries))
+	for _, entry := range entries {
+		proof, err := protocol.DecodeRemovalProof(entry.Proof)
+		if err != nil || proof.GroupID != group || proof.CommunityID != s.binding.Community {
+			return errors.New("removal proof has an invalid binding")
+		}
+		if seen[proof.ActorUser] {
+			continue
+		}
+		seen[proof.ActorUser] = true
+		version, err := s.native.RemovalActorHistoryVersion(ctx, group, entry)
+		if err != nil {
+			return err
+		}
+		history, head, _, err := readSenderHistory(ctx, session, proof.ActorUser, version)
+		if err != nil {
+			return err
+		}
+		if len(history)+len(head)+len(entry.Proof) > removalHistoryHelperBudget {
+			return ErrSenderHistoryStale
+		}
+		if _, err := s.native.RefreshRemovalActorHistory(ctx, group, entry, history, head); err != nil {
+			return err
+		}
+	}
+	return nil
 }
