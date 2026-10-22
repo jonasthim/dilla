@@ -376,12 +376,14 @@ func (c *InteractionRegistrationCoordinator) RecoverInteractionRegistration(ctx 
 	if !validInteractionReceipt(in, receipt) || (in.Phase == 1 && in.Receipt != receipt) {
 		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 	}
-	in.Phase = 1
-	in.Receipt = receipt
-	in.ManualRecovery = false
-	revision, err := c.saveInteractionRegistration(ctx, key, value.Revision, in)
-	if err != nil {
-		return InteractionRegistrationResult{}, err
+	revision := value.Revision
+	if in.Phase == 0 {
+		in.Phase = 1
+		in.Receipt = receipt
+		revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
+		if err != nil {
+			return InteractionRegistrationResult{}, err
+		}
 	}
 	return c.resolveInteractionReceipt(ctx, key, revision, in, receipt)
 }
@@ -469,6 +471,7 @@ func (c *InteractionRegistrationCoordinator) resolveInteractionReceipt(ctx conte
 	}
 	in.Phase = 2
 	in.Receipt = r
+	in.ManualRecovery = false
 	if _, err := c.saveInteractionRegistration(ctx, key, revision, in); err != nil {
 		return InteractionRegistrationResult{}, err
 	}

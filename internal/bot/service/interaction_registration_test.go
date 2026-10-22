@@ -189,6 +189,85 @@ func TestInteractionRegistrationManualRecoveryRequiresExactAuthoritativeReceipt(
 	}
 }
 
+func TestInteractionRegistrationManualRecoveryRemainsRetryableAfterNativeFailure(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	intent := pendingInteractionRecoveryIntent(f, []byte{7, 8, 9})
+	putInteractionRecoveryIntent(t, f, intent)
+	r := client.BotGroupRegistrationReceipt{OperationID: intent.Operation, GroupID: intent.Group, RegistrationSHA256: interactionRegistrationHash(intent.Body), AcceptedGeneration: intent.Generation, InitialEpoch: 1, NextSequence: 1}
+	f.s.receipt = &r
+	f.n.groupRegisteredErr = errors.New("native resolution unavailable")
+	if _, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group); err == nil {
+		t.Fatal("recovery succeeded despite native resolution failure")
+	}
+	assertManualRecoveryPhase(t, f, intent.Group, 1)
+	rows, err := f.coordinator.InspectInteractionRegistrationRecovery(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].Group != intent.Group {
+		t.Fatalf("failed recovery disappeared from diagnostics: rows=%+v err=%v", rows, err)
+	}
+
+	f.n.groupRegisteredErr = nil
+	f.coordinator, err = NewInteractionRegistrationCoordinator(f.instance, f.community, f.install, f.n, f.d, f.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group)
+	if err != nil || got.Receipt != r || f.n.registered != 2 || f.s.registerCalls != 0 {
+		t.Fatalf("restart recovery result=%+v err=%v native_calls=%d posts=%d", got, err, f.n.registered, f.s.registerCalls)
+	}
+	assertCompletedInteractionRecovery(t, f, intent.Group)
+}
+
+func TestInteractionRegistrationManualRecoveryRemainsRetryableAfterPhaseTwoSaveFailure(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	intent := pendingInteractionRecoveryIntent(f, []byte{9, 8, 7})
+	putInteractionRecoveryIntent(t, f, intent)
+	r := client.BotGroupRegistrationReceipt{OperationID: intent.Operation, GroupID: intent.Group, RegistrationSHA256: interactionRegistrationHash(intent.Body), AcceptedGeneration: intent.Generation, InitialEpoch: 1, NextSequence: 1}
+	f.s.receipt = &r
+	f.n.failTransactionCall = 2 // phase 1 persists; phase 2 save fails after native resolution.
+	if _, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group); err == nil {
+		t.Fatal("recovery succeeded despite phase 2 persistence failure")
+	}
+	assertManualRecoveryPhase(t, f, intent.Group, 1)
+	rows, err := f.coordinator.InspectInteractionRegistrationRecovery(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].Group != intent.Group {
+		t.Fatalf("phase 2 save failure disappeared from diagnostics: rows=%+v err=%v", rows, err)
+	}
+
+	f.coordinator, err = NewInteractionRegistrationCoordinator(f.instance, f.community, f.install, f.n, f.d, f.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group)
+	if err != nil || got.Receipt != r || f.n.registered != 2 || f.s.registerCalls != 0 {
+		t.Fatalf("restart recovery result=%+v err=%v native_calls=%d posts=%d", got, err, f.n.registered, f.s.registerCalls)
+	}
+	assertCompletedInteractionRecovery(t, f, intent.Group)
+}
+
+func assertManualRecoveryPhase(t *testing.T, f *interactionRegistrationFixture, group id.ID, phase uint64) {
+	t.Helper()
+	v, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := decodeInteractionRegistrationIntent(v.Value)
+	if err != nil || saved.Phase != phase || !saved.ManualRecovery || saved.Receipt.OperationID.IsZero() {
+		t.Fatalf("retryable recovery state=%+v err=%v", saved, err)
+	}
+}
+
+func assertCompletedInteractionRecovery(t *testing.T, f *interactionRegistrationFixture, group id.ID) {
+	t.Helper()
+	v, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := decodeInteractionRegistrationIntent(v.Value)
+	if err != nil || saved.Phase != 2 || saved.ManualRecovery {
+		t.Fatalf("completed recovery state=%+v err=%v", saved, err)
+	}
+}
+
 func pendingInteractionRecoveryIntent(f *interactionRegistrationFixture, body []byte) interactionRegistrationIntent {
 	return interactionRegistrationIntent{Operation: id.New(), AdmissionRequest: id.New(), Group: f.request.Group, ParticipantUser: f.request.ParticipantUser, ParticipantDevice: f.request.ParticipantDevice, BotUser: f.botUser, BotDevice: f.botDevice, MinimumRevision: 4, Policy: 3, Generation: 8, Body: body, Submitted: true, ManualRecovery: true}
 }
@@ -525,6 +604,9 @@ type interactionRegistrationNativeFake struct {
 	createCalls, registered uint64
 	discarded               []id.ID
 	createErr               error
+	groupRegisteredErr      error
+	failTransactionCall     uint64
+	transactionCalls        uint64
 	createdExpected         native.InteractionGroupExpected
 	createdKeyPackage       []byte
 }
@@ -552,7 +634,7 @@ func (n *interactionRegistrationNativeFake) DiscardGroup(_ context.Context, oper
 
 func (n *interactionRegistrationNativeFake) GroupRegistered(context.Context, id.ID, id.ID, uint64) error {
 	n.registered++
-	return nil
+	return n.groupRegisteredErr
 }
 func (n *interactionRegistrationNativeFake) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	if n.values == nil {
@@ -583,6 +665,10 @@ func (n *interactionRegistrationNativeFake) StateScan(_ context.Context, area ui
 	return page, nil
 }
 func (n *interactionRegistrationNativeFake) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	n.transactionCalls++
+	if n.failTransactionCall != 0 && n.transactionCalls == n.failTransactionCall {
+		return nil, errors.New("injected state transaction failure")
+	}
 	if n.values == nil {
 		n.values = map[string]native.StateValue{}
 	}

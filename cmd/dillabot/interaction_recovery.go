@@ -108,7 +108,7 @@ func runInteractionRecovery(ctx context.Context, cfg config, stdout io.Writer, r
 		nativeClient, err := native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
 		clear(key)
 		if err != nil {
-			return fmt.Errorf("installation %s native helper unavailable", installation.ID)
+			return fmt.Errorf("installation %s native helper unavailable; stop the dillabot service first if it holds the helper lock", installation.ID)
 		}
 		identity, identityErr := nativeClient.Identity(ctx)
 		stored, sessionErr := nativeClient.Session(ctx)
