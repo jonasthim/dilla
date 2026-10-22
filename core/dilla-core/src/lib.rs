@@ -67,4 +67,6 @@ pub const WIRE_VERSION: u64 = 3;
 /// **8** since 2026-10-21 (DILLA-BOT-04 Task5): `validate_key_package`'s response grew an eighth
 /// element, the exact credential bytes validated from the KeyPackage leaf. The Go host bounds
 /// and passes those bytes to the managed Bot admission check; public wire versions do not change.
-pub const ABI_VERSION: u64 = 8;
+/// **9** adds `public_group_roster_extract`, a bounded export that verifies GroupInfo/tree
+/// authentication and every member credential before returning roster descriptors.
+pub const ABI_VERSION: u64 = 9;

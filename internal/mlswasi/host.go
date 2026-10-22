@@ -69,9 +69,10 @@ import (
 // 2026-10-21 (DILLA-BOT-04): the module adds verify_credential, backed by the core's strict
 // Ed25519 verifier. **8** since 2026-10-21 (DILLA-BOT-04 Task5): validate_key_package appends the
 // validated leaf credential bytes so managed Bot admission can compare the exact registered value.
-const ABIVersion uint64 = 8
+// **9** adds bounded authenticated roster extraction.
+const ABIVersion uint64 = 9
 
-// RequiredExports is the 24-export ABI v8 surface. New refuses any module that does not carry all
+// RequiredExports is the 25-export ABI v9 surface. New refuses any module that does not carry all
 // of them. _initialize is deliberately absent: see the package comment.
 var RequiredExports = []string{
 	"dilla_alloc",
@@ -98,6 +99,7 @@ var RequiredExports = []string{
 	"external_propose_remove",
 	"device_list_entries",
 	"verify_credential",
+	"public_group_roster_extract",
 }
 
 // startFunctions is what every instance, and the control arm of the clock test,

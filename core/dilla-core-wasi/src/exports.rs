@@ -59,6 +59,7 @@ pub fn dispatch(export: &str, req: &[u8]) -> Vec<u8> {
         "external_propose_remove" => external_propose_remove_export(req, t),
         "device_list_entries" => device_list_entries_export(req, t),
         "verify_credential" => verify_credential_export(req),
+        "public_group_roster_extract" => public_group_roster_extract(req),
         other => Err(AbiError::shape(format!("unknown export {other}"))),
     });
     match result {
@@ -121,6 +122,57 @@ fn verify_credential_export(req: &[u8]) -> Result<Vec<u8>, AbiError> {
         .uint(u64::from(credential.signer_tier.as_u8()))
         .bytes(&credential.ssk_pub)
         .bytes(&credential.sig_umk_ssk);
+    Ok(e.into_vec())
+}
+
+/// Extracts a bounded roster from a ratchet tree and GroupInfo after OpenMLS authenticates
+/// their relationship. Every leaf credential is then strictly decoded and both identity-chain
+/// signatures are checked against the DSK in that same leaf. Nothing is returned partially.
+fn public_group_roster_extract(req: &[u8]) -> Result<Vec<u8>, AbiError> {
+    const MAX_TREE_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_GROUP_INFO_BYTES: usize = 64 * 1024;
+    const MAX_LEAVES: usize = 1500;
+    let mut d = abi::open(req, 3)?;
+    let tree_bytes = d.bytes()?;
+    let group_info_bytes = d.bytes()?;
+    d.finish()?;
+    if tree_bytes.is_empty()
+        || tree_bytes.len() > MAX_TREE_BYTES
+        || group_info_bytes.is_empty()
+        || group_info_bytes.len() > MAX_GROUP_INFO_BYTES
+    {
+        return Err(AbiError::new(
+            "E_ROSTER_LIMIT",
+            "roster input exceeds its bound",
+        ));
+    }
+    let crypto = RustCrypto::default();
+    let (group, _) = DillaPublicGroup::from_external(
+        &crypto,
+        tls::ratchet_tree_in(tree_bytes)?,
+        tls::verifiable_group_info(group_info_bytes)?,
+    )?;
+    let members = group.members();
+    if group.leaf_count() > MAX_LEAVES || members.len() != group.leaf_count() as usize {
+        return Err(AbiError::new(
+            "E_ROSTER_LIMIT",
+            "roster has too many leaves or contains an unsupported credential",
+        ));
+    }
+    let mut e = Encoder::new();
+    e.array(2).uint(0).array(members.len());
+    for member in members {
+        member
+            .identity
+            .verify_signatures(&member.signature_key)
+            .map_err(|_| AbiError::new("E_CREDENTIAL", "roster credential verification failed"))?;
+        e.array(5)
+            .bytes(member.identity.user_id.as_bytes())
+            .bytes(member.identity.device_id.as_bytes())
+            .bytes(&member.signature_key)
+            .uint(u64::from(member.identity.tier.as_u8()))
+            .uint(u64::from(member.identity.kind.as_u8()));
+    }
     Ok(e.into_vec())
 }
 
@@ -1058,6 +1110,50 @@ mod tests {
         include_bytes!("../../../testkit/fixtures/ds-1500/ratchet_tree.mls");
     const FIXTURE_GROUP_INFO: &[u8] =
         include_bytes!("../../../testkit/fixtures/ds-1500/group_info.mls");
+
+    #[test]
+    fn roster_extraction_authenticates_the_group_and_every_member_credential() {
+        let out = dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(FIXTURE_TREE)
+                    .bytes(FIXTURE_GROUP_INFO);
+            }),
+        );
+        let count = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0);
+            let n = d.array_len()?;
+            assert_eq!(n, 1500);
+            for _ in 0..n {
+                d.array(5)?;
+                assert_eq!(d.bytes()?.len(), 16);
+                assert_eq!(d.bytes()?.len(), 16);
+                assert_eq!(d.bytes()?.len(), 32);
+                assert!(d.uint()? <= 1);
+                assert!(d.uint()? <= 1);
+            }
+            Ok(n)
+        })
+        .expect("authenticated fixture roster");
+        assert_eq!(count, 1500);
+
+        let mut tampered = FIXTURE_GROUP_INFO.to_vec();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        let (code, _) = failure(&dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(FIXTURE_TREE)
+                    .bytes(&tampered);
+            }),
+        ));
+        assert_ne!(code, "");
+    }
 
     /// Creates the fixture group and returns `(handle, epoch, group_id, tree_hash)`.
     fn create_fixture_group() -> (u64, u64, Vec<u8>, Vec<u8>) {

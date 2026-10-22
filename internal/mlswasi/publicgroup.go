@@ -2,6 +2,7 @@ package mlswasi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/fxamacker/cbor/v2"
@@ -97,6 +98,61 @@ type Member struct {
 	LeafIndex          uint32
 	SignatureKey       []byte
 	CredentialIdentity []byte
+}
+
+// RosterLeaf is a dilla identity descriptor extracted from one authenticated MLS leaf.
+type RosterLeaf struct {
+	UserID   []byte
+	DeviceID []byte
+	DSKPub   []byte
+	Tier     uint8
+	Kind     uint8
+}
+
+// ExtractAuthenticatedRoster imports the supplied tree and GroupInfo through OpenMLS, which
+// checks the GroupInfo signer, tree hash, and MLS leaf validity, then verifies each dilla
+// CredentialIdentity's signatures against that leaf's DSK. It returns no partial roster.
+// Limits are part of the ABI: at most 1500 leaves, 4 MiB tree and 64 KiB GroupInfo.
+func (i *Instance) ExtractAuthenticatedRoster(ctx context.Context, tree, groupInfo []byte) ([]RosterLeaf, error) {
+	if len(tree) == 0 || len(tree) > 4*1024*1024 || len(groupInfo) == 0 || len(groupInfo) > 64*1024 {
+		return nil, errors.New("mlswasi: roster input exceeds its bound")
+	}
+	elems, err := i.call(ctx, "public_group_roster_extract", tree, groupInfo)
+	if err != nil {
+		return nil, err
+	}
+	if len(elems) != 2 {
+		return nil, errors.New("mlswasi: roster response has an invalid shape")
+	}
+	rows, err := rawArray(elems[1])
+	if err != nil || len(rows) > 1500 {
+		return nil, errors.New("mlswasi: roster response exceeds its bound")
+	}
+	out := make([]RosterLeaf, 0, len(rows))
+	for _, row := range rows {
+		fields, err := rawArray(row)
+		if err != nil || len(fields) != 5 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid shape")
+		}
+		var leaf RosterLeaf
+		if leaf.UserID, err = rawBytes(fields[0]); err != nil || len(leaf.UserID) != 16 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid user id")
+		}
+		if leaf.DeviceID, err = rawBytes(fields[1]); err != nil || len(leaf.DeviceID) != 16 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid device id")
+		}
+		if leaf.DSKPub, err = rawBytes(fields[2]); err != nil || len(leaf.DSKPub) != 32 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid DSK")
+		}
+		tier, e1 := rawUint(fields[3])
+		kind, e2 := rawUint(fields[4])
+		if e1 != nil || e2 != nil || tier > 1 || kind > 1 {
+			return nil, errors.New("mlswasi: roster leaf has an invalid tier or kind")
+		}
+		leaf.Tier, leaf.Kind = uint8(tier), uint8(kind)
+		out = append(out, leaf)
+	}
+	return out, nil
 }
 
 // GroupState is the public_group_state response.
