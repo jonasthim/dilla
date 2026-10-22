@@ -67,6 +67,41 @@ fn commit_build_drops_a_queued_instance_remove_the_listing_lacks() {
     assert_eq!(b.sync(&relay).state, 2, "the commit did not remove Bob");
 }
 
+/// UP13: the listing a commit is built from may be of a newer epoch than the device's own (another
+/// member's commit landed first), so it lacks a queued instance Remove that was not withdrawn but
+/// committed. The I4 fallback takes it out of this build only: once the build is aborted (the post
+/// is refused 409), the queue still holds it, and the winning commit that carries it by reference
+/// is processed. Before, the drop outlived the abort and that commit failed, losing the group
+/// (state 3), which a call resumed only by an external join and a second start.
+#[test]
+fn an_aborted_build_keeps_the_instance_remove_its_listing_lacked() {
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
+    instance.propose_remove(&mut relay, a.device);
+    a.sync(&relay);
+    b.sync(&relay);
+    assert_eq!(pending(&a, &GROUP), 1);
+    // The newer epoch's listing is empty; the build drops the queued Remove and succeeds.
+    let mut empty = Encoder::new();
+    empty.array(0);
+    a.core
+        .commit_build(&GROUP, &empty.into_vec())
+        .expect("commit_build");
+    a.core.commit_abort(&GROUP).expect("commit_abort");
+    assert_eq!(
+        pending(&a, &GROUP),
+        1,
+        "the abort leaves the queue as it was"
+    );
+
+    // Bob's commit of that Remove wins the epoch.
+    b.commit(&mut relay);
+    let applied = a.sync(&relay);
+    assert_eq!(
+        applied.state, 4,
+        "Alice processes Bob's commit: her leaf is removed, her group not lost"
+    );
+}
+
 /// A listed instance Remove is kept and committed: the fallback drops only what the listing lacks.
 #[test]
 fn commit_build_keeps_a_listed_instance_remove() {

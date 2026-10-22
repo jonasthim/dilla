@@ -904,14 +904,20 @@ impl DillaGroup {
 
     /// UP6b's fallback for a client that missed a `withdrawn` row (correction I4): takes every
     /// queued instance `Remove` (external sender) whose reference `listed` does not name out of the
-    /// queue, and answers the references it took. `commit_build` passes the delivery service's
+    /// queue, and answers the proposals it took. `commit_build` passes the delivery service's
     /// listing, which never names a withdrawn proposal; member proposals and Adds stay queued.
+    ///
+    /// UP13: the listing may be of a newer epoch than this group's (another member's commit landed
+    /// first, and it committed the Remove rather than the instance withdrawing it), so the drop is
+    /// for the one build only: `commit_build` queues the proposals again (`requeue`) once the
+    /// commit is staged. The commit leaves them out; if it is refused and aborted, the queue still
+    /// holds them, so the winning commit that references them can be processed.
     pub fn drop_unlisted_instance_removes(
         &mut self,
         provider: &DillaProvider,
         listed: impl Fn(&[u8]) -> bool,
-    ) -> Result<Vec<Vec<u8>>, MlsError> {
-        let refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = self
+    ) -> Result<Vec<QueuedProposal>, MlsError> {
+        let taken: Vec<QueuedProposal> = self
             .group
             .pending_proposals()
             .filter(|p| {
@@ -919,21 +925,35 @@ impl DillaGroup {
                     && matches!(p.proposal(), Proposal::Remove(_))
                     && !listed(p.proposal_reference_ref().as_slice())
             })
-            .map(|p| p.proposal_reference_ref().clone())
+            .cloned()
             .collect();
-        if refs.is_empty() {
+        if taken.is_empty() {
             return Ok(Vec::new());
         }
         let group = &mut self.group;
         provider.storage().transaction(|| {
-            for r in &refs {
+            for p in &taken {
                 group
-                    .remove_pending_proposal(provider.storage(), r)
+                    .remove_pending_proposal(provider.storage(), p.proposal_reference_ref())
                     .map_err(openmls)?;
             }
             Ok::<(), MlsError>(())
         })?;
-        Ok(refs.iter().map(|r| r.as_slice().to_vec()).collect())
+        Ok(taken)
+    }
+
+    /// UP13: queues again the proposals `drop_unlisted_instance_removes` took out for one build,
+    /// after the commit is staged (the staged commit leaves them out). A merge of that commit
+    /// empties the queue as always; an abort leaves them queued as they were before the build.
+    pub fn requeue(
+        &mut self,
+        provider: &DillaProvider,
+        taken: Vec<QueuedProposal>,
+    ) -> Result<(), MlsError> {
+        for p in taken {
+            self.store_pending_proposal(provider, p)?;
+        }
+        Ok(())
     }
 
     /// Takes every queued `Add` that `keep` refuses back out of the queue, so the next

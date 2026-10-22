@@ -478,20 +478,17 @@ impl ClientCore {
                 // `withdrawn`). The listing never names a withdrawn proposal, so every queued
                 // instance `Remove` it does not name is taken out (a member's proposal and an Add
                 // stay). `call_rotate` takes no listing and relies on the row.
+                //
+                // UP13: the drop is for this build only. The listing may be of a newer epoch (a
+                // member's commit of that Remove landed first), and that commit references the
+                // Remove: the proposals are queued again once the commit is staged (below), so an
+                // aborted build leaves the queue, and its app_proposals rows, as they were.
+                let mut unlisted = Vec::new();
                 if !rotate {
                     let listed: std::collections::HashSet<&[u8]> =
                         proposals.iter().map(|item| item.reference.as_slice()).collect();
-                    let dropped = group
+                    unlisted = group
                         .drop_unlisted_instance_removes(ctx.provider, |r| listed.contains(r))?;
-                    for reference in dropped {
-                        u.with_conn(|c| {
-                            c.execute(
-                                "DELETE FROM app_proposals WHERE group_id=?1 AND ref=?2",
-                                params![id.as_slice(), reference],
-                            )?;
-                            Ok(())
-                        })?;
-                    }
                 }
                 if rotate {
                     group.withdraw_leave(ctx.provider)?;
@@ -509,6 +506,7 @@ impl ClientCore {
                 })?;
                 let epoch = group.epoch();
                 let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
+                group.requeue(ctx.provider, unlisted)?;
                 u.with_conn(|c| set_pending(c, id, true))?;
                 let info = bundle.group_info.ok_or_else(|| ClientError::new(E_CORE_MLS, "the staged commit carries no GroupInfo"))?;
                 let mut out = Encoder::new();

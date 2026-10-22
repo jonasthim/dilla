@@ -1115,8 +1115,8 @@ impl TestClient {
             let dropped = group
                 .drop_unlisted_instance_removes(&self.provider, |r| listed.contains(r))?;
             if let Some(q) = self.queued.get_mut(group_id) {
-                for r in &dropped {
-                    q.remove(r);
+                for p in &dropped {
+                    q.remove(p.proposal_reference_ref().as_slice());
                 }
             }
         }

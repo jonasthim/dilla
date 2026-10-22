@@ -708,7 +708,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    drops the reference and builds again. The instance keeps the proposal queued in its own
    `PublicGroup`, so a commit that omits it is processed as before. A client that missed the row
    also drops, before it builds a commit from a listing, every queued instance `Remove` the
-   listing does not name. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
+   listing does not name, from that commit only: it keeps them queued, so a commit refused and
+   discarded leaves its queue as it was. The listing can be of a later epoch than the client's (a
+   member's commit of that `Remove` won first), and the client must then process that commit,
+   which references the `Remove`. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
    queued: its commits in that group are refused until its next epoch, which is a safe refusal
    because other members commit, and the instance never elects it (invariant 7). The same `Remove`
    proposed again within 30 seconds of the withdrawal (the `admissionJoinWindow` of `09` § Voice)
