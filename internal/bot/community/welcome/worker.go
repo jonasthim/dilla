@@ -383,15 +383,10 @@ func (p *Processor) save(ctx context.Context, key []byte, revision uint64, value
 	if err != nil {
 		return err
 	}
-	seed := append([]byte("dilla.bot.welcome.state.tx.v1\x00"), key...)
-	seed = append(seed, body...)
-	var rev [8]byte
-	for i := 0; i < 8; i++ {
-		rev[7-i] = byte(revision >> (i * 8))
-	}
-	seed = append(seed, rev[:]...)
-	sum := sha256.Sum256(seed)
-	tx := id.ID(sum[:16])
+	// Each independent CAS attempt needs a fresh transaction ID. Reusing a
+	// content-derived ID could replay an old helper receipt after a newer state
+	// revision has already committed.
+	tx := id.New()
 	if tx.IsZero() {
 		return errors.New("invalid welcome transaction id")
 	}

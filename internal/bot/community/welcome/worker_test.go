@@ -20,6 +20,22 @@ type testNative struct {
 	failReadback bool
 }
 
+type receiptFirstNative struct {
+	*testNative
+	receipts map[id.ID][]uint64
+}
+
+func (n *receiptFirstNative) StateTransaction(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	if prior, ok := n.receipts[tx]; ok {
+		return prior, nil
+	}
+	revs, err := n.testNative.StateTransaction(ctx, tx, changes)
+	if err == nil {
+		n.receipts[tx] = append([]uint64(nil), revs...)
+	}
+	return revs, err
+}
+
 func (n *testNative) Binding() native.Binding { return n.binding }
 func (n *testNative) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	return n.values[stateMapKey(area, key)], nil
@@ -52,6 +68,23 @@ func (n *testNative) StateTransaction(_ context.Context, tx id.ID, changes []nat
 	return revs, nil
 }
 func stateMapKey(area uint64, key []byte) string { return string(rune(area)) + ":" + string(key) }
+
+func TestWelcomeStateStaleReplayCannotHideLaterRevision(t *testing.T) {
+	n := &receiptFirstNative{testNative: &testNative{values: map[string]native.StateValue{}, transactions: map[id.ID][]native.StateChange{}}, receipts: map[id.ID][]uint64{}}
+	p := &Processor{native: n}
+	key := []byte("episode")
+	first := episode{Status: StatusPending, EventID: testID(1), Timestamp: 100, OperationID: testID(2)}
+	second := episode{Status: StatusPosted, EventID: testID(1), Timestamp: 100, OperationID: testID(2)}
+	if err := p.save(context.Background(), key, 0, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.save(context.Background(), key, 1, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.save(context.Background(), key, 0, first); err == nil {
+		t.Fatal("stale save replayed an old native transaction receipt")
+	}
+}
 
 type testSender struct {
 	calls        int
