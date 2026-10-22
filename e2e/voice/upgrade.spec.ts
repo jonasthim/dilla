@@ -450,7 +450,13 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const startsA = peers.map((p, i) => p.requests.slice(reqFromA[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls`)
         .map((r) => ({ life: r.at < loadAt[i] ? 'old' : 'new', status: r.status })));
       timings.A = { allBackAndHeardMs: allAt - answerAt,
-        starts: Object.fromEntries(peers.map((p, i) => [p.name, startsA[i].map((x) => `${x.life}:${String(x.status)}`)])) };
+        starts: Object.fromEntries(peers.map((p, i) => [p.name, startsA[i].map((x) => `${x.life}:${String(x.status)}`)])),
+        // UP6c tail: each page's call-path requests in order (ms from the answer, its life), so a second start names its cause
+        // (a resume commit refused, a leaf gone, an external join).
+        calls: Object.fromEntries(peers.map((p, i) => [p.name, p.requests.slice(reqFromA[i])
+          .filter((r) => r.method === 'POST' && (r.path === `/v1/channels/${voice}/calls` || r.path === '/v1/groups'
+            || /^\/v1\/groups\/[0-9a-f]{32}\/(commit|resync|proposal)$/.test(r.path)))
+          .map((r) => `${String(Math.round(r.at - answerAt))}:${r.at < loadAt[i] ? 'old' : 'new'}:${r.path.replace(/^.*\//, '')}:${String(r.status)}`)])) };
       for (const [i, p] of peers.entries()) {
         const ok = (life: string) => startsA[i].filter((x) => x.life === life && x.status >= 200 && x.status < 300).length;
         expect(ok('new'), `${p.name}: the reloaded page is back through exactly one start`).toBe(1);
