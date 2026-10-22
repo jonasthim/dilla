@@ -72,6 +72,7 @@ type Repository interface {
 	BotStructuralEvents
 	BotInteractionEligibility
 	BotInteractionAdmissionReceipts
+	BotGroupRegistrationAdmissionReceipts
 	ModerationRemovals
 }
 
@@ -100,6 +101,13 @@ type BotInteractionAdmissionReceipts interface {
 	// Compaction removes expired payloads immediately and forgets request hashes after
 	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
 	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
+}
+
+// BotGroupRegistrationAdmissionReceipts atomically records the accepted
+// registration consumed by one kind-3 admission request. The bool is true for
+// an exact retry; reusing a request ID for different registration data conflicts.
+type BotGroupRegistrationAdmissionReceipts interface {
+	AcceptBotGroupRegistrationAdmission(context.Context, id.ID, BotGroupRegistrationReceipt) (BotGroupRegistrationReceipt, bool, error)
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may

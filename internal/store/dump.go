@@ -119,6 +119,9 @@ var DumpTables = []string{
 	// 025_bot_group_registration_receipts.sql: immutable receipts scoped to an installation.
 	"bot_event_streams", "bot_structural_events",
 	"bot_group_registration_receipts",
+	// Admission consumption bindings depend on the installation and accompany
+	// the accepted registration in logical backups.
+	"bot_group_registration_admission_receipts",
 	"bot_event_acks",
 }
 
