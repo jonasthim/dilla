@@ -16,6 +16,7 @@ import { recoverModerationRemovals } from './removals';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
+  | 'getInteractionAdmissionContext'
   | 'getDeviceList' | 'getDeviceListHistory' | 'getModerationRemovals'>;
 export type SyncGateway = Pick<Gateway, 'subscribe' | 'commitAck'>;
 export interface SyncDeps {

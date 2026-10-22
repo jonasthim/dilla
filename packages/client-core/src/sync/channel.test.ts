@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, SyncError } from './engine';
+import { welcomeFrame } from './channel';
 import { coreCalls, device, readyInfo, type Device } from './testing/harness';
 import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, at, deferred, httpError, idOf, settle, type RouteName } from './testing/model';
 
@@ -83,6 +84,7 @@ describe('opening a channel (rule 6)', () => {
     await settle();
     expect(count('postResync')).toBe(0);
     expect(count('deleteWelcome')).toBe(1);
+    expect(count('getInteractionAdmissionContext')).toBe(0);
     expect(ds.welcomesFor(ME.device)).toEqual([]);
     expect(d.core.bodies(pg)).toEqual(['after welcome']);
   });
@@ -327,6 +329,217 @@ describe('opening a channel (rule 6)', () => {
     expect(await opened).toEqual({ ok: { groupId: r.groupId, state: 2 } });
     expect(count('postResync')).toBe(1);
     expect(coreCalls(d, r.groupId, ['groupJoinExternal'])).toEqual(['groupJoinExternal']);
+  });
+});
+
+describe('human interaction Welcomes', () => {
+  it('fetches the signed current context before applying and acknowledging an unexpected Welcome', async () => {
+    const group = ds.peerCreate(PEER, CHANNEL);
+    ds.detach(ME.device);
+    ds.peerCommit(group, PEER, [ME.device]);
+    ds.reattach(ME.device);
+
+    const events: string[] = [];
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = (groupId) => {
+      events.push(`context:${toHex(groupId)}`);
+      return Promise.resolve({ payload: new Uint8Array([1]), signature: new Uint8Array(64).fill(2) });
+    };
+    const core = d.engine.deps.core;
+    const originalApply = core.welcomesApply.bind(core);
+    core.welcomesApply = (body, expected) => {
+      events.push('generic');
+      return originalApply(body, expected);
+    };
+    const originalDelete = routes.deleteWelcome.bind(routes);
+    routes.deleteWelcome = async (welcomeId) => {
+      events.push(`ack:${String(welcomeId)}`);
+      await originalDelete(welcomeId);
+    };
+    const interactionCore = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array) => {
+        welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string;
+      }[];
+    };
+    interactionCore.humanInteractionWelcomeApply = (body, proof) => {
+      expect(proof).toEqual(expect.any(Uint8Array));
+      expect(body).toEqual(expect.any(Uint8Array));
+      events.push(`apply:${toHex(group)}`);
+      return [{ welcomeId: 1n, groupId: group, outcome: 0, reason: '' }];
+    };
+
+    await d.engine.pollWelcomes();
+
+    expect(events).toEqual([`context:${toHex(group)}`, `apply:${toHex(group)}`, 'ack:1']);
+    expect(ds.welcomesFor(ME.device)).toEqual([]);
+    expect(d.unexpected).toEqual([]);
+  });
+
+  it('preserves an unexpected Welcome when the current-context proof cannot be fetched', async () => {
+    const group = ds.peerCreate(PEER, CHANNEL);
+    ds.detach(ME.device);
+    ds.peerCommit(group, PEER, [ME.device]);
+    ds.reattach(ME.device);
+
+    const events: string[] = [];
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = (groupId) => {
+      events.push(`context:${toHex(groupId)}`);
+      return Promise.reject(httpError(403, 'E_FORBIDDEN'));
+    };
+    const core = d.engine.deps.core;
+    const originalApply = core.welcomesApply.bind(core);
+    core.welcomesApply = (body, expected) => {
+      events.push('generic');
+      return originalApply(body, expected);
+    };
+    const originalDelete = routes.deleteWelcome.bind(routes);
+    routes.deleteWelcome = async (welcomeId) => {
+      events.push(`ack:${String(welcomeId)}`);
+      await originalDelete(welcomeId);
+    };
+    const interactionCore = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: () => { welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string }[];
+    };
+    interactionCore.humanInteractionWelcomeApply = () => {
+      events.push('apply');
+      return [{ welcomeId: 1n, groupId: group, outcome: 0, reason: '' }];
+    };
+
+    await d.engine.pollWelcomes();
+
+    expect(events).toEqual([`context:${toHex(group)}`, 'generic']);
+    expect(ds.welcomesFor(ME.device)).toEqual([{ id: 1n, groupId: toHex(group) }]);
+    expect(d.unexpected).toEqual([toHex(group)]);
+  });
+
+  it('keeps a kind-3 Welcome when the proof-aware core returns a refusal outcome', async () => {
+    const group = ds.peerCreate(PEER, CHANNEL);
+    ds.detach(ME.device);
+    ds.peerCommit(group, PEER, [ME.device]);
+    ds.reattach(ME.device);
+
+    const events: string[] = [];
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = (groupId) => {
+      events.push(`context:${toHex(groupId)}`);
+      return Promise.resolve({ payload: new Uint8Array([1]), signature: new Uint8Array(64).fill(2) });
+    };
+    const core = d.engine.deps.core;
+    const originalApply = core.welcomesApply.bind(core);
+    core.welcomesApply = (body, expected) => {
+      events.push('generic');
+      return originalApply(body, expected);
+    };
+    const originalDelete = routes.deleteWelcome.bind(routes);
+    routes.deleteWelcome = async (welcomeId) => {
+      events.push(`ack:${String(welcomeId)}`);
+      await originalDelete(welcomeId);
+    };
+    const interactionCore = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array) => {
+        welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string;
+      }[];
+    };
+    interactionCore.humanInteractionWelcomeApply = () => {
+      events.push('apply');
+      return [{ welcomeId: 1n, groupId: group, outcome: 2, reason: 'E_BINDING' }];
+    };
+
+    await d.engine.pollWelcomes();
+    await d.engine.pollWelcomes();
+
+    expect(events).toEqual([
+      `context:${toHex(group)}`, 'apply',
+      `context:${toHex(group)}`, 'apply',
+    ]);
+    expect(ds.welcomesFor(ME.device)).toEqual([{ id: 1n, groupId: toHex(group) }]);
+    expect(d.unexpected).toEqual([toHex(group)]);
+  });
+
+  it('uses the proof-aware path for a live Welcome frame too', async () => {
+    const group = idOf(0x9a, 99);
+    const events: string[] = [];
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = (groupId) => {
+      events.push(`context:${toHex(groupId)}`);
+      return Promise.resolve({ payload: new Uint8Array([1]), signature: new Uint8Array(64).fill(2) });
+    };
+    const originalDelete = routes.deleteWelcome.bind(routes);
+    routes.deleteWelcome = async (welcomeId) => {
+      events.push(`ack:${String(welcomeId)}`);
+      await originalDelete(welcomeId);
+    };
+    const core = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array) => {
+        welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string;
+      }[];
+    };
+    core.humanInteractionWelcomeApply = () => {
+      events.push(`apply:${toHex(group)}`);
+      return [{ welcomeId: 9n, groupId: group, outcome: 0, reason: '' }];
+    };
+
+    await welcomeFrame(d.engine, { op: 20, n: 1n, groupId: group,
+      payload: [9n, 2n, 3n, new Uint8Array([4]), new Uint8Array([5]), new Uint8Array(32)] });
+
+    expect(events).toEqual([`context:${toHex(group)}`, `apply:${toHex(group)}`, 'ack:9']);
+  });
+
+  it('acks a replay only after the proof-aware core confirms the prior Welcome was accepted', async () => {
+    const group = ds.peerCreate(PEER, CHANNEL);
+    ds.detach(ME.device);
+    ds.peerCommit(group, PEER, [ME.device]);
+    ds.reattach(ME.device);
+
+    const events: string[] = [];
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = (groupId) => {
+      events.push(`context:${toHex(groupId)}`);
+      return Promise.resolve({ payload: new Uint8Array([1]), signature: new Uint8Array(64).fill(2) });
+    };
+    const originalDelete = routes.deleteWelcome.bind(routes);
+    let loseFirstDelete = true;
+    routes.deleteWelcome = async (welcomeId) => {
+      events.push(`ack:${String(welcomeId)}`);
+      if (loseFirstDelete) {
+        loseFirstDelete = false;
+        throw httpError(503, 'E_UNAVAILABLE');
+      }
+      await originalDelete(welcomeId);
+    };
+    let attempts = 0;
+    const core = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array) => {
+        welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string;
+      }[];
+    };
+    core.humanInteractionWelcomeApply = () => {
+      attempts += 1;
+      events.push(`apply:${String(attempts)}`);
+      return [{ welcomeId: 1n, groupId: group, outcome: attempts === 1 ? 0 : 1, reason: '' }];
+    };
+
+    await d.engine.pollWelcomes();
+    expect(ds.welcomesFor(ME.device)).toEqual([{ id: 1n, groupId: toHex(group) }]);
+    await d.engine.pollWelcomes();
+
+    expect(events).toEqual([
+      `context:${toHex(group)}`, 'apply:1', 'ack:1',
+      `context:${toHex(group)}`, 'apply:2', 'ack:1',
+    ]);
+    expect(ds.welcomesFor(ME.device)).toEqual([]);
+    expect(d.unexpected).toEqual([]);
   });
 });
 

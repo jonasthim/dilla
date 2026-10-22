@@ -2197,6 +2197,7 @@ export class ModelCore implements CorePort {
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
+  | 'getInteractionAdmissionContext'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
@@ -2876,6 +2877,9 @@ export class ModelDs {
         }),
       postResync: (id, body) => this.call(d, 'postResync', id, null, () => this.postResync(dev, id, body)),
       getWelcomes: (after) => this.call(d, 'getWelcomes', null, after, () => this.welcomePage(d, after)),
+      getInteractionAdmissionContext: (groupId) => this.call(d, 'getInteractionAdmissionContext', groupId, null, () => {
+        throw httpError(403, 'E_FORBIDDEN');
+      }),
       deleteWelcome: (welcomeId) =>
         this.call(d, 'deleteWelcome', null, null, () => {
           const i = this.welcomes.findIndex((w) => w.dev === d && w.id === welcomeId);
