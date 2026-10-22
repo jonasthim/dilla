@@ -38,15 +38,33 @@ func TestSandboxCommandPointsTLSAtMountedResolvedCABundle(t *testing.T) {
 	}
 	_ = stdout.Close()
 	args := cmd.Args
+	caBundle, _, err := systemCABundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleMounted := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == caBundle && args[i+2] == "/etc/ssl/cert.pem" {
+			bundleMounted = true
+			break
+		}
+	}
+	if !bundleMounted {
+		t.Fatalf("sandbox command does not mount resolved CA bundle %q at /etc/ssl/cert.pem", caBundle)
+	}
+	envFound := false
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--setenv" && args[i+1] == "SSL_CERT_FILE" {
 			if args[i+2] != "/etc/ssl/cert.pem" {
 				t.Fatalf("SSL_CERT_FILE = %q, want mounted resolved bundle /etc/ssl/cert.pem", args[i+2])
 			}
-			return
+			envFound = true
+			break
 		}
 	}
-	t.Fatal("sandbox command does not set SSL_CERT_FILE")
+	if !envFound {
+		t.Fatal("sandbox command does not set SSL_CERT_FILE")
+	}
 }
 
 func TestPCMChildCannotReachPublicNetworkDirectly(t *testing.T) {
