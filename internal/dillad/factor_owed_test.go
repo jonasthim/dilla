@@ -174,7 +174,7 @@ func concrete(t *testing.T, r docRoute) string {
 	const hex32 = "0102030405060708090a0b0c0d0e0f10"
 	return pathParameter.ReplaceAllStringFunc(path, func(p string) string {
 		switch p {
-		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{attempt}":
+		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}":
 			return hex32
 		case "{blob_id}":
 			return hex32 + hex32
