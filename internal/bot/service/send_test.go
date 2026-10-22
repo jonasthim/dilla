@@ -1,0 +1,254 @@
+package service
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"testing"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+func sendID(n byte) id.ID { var v id.ID; v[15] = n; return v }
+
+func sendBinding() native.Binding {
+	return native.Binding{Instance: sendID(1), Community: sendID(2), Installation: sendID(3)}
+}
+
+type sendNativeFake struct {
+	binding                    native.Binding
+	group                      native.GroupInfo
+	prepared                   native.PreparedSend
+	prepareCalls, confirmCalls int
+	confirmed                  [][]byte
+}
+
+func (f *sendNativeFake) Binding() native.Binding { return f.binding }
+func (f *sendNativeFake) InspectGroup(context.Context, id.ID) (native.GroupInfo, error) {
+	return f.group, nil
+}
+func (f *sendNativeFake) PrepareSend(context.Context, id.ID, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error) {
+	f.prepareCalls++
+	return f.prepared, nil
+}
+func (f *sendNativeFake) ConfirmSendReceipt(_ context.Context, _ id.ID, b []byte) error {
+	f.confirmCalls++
+	f.confirmed = append(f.confirmed, append([]byte(nil), b...))
+	return nil
+}
+
+type sendAuthorityFake struct{ discovery client.Discovery }
+
+func (f sendAuthorityFake) DiscoverObserved(context.Context) (client.Discovery, client.ResponseObservation, error) {
+	return f.discovery, client.ResponseObservation{}, nil
+}
+
+type sendSessionFake struct {
+	receipts                 map[id.ID]protocol.SendReceipt
+	postReceipt              *protocol.SendReceipt
+	postErr                  error
+	resolveReceipt           *protocol.SendReceipt
+	resolveErr               error
+	posts, lookups, resolves int
+	uploads                  []client.BotMessageUpload
+	resolutions              []client.BotMessageResolution
+}
+
+func (f *sendSessionFake) BotMessageReceipt(_ context.Context, _, operation, attempt, group id.ID) (protocol.SendReceipt, error) {
+	f.lookups++
+	if r, ok := f.receipts[attempt]; ok {
+		return r, nil
+	}
+	return protocol.SendReceipt{}, client.ErrBotSendReceiptNotFound
+}
+func (f *sendSessionFake) PostBotMessage(_ context.Context, _, _ id.ID, upload client.BotMessageUpload) (protocol.SendReceipt, error) {
+	f.posts++
+	f.uploads = append(f.uploads, upload)
+	if f.postReceipt != nil {
+		f.receipts[upload.AttemptID] = *f.postReceipt
+	}
+	return protocol.SendReceipt{}, f.postErr
+}
+func (f *sendSessionFake) ResolveBotMessage(_ context.Context, _, _ id.ID, resolution client.BotMessageResolution) (protocol.SendReceipt, error) {
+	f.resolves++
+	f.resolutions = append(f.resolutions, resolution)
+	if f.resolveErr != nil {
+		return protocol.SendReceipt{}, f.resolveErr
+	}
+	if f.resolveReceipt == nil {
+		return protocol.SendReceipt{}, errors.New("missing configured resolution")
+	}
+	f.receipts[resolution.AttemptID] = *f.resolveReceipt
+	return *f.resolveReceipt, nil
+}
+
+func sendReceipt(op, attempt, group id.ID, generation, epoch uint64, outcome protocol.SendOutcome) protocol.SendReceipt {
+	hash := sha256.Sum256([]byte("ciphertext"))
+	r := protocol.SendReceipt{OperationID: op, AttemptID: attempt, CommunityID: sendID(2), GroupID: group, ExpectedGeneration: generation, CiphertextHash: hash[:], Epoch: epoch, Outcome: outcome}
+	if outcome == protocol.ReceiptAccepted {
+		body, _ := cborx.Marshal([]any{uint64(1), make([]byte, 32), uint64(100)})
+		r.SendResponse = &protocol.OriginalSendResponse{Sequence: 1, FrankingTag: make([]byte, 32), ReceiveTimestamp: 100, Body: body}
+	}
+	return r
+}
+
+func sendFixture() (*SendCoordinator, *sendNativeFake, *sendSessionFake, SendInput) {
+	b := sendBinding()
+	group := sendID(4)
+	g := native.GroupInfo{ID: group, Kind: 0, Community: &b.Community, Target: sendID(5), State: 2, Epoch: 9, NextSequence: 1}
+	n := &sendNativeFake{binding: b, group: g, prepared: native.PreparedSend{MessageID: sendID(8), Epoch: 9, Class: 0, Ciphertext: []byte("ciphertext"), UploadBody: []byte("exact-canonical-upload")}}
+	s := &sendSessionFake{receipts: map[id.ID]protocol.SendReceipt{}}
+	a := sendAuthorityFake{discovery: client.Discovery{InstanceID: b.Instance, Generation: 12}}
+	c, _ := newSendCoordinator(n, a)
+	return c, n, s, SendInput{OperationID: sendID(6), AttemptID: sendID(7), GroupID: group, RequestBody: []byte{0x84, 0, 0xf6, 0x60, 0x80}, OriginalNow: 100, ExpectedGeneration: 12}
+}
+
+func TestSendRecoversLostAcceptedResponseAndRestartDoesNotPostAgain(t *testing.T) {
+	c, n, s, in := sendFixture()
+	accepted := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptAccepted)
+	s.postErr = errors.New("connection lost after server commit")
+	s.postReceipt = &accepted
+	// The first recovery lookup sees the receipt committed by the lost response.
+	got, err := c.send(context.Background(), s, in)
+	if err != nil || got.Outcome != protocol.ReceiptAccepted {
+		t.Fatalf("first Send=%+v, %v", got, err)
+	}
+	if s.posts != 1 || s.resolves != 0 || n.confirmCalls != 1 {
+		t.Fatalf("calls post=%d resolve=%d confirm=%d", s.posts, s.resolves, n.confirmCalls)
+	}
+	// Reopening the coordinator with the same immutable inputs first consults the server receipt.
+	c2, _, _, _ := sendFixture()
+	got, err = c2.send(context.Background(), s, in)
+	if err != nil || got.Outcome != protocol.ReceiptAccepted {
+		t.Fatalf("restart Send=%+v, %v", got, err)
+	}
+	if s.posts != 1 {
+		t.Fatalf("restart retransmitted POST, posts=%d", s.posts)
+	}
+}
+
+func TestSendResolvesLateReceipt404WithoutReencrypting(t *testing.T) {
+	c, n, s, in := sendFixture()
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptClosedNotAccepted)
+	s.postErr = errors.New("HTTP result unknown")
+	s.resolveReceipt = &closed
+	got, err := c.send(context.Background(), s, in)
+	if err != nil || got.Outcome != protocol.ReceiptClosedNotAccepted {
+		t.Fatalf("Send=%+v, %v", got, err)
+	}
+	if s.posts != 1 || s.resolves != 1 || n.prepareCalls != 1 || n.confirmCalls != 1 {
+		t.Fatalf("post=%d resolve=%d prepare=%d confirm=%d", s.posts, s.resolves, n.prepareCalls, n.confirmCalls)
+	}
+	if s.resolutions[0].CiphertextSHA256 == ([32]byte{}) {
+		t.Fatal("resolution omitted exact ciphertext hash")
+	}
+}
+
+func TestSendUnknownReceiptIsTerminal(t *testing.T) {
+	c, _, s, in := sendFixture()
+	unknown := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptUnknownAfterRestore)
+	s.postErr = errors.New("HTTP result unknown")
+	s.resolveReceipt = &unknown
+	got, err := c.send(context.Background(), s, in)
+	if !errors.Is(err, ErrSendTerminal) || got.Outcome != protocol.ReceiptUnknownAfterRestore {
+		t.Fatalf("Send=%+v, %v", got, err)
+	}
+	if s.posts != 1 || s.resolves != 1 {
+		t.Fatalf("post=%d resolve=%d", s.posts, s.resolves)
+	}
+}
+
+func TestSendAllowsSuccessorOnlyAfterClosedAttemptAndNewEpoch(t *testing.T) {
+	c, n, s, in := sendFixture()
+	prev := sendID(10)
+	in.AttemptID = sendID(11)
+	in.PredecessorAttemptID = &prev
+	prior := sendReceipt(in.OperationID, prev, in.GroupID, in.ExpectedGeneration, 8, protocol.ReceiptClosedNotAccepted)
+	s.receipts[prev] = prior
+	n.group.Epoch = 9
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptClosedNotAccepted)
+	closed.PredecessorAttemptID = &prev
+	s.resolveReceipt = &closed
+	s.postErr = errors.New("network unavailable")
+	if _, err := c.send(context.Background(), s, in); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.uploads) != 1 || s.uploads[0].PredecessorAttemptID == nil || *s.uploads[0].PredecessorAttemptID != prev {
+		t.Fatalf("upload predecessor=%v", s.uploads)
+	}
+}
+
+func TestSendAllowsSuccessorAfterClosedAttemptAtSameEpoch(t *testing.T) {
+	c, n, s, in := sendFixture()
+	prev := sendID(10)
+	in.AttemptID = sendID(11)
+	in.PredecessorAttemptID = &prev
+	prior := sendReceipt(in.OperationID, prev, in.GroupID, in.ExpectedGeneration, n.group.Epoch, protocol.ReceiptClosedNotAccepted)
+	s.receipts[prev] = prior
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, n.group.Epoch, protocol.ReceiptClosedNotAccepted)
+	closed.PredecessorAttemptID = &prev
+	s.resolveReceipt = &closed
+	s.postErr = errors.New("network unavailable")
+	if _, err := c.send(context.Background(), s, in); err != nil {
+		t.Fatalf("same-epoch successor was refused: %v", err)
+	}
+	if len(s.uploads) != 1 || s.uploads[0].PredecessorAttemptID == nil || *s.uploads[0].PredecessorAttemptID != prev {
+		t.Fatalf("upload predecessor=%v", s.uploads)
+	}
+}
+
+func TestSendRejectsSuccessorFromUnknownAttempt(t *testing.T) {
+	c, _, s, in := sendFixture()
+	prev := sendID(10)
+	in.PredecessorAttemptID = &prev
+	s.receipts[prev] = sendReceipt(in.OperationID, prev, in.GroupID, in.ExpectedGeneration, 8, protocol.ReceiptUnknownAfterRestore)
+	if _, err := c.send(context.Background(), s, in); err == nil {
+		t.Fatal("unknown predecessor accepted")
+	}
+	if s.posts != 0 {
+		t.Fatalf("posted successor after unknown predecessor: %d", s.posts)
+	}
+}
+
+func TestSendGenerationChangeResolvesOldAttemptWithoutPosting(t *testing.T) {
+	c, _, s, in := sendFixture()
+	c.authority = sendAuthorityFake{discovery: client.Discovery{InstanceID: sendBinding().Instance, Generation: 13}}
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptUnknownAfterRestore)
+	s.resolveReceipt = &closed
+	got, err := c.send(context.Background(), s, in)
+	if !errors.Is(err, ErrSendTerminal) || got.Outcome != protocol.ReceiptUnknownAfterRestore {
+		t.Fatalf("Send=%+v, %v", got, err)
+	}
+	if s.posts != 0 || s.resolves != 1 {
+		t.Fatalf("generation drift posted=%d resolved=%d", s.posts, s.resolves)
+	}
+}
+
+func TestSendEpochChangeResolvesCachedAttemptWithoutPosting(t *testing.T) {
+	c, n, s, in := sendFixture()
+	n.prepared.Epoch = 8
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 8, protocol.ReceiptClosedNotAccepted)
+	s.resolveReceipt = &closed
+	got, err := c.send(context.Background(), s, in)
+	if err != nil || got.Outcome != protocol.ReceiptClosedNotAccepted {
+		t.Fatalf("Send=%+v, %v", got, err)
+	}
+	if s.posts != 0 || s.resolves != 1 || n.prepareCalls != 1 {
+		t.Fatalf("epoch drift post=%d resolve=%d prepare=%d", s.posts, s.resolves, n.prepareCalls)
+	}
+}
+
+func TestSendRejectsForeignInstanceBeforeUsingSession(t *testing.T) {
+	c, _, s, in := sendFixture()
+	c.authority = sendAuthorityFake{discovery: client.Discovery{InstanceID: sendID(99), Generation: 12}}
+	if _, err := c.send(context.Background(), s, in); !errors.Is(err, client.ErrInstanceChanged) {
+		t.Fatalf("foreign instance error=%v", err)
+	}
+	if s.posts != 0 || s.lookups != 0 {
+		t.Fatalf("foreign instance network use: post=%d lookup=%d", s.posts, s.lookups)
+	}
+}
