@@ -19,7 +19,8 @@ import { DillaHttpError } from '../http/errors';
 import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
 import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
-import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES } from './controller';
+import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES, HOLD_MS } from './controller';
+import { CALL_KEEP_KEY } from '../state/settings';
 import { JOIN_READS_MAX } from './join';
 import type { FromWorker } from '../worker/protocol';
 
@@ -2090,15 +2091,263 @@ describe('a hand-over is not held up by call work (wb-client m5)', () => {
 });
 
 describe('a room that ended on its own (wb-client I3)', () => {
-  it("callLeave 'lost' leaves as a person's leave and ends in phase removed with E_DISCONNECTED", async () => {
+  // UP6 (R-UP6): a lost room holds the call group; it no longer leaves as a person's leave does.
+  it("callLeave 'lost' holds the call group: no self-Remove, no forget, and phase removed with E_DISCONNECTED", async () => {
     const w = await joined();
     expect(await w.call({ m: 'callLeave', reason: 'lost' })).toBeNull();
-    expect(w.server.routes()).toContain('POST proposal');
-    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.server.routes()).not.toContain('POST proposal');
+    expect(w.model.calls.filter((c) => c.m === 'callGroupForget' || c.m === 'callLeaveProposal')).toEqual([]);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
     expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_DISCONNECTED' } });
     // A join is offered again from there.
     await w.call(JOIN(w));
     expect(w.slice('call').phase).toBe('in');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// UP6 (R-UP6): the held call. A lost room or an update reload keeps the call group; the next join of the channel resumes
+// it, or forgets it without a Remove and joins afresh. Every abandonment posts exactly one self-Remove.
+// ---------------------------------------------------------------------------------------------
+
+describe('a held call (UP6, R-UP6)', () => {
+  const LOST = { m: 'callLeave', reason: 'lost' } as const;
+  const callRoutes = (w: World): string[] => w.server.routes().filter((r) => r !== 'GET device list' && r !== 'GET members');
+  const count = (w: World, route: string): number => w.server.routes().filter((r) => r === route).length;
+  const coreCalls = (w: World, m: string, g: Id): number => w.model.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
+  const marker = (w: World): unknown => { const v = w.model.settings()[CALL_KEEP_KEY]; return v === undefined ? undefined : JSON.parse(v) as unknown; };
+
+  it('a rejoin within the hold resumes: no external commit, the same epoch key, and the start re-mints the token', async () => {
+    const w = await joined();
+    const key = w.model.lastBaseKeyHex(w.callGroup);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    expect(coreCalls(w, 'callGroupJoinExternal', w.callGroup)).toBe(1);   // the first join's only
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), epoch: w.result.epoch, resumed: true, expired: false });
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([w.result.epoch]);
+    expect(w.model.lastBaseKeyHex(w.callGroup)).toBe(key);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: w.result.epoch });
+    // Resumed, the call is an ordinary live call again: a person's leave posts its self-Remove.
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(count(w, 'POST proposal')).toBe(1);
+  });
+
+  it('the server removed the leaf while held: the call group is forgotten without a Remove, then an external join', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.ds.propose(w.callGroup, 'remove', ME.device);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup) });
+    expect(r.resumed).toBeUndefined();
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('a start that answers E_LEAF_NOT_CURRENT (a removed or epoch-unknown leaf): forget, then an external join', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    w.server.answer('POST calls', 403, 'E_LEAF_NOT_CURRENT');
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(1);
+    expect(r.resumed).toBeUndefined();
+    // The resume's key was zero-filled and never posted: only the fresh join's key reached the page.
+    expect(keysPosted(w)).toHaveLength(1);
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('the group closed while held: a fresh group', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.ds.endCall(VOICE);
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST group', 'POST calls']);
+    expect(r.groupId).not.toBe(toHex(w.callGroup));
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  it('callRelease abandons the hold with exactly one self-Remove; a second release sends nothing', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    expect(await w.call({ m: 'callRelease' })).toBeNull();
+    expect(callRoutes(w)).toEqual(['POST proposal']);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(await w.call({ m: 'callRelease' })).toBeNull();
+    await w.clock.advance(HOLD_MS);
+    await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+  });
+
+  it('a hold that expires is abandoned with exactly one self-Remove', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    await w.clock.advance(HOLD_MS - 1);
+    await settled(w);
+    expect(count(w, 'POST proposal')).toBe(0);
+    await w.clock.advance(1);
+    await settled(w, 8);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    await w.clock.advance(HOLD_MS);
+    await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+  });
+
+  it('a hold that expires while the instance is unreachable is acted on only once it answers', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.offline();
+    w.server.refuseAll('GET channel call', 0, 'E_NETWORK');
+    await w.clock.advance(HOLD_MS + 60_000);
+    await settled(w, 8);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+    w.server.allow('GET channel call');
+    w.online();
+    await settled(w, 8);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  it('a blocked leave and a person\'s leave still post their self-Remove', async () => {
+    const w = await joined();
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(count(w, 'POST proposal')).toBe(1);
+    const b = await joined();
+    b.model.addFailedLeaf(b.callGroup, 'E_DEVICE_UNLISTED');
+    await b.deliverHandshakes(b.callGroup);
+    await settled(b, 8);
+    expect(b.slice('call').phase).toBe('blocked');
+    expect(count(b, 'POST proposal')).toBe(1);
+  });
+
+  it('a join of another channel abandons the hold first, with its self-Remove', async () => {
+    const w = await joined({ dm: true });
+    await w.call(LOST);
+    w.server.reset();
+    await w.call({ m: 'callJoin', channelId: w.dm, vdec: 'vp8' });
+    expect(callRoutes(w)[0]).toBe('POST proposal');
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', channelId: w.dm });
+  });
+
+  it('sign-out drops the hold with a self-Remove', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    // The harness's revoke itself is not modelled; the call's part of the sign-out comes first.
+    const out = w.send({ m: 'signOutRevoke', recoveryKey: 'QRST'.repeat(13) });
+    for (let i = 0; i < 20 && w.ret(out) === undefined; i++) await settled(w);
+    expect(w.ret(out)).toBeDefined();
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  it('callHold (the update reload) holds the call, persists callKeep and posts nothing', async () => {
+    const w = await joined();
+    const before = w.clock.now();
+    expect(await w.call({ m: 'callHold', channelId: w.voice })).toBeNull();
+    expect(callRoutes(w)).toEqual([]);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+    expect(marker(w)).toEqual({ groupId: toHex(w.callGroup), channelId: w.voice, until: before + HOLD_MS });
+    expect(w.slice('call')).toMatchObject({ phase: 'removed', error: { code: 'E_DISCONNECTED' } });
+    // Resumed, the marker goes.
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(r).toMatchObject({ resumed: true, expired: false });
+    expect(marker(w)).toBeUndefined();
+  });
+
+  type Before = NonNullable<HarnessOptions['before']>;
+  /** After an update reload: bob and this device in the lounge's live call, the call group held active in the store and
+   *  named by a callKeep marker that runs until `until`. */
+  function reloaded(until: number, more: Before = () => {}): { group: () => Id; before: Before } {
+    let group: Id = new Uint8Array(16);
+    return {
+      group: () => group,
+      before: async (b) => {
+        group = b.ds.peerCreateCall(PEER, VOICE);
+        b.ds.join(group, ME.device);
+        await b.ds.routesFor(PEER.device).startCall(VOICE, '');
+        b.ds.voice(VOICE, PEER, 1);
+        b.ds.voice(VOICE, ME, 1);
+        b.model.seedGroup(group, 1, COMMUNITY, VOICE, 0n);
+        b.model.setCallTree(group, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+        b.model.settingPut(CALL_KEEP_KEY, JSON.stringify({ groupId: toHex(group), channelId: toHex(VOICE), until }));
+        await more(b);
+      },
+    };
+  }
+
+  it('an update reload: the boot sweep spares the kept group, and the join resumes it', async () => {
+    const seed = reloaded(Number.MAX_SAFE_INTEGER);
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await settled(w, 8);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(0);
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    expect(r).toMatchObject({ groupId: toHex(seed.group()), resumed: true, expired: false });
+    expect(marker(w)).toBeUndefined();
+  });
+
+  it('a reload without a marker still sweeps the call group (reload.spec)', async () => {
+    const seed = reloaded(0, (b) => { b.model.settingDelete(CALL_KEEP_KEY); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    for (let i = 0; i < 20 && count(w, 'POST proposal') === 0; i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(seed.group())?.state).toBe(4);
+  });
+
+  it('an expired marker while offline: nothing posted, nothing forgotten, the marker kept; once online, one self-Remove', async () => {
+    const seed = reloaded(0, (b) => { b.server.refuseAll('GET channel call', 0, 'E_NETWORK'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await settled(w, 8);
+    expect(count(w, 'GET channel call')).toBeGreaterThan(0);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(0);
+    expect(marker(w)).toMatchObject({ groupId: toHex(seed.group()) });
+    w.server.allow('GET channel call');
+    w.reconnect();
+    for (let i = 0; i < 20 && count(w, 'POST proposal') === 0; i++) await settled(w);
+    expect(count(w, 'POST proposal')).toBe(1);
+    expect(w.model.group(seed.group())?.state).toBe(4);
+    expect(marker(w)).toBeUndefined();
+    w.reconnect();
+    await settled(w, 8);
+    expect(count(w, 'POST proposal')).toBe(1);
+  });
+
+  it('a resume from an expired marker is still tried: the leaf is current, so it resumes, reported expired', async () => {
+    const seed = reloaded(0, (b) => { b.server.refuseAll('GET channel call', 0, 'E_NETWORK'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await settled(w, 8);
+    // The instance answers again; the page's restore joins before any sweep reaches the group.
+    w.server.allow('GET channel call');
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    expect(r).toMatchObject({ groupId: toHex(seed.group()), resumed: true, expired: true });
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(marker(w)).toBeUndefined();
   });
 });
 

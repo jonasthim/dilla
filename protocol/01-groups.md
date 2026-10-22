@@ -22,6 +22,26 @@ same leaf, taken in the same epoch, with its device out of the room, and the dev
 to the room in the last 30 seconds, the instance proposes a DS `Remove` of that leaf bound to that
 membership, so a device that has rejoined the group since is never removed (`09` § Voice, Leaving).
 
+A client MAY hold its `call` group leaf without a live room for a bounded time (a held leaf): when
+its room is lost with `E_DISCONNECTED`, or when the page reloads into a new build. It then sends no
+self-`Remove` and keeps the group state and the current epoch's secrets it already holds; nothing new
+is derived for it and no epoch is opened to it. The held leaf is bounded by the room sweep above
+alone: the client's hold never extends the instance's tolerance, so the leaf is removed about 30 to
+60 seconds after the SFU stops seeing the device, as for a crashed tab (while the SFU or the instance
+is down the sweep cannot run, so the bound is that downtime plus the same 60 seconds). The client's
+own hold time is wall-clock and is never trusted alone: an expired hold is acted on (a self-`Remove`
+and the forget) only once the instance answers, and a resume after it is still tried. A resume
+catches the group up, takes the current epoch's key through the join gate and starts the call; the
+start's current-leaf check decides. `403 E_LEAF_NOT_CURRENT` there covers both a leaf that is no
+longer in the current tree (removed) and a group whose epoch the instance does not know
+(`EpochUnknown`, after a restore). On it, on an applied `Remove` of the own leaf, or when the instance
+names another group (or none) for the channel, the client forgets the group without a `Remove` and
+joins afresh by external commit. Forgetting without a `Remove` is safe because the room sweep is
+authoritative: the instance proposes the `Remove` of an absent leaf itself, and the next commit
+rotates the epoch. Every other way a client abandons a held leaf (the person's leave, a release, the
+hold's end, a sign-out or hand-over, a boot that finds no unexpired hold naming the group) sends
+exactly one self-`Remove`.
+
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the
 `PrivateMessage` ciphertext length is a multiple of 256 bytes (RFC 9420 §6.3.1 padding field).

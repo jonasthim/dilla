@@ -4,6 +4,10 @@
 // is left through the controller's own leave rules: a call this device is alone in is ended conditionally (ended, or a
 // 404: forgotten only, as teardown does); any other outcome sends leaveGroup's self-Remove, then the forget, on the
 // group's lane. A group the instance no longer names for its channel is only forgotten.
+//
+// UP6 (R-UP6): a held call group (a room lost, or an update reload's callKeep marker) is spared while its hold has not
+// passed `until`. `until` is wall-clock, so it is never trusted alone: an expired hold is acted on like any leftover,
+// and that needs the instance to answer first (its call read); offline, nothing is posted or forgotten.
 import type { CorePort, GroupInfo, Id } from '../core-port';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -21,6 +25,12 @@ export interface SweepDeps {
   /** The signal every request for a group of this channel carries (review I3): the controller aborts it on a stop, and
    *  when a join of the channel passes its wait's bound. None: the requests cannot be cancelled. */
   signal?(channelId: Id): AbortSignal;
+  /** UP6: the held call group (the callKeep marker, or a lost room's hold), spared while now() < until. */
+  keep?(): { groupId: Id; until: number } | null;
+  /** The wall clock (ms) the hold's `until` is read against. */
+  now?(): number;
+  /** UP6: only this group is swept (a hold that expired), every other leftover is left as it is. */
+  only?: Id;
 }
 
 /** The status of a failed request (0: the instance could not be reached), else null. */
@@ -32,7 +42,7 @@ export async function sweepStaleCalls(d: SweepDeps): Promise<void> {
   const core = d.core();
   if (core === null || d.me() === null || d.stopped()) return;
   let leftover: GroupInfo[];
-  try { leftover = core.groups().filter((g) => g.kind === 1 && g.state === 2); }
+  try { leftover = core.groups().filter((g) => g.kind === 1 && g.state === 2 && (d.only === undefined || toHex(g.groupId) === toHex(d.only))); }
   catch { return; }
   for (const g of leftover) {
     if (!live(d, core, g.groupId)) { if (d.stopped()) return; continue; }
@@ -80,6 +90,10 @@ function live(d: SweepDeps, core: CorePort, groupId: Id): boolean {
   if (d.stopped() || d.core() !== core) return false;
   const held = d.heldGroup();
   if (held !== null && toHex(held) === toHex(groupId)) return false;
+  // UP6: an unexpired hold is spared; an expired one is swept, and only after the instance answered its call read (an
+  // offline read returns before anything is posted or forgotten).
+  const keep = d.keep?.() ?? null;
+  if (keep !== null && toHex(keep.groupId) === toHex(groupId) && (d.now?.() ?? Date.now()) < keep.until) return false;
   try { return core.groupRow(groupId)?.state === 2; } catch { return false; }
 }
 

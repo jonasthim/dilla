@@ -26,6 +26,9 @@ export interface JoinDeps {
   cancelled(): boolean;
   /** The join has begun waiting for this device's earlier Remove (the page says so in its status region). */
   rejoining(): void;
+  /** UP6 (R-UP6): catches the held call group up on its lane (its commits applied); true while this device still holds
+   *  it active as the held group (no applied commit removed its leaf, and no read found it gone). */
+  catchUp(groupId: Id): Promise<boolean>;
 }
 
 /**
@@ -44,8 +47,10 @@ export const REJOIN_WAIT_MS = 30_000;
  *  pair disagreeing (a commit landed between the two reads). */
 export const JOIN_READS_MAX = 3;
 
-export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string }
-export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStarted }
+/** `held` (UP6): the call group this device holds for the channel (a lost room, an update reload), or null. */
+export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string; held?: Id | null }
+/** `resumed` (UP6): the held group was taken up again, with no external commit. */
+export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStarted; resumed?: boolean }
 
 /** A join that ended without a call. `leave` names an active call group this device must leave (a self-Remove and a
  *  forget); `cause` is the error to answer the command with. */
@@ -90,9 +95,18 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
   let waitSince: number | null = null;
   let read: ChannelCall = await d.routes.getChannelCall(t.channelId);
   seen.read = read;
+  let held = t.held ?? null;
   for (;;) {
     seen.read = read;
     forgetStale(d.core, t.channelId, read.groupId);
+    // UP6 (R-UP6): the instance still names the held group, so it is resumed; once only. Otherwise forgetStale above has
+    // forgotten it (a different group, or none: it is closed), and the join goes on as today.
+    if (held !== null && read.groupId !== null && toHex(read.groupId) === toHex(held)) {
+      const groupId = held;
+      held = null;
+      const resumed = await resume(d, t, groupId);
+      if (resumed !== null) return resumed;
+    }
     let groupId: Id;
     let created = false;
     if (read.groupId === null) {
@@ -146,6 +160,43 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
       throw new JoinRefused(codeOf(e), 'failed', e, groupId, alone);
     }
   }
+}
+
+/** HTTP refusals a resume waits out with the hold kept (the page tries again): the instance unreachable, a start it
+ *  cannot serve now (503, R-UP7), or a rate limit. */
+const transient = (e: unknown): boolean => e instanceof DillaHttpError && (e.status === 0 || e.status === 503 || e.status === 429);
+
+/**
+ * UP6 (R-UP6): the resume of the held call group, with no external commit. It catches the group up on its lane, gets
+ * the current epoch's key through the gate, and starts the call; the instance's leaf check (requireCurrentLeaf) decides
+ * whether the leaf is still current. Null when the leaf is gone (an applied Remove, a group read the instance refused,
+ * or a start answered 403 E_LEAF_NOT_CURRENT for a removed or epoch-unknown leaf): the group is then forgotten here
+ * without a Remove (the leaf is already gone, or the room sweep removes it, the only authority), and the caller joins
+ * afresh. A transient failure keeps the hold (no leave). Any key derived is zero-filled on every failure.
+ */
+async function resume(d: JoinDeps, t: JoinTarget, groupId: Id): Promise<Joined | null> {
+  const still = await d.catchUp(groupId);
+  if (d.cancelled()) throw stopped(groupId);
+  if (!still) { forgetHeld(d.core, groupId); return null; }
+  const media = await mediaEpoch(d, groupId);
+  if (d.cancelled()) { new Uint8Array(media.baseKey).fill(0); throw stopped(groupId); }
+  try {
+    return { groupId, media, started: await d.routes.startCall(t.channelId, t.vdec), resumed: true };
+  } catch (e) {
+    new Uint8Array(media.baseKey).fill(0);
+    if (isHttp(e, 403, 'E_LEAF_NOT_CURRENT')) { forgetHeld(d.core, groupId); return null; }
+    if (transient(e)) throw new JoinRefused(codeOf(e), 'failed', e, null);
+    const alone = media.roster.length === 1 && media.roster[0]?.leaf === media.ownLeaf;
+    throw new JoinRefused(codeOf(e), 'failed', e, groupId, alone);
+  }
+}
+
+/** The held group's state goes, with no Remove (UP6). */
+function forgetHeld(core: CorePort, groupId: Id): void {
+  try {
+    const state = core.groupRow(groupId)?.state;
+    if (state === 2 || state === 3) core.callGroupForget(groupId);
+  } catch { /* forgotten already */ }
 }
 
 /** The rejoin's wait (REJOIN_WAIT_MS from `since`): each step reads the call, and while it still names the refused

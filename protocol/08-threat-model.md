@@ -118,6 +118,14 @@ Stated plainly in the product's documentation and onboarding:
   makes internally while transferring the key to the worker. A media worker that fails during a
   call is told to clear its keys and then terminated, so no key in it is used after the failure; its
   memory is released by the browser, not zeroed.
+- A client that lost its call's room, or reloads into a new build mid-call, holds its `call` group
+  leaf for a resume (`01` § Group kinds, a held leaf) instead of sending its self-`Remove`. It keeps
+  only the current epoch's secrets it already holds; nothing new is derived for it and no epoch is
+  opened to it, and media needs an SFU token that only a current leaf gets. The bound is the
+  instance's room sweep alone, the same as for a crashed tab: about 30 to 60 seconds after the SFU
+  stops seeing the device (plus any time the SFU or the instance is down, when the sweep cannot
+  run). The client's hold adds no server-side grace; a returning device whose leaf the sweep
+  removed is refused (`E_LEAF_NOT_CURRENT`), forgets the group and joins afresh.
 - A follower tab receives no group material, timeline/search slices, plaintext, or `base_key`.
   Its “use this tab” notice is only `{t:'takeover',instance:<hex>,nonce:<16-byte random hex>}`.
   The leader closes command admission, drains accepted work, stops gateway and sync, pauses its
