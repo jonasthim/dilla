@@ -364,7 +364,21 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
     // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
     await openPath(page, serverPath);
     await channelRow(page, 'general').click();
-    await sendText(page, 'general', `and again ${LONG_WORD}`);
+    if (phone !== page) {
+      // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
+      // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
+      // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
+      // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
+      // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
+      await openPath(phone, serverPath);
+      await expectComposerReady(phone, 'general');
+      const here = `the phone is in ${String(Date.now())}`;
+      await sendText(phone, 'general', here);
+      await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    }
+    const again = `and again ${LONG_WORD}`;
+    await sendText(page, 'general', again);
+    if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     for (const size of SIZES.filter(s => s.phone)) {
       await phone.setViewportSize({ width: size.width, height: size.height });
       await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
@@ -1056,10 +1070,38 @@ test('FB1, FB2: the desktop Home title is not the server name; a file card stack
   const row = messageRow(page, 'general', text);
   await expect(row).toBeVisible({ timeout: WAIT });
   await expect(row.locator('.d-attachment-card__file .d-attachment-card__name')).toBeVisible({ timeout: WAIT });
-  const log = (await boxes(page, '[role="log"]'))[0];
-  const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
-  const name = (await boxes(page, '.d-attachment-card__file .d-attachment-card__name'))[0];
-  const images = await boxes(page, '.d-attachment-card[data-kind="image"]');
+  // FB2 compares rects with each other, so all of them are read in one frame, once the row has settled: both thumbnails
+  // loaded and decoded (a thumbnail takes its card's place) and no rect moving across two frames (the log keeps its end
+  // in view while it fills). Read one call apart, the card was taken before such a move and the images after it: CI run
+  // 39727747643 put the card at y=545 and, a moment later, its own name at y=592.
+  type Settled = { log: Box | undefined; card: Box | undefined; name: Box | undefined; images: Box[] };
+  const got: { v: Settled | null } = { v: null };
+  await expect.poll(async () => {
+    got.v = await row.evaluate(async (el): Promise<Settled | null> => {
+      const thumbs = [...el.querySelectorAll<HTMLImageElement>('.d-attachment-card[data-kind="image"] img')];
+      if (thumbs.length < 2 || thumbs.some(i => !i.complete || i.naturalWidth === 0)) return null;
+      await Promise.all(thumbs.map(i => i.decode().catch(() => undefined)));
+      const box = (e: Element): Box => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom, t: (e.getAttribute('aria-label') ?? e.textContent ?? '').trim().slice(0, 32) };
+      };
+      const read = (): Settled => {
+        const log = document.querySelector('[role="log"]');
+        const card = el.querySelector('.d-attachment-card[data-kind="file"]');
+        const name = el.querySelector('.d-attachment-card__file .d-attachment-card__name');
+        return { log: log === null ? undefined : box(log), card: card === null ? undefined : box(card), name: name === null ? undefined : box(name),
+          images: [...el.querySelectorAll('.d-attachment-card[data-kind="image"]')].map(box) };
+      };
+      const frame = () => new Promise<void>(done => { requestAnimationFrame(() => { done(); }); });
+      const before = read();
+      await frame();
+      await frame();
+      const after = read();
+      return JSON.stringify(before) === JSON.stringify(after) ? after : null;
+    });
+    return got.v !== null;
+  }, { message: 'FB2 the row has both thumbnails decoded and holds still', timeout: WAIT }).toBe(true);
+  const { log, card, name, images } = got.v ?? { log: undefined, card: undefined, name: undefined, images: [] as Box[] };
   expect(log !== undefined && card !== undefined && name !== undefined && images.length > 0, 'FB2 the log, an image card and the file card are drawn').toBe(true);
   if (log === undefined || card === undefined || name === undefined) return;
   expect.soft(name.w, 'FB2 the file name has room').toBeGreaterThan(40);
