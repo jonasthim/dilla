@@ -1,6 +1,7 @@
 package native
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -35,6 +36,36 @@ type SessionSignature struct {
 	Purpose   uint64
 	Signature [64]byte
 }
+
+type CallMediaMember struct {
+	Leaf     uint64
+	DeviceID id.ID
+	UserID   id.ID
+}
+
+// CallMediaEpoch contains per-call key material. Standard formatting redacts it.
+type CallMediaEpoch struct {
+	Epoch   uint64
+	BaseKey [16]byte
+	OwnLeaf uint64
+	Roster  []CallMediaMember
+	Code    string
+}
+
+func (CallMediaEpoch) String() string   { return "CallMediaEpoch{base_key:[redacted]}" }
+func (CallMediaEpoch) GoString() string { return "native.CallMediaEpoch{base_key:[redacted]}" }
+
+func (e CallMediaEpoch) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Epoch   uint64            `json:"epoch"`
+		BaseKey string            `json:"base_key"`
+		OwnLeaf uint64            `json:"own_leaf"`
+		Roster  []CallMediaMember `json:"roster"`
+		Code    string            `json:"code"`
+	}{e.Epoch, "[redacted]", e.OwnLeaf, e.Roster, e.Code})
+}
+
+var _ fmt.Stringer = CallMediaEpoch{}
 
 // Session keeps the bearer private and explicitly redacts all standard fmt
 // diagnostics. Token is the intentional access path for authenticated HTTP.

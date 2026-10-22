@@ -144,7 +144,7 @@ impl Helper {
             .map(|v| (v, false)),
             7 => self.prepare_send(payload),
             8 => self.send_receipt(payload),
-            9 => Err(DispatchError::Unavailable),
+            9 => self.call_media_epoch(payload),
             14 => self.keypackage_resolve(payload),
             16 => self.group_transfer(payload, request_id),
             _ => Err(DispatchError::Invalid),
@@ -394,6 +394,23 @@ impl Helper {
         Ok((empty(), false))
     }
 
+    fn call_media_epoch(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let call = decode_call_epoch(payload)?;
+        let result = self
+            .core
+            .as_ref()
+            .expect("opened")
+            .call_media_epoch(&call)
+            .map_err(map_client)?;
+        if result.is_empty() || result.len() > 262_144 {
+            return Err(DispatchError::Unavailable);
+        }
+        Ok((Zeroizing::new(body(result)), false))
+    }
+
     fn keypackage_resolve(
         &mut self,
         payload: &[u8],
@@ -498,6 +515,18 @@ fn decode_send_receipt(payload: &[u8]) -> Result<([u8; 16], Zeroizing<Vec<u8>>),
         return Err(DispatchError::Invalid);
     }
     Ok(decoded)
+}
+
+fn decode_call_epoch(payload: &[u8]) -> Result<[u8; 16], DispatchError> {
+    let call = decode_strict(payload, |d| {
+        d.array(1)?;
+        d.bytes_exact::<16>()
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if call == [0; 16] {
+        return Err(DispatchError::Invalid);
+    }
+    Ok(call)
 }
 
 pub(crate) fn body(mut v: Vec<u8>) -> Vec<u8> {
@@ -624,5 +653,35 @@ mod send_abi_tests {
             decode_send_receipt(&oversized.into_vec()),
             Err(DispatchError::Invalid)
         ));
+    }
+
+    #[test]
+    fn call_epoch_requires_exact_nonzero_call_id() {
+        let mut valid = Encoder::new();
+        valid.array(1).bytes(&[7; 16]);
+        assert_eq!(decode_call_epoch(&valid.into_vec()).unwrap(), [7; 16]);
+
+        for payload in [
+            {
+                let mut e = Encoder::new();
+                e.array(1).bytes(&[0; 16]);
+                e.into_vec()
+            },
+            {
+                let mut e = Encoder::new();
+                e.array(1).bytes(&[7; 15]);
+                e.into_vec()
+            },
+            {
+                let mut e = Encoder::new();
+                e.array(2).bytes(&[7; 16]).uint(0);
+                e.into_vec()
+            },
+        ] {
+            assert!(matches!(
+                decode_call_epoch(&payload),
+                Err(DispatchError::Invalid)
+            ));
+        }
     }
 }
