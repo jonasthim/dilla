@@ -97,24 +97,31 @@ func (r fixedKind3InstanceRepo) CreateInstance(ctx context.Context, row store.In
 func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]byte) {
 	t.Helper()
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "kind3-api.db")
-	write, err := sqlite.OpenWrite(path)
-	if err != nil {
-		t.Fatal(err)
+	var repo store.Repository
+	if dsn := os.Getenv("DILLA_TEST_PG"); dsn != "" {
+		repo = botRegistrationPostgresRepo(t, dsn)
+	} else {
+		path := filepath.Join(t.TempDir(), "kind3-api.db")
+		write, err := sqlite.OpenWrite(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		read, err := sqlite.OpenRead(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sqliteRepo := sqlite.New(write, read)
+		repo = sqliteRepo
+		t.Cleanup(func() { _ = sqliteRepo.Close() })
 	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
-	read, err := sqlite.OpenRead(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo := fixedKind3InstanceRepo{sqlite.New(write, read)}
-	t.Cleanup(func() { _ = repo.Close() })
+	repo = fixedKind3InstanceRepo{repo}
 	handler, deps := newTestAPIFullWithRepo(t, repo, nil, nil)
 	mux, ok := handler.(*server.Mux)
 	if !ok {
