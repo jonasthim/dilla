@@ -42,7 +42,9 @@ export function decodeErrorBody(status: number, body: Uint8Array, retryAfterHead
     delay = value[2];
     extra = value.slice(3);
   }
+  // UP7b fix round 2: only the instance's own Retry-After is honoured; a reverse proxy's (no X-Dilla-Generation) is ignored.
+  const header = fromInstance === false ? null : retryAfterHeader;
   const retryAfterMs = delay !== null ? Number(delay > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : delay)
-    : retryAfterHeader !== null && /^[0-9]{1,9}$/.test(retryAfterHeader) ? Number(retryAfterHeader) * 1000 : null;
+    : header !== null && /^[0-9]{1,9}$/.test(header) ? Number(header) * 1000 : null;
   return new DillaHttpError({ status, code, detail, retryAfterMs, extra, fromInstance });
 }

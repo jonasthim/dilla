@@ -24,6 +24,7 @@
 import { resolve } from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
+import { OUTAGE_LINES, tagLeaveReasons } from './support/outage-lines';
 import { REPO_ROOT, buildDillad, removeHostData, startMediaHost, startTestHost, swapWebRoot, type HostConfig, type MediaHost, type StartedHost } from '../web/support/host';
 import { expect, mediaWorkers, test, type Person } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
@@ -50,53 +51,12 @@ watchContexts(test);
 // The tree's dillad is the SFU unless DILLA_SFU_BIN names another (UP4's compat run, the previous release).
 test.beforeAll(() => { if (process.env.DILLA_SFU_BIN === undefined) buildDillad(); });
 
-/** Console lines a page prints while its instance does not answer or reloads mid-call (a refused connection, a dropped
- *  socket), both engines. Tolerated only inside an outage window (`tolerate`), never elsewhere. */
-const OUTAGE_LINES: RegExp[] = [
-  /^Failed to load resource: net::ERR_CONNECTION_REFUSED$/,
-  /^WebSocket connection to 'ws:\/\/127\.0\.0\.1:8561\/[^']*' failed/,
-  /^\[JavaScript Error: "Firefox can.t establish a connection to the server at ws:\/\/127\.0\.0\.1:8561\//,
-  // livekit-client's own log (Chromium prints its fields, Firefox a JSHandle): the signal socket the outage closed, its
-  // reconnect's unreachable server and timed-out connect, and (case A, the SFU restarted) the room a reconnect asks for gone;
-  // the page then rejoins through a start.
-  /^error reading from signal stream (\{room: .*error: ConnectionError: WS closed unexpectedly with code 1006|JSHandle@object$)/s,
-  /^(Failed to fetch \{room: .*ConnectionError: Failed to fetch|NetworkError when attempting to fetch resource\. JSHandle@object$)/s,
-  /^room connection has timed out \(signal\) (\{room: |JSHandle@object$)/,
-  /^requested room does not exist (\{room: .*ConnectionError: requested room does not exist|JSHandle@object$)/s,
-  // UP7b fix round 1 (I3): a reconnect told to leave by the SFU, tolerated only for the reason an outage gives
-  // (tagLeaveReasons appends it): PARTICIPANT_REMOVED (4), seen only in case A (the SFU restarted, then the API with a new
-  // build: a reconnect reaches a participant the instance has removed). A DUPLICATE_IDENTITY (2), which a page's double start would
-  // give, is never tolerated; each page's starts are counted below as well.
-  /^Received leave request while trying to \(re\)connect (\{room: .*ConnectionError: Received leave request|JSHandle@object).* \[leave reason 4\]$/s,
-  // The peer connection an outage or the SFU's restart closed takes its data channels with it.
-  /^DataChannel error on (lossy|reliable): User-Initiated Abort, reason= ?(\{room: |JSHandle@object$)/,
-  /^publisher data channel '[A-Z_]+' closed unexpectedly ?(\{room: |JSHandle@object$)/,
-  // UP7b: with the instance noticed within 2 s, the peers come back almost together, and livekit-client logs a track whose
-  // publication reached it before that participant's own join update. In 2.22.3 a connected room DROPS that track
-  // (esm.mjs:35227-35234; only a room still connecting defers it), so nothing recovers it by itself: every step that can
-  // log this ends in allHear(), which fails if a remote track was lost.
-  /^Tried to add a track for a participant, that's not present\. Sid: PA_[A-Za-z0-9]+ ?(\{room: |JSHandle@object$)/,
-];
 
 interface Peer { name: typeof NAMES[number]; person: Person; device: string; requests: UpgradeRecord['requests'] }
 
 async function postControl(control: string, path: string, body?: unknown): Promise<void> {
   const res = await fetch(`${control}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   expect(res.status, `POST ${path}: ${await res.text()}`).toBe(204);
-}
-
-/** UP7b fix round 1 (I3): livekit-client logs "Received leave request while trying to (re)connect" with the leave's reason
- *  only inside the error object; this appends it as `[leave reason N]`, so OUTAGE_LINES can tolerate one reason only. */
-function tagLeaveReasons(): void {
-  const original = console.error.bind(console);
-  console.error = (...args: unknown[]): void => {
-    if (typeof args[0] === 'string' && args[0].startsWith('Received leave request while trying to (re)connect')) {
-      const reason = (args[1] as { error?: { reason?: unknown } } | undefined)?.error?.reason;
-      original(...args, `[leave reason ${String(reason)}]`);
-      return;
-    }
-    original(...args);
-  };
 }
 
 /** The page's own pagehide time, kept in sessionStorage across its reload (performance time, never the moved Date.now). */
@@ -466,7 +426,10 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
 
     await test.step('A: the API stops, the SFU restarts, the API starts with a new build; all back within 90 s', async () => {
       const lines = guard.consoleErrors.length;
-      const loads = pages.map((page) => page.waitForEvent('load', { timeout: 120_000 }));
+      const reqFromA = peers.map((p) => p.requests.length);
+      // When each page's reload (the new build) loaded: its starts before are the old page's, after it the new page's.
+      const loadAt: number[] = peers.map(() => Number.NaN);
+      const loads = pages.map((page, i) => page.waitForEvent('load', { timeout: 120_000 }).then(() => { loadAt[i] = Date.now(); }));
       await host.stop();
       await media.restartMedia();
       root = DIST;
@@ -479,8 +442,20 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const allAt = Date.now();
       expect(allAt - answerAt, 'all three connected and heard within 90 s of the API answering').toBeLessThanOrEqual(90_000);
       await carolRelayed('A');
-      timings.A = { allBackAndHeardMs: allAt - answerAt };
+      // UP7b fix round 2 (N1): the call starts per page here too, where the tolerated leave lines appear. Case A has two
+      // page lives: the old page sees its room lost and the API back, and may start once (its recovery) before the new
+      // build's update reload holds that call; the reloaded page then starts exactly once. A double start in either life
+      // fails here. The step's own console lines are tolerated first, so a failure here names the starts, not the lines.
       tolerate(lines, 'A');
+      const startsA = peers.map((p, i) => p.requests.slice(reqFromA[i]).filter((r) => r.method === 'POST' && r.path === `/v1/channels/${voice}/calls`)
+        .map((r) => ({ life: r.at < loadAt[i] ? 'old' : 'new', status: r.status })));
+      timings.A = { allBackAndHeardMs: allAt - answerAt,
+        starts: Object.fromEntries(peers.map((p, i) => [p.name, startsA[i].map((x) => `${x.life}:${String(x.status)}`)])) };
+      for (const [i, p] of peers.entries()) {
+        const ok = (life: string) => startsA[i].filter((x) => x.life === life && x.status >= 200 && x.status < 300).length;
+        expect(ok('new'), `${p.name}: the reloaded page is back through exactly one start`).toBe(1);
+        expect(ok('old'), `${p.name}: the old page started at most once before its reload`).toBeLessThanOrEqual(1);
+      }
     });
   } finally {
     // eslint-disable-next-line no-console -- the measured timings are the point of this spec (UP9 report)

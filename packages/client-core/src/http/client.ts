@@ -126,8 +126,10 @@ async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint
   if (bound === undefined) {
     return new Uint8Array(await response.arrayBuffer());
   }
+  // UP7b fix round 2 (N2): an oversized error page still says who answered (a proxy's carries no X-Dilla-Generation).
   const tooLarge = (): DillaHttpError => new DillaHttpError({ status: response.status, code: 'E_BODY_TOO_LARGE',
-    detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [] });
+    detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [],
+    fromInstance: response.headers.get('X-Dilla-Generation') !== null });
   const length = response.headers.get('Content-Length');
   if (length !== null && /^\d+$/.test(length) && Number(length) > bound) {
     await response.body?.cancel();

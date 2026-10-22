@@ -501,3 +501,37 @@ describe('UP7b: who answered a refusal', () => {
     expect(new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: '', retryAfterMs: null, extra: [] }).fromInstance).toBeNull();
   });
 });
+
+describe('UP7b fix round 2: a proxy\'s refusal', () => {
+  // N2: a proxy error page over the 64 KiB error cap still says who answered.
+  it('an error body over the cap carries fromInstance like any refusal', async () => {
+    const t = fakeTransport();
+    const big = '<html>' + 'x'.repeat(70 * 1024) + '</html>';
+    t.replies.push(new Response(big, { status: 502, headers: { 'Content-Type': 'text/html' } }),
+      new Response(big, { status: 502, headers: { 'Content-Type': 'text/html', 'X-Dilla-Generation': '3' } }));
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, code: 'E_BODY_TOO_LARGE', fromInstance: false });
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, code: 'E_BODY_TOO_LARGE', fromInstance: true });
+  });
+
+  // Ruling: only the instance's own Retry-After is honoured; a proxy's 503 or 429 waits the default second.
+  it('a 503 or 429 without X-Dilla-Generation ignores its Retry-After', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response('busy', { status: 503, headers: { 'Retry-After': '30' } }),
+      new Response('slow', { status: 429, headers: { 'Retry-After': '12' } }), cborReply(200, []));
+    await new HttpClient(t.deps).request(GET_READ);
+    expect(t.sleeps).toEqual([1000, 1000]);
+  });
+
+  it('a proxy refusal reports no retry_after_ms to its caller', async () => {
+    const t = fakeTransport();
+    t.replies.push(new Response('nope', { status: 502, headers: { 'Retry-After': '30' } }));
+    expect(await failure(new HttpClient(t.deps).request(POST_WRITE))).toMatchObject({ status: 502, retryAfterMs: null, fromInstance: false });
+  });
+
+  it("the instance's own Retry-After on a 503 is honoured (control)", async () => {
+    const t = fakeTransport();
+    t.replies.push(textReply(503, 'busy', { 'Retry-After': '4' }), cborReply(200, []));
+    await new HttpClient(t.deps).request(GET_READ);
+    expect(t.sleeps).toEqual([4000]);
+  });
+});

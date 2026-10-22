@@ -42,9 +42,10 @@ export const GATEWAY = {
   /** UP7b (R-UP8): while the instance cannot be reached, a probe every probeMs plus up to probeJitterMs (so a returning
    *  instance is noticed within 2 s, and clients do not probe in step); its first answer reconnects at once. */
   probeMs: 1500, probeJitterMs: 500,
-  /** UP7b fix round 1 (M2): after probeSlowAfterMs of continuous probing the interval doubles from 2 × probeMs up to
-   *  probeCapMs, with up to 20 % jitter; an answer (or a ready) starts the next outage at the fast interval again. */
-  probeSlowAfterMs: 120_000, probeCapMs: 10_000,
+  /** UP7b fix rounds 1 and 2 (M2, N3, N4): after probeSlowAfterMs (5 min, Jonas) of continuous probing the interval
+   *  doubles from 2 × probeMs up to probeCapMs, with up to 20 % jitter. Only a ready (or a stop) starts the next outage at
+   *  the fast interval again: a probe answer whose connect fails again is no recovery. */
+  probeSlowAfterMs: 300_000, probeCapMs: 10_000,
 } as const;
 
 export const CLIENT_CLOSE = {
@@ -181,7 +182,9 @@ export class Gateway {
       // UP7b: no answer from the instance means it is out of reach: no HTTP answer (status 0), an answer that is not the
       // instance's (fix round 1, I1: a reverse proxy's 502/503/504 or its own page, without X-Dilla-Generation), or a body
       // that is not the instance's (a decode error). A refusal the instance answered (a 503, a 429) keeps the backoff.
-      this.fail(null, !(err instanceof DillaHttpError) || err.status === 0 || err.fromInstance === false);
+      // Fix round 2 (N2): only a refusal known to be the instance's (stamped) keeps the backoff; one whose origin is
+      // unknown (an oversized page, an error made here) is treated as out of reach.
+      this.fail(null, !(err instanceof DillaHttpError) || err.status === 0 || err.fromInstance !== true);
       return;
     }
     if (id !== this.attempt) return;
@@ -357,7 +360,7 @@ export class Gateway {
       void (deps.probe?.() ?? Promise.resolve(false)).catch(() => false).then((answered) => {
         if (!still()) return;
         if (!answered) { this.armProbe(); return; }
-        this.resetProbe();
+        // N3: the slow-down is reset only by a ready, so an answering probe with a mint that keeps failing still slows.
         this.cancel('reconnectTimer');
         this.setStatus('connecting', null);
         this.connect();

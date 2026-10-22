@@ -905,6 +905,40 @@ func TestOptionsWebReplacesTheEmbeddedClient(t *testing.T) {
 	}
 }
 
+// UP7b fix round 2: the web client's outage probe and its refusals count an answer as the instance's only by
+// X-Dilla-Generation, so every answer of the web client's handler (internal/web) carries it too: the SPA fallback, a static
+// file, app-version.json, a missing asset (404) and a wrong method (405). None of them must look like a reverse proxy's.
+func TestTheWebClientsAnswersCarryTheGenerationHeader(t *testing.T) {
+	const page = "<!doctype html><title>built</title><script type=\"module\" src=\"/assets/app-abc.js\"></script>\n"
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t),
+		Web: webTree(t, map[string]string{"index.html": page, "assets/app-abc.js": "export {};\n"}),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	for _, c := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/c/0123456789abcdef0123456789abcdef", http.StatusOK}, // the SPA fallback
+		{http.MethodGet, "/", http.StatusOK},
+		{http.MethodGet, "/assets/app-abc.js", http.StatusOK}, // a static file
+		{http.MethodGet, "/app-version.json", http.StatusOK},
+		{http.MethodGet, "/assets/missing.js", http.StatusNotFound}, // a missing asset
+		{http.MethodPost, "/welcome", http.StatusMethodNotAllowed},  // the web handler's own 405
+	} {
+		rec := serveOne(t, srv.Handler(), c.method, c.path, "dilla.test")
+		if rec.Code != c.want {
+			t.Fatalf("%s %s = %d, want %d", c.method, c.path, rec.Code, c.want)
+		}
+		if rec.Header().Get("X-Dilla-Generation") == "" {
+			t.Errorf("%s %s (%d) carries no X-Dilla-Generation", c.method, c.path, rec.Code)
+		}
+	}
+}
+
 // Ruling 12: a client tree its manifest does not describe stops the instance from starting.
 func TestNewRefusesAWebClientItsManifestDoesNotDescribe(t *testing.T) {
 	const page = "<!doctype html><title>built</title>\n"

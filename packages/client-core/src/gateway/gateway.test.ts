@@ -183,7 +183,7 @@ describe('Gateway connect', () => {
   it('pins the timing constants', () => {
     expect(GATEWAY).toEqual({ heartbeatMaxMs: 15000, ackTimeoutMs: 10000, helloTimeoutMs: 15000,
       reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500, probeMs: 1500, probeJitterMs: 500,
-      probeSlowAfterMs: 120_000, probeCapMs: 10_000 });
+      probeSlowAfterMs: 300_000, probeCapMs: 10_000 });
     expect(CLIENT_CLOSE).toEqual({ normal: 1000, version: 4006, helloTimeout: 4100, heartbeatTimeout: 4101,
       undecodable: 4102, tooLarge: 4109 });
   });
@@ -893,7 +893,7 @@ describe('UP7b: the outage probe', () => {
     expect(FakeSocket.instances).toHaveLength(0);
   });
 
-  it('after 2 minutes of probing the interval grows to a 10 s cap (with jitter); an answer resets it', async () => {
+  it('after 5 minutes of probing the interval grows to a 10 s cap (with jitter); a ready resets it', async () => {
     const at: number[] = [];
     let up = false;
     const h = harness({
@@ -902,17 +902,18 @@ describe('UP7b: the outage probe', () => {
       probe: () => { at.push(h.clock.now); return Promise.resolve(false); },
     });
     h.gw.start();
-    await run(h, 600_000);
+    await run(h, 900_000);
     const gaps = at.slice(1).map((t, i) => t - at[i]);
-    const early = gaps.filter((_, i) => at[i + 1] < 110_000);
-    const late = gaps.filter((_, i) => at[i] > 300_000);
+    // N4 (Jonas): the fast interval holds for the first 5 minutes.
+    const early = gaps.filter((_, i) => at[i + 1] < 295_000);
+    const late = gaps.filter((_, i) => at[i] > 330_000);
+    expect(GATEWAY.probeSlowAfterMs).toBe(300_000);
     expect(Math.max(...early)).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs + 100);
     expect(Math.min(...late)).toBeGreaterThanOrEqual(GATEWAY.probeCapMs);
     expect(Math.max(...gaps)).toBeLessThanOrEqual(GATEWAY.probeCapMs * 1.2 + 100);
-    expect(GATEWAY.probeSlowAfterMs).toBe(120_000);
-    // Ten minutes at the cap is about one probe per 10 s, not one per 2 s.
-    expect(at.length).toBeLessThan(140);
-    // The instance answers: the next probe connects; a later outage starts at the fast interval again.
+    // After the first 5 minutes, about one probe per 10 s, not one per 2 s.
+    expect(at.filter((t) => t > 330_000).length).toBeLessThanOrEqual((900_000 - 330_000) / GATEWAY.probeCapMs + 1);
+    // The instance answers: the next probe connects, the gateway is ready, and a later outage starts fast again.
     up = true;
     await run(h, GATEWAY.probeCapMs * 1.3);
     expect(FakeSocket.instances).toHaveLength(1);
@@ -927,6 +928,37 @@ describe('UP7b: the outage probe', () => {
     expect(fresh.length).toBeGreaterThanOrEqual(2);
     expect(fresh[1] - fresh[0]).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs);
   });
+
+  // N3: a probe answer is not a recovery. A proxy that replaces the instance's 5xx with its own page leaves the mint
+  // unreachable while GET /v1/instance answers stamped; the probe-triggered connects still slow down after 5 minutes.
+  it('a probe that answers while the mint stays unreachable does not reset the slow-down', async () => {
+    const at: number[] = [];
+    const h = harness({
+      random: 0.5,
+      mint: () => Promise.reject(new DillaHttpError({ status: 503, code: 'E_HTTP', detail: '', retryAfterMs: null, extra: [], fromInstance: false })),
+      probe: () => { at.push(h.clock.now); return Promise.resolve(true); },
+    });
+    h.gw.start();
+    await run(h, 900_000);
+    const gaps = at.slice(1).map((t, i) => t - at[i]);
+    expect(Math.min(...gaps.filter((_, i) => at[i] > 330_000))).toBeGreaterThanOrEqual(GATEWAY.probeCapMs);
+    expect(at.filter((t) => t > 330_000).length).toBeLessThanOrEqual((900_000 - 330_000) / GATEWAY.probeCapMs + 1);
+  });
+
+  // N2: a proxy error page over the 64 KiB cap (E_BODY_TOO_LARGE) is no answer of the instance unless it is stamped.
+  for (const [what, err, probes] of [
+    ['an unstamped oversized 502 page', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [], fromInstance: false }), true],
+    ['a refusal whose origin is unknown', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [] }), true],
+    ['a stamped oversized refusal', new DillaHttpError({ status: 502, code: 'E_BODY_TOO_LARGE', detail: '', retryAfterMs: null, extra: [], fromInstance: true }), false],
+  ] as const) {
+    it(`${what} ${probes ? 'starts' : 'does not start'} the probe`, async () => {
+      let n = 0;
+      const h = harness({ mint: () => Promise.reject(err), probe: () => { n += 1; return Promise.resolve(false); } });
+      h.gw.start();
+      await run(h, 60_000);
+      expect(n > 0).toBe(probes);
+    });
+  }
 
   // M3: the probe in flight against stop(), against the reconnect timer, and a stalled mint.
   const slowProbe = () => {
