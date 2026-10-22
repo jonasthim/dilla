@@ -3,10 +3,11 @@
 use super::error::{E_BINDING, E_CORE_INPUT, E_CORE_NOT_FOUND, E_CORE_STATE};
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
-use crate::identity::sha256;
-use crate::ids::{CommunityId, InstanceId};
+use crate::identity::{CredentialIdentity, Kind, SignerTier, Tier, sha256};
+use crate::ids::{CommunityId, DeviceId, InstanceId, UserId};
 use crate::mls::{
-    DillaBinding, DillaGroup, GroupKind, StorageError, UnitScope, WelcomeLabel, external_senders,
+    DillaBinding, DillaGroup, DillaInteractionBinding, GroupKind, StorageError, UnitScope,
+    WelcomeLabel, external_senders,
 };
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
@@ -20,6 +21,11 @@ pub(crate) const STATE_ACTIVE: i64 = 2;
 pub(crate) const STATE_NEEDS_RESYNC: i64 = 3;
 #[allow(dead_code)] // Task 6 consumes the gone state.
 pub(crate) const STATE_GONE: i64 = 4;
+
+struct HumanInteractionWelcome {
+    context: crate::bot::human_interaction_context::CurrentContext,
+    proof: Vec<u8>,
+}
 
 #[allow(dead_code)] // The full persisted row is shared with task 6.
 #[derive(Clone)]
@@ -64,6 +70,25 @@ fn bot_welcome_receipt_key(group_id: &[u8; 16]) -> String {
         let _ = write!(key, "{byte:02x}");
     }
     key
+}
+
+fn human_interaction_welcome_receipt_key(group_id: &[u8; 16]) -> String {
+    let mut key = String::from("human_interaction_welcome/v1/");
+    for byte in group_id {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
+fn unix_time() -> Result<u64, ClientError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| ClientError::new(E_CORE_STATE, "system clock is before Unix epoch"))
+}
+
+fn interaction_target_matches(target: &[u8; 16], binding: &DillaInteractionBinding) -> bool {
+    binding.bot_user_id == *target
 }
 
 fn clear_bot_welcome_receipt(
@@ -774,7 +799,75 @@ impl ClientCore {
         welcomes_body: &[u8],
         expected: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
-        self.welcomes_apply_kind(welcomes_body, expected, GroupKind::Text, None)
+        self.welcomes_apply_kind(welcomes_body, expected, GroupKind::Text, None, None)
+    }
+
+    /// Apply one kind-3 v2 interaction Welcome after checking the server-signed current-context
+    /// proof against the enrolled instance key and the authenticated MLS state. The proof is
+    /// bound to this core's own instance, user and device; callers cannot supply those pins.
+    pub fn human_interaction_welcome_apply(
+        &mut self,
+        welcomes_body: &[u8],
+        expected: &[u8],
+        current_context_proof: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        if own.kind != Kind::User.as_u8() {
+            return Err(ClientError::new(
+                E_BINDING,
+                "human interaction Welcome requires a user identity",
+            ));
+        }
+        let items = wire::decode_welcomes_body(welcomes_body)?;
+        let expected_groups = wire::decode_expected(expected)?;
+        if items.len() != 1 || expected_groups.len() != 1 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction Welcome requires exactly one expected group",
+            ));
+        }
+        let item = &items[0];
+        let want = &expected_groups[0];
+        if item.group_id != want.group_id {
+            return Err(ClientError::new(
+                E_BINDING,
+                "interaction Welcome group mismatch",
+            ));
+        }
+        let now = unix_time()?;
+        let pinned_key = self.pinned_instance_signer_key()?;
+        let expected_context = crate::bot::human_interaction_context::Expected {
+            instance: crate::ids::InstanceId::from_bytes(own.instance_id),
+            group: crate::ids::MsgId::from_bytes(item.group_id),
+            participant_user: UserId::from_bytes(own.user_id),
+            participant_device: DeviceId::from_bytes(own.device_id),
+            now,
+        };
+        let context = crate::bot::human_interaction_context::verify(
+            current_context_proof,
+            &pinned_key,
+            &expected_context,
+        )
+        .map_err(|_| ClientError::new(E_BINDING, "interaction Welcome context rejected"))?;
+        if want.community_id != Some(*context.binding.community_id.as_bytes())
+            || !interaction_target_matches(&want.channel_id, &context.binding)
+            || *context.registration.group.as_bytes() != item.group_id
+        {
+            return Err(ClientError::new(
+                E_BINDING,
+                "interaction Welcome binding mismatch",
+            ));
+        }
+        self.welcomes_apply_kind(
+            welcomes_body,
+            expected,
+            GroupKind::Interaction,
+            None,
+            Some(HumanInteractionWelcome {
+                context,
+                proof: current_context_proof.to_vec(),
+            }),
+        )
     }
 
     /// Apply server-expected welcomes for a bound native Bot installation. Unlike the general
@@ -798,7 +891,7 @@ impl ClientCore {
         {
             return Err(ClientError::new(E_BINDING, "welcome community mismatch"));
         }
-        self.welcomes_apply_kind(welcomes_body, expected, group_kind, Some(bot))
+        self.welcomes_apply_kind(welcomes_body, expected, group_kind, Some(bot), None)
     }
 
     fn welcomes_apply_kind(
@@ -807,6 +900,7 @@ impl ClientCore {
         expected: &[u8],
         group_kind: GroupKind,
         bot: Option<super::bot_intents::Binding>,
+        human_interaction: Option<HumanInteractionWelcome>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let items = wire::decode_welcomes_body(welcomes_body)?;
@@ -819,7 +913,13 @@ impl ClientCore {
             if let Some(want) = expected.iter().find(|v| v.group_id == item.group_id) {
                 let id = &item.group_id;
                 let row = self.read(|c| group_row(c, id))?;
-                if bot.is_none() && row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE) {
+                if human_interaction.is_some() && row.is_some() {
+                    outcome = 2;
+                    reason = E_BINDING;
+                } else if bot.is_none()
+                    && human_interaction.is_none()
+                    && row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE)
+                {
                     // Preserve the longstanding human client idempotency behavior and ordering.
                     outcome = 1;
                 } else if row.as_ref().is_some_and(|r| {
@@ -887,23 +987,43 @@ impl ClientCore {
                             reason = err.code;
                         }
                         Ok((w, t)) => {
-                            let mut prior = self.take_group_unchecked(id)?;
-                            let floor = epoch_floor(row.as_ref(), prior.as_ref());
-                            let bind = binding(
-                                &own,
-                                want.community_id.as_ref(),
-                                &want.channel_id,
-                                want.policy_version,
-                                group_kind,
-                            );
-                            let welcome_receipt =
-                                bot.map(|bot| bot_welcome_receipt(bot, id, &item, &bind));
-                            let next = checked("commit_seq", item.commit_seq).and_then(|n| {
-                                n.checked_add(1).ok_or_else(|| {
-                                    ClientError::new(E_CORE_INPUT, "commit_seq out of range")
-                                })
-                            });
-                            let result = next.and_then(|next| {
+                            if let Some(human) = human_interaction.as_ref() {
+                                let result = self.apply_human_interaction_welcome(
+                                    id, &item, w, t, want, &own, human,
+                                );
+                                match result {
+                                    Ok(g) => {
+                                        self.keep_group(*id, g);
+                                        outcome = 0;
+                                    }
+                                    Err(err) => {
+                                        if err.code == super::error::E_CORE_STORAGE
+                                            || err.code == super::error::E_CORE_RELOAD
+                                        {
+                                            return Err(err);
+                                        }
+                                        outcome = 2;
+                                        reason = err.code;
+                                    }
+                                }
+                            } else {
+                                let mut prior = self.take_group_unchecked(id)?;
+                                let floor = epoch_floor(row.as_ref(), prior.as_ref());
+                                let bind = binding(
+                                    &own,
+                                    want.community_id.as_ref(),
+                                    &want.channel_id,
+                                    want.policy_version,
+                                    group_kind,
+                                );
+                                let welcome_receipt =
+                                    bot.map(|bot| bot_welcome_receipt(bot, id, &item, &bind));
+                                let next = checked("commit_seq", item.commit_seq).and_then(|n| {
+                                    n.checked_add(1).ok_or_else(|| {
+                                        ClientError::new(E_CORE_INPUT, "commit_seq out of range")
+                                    })
+                                });
+                                let result = next.and_then(|next| {
                                 self.write(|ctx, u| {
                                     if let Some(g) = prior.as_mut() {
                                         g.delete(ctx.provider)?;
@@ -976,19 +1096,20 @@ impl ClientCore {
                                     Ok::<_, ClientError>(g)
                                 })
                             });
-                            match result {
-                                Ok(g) => {
-                                    self.keep_group(*id, g);
-                                    outcome = 0;
-                                }
-                                Err(err) => {
-                                    if err.code == super::error::E_CORE_STORAGE
-                                        || err.code == super::error::E_CORE_RELOAD
-                                    {
-                                        return Err(err);
+                                match result {
+                                    Ok(g) => {
+                                        self.keep_group(*id, g);
+                                        outcome = 0;
                                     }
-                                    outcome = 2;
-                                    reason = err.code;
+                                    Err(err) => {
+                                        if err.code == super::error::E_CORE_STORAGE
+                                            || err.code == super::error::E_CORE_RELOAD
+                                        {
+                                            return Err(err);
+                                        }
+                                        outcome = 2;
+                                        reason = err.code;
+                                    }
                                 }
                             }
                         }
@@ -1002,5 +1123,177 @@ impl ClientCore {
                 .text(reason);
         }
         Ok(e.into_vec())
+    }
+
+    fn apply_human_interaction_welcome(
+        &mut self,
+        id: &[u8; 16],
+        item: &wire::WelcomeItem,
+        welcome: Welcome,
+        ratchet_tree: openmls::treesync::RatchetTreeIn,
+        want: &wire::ExpectedGroup,
+        own: &Own,
+        human: &HumanInteractionWelcome,
+    ) -> Result<DillaGroup, ClientError> {
+        if let Some(existing) = self.take_group_unchecked(id)? {
+            self.keep_group(*id, existing);
+            return Err(ClientError::new(
+                E_BINDING,
+                "interaction Welcome already exists",
+            ));
+        }
+        let context = &human.context;
+        if context.registration.group.as_bytes() != id
+            || context.binding.policy_version != want.policy_version
+            || context.binding.community_id.as_bytes().as_slice()
+                != want
+                    .community_id
+                    .as_ref()
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[])
+            || !interaction_target_matches(&want.channel_id, &context.binding)
+        {
+            return Err(ClientError::new(
+                E_BINDING,
+                "interaction Welcome context mismatch",
+            ));
+        }
+        let receipt_key = human_interaction_welcome_receipt_key(id);
+        let mut receipt_input = Encoder::new();
+        receipt_input
+            .array(8)
+            .text("dilla.human.interaction.welcome.receipt.v1")
+            .bytes(id)
+            .uint(item.epoch)
+            .uint(item.commit_seq)
+            .bytes(&item.tree_hash)
+            .bytes(&human.proof);
+        receipt_input.bytes(&item.blob).bytes(&item.ratchet_tree);
+        let receipt = sha256(&receipt_input.into_vec());
+        self.write(|ctx, unit| {
+            let signer = ctx
+                .signer
+                .ok_or_else(|| ClientError::new(E_CORE_STATE, "identity signer is unavailable"))?;
+            let fresh_now = unix_time()?;
+            if fresh_now < context.issued_at || fresh_now >= context.not_after {
+                return Err(ClientError::new(E_BINDING, "interaction Welcome context expired"));
+            }
+            let already_used = unit.with_conn(|c| super::schema::meta_get(c, &receipt_key))?;
+            if already_used.is_some() {
+                return Err(ClientError::new(E_BINDING, "interaction Welcome was already used"));
+            }
+            let group = DillaGroup::join_interaction_from_welcome_labelled(
+                ctx.provider,
+                welcome,
+                ratchet_tree,
+                WelcomeLabel {
+                    group_id: id,
+                    epoch: item.epoch,
+                    tree_hash: item.tree_hash.as_slice(),
+                },
+            )?;
+            if group.kind() != GroupKind::Interaction || group.member_count() != 2 {
+                return Err(ClientError::new(E_BINDING, "interaction Welcome roster rejected"));
+            }
+            let actual_binding = group.interaction_binding().map_err(|_| {
+                ClientError::new(E_BINDING, "interaction Welcome binding rejected")
+            })?;
+            let actual_tree_hash = group.tree_hash(ctx.provider, signer)?;
+            let mut leaves = Vec::with_capacity(2);
+            let mut saw_bot = false;
+            let mut saw_participant = false;
+            for member in group.members() {
+                let basic = BasicCredential::try_from(member.credential).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction Welcome credential rejected")
+                })?;
+                let credential = CredentialIdentity::decode(basic.identity()).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction Welcome credential rejected")
+                })?;
+                let dsk: [u8; 32] = member.signature_key.as_slice().try_into().map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction Welcome signature key rejected")
+                })?;
+                credential.verify_signatures(&dsk).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction Welcome credential rejected")
+                })?;
+                if credential.user_id.as_bytes() == context.registration.bot_user.as_bytes()
+                    && credential.device_id.as_bytes() == context.registration.bot_device.as_bytes()
+                {
+                    if credential.kind != Kind::Bot
+                        || credential.tier != Tier::Native
+                        || credential.signer_tier != SignerTier::Native
+                    {
+                        return Err(ClientError::new(E_BINDING, "interaction Bot credential rejected"));
+                    }
+                    saw_bot = true;
+                } else if credential.user_id.as_bytes() == &own.user_id
+                    && credential.device_id.as_bytes() == &own.device_id
+                {
+                    if credential.kind != Kind::User {
+                        return Err(ClientError::new(E_BINDING, "interaction participant credential rejected"));
+                    }
+                    saw_participant = true;
+                } else {
+                    return Err(ClientError::new(E_BINDING, "interaction Welcome contains another device"));
+                }
+                leaves.push((
+                    member.index.u32() as u64,
+                    crate::bot::interaction_admission::AuthenticatedRosterLeaf {
+                        user: credential.user_id,
+                        device: credential.device_id,
+                        dsk_pub: dsk,
+                        tier: credential.tier,
+                    },
+                ));
+            }
+            if !saw_bot || !saw_participant {
+                return Err(ClientError::new(E_BINDING, "interaction Welcome roster rejected"));
+            }
+            context
+                .verify_authenticated_group(
+                    &actual_binding,
+                    group.epoch(),
+                    &actual_tree_hash,
+                    &leaves,
+                )
+                .map_err(|_| ClientError::new(E_BINDING, "interaction Welcome proof mismatch"))?;
+            let next_seq = checked("commit_seq", item.commit_seq)?
+                .checked_add(1)
+                .ok_or_else(|| ClientError::new(E_CORE_INPUT, "commit_seq out of range"))?;
+            let held = checked("epoch", group.epoch())?;
+            unit.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO app_groups (group_id,kind,community_id,target_id,state,next_seq,max_epoch,epoch) VALUES(?1,3,?2,?3,2,?4,?5,?5)",
+                    params![id.as_slice(), want.community_id.as_ref().map(|v| v.as_slice()), want.channel_id.as_slice(), next_seq, held],
+                )?;
+                super::schema::meta_put(c, &receipt_key, &receipt)
+            })?;
+            Ok::<_, ClientError>(group)
+        })
+    }
+}
+
+#[cfg(test)]
+mod interaction_welcome_tests {
+    use super::*;
+
+    #[test]
+    fn kind3_welcome_target_is_the_bot_user_not_the_participant_user() {
+        let binding = DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([1; 16]),
+            bot_user_id: [2; 16],
+            installation_id: [3; 16],
+            community_id: CommunityId::from_bytes([4; 16]),
+            participant_user_id: [5; 16],
+            participant_device_id: DeviceId::from_bytes([6; 16]),
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        assert_ne!(binding.bot_user_id, binding.participant_user_id);
+        assert!(interaction_target_matches(&binding.bot_user_id, &binding));
+        assert!(!interaction_target_matches(
+            &binding.participant_user_id,
+            &binding
+        ));
     }
 }

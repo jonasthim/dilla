@@ -2,6 +2,7 @@ use super::*;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use std::sync::{Arc, Mutex};
+use tls_codec::{Deserialize as _, Serialize as _};
 
 fn provider() -> DillaProvider {
     let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
@@ -118,4 +119,92 @@ fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
         persisted, 0,
         "rejected candidate leaves no OpenMLS provider state"
     );
+}
+
+#[test]
+fn labelled_interaction_welcome_joins_only_the_v2_group_at_the_served_epoch_and_hash() {
+    let bot_provider = provider();
+    let participant_provider = provider();
+    let bot_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("Bot DSK");
+    let participant_signer =
+        SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("participant DSK");
+    let bot_credential = credential(0x21, 0x22, &bot_signer);
+    let participant_credential = credential(0x31, 0x32, &participant_signer);
+    let package = build_key_package(
+        &participant_provider,
+        &participant_signer,
+        participant_credential,
+        false,
+    )
+    .expect("participant KeyPackage");
+    let binding = DillaInteractionBinding {
+        instance_id: crate::ids::InstanceId::from_bytes([0x11; 16]),
+        bot_user_id: [0x21; 16],
+        installation_id: [0x33; 16],
+        community_id: crate::ids::CommunityId::from_bytes([0x44; 16]),
+        participant_user_id: [0x31; 16],
+        participant_device_id: crate::ids::DeviceId::from_bytes([0x32; 16]),
+        policy_version: 1,
+        e2ee_version: 1,
+        media_version: 0,
+    };
+    let mut bot = DillaGroup::create_interaction(
+        &bot_provider,
+        &bot_signer,
+        bot_credential,
+        GroupId::from_slice(&[0x61; 16]),
+        binding.clone(),
+    )
+    .expect("interaction group");
+    let added = bot
+        .add_members(&bot_provider, &bot_signer, &[package.key_package().clone()])
+        .expect("add participant");
+    let welcome = added.welcomes.into_iter().next().expect("Welcome").1;
+    bot.merge_pending_commit(&bot_provider)
+        .expect("merge add commit");
+    let tree = bot.export_ratchet_tree();
+    let tree_bytes = tree.tls_serialize_detached().expect("ratchet tree bytes");
+    let welcome_bytes = welcome.tls_serialize_detached().expect("Welcome bytes");
+    let wrong_hash = [0x99; 32];
+    let wrong_input = MlsMessageIn::tls_deserialize_exact(&welcome_bytes).expect("Welcome message");
+    let MlsMessageBodyIn::Welcome(welcome) = wrong_input.extract() else {
+        panic!("expected Welcome");
+    };
+    let tree = RatchetTreeIn::tls_deserialize_exact(&tree_bytes).expect("ratchet tree");
+    assert!(
+        DillaGroup::join_interaction_from_welcome_labelled(
+            &participant_provider,
+            welcome,
+            tree,
+            WelcomeLabel {
+                group_id: &[0x61; 16],
+                epoch: bot.epoch(),
+                tree_hash: &wrong_hash,
+            },
+        )
+        .is_err()
+    );
+
+    let input = MlsMessageIn::tls_deserialize_exact(&welcome_bytes).expect("Welcome message");
+    let MlsMessageBodyIn::Welcome(welcome) = input.extract() else {
+        panic!("expected Welcome");
+    };
+    let tree_hash = bot
+        .tree_hash(&bot_provider, &bot_signer)
+        .expect("served tree hash");
+    let joined = DillaGroup::join_interaction_from_welcome_labelled(
+        &participant_provider,
+        welcome,
+        RatchetTreeIn::tls_deserialize_exact(&tree_bytes).expect("ratchet tree"),
+        WelcomeLabel {
+            group_id: &[0x61; 16],
+            epoch: bot.epoch(),
+            tree_hash: &tree_hash,
+        },
+    )
+    .expect("join interaction Welcome");
+    assert_eq!(joined.kind(), GroupKind::Interaction);
+    assert_eq!(joined.interaction_binding().expect("v2 binding"), binding);
+    assert_eq!(joined.epoch(), bot.epoch());
+    assert_eq!(joined.member_count(), 2);
 }

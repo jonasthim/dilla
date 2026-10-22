@@ -358,6 +358,42 @@ impl DillaGroup {
         Self::join_welcome(provider, welcome, ratchet_tree, expected, Some(label))
     }
 
+    /// Join a kind-3 v2 interaction Welcome while checking the delivery-service labels before
+    /// the staged group is materialized. The caller must still authenticate the server's
+    /// current-context proof and compare the resulting MLS binding and roster before persisting
+    /// application state.
+    pub fn join_interaction_from_welcome_labelled(
+        provider: &DillaProvider,
+        welcome: Welcome,
+        ratchet_tree: RatchetTreeIn,
+        label: WelcomeLabel<'_>,
+    ) -> Result<Self, MlsError> {
+        let (group, interaction_binding) = provider.storage().transaction(|| {
+            let staged = StagedWelcome::new_from_welcome(
+                provider,
+                &join_config(GroupKind::Interaction),
+                welcome,
+                Some(ratchet_tree),
+            )
+            .map_err(mls_err)?;
+            let context = staged.group_context();
+            let interaction_binding =
+                DillaInteractionBinding::from_group_context(context).map_err(MlsError::Protocol)?;
+            if context.group_id().as_slice() != label.group_id {
+                return Err(MlsError::Protocol(ProtocolError::Binding));
+            }
+            if context.epoch().as_u64() != label.epoch || context.tree_hash() != label.tree_hash {
+                return Err(MlsError::WelcomeLabel);
+            }
+            let group = staged.into_group(provider).map_err(mls_err)?;
+            Ok((group, interaction_binding))
+        })?;
+        Ok(Self {
+            group,
+            binding: interaction_binding.group_binding(),
+        })
+    }
+
     fn join_welcome(
         provider: &DillaProvider,
         welcome: Welcome,
