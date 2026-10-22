@@ -469,6 +469,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									registration, registrationErr := service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 									if registrationErr != nil {
 										ensureErr = registrationErr
+									} else if catchup, catchupErr := service.NewMemberRegistrationCatchup(nativeClient, service.MemberRegistrationCatchupOptions{}); catchupErr != nil {
+										ensureErr = catchupErr
 									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID); registrationHandlerErr != nil {
 										ensureErr = registrationHandlerErr
 									} else {
@@ -485,8 +487,16 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
 										if membersErr != nil {
 											logger.Info("bot interaction registration worker unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
-										} else if workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session); workErr != nil {
-											logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
+										} else {
+											catchupResult, stageErr := catchup.StageOnce(ctx, members, registration)
+											if stageErr != nil {
+												logger.Info("bot member registration catch-up remains pending", "installation_id", installation.ID.String(), "error", stageErr.Error())
+											} else if catchupResult.More {
+												logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
+											}
+											if workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session); workErr != nil {
+												logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
+											}
 										}
 									}
 								}

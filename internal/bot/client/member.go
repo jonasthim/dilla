@@ -86,6 +86,15 @@ func (s *Session) CommunityMembers(community id.ID) (*CommunityMembers, error) {
 	return &CommunityMembers{session: s, community: community}, nil
 }
 
+// Page reads the next ordered page for this community using the exclusive
+// user ID cursor. CommunityMembersPage strictly validates the response.
+func (m *CommunityMembers) Page(ctx context.Context, after id.ID) (CommunityMemberPage, error) {
+	if m == nil || m.session == nil {
+		return CommunityMemberPage{}, ErrInvalidConfig
+	}
+	return m.session.CommunityMembersPage(ctx, m.community, after)
+}
+
 func (m *CommunityMembers) ResolveCurrentMember(ctx context.Context, user id.ID) (bool, string, error) {
 	if m == nil || m.session == nil {
 		return false, "", ErrInvalidConfig
