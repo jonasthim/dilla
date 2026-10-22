@@ -1,8 +1,8 @@
 //go:build linux
 
 // Command dillabot runs the first Linux service bootstrap for managed bot
-// installations. It reconciles native identity only; group sync, events and
-// music are separate work and are not reported as ready here.
+// installations. It reconciles identity and currently authorized MLS groups;
+// event dispatch and music are separate work and are not reported as ready here.
 package main
 
 import (
@@ -283,7 +283,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "not_implemented", "events", "not_implemented", "music", "not_implemented")
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "not_implemented", "music", "not_implemented")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -347,6 +347,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		nativeClient, err := native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
+		clear(key)
 		if err != nil {
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start")
 			continue
@@ -357,15 +358,25 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
-		_, ensureErr := lifecycle.Ensure(ctx)
+		result, ensureErr := lifecycle.Ensure(ctx)
+		if ensureErr == nil {
+			if result.Session == nil {
+				ensureErr = errors.New("identity lifecycle returned no scoped device session")
+			} else {
+				var membership *service.MembershipReconciler
+				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
+				if ensureErr == nil {
+					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
+				}
+			}
+		}
 		closeErr := nativeClient.Close()
-		clear(key)
 		if ensureErr != nil || closeErr != nil {
-			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity")
+			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_or_membership")
 			continue
 		}
 		succeeded++
-		logger.Info("bot installation identity reconciled", "installation_id", installation.ID.String())
+		logger.Info("bot installation identity and membership reconciled", "installation_id", installation.ID.String())
 	}
 	if succeeded != eligible {
 		return fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
