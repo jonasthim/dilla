@@ -13,11 +13,13 @@ export function isChromium(ua: string = globalThis.navigator?.userAgent ?? ''): 
 }
 
 /**
- * The one place that decides whether the misroute watch (misroute.ts) runs: Gecko's Firefox, whose BUNDLE demux puts an
- * SSRC that arrives before its answer on a spare section by payload type. Chromium and Safari never did (measured).
+ * The one place that decides whether the misroute watch (misroute.ts) runs: any Gecko browser (Firefox, Firefox for
+ * Android, SeaMonkey), whose BUNDLE demux puts an SSRC that arrives before its answer on a spare section by payload type.
+ * Chromium and Safari never did (measured); their agents say "like Gecko)", never "Gecko/<version>". Other Firefox sniffs
+ * (share-audio advice, the session's getBrowser) serve other features.
  */
 export function isFirefox(ua: string = globalThis.navigator?.userAgent ?? ''): boolean {
-  return /\bFirefox\/\d/.test(ua) && /\bGecko\//.test(ua) && !/\bSeaMonkey\//.test(ua);
+  return /\bGecko\/\d/.test(ua);
 }
 
 export function isVoiceSupported(): VoiceSupport {

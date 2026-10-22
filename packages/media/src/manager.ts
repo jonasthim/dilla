@@ -329,6 +329,15 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     this.refreshRemoteStatus();
   }
 
+  /**
+   * fix/firefox-misrouted-audio (review M7): the misroute watch's counts, kept on the main thread where the watch runs, so
+   * not in the worker's DillaMediaStats (nor its __dillaMediaStats mirror). recovered: publications re-subscribed after
+   * their audio landed on a spare receiver; missed: repeat cases the watch only logged.
+   */
+  misrouteCounts(): { recovered: number; missed: number } {
+    return { recovered: this.misrouteRecovered, missed: this.misrouteMissed };
+  }
+
   stats(): Promise<DillaMediaStats> {
     try {
       this.assertUsable();
@@ -456,8 +465,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       case 'stats': {
         const p = this.pendingStats.get(m.id);
         this.pendingStats.delete(m.id);
-        // The misroute counts live here, on the main thread; the worker reports its own counters only.
-        p?.resolve({ ...m.data, misrouteRecovered: this.misrouteRecovered, misrouteMissed: this.misrouteMissed });
+        p?.resolve(m.data);
         return;
       }
       case 'seqExhausted':

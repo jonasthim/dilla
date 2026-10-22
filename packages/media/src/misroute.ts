@@ -10,6 +10,10 @@
 // The watch reads getStats only. Frames on the spare receiver are never mapped, so the worker keeps holding and dropping
 // them (never decrypted under a guessed identity); the remedy is LiveKit's own re-subscription, which binds a new
 // downtrack (a new SSRC) once the client has the answer.
+//
+// Known limit (review M2): a receiver once bound to a subscribed track is never counted as spare, also after its peer
+// left and its transceiver is free. Were Firefox's payload-type fallback to pick such a section rather than a
+// pre-requested spare, the watch would not fire; every measured case used the pre-requested spare (mid 2).
 
 /** How long after TrackSubscribed the bound receiver may stay without RTP before the watch decides. */
 export const MISROUTE_WINDOW_MS = 3_000;
@@ -20,15 +24,16 @@ export const MISROUTE_CODE = 'E_MEDIA_MISROUTE';
 
 type Level = 'error' | 'warn' | 'info' | 'debug';
 type StatsSource = Pick<RTCRtpReceiver, 'getStats'>;
-interface WatchedTrack { kind: unknown; receiver?: RTCRtpReceiver }
-interface WatchedPublication { trackSid: string; setSubscribed(on: boolean): void }
+interface WatchedTrack { kind: unknown; receiver?: RTCRtpReceiver; isMuted?: boolean }
+/** isMuted / isDesired as livekit-client's RemoteTrackPublication has them; absent reads as unmuted and desired. */
+interface WatchedPublication { trackSid: string; isMuted?: boolean; isDesired?: boolean; setSubscribed(on: boolean): void }
 interface WatchedParticipant { sid: string; identity: string }
 
 export interface MisrouteDeps {
   /** Firefox only (support.ts isFirefox); false makes every method a no-op. */
   enabled: boolean;
   log(level: Level, msg: string): void;
-  /** A misroute was seen and the publication re-subscribed. */
+  /** A misroute was seen and the publication re-subscribed (setSubscribed false, then true, both done). */
   onRecover(identity: string): void;
   /** A misroute was seen again for a publication already re-subscribed once: logged and counted only. */
   onMiss(identity: string): void;
@@ -78,7 +83,7 @@ export class MisrouteWatch {
     this.cancel(receiver);
     const episode: Episode = { cancelled: false, timer: undefined };
     this.episodes.set(receiver, episode);
-    void this.run(episode, receiver, pub, participant);
+    void this.run(episode, track, receiver, pub, participant);
   }
 
   unsubscribed(track: WatchedTrack): void {
@@ -103,7 +108,10 @@ export class MisrouteWatch {
     return new Promise((resolve) => { episode.timer = setTimeout(resolve, ms); });
   }
 
-  /** The spare receivers' counts now: only a never-bound receiver with an inbound-rtp count is listed. */
+  /**
+   * The spare receivers' counts now: every never-bound receiver whose getStats answered, with 0 when it has no inbound-rtp
+   * entry yet (so a spare silent until now is seen when it starts receiving); one whose getStats failed is left out.
+   */
   private async spareCounts(): Promise<Map<StatsSource, number>> {
     const out = new Map<StatsSource, number>();
     await Promise.all([...this.receivers].filter((r) => !this.bound.has(r)).map(async (r) => {
@@ -113,8 +121,9 @@ export class MisrouteWatch {
     return out;
   }
 
-  private async run(episode: Episode, receiver: RTCRtpReceiver, pub: WatchedPublication, participant: WatchedParticipant): Promise<void> {
+  private async run(episode: Episode, track: WatchedTrack, receiver: RTCRtpReceiver, pub: WatchedPublication, participant: WatchedParticipant): Promise<void> {
     const baseline = await this.spareCounts();
+    if (episode.cancelled) return; // review M4: no timer is armed for an episode cancelled during the baseline read
     for (let elapsed = MISROUTE_POLL_MS; elapsed <= MISROUTE_WINDOW_MS; elapsed += MISROUTE_POLL_MS) {
       await this.wait(episode, MISROUTE_POLL_MS);
       if (episode.cancelled) return;
@@ -127,6 +136,9 @@ export class MisrouteWatch {
     const now = await this.spareCounts();
     if (episode.cancelled) return;
     this.finish(episode, receiver);
+    // Review I1: a muted peer (or one SpeakerPolicy no longer wants) legitimately sends nothing, and nothing ties a spare's
+    // RTP to this peer: such a publication is never re-subscribed nor named for another peer's misroute.
+    if (pub.isMuted === true || track.isMuted === true || pub.isDesired === false) return;
     const spare = [...now].some(([r, n]) => n > (baseline.get(r) ?? Number.POSITIVE_INFINITY));
     if (!spare) return;
     const key = `${participant.sid}/${pub.trackSid}`;
@@ -137,7 +149,6 @@ export class MisrouteWatch {
     }
     this.recovered.add(key);
     this.deps.log('error', `${MISROUTE_CODE}: ${participant.identity} ${pub.trackSid} landed on a spare receiver; re-subscribing`);
-    this.deps.onRecover(participant.identity);
     try {
       pub.setSubscribed(false);
     } catch (err) {
@@ -153,7 +164,10 @@ export class MisrouteWatch {
       pub.setSubscribed(true);
     } catch (err) {
       this.deps.log('warn', `${MISROUTE_CODE}: subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
+    // Review M3: counted (and noted for Diagnostics) only once the re-subscription was actually asked for.
+    this.deps.onRecover(participant.identity);
   }
 
   private finish(episode: Episode, receiver: object): void {

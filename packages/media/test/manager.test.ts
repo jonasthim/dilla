@@ -290,8 +290,7 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     const req = w.last('stats')!;
     const data = { passedThrough: 0, currentEpoch: '5' } as unknown as DillaMediaStats;
     w.reply({ kind: 'stats', id: req.msg.id, data });
-    // The worker's counters, with the main thread's misroute counts over them (fix/firefox-misrouted-audio).
-    await expect(p).resolves.toEqual({ ...data, misrouteRecovered: 0, misrouteMissed: 0 });
+    await expect(p).resolves.toBe(data);
   });
 
   // WB security I1: a call held after a refused rekey drops every media key at once; the next epoch installs as usual.
@@ -1217,9 +1216,9 @@ describe('the Firefox misroute watch through the manager', () => {
 
   afterEach(() => vi.useRealTimers());
 
-  it('re-subscribes a misrouted peer once, emits misrouteRecovered and counts it in stats()', async () => {
+  it('re-subscribes a misrouted peer once, emits misrouteRecovered and counts it in misrouteCounts()', async () => {
     vi.useFakeTimers();
-    const { w, m, room, spare, pub, track, carol, logs } = firefoxSetup();
+    const { m, room, spare, pub, track, carol, logs } = firefoxSetup();
     const seen: string[] = [];
     m.on('misrouteRecovered', (identity: string) => seen.push(identity));
     room.emit('trackSubscribed', track, pub, carol);
@@ -1231,13 +1230,17 @@ describe('the Firefox misroute watch through the manager', () => {
     room.emit('trackSubscribed', track, pub, carol);
     await watchWindow(spare);
     expect(pub.setSubscribed).toHaveBeenCalledTimes(2);
-    const p = m.stats();
-    await vi.advanceTimersByTimeAsync(0);
-    const data = { verified: {}, decrypted: {}, passedThrough: 0, misrouteRecovered: 0, misrouteMissed: 0 } as unknown as DillaMediaStats;
-    w.reply({ kind: 'stats', id: w.last('stats')!.msg.id, data });
-    const s = await p;
-    expect(s.misrouteRecovered).toBe(1);
-    expect(s.misrouteMissed).toBe(1);
+    expect(m.misrouteCounts()).toEqual({ recovered: 1, missed: 1 });
+  });
+
+  it('never re-subscribes a muted peer (review I1), as LiveKit hands its publication over', async () => {
+    vi.useFakeTimers();
+    const { m, room, spare, pub, track, carol } = firefoxSetup();
+    Object.assign(pub, { isMuted: true });
+    room.emit('trackSubscribed', track, pub, carol);
+    await watchWindow(spare);
+    expect(pub.setSubscribed).not.toHaveBeenCalled();
+    expect(m.misrouteCounts()).toEqual({ recovered: 0, missed: 0 });
   });
 
   it('never runs on Chromium', async () => {

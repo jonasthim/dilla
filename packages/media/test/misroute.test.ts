@@ -21,9 +21,17 @@ class FakeReceiver {
 
 class FakePublication {
   isSubscribed = true;
+  isMuted = false;
+  isDesired = true;
+  /** When set, setSubscribed throws it (a publication LiveKit no longer holds). */
+  throwOnSet: Error | null = null;
   readonly calls: boolean[] = [];
   constructor(readonly trackSid: string) {}
-  setSubscribed(on: boolean): void { this.calls.push(on); this.isSubscribed = on; }
+  setSubscribed(on: boolean): void {
+    if (this.throwOnSet !== null) throw this.throwOnSet;
+    this.calls.push(on);
+    this.isSubscribed = on;
+  }
 }
 
 const FIREFOX_UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0';
@@ -60,8 +68,10 @@ beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('isFirefox, the one place that decides the watchdog runs', () => {
-  it('is true for Firefox and false for Chromium, Safari and an empty agent', () => {
+  it('is true for every Gecko browser (Firefox, Firefox for Android, SeaMonkey) and false for Chromium, Safari and an empty agent', () => {
     expect(isFirefox(FIREFOX_UA)).toBe(true);
+    expect(isFirefox('Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0')).toBe(true);
+    expect(isFirefox('Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 SeaMonkey/2.53.20')).toBe(true);
     expect(isFirefox(CHROMIUM_UA)).toBe(false);
     expect(isFirefox('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15')).toBe(false);
     expect(isFirefox('')).toBe(false);
@@ -94,9 +104,68 @@ describe('MisrouteWatch', () => {
     const pub = new FakePublication('TR_a');
     w.subscribed(audio(bound), pub, peer());
     await runWindow();
-    await vi.advanceTimersByTimeAsync(5_000);
-    bound.packets = 3; // the first packet, late
     expect(pub.calls).toEqual([]);
+    expect(deps.recovered).toEqual([]);
+  });
+
+  // Review I2: a receiver that MediaTrackAdded delivers mid-window (another peer whose TrackSubscribed LiveKit defers)
+  // carries that peer's RTP; it is not a spare of the watched subscription.
+  it('does not fire on RTP of a receiver that appeared after the window began', async () => {
+    const { w, deps } = setup();
+    const bound = new FakeReceiver();
+    const late = new FakeReceiver();
+    const pub = new FakePublication('TR_a');
+    w.subscribed(audio(bound), pub, peer());
+    await vi.advanceTimersByTimeAsync(MISROUTE_POLL_MS);
+    w.receiverAdded(late as unknown as RTCRtpReceiver);
+    late.packets = 0;
+    await runWindow(() => { late.packets! += 25; });
+    expect(pub.calls).toEqual([]);
+    expect(deps.recovered).toEqual([]);
+  });
+
+  // Review I1: a muted peer's bound receiver legitimately gets nothing; another peer's misroute must not re-subscribe it
+  // nor name it in E_MEDIA_MISROUTE.
+  it('does not fire for a muted publication, whatever a spare receiver does', async () => {
+    const { w, deps } = setup();
+    const bound = new FakeReceiver();
+    const spare = new FakeReceiver();
+    w.receiverAdded(spare as unknown as RTCRtpReceiver);
+    spare.packets = 0;
+    const pub = new FakePublication('TR_muted');
+    pub.isMuted = true;
+    w.subscribed(audio(bound), pub, peer('PA_yves', 'd4'.repeat(16)));
+    await runWindow(() => { spare.packets! += 25; });
+    expect(pub.calls).toEqual([]);
+    expect(deps.recovered).toEqual([]);
+    expect(deps.logs.filter((l) => l.startsWith('error'))).toEqual([]);
+  });
+
+  it('does not fire for a publication muted during the window, nor for one no longer desired', async () => {
+    const { w, deps } = setup();
+    const spare = new FakeReceiver();
+    w.receiverAdded(spare as unknown as RTCRtpReceiver);
+    spare.packets = 0;
+    const mutedLate = new FakePublication('TR_m');
+    const undesired = new FakePublication('TR_u');
+    w.subscribed(audio(new FakeReceiver()), mutedLate, peer('PA_m'));
+    w.subscribed(audio(new FakeReceiver()), undesired, peer('PA_u'));
+    await runWindow((t) => { spare.packets! += 25; if (t === 3) { mutedLate.isMuted = true; undesired.isDesired = false; } });
+    expect(mutedLate.calls).toEqual([]);
+    expect(undesired.calls).toEqual([]);
+    expect(deps.recovered).toEqual([]);
+  });
+
+  // Review M3: the recovery is counted only when the re-subscription was actually asked for.
+  it('counts nothing when the unsubscribe throws', async () => {
+    const { w, deps } = setup();
+    const spare = new FakeReceiver();
+    w.receiverAdded(spare as unknown as RTCRtpReceiver);
+    spare.packets = 0;
+    const pub = new FakePublication('TR_a');
+    pub.throwOnSet = new Error('gone');
+    w.subscribed(audio(new FakeReceiver()), pub, peer());
+    await runWindow(() => { spare.packets! += 25; });
     expect(deps.recovered).toEqual([]);
   });
 
