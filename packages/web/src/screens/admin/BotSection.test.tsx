@@ -141,6 +141,52 @@ describe('the server bot settings', () => {
     expect(announce).toHaveBeenCalledWith(en['admin.bot.enabledNotice']);
   });
 
+  it('submits explicitly selected capabilities and supports toggling them by keyboard', async () => {
+    const { fake, user } = setup();
+    await screen.findByText(en['admin.bot.none']);
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).not.toBeChecked();
+    const music = screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] });
+    music.focus();
+    await user.keyboard(' ');
+    expect(music).toBeChecked();
+    const announcements = screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] });
+    await user.click(announcements);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ capabilities: 1 | 8 });
+  });
+
+  it('shows the permission ceiling and disables capabilities the current access summary cannot grant', async () => {
+    const { user } = setup(null, false, false, false);
+    await screen.findByText(en['admin.bot.none']);
+    expect(screen.getByText(en['admin.bot.capabilities.permissionCeiling'])).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toHaveAccessibleDescription(
+      /Requires Connect and Speak/);
+    await user.keyboard('{Tab}');
+  });
+
+  it('sends the currently read revision and explains when another admin changed the installation', async () => {
+    const initial = { ...ROW, state: 4 as const, revision: '11', capabilities: 255 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.reject(refusal({ code: 'E_CONFLICT', status: 409 }));
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.disabled']);
+    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] }));
+    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.conflict']);
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '11', capabilities: 1 });
+  });
+
   it.each([
     [0, 'admin.bot.status.pending'], [1, 'admin.bot.status.pending'], [2, 'admin.bot.status.joining'],
     [3, 'admin.bot.status.ready'], [4, 'admin.bot.status.disabled'], [5, 'admin.bot.status.failed'],

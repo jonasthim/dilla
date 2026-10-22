@@ -16,6 +16,17 @@ type StepUpPurpose = 'bot' | 'spotify';
 type JoinRoleSetting = { roleId: string | null; installationId: string };
 const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
 
+const CAPABILITY_OPTIONS = [
+  { name: 'music', bit: 1 << 0, permission: null, requirement: 'music' },
+  { name: 'welcome', bit: 1 << 1, permission: null, requirement: null },
+  { name: 'roles', bit: 1 << 2, permission: 'manageRoles', requirement: 'roles' },
+  { name: 'announcements', bit: 1 << 3, permission: null, requirement: null },
+  { name: 'warnings', bit: 1 << 4, permission: 'moderateMembers', requirement: 'warnings' },
+  { name: 'removal', bit: 1 << 5, permission: null, requirement: 'removal' },
+  { name: 'kick', bit: 1 << 6, permission: 'kickMembers', requirement: 'kick' },
+  { name: 'ban', bit: 1 << 7, permission: 'banMembers', requirement: 'ban' },
+] as const;
+
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
 const stateKey = (state: Installation['state']): StringKey => state <= 1 ? 'admin.bot.status.pending'
   : state === 2 ? 'admin.bot.status.joining' : state === 3 ? 'admin.bot.status.ready'
@@ -47,6 +58,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [phase, setPhase] = useState<Phase>('idle');
   const [stepUpPurpose, setStepUpPurpose] = useState<StepUpPurpose>('bot');
   const [busyFor, setBusyFor] = useState<string | null>(null);
+  const [selectedCapabilities, setSelectedCapabilities] = useState(0);
   const readGeneration = useRef(0);
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
@@ -61,6 +73,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setLoadedFor(null);
     setError(null);
     setPhase('idle');
+    setSelectedCapabilities(0);
     void client.call({ m: 'getBotInstallation', communityId }).then(value => {
       if (generation !== readGeneration.current) return;
       setInstallation(value as Installation | null);
@@ -89,18 +102,19 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const currentError = current ? error : null;
   const busy = busyFor === communityId;
   const enable = () => {
-    if (busy || !current || currentError !== null || factors === undefined) return;
+    if (busy || !current || currentError !== null || factors === undefined || access?.loaded !== true || !access.manageCommunity) return;
     setStepUpPurpose('bot');
     setPhase('stepup');
   };
   const configure = (stepUp: string) => {
-    if (busy || selectedCommunity.current !== communityId || !current || currentError !== null || factors === undefined) return;
+    if (busy || selectedCommunity.current !== communityId || !current || currentError !== null || factors === undefined
+      || access?.loaded !== true || !access.manageCommunity) return;
     const requestCommunity = communityId;
     const generation = readGeneration.current;
     setBusyFor(requestCommunity);
     setError(null);
     void client.call({ m: 'configureBotInstallation', communityId, requestId: requestId(),
-      expectedRevision: currentInstallation?.revision ?? null, capabilities: 0, stepUp }).then(value => {
+      expectedRevision: currentInstallation?.revision ?? null, capabilities: selectedCapabilities, stepUp }).then(value => {
       if (generation !== readGeneration.current) return;
       setInstallation(value as Installation);
       announce(t('admin.bot.enabledNotice'));
@@ -184,11 +198,16 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const bot = currentInstallation?.userId === null || currentInstallation?.userId === undefined
     ? undefined : members?.find(m => m.userId === currentInstallation.userId && m.kind === 1);
   const enabled = currentInstallation !== null && currentInstallation.state !== 4;
-  const enableUnavailable = !current || currentError !== null || factors === undefined;
+  const enableUnavailable = !current || currentError !== null || factors === undefined
+    || access?.loaded !== true || !access.manageCommunity;
   const status = currentInstallation === null ? null : t(stateKey(currentInstallation.state));
   const joinRoleCandidates = (roles ?? []).filter(role => role.position > 0
     && (access?.owner === true || role.position < (access?.top ?? 0)));
   const joinRoleReady = current && joinRole !== null && currentInstallation?.id === joinRole.installationId;
+  const canSelectCapability = (option: typeof CAPABILITY_OPTIONS[number]): boolean => access?.loaded === true && access.manageCommunity
+    && (option.permission === null || access[option.permission] === true);
+  const showCapabilitySelection = current && currentError === null
+    && (currentInstallation === null || currentInstallation.state === 4);
 
   return (
     <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
@@ -201,6 +220,32 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p role="status" aria-live="polite">{status}</p>
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
         </SettingsRow>
+      ) : null}
+      {showCapabilitySelection ? (
+        <fieldset aria-describedby={`${base}-capability-help`}>
+          <legend>{t('admin.bot.capabilities.select')}</legend>
+          <p id={`${base}-capability-help`}>{t('admin.bot.capabilities.permissionCeiling')}</p>
+          {CAPABILITY_OPTIONS.map(option => {
+            const key = `admin.bot.capability.${option.name}` as StringKey;
+            const requirement = option.requirement === null ? undefined : t(`admin.bot.capability.requires.${option.requirement}` as StringKey);
+            const checked = (selectedCapabilities & option.bit) !== 0;
+            const disabled = busy || !canSelectCapability(option);
+            return <div key={option.name}>
+              <label htmlFor={`${base}-capability-${option.name}`}>
+                <input id={`${base}-capability-${option.name}`} type="checkbox" checked={checked} disabled={disabled}
+                  aria-describedby={requirement === undefined ? `${base}-capability-help` : `${base}-capability-help ${base}-capability-${option.name}-help`}
+                  onChange={event => {
+                    const checkedNow = event.currentTarget.checked;
+                    setSelectedCapabilities(mask => checkedNow ? mask | option.bit : mask & ~option.bit);
+                  }} />
+                {t(key)}
+              </label>
+              {requirement === undefined ? null : <span id={`${base}-capability-${option.name}-help`}>{requirement}</span>}
+              {option.permission !== null && !canSelectCapability(option) && access?.loaded === true
+                ? <span>{t('admin.bot.capabilities.permissionUnavailable')}</span> : null}
+            </div>;
+          })}
+        </fieldset>
       ) : null}
       <section aria-labelledby={`${base}-join-role-title`}>
         <h3 id={`${base}-join-role-title`}>{t('admin.bot.joinRole.title')}</h3>
