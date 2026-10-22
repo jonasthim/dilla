@@ -925,7 +925,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `devices.revoke` | `remove` | button on the row of every other device that is not removed |
 | `devices.rename` | `rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
 | `devices.renameTitle` | `Name this device` | dialog title, the name dialog |
-| `devices.renameBody` | `A name you will recognise. The server can read and change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
+| `devices.renameBody` | `The server can change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
 | `devices.renameLabel` | `Device name` | field label, the name dialog (at most 64 characters) |
 | `devices.renameServerReads` | `The server can read this, like your display name.` | a second quiet hint line under the name field, in its description after `devices.renameBody` (web3.12.1) |
 | `devices.renameSave` | `Save` | submit, the name dialog |

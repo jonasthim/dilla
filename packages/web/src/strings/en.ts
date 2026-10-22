@@ -313,7 +313,7 @@ export const en = {
   'devices.revoke': 'remove',
   'devices.rename': 'rename',
   'devices.renameTitle': 'Name this device',
-  'devices.renameBody': 'A name you will recognise. The server can read and change it, so check a device by its id before you remove it.',
+  'devices.renameBody': 'The server can change it, so check a device by its id before you remove it.',
   'devices.renameLabel': 'Device name',
   'devices.renameServerReads': 'The server can read this, like your display name.',
   'devices.renameSave': 'Save',

@@ -59,7 +59,7 @@ describe('the copy rules', () => {
     expect(en['devices.cap.other']).toBe('{n} devices');
     expect(en['devices.cap.one']).toBe('one device');
     // EOD E7: a device can be named; the body says who can read the name.
-    expect(en['devices.renameBody']).toBe('A name you will recognise. The server can read and change it, so check a device by its id before you remove it.');
+    expect(en['devices.renameBody']).toBe('The server can change it, so check a device by its id before you remove it.');
     expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
