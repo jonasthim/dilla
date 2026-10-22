@@ -233,13 +233,18 @@ impl TestClient {
         ds: &mut dyn DeliveryService,
         group_id: &[u8],
     ) -> Result<(), TestkitError> {
-        self.absorb_proposals(ds, group_id)?;
+        let taken = self.absorb_proposals(ds, group_id)?;
         let group = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let epoch = group.epoch();
         let bundle = group.self_update(&self.provider, &self.signer)?;
+        self.requeue_taken(group_id, taken)?;
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
         let request = (|| {
             let group_info = bundle.group_info.ok_or_else(|| {
                 TestkitError::Scenario("the staged commit carries no GroupInfo".into())
@@ -1068,7 +1073,7 @@ impl TestClient {
         group_id: &[u8],
         member_removes_last: bool,
     ) -> Result<(), TestkitError> {
-        self.absorb_proposals(ds, group_id)?;
+        let taken = self.absorb_proposals(ds, group_id)?;
         let group = self
             .groups
             .get_mut(group_id)
@@ -1080,6 +1085,7 @@ impl TestClient {
             ));
         }
         let bundle = group.self_update(&self.provider, &self.signer)?;
+        self.requeue_taken(group_id, taken)?;
         // A queued instance Add makes the commit carry a Welcome, addressed by `self_update` to
         // the device the Add names; the instance stores it for that device (row 15).
         let welcomes = bundle
@@ -1097,11 +1103,15 @@ impl TestClient {
     /// The list, not only the `mls.handshake` frames, because a frame is fanned out asynchronously
     /// and may not have reached the socket when the committer builds its commit; invariant 4
     /// refuses a commit that misses an outstanding proposal.
+    ///
+    /// Answers the queued instance `Remove`s the listing lacked, which it took out for the next
+    /// commit only: the caller queues them again (`requeue_taken`) once that commit is staged, so a
+    /// refused commit leaves the queue as it was (UP13).
     fn absorb_proposals(
         &mut self,
         ds: &mut dyn DeliveryService,
         group_id: &[u8],
-    ) -> Result<(), TestkitError> {
+    ) -> Result<Vec<QueuedProposal>, TestkitError> {
         let items = ds.proposals(group_id)?;
         let group = self
             .groups
@@ -1110,12 +1120,12 @@ impl TestClient {
         // UP6b, correction I4: the listing never names a withdrawn proposal, so a queued instance
         // Remove it does not name is taken out (a client that missed the kind-3 row). A legacy
         // client predates the rule.
+        let mut taken = Vec::new();
         if !self.legacy {
             let listed: BTreeSet<Vec<u8>> = items.iter().map(|i| i.proposal_ref.clone()).collect();
-            let dropped = group
-                .drop_unlisted_instance_removes(&self.provider, |r| listed.contains(r))?;
+            taken = group.drop_unlisted_instance_removes(&self.provider, |r| listed.contains(r))?;
             if let Some(q) = self.queued.get_mut(group_id) {
-                for p in &dropped {
+                for p in &taken {
                     q.remove(p.proposal_reference_ref().as_slice());
                 }
             }
@@ -1139,6 +1149,32 @@ impl TestClient {
                 }
             }
         }
+        Ok(taken)
+    }
+
+    /// UP13: queues again what `absorb_proposals` took out for one commit, once that commit is
+    /// staged (it leaves them out). A merge empties the queue; a refused commit leaves them queued.
+    fn requeue_taken(
+        &mut self,
+        group_id: &[u8],
+        taken: Vec<QueuedProposal>,
+    ) -> Result<(), TestkitError> {
+        if taken.is_empty() {
+            return Ok(());
+        }
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| TestkitError::Scenario("not a member of this group".into()))?;
+        let refs: Vec<Vec<u8>> = taken
+            .iter()
+            .map(|p| p.proposal_reference_ref().as_slice().to_vec())
+            .collect();
+        group.requeue(&self.provider, taken)?;
+        self.queued
+            .entry(group_id.to_vec())
+            .or_default()
+            .extend(refs);
         Ok(())
     }
 
