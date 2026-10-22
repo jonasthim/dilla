@@ -47,6 +47,7 @@ fn large_fixture_candidate(index: u32) -> client_support::Core {
         &user,
         &format!("welcome-candidate-{index}"),
         client_support::NOW,
+        &client_support::INSTANCE_SIGNER_PUB,
     )
     .expect("candidate enrollment");
     let device = decode_strict(&core.identity().expect("candidate identity"), |d| {
