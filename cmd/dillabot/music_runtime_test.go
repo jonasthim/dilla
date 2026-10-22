@@ -237,21 +237,25 @@ func testLeaseManager(t *testing.T) *music.SpotifyLeaseManager {
 func TestNewMusicQueueStarterResolvesTrackToRoomCallAndProvider(t *testing.T) {
 	channel, community, group := id.New(), id.New(), id.New()
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}}
+	youtubePCM := runtimePCM{}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{
-		Community: community, Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: runtimePCM{},
+		Community: community, Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: youtubePCM,
 		Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{},
 		Channel: channel, LeaseManager: testLeaseManager(t), Lifetime: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"}
+	track := music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}
 	o, err := starter.OptionsFor(context.Background(), track)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls.channel != channel {
 		t.Fatalf("call channel = %s, want %s", calls.channel, channel)
+	}
+	if _, ok := o.PCM.(session.YouTubePCM); !ok {
+		t.Fatalf("YouTube PCM adapter type = %T", o.PCM)
 	}
 	if o.Community != community || o.Channel != channel || o.Provider != music.ProviderYouTube || o.Track != track.CanonicalID || o.Group != group || o.Call.CallID != calls.call.CallID || o.Epochs == nil || o.Encoder == nil || o.Publisher == nil {
 		t.Fatalf("incomplete runtime options: %#v", o)

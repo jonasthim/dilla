@@ -12,6 +12,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
+	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -113,7 +114,7 @@ type musicRuntimeDeps struct {
 	Community, Channel id.ID
 	Calls              musicCallStarter
 	SpotifyPCM         session.PCMStarter
-	YouTubePCM         session.PCMStarter
+	YouTubePCM         youtube.PCMSourceStarter
 	LeaseManager       *music.SpotifyLeaseManager
 	Encoder            session.EncoderStarter
 	Publisher          session.PublisherStarter
@@ -143,7 +144,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		case music.ProviderSpotify:
 			pcm = deps.SpotifyPCM
 		case music.ProviderYouTube:
-			pcm = deps.YouTubePCM
+			pcm = session.YouTubePCM{Source: deps.YouTubePCM}
 		default:
 			return session.Options{}, session.ErrInvalid
 		}
