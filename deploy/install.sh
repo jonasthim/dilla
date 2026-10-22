@@ -1035,9 +1035,17 @@ set_livekit_mode() { # MODE
 	mv -f "$CONF.new" "$CONF"
 }
 
+# run_doctor: dillad doctor as the service user, bounded: it reads files dillad writes (media.json)
+# and asks the network, and the upgrade holds the lock while it waits. DILLA_INSTALL_DOCTOR_TIMEOUT
+# shortens the bound for deploy/install_test.sh.
+DOCTOR_TIMEOUT="${DILLA_INSTALL_DOCTOR_TIMEOUT:-120}"
 run_doctor() {
 	DOCTOR_RC=0
-	DOCTOR_OUT="$(runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
+	DOCTOR_OUT="$(timeout "$DOCTOR_TIMEOUT" runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
+	if [ "$DOCTOR_RC" -eq 124 ]; then
+		DOCTOR_OUT="${DOCTOR_OUT:+$DOCTOR_OUT
+}FAIL  doctor       did not finish within $DOCTOR_TIMEOUT s"
+	fi
 }
 
 doctor_and_report() {

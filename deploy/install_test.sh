@@ -323,6 +323,8 @@ EOF
 	echo "this link is printed once and is not stored anywhere; the database holds only its SHA-256"
 	;;
 doctor)
+	# FAKE_DOCTOR_HANG: a doctor that never returns (a FIFO media.json, a stalled peer).
+	[ -z "${FAKE_DOCTOR_HANG:-}" ] || exec tail -f /dev/null
 	if [ -n "${FAKE_DOCTOR:-}" ]; then
 		cat "$FAKE_DOCTOR"
 	else
@@ -1554,6 +1556,16 @@ cmp -s "$PENDING_FILE" "$TMP/pending.first" || problems="$problems|a second busy
 refresh
 [ ! -e "$PENDING_FILE" ] || problems="$problems|the record outlived the restart"
 verdict "refresh: a deferred restart is recorded once for the doctor, and cleared by the restart"
+
+# Fix round 4: a doctor that never returns is cut off, so the upgrade (which holds the lock) ends.
+fresh "$NEW"
+FAKE_DOCTOR_HANG=1 DILLA_INSTALL_DOCTOR_TIMEOUT=2 RUN_TIMEOUT=60 KEEP_ROOT=1 run --upgrade --release-url "file://$C13"
+problems=""
+[ "$RC" -ne 124 ] || problems="$problems|the upgrade hung on the doctor"
+[ "$RC" -eq 1 ] || problems="$problems|exit status $RC, want 1: a doctor that did not finish is a failed check"
+has "$ERR" "did not finish within 2 s" || problems="$problems|the cut-off is not said"
+has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad doctor" || problems="$problems|the doctor did not run"
+verdict "a hanging doctor is cut off, and the upgrade ends"
 
 # The readiness trap: the installed binary is new, but the process systemd runs after the restart
 # is the old one. A probe run from the installed binary would pass; asking the running process does

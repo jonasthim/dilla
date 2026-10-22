@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -90,10 +92,13 @@ func writeMediaState(dataDir string, st mediaState) error {
 // a process that is not the unit's current one.
 var errNoMediaState = errors.New("no valid media.json")
 
+// maxMediaStateBytes bounds a media.json read; the real one is about 150 bytes.
+const maxMediaStateBytes = 4096
+
 // readMediaState reads media.json and applies the staleness rule: a file whose pid is not the
 // unit's MainPID was left by an earlier process (a crash or a reboot) and counts as absent.
 func readMediaState(ctx context.Context, dataDir string) (mediaState, error) {
-	raw, err := os.ReadFile(mediaStatePath(dataDir))
+	raw, err := readMediaStateFile(mediaStatePath(dataDir))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return mediaState{}, errNoMediaState
@@ -108,6 +113,36 @@ func readMediaState(ctx context.Context, dataDir string) (mediaState, error) {
 		return mediaState{}, fmt.Errorf("%w: pid %d is not the %s unit's MainPID", errNoMediaState, st.PID, mediaUnit)
 	}
 	return st, nil
+}
+
+// readMediaStateFile reads at most maxMediaStateBytes of path, which must be a regular file. The
+// directory is dillad's, and the doctor (run by the installer) and serve read it, so a FIFO, a
+// device or a link there must never block them or be followed: the open is O_NONBLOCK|O_NOFOLLOW
+// and the type is checked on the open file.
+func readMediaStateFile(path string) ([]byte, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: the state directory derived from dilla.toml
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err = f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxMediaStateBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxMediaStateBytes {
+		return nil, errors.New("larger than 4096 bytes")
+	}
+	return raw, nil
 }
 
 // mediaMainPID asks systemd for the unit's MainPID (0 when it is not running). A variable so a test
