@@ -20,7 +20,7 @@ const (
 	permViewAuditLog       = uint64(1 << 17)
 	maxEvidenceBytes       = 4 << 10
 	MaxEvidenceReasonBytes = 1024
-	EvidenceRetention      = 30 * 24 * time.Hour
+	EvidenceRetention      = 90 * 24 * time.Hour
 )
 
 var (
@@ -47,8 +47,9 @@ type Evidence struct {
 	ExpiresAt   time.Time
 }
 
-// EvidenceInput must represent evidence tied to an authoritative accepted
-// moderation action. Callers must not construct it from an unverified request.
+// EvidenceInput supports message-linked actions only and must represent an
+// authoritative accepted moderation action. Manual cases without a message
+// target are unsupported. Callers must not construct it from an unverified request.
 type EvidenceInput struct {
 	OperationID id.ID
 	MessageID   id.ID
@@ -72,7 +73,7 @@ func NewEvidenceWriter(state configStateClient) *EvidenceWriter {
 	return &EvidenceWriter{state: state, binding: state.Binding()}
 }
 
-// Save is idempotent by OperationID. The record expires no later than 30 days
+// Save is idempotent by OperationID. The record expires no later than 90 days
 // after CreatedAt; retries with different contents under the same ID conflict.
 func (w *EvidenceWriter) Save(ctx context.Context, input EvidenceInput) error {
 	if w == nil || w.state == nil || !validConfigBinding(w.binding) || input.OperationID.IsZero() || input.MessageID.IsZero() ||
@@ -82,7 +83,7 @@ func (w *EvidenceWriter) Save(ctx context.Context, input EvidenceInput) error {
 	}
 	now := time.Now().UTC()
 	created := input.CreatedAt.UTC().Truncate(time.Second)
-	if created.After(now.Add(5*time.Minute)) || now.Sub(created) > EvidenceRetention {
+	if !withinEvidenceRetention(input.CreatedAt, now) {
 		return ErrEvidenceWrite
 	}
 	input.CreatedAt = created
@@ -112,6 +113,14 @@ func (w *EvidenceWriter) Save(ctx context.Context, input EvidenceInput) error {
 		return nil
 	}
 	return ErrEvidenceConflict
+}
+
+func withinEvidenceRetention(createdAt, now time.Time) bool {
+	if createdAt.IsZero() {
+		return false
+	}
+	age := now.UTC().Sub(createdAt.UTC())
+	return age <= EvidenceRetention && age >= -5*time.Minute
 }
 
 // EvidenceReader reads one installation-bound evidence item after resolving

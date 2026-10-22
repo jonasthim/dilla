@@ -217,6 +217,17 @@ func TestEvidenceWriterUsesOperationIDIdempotently(t *testing.T) {
 	}
 }
 
+func TestEvidenceRetentionNinetyDayBoundary(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	boundary := now.Add(-90 * 24 * time.Hour)
+	if EvidenceRetention != 90*24*time.Hour || !withinEvidenceRetention(boundary, now) {
+		t.Fatalf("exact 90-day evidence age was rejected: retention=%s", EvidenceRetention)
+	}
+	if withinEvidenceRetention(boundary.Add(-time.Second), now) {
+		t.Fatal("evidence older than 90 days was accepted")
+	}
+}
+
 func validEvidenceInput() EvidenceInput {
 	return EvidenceInput{OperationID: id.ID{1}, MessageID: id.ID{2}, Action: ActionRemove, Rule: RuleDuplicate,
 		Reason: "Repeated message", Excerpt: "bounded excerpt", CreatedAt: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
