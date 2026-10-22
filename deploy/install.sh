@@ -584,7 +584,7 @@ NEW_VERSION="$("$WORK/$BIN_NAME" version 2>/dev/null | awk '$1 == "dillad" { pri
 NEW_JSON="$("$WORK/$BIN_NAME" version --json 2>/dev/null | head -n 1)" || NEW_JSON=""
 NEW_LEVEL="$(json_get "$NEW_JSON" media_level)"
 case "$NEW_LEVEL" in '' | *[!0-9]*) NEW_LEVEL=1 ;; esac
-# A dillad of media level 2 (web3.12) or later sends READY=1 and answers on media.sock.
+# A dillad of media level 2 (web3.13, the first of the new scheme) or later sends READY=1 and answers on media.sock.
 NEW_NOTIFY=0
 [ "$NEW_LEVEL" -lt 2 ] || NEW_NOTIFY=1
 NEW_MIN=""
@@ -649,7 +649,7 @@ conf_value() {
 	' "$CONF"
 }
 
-# turn_listen_served: TURN is on and turn.listen is set, so a web3.12+ dilla-media binds it (R-UP11).
+# turn_listen_served: TURN is on and turn.listen is set, so a web3.13+ dilla-media binds it (R-UP11).
 turn_listen_served() {
 	[ "$(conf_value turn enabled)" = true ] && [ -n "$(conf_value turn listen)" ]
 }
@@ -665,7 +665,7 @@ media_bind_cap() {
 }
 
 # write_media_unit notify|simple: deploy/dilla-media.service, verbatim, for a dillad that sends
-# READY=1 (web3.12 on); "simple" is the same unit for an older dillad, which never does.
+# READY=1 (web3.13 on); "simple" is the same unit for an older dillad, which never does.
 write_media_unit() {
 	cat >"$WORK/dilla-media.service" <<'UNIT'
 [Unit]
@@ -729,7 +729,7 @@ UNIT
 	put "$WORK/dilla-media.service" "$MEDIA_UNIT_PATH" 0644
 }
 
-# media_unit_type: notify for a new binary that sends READY=1 (media level 2, web3.12, on).
+# media_unit_type: notify for a new binary that sends READY=1 (media level 2, web3.13, on).
 media_unit_type() {
 	if [ "$NEW_LEVEL" -ge 2 ]; then echo notify; else echo simple; fi
 }
@@ -860,7 +860,7 @@ parse_report() {
 # the unit's MainPID) says about itself: first on media.sock (GET /media/self, asked as dillad
 # through the installed dillad as a client), then from its media.json. An answer for another pid,
 # a file left by an earlier process, or anything malformed counts as no answer. A media server
-# older than web3.12 has neither. Nothing reached through /proc is ever run.
+# older than web3.13 (every web3.12.x too) has neither. Nothing reached through /proc is ever run.
 media_state() {
 	MS_VERSION=""
 	MS_LEVEL=0
@@ -1004,7 +1004,7 @@ SCRIPT
 	put "$WORK/dilla-media-refresh" "$REFRESH_SCRIPT" 0755
 }
 
-# refresh_timer: enables the timer for a dillad that knows `media --idle` (web3.12 on), and
+# refresh_timer: enables the timer for a dillad that knows `media --idle` (web3.13 on), and
 # disables it for an older one, which would answer every minute with a usage error.
 refresh_timer() {
 	if [ "$NEW_LEVEL" -ge 2 ]; then
@@ -1110,7 +1110,7 @@ rollback_stuck() {
 		log "dilla-media was restarted onto the new binary. Whichever way you go back to the previous one, stop dilla-media"
 		log "before you start the previous dilla, and start it again first, so exactly one of them holds turn.listen:"
 		log "    systemctl stop dilla-media; <put the previous pair back as below>; systemctl start dilla-media; systemctl start dilla"
-		log "A previous release below v0.1.0-web3.12 runs dilla-media as Type=simple: set Type=simple in $MEDIA_UNIT_PATH and run systemctl daemon-reload first."
+		log "A previous release below v0.1.0-web3.$NEW_SCHEME_FIRST (every web3.12.x included) runs dilla-media as Type=simple: set Type=simple in $MEDIA_UNIT_PATH and run systemctl daemon-reload first."
 	fi
 	if [ -z "${SCHEMA_AFTER:-}" ]; then
 		log "First read the database's schema version with the previous binary:"
@@ -1138,9 +1138,9 @@ rollback_stuck() {
 MEDIA_WAIT=60
 API_WAIT=60
 
-# The released dillad binaries a running dilla-media older than web3.12 is recognised by, by the
+# The released dillad binaries a running dilla-media older than web3.13 is recognised by, by the
 # SHA-256 of its executable: such a media server has no media.sock and writes no media.json, and
-# nothing reached through /proc is ever run to ask it. web3.12 and later answer on media.sock, so
+# nothing reached through /proc is ever run to ask it. web3.13 and later answer on media.sock, so
 # this table never grows. "<sha256> <version> <media level> <asset>", from the release's SHA256SUMS.
 KNOWN_SFU_BINARIES="
 f13cf8c804d050afd295b178f8ef2a4c87ef1387a6782ba422652fe21a5af8c1 0.1.0-web3.11 1 dillad-linux-amd64
@@ -1250,8 +1250,9 @@ sfu_level() {
 				sl_level="$(json_get "$sl_json" media_level)"
 			else
 				sl_is="$(timeout 10 runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
-				# web3.11 to web3.12.4 know no --json and are level 1, as release-meta.mjs counts them.
-				if [ -n "$sl_is" ] && web3_at_least "$sl_is" "$BASELINE_SFU_FIRST"; then sl_level=1; fi
+				# web3.11 to web3.12.x know no --json and are level 1, as release-meta.mjs counts them; a web3.13+
+				# binary whose --json failed stays unknown (a restart).
+				if [ -n "$sl_is" ] && web3_at_least "$sl_is" "$BASELINE_SFU_FIRST" && ! new_scheme_release "$sl_is"; then sl_level=1; fi
 			fi
 			SFU_FROM="$SFU_FROM, which is $sl_cand"
 			break
@@ -1469,10 +1470,11 @@ if [ "$UPGRADE" -eq 1 ]; then
 	esac
 	MEDIA_DATA="$(conf_value instance data_dir)"
 	[ -n "$MEDIA_DATA" ] || MEDIA_DATA="$DATA_DIR"
-	# A release below web3.12 refuses turn.listen in public mode (its config validation), so a
-	# rollback there with the web3.12 opt-in set would leave the instance down (R-UP11).
-	if ! new_scheme_release "$NEW_VERSION" && [ "$(conf_value tls mode)" = acme_tls_alpn ] && [ -n "$(conf_value turn listen)" ]; then
-		die "v$NEW_VERSION refuses turn.listen in public mode (tls.mode = acme_tls_alpn), and dilla.toml sets it: remove turn.listen from dilla.toml first; public-mode TURN goes back to 443. Nothing was changed"
+	# A release below the new scheme (web3.11, every web3.12.x) refuses turn.listen in every tls.mode
+	# but behind_proxy (its config validation), and an omitted tls.mode defaults to acme_tls_alpn, so
+	# a rollback there with the opt-in set would leave the instance down (R-UP11).
+	if ! new_scheme_release "$NEW_VERSION" && [ "$(conf_value tls mode)" != behind_proxy ] && [ -n "$(conf_value turn listen)" ]; then
+		die "v$NEW_VERSION refuses turn.listen in public mode (tls.mode is not behind_proxy; an omitted tls.mode is acme_tls_alpn), and dilla.toml sets it: remove turn.listen from dilla.toml first; public-mode TURN goes back to 443. Nothing was changed"
 	fi
 	# The binary being replaced: what a rollback starts again, and how its media server reports ready.
 	OLD_VERSION="$("$BIN_DIR/dillad" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || OLD_VERSION=""

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
  *
  *   - The previous release's release.json says its own media_level.
  *   - A previous release with NO release.json is a release from before the scheme. From v0.1.0-web3.11 on it counts as
- *     media level 1 (web3.11 is the baseline CI proves; web3.12.1 to .3 shipped no file and kept its contract).
+ *     media level 1 (web3.11 is the baseline CI proves; web3.12 to .4 shipped no file and kept its contract).
  *   - A release older than web3.11 with no file counts as "required": nothing says what its SFU speaks.
  *   - So the new release's sfu_restart is "when-idle" when the previous level is at least its min_sfu_media_level, and
  *     "required" otherwise (and when there is no previous release at all).

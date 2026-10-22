@@ -420,11 +420,11 @@ make_fake() {
 	chmod 0755 "$1"
 }
 
-# make_fake_nojson OUT VERSION: a web3.12.0 to 12.4 dillad as shipped: the media server of level 2
-# behaviour (media.json, READY=1, --idle, --self) but no `version --json`, and no release.json.
+# make_fake_nojson OUT VERSION: a web3.12.0 to 12.4 dillad as shipped: media level 0 behaviour (no
+# `version --json`, `media --idle` or `--self`, no media.json, no READY=1, no TURN in dilla-media)
+# and no release.json. The installer counts it as level 1 by its version, not by what it says.
 make_fake_nojson() {
-	make_fake "$1" "$2" 2 1 '"turn"' v2
-	sed -i 's/^# fake-nojson.*/# fake-nojson 1/' "$1"
+	make_fake "$1" "$2" 0 0 none v2
 }
 
 # release_json BINARY: what release.yml makes of the binary's `version --json` (R-UP2), or nothing
@@ -451,6 +451,9 @@ make_release() {
 	(cd "$1" && sha256sum $assets >SHA256SUMS)
 }
 
+# Note: "fake-v2" (named web3.12 below) stands for the first release of the new scheme, which is
+# web3.13 in the real tag line; the real web3.12.x are old-scheme (level 1, no release.json), see
+# fake-w123. Its version string only has to differ from web3.11 and carry release.json.
 # The releases: web3.11 (REL, the base fake: no release.json), web3.12 (NEW: media level 2, works
 # with level 1, serves TURN in dilla-media), a compatible web3.13 (C13: level 2, needs 2) and an
 # incompatible one (I13: level 3, needs 3), and a web3.10 whose SFU no rule recognises.
@@ -1290,6 +1293,15 @@ refresh() {
 	ERR="$(cat "$TMP/out")"
 }
 # set_turn ENABLED LISTEN: [turn] enabled and listen in the instance's dilla.toml.
+# set_tls_mode MODE: [tls] mode in the instance's dilla.toml; MODE "omit" removes the line.
+set_tls_mode() {
+	awk -v m="$1" '
+		/^\[/ { inside = ($0 == "[tls]") }
+		inside && /^  mode = / { if (m == "omit") next; $0 = "  mode = \047" m "\047" }
+		{ print }
+	' "$ROOT/etc/dilla/dilla.toml" >"$TMP/tls.toml"
+	cat "$TMP/tls.toml" >"$ROOT/etc/dilla/dilla.toml"
+}
 set_turn() {
 	awk -v e="$1" -v l="$2" '
 		/^\[/ { inside = ($0 == "[turn]") }
@@ -1645,18 +1657,20 @@ has "$ERR" "dilla-media runs v0.1.0-web3.12.3 (media level 1, from the SHA-256 o
 [ "$(count 'systemctl restart dilla-media')" -eq 0 ] && [ "$(count 'systemctl stop dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted or stopped"
 [ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
 has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran"
-has "$(cat "$LOG")" "version --json" || problems="$problems|the matched binary was not tried with version --json"
+has "$(cat "$LOG")" "runuser -u dillad -- $ROOT/usr/local/bin/dillad version" || problems="$problems|the matched binary was not asked its version as dillad"
 verdict "an upgrade from a running web3.12.3 SFU (no version --json) keeps it, as when-idle says"
 
 # Executable identity still decides: a web3.12.3 SFU whose executable is neither the installed
 # binary nor dillad.prev is unknown, so a restart.
 fresh "$W123"
-printf '# some other dillad\n' >"$TMP/other-dillad"
+printf '#!/bin/sh\necho EXECUTED >>"%s"\necho "dillad 0.1.0-web3.12.3"\n' "$TMP/other-ran" >"$TMP/other-dillad"
 chmod 0755 "$TMP/other-dillad"
+rm -f "$TMP/other-ran"
 STUB_MEDIA_RUNS="$TMP/other-dillad" stub_sys restart dilla-media >/dev/null
 KEEP_ROOT=1 run --upgrade --yes --release-url "file://$N13"
 problems=""
 has "$ERR" "media level is unknown" || problems="$problems|an executable no rule knows was not unknown: $ERR"
+[ ! -e "$TMP/other-ran" ] || problems="$problems|the running executable was executed"
 verdict "a running executable that is neither the installed binary nor dillad.prev is still unknown"
 
 # A rollback to web3.12.3 is a rollback below the new scheme: dilla-media stops first (its SFU
@@ -1673,6 +1687,8 @@ before 'systemctl stop dilla-media' 'systemctl start dilla-media' || problems="$
 before 'systemctl start dilla-media' 'systemctl restart dilla' || problems="$problems|dilla started before dilla-media was stopped and started"
 [ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted as well"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-w123" || problems="$problems|the binary was not rolled back to web3.12.3"
+cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$TMP/dilla-media.simple.service" || problems="$problems|the media unit is not Type=simple for web3.12.3"
+has "$(cat "$LOG")" "systemctl disable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer stays on for web3.12.3"
 verdict "a rollback to web3.12.3 is accepted, and its turn.listen limit (dilla-media first) applies"
 
 fresh "$C13" public
@@ -1684,6 +1700,31 @@ problems="$(untouched)"
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
 has "$ERR" "remove turn.listen from dilla.toml first; public-mode TURN goes back to 443" || problems="$problems|the key is not named"
 verdict "a rollback to web3.12.3 with the public-mode turn.listen set is refused and changes nothing"
+
+# UP12 I3: web3.11 and every web3.12.x refuse turn.listen in every tls.mode but behind_proxy, and an
+# omitted tls.mode is acme_tls_alpn.
+for tlsmode in acme_dns acme_ip omit; do
+	fresh "$C13" public
+	set_turn true ':5349'
+	set_tls_mode "$tlsmode"
+	cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+	cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+	KEEP_ROOT=1 run --upgrade --yes --release-url "file://$W123"
+	problems="$(untouched)"
+	[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+	has "$ERR" "remove turn.listen from dilla.toml first" || problems="$problems|the key is not named"
+	verdict "a rollback to web3.12.3 with turn.listen set and tls.mode $tlsmode is refused up front"
+done
+
+# UP12 I1: a rollback that gets stuck after dilla-media was restarted tells the operator that every
+# release below the new scheme, web3.12.x included, runs it as Type=simple.
+fresh "$REL" public
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" FAKE_DOWN_FAIL=1 STUB_FAIL_V2=1 STUB_RESTART_MIGRATES_TO=17 KEEP_ROOT=1 run --upgrade --yes --restart-sfu --release-url "file://$NEW"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero"
+has "$ERR" "A previous release below v0.1.0-web3.13 (every web3.12.x included) runs dilla-media as Type=simple" || problems="$problems|the Type=simple hint does not name web3.13 and the web3.12.x"
+verdict "a stuck rollback after a media restart says web3.12.x runs dilla-media as Type=simple"
 
 # --restart-sfu on a compatible release.
 fresh "$NEW"

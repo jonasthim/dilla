@@ -91,7 +91,7 @@ parse_report() {
 # the unit's MainPID) says about itself: first on media.sock (GET /media/self, asked as dillad
 # through the installed dillad as a client), then from its media.json. An answer for another pid,
 # a file left by an earlier process, or anything malformed counts as no answer. A media server
-# older than web3.12 has neither. Nothing reached through /proc is ever run.
+# older than web3.13 (every web3.12.x too) has neither. Nothing reached through /proc is ever run.
 media_state() {
 	MS_VERSION=""
 	MS_LEVEL=0
