@@ -1269,6 +1269,25 @@ describe('UP6c tail (m2): a held restore the worker keeps refusing backs off', (
     expect(gaps).toEqual([0, 1, 2, 4, 8, 8]);
   });
 
+  it('a tick that finds the previous attempt still starting launches nothing and does not move the backoff on', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    // The restore's own attempt takes 2.5 s to be refused (the worker's commit round trips, a slow instance).
+    const original = h.module.startPageCall;
+    let first = true;
+    h.module.startPageCall = vi.fn(async (...args: Parameters<VoiceModule['startPageCall']>) => {
+      if (first) { first = false; h.started.push({ channelId: args[1].channelId, opts: args[2] }); await new Promise((r) => setTimeout(r, 2_500)); throw keptHold(); }
+      return original(...args);
+    });
+    for (let i = 0; i < 3; i++) h.failures.push(keptHold());
+    const t0 = Date.now();
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    const at = await startsOver(h, 9_500);
+    // At once; the ticks at 1 and 2 s find it starting; the tick at 3 s retries, then 2 s, then 4 s later.
+    expect(at.map((x) => Math.round((x - t0) / 1_000))).toEqual([0, 3, 5, 9]);
+  });
+
   it('the instance answering again starts the backoff over at 1 s, and a success ends it', async () => {
     fakeClocks();
     const h = harness();

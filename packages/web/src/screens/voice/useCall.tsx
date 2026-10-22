@@ -1357,9 +1357,11 @@ export function useCall(o: UseCallOptions): CallView {
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
-    /** UP6c tail (m2): the held restore's own backoff while the instance answers. The first tick below is its 1 s step
-     *  (the restore itself attempted at once); 0 once the instance answered again (its attempt at once, then 1 s). */
-    let heldDelay = 1_000;
+    /** UP6c tail (m2): the held resumes this recovery's ticks launched (the restore's own one at once is not counted)
+     *  since the instance last answered again. Only a tick that launched one moves the backoff on: a tick that found the
+     *  previous attempt still starting launches nothing, and the next tick stays 1 s away. */
+    let heldTries = 0;
+    let launched = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
     let running = false;
@@ -1374,6 +1376,7 @@ export function useCall(o: UseCallOptions): CallView {
       const wait = retryAt.current - Date.now();
       if (wait > 0) { schedule(wait); return; }
       running = true;
+      launched = false;
       try {
         await attempt();
       } finally {
@@ -1385,13 +1388,8 @@ export function useCall(o: UseCallOptions): CallView {
       // whose resume the worker refused with the hold kept backs off 1, 2, 4, 8 s while the instance answers, since each
       // attempt is a start and a commit at the instance.
       if (recoveryWindow.current !== null && instanceOnline()) {
-        if (recoveryHeld.current !== null) {
-          heldDelay = heldDelay === 0 ? 1_000 : Math.min(heldDelay * 2, HELD_RETRY_MAX_MS);
-          delay = heldDelay;
-        } else {
-          heldDelay = 0;
-          delay = 1_000;
-        }
+        if (recoveryHeld.current !== null && launched) heldTries += 1;
+        delay = recoveryHeld.current !== null ? Math.min(1_000 * 2 ** heldTries, HELD_RETRY_MAX_MS) : 1_000;
       } else {
         delay = Math.min(delay * 2, RECOVERY_BACKOFF_MAX_MS);
       }
@@ -1420,7 +1418,7 @@ export function useCall(o: UseCallOptions): CallView {
       const held = recoveryHeld.current;
       // UP7 fix round 1: past HOLD_MS by the page's clock the hold is expired whatever the worker would say: read first.
       if (held !== null && Date.now() - held.at > HOLD_MS) dropHeldRef.current(recoveryChannelId, held);
-      else if (held !== null) { joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
+      else if (held !== null) { launched = true; joinRef.current(recoveryChannelId, undefined, resumeOfRef.current(recoveryChannelId, held)); return; }
       // Fix round 1 (I1), AW5 (R-AW7): only on a fresh read of its community's AFK state, and only while the person is
       // not away there since the call (nor cut there by the sweep); a read that does not come joins nothing.
       // Fix round 2 (B-I1): a read that fails or does not come in time skips this attempt only; the backoff and the
@@ -1442,7 +1440,7 @@ export function useCall(o: UseCallOptions): CallView {
       online = now;
       if (!now || cancelled) return;
       delay = 1_000;
-      heldDelay = 0;
+      heldTries = 0;
       schedule(0);
     });
     schedule(delay);
