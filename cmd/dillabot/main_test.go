@@ -5,31 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/id"
 )
-
-func TestInteractionHandlersRegisterOnlyReadOnlyModerationCases(t *testing.T) {
-	community := id.New()
-	moderationHandlers := service.ModerationInteractions{CommunityID: community}.Handlers()
-	handlers := interactionHandlers(nil, community, moderationHandlers)
-	if len(handlers) != 2 {
-		t.Fatalf("registered operations = %v, want overview and case list only", handlers)
-	}
-	if _, ok := handlers[protocol.OpOverviewGet]; !ok {
-		t.Fatal("overview handler missing")
-	}
-	if _, ok := handlers[protocol.OpModerationCases]; !ok {
-		t.Fatal("read-only moderation case list handler missing")
-	}
-	for _, operation := range []protocol.Operation{protocol.OpModerationEvidence} {
-		if _, ok := handlers[operation]; ok {
-			t.Fatalf("mutation operation %d registered", operation)
-		}
-	}
-}
 
 func TestLoadConfigRequiresAbsoluteProtectedCredentialPaths(t *testing.T) {
 	dir := t.TempDir()

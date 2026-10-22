@@ -10,16 +10,17 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-func TestRuntimeInteractionHandlersRegisterAnnouncementListOnly(t *testing.T) {
+func TestRuntimeInteractionHandlersRegisterReadOperationsOnly(t *testing.T) {
 	community := id.New()
 	handlers := runtimeInteractionHandlers(
 		service.OverviewInteractions{CommunityID: community},
 		service.AnnouncementInteractions{CommunityID: community},
+		service.ModerationInteractions{CommunityID: community},
 	)
-	if len(handlers) != 2 {
-		t.Fatalf("runtime handlers has %d operations, want overview.get and announcements.list", len(handlers))
+	if len(handlers) != 3 {
+		t.Fatalf("runtime handlers has %d operations, want overview.get, announcements.list, and moderation.cases", len(handlers))
 	}
-	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil {
+	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil || handlers[protocol.OpModerationCases].Handle == nil {
 		t.Fatalf("runtime handlers missing read operations: %v", handlers)
 	}
 	if _, ok := handlers[protocol.OpAnnouncementsPut]; ok {
@@ -27,5 +28,8 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementListOnly(t *testing.T) {
 	}
 	if _, ok := handlers[protocol.OpAnnouncementsDelete]; ok {
 		t.Fatal("runtime handlers registered announcements.delete")
+	}
+	if _, ok := handlers[protocol.OpModerationEvidence]; ok {
+		t.Fatal("runtime handlers registered moderation.evidence")
 	}
 }
