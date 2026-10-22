@@ -82,11 +82,19 @@ func (d *DS) RegisterWithBotReceipt(ctx context.Context, r BotRegisterRequest) (
 	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
 		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
 	}
+	// The admission-aware registration path must run the authenticated MLS roster
+	// preflight and consume its issued receipt in the same final transaction as
+	// group persistence. Until that path exists, reject both v2 interaction
+	// bindings and legacy kind-3-shaped bindings before a receipt lookup or write.
+	var interaction interactionBindingV2
+	if err := cborx.Unmarshal(r.Registration.Binding, &interaction); err == nil && interaction.Version == 2 && interaction.Kind == 3 {
+		return BotRegisterReceipt{}, false, errForbidden("managed Bot interaction registration is unavailable")
+	}
+	if binding, err := decodeBinding(r.Registration.Binding); err == nil && binding.Kind == 3 {
+		return BotRegisterReceipt{}, false, errForbidden("managed Bot interaction registration is unavailable")
+	}
 	if !r.AdmissionRequestID.IsZero() {
-		binding, err := decodeBinding(r.Registration.Binding)
-		if err != nil || binding.Kind != 3 {
-			return BotRegisterReceipt{}, false, errInvalid("admission_request_id is only valid for kind-3 registration")
-		}
+		return BotRegisterReceipt{}, false, errInvalid("admission_request_id is only valid for kind-3 registration")
 	}
 	domainBody := append([]byte("dilla bot group registration v1\x00"), r.RegistrationBody...)
 	hash := sha256.Sum256(domainBody)
