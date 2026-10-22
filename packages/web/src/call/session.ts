@@ -89,7 +89,7 @@ export interface PageCallState {
  *  R-UP6): the worker hears callHold, so the call group is kept for the recovery's resume; any other end (E_CALL_ENDED,
  *  E_REMOVED) posts callLeave 'lost' as before.
  *  'hold' (UP7, Q1 = B): the update reload. callHold is posted and answered first (the worker keeps the call group and
- *  persists its callKeep marker), then the LiveKit room is disconnected with no MLS leave, so the SFU frees the old
+ *  persists its callKeep marker), then the LiveKit room is disconnected with no group self-Remove, so the SFU frees the old
  *  participant at once, and the media goes. The next page resumes the held group. */
 export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost' | 'hold';
 export interface PageCall {
@@ -1554,7 +1554,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const releaseAll = () => release().catch(() => undefined).finally(stopCaptures);
       if (reason === 'hold') {
         // UP7 (Q1 = B): the update reload. The worker holds the group (and persists its marker) before anything else; then
-        // the room is disconnected with no MLS leave, so the SFU frees this participant at once, and the media goes.
+        // the room is disconnected with no group self-Remove, so the SFU frees this participant at once, and the media goes.
         leaving = hold().then(() => {
           try { manager.dispose(); } catch { /* released below */ }
           return Promise.resolve(room.disconnect()).catch(() => undefined);
