@@ -172,7 +172,12 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       if (generation !== readGeneration.current) return;
       const refreshed = value as Installation | null;
       if (refreshed !== null && refreshed.communityId !== communityId) return;
-      if (editingCapabilitiesRef.current) {
+      if (editingCapabilitiesRef.current && refreshed?.state !== 3) {
+        editingCapabilitiesRef.current = false;
+        setEditingCapabilities(false);
+        setInstallation(refreshed);
+        setSelectedCapabilities(refreshed?.capabilities ?? 0);
+      } else if (editingCapabilitiesRef.current) {
         setInstallation(previous => previous === null || refreshed === null ? refreshed : { ...previous, state: refreshed.state });
       } else {
         setInstallation(refreshed);

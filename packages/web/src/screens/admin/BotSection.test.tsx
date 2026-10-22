@@ -71,6 +71,22 @@ describe('the server bot settings', () => {
     expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
   });
 
+  it('leaves capability edit mode when a refresh finds a disabled installation', async () => {
+    const initial = { ...ROW, state: 3 as const, capabilities: 1 };
+    const refreshed = { ...ROW, state: 4 as const, capabilities: 3 };
+    const { fake, user } = setup(initial);
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(refreshed);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(screen.getByRole('button', { name: en['admin.bot.status.refresh'] }));
+    expect(await screen.findByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.welcome'] })).toBeChecked();
+  });
+
   it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
     spotifySession.clear();
     vi.mocked(authorizeSpotify).mockClear();
