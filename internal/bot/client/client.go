@@ -169,6 +169,7 @@ type APIError struct {
 	Code                                      string
 	Outcome                                   Outcome
 	RetryAfterMS                              *uint64
+	EventFloor, EventHighWater                uint64
 	WireVersions, E2EEVersions, MediaVersions []uint64
 	WinningCommit                             []byte
 	Proposals                                 [][]byte
@@ -344,6 +345,19 @@ func errorShape(a []any) bool {
 		retry = &n
 	}
 	switch a[0] {
+	case "E_PRUNED":
+		if retry != nil {
+			return false
+		}
+		if len(a) == 3 {
+			return true
+		}
+		if len(a) != 5 {
+			return false
+		}
+		floor, floorOK := asUint(a[3])
+		high, highOK := asUint(a[4])
+		return floorOK && floor > 0 && highOK && floor <= high+1
 	case "E_COMMIT_CONFLICT":
 		if retry != nil || len(a) != 5 {
 			return false
@@ -415,6 +429,11 @@ func parseAPIError(status int, code string, a []any) *APIError {
 		e.RetryAfterMS = &n
 	}
 	switch code {
+	case "E_PRUNED":
+		if len(a) == 5 {
+			e.EventFloor, _ = asUint(a[3])
+			e.EventHighWater, _ = asUint(a[4])
+		}
 	case "E_VERSION":
 		e.WireVersions, _ = uints(a[3])
 		e.E2EEVersions, _ = uints(a[4])
@@ -541,6 +560,12 @@ func expectedStatus(method, path string) (int, bool) {
 	}
 	if len(parts) == 3 && parts[0] == "communities" && parts[2] == "channels" && method == http.MethodGet {
 		return 200, true
+	}
+	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "events" && method == http.MethodGet {
+		return 200, true
+	}
+	if len(parts) == 5 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "events" && parts[4] == "ack" && method == http.MethodPut {
+		return 204, true
 	}
 	return 0, false
 }
