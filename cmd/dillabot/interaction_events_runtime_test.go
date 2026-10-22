@@ -82,8 +82,37 @@ func TestInteractionEventHandlerDispatchesOnlyNativeInteractionGroups(t *testing
 			return false, nil
 		}),
 	)
-	if err := handler.HandleGroupEvent(context.Background(), event); err != nil {
-		t.Fatalf("ignore non-interaction group: %v", err)
+	if err := handler.HandleGroupEvent(context.Background(), event); err == nil {
+		t.Fatal("unsupported text group was silently accepted")
+	}
+}
+
+func TestInteractionEventHandlerLeavesUnsupportedTextGroupUnacknowledged(t *testing.T) {
+	event := native.GroupEvent{DeliveryID: 9, Group: id.New()}
+	handler := newInteractionEventHandler(
+		interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
+			return native.GroupInfo{ID: group, Kind: 0}, nil
+		}),
+		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+			t.Fatal("text group reached interaction dispatcher")
+			return "", nil
+		}),
+		interactionResponseSenderFunc(func(context.Context, native.GroupEvent, string) (bool, error) {
+			t.Fatal("text group reached response sender")
+			return false, nil
+		}),
+	)
+	acked := false
+	poller := interactionPollerFunc(func(ctx context.Context, h service.GroupEventHandler) (service.GroupEventPollResult, error) {
+		if err := h.HandleGroupEvent(ctx, event); err != nil {
+			return service.GroupEventPollResult{}, err
+		}
+		acked = true
+		return service.GroupEventPollResult{Handled: 1, AcknowledgedThrough: event.DeliveryID}, nil
+	})
+	_, err := newInteractionEventRuntime(poller, handler).Drain(context.Background())
+	if err == nil || acked {
+		t.Fatalf("Drain error=%v acked=%v; unsupported group must stay pending", err, acked)
 	}
 }
 

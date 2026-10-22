@@ -54,7 +54,7 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 		return errors.New("native interaction event group inspection mismatch")
 	}
 	if group.Kind != 3 {
-		return nil
+		return errors.New("unsupported native bot event group kind")
 	}
 	response, err := h.dispatcher.Dispatch(ctx, event)
 	if err != nil {
