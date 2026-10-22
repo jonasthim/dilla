@@ -13,6 +13,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
+	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
@@ -51,6 +52,26 @@ type runtimePublisher struct{}
 
 func (runtimePublisher) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
 	return nil, errors.New("unused")
+}
+
+type runtimeStateNative struct {
+	binding native.Binding
+	rows    map[string]native.StateValue
+}
+
+func (n *runtimeStateNative) Binding() native.Binding { return n.binding }
+func (n *runtimeStateNative) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
+	return n.rows[string(key)], nil
+}
+func (n *runtimeStateNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	c := changes[0]
+	old := n.rows[string(c.Key)]
+	if old.Revision != c.ExpectedRevision {
+		return nil, persistence.ErrConflict
+	}
+	revision := old.Revision + 1
+	n.rows[string(c.Key)] = native.StateValue{Revision: revision, Value: append([]byte(nil), c.Value...)}
+	return []uint64{revision}, nil
 }
 
 func testLeaseManager(t *testing.T) *music.SpotifyLeaseManager {
@@ -129,5 +150,50 @@ func TestMusicQueueStarterRejectsCallForDifferentChannel(t *testing.T) {
 	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"})
 	if err == nil {
 		t.Fatal("expected mismatched call group to be rejected")
+	}
+}
+
+func TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio(t *testing.T) {
+	channel, community := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := store.Load(context.Background(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := music.Apply(initial.State, initial.Revision, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(context.Background(), channel, initial.Revision, queued); err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(queued, queued.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(context.Background(), channel, queued.Revision, playing); err != nil {
+		t.Fatal(err)
+	}
+
+	starts := 0
+	starter := session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+		starts++
+		return session.Options{}, errors.New("must not resolve track during restore")
+	}}
+	supervisor, err := newMusicSupervisor(context.Background(), channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	if starts != 0 {
+		t.Fatalf("restore resolved/started %d tracks, want none", starts)
+	}
+	state := supervisor.State()
+	if !state.Paused || state.Current == nil || state.Current.ID != "track-1" {
+		t.Fatalf("restored state=%+v, want current track retained but paused", state)
 	}
 }
