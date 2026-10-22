@@ -56,6 +56,31 @@ Every group carries a GroupContext extension of type `0xF001` (RFC 9420 private-
 ]
 ```
 
+Bot interaction groups use the following typed v2 form; it is a separate encoding, not an extension
+of the legacy v1 kind-3 binding:
+
+```
+[
+  2,                       ; version
+  instance_id,             ; bstr, 16 bytes
+  null,                    ; legacy community slot stays null for kind 3
+  bot_user_id,             ; bstr, 16 bytes, the interaction target
+  3,                       ; kind = interaction
+  policy_version,          ; uint, snapshot at creation
+  1,                       ; e2ee_version
+  0,                       ; media_version
+  installation_id,         ; bstr, 16 bytes
+  community_id,            ; bstr, 16 bytes, installation's community scope
+  participant_user_id      ; bstr, 16 bytes, the single eligible human participant
+]
+```
+
+All five IDs in the v2 form MUST be nonzero. A v2 decoder MUST require exactly eleven fields,
+the null legacy community slot, kind 3, and the stated protocol versions. Legacy v1 kind-3
+bindings remain valid for existing human interaction groups; Bot admission MUST require v2 and
+must also validate the installation and participant against the server-authoritative admission
+contract. This binding format alone does not authorize a participant or enable Bot admission.
+
 Rules:
 
 1. A client MUST reject a Welcome, GroupInfo, Proposal or Commit whose group's `dilla_binding`

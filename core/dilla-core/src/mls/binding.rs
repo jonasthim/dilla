@@ -155,6 +155,130 @@ impl DillaBinding {
     }
 }
 
+/// Version-2 binding for a Bot interaction group. The original `community_id` slot in the
+/// eight-field `DillaBinding` remains null for kind 3; this typed extension adds the
+/// installation's community scope and the one human participant as immutable GroupContext data.
+/// Keeping this separate preserves v1 bindings (including legacy kind-3 groups) and avoids
+/// treating a caller-supplied participant as authenticated before a group actually carries v2.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DillaInteractionBinding {
+    pub instance_id: InstanceId,
+    /// The Bot account, retained as the interaction group's v1 target.
+    pub bot_user_id: [u8; 16],
+    pub installation_id: [u8; 16],
+    pub community_id: CommunityId,
+    pub participant_user_id: [u8; 16],
+    pub policy_version: u64,
+    pub e2ee_version: u64,
+    pub media_version: u64,
+}
+
+impl DillaInteractionBinding {
+    /// Encode v2 as `[2, instance, null, bot, 3, policy, e2ee, media, installation,
+    /// community, participant]`. The null in position 2 preserves the established kind-3
+    /// semantics; the appended community is the installation scope.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Encoder::with_capacity(128);
+        e.array(11)
+            .uint(2)
+            .bytes(self.instance_id.as_bytes())
+            .null()
+            .bytes(&self.bot_user_id)
+            .uint(u64::from(GroupKind::Interaction.as_u8()))
+            .uint(self.policy_version)
+            .uint(self.e2ee_version)
+            .uint(self.media_version)
+            .bytes(&self.installation_id)
+            .bytes(self.community_id.as_bytes())
+            .bytes(&self.participant_user_id);
+        e.into_vec()
+    }
+
+    /// Decode only the v2 interaction shape. Exact length, null legacy community scope, kind,
+    /// protocol versions and all identity IDs are checked before returning a typed value.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        decode_strict(bytes, |d| {
+            d.array(11)?;
+            let version = d.uint()?;
+            let instance_id = InstanceId::from_bytes(d.bytes_exact::<16>()?);
+            let legacy_community_id = d.opt_bytes_exact::<16>()?;
+            let bot_user_id = d.bytes_exact::<16>()?;
+            let kind = d.uint()?;
+            let policy_version = d.uint()?;
+            let e2ee_version = d.uint()?;
+            let media_version = d.uint()?;
+            let installation_id = d.bytes_exact::<16>()?;
+            let community_id = CommunityId::from_bytes(d.bytes_exact::<16>()?);
+            let participant_user_id = d.bytes_exact::<16>()?;
+            Ok((
+                version,
+                instance_id,
+                legacy_community_id,
+                bot_user_id,
+                kind,
+                policy_version,
+                e2ee_version,
+                media_version,
+                installation_id,
+                community_id,
+                participant_user_id,
+            ))
+        })
+        .map_err(|_| ProtocolError::Binding)
+        .and_then(
+            |(
+                version,
+                instance_id,
+                legacy_community_id,
+                bot_user_id,
+                kind,
+                policy_version,
+                e2ee_version,
+                media_version,
+                installation_id,
+                community_id,
+                participant_user_id,
+            )| {
+                let ids_nonzero = instance_id.as_bytes() != &[0; 16]
+                    && bot_user_id != [0; 16]
+                    && installation_id != [0; 16]
+                    && community_id.as_bytes() != &[0; 16]
+                    && participant_user_id != [0; 16];
+                if version != 2
+                    || legacy_community_id.is_some()
+                    || kind != u64::from(GroupKind::Interaction.as_u8())
+                    || e2ee_version != 1
+                    || media_version != 0
+                    || !ids_nonzero
+                {
+                    return Err(ProtocolError::Binding);
+                }
+                Ok(Self {
+                    instance_id,
+                    bot_user_id,
+                    installation_id,
+                    community_id,
+                    participant_user_id,
+                    policy_version,
+                    e2ee_version,
+                    media_version,
+                })
+            },
+        )
+    }
+
+    pub fn to_extension(&self) -> Extension {
+        Extension::Unknown(DILLA_BINDING_ID, UnknownExtension(self.encode()))
+    }
+
+    pub fn from_extensions<T>(exts: &Extensions<T>) -> Result<Self, ProtocolError> {
+        let raw = exts
+            .unknown(DILLA_BINDING_ID)
+            .ok_or(ProtocolError::Binding)?;
+        Self::decode(&raw.0)
+    }
+}
+
 /// The instance external sender's basic-credential identity: CBOR `[1, "instance", instance_id]`.
 pub fn instance_credential_identity(instance_id: &InstanceId) -> Vec<u8> {
     let mut e = Encoder::with_capacity(32);
@@ -223,6 +347,112 @@ mod tests {
         bytes.push(0x00);
         assert_eq!(DillaBinding::decode(&bytes), Err(ProtocolError::Binding));
         assert_eq!(DillaBinding::decode(&[]), Err(ProtocolError::Binding));
+    }
+
+    fn interaction_v2() -> DillaInteractionBinding {
+        DillaInteractionBinding {
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            bot_user_id: [0x22; 16],
+            installation_id: [0x33; 16],
+            community_id: CommunityId::from_bytes([0x44; 16]),
+            participant_user_id: [0x55; 16],
+            policy_version: 9,
+            e2ee_version: 1,
+            media_version: 0,
+        }
+    }
+
+    #[test]
+    fn interaction_v2_binding_round_trips_and_keeps_legacy_community_null() {
+        let b = interaction_v2();
+        let bytes = b.encode();
+        assert_eq!(bytes[0], 0x8b, "an 11-element array head");
+        assert_eq!(DillaInteractionBinding::decode(&bytes).unwrap(), b);
+
+        // Legacy kind-3 bindings remain readable for existing human interaction groups. Bot
+        // admission must separately require the typed v2 contract.
+        let legacy = DillaBinding {
+            v: 1,
+            instance_id: b.instance_id,
+            community_id: None,
+            target_id: b.bot_user_id,
+            kind: GroupKind::Interaction,
+            policy_version: b.policy_version,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        assert_eq!(DillaBinding::decode(&legacy.encode()).unwrap(), legacy);
+        assert_eq!(
+            DillaInteractionBinding::decode(&legacy.encode()),
+            Err(ProtocolError::Binding)
+        );
+    }
+
+    #[test]
+    fn interaction_v2_binding_rejects_scope_kind_version_and_identity_mismatches() {
+        let b = interaction_v2();
+        let valid = b.encode();
+        assert_eq!(
+            DillaInteractionBinding::decode(&[]),
+            Err(ProtocolError::Binding)
+        );
+        let mut trailing = valid.clone();
+        trailing.push(0x00);
+        assert_eq!(
+            DillaInteractionBinding::decode(&trailing),
+            Err(ProtocolError::Binding)
+        );
+
+        for mutate in [
+            |x: &mut DillaInteractionBinding| x.instance_id = InstanceId::from_bytes([0; 16]),
+            |x: &mut DillaInteractionBinding| x.bot_user_id = [0; 16],
+            |x: &mut DillaInteractionBinding| x.installation_id = [0; 16],
+            |x: &mut DillaInteractionBinding| x.community_id = CommunityId::from_bytes([0; 16]),
+            |x: &mut DillaInteractionBinding| x.participant_user_id = [0; 16],
+            |x: &mut DillaInteractionBinding| x.e2ee_version = 2,
+            |x: &mut DillaInteractionBinding| x.media_version = 1,
+        ] {
+            let mut invalid = b.clone();
+            mutate(&mut invalid);
+            assert_eq!(
+                DillaInteractionBinding::decode(&invalid.encode()),
+                Err(ProtocolError::Binding)
+            );
+        }
+
+        // In this canonical fixed-width layout, byte 1 is the version and byte 37 is kind.
+        let mut wrong_version = valid.clone();
+        wrong_version[1] = 1;
+        assert_eq!(
+            DillaInteractionBinding::decode(&wrong_version),
+            Err(ProtocolError::Binding)
+        );
+        let mut wrong_kind = valid.clone();
+        wrong_kind[37] = 2;
+        assert_eq!(
+            DillaInteractionBinding::decode(&wrong_kind),
+            Err(ProtocolError::Binding)
+        );
+
+        // The original community slot must stay null; the installation community is appended.
+        let mut wrong_slot = crate::cbor::Encoder::new();
+        wrong_slot
+            .array(11)
+            .uint(2)
+            .bytes(b.instance_id.as_bytes())
+            .bytes(b.community_id.as_bytes())
+            .bytes(&b.bot_user_id)
+            .uint(3)
+            .uint(b.policy_version)
+            .uint(1)
+            .uint(0)
+            .bytes(&b.installation_id)
+            .bytes(b.community_id.as_bytes())
+            .bytes(&b.participant_user_id);
+        assert_eq!(
+            DillaInteractionBinding::decode(&wrong_slot.into_vec()),
+            Err(ProtocolError::Binding)
+        );
     }
 
     #[test]

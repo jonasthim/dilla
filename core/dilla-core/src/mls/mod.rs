@@ -30,8 +30,8 @@ mod storage;
 mod tx;
 
 pub use binding::{
-    DILLA_BINDING, DILLA_BINDING_ID, DillaBinding, GroupKind, external_senders,
-    instance_credential, instance_credential_identity, instance_sender_index,
+    DILLA_BINDING, DILLA_BINDING_ID, DillaBinding, DillaInteractionBinding, GroupKind,
+    external_senders, instance_credential, instance_credential_identity, instance_sender_index,
 };
 pub use policy::{
     CALL_SWEEP, PAST_EPOCHS_CALL, PAST_EPOCHS_TEXT, TEXT_SWEEP, past_epoch_policy,
