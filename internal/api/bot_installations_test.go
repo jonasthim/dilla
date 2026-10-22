@@ -15,6 +15,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
 	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -335,6 +336,10 @@ func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	if first.Code != http.StatusCreated {
 		t.Fatalf("enable = %d (%x), want 201", first.Code, first.Body.Bytes())
 	}
+	page, err := deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
+	if err != nil || len(page.Events) != 1 || page.Events[0].Kind != botprotocol.EventInstallation || page.Events[0].Data[1] != uint64(store.BotInstallationPending) || page.Events[0].Data[2] != uint64(1) {
+		t.Fatalf("enable event = %+v, %v; want one pending installation revision 1", page, err)
+	}
 	replay := putCBORAuth(h, path, encode(""), token)
 	if replay.Code != http.StatusOK {
 		t.Fatalf("matching completed replay = %d (%x), want 200", replay.Code, replay.Body.Bytes())
@@ -357,6 +362,19 @@ func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	row, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
 	if err != nil || row.State != store.BotInstallationPending || row.Revision != 1 {
 		t.Fatalf("installation after retries = %+v, %v; want pending revision 1", row, err)
+	}
+	page, err = deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
+	if err != nil || len(page.Events) != 1 {
+		t.Fatalf("replay/noop event page = %+v, %v; want exactly one event", page, err)
+	}
+	disableBody, _ := cborx.Marshal([]any{id.New(), uint64(1)})
+	disablePath := path + "/disable"
+	if rec := postCBORAuth(h, disablePath, disableBody, token); rec.Code != http.StatusOK {
+		t.Fatalf("disable = %d (%x)", rec.Code, rec.Body.Bytes())
+	}
+	page, err = deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
+	if err != nil || len(page.Events) != 2 || page.Events[1].Kind != botprotocol.EventInstallation || page.Events[1].Data[1] != uint64(store.BotInstallationDisabled) || page.Events[1].Data[2] != uint64(2) {
+		t.Fatalf("disable event page = %+v, %v; want one disabled event revision 2", page, err)
 	}
 }
 
@@ -695,6 +713,10 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	if err != nil || len(membersAfter) != len(membersBefore) {
 		t.Fatalf("duplicate DSK enrollment left membership: before=%d after=%d err=%v", len(membersBefore), len(membersAfter), err)
 	}
+	beforeEnrollEvents, err := deps.Repo.ListBotStructuralEvents(context.Background(), cid, 0, 10)
+	if err != nil || len(beforeEnrollEvents.Events) != 1 || beforeEnrollEvents.Events[0].Kind != botprotocol.EventInstallation {
+		t.Fatalf("rejected enrollments emitted events: %+v, %v", beforeEnrollEvents, err)
+	}
 
 	enrollBody := makeEnrollBody(enrollRequestID, credential, credential.UMKPub, credential.SSKPub, credential.DSKPub, credential.Credential)
 	enrolled := doBotCBOR(h, http.MethodPost, enrollPath, enrollBody, authHeader)
@@ -736,6 +758,16 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	}
 	if retry := putCBORAuth(h, credentialPath, credentialBody, botToken); retry.Code != http.StatusOK {
 		t.Fatalf("matching final credential replay while joining = %d (%x)", retry.Code, retry.Body.Bytes())
+	}
+	page, err := deps.Repo.ListBotStructuralEvents(context.Background(), cid, 0, 10)
+	if err != nil || len(page.Events) != 3 {
+		t.Fatalf("enrollment event page = %+v, %v; want pending, enrolling, joining exactly once", page, err)
+	}
+	for i, state := range []uint8{store.BotInstallationPending, store.BotInstallationEnrolling, store.BotInstallationJoining} {
+		event := page.Events[i]
+		if event.Kind != botprotocol.EventInstallation || event.Data[0] != installationID || event.Data[1] != uint64(state) || event.Data[2] != uint64(i+1) || event.Sequence != uint64(i+1) {
+			t.Fatalf("installation event %d = %+v, want state %d revision %d", i, event, state, i+1)
+		}
 	}
 	installationAfterRetry, err := deps.Repo.GetActiveBotInstallationByCommunity(context.Background(), cid)
 	if err != nil || installationAfterRetry.Revision != 3 || installationAfterRetry.State != store.BotInstallationJoining {

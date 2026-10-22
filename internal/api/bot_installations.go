@@ -12,6 +12,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/bot/identity"
+	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -83,6 +84,17 @@ type botOperationPayload struct {
 	Request      id.ID
 	Revision     *uint64
 	Capabilities uint64
+}
+
+// appendBotInstallationEvent runs inside the installation mutation transaction.
+// A replay returns the recorded operation before reaching this function.
+func appendBotInstallationEvent(ctx context.Context, tx store.Repository, row store.BotInstallationRow) error {
+	_, err := tx.AppendBotStructuralEvent(ctx, botprotocol.Event{
+		ID: id.New(), CommunityID: row.CommunityID, Timestamp: uint64(row.Updated),
+		Kind: botprotocol.EventInstallation,
+		Data: []any{row.ID, uint64(row.State), row.Revision},
+	})
+	return err
 }
 
 func registerBotInstallations(m *server.Mux, d Deps) {
@@ -242,6 +254,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if err := tx.CreateBotInstallation(r.Context(), current); err != nil {
 				return err
 			}
+			if err := appendBotInstallationEvent(r.Context(), tx, current); err != nil {
+				return err
+			}
 		} else if cerr != nil {
 			return cerr
 		} else {
@@ -308,6 +323,9 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 				current.State = store.BotInstallationPending
 			}
 			if err := tx.UpdateBotInstallation(r.Context(), current.ID, current.Revision-1, current); err != nil {
+				return err
+			}
+			if err := appendBotInstallationEvent(r.Context(), tx, current); err != nil {
 				return err
 			}
 		}
@@ -585,6 +603,9 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 				row.RoleID = nil
 			}
 			if err := tx.UpdateBotInstallation(r.Context(), row.ID, req.ExpectedRevision, row); err != nil {
+				return err
+			}
+			if err := appendBotInstallationEvent(r.Context(), tx, row); err != nil {
 				return err
 			}
 			if row.RuntimeID != nil {
@@ -982,6 +1003,9 @@ func (d Deps) EnrollBotInstallation(w http.ResponseWriter, r *http.Request) {
 		if err := tx.UpdateBotInstallation(r.Context(), row.ID, row.Revision-1, row); err != nil {
 			return err
 		}
+		if err := appendBotInstallationEvent(r.Context(), tx, row); err != nil {
+			return err
+		}
 		result = row
 		encoded, err := encodeBotInstallationResult(row)
 		if err != nil {
@@ -1121,6 +1145,9 @@ func (d Deps) FinalizeBotCredential(w http.ResponseWriter, r *http.Request) {
 		cur.Revision++
 		cur.Updated = now
 		if err := tx.UpdateBotInstallation(r.Context(), cur.ID, req.ExpectedRevision, cur); err != nil {
+			return err
+		}
+		if err := appendBotInstallationEvent(r.Context(), tx, cur); err != nil {
 			return err
 		}
 		row = cur
@@ -1263,6 +1290,9 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		cur.Revision++
 		cur.Updated = now
 		if err := tx.UpdateBotInstallation(r.Context(), cur.ID, req.ExpectedRevision, cur); err != nil {
+			return err
+		}
+		if err := appendBotInstallationEvent(r.Context(), tx, cur); err != nil {
 			return err
 		}
 		row = cur
