@@ -188,7 +188,7 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | — | `[generation,server_time,ordinary_active_count,has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]` | `201` new / `200` replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]`; kind-3 adds `admission_request_id` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
 
@@ -200,7 +200,9 @@ The collection GET is a read-only current inventory snapshot with server Unix
 time in seconds; it never consumes a package. Its fallback flag is uint 0 or 1.
 
 Managed Bots register groups only through the installation-scoped routes above;
-their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Human group
+their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Existing
+non-kind-3 Bot registration keeps its three-field outer tuple; an initial kind-3
+interaction adds the nonzero admission request ID as field four. Human group
 registration and its four-field CBOR tuple remain unchanged. `registration_body`
 is a bstr of at most 65,505 bytes (the whole CBOR request is capped at 64 KiB)
 containing the exact deterministic-CBOR encoding of

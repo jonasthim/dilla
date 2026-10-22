@@ -476,7 +476,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// exist (deviation B35).
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
-	groups := &api.Groups{DS: delivery, Limiter: limiter}
+	groups := &api.Groups{DS: delivery, Limiter: limiter,
+		LoadBotInteractionPreflight: deps.LoadBotInteractionRegistrationPreflight}
 	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
 	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
 	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine

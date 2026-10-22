@@ -176,9 +176,88 @@ func (d *DS) RegisterWithBotReceipt(ctx context.Context, r BotRegisterRequest) (
 	return botRegisterReceipt(intent.receipt), true, nil
 }
 
-// RegisterBotInteractionGroup is the separate kind-3 atomic acceptance path. It remains
-// unmounted until the API admission loader supplies TrustedPreflight and the end-to-end tests
-// cover acceptance and recovery. RegisterWithBotReceipt retains its explicit kind-3 refusal.
+// ReplayBotInteractionGroup checks only the durable receipt pair and current authenticated Bot
+// session. It deliberately does not require a live admission proof, so an exact retry can recover
+// after expiry or admission-receipt compaction. A conflicting operation or admission reuse fails.
+func (d *DS) ReplayBotInteractionGroup(ctx context.Context, r BotInteractionRegisterRequest) (BotRegisterReceipt, bool, error) {
+	if d == nil || d.opts.Store == nil || r.OperationID.IsZero() || r.InstallationID.IsZero() || r.AdmissionRequestID.IsZero() ||
+		r.ExpectedGeneration == 0 || r.ExpectedGeneration > math.MaxInt64 || len(r.RegistrationBody) == 0 ||
+		r.Session.Scope != auth.ScopeEnrolled || r.Session.Bot == nil || r.Session.Bot.InstallationID != r.InstallationID || len(r.Session.TokenHash) == 0 {
+		return BotRegisterReceipt{}, false, errInvalid("invalid kind-3 managed registration replay intent")
+	}
+	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree})
+	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
+		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
+	}
+	bodyHash := sha256.Sum256(append([]byte("dilla bot group registration v1\x00"), r.RegistrationBody...))
+	prior, err := d.lookupBotInteractionRegistration(ctx, r, bodyHash)
+	if err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	if prior == nil {
+		return BotRegisterReceipt{}, false, nil
+	}
+	if err := d.reconcileBotInteractionRegistration(ctx, prior.GroupID); err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	return botRegisterReceipt(*prior), true, nil
+}
+
+// BotInteractionGroupBinding contains routing hints read from an authenticated GroupContext.
+type BotInteractionGroupBinding struct {
+	InstanceID          id.ID
+	BotUserID           id.ID
+	InstallationID      id.ID
+	CommunityID         id.ID
+	ParticipantUserID   id.ID
+	ParticipantDeviceID id.ID
+	PolicyVersion       uint64
+	E2EEVersion         uint64
+	MediaVersion        uint64
+}
+
+// AuthenticatedBotInteractionBinding returns routing hints only after importing GroupInfo and its
+// ratchet tree through OpenMLS and reading the resulting GroupContext binding. The binding itself
+// must be a canonical, complete kind-3 v2 tuple.
+func (d *DS) AuthenticatedBotInteractionBinding(ctx context.Context, registration RegisterRequest) (BotInteractionGroupBinding, error) {
+	var binding interactionBindingV2
+	if d == nil || d.opts.Wasm == nil || registration.GroupID.IsZero() || len(registration.GroupInfo) == 0 || len(registration.RatchetTree) == 0 {
+		return BotInteractionGroupBinding{}, errInvalid("invalid kind-3 registration context")
+	}
+	inst, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return BotInteractionGroupBinding{}, err
+	}
+	defer inst.Release()
+	group, err := inst.PublicGroupFromExternal(ctx, registration.RatchetTree, registration.GroupInfo)
+	if err != nil {
+		return BotInteractionGroupBinding{}, errBinding("invalid authenticated kind-3 GroupInfo")
+	}
+	defer group.Close(ctx)
+	state, err := group.State(ctx)
+	if err != nil {
+		return BotInteractionGroupBinding{}, err
+	}
+	if !bytes.Equal(state.GroupID, registration.GroupID[:]) || state.LeafCount != 2 || len(state.Members) != 2 || !bytes.Equal(state.Binding, registration.Binding) {
+		return BotInteractionGroupBinding{}, errBinding("authenticated kind-3 GroupContext does not match registration")
+	}
+	if err := cborx.Unmarshal(state.Binding, &binding); err != nil {
+		return BotInteractionGroupBinding{}, errBinding("invalid kind-3 v2 GroupContext binding")
+	}
+	encoded, err := cborx.Marshal(binding)
+	if err != nil || !bytes.Equal(encoded, state.Binding) || binding.Version != 2 || binding.LegacyCommunityID != nil || binding.Kind != 3 ||
+		binding.InstanceID.IsZero() || binding.BotUserID.IsZero() || binding.InstallationID.IsZero() || binding.CommunityID.IsZero() ||
+		binding.ParticipantUserID.IsZero() || binding.ParticipantDeviceID.IsZero() || binding.PolicyVersion == 0 || binding.E2EEVersion != 1 || binding.MediaVersion != 0 {
+		return BotInteractionGroupBinding{}, errBinding("invalid kind-3 v2 GroupContext binding")
+	}
+	return BotInteractionGroupBinding{InstanceID: binding.InstanceID, BotUserID: binding.BotUserID, InstallationID: binding.InstallationID,
+		CommunityID: binding.CommunityID, ParticipantUserID: binding.ParticipantUserID, ParticipantDeviceID: binding.ParticipantDeviceID,
+		PolicyVersion: binding.PolicyVersion, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion}, nil
+}
+
+// RegisterBotInteractionGroup is the kind-3 atomic acceptance path. Fresh calls must supply
+// TrustedPreflight from the server admission loader; RegisterWithBotReceipt retains its explicit
+// kind-3 refusal.
 func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRegisterRequest) (BotRegisterReceipt, bool, error) {
 	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || d.opts.BotCapability == nil || d.opts.Clock == nil || d.opts.DeviceLists == nil ||
 		r.OperationID.IsZero() || r.InstallationID.IsZero() || r.AdmissionRequestID.IsZero() || r.AdmissionID.IsZero() || r.Registration.GroupID.IsZero() ||

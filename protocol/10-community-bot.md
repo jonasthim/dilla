@@ -696,9 +696,9 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | — | `[generation, server_time, ordinary_active_count, has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id, expected_generation, registration_body]` | `201` new / `200` replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` or kind-3 `[operation_id,expected_generation,registration_body,admission_request_id]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; proof issuance only, kind-3 registration remains refused |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
@@ -835,9 +835,11 @@ installation's community. Generic human `POST /v1/groups` refuses B sessions
 with `403 E_FORBIDDEN`; its human authorization, four-field request and response
 remain unchanged.
 
-The POST tuple is `[operation_id,expected_generation,registration_body]`.
+The POST tuple is `[operation_id,expected_generation,registration_body]` for
+existing non-kind-3 registration. Initial kind-3 interaction registration adds
+the nonzero `admission_request_id` as a fourth element.
 `operation_id` is a nonzero bstr16, `expected_generation` is uint 0 through
-signed-int64 max, and `registration_body` is a bstr of at most 65,505 bytes
+signed-int64 max (nonzero for kind-3), and `registration_body` is a bstr of at most 65,505 bytes
 (the whole CBOR request is capped at 64 KiB) containing
 the exact canonical deterministic-CBOR four-element registration array
 `[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`. It must
@@ -873,6 +875,22 @@ A different operation colliding with an existing group is `409 E_GROUP_EXISTS`
 without group metadata. Uniqueness races roll back before the winner is read in a
 new transaction; identical requests return the winner's receipt, conflicts reveal
 no group metadata.
+
+For a kind-3 request, the server first imports GroupInfo and the ratchet tree
+through OpenMLS, then reads the canonical v2 binding from the authenticated
+GroupContext. Its participant IDs are routing hints for loading the matching
+admission preflight. Fresh acceptance requires that trusted preflight and
+repeats installation, account, device-list, membership, ban, eligibility,
+policy, generation and receipt checks in the final transaction that stores the
+group, its two initial members and the consumed admission. A kind-3 group is
+already populated by those two leaves, so the channel `AfterRegister` hook does
+not run.
+
+Before loading fresh context, a kind-3 retry checks the session-fenced durable
+operation and consumed-admission receipts. An exact operation, admission,
+generation and body retry returns the original receipt even after the admission
+proof expires or its signed payload is compacted. Reusing either the operation
+or admission request with changed data is `409 E_INVALID_REQUEST`.
 
 The GET requires the same current installation-bound B authority. It returns the
 exact six-field receipt or `404 E_NOT_FOUND`; an installation cannot distinguish

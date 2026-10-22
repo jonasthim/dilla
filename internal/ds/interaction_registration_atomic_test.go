@@ -115,8 +115,12 @@ func newKind3RegistrationFixture(t *testing.T) kind3RegistrationFixture {
 	botSSK, participantSSK := decode("Bot SSK", meta.BotSSKPublicHex), decode("participant SSK", meta.ParticipantSSKPublicHex)
 	botCredential, participantCredential := read("bot_credential.cbor"), read("participant_credential.cbor")
 	var botIdentity, participantIdentity kind3CredentialIdentity
-	if err := cborx.Unmarshal(botCredential, &botIdentity); err != nil { t.Fatalf("decode Bot credential: %v", err) }
-	if err := cborx.Unmarshal(participantCredential, &participantIdentity); err != nil { t.Fatalf("decode participant credential: %v", err) }
+	if err := cborx.Unmarshal(botCredential, &botIdentity); err != nil {
+		t.Fatalf("decode Bot credential: %v", err)
+	}
+	if err := cborx.Unmarshal(participantCredential, &participantIdentity); err != nil {
+		t.Fatalf("decode participant credential: %v", err)
+	}
 	botList, participantList := read("bot_device_list.cbor"), read("participant_device_list.cbor")
 	for _, user := range []store.UserRow{
 		{ID: tuple.BotUserID, Username: "k3bot" + tuple.BotUserID.String()[:8], Display: "Kind 3 Bot", Kind: 1, UMKPub: botIdentity.UMKPub, SSKPub: botSSK, SigUMKSSK: botIdentity.SigUMKSSK, Created: now},
@@ -253,6 +257,12 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 		t.Fatalf("compact expired admission payload: %v", err)
 	}
 	fixture.h.restartDS()
+	replayIntent := fixture.request
+	replayIntent.TrustedPreflight = ds.InteractionRegistrationPreflight{}
+	replayOnly, found, replayErr := fixture.h.ds.ReplayBotInteractionGroup(ctx, replayIntent)
+	if replayErr != nil || !found || replayOnly != receipt {
+		t.Fatalf("receipt-only expired-proof replay=%+v found=%v err=%v", replayOnly, found, replayErr)
+	}
 	replayed, created, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request)
 	if err != nil || created || replayed != receipt {
 		t.Fatalf("expired-proof retry receipt=%+v created=%v err=%v", replayed, created, err)
@@ -267,6 +277,9 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	conflict.RegistrationBody, err = cborx.Marshal([]any{conflict.Registration.GroupID, conflict.Registration.Binding, conflict.Registration.GroupInfo, conflict.Registration.RatchetTree})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, _, err := fixture.h.ds.ReplayBotInteractionGroup(ctx, conflict); err == nil {
+		t.Fatal("receipt-only replay accepted a changed registration body")
 	}
 	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, conflict); err == nil {
 		t.Fatal("same operation with a changed registration body succeeded")
