@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -263,6 +264,17 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	if err := src.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotKeyPackagePublicationReceipt(ctx, publication) }); err != nil {
 		t.Fatalf("CreateBotKeyPackagePublicationReceipt: %v", err)
 	}
+	sendOpID, sendAttemptID := id.New(), id.New()
+	sendOp := store.BotSendOperationRow{InstallationID: installation.ID, OperationID: sendOpID, UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), CurrentAttempt: sendAttemptID, State: uint8(store.BotSendOperationActive)}
+	sendAttempt := store.BotSendAttemptRow{InstallationID: installation.ID, OperationID: sendOpID, AttemptID: sendAttemptID, Generation: 4, Epoch: 7, Class: 1, CiphertextSHA256: bytes.Repeat([]byte{0x41}, 32), FingerprintSHA256: bytes.Repeat([]byte{0x52}, 32), Outcome: uint8(store.BotSendAttemptClosed), Receipt: []byte{0x81, 0x00}}
+	if err := src.Tx(ctx, func(tx store.Repository) error {
+		if _, _, err := tx.CreateBotSendOperationIfAbsent(ctx, sendOp); err != nil {
+			return err
+		}
+		return tx.InsertBotSendAttempt(ctx, sendAttempt)
+	}); err != nil {
+		t.Fatalf("create send attempt: %v", err)
+	}
 	g := seedGroup(ctx, t, src, 1)
 	zero := uint8(0)
 	for seq, class := range map[uint64]*uint8{1: &zero, 2: nil} {
@@ -299,6 +311,19 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	if got, err := dst.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, publication.OperationID); err != nil || got.Count != publication.Count || !bytes.Equal(got.UploadSHA256, publication.UploadSHA256) {
 		t.Fatalf("restored KeyPackage receipt: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || got.Generation != sendAttempt.Generation || got.Epoch != sendAttempt.Epoch || !bytes.Equal(got.Receipt, sendAttempt.Receipt) || !bytes.Equal(got.FingerprintSHA256, sendAttempt.FingerprintSHA256) {
+		t.Fatalf("restored Bot send attempt: %+v %v", got, err)
+	}
+	var failedRestore bytes.Buffer
+	if err := store.DumpPostgres(ctx, srcDSN, &failedRestore); err != nil {
+		t.Fatalf("DumpPostgres for rollback: %v", err)
+	}
+	if err := store.LoadPostgres(ctx, dstDB, &failedRestore, func(*sql.Tx) error { return errors.New("abort restore") }); err == nil {
+		t.Fatal("restore callback failure committed")
+	}
+	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || !bytes.Equal(got.Receipt, sendAttempt.Receipt) {
+		t.Fatalf("failed restore changed receipt: %+v %v", got, err)
 	}
 	post, err := dst.GetAppMessage(ctx, g.GroupID, 1)
 	if err != nil || post.Class == nil || *post.Class != 0 {

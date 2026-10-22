@@ -106,6 +106,8 @@ var DumpTables = []string{
 	"bot_runtimes", "bot_installations", "bot_claims", "bot_operations", "bot_session_bindings",
 	// 023_bot_keypackage_publications.sql: receipts are children of installations, users and devices.
 	"bot_keypackage_publication_receipts",
+	// 024_bot_sends.sql: logical operations before their immutable attempt children.
+	"bot_send_operations", "bot_send_attempts",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

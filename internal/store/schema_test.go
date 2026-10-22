@@ -270,7 +270,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks; Task4B adds the
 // runtime, installation, claim and session-binding tables, and task 5B4B adds publication receipts.
 var wantTables = []string{
-	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_installations", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_session_bindings", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_installations", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

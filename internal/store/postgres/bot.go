@@ -228,6 +228,9 @@ func (r *Repo) UpdateBotInstallation(ctx context.Context, installationID id.ID, 
 		if err := r.DeleteBotKeyPackagePublicationReceipts(ctx, installationID); err != nil {
 			return err
 		}
+		if err := r.DeleteBotSendsByInstallation(ctx, installationID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

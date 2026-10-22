@@ -62,6 +62,7 @@ type Repository interface {
 	BotOperations
 	BotSessionBindings
 	BotKeyPackagePublications
+	BotSendOperations
 }
 
 type Instance interface {
@@ -106,6 +107,65 @@ type BotKeyPackagePublications interface {
 	CreateBotKeyPackagePublicationReceipt(context.Context, KeyPackagePublicationReceipt) error
 	DeleteBotKeyPackagePublicationReceipts(context.Context, id.ID) error
 	GetKeyPackage(context.Context, id.ID, []byte) (KeyPackageRow, error)
+}
+
+// BotSendOperationRow is the stable, installation-scoped side effect. Attempt
+// IDs and pointers are opaque identifiers; state is BotSendOperationState.
+type BotSendOperationRow struct {
+	InstallationID  id.ID
+	OperationID     id.ID
+	UserID          id.ID
+	DeviceID        id.ID
+	CommunityID     id.ID
+	GroupID         id.ID
+	CurrentAttempt  id.ID
+	AcceptedAttempt *id.ID
+	State           uint8
+}
+
+// BotSendAttemptRow stores only metadata and the canonical receipt. It never
+// contains plaintext or provider data. Outcome is BotSendAttemptOutcome.
+type BotSendAttemptRow struct {
+	InstallationID    id.ID
+	OperationID       id.ID
+	AttemptID         id.ID
+	PredecessorID     *id.ID
+	Generation        uint64
+	Epoch             uint64
+	Class             uint8
+	CiphertextSHA256  []byte
+	FingerprintSHA256 []byte
+	Outcome           uint8
+	Receipt           []byte
+}
+
+type BotSendOperationState uint8
+
+const (
+	BotSendOperationActive BotSendOperationState = iota
+	BotSendOperationAccepted
+	BotSendOperationUncertain
+)
+
+type BotSendAttemptOutcome uint8
+
+const (
+	BotSendAttemptClosed BotSendAttemptOutcome = iota
+	BotSendAttemptAccepted
+	BotSendAttemptUnknown
+)
+
+// BotSendOperations is a narrow transaction-scoped persistence API for durable
+// send attempts. It exposes immutable inserts and guarded pointer transitions,
+// not arbitrary row updates.
+type BotSendOperations interface {
+	CreateBotSendOperationIfAbsent(context.Context, BotSendOperationRow) (BotSendOperationRow, bool, error)
+	LockBotSendOperation(context.Context, id.ID, id.ID) (BotSendOperationRow, error)
+	GetBotSendAttempt(context.Context, id.ID, id.ID, id.ID) (BotSendAttemptRow, error)
+	InsertBotSendAttempt(context.Context, BotSendAttemptRow) error
+	AdvanceBotSendAttempt(context.Context, id.ID, id.ID, id.ID, id.ID) error
+	SealBotSendOperation(context.Context, id.ID, id.ID, id.ID, BotSendOperationState) error
+	DeleteBotSendsByInstallation(context.Context, id.ID) error
 }
 
 type Accounts interface {

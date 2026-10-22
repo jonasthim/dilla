@@ -79,7 +79,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// and heal. Plan 2 records the marking and the call-ending as P2-D19 for the
 			// same work, so both plans name ONE method set rather than two.
 			"ClearEpochUnknown",
-			"CloseGroup", "CountForkReporters", "CountKeyPackages",
+			"CloseGroup", "CountForkReporters", "CountKeyPackages", "HasCurrentLastResortKeyPackage",
 			"CreateGroup", "DeleteProposals", "DeleteWelcome", "EndAllVoiceSessions",
 			"GetCommitAtEpoch", "GetGroup",
 			"GroupsForDevice",
@@ -330,6 +330,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotSessionBindings)(nil)).Elem(),
 		// Task 5B4B: managed Bot KeyPackage publication receipts.
 		reflect.TypeOf((*store.BotKeyPackagePublications)(nil)).Elem(),
+		// Task 6B1: immutable durable Bot send operations and attempts.
+		reflect.TypeOf((*store.BotSendOperations)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
