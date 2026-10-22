@@ -516,7 +516,7 @@ func (s *Scheduler) resolveUnstarted(ctx context.Context, state scheduledState, 
 }
 
 func (s *Scheduler) sendRequest(state scheduledState) SendRequest {
-	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(s.now().Unix())}
+	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(state.Occurrence.At.Unix())}
 }
 
 func (s *Scheduler) snapshot(ctx context.Context) ([]scheduledState, uint64, error) {

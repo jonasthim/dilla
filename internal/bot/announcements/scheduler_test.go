@@ -152,6 +152,20 @@ func schedulerFixture(t *testing.T, now *time.Time) (*Scheduler, *schedulerNativ
 	return s, n, sender, community, destination
 }
 
+func TestAnnouncementSendRequestTimestampIsStableAcrossRetry(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	s, _, _, _, _ := schedulerFixture(t, &now)
+	state := scheduledState{Announcement: Announcement{ID: schedulerID(9)}, Occurrence: Occurrence{
+		At: time.Date(2026, 10, 22, 11, 59, 0, 0, time.UTC), Key: "2026-10-22T11:59", Revision: 1,
+	}}
+	first := s.sendRequest(state)
+	now = now.Add(30 * time.Second)
+	second := s.sendRequest(state)
+	if first.OriginalNow != second.OriginalNow || first.OriginalNow != uint64(state.Occurrence.At.Unix()) {
+		t.Fatalf("retry changed original timestamp: first=%d second=%d", first.OriginalNow, second.OriginalNow)
+	}
+}
+
 func schedulerID(v byte) id.ID { var out id.ID; out[15] = v; return out }
 func mustCBOR(v any) []byte    { b, _ := cborx.Marshal(v); return b }
 
