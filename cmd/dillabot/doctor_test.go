@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -124,10 +125,26 @@ func TestDillabotDoctorRejectsUntrustedOrUnexecutableCodeFiles(t *testing.T) {
 	if err := validateHelperExecutable(helper); err == nil {
 		t.Fatal("helper writable by another user was accepted")
 	}
+	if err := os.Chmod(helper, os.ModeSetuid|0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHelperExecutable(helper); err == nil {
+		t.Fatal("setuid helper was accepted")
+	}
 	if err := os.Chmod(module, 0o620); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readDoctorWASI(module); err == nil {
 		t.Fatal("group-writable WASI module was accepted")
+	}
+	fifo := filepath.Join(dir, "blocking-fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHelperExecutable(fifo); err == nil {
+		t.Fatal("FIFO was accepted as a helper")
+	}
+	if _, err := readDoctorWASI(fifo); err == nil {
+		t.Fatal("FIFO was accepted as a WASI module")
 	}
 }

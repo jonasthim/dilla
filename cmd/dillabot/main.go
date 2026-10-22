@@ -245,7 +245,7 @@ func validateHelperExecutable(path string) error {
 	if !filepath.IsAbs(path) {
 		return errors.New("helper executable path must be absolute")
 	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return errors.New("native helper executable is unavailable")
 	}
@@ -260,7 +260,7 @@ func validateHelperExecutable(path string) error {
 
 func trustedLocalCode(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && (st.Uid == 0 || st.Uid == uint32(os.Geteuid())) && info.Mode().Perm()&0o022 == 0
+	return ok && (st.Uid == 0 || st.Uid == uint32(os.Geteuid())) && info.Mode().Perm()&0o022 == 0 && info.Mode()&(os.ModeSetuid|os.ModeSetgid) == 0
 }
 
 func serviceCanExecute(info os.FileInfo) bool {

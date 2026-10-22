@@ -92,7 +92,7 @@ func readDoctorWASI(path string) ([]byte, error) {
 	if !filepath.IsAbs(path) {
 		return nil, os.ErrInvalid
 	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
