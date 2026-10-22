@@ -207,7 +207,8 @@ async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { in
     catch (e) {
       discard(d.core, groupId);
       // The same commit, landing after the tree read: the external commit was built on an epoch the group has left. A
-      // refusal is final only for the group it was built on, so when GroupInfo has changed since, both are read again.
+      // refusal is final only for the group it was built on, so when GroupInfo has changed since (a commit, or any
+      // proposal or message the group sequenced), both are read again.
       if (again() && isStaleCommit(e) && await groupMovedSince(d, groupId, info)) continue;
       throw refused(e, null);
     }
@@ -223,7 +224,9 @@ function isStaleCommit(e: unknown): boolean {
   return e instanceof DillaHttpError && ((e.status === 422 && e.code === 'E_COMMIT_INVALID') || (e.status === 409 && e.code === 'E_COMMIT_CONFLICT'));
 }
 
-/** True when the group's GroupInfo is no longer `info`, so a commit landed after it was read. A failed read says nothing. */
+/** True when the group's GroupInfo is no longer `info`: a commit landed after it was read, or anything else the group
+ *  sequenced did (GET /info carries NextSeq, one space for proposals, messages and commits; a retry for such a change
+ *  is bounded and harmless). A failed read says nothing. */
 async function groupMovedSince(d: JoinDeps, groupId: Id, info: Uint8Array): Promise<boolean> {
   try { return toHex(await d.routes.getGroupInfo(groupId)) !== toHex(info); }
   catch { return false; }
