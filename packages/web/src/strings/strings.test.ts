@@ -59,14 +59,14 @@ describe('the copy rules', () => {
     expect(en['devices.cap.other']).toBe('{n} devices');
     expect(en['devices.cap.one']).toBe('one device');
     // EOD E7: a device can be named; the body says who can read the name.
-    expect(en['devices.renameBody']).toBe('A name you will recognise. The server can read and change it, so check a device by its id before you remove it.');
+    expect(en['devices.renameBody']).toBe('The server can change it, so check a device by its id before you remove it.');
     expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(149); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(150); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });

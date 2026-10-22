@@ -243,7 +243,12 @@ describe('naming a device', () => {
     const { fake, user, view } = setup(undefined, list());
     await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
-    expect(within(dialog).getByText('A name you will recognise. The server can read and change it, so check a device by its id before you remove it.')).toBeInTheDocument();
+    expect(within(dialog).getByText('The server can change it, so check a device by its id before you remove it.')).toBeInTheDocument();
+    // web3.12.1: a quiet line under the field says the server can read the name, and it is part of the field's description.
+    const reads = within(dialog).getByText('The server can read this, like your display name.');
+    expect(reads).toHaveClass('d-text-field__hint');
+    expect(field()).toHaveAccessibleDescription(
+      'The server can change it, so check a device by its id before you remove it. The server can read this, like your display name.');
     expect(field()).toHaveValue('work laptop');
     expect(field()).toHaveFocus();
     expect(field()).toHaveAttribute('maxlength', '64');

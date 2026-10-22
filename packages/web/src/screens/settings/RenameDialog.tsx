@@ -54,7 +54,8 @@ export function RenameDialog(props: {
         {busy ? t('devices.working') : t('devices.renameSave')}</Button>}>
       <form id={formId} noValidate onSubmit={e => { void submit(e); }}>
         {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
-        <TextField id={`${props.id}-name`} label={t('devices.renameLabel')} hint={t('devices.renameBody')} value={value}
+        <TextField id={`${props.id}-name`} label={t('devices.renameLabel')} hint={t('devices.renameBody')}
+          note={t('devices.renameServerReads')} value={value}
           onChange={next => { if (!running.current) setValue(next); }} maxLength={DEVICE_NAME_MAX} spellCheck={false}
           autoComplete="off" initialFocus />
       </form>

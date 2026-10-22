@@ -96,9 +96,9 @@ export function Profile(): React.JSX.Element {
         <TextField id="profile-display" label={t('profile.display.label')} value={fields.display} onChange={display => { edit({ display }); }}
           maxLength={DISPLAY_MAX_CHARS} required autoComplete="nickname" error={text(problem.display) ?? (displayError ? t('profile.error.display') : undefined)} />
         <TextField id="profile-status" label={t('profile.status.label')} value={fields.statusMsg} onChange={statusMsg => { edit({ statusMsg: statusMsg.replace(/[\r\n]+/g, ' ') }); }}
-          maxLength={STATUS_MAX_CHARS} hint={t('profile.status.hint')} error={text(problem.statusMsg)} />
+          maxLength={STATUS_MAX_CHARS} hint={t('profile.status.hint')} note={t('profile.serverReads')} error={text(problem.statusMsg)} />
         <TextField id="profile-bio" label={t('profile.bio.label')} value={fields.bio} onChange={bio => { edit({ bio }); }}
-          maxLength={BIO_MAX_CHARS} multiline rows={5} hint={t('profile.bio.hint')} error={text(problem.bio)} />
+          maxLength={BIO_MAX_CHARS} multiline rows={5} hint={t('profile.bio.hint')} note={t('profile.serverReads')} error={text(problem.bio)} />
         <div className="dw-profile-form__actions">
           <Button type="submit" disabled={!dirty || pending || invalid}>{t('profile.save')}</Button>
           <p role="status" className="dw-profile-form__saved">{done && !dirty ? t('profile.saved') : ''}</p>
