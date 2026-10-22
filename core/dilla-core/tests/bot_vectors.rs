@@ -1,3 +1,6 @@
+use dilla_core::bot::group_registration::{
+    Receipt as GroupRegistrationReceipt, Request as GroupRegistrationRequest,
+};
 use dilla_core::bot::keypackage::{
     Intent, IntentResult, Publication, PublicationReceipt, Resolution,
 };
@@ -287,7 +290,9 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             "keypackage_publication_receipt",
             "keypackage_intent",
             "keypackage_intent_result",
-            "keypackage_resolution"
+            "keypackage_resolution",
+            "group_registration_request",
+            "group_registration_receipt"
         ]
         .into_iter()
         .collect()
@@ -401,6 +406,18 @@ fn shared_bot_corpus_round_trips_and_rejects() {
                 let value = Resolution::decode(&raw).unwrap();
                 assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
             }
+            "group_registration_request" => {
+                let value = GroupRegistrationRequest::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+                assert_eq!(
+                    hex::encode(&value.registration_body),
+                    case["registration_body_hex"].as_str().unwrap()
+                );
+            }
+            "group_registration_receipt" => {
+                let value = GroupRegistrationReceipt::decode(&raw).unwrap();
+                assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
+            }
             other => panic!("unknown bot vector kind: {other}"),
         }
     }
@@ -481,6 +498,12 @@ fn shared_bot_corpus_round_trips_and_rejects() {
                 .as_ref()
                 .is_some_and(|r| IntentResult::decode(r).is_ok()),
             "keypackage_resolution" => raw.as_ref().is_some_and(|r| Resolution::decode(r).is_ok()),
+            "group_registration_request" => raw
+                .as_ref()
+                .is_some_and(|r| GroupRegistrationRequest::decode(r).is_ok()),
+            "group_registration_receipt" => raw
+                .as_ref()
+                .is_some_and(|r| GroupRegistrationReceipt::decode(r).is_ok()),
             other => panic!("unknown bot reject kind: {other}"),
         };
         assert!(!accepted, "reject vector accepted: {}", case["name"]);
