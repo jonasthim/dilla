@@ -299,15 +299,23 @@ The current registration check also authenticates only the registering Bot
 leaf. A participant tuple copied from an event, URL, helper request or MLS
 binding remains caller-declared data.
 
-The proposed issuance route is
+The issuance-only route is
 `POST /v1/bot-runtime/installations/{installation}/interaction-admissions`,
 under the current wire-3 Bot session for that installation, in joining or ready
 state. Its request is `[request_id,group_id,participant_user,participant_device]`.
-The server requires the participant to be a current, non-banned member of the
+The server requires the participant to be an active human account and current,
+non-banned member of the
 installation community and the selected device to be active in that user's
-latest valid signed device list. This decision authorizes membership in the
-interaction group only; the Bot dispatcher still checks each operation's
-permissions at use time.
+latest valid signed device list. The proof records that eligibility decision;
+it does not currently admit the interaction group. Once admission is wired,
+the Bot dispatcher must still check each operation's permissions at use time.
+
+Issuance is fenced by the participant user row and a durable per-community,
+per-user eligibility revision. A repeated request ID with the same group and
+participant tuple returns the same 30-second proof while it remains current;
+conflicting reuse fails. Expired proofs can be refreshed for the same tuple.
+After 30 days, the request-hash tombstone may be compacted and the ID reused.
+An admission receipt is not a group-registration receipt.
 
 The response is `[payload_bstr,signature_bstr]`. The payload is strict
 deterministic CBOR `[1,admission_id,instance_id,installation_id,community_id,
@@ -322,11 +330,11 @@ caller-supplied key or expected tuple is never a trust anchor. Changing the
 pinned key requires an explicit trusted instance-key transition, not an
 admission retry.
 
-The core rejects an invalid signature, any tuple mismatch, `not_after` earlier
+The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
 than authenticated server time, an admission replayed for another operation or
 group, or an `eligibility_revision` older than the latest admission known for
 that installation and participant. The server increments that revision when
-membership, ban state or the participant's active device set changes, and
+membership, ban state, account disable/deletion or the participant's active device set changes, and
 rechecks it under the same transaction fence as group registration. Registration
 and recovery receipts bind the admission id and payload hash in addition to
 the existing installation, operation, body and generation fields. This receipt
@@ -669,6 +677,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
 | `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id, expected_generation, registration_body]` | `201` new / `200` replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; proof issuance only, kind-3 registration remains refused |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
