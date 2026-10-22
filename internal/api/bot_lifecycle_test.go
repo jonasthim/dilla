@@ -5,6 +5,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -161,7 +162,10 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	h, deps := newTestAPIFullWithRepoAndMount(t, repo, nil, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
 		d.DeviceLists = ds.NewDeviceLists(d.Repo, deviceListRuntime)
-		d.ExternalSenderPub = make([]byte, 32)
+		externalSenderSeed := make([]byte, ed25519.SeedSize)
+		externalSenderSeed[0] = 1
+		externalSenderPrivate := ed25519.NewKeyFromSeed(externalSenderSeed)
+		d.ExternalSenderPub = append(ed25519.PublicKey(nil), externalSenderPrivate.Public().(ed25519.PublicKey)...)
 		d.Log = slog.New(slog.NewTextHandler(&diagnostics, nil))
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
