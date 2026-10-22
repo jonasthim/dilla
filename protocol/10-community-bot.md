@@ -275,15 +275,66 @@ Group suboperations are: 0 list `[]`; 1 inspect `[group_id]`;
 19 events_ack `[through_delivery_id]`; 20 intent_result `[operation_id]`.
 Here argument arrays expand after the suboperation number rather than adding a
 nested array. Kind is the existing text, call or interaction group kind. Text and
-call groups require this installation's community. Interaction groups preserve
-`01`'s null community, target equal to this bot's account and no external sender;
-the helper additionally persists their installation/community association and
-eligible human participant and authenticated participant device. Interaction creation requires null external sender;
-text/call creation requires the public key. External join is unavailable for
-interaction groups; their membership uses ordinary signed Add/Welcome processing.
-Welcome expectations, participants and actual bindings must agree with that
-scope. Sender validation uses the existing credential/device-list chain;
-unvalidated pending history must never produce actionable bot messages.
+The Bot helper currently admits only text (0) and call (1) group creation,
+external join and Welcome expectations. Pairing (2) and interaction (3) are
+refused before MLS or durable-intent mutation. Text and call groups require
+this installation's community. An interaction binding, when decoded by the
+shared protocol library, preserves `01`'s null legacy community slot and carries
+the Bot account, installation community, one participant user and one
+participant device in its typed v2 extension. That shape is structural data;
+it does not authenticate the participant or authorize admission. Do not create
+an interaction group by trusting those fields from the helper request.
+
+### Kind-3 Bot admission contract proposal
+
+Kind-3 Bot admission remains unavailable until the server and native core can
+bind an authenticated admission decision to the exact MLS roster. Existing
+evidence does not supply that decision: a Bot session authenticates the acting
+installation, community, Bot account and Bot device; the current group
+registration receipt binds that session to the submitted group body and
+generation; and a signed device list authenticates a device's account
+credential. None of those proves that a selected human is currently eligible
+for this Bot interaction or binds that selection to the resulting group.
+The current registration check also authenticates only the registering Bot
+leaf. A participant tuple copied from an event, URL, helper request or MLS
+binding remains caller-declared data.
+
+The future admission path must use one server-authenticated typed admission
+result bound to the current Bot session and installation. It must identify the
+installation, community, Bot account and device, participant account and
+device, group id, and the server's current eligibility decision and revision.
+The native core must verify the result under a server verification key obtained
+through the established instance trust path; a key or expected tuple supplied
+alongside the result is not a trust anchor. The result must be rejected when
+expired, replayed for another group or installation, or superseded by a newer
+eligibility revision. The exact signature format, key distribution, issuance
+route and stable error mapping remain open protocol work and must be specified
+before enabling the operation.
+
+After verifying that result, the core must inspect the authenticated MLS
+GroupInfo and tree and require a v2 interaction binding equal to the result in
+all immutable fields. Its authenticated roster must contain the Bot's
+registered device and exactly the selected human device, with no other human
+account or device. Each leaf credential must match its account's current
+signature-verified device list, including the complete Bot credential match
+required by managed Bot registration. Binding equality alone is insufficient.
+The server must independently enforce the same admission tuple and roster
+constraints when it accepts registration and every later Add, Remove, Welcome
+or resync; a valid initial receipt must not authorize a changed roster.
+
+The core must persist the verified admission tuple and receipt atomically with
+the group state and its registration or Welcome outcome. Recovery and duplicate
+handling must compare the exact receipt and group body, and any participant
+eligibility change or removal must stop new interaction sends and invalidate
+the admission for subsequent membership changes. Event attribution must come
+from the MLS-authenticated sender and pass the same current device-list checks;
+the binding's participant fields never override the authenticated sender.
+Until all these checks and recovery rules exist end to end, kind 3 creation,
+join, Welcome admission, synchronization and event delivery stay unavailable.
+
+For the currently supported text and call paths, sender validation uses the
+existing credential/device-list chain; unvalidated pending history must never
+produce actionable bot messages.
 Revalidation limit1..256; leaf index at most uint32 max. Network pages are bounded
 by encoded size; indivisible large group objects use group_transfer below.
 Actionable decrypted messages are delivered through the durable event journal,

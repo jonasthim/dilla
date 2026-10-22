@@ -576,6 +576,30 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
             .code,
         "E_CORE_INPUT"
     );
+    for kind in [2, 3] {
+        assert_eq!(
+            bot.bot_group_external_join(&OP_JOIN, &GROUP, &CHANNEL, kind, 1, &[0x80], &[0x80])
+                .expect_err("interaction and pairing groups cannot use external join")
+                .code,
+            "E_CORE_INPUT"
+        );
+        assert_eq!(
+            bot.bot_welcomes_apply(&[0x80], &[0x80], kind)
+                .expect_err("interaction and pairing Welcome admission require typed bindings")
+                .code,
+            "E_CORE_INPUT"
+        );
+    }
+    assert_eq!(
+        result(&bot, &OP_JOIN),
+        None,
+        "refused joins create no intent"
+    );
+    assert_eq!(
+        result(&bot, &OPERATION),
+        None,
+        "refused creates create no intent"
+    );
 
     let mut incomplete = ClientCore::open(conn()).expect("open incomplete Bot");
     incomplete
