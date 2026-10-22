@@ -632,6 +632,29 @@ the relay binds the container's own address.
 On a container that already exists, such as one from the Proxmox community scripts, skip the helper
 and run `install.sh` inside it directly.
 
+### Dilla Bot operator status
+
+The current `install.sh` release installs `dillad` only. `deploy/dillabot.service` is a systemd
+unit fragment, not a Bot installer: no release flow currently creates the `dillabot` account,
+installs the Bot binary, native helper or WASI module, provisions `/etc/dilla/bot.toml` and its
+runtime credential, or enables the unit. Do not treat copying the unit as a supported installation.
+
+There is no Bot health endpoint or `dillad doctor` leg yet. `systemctl status dillabot` and
+`journalctl -u dillabot` can show whether the process starts, but they do not establish that Bot
+interactions or music are usable. In this checkpoint, queue metadata restores paused and the PCM
+providers are unavailable in the service runtime; successful startup is not playback acceptance.
+Spotify authorization belongs in Dilla server settings when the complete flow is released. Do not
+put provider credentials in command arguments or logs.
+
+The service uses `/etc/dilla/bot.toml`, the owner-only runtime-credential file named by that config,
+and private state under `/var/lib/dillabot`. Per-installation state includes `database.key` and an
+encrypted SQLite database with possible WAL/journal sidecars. Keep the key and its database files
+together; losing the key makes that local state unreadable, while replacing it beside existing
+state is refused. The existing `dillad backup` archive does not include these Bot files. There is
+not yet a supported coordinated Bot backup/restore procedure or restore acceptance run, so a
+`dillad` restore alone must not be represented as a complete Bot restore. Those packaging,
+diagnostics and coordinated restore steps remain release blockers.
+
 ## 4. Backup and restore
 
 Backups hold no end-to-end-encrypted plaintext: they contain ciphertext, server-readable channel content, revealed report envelopes, TLS material and the instance keys.
