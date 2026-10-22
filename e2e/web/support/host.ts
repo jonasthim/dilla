@@ -74,6 +74,11 @@ export interface StartedHost { url: string; control: string; invite: string; run
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
+  // The bot acceptance host serves the web bundle from disk; always rebuild that
+  // bundle from current source so the acceptance flow cannot pass on stale UI.
+  if (c.botRuntime === true && c.webRoot !== null) {
+    execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  }
   const dataDir = `/tmp/dw/host-${c.port}`;
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync('/tmp/dw', { recursive: true });
