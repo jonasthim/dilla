@@ -1237,6 +1237,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		// Letting the session reach it reveals no receipt and keeps the cross-installation result
 		// independent of middleware's otherwise-global 403 refusal.
 		return phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
+	case "POST /v1/bot-runtime/installations/{installation}/interaction-admissions":
+		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":

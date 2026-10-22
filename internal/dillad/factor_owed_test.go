@@ -251,6 +251,8 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 			documented[r.method+" "+pathParameter.ReplaceAllString(path, "{}")] = true
 		}
 	}
+	// protocol/10-community-bot.md defines this new installation-scoped route.
+	documented["POST /v1/bot-runtime/installations/{}/interaction-admissions"] = true
 	anyParameter := regexp.MustCompile(`\{[A-Za-z_.]+\}`)
 	mounted := 0
 	for _, pattern := range srv.Mux().Patterns() {

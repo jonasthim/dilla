@@ -71,6 +71,7 @@ type Repository interface {
 	BotSendOperations
 	BotStructuralEvents
 	BotInteractionEligibility
+	BotInteractionAdmissionReceipts
 	ModerationRemovals
 }
 
@@ -81,6 +82,24 @@ type Repository interface {
 // changes. This primitive does not itself authorize interaction admission.
 type BotInteractionEligibility interface {
 	GetBotInteractionEligibilityRevision(context.Context, id.ID, id.ID) (uint64, error)
+}
+
+type BotInteractionAdmissionReceipt struct {
+	InstallationID id.ID
+	RequestID      id.ID
+	RequestHash    []byte
+	Payload        []byte
+	Signature      []byte
+	NotAfter       int64
+}
+
+type BotInteractionAdmissionReceipts interface {
+	GetBotInteractionAdmissionReceipt(context.Context, id.ID, id.ID) (BotInteractionAdmissionReceipt, error)
+	CreateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
+	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
+	// Compaction removes expired payloads immediately and forgets request hashes after
+	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
+	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may

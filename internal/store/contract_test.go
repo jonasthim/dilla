@@ -353,6 +353,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
 		// Kind-3 admission groundwork: transaction-fenced participant eligibility revision.
 		reflect.TypeOf((*store.BotInteractionEligibility)(nil)).Elem(),
+		// Kind-3 admission issuance: immutable idempotent signed response receipts.
+		reflect.TypeOf((*store.BotInteractionAdmissionReceipts)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 	} {

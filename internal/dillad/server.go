@@ -194,6 +194,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
 	// seed || public, so its second half is the public key.
 	deps.ExternalSenderPub = []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:])
+	deps.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
+		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
+		preimage := append([]byte("dilla bot interaction admission v1\x00"), payload...)
+		return ed25519.Sign(private, preimage), nil
+	}
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
 	sessions.Assertions = deps.Assertions

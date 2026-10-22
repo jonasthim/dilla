@@ -56,6 +56,10 @@ type Deps struct {
 	// the history itself is never served.
 	ExternalSenderPub []byte
 
+	// SignBotInteractionAdmission signs only the versioned admission payload with the
+	// current instance external-sender key. The composition root owns the secret.
+	SignBotInteractionAdmission func(payload []byte) ([]byte, error)
+
 	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
 	// and is passed from the same composition options as the gateway.
 	WireVersions  []uint64
