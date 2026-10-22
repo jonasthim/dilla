@@ -67,6 +67,22 @@ func TestStartFailsOnSanitizedHelperError(t *testing.T) {
 	}
 }
 
+func TestStartRejectsHelperWithOutOfOrderReadinessPhases(t *testing.T) {
+	helper, controlFile := fakeProtocolHelper(t, true)
+	statusFile := filepath.Join(filepath.Dir(controlFile), "status")
+	statusFrames := append(frameStatus(`{"ok":true,"phase":"authorization","code":null}`), frameStatus(`{"ok":true,"phase":"playback","code":null}`)...)
+	if err := os.WriteFile(statusFile, statusFrames, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{HelperPath: helper, StateDir: t.TempDir(), Credential: credential(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Start(t.Context(), "spotify:track:0123456789012345678901"); !errors.Is(err, ErrHelperContractUnsupported) {
+		t.Fatalf("Start with out-of-order phases = %v, want ErrHelperContractUnsupported", err)
+	}
+}
+
 func TestStartDrainsStatusAndPCMBeforeReapingFastExit(t *testing.T) {
 	helper, _ := fakeProtocolHelper(t, true, true)
 	for i := 0; i < 30; i++ {
@@ -224,15 +240,12 @@ func fakeProtocolHelper(t *testing.T, withPCM bool, exitAfterPCM ...bool) (strin
 	t.Helper()
 	// A deterministic shell child emits the helper wire protocol from fixture files.
 	dir := t.TempDir()
-	status := `{"ok":true,"phase":"playback","code":null}`
+	status := append(frameStatus(`{"ok":true,"phase":"startup","code":null}`), frameStatus(`{"ok":true,"phase":"authorization","code":null}`)...)
+	status = append(status, frameStatus(`{"ok":true,"phase":"playback","code":null}`)...)
 	if !withPCM {
-		status = `{"ok":false,"phase":"authorization","code":"provider_unavailable"}`
+		status = frameStatus(`{"ok":false,"phase":"authorization","code":"provider_unavailable"}`)
 	}
-	statusBytes := []byte(status)
-	statusFrame := make([]byte, 4+len(statusBytes))
-	binary.BigEndian.PutUint32(statusFrame, uint32(len(statusBytes)))
-	copy(statusFrame[4:], statusBytes)
-	if err := os.WriteFile(filepath.Join(dir, "status"), statusFrame, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "status"), status, 0600); err != nil {
 		t.Fatal(err)
 	}
 	pcm := make([]byte, 9+PCMBytesPerFrame)

@@ -162,6 +162,8 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	timer := time.NewTimer(startupTimeout)
 	defer timer.Stop()
 	ready, receivedPCM := false, false
+	readinessPhases := [...]string{"startup", "authorization", "playback"}
+	phaseIndex := 0
 	statusFrames, pcmFrames, processDone := (<-chan Status)(p.statuses), (<-chan []byte)(p.frames), p.done
 	for !ready || !receivedPCM {
 		if statusFrames == nil && pcmFrames == nil {
@@ -177,6 +179,11 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 				p.killAndWait()
 				return nil, ErrPlaybackFailed
 			}
+			if phaseIndex == len(readinessPhases) || status.Phase != readinessPhases[phaseIndex] {
+				p.killAndWait()
+				return nil, ErrHelperContractUnsupported
+			}
+			phaseIndex++
 			if status.Phase == "playback" {
 				ready = true
 			}
