@@ -28,36 +28,11 @@ var (
 	ErrInteractionRegistrationOutcomeUnknown = errors.New("bot interaction registration outcome is unknown")
 )
 
-// InteractionGroupExpected is the exact identity/admission tuple sent to the
-// transaction-local native create primitive. The native helper verifies the
-// signed snapshot and derives the roster from OpenMLS credentials.
-type InteractionGroupExpected struct {
-	Instance, Installation, Community, BotUser, BotDevice id.ID
-	ParticipantUser, ParticipantDevice, Group             id.ID
-	MinimumEligibilityRevision, ServerNow, PolicyVersion  uint64
-}
-
-type InteractionGroupBinding struct {
-	Instance, BotUser, Installation, Community id.ID
-	ParticipantUser, ParticipantDevice         id.ID
-	PolicyVersion, E2EEVersion, MediaVersion   uint64
-}
-
-// InteractionGroupCreateResult is service-local until the typed native adapter
-// API lands. Epoch and MemberCount are contract markers emitted only after the
-// native helper has checked the actual GroupContext and OpenMLS leaves.
-type InteractionGroupCreateResult struct {
-	Group                                        id.ID
-	Binding                                      InteractionGroupBinding
-	BindingBody, GroupInfo, RatchetTree, Welcome []byte
-	Epoch, MemberCount                           uint64
-}
-
 type interactionRegistrationNativeAPI interface {
 	Binding() native.Binding
 	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	Identity(context.Context) (native.Identity, error)
-	CreateInteractionGroup(context.Context, id.ID, InteractionGroupExpected, []byte, []byte) (InteractionGroupCreateResult, error)
+	CreateInteractionGroup(context.Context, id.ID, native.InteractionGroupExpected, []byte, []byte) (native.InteractionGroupCreateResult, error)
 	GroupRegistered(context.Context, id.ID, id.ID, uint64) error
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
@@ -190,7 +165,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		if err != nil || snapshotRequest != in.AdmissionRequest {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
-		expected := InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community, BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice, Group: in.Group, MinimumEligibilityRevision: in.MinimumRevision, ServerNow: now, PolicyVersion: in.Policy}
+		expected := native.InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community, BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice, Group: in.Group, MinimumEligibilityRevision: in.MinimumRevision, ServerNow: now, PolicyVersion: in.Policy}
 		created, err := c.native.CreateInteractionGroup(ctx, in.Operation, expected, in.Snapshot, in.KeyPackage)
 		if err != nil {
 			return InteractionRegistrationResult{}, fmt.Errorf("%w: native create remains pending: %v", ErrInteractionRegistrationRecovery, err)
@@ -310,7 +285,7 @@ func (c *InteractionRegistrationCoordinator) saveInteractionRegistration(ctx con
 	return revs[0], nil
 }
 
-func validInteractionCreateResult(r InteractionGroupCreateResult, e InteractionGroupExpected, d client.Discovery) bool {
+func validInteractionCreateResult(r native.InteractionGroupCreateResult, e native.InteractionGroupExpected, d client.Discovery) bool {
 	b := r.Binding
 	return r.Group == e.Group && b.Instance == e.Instance && b.Installation == e.Installation && b.Community == e.Community && b.BotUser == e.BotUser && b.ParticipantUser == e.ParticipantUser && b.ParticipantDevice == e.ParticipantDevice && b.PolicyVersion == e.PolicyVersion && b.E2EEVersion == 1 && b.MediaVersion == 0 && containsVersion(d.E2EEVersions, b.E2EEVersion) && r.Epoch == 1 && r.MemberCount == 2 && len(r.BindingBody) > 0 && len(r.GroupInfo) > 0 && len(r.RatchetTree) > 0 && len(r.Welcome) > 0
 }

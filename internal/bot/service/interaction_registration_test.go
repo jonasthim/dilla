@@ -141,12 +141,12 @@ func (n *interactionRegistrationNativeFake) Bootstrap(context.Context, [32]byte)
 func (n *interactionRegistrationNativeFake) Identity(context.Context) (native.Identity, error) {
 	return n.identity, nil
 }
-func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, _ id.ID, e InteractionGroupExpected, _ []byte, _ []byte) (InteractionGroupCreateResult, error) {
+func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, _ id.ID, e native.InteractionGroupExpected, _ []byte, _ []byte) (native.InteractionGroupCreateResult, error) {
 	n.createCalls++
 	if n.createErr != nil {
-		return InteractionGroupCreateResult{}, n.createErr
+		return native.InteractionGroupCreateResult{}, n.createErr
 	}
-	return InteractionGroupCreateResult{Group: e.Group, Binding: InteractionGroupBinding{Instance: e.Instance, BotUser: e.BotUser, Installation: e.Installation, Community: e.Community, ParticipantUser: e.ParticipantUser, ParticipantDevice: e.ParticipantDevice, PolicyVersion: e.PolicyVersion, E2EEVersion: 1, MediaVersion: 0}, BindingBody: []byte{1}, GroupInfo: []byte{2}, RatchetTree: []byte{3}, Welcome: []byte{4}, Epoch: 1, MemberCount: 2}, nil
+	return native.InteractionGroupCreateResult{Group: e.Group, Binding: native.InteractionGroupBinding{Instance: e.Instance, BotUser: e.BotUser, Installation: e.Installation, Community: e.Community, ParticipantUser: e.ParticipantUser, ParticipantDevice: e.ParticipantDevice, PolicyVersion: e.PolicyVersion, E2EEVersion: 1, MediaVersion: 0}, BindingBody: []byte{1}, GroupInfo: []byte{2}, RatchetTree: []byte{3}, Welcome: []byte{4}, Epoch: 1, MemberCount: 2}, nil
 }
 func (n *interactionRegistrationNativeFake) GroupRegistered(context.Context, id.ID, id.ID, uint64) error {
 	n.registered++
