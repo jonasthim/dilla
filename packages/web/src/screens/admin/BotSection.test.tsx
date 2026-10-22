@@ -8,6 +8,9 @@ import { account, ME } from '../../test/fixtures.ts';
 import { en } from '../../strings/index.ts';
 import { ServerSettings } from './ServerSettings.tsx';
 
+vi.mock('./spotify-link.ts', async importOriginal => ({ ...await importOriginal<typeof import('./spotify-link.ts')>(), authorizeSpotify: vi.fn() }));
+import { authorizeSpotify, spotifySession } from './spotify-link.ts';
+
 const SERVER = 'a1'.repeat(16);
 type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 | 5; revision: string;
   userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string };
@@ -38,14 +41,34 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
-  it('states music provider setup honestly without collecting account credentials', async () => {
-    const { fake } = setup({ ...ROW, state: 3, capabilities: 1 });
-    expect(await screen.findByText(en['admin.bot.music.spotifyUnavailable'])).toBeInTheDocument();
-    expect(screen.getByText(en['admin.bot.music.spotifyHelp'])).toBeInTheDocument();
+  it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
+    spotifySession.clear();
+    vi.mocked(authorizeSpotify).mockClear();
+    const { fake, user } = setup({ ...ROW, state: 3, capabilities: 1 });
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3, capabilities: 1 });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'beginBotSpotifyAttempt') return Promise.resolve({
+        attemptId: 'dd'.repeat(16), authorizeUrl: 'https://accounts.spotify.com/authorize?state=csrf-only', expires: `${Math.floor(Date.now() / 1000) + 600}`,
+      });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] }));
+    expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(authorizeSpotify).toHaveBeenCalledWith('https://accounts.spotify.com/authorize?state=csrf-only'));
+    const stored = spotifySession.getItem('dilla.spotifyAttempt');
+    expect(stored).toContain(SERVER);
+    expect(stored).toContain('dd'.repeat(16));
+    expect(stored).toContain('csrf-only');
+    expect(stored).not.toContain('oauth-code');
+    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up' })]);
     expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
     expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors']);
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
   it('shows staged status and asks for step-up before enabling through the worker', async () => {
