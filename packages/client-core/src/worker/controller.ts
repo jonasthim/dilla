@@ -1614,6 +1614,10 @@ export class Controller {
       const gateway = this.parts.gateway({
         url: this.deps.origin.replace(/^http/, 'ws') + '/gateway',
         mintTicket: async () => {
+          // Gateway retries call mintTicket directly, without passing through the
+          // controller's explicit ready/revocation paths. Revalidate the pinned
+          // instance signer before every connection attempt.
+          if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
           const minted = await this.routes.postTicket();
           // The instance's clock at the mint (a ticket is valid TICKET_TTL_S seconds, protocol/09): the notice
           // floor compares server receive times with server time, never with this browser's clock.
