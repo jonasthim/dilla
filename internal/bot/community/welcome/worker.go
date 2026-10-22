@@ -43,6 +43,12 @@ type Membership interface {
 	IsCurrentMember(context.Context, id.ID) (bool, error)
 }
 
+// DestinationResolver verifies that the configured channel is still a valid
+// text destination and returns its authorized MLS group.
+type DestinationResolver interface {
+	ResolveTextGroup(context.Context, id.ID, id.ID) (id.ID, error)
+}
+
 // Sender must reuse the supplied operation and attempt IDs on retries and return
 // the server's decoded receipt. An error leaves the episode pending.
 type Sender interface {
@@ -63,9 +69,11 @@ type SendRequest struct {
 
 type Options struct {
 	ChannelID                         id.ID
+	ExpectedGroupID                   id.ID
 	Template, ServerName, ChannelName string
 	MemberName                        func(id.ID) string
 	Membership                        Membership
+	Destination                       DestinationResolver
 	Sender                            Sender
 	Now                               func() time.Time
 }
@@ -92,15 +100,17 @@ type Processor struct {
 	native                            Native
 	binding                           native.Binding
 	channel                           id.ID
+	expectedGroup                     id.ID
 	template, serverName, channelName string
 	memberName                        func(id.ID) string
 	membership                        Membership
+	destination                       DestinationResolver
 	sender                            Sender
 	now                               func() time.Time
 }
 
 func New(n Native, options Options) (*Processor, error) {
-	if n == nil || options.Membership == nil || options.Sender == nil || options.ChannelID.IsZero() || options.MemberName == nil {
+	if n == nil || options.Membership == nil || options.Destination == nil || options.Sender == nil || options.ChannelID.IsZero() || options.ExpectedGroupID.IsZero() || options.MemberName == nil {
 		return nil, errors.New("missing welcome dependency")
 	}
 	b := n.Binding()
@@ -113,7 +123,7 @@ func New(n Native, options Options) (*Processor, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Processor{native: n, binding: b, channel: options.ChannelID, template: options.Template, serverName: options.ServerName, channelName: options.ChannelName, memberName: options.MemberName, membership: options.Membership, sender: options.Sender, now: options.Now}, nil
+	return &Processor{native: n, binding: b, channel: options.ChannelID, expectedGroup: options.ExpectedGroupID, template: options.Template, serverName: options.ServerName, channelName: options.ChannelName, memberName: options.MemberName, membership: options.Membership, destination: options.Destination, sender: options.Sender, now: options.Now}, nil
 }
 
 // Preview substitutes only the three supported references and bounds both the
@@ -234,12 +244,19 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 			return resolveErr
 		}
 		if found {
-			if !acceptedReceipt(receipt, op, attemptID(op), p.binding.Community, p.channel) {
+			if !acceptedReceipt(receipt, op, attemptID(op), p.binding.Community, p.expectedGroup) {
 				return ErrReceiptUnresolved
 			}
 			return p.save(ctx, key, revision, episode{Status: StatusPosted, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
 		}
 		return p.save(ctx, key, revision, episode{Status: StatusMissed, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
+	}
+	group, err := p.destination.ResolveTextGroup(ctx, p.binding.Community, p.channel)
+	if err != nil {
+		return err
+	}
+	if group.IsZero() || group != p.expectedGroup {
+		return errors.New("welcome channel destination is missing or changed")
 	}
 	member, err := p.membership.IsCurrentMember(ctx, user)
 	if err != nil {
@@ -257,11 +274,11 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 		return errors.New("welcome event timestamp out of range")
 	}
 	attempt := attemptID(op)
-	receipt, sendErr := p.sender.SendWelcome(ctx, SendRequest{OperationID: op, AttemptID: attempt, CommunityID: p.binding.Community, InstallationID: p.binding.Installation, MemberID: user, EpisodeID: episodeID, GroupID: p.channel, Text: text, OriginalNow: event.Timestamp})
+	receipt, sendErr := p.sender.SendWelcome(ctx, SendRequest{OperationID: op, AttemptID: attempt, CommunityID: p.binding.Community, InstallationID: p.binding.Installation, MemberID: user, EpisodeID: episodeID, GroupID: group, Text: text, OriginalNow: event.Timestamp})
 	if sendErr != nil {
 		return sendErr
 	}
-	if !acceptedReceipt(receipt, op, attempt, p.binding.Community, p.channel) {
+	if !acceptedReceipt(receipt, op, attempt, p.binding.Community, group) {
 		return errors.New("welcome send has no authoritative accepted receipt")
 	}
 	return p.save(ctx, key, revision, episode{Status: StatusPosted, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})

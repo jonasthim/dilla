@@ -60,6 +60,7 @@ type testSender struct {
 	resolveFound bool
 	resolveCalls int
 	operations   []id.ID
+	groups       []id.ID
 	text         []string
 }
 
@@ -71,6 +72,7 @@ func (s *testSender) ResolveWelcome(_ context.Context, _, _ id.ID) (protocol.Sen
 func (s *testSender) SendWelcome(_ context.Context, req SendRequest) (protocol.SendReceipt, error) {
 	s.calls++
 	s.operations = append(s.operations, req.OperationID)
+	s.groups = append(s.groups, req.GroupID)
 	s.text = append(s.text, req.Text)
 	s.receipt.OperationID = req.OperationID
 	s.receipt.AttemptID = req.AttemptID
@@ -84,11 +86,21 @@ type testMembership bool
 
 func (m testMembership) IsCurrentMember(context.Context, id.ID) (bool, error) { return bool(m), nil }
 
+type testDestination struct {
+	group id.ID
+	err   error
+}
+
+func (d testDestination) ResolveTextGroup(context.Context, id.ID, id.ID) (id.ID, error) {
+	return d.group, d.err
+}
+
 func fixture() (*testNative, *testSender, *Processor, id.ID, id.ID, id.ID, id.ID) {
 	community, install, user, episode := testID(1), testID(2), testID(3), testID(4)
 	n := &testNative{binding: native.Binding{Instance: testID(5), Community: community, Installation: install}, values: map[string]native.StateValue{}, transactions: map[id.ID][]native.StateChange{}}
-	s := &testSender{receipt: protocol.SendReceipt{OperationID: testID(9), AttemptID: testID(10), CommunityID: community, GroupID: testID(6), Outcome: protocol.ReceiptAccepted, SendResponse: &protocol.OriginalSendResponse{Sequence: 1, FrankingTag: make([]byte, 32), ReceiveTimestamp: 1, Body: mustCBOR([]any{uint64(1), make([]byte, 32), uint64(1)})}}}
-	p, _ := New(n, Options{ChannelID: testID(6), Template: "Welcome {member} to {server} in {channel}", ServerName: "Dilla", ChannelName: "general", MemberName: func(id.ID) string { return "Ada" }, Membership: testMembership(true), Sender: s, Now: func() time.Time { return time.Unix(2_000_000, 0) }})
+	channel, group := testID(6), testID(12)
+	s := &testSender{receipt: protocol.SendReceipt{OperationID: testID(9), AttemptID: testID(10), CommunityID: community, GroupID: group, Outcome: protocol.ReceiptAccepted, SendResponse: &protocol.OriginalSendResponse{Sequence: 1, FrankingTag: make([]byte, 32), ReceiveTimestamp: 1, Body: mustCBOR([]any{uint64(1), make([]byte, 32), uint64(1)})}}}
+	p, _ := New(n, Options{ChannelID: channel, ExpectedGroupID: group, Destination: testDestination{group: group}, Template: "Welcome {member} to {server} in {channel}", ServerName: "Dilla", ChannelName: "general", MemberName: func(id.ID) string { return "Ada" }, Membership: testMembership(true), Sender: s, Now: func() time.Time { return time.Unix(2_000_000, 0) }})
 	return n, s, p, community, user, episode, install
 }
 func testID(v byte) id.ID   { var out id.ID; out[15] = v; return out }
@@ -112,7 +124,32 @@ func TestDuplicateJoinSendsOneEpisode(t *testing.T) {
 	if s.text[0] != "Welcome Ada to Dilla in general" {
 		t.Fatalf("rendered %q", s.text[0])
 	}
+	if s.groups[0] == testID(6) || s.groups[0] != testID(12) || s.receipt.GroupID != s.groups[0] {
+		t.Fatalf("send group=%s receipt group=%s; want resolved group %s, distinct from channel %s", s.groups[0], s.receipt.GroupID, testID(12), testID(6))
+	}
 	_ = n
+}
+
+func TestChangedOrMissingDestinationFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		to   testDestination
+	}{
+		{name: "changed group", to: testDestination{group: testID(13)}},
+		{name: "missing group", to: testDestination{}},
+		{name: "resolver error", to: testDestination{err: errors.New("channel is no longer authorized")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, s, p, c, u, e, _ := fixture()
+			p.destination = tc.to
+			if err := p.Process(context.Background(), joinEvent(c, u, e, 1_999_999)); err == nil {
+				t.Fatal("expected destination resolution failure")
+			}
+			if s.calls != 0 {
+				t.Fatalf("sent %d messages to invalid destination", s.calls)
+			}
+		})
+	}
 }
 
 func TestRejoinEpisodeHasDifferentOperation(t *testing.T) {
@@ -211,6 +248,34 @@ func TestExpiredPendingAcceptedReceiptIsPostedWithoutResend(t *testing.T) {
 	}
 	if status, err := p.Status(context.Background(), u, e); err != nil || status != StatusPosted {
 		t.Fatalf("status=%v err=%v", status, err)
+	}
+}
+
+func TestExpiredPendingResolvesReceiptAfterDestinationLoss(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		_, s, p, c, u, e, _ := fixture()
+		s.err = errors.New("response lost")
+		ev := joinEvent(c, u, e, 1_999_999)
+		if err := p.Process(context.Background(), ev); err == nil {
+			t.Fatal("expected ambiguous send")
+		}
+		p.now = func() time.Time { return time.Unix(2_000_000, 0).Add(25 * time.Hour) }
+		p.destination = testDestination{err: errors.New("channel deleted")}
+		s.resolveFound = accepted
+		s.err = nil
+		if err := p.Process(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+		want := StatusMissed
+		if accepted {
+			want = StatusPosted
+		}
+		if status, err := p.Status(context.Background(), u, e); err != nil || status != want {
+			t.Fatalf("accepted=%v status=%v err=%v", accepted, status, err)
+		}
+		if s.calls != 1 || s.resolveCalls != 1 {
+			t.Fatalf("accepted=%v sends=%d lookups=%d", accepted, s.calls, s.resolveCalls)
+		}
 	}
 }
 
