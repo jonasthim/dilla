@@ -377,6 +377,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								ensureErr = pollerErr
 							} else if _, pollErr := poller.PollOnce(ctx, result.Session, welcome.ConfiguredEventHandler(nativeClient, nil)); pollErr != nil {
 								logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
+								ensureErr = pollErr
 							}
 						}
 					}
