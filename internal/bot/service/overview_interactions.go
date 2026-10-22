@@ -27,7 +27,7 @@ type OverviewInteractions struct {
 
 func (h OverviewInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpOverviewGet: {Handle: h.get},
+		protocol.OpOverviewGet: {RecomputeOnReplay: true, Handle: h.get},
 	}
 }
 

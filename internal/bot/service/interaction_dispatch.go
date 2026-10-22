@@ -53,6 +53,10 @@ type InteractionResult struct {
 // InteractionHandlerSpec allows mutations to check the current operator
 // configuration revision before performing their effect.
 type InteractionHandlerSpec struct {
+	// RecomputeOnReplay marks read handlers whose authorization and response
+	// must be refreshed for an exact duplicate request. Mutations must leave
+	// this false so their effects remain deduplicated.
+	RecomputeOnReplay bool
 	// CurrentRevision is a preflight check. For mutations, Handle must
 	// atomically compare Request.Revision with the current revision in the same
 	// transaction as its write and return status 4 on a race.
@@ -180,6 +184,9 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	if err != nil {
 		return "", err
 	}
+	d.mu.Lock()
+	handler, ok := d.handlers[request.Operation]
+	d.mu.Unlock()
 	response := protocol.Response{RequestID: request.RequestID, CommunityID: d.binding.Community, Data: []byte{}}
 	key := interactionReplayKey{requestID: request.RequestID, actorUser: event.SenderUser, actorDevice: event.SenderDevice, group: event.Group, channel: event.Channel}
 	fingerprint := interactionFingerprint(encoded)
@@ -192,9 +199,16 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		return "", err
 	}
 	if !owner {
+		if !ok || !handler.RecomputeOnReplay {
+			select {
+			case <-entry.done:
+				return entry.response, nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
 		select {
 		case <-entry.done:
-			return entry.response, nil
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
@@ -210,7 +224,9 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		if encodeErr != nil {
 			return "", encodeErr
 		}
-		d.complete(entry, body)
+		if owner {
+			d.complete(entry, body)
+		}
 		return body, nil
 	}
 
@@ -231,9 +247,6 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 		return finish()
 	}
 
-	d.mu.Lock()
-	handler, ok := d.handlers[request.Operation]
-	d.mu.Unlock()
 	if !ok {
 		response.Status = interactionStatusUnavailable
 		return finish()

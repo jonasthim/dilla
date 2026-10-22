@@ -195,6 +195,40 @@ func TestModerationInteractionsRechecksPermissionBeforeReturningSecondPage(t *te
 	}
 }
 
+func TestModerationCaseDispatchRechecksPermissionOnIdenticalRetry(t *testing.T) {
+	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
+	state.binding.Community = interactionID(2)
+	sink, err := NewModerationCaseSink(state, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &caseReadAuthority{result: client.ActorAuthority{EffectiveBits: moderationViewAuditLogBit}, present: true}
+	reader, err := NewModerationCaseReader(sink, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, event, binding := interactionFixture(t, (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers())
+	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, Operation: protocol.OpModerationCases, Args: []any{nil}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Body = &body
+	first, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil || interactionResponse(t, first).Status != 0 {
+		t.Fatalf("first response=%q err=%v; want authorized case list", first, err)
+	}
+
+	authority.result.EffectiveBits = 0
+	second, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionResponse(t, second)
+	if response.Status != interactionStatusInternal || len(response.Data) != 0 || authority.calls != 2 || state.scans != 1 {
+		t.Fatalf("revoked duplicate response=%+v lookups=%d scans=%d; want no new scan and no data", response, authority.calls, state.scans)
+	}
+}
+
 func TestModerationInteractionsFailClosedForMissingActorOrReaderError(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

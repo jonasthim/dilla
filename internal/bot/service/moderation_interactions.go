@@ -30,7 +30,7 @@ type ModerationInteractions struct {
 
 func (h ModerationInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpModerationCases: {Handle: h.listCases},
+		protocol.OpModerationCases: {RecomputeOnReplay: true, Handle: h.listCases},
 	}
 }
 

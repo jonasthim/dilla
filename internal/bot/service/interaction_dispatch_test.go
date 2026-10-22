@@ -219,12 +219,16 @@ func TestInteractionDispatcherMarksExpiredMutation(t *testing.T) {
 
 func TestInteractionDispatcherReplaysDuplicateRequestAndRejectsChangedReuse(t *testing.T) {
 	calls := 0
-	h := InteractionHandlerSpec{Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
+	h := InteractionHandlerSpec{RevisionInHandler: true, Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
 		calls++
 		return InteractionResult{Status: 0, Data: cborEmptyArray()}, nil
 	}}
-	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{protocol.OpOverviewGet: h})
-	body := interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil)
+	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{protocol.OpSettingsPut: h})
+	revision, expires := uint64(1), uint64(120)
+	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: interactionID(2), Operation: protocol.OpSettingsPut, Revision: &revision, Expires: &expires, Args: []any{uint64(0), []byte{0x80}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	event.Body = &body
 	first, err := d.Dispatch(context.Background(), event)
 	if err != nil {
@@ -245,6 +249,35 @@ func TestInteractionDispatcherReplaysDuplicateRequestAndRejectsChangedReuse(t *t
 	event.Body = &changed
 	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, ErrInteractionRequestIDConflict) {
 		t.Fatalf("changed request id reuse error = %v", err)
+	}
+}
+
+func TestInteractionDispatcherRecomputesReadResponseAfterPermissionRevocation(t *testing.T) {
+	allowed := true
+	calls := 0
+	h := InteractionHandlerSpec{RecomputeOnReplay: true, Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
+		calls++
+		if !allowed {
+			return InteractionResult{}, errors.New("permission revoked")
+		}
+		return InteractionResult{Status: 0, Data: cborEmptyArray()}, nil
+	}}
+	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{protocol.OpOverviewGet: h})
+	body := interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil)
+	event.Body = &body
+	first, err := d.Dispatch(context.Background(), event)
+	if err != nil || interactionResponse(t, first).Status != 0 {
+		t.Fatalf("first response=%q err=%v; want authorized read", first, err)
+	}
+
+	allowed = false
+	second, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionResponse(t, second)
+	if response.Status != interactionStatusInternal || len(response.Data) != 0 || calls != 2 {
+		t.Fatalf("revoked duplicate response=%+v calls=%d; want fresh denied response without data", response, calls)
 	}
 }
 

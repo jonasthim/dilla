@@ -55,7 +55,7 @@ func (h AnnouncementInteractions) Handlers() map[protocol.Operation]InteractionH
 // registration policy is explicitly enabled.
 func (h AnnouncementInteractions) ReadOnlyHandlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpAnnouncementsList: {Handle: h.list},
+		protocol.OpAnnouncementsList: {RecomputeOnReplay: true, Handle: h.list},
 	}
 }
 

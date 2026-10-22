@@ -88,6 +88,30 @@ func TestOverviewDispatchUsesAuthenticatedEventSenderAndBoundCommunity(t *testin
 	}
 }
 
+func TestOverviewDispatchRechecksPermissionOnIdenticalRetry(t *testing.T) {
+	authority := &overviewAuthorityFake{result: client.ActorAuthority{Owner: true}, present: true}
+	dispatcher, event, binding := interactionFixture(t, (OverviewInteractions{Authority: authority, CommunityID: interactionID(2)}).Handlers())
+	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, Operation: protocol.OpOverviewGet, Args: []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Body = &body
+	first, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil || interactionResponse(t, first).Status != 0 {
+		t.Fatalf("first response=%q err=%v; want authorized overview", first, err)
+	}
+
+	authority.result = client.ActorAuthority{}
+	second, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := interactionResponse(t, second)
+	if response.Status != interactionStatusForbidden || len(response.Data) != 0 || authority.calls != 2 {
+		t.Fatalf("revoked duplicate response=%+v lookups=%d; want fresh forbidden response", response, authority.calls)
+	}
+}
+
 func TestOverviewInteractionRefusesNonAdminAndForeignCommunityWithoutSideEffects(t *testing.T) {
 	community := interactionID(2)
 	authority := &overviewAuthorityFake{result: client.ActorAuthority{EffectiveBits: 4}, present: true}
