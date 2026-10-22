@@ -1,11 +1,13 @@
 package ds_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -23,6 +25,26 @@ func TestManagedRegistrationRejectsNoncanonicalBodyBeforeStoreAccess(t *testing.
 	var refusal *ds.Error
 	if !errors.As(err, &refusal) || refusal.Code != "E_INVALID_REQUEST" {
 		t.Fatalf("noncanonical registration body = %v, want E_INVALID_REQUEST before lookup", err)
+	}
+}
+
+func TestManagedRegistrationRejectsAdmissionIDOutsideKindThree(t *testing.T) {
+	h := newDSHarness(t)
+	installation := id.New()
+	registration := ds.RegisterRequest{GroupID: id.New(), Binding: []byte("not a binding"), GroupInfo: []byte{1}, RatchetTree: []byte{2}}
+	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ds.BotRegisterRequest{
+		Session:        auth.Session{Scope: auth.ScopeEnrolled, Bot: &auth.BotSessionBinding{InstallationID: installation, State: store.BotInstallationJoining}},
+		InstallationID: installation, OperationID: id.New(), ExpectedGeneration: 1, AdmissionRequestID: id.New(),
+		RegistrationBody: body, Registration: registration,
+	}
+	_, _, err = h.ds.RegisterWithBotReceipt(context.Background(), request)
+	var refusal *ds.Error
+	if !errors.As(err, &refusal) || refusal.Code != "E_INVALID_REQUEST" || !bytes.Contains([]byte(refusal.Detail), []byte("admission_request_id is only valid")) {
+		t.Fatalf("admission ID on a non-kind-3 registration = %v, want explicit E_INVALID_REQUEST", err)
 	}
 }
 

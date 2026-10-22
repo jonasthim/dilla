@@ -38,6 +38,7 @@ type BotRegisterRequest struct {
 	InstallationID     id.ID
 	OperationID        id.ID
 	ExpectedGeneration uint64
+	AdmissionRequestID id.ID
 	RegistrationBody   []byte
 	Registration       RegisterRequest
 }
@@ -80,6 +81,12 @@ func (d *DS) RegisterWithBotReceipt(ctx context.Context, r BotRegisterRequest) (
 	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree})
 	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
 		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
+	}
+	if !r.AdmissionRequestID.IsZero() {
+		binding, err := decodeBinding(r.Registration.Binding)
+		if err != nil || binding.Kind != 3 {
+			return BotRegisterReceipt{}, false, errInvalid("admission_request_id is only valid for kind-3 registration")
+		}
 	}
 	domainBody := append([]byte("dilla bot group registration v1\x00"), r.RegistrationBody...)
 	hash := sha256.Sum256(domainBody)

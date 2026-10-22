@@ -861,6 +861,19 @@ func (s *Session) RegisterGroup(ctx context.Context, group id.ID, binding, info,
 // reconstructs, retries or replaces that body; an uncertain mutation remains
 // unknown until the caller checks its receipt.
 func (s *Session) RegisterBotGroup(ctx context.Context, installation, operation id.ID, expectedGeneration uint64, registrationBody []byte) (BotGroupRegistrationReceipt, error) {
+	return s.registerBotGroup(ctx, installation, operation, expectedGeneration, registrationBody, nil)
+}
+
+// RegisterBotGroupWithAdmissionRequest submits a kind-3 registration intent linked to its
+// durable admission request. Kind-3 registration remains subject to the server's refusal gate.
+func (s *Session) RegisterBotGroupWithAdmissionRequest(ctx context.Context, installation, operation id.ID, expectedGeneration uint64, registrationBody []byte, admissionRequestID id.ID) (BotGroupRegistrationReceipt, error) {
+	if admissionRequestID.IsZero() {
+		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
+	}
+	return s.registerBotGroup(ctx, installation, operation, expectedGeneration, registrationBody, &admissionRequestID)
+}
+
+func (s *Session) registerBotGroup(ctx context.Context, installation, operation id.ID, expectedGeneration uint64, registrationBody []byte, admissionRequestID *id.ID) (BotGroupRegistrationReceipt, error) {
 	if operation.IsZero() || expectedGeneration > maxStoredSequence || len(registrationBody) == 0 || len(registrationBody) > maxBotGroupRegistrationBody {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
 	}
@@ -872,7 +885,13 @@ func (s *Session) RegisterBotGroup(ctx context.Context, installation, operation 
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
 	}
-	request, err := encode([]any{operation, expectedGeneration, registrationBody})
+	var requestTuple []any
+	if admissionRequestID == nil {
+		requestTuple = []any{operation, expectedGeneration, registrationBody}
+	} else {
+		requestTuple = []any{operation, expectedGeneration, registrationBody, *admissionRequestID}
+	}
+	request, err := encode(requestTuple)
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
 	}

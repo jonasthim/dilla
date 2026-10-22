@@ -180,6 +180,12 @@ func testManagedBotGroupRegistrationReceipt(t *testing.T, h *groupsAPI) {
 	}
 	request := mustCBOR(t, []any{operation, instance.Generation, registrationBody})
 	path := "/v1/bot-runtime/installations/" + installation.ID.String() + "/groups"
+	for _, badAdmissionID := range [][]byte{make([]byte, len(id.ID{})), []byte("short")} {
+		bad := h.do(t, http.MethodPost, path, token, mustCBOR(t, []any{id.New(), instance.Generation, registrationBody, badAdmissionID}))
+		if bad.Code != http.StatusBadRequest || errorCode(t, bad) != "E_INVALID_REQUEST" {
+			t.Fatalf("malformed admission request id: %d %x, want 400 E_INVALID_REQUEST", bad.Code, bad.Body.Bytes())
+		}
+	}
 	boundaryBody := mustCBOR(t, []any{groupID, []byte{}, []byte{}, make([]byte, 65_482)})
 	if len(boundaryBody) != 65_505 {
 		t.Fatalf("boundary body length = %d, want 65,505", len(boundaryBody))

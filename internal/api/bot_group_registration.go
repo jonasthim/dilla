@@ -42,13 +42,27 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tuple []any
-	if cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || len(tuple) != 3 {
+	if cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || (len(tuple) != 3 && len(tuple) != 4) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
+		return
+	}
+	canonicalRequest, canonicalErr := cborx.Marshal(tuple)
+	if canonicalErr != nil || !bytes.Equal(canonicalRequest, raw) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
 		return
 	}
 	operation, ok := registrationID(tuple[0])
 	generation, generationOK := tuple[1].(uint64)
 	body, bodyOK := tuple[2].([]byte)
+	var admissionRequestID id.ID
+	if len(tuple) == 4 {
+		var admissionOK bool
+		admissionRequestID, admissionOK = registrationID(tuple[3])
+		if !admissionOK {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
+			return
+		}
+	}
 	if !ok || !generationOK || generation > math.MaxInt64 || !bodyOK {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
 		return
@@ -74,7 +88,7 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 	registration.Session = session
 	receipt, created, err := h.DS.RegisterWithBotReceipt(r.Context(), ds.BotRegisterRequest{
 		Session: session, InstallationID: installation, OperationID: operation, ExpectedGeneration: generation,
-		RegistrationBody: body, Registration: registration,
+		RegistrationBody: body, Registration: registration, AdmissionRequestID: admissionRequestID,
 	})
 	if err != nil {
 		server.WriteError(w, dsError(err))

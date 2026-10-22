@@ -78,6 +78,54 @@ func TestRegisterBotGroupPostsExactPendingBodyAndAcceptsNewOrReplay(t *testing.T
 	}
 }
 
+func TestRegisterBotGroupWithAdmissionRequestPostsExactVersionedShape(t *testing.T) {
+	installation, operation, admissionRequest, group := testID(21), testID(22), testID(24), testID(23)
+	body := registrationBody(t, group)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, 200, discovery(testID(99)))
+			return
+		}
+		var tuple []any
+		requestBytes, err := io.ReadAll(r.Body)
+		if err != nil || cborx.Unmarshal(requestBytes, &tuple) != nil || len(tuple) != 4 {
+			t.Fatalf("request tuple %x: %v", requestBytes, err)
+		}
+		gotAdmission, ok := asID(tuple[3])
+		if !ok || gotAdmission != admissionRequest {
+			t.Errorf("admission request id = %#v, want %s", tuple[3], admissionRequest)
+		}
+		gotBody, ok := tuple[2].([]byte)
+		if !ok || !bytes.Equal(gotBody, body) {
+			t.Errorf("registration body = %x, want exact %x", gotBody, body)
+		}
+		reply(w, http.StatusBadRequest, cbor(t, []any{uint64(1), "E_INVALID_REQUEST", "kind-3 registration is refused"}))
+	}, time.Second)
+	s, _ := c.Session("device-token")
+	_, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), installation, operation, 17, body, admissionRequest)
+	if err == nil {
+		t.Fatal("kind-3 admission registration unexpectedly succeeded")
+	}
+}
+
+func TestRegisterBotGroupWithAdmissionRequestRejectsZeroIDBeforeRequest(t *testing.T) {
+	calls := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, 200, discovery(testID(99)))
+			return
+		}
+		calls++
+	}, time.Second)
+	s, _ := c.Session("device-token")
+	if _, err := s.RegisterBotGroupWithAdmissionRequest(context.Background(), testID(21), testID(22), 17, registrationBody(t, testID(23)), id.Zero); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("error = %v, want ErrInvalidConfig", err)
+	}
+	if calls != 0 {
+		t.Fatalf("sent %d requests for zero admission request id", calls)
+	}
+}
+
 func registrationHashPreimage(body []byte) []byte {
 	return append([]byte("dilla bot group registration v1\x00"), body...)
 }
