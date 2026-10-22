@@ -335,7 +335,7 @@ describe('wire version 2 (web3.8 C2)', () => {
     const socket = Sock.all[0];
     socket.open();
     socket.receive(HELLO);
-    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1])]);
     socket.receive(READY);
     await until(() => w.connection()?.status === 'online');
     expect(w.connection()?.reason).toBeUndefined();
