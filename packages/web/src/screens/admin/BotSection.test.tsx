@@ -45,6 +45,14 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
+  it('shows the moderation log as unavailable without requesting or inventing case data', async () => {
+    const { fake } = setup({ ...ROW, state: 3 });
+    expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();
+    expect(screen.getByText(en['admin.bot.moderationLog.unavailable'])).toHaveAttribute('role', 'note');
+    expect(fake.calls.map(call => call.m)).not.toContain('getModerationCases');
+    expect(screen.queryByText(/reason|excerpt|case #/i)).not.toBeInTheDocument();
+  });
+
   it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
     spotifySession.clear();
     vi.mocked(authorizeSpotify).mockClear();

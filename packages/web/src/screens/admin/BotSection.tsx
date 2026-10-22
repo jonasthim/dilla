@@ -350,6 +350,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{t('admin.bot.music.youtubeHelp')}</p>
         </SettingsRow>
       </section>
+      <section aria-labelledby={`${base}-moderation-log-title`}>
+        <h3 id={`${base}-moderation-log-title`}>{t('admin.bot.moderationLog.title')}</h3>
+        <p role="note">{t('admin.bot.moderationLog.unavailable')}</p>
+      </section>
       {currentError === null ? null : <p role="alert">{currentError}</p>}
       <div>
         {enabled ? <Button aria-disabled={busy || undefined} onClick={disable}>{busy ? t('admin.bot.disabling') : t('admin.bot.disable')}</Button>
