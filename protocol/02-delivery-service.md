@@ -690,7 +690,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    Voice, Leaving). Such a `Remove` is marked `withdrawable` when it is issued, and keeps the mark
    through every re-issue, re-arm and re-drive; no other `Remove` ever carries it (a revocation, a
    kick or ban, an eviction, a barred device's cut, the election's removal of a candidate, a member's
-   own proposal). Only the departed device's own resume withdraws, and only the `Remove` of its own
+   own proposal). A deliberate `Remove` of the same leaf — one of those, issued while the absence
+   `Remove` stands, or re-arming it after a void or a withdrawal — loses the mark for good: the
+   deliberate intent is folded into the standing proposal, and no resume may withdraw it. Only the
+   departed device's own resume withdraws, and only the `Remove` of its own
    membership: under the group lock, in the call start's last step before the token is minted
    (`09` § Voice), the instance checks that the device still holds the same membership (the leaf,
    taken in the same epoch), then marks every withdrawable, unwithdrawn instance `Remove` of that
