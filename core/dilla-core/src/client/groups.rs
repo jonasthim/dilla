@@ -250,6 +250,7 @@ fn binding(
 pub(super) fn row_kind(kind: GroupKind) -> i64 {
     match kind {
         GroupKind::Call => 1,
+        GroupKind::Interaction => 3,
         _ => 0,
     }
 }
