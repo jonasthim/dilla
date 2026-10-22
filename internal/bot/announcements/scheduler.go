@@ -25,6 +25,7 @@ const (
 	maxAnnouncements     = 128
 	maxAnnouncementText  = 4000
 	maxAnnouncementState = 262144
+	maxMutationReceipts  = 512
 )
 
 var (
@@ -32,6 +33,9 @@ var (
 	ErrSchedulerMalformed   = errors.New("malformed announcement scheduler state")
 	ErrAnnouncementNotFound = errors.New("announcement not found")
 	ErrSendNotStarted       = errors.New("announcement send window closed before send started")
+	ErrMutationIDConflict   = errors.New("announcement mutation request ID reused with different input")
+	ErrMutationReceiptLimit = errors.New("announcement mutation receipt capacity reached")
+	ErrMutationExpired      = errors.New("announcement mutation request expired")
 )
 
 // Native exposes the helper's encrypted, community-bound application state.
@@ -103,6 +107,23 @@ type scheduledState struct {
 	GroupID      id.ID
 }
 
+// MutationOutcome is the stable application result of a schedule mutation.
+// Put returns the resulting schedule revision; Delete has no revision.
+type MutationOutcome struct {
+	Status   uint64
+	Revision *uint64
+	Data     []byte
+}
+
+type mutationReceipt struct {
+	RequestID   id.ID
+	Fingerprint [32]byte
+	Expires     uint64
+	Status      uint64
+	Revision    *uint64
+	Data        []byte
+}
+
 type Scheduler struct {
 	mu            sync.Mutex
 	native        Native
@@ -112,6 +133,7 @@ type Scheduler struct {
 	sender        Sender
 	receiptLookup ReceiptLookup
 	now           func() time.Time
+	receipts      []mutationReceipt
 }
 
 func NewScheduler(n Native, options SchedulerOptions) (*Scheduler, error) {
@@ -143,17 +165,59 @@ func (s *Scheduler) Put(ctx context.Context, value Announcement) error {
 	if err != nil {
 		return err
 	}
+	states, err = putAnnouncement(states, value, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	return s.save(ctx, revision, states, s.receipts)
+}
+
+// PutWithReceipt atomically stores the Put outcome and its request receipt in
+// the same encrypted state transaction. The fingerprint covers the complete
+// canonical application request; MLS event epoch/delivery coordinates do not
+// participate, so retries carried by a later epoch return the original result.
+func (s *Scheduler) PutWithReceipt(ctx context.Context, requestID id.ID, fingerprint [32]byte, expires uint64, value Announcement) (MutationOutcome, error) {
+	if s == nil {
+		return MutationOutcome{}, errors.New("missing announcement scheduler")
+	}
+	if err := validateAnnouncement(value); err != nil {
+		return MutationOutcome{}, err
+	}
+	if err := s.validateMutationInput(requestID, expires); err != nil {
+		return MutationOutcome{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	states, revision, err := s.load(ctx)
+	if err != nil {
+		return MutationOutcome{}, err
+	}
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint); found || lookupErr != nil {
+		return outcome, lookupErr
+	}
+	states, err = putAnnouncement(states, value, s.now().UTC())
+	if err != nil {
+		if errors.Is(err, ErrSchedulerConflict) {
+			return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 4, Data: []byte{0x80}})
+		}
+		return MutationOutcome{}, err
+	}
+	return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires,
+		MutationOutcome{Revision: cloneUint64(&value.Schedule.Revision), Data: []byte{0x80}})
+}
+
+func putAnnouncement(states []scheduledState, value Announcement, now time.Time) ([]scheduledState, error) {
 	i := findAnnouncement(states, value.ID)
 	if i < 0 {
 		if len(states) >= maxAnnouncements {
-			return errors.New("announcement schedule limit reached")
+			return states, errors.New("announcement schedule limit reached")
 		}
 		if value.Schedule.Revision == 0 {
-			return errors.New("new announcement revision must be positive")
+			return states, errors.New("new announcement revision must be positive")
 		}
-		next, nextErr := NextOccurrence(value.Schedule, s.now().UTC())
+		next, nextErr := NextOccurrence(value.Schedule, now)
 		if nextErr != nil && !errors.Is(nextErr, ErrNoOccurrence) {
-			return nextErr
+			return states, nextErr
 		}
 		state := scheduledState{Announcement: value}
 		if nextErr == nil {
@@ -163,11 +227,11 @@ func (s *Scheduler) Put(ctx context.Context, value Announcement) error {
 	} else {
 		old := states[i]
 		if value.Schedule.Revision != old.Announcement.Schedule.Revision+1 {
-			return ErrSchedulerConflict
+			return states, ErrSchedulerConflict
 		}
-		next, nextErr := NextOccurrence(value.Schedule, s.now().UTC())
+		next, nextErr := NextOccurrence(value.Schedule, now)
 		if nextErr != nil && !errors.Is(nextErr, ErrNoOccurrence) {
-			return nextErr
+			return states, nextErr
 		}
 		state := scheduledState{Announcement: value}
 		if nextErr == nil {
@@ -175,7 +239,7 @@ func (s *Scheduler) Put(ctx context.Context, value Announcement) error {
 		}
 		states[i] = state
 	}
-	return s.save(ctx, revision, states)
+	return states, nil
 }
 
 // Delete removes a schedule only at its expected schedule revision. The check
@@ -198,7 +262,95 @@ func (s *Scheduler) Delete(ctx context.Context, announcementID id.ID, expectedRe
 		return ErrSchedulerConflict
 	}
 	states = append(states[:i], states[i+1:]...)
-	return s.save(ctx, revision, states)
+	return s.save(ctx, revision, states, s.receipts)
+}
+
+// DeleteWithReceipt atomically stores the Delete outcome and its request
+// receipt in the same encrypted state transaction.
+func (s *Scheduler) DeleteWithReceipt(ctx context.Context, requestID id.ID, fingerprint [32]byte, expires uint64, announcementID id.ID, expectedRevision uint64) (MutationOutcome, error) {
+	if s == nil || announcementID.IsZero() || expectedRevision == 0 {
+		return MutationOutcome{}, errors.New("invalid announcement ID or revision")
+	}
+	if err := s.validateMutationInput(requestID, expires); err != nil {
+		return MutationOutcome{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	states, revision, err := s.load(ctx)
+	if err != nil {
+		return MutationOutcome{}, err
+	}
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint); found || lookupErr != nil {
+		return outcome, lookupErr
+	}
+	i := findAnnouncement(states, announcementID)
+	if i < 0 {
+		return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 5, Data: []byte{0x80}})
+	}
+	if states[i].Announcement.Schedule.Revision != expectedRevision {
+		return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 4, Data: []byte{0x80}})
+	}
+	states = append(states[:i], states[i+1:]...)
+	return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Data: []byte{0x80}})
+}
+
+func (s *Scheduler) saveMutationOutcome(ctx context.Context, revision uint64, states []scheduledState, requestID id.ID, fingerprint [32]byte, expires uint64, outcome MutationOutcome) (MutationOutcome, error) {
+	receipts, err := s.nextMutationReceipts(requestID, fingerprint, expires, outcome)
+	if err != nil {
+		return MutationOutcome{}, err
+	}
+	if err := s.save(ctx, revision, states, receipts); err != nil {
+		return MutationOutcome{}, err
+	}
+	return outcome, nil
+}
+
+func (s *Scheduler) validateMutationInput(requestID id.ID, expires uint64) error {
+	if requestID.IsZero() || expires == 0 || expires > math.MaxInt64 {
+		return errors.New("invalid announcement mutation receipt input")
+	}
+	now := s.now().UTC().Unix()
+	if now < 0 || uint64(now) >= expires || uint64(now) > math.MaxInt64-30 || expires > uint64(now)+30 {
+		return ErrMutationExpired
+	}
+	return nil
+}
+
+func (s *Scheduler) nextMutationReceipts(requestID id.ID, fingerprint [32]byte, expires uint64, outcome MutationOutcome) ([]mutationReceipt, error) {
+	now := uint64(s.now().UTC().Unix())
+	kept := make([]mutationReceipt, 0, len(s.receipts)+1)
+	for _, receipt := range s.receipts {
+		if receipt.Expires > now {
+			kept = append(kept, receipt)
+		}
+	}
+	if len(kept) >= maxMutationReceipts {
+		return nil, ErrMutationReceiptLimit
+	}
+	kept = append(kept, mutationReceipt{RequestID: requestID, Fingerprint: fingerprint, Expires: expires,
+		Status: outcome.Status, Revision: cloneUint64(outcome.Revision), Data: append([]byte(nil), outcome.Data...)})
+	return kept, nil
+}
+
+func findMutationReceipt(receipts []mutationReceipt, requestID id.ID, fingerprint [32]byte) (MutationOutcome, bool, error) {
+	for _, receipt := range receipts {
+		if receipt.RequestID != requestID {
+			continue
+		}
+		if receipt.Fingerprint != fingerprint {
+			return MutationOutcome{}, true, ErrMutationIDConflict
+		}
+		return MutationOutcome{Status: receipt.Status, Revision: cloneUint64(receipt.Revision), Data: append([]byte(nil), receipt.Data...)}, true, nil
+	}
+	return MutationOutcome{}, false, nil
+}
+
+func cloneUint64(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
 }
 
 // List returns the current bounded schedule set in stable ID order.
@@ -545,7 +697,7 @@ func (s *Scheduler) replaceOne(ctx context.Context, state scheduledState, revisi
 		return ErrSchedulerConflict
 	}
 	states[i] = state
-	return s.save(ctx, revision, states)
+	return s.save(ctx, revision, states, s.receipts)
 }
 
 func (s *Scheduler) load(ctx context.Context) ([]scheduledState, uint64, error) {
@@ -565,18 +717,19 @@ func (s *Scheduler) load(ctx context.Context) ([]scheduledState, uint64, error) 
 	if v.Revision > math.MaxInt64 || len(v.Value) == 0 || len(v.Value) > maxAnnouncementState {
 		return nil, 0, ErrSchedulerMalformed
 	}
-	states, err := decodeStates(v.Value)
+	states, receipts, err := decodeStateDocument(v.Value)
 	if err != nil {
 		return nil, 0, err
 	}
+	s.receipts = receipts
 	return states, v.Revision, nil
 }
 
-func (s *Scheduler) save(ctx context.Context, revision uint64, states []scheduledState) error {
+func (s *Scheduler) save(ctx context.Context, revision uint64, states []scheduledState, receipts []mutationReceipt) error {
 	if revision >= math.MaxInt64 {
 		return errors.New("announcement state revision exhausted")
 	}
-	body, err := encodeStates(states)
+	body, err := encodeStateDocument(states, receipts)
 	if err != nil {
 		return err
 	}
@@ -588,10 +741,12 @@ func (s *Scheduler) save(ctx context.Context, revision uint64, states []schedule
 	tx := id.New()
 	revisions, txErr := s.native.StateTransaction(ctx, tx, []native.StateChange{{Area: schedulerStateArea, Key: key, ExpectedRevision: revision, Value: body}})
 	if txErr == nil && len(revisions) == 1 && revisions[0] == revision+1 {
+		s.receipts = append([]mutationReceipt(nil), receipts...)
 		return nil
 	}
 	actual, readErr := s.native.StateGet(ctx, schedulerStateArea, key)
 	if readErr == nil && !actual.Tombstone && actual.Revision == revision+1 && bytes.Equal(actual.Value, body) {
+		s.receipts = append([]mutationReceipt(nil), receipts...)
 		return nil
 	}
 	if readErr != nil {
@@ -660,8 +815,15 @@ func validAcceptedReceipt(r protocol.SendReceipt, req SendRequest) bool {
 }
 
 func encodeStates(states []scheduledState) ([]byte, error) {
+	return encodeStateDocument(states, nil)
+}
+
+func encodeStateDocument(states []scheduledState, receipts []mutationReceipt) ([]byte, error) {
 	if len(states) > maxAnnouncements {
 		return nil, errors.New("announcement schedule limit reached")
+	}
+	if len(receipts) > maxMutationReceipts {
+		return nil, ErrMutationReceiptLimit
 	}
 	a := make([]any, 0, len(states))
 	for _, s := range states {
@@ -680,7 +842,26 @@ func encodeStates(states []scheduledState) ([]byte, error) {
 		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(sched.Hour), uint64(sched.Minute), uint64(sched.Weekday), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID}
 		a = append(a, row)
 	}
-	b, err := cborx.Marshal([]any{uint64(1), a})
+	encodedReceipts := make([]any, 0, len(receipts))
+	seenReceipts := make(map[id.ID]bool, len(receipts))
+	for _, receipt := range receipts {
+		if receipt.RequestID.IsZero() || seenReceipts[receipt.RequestID] || receipt.Expires == 0 || receipt.Expires > math.MaxInt64 {
+			return nil, ErrSchedulerMalformed
+		}
+		seenReceipts[receipt.RequestID] = true
+		var resultRevision any
+		if receipt.Revision != nil {
+			if *receipt.Revision == 0 || *receipt.Revision > math.MaxInt64 {
+				return nil, ErrSchedulerMalformed
+			}
+			resultRevision = *receipt.Revision
+		}
+		if receipt.Status > 9 || len(receipt.Data) > 2400 || len(receipt.Data) > 0 && cborx.ExpectMajor(receipt.Data, cborx.MajorArray) != nil {
+			return nil, ErrSchedulerMalformed
+		}
+		encodedReceipts = append(encodedReceipts, []any{receipt.RequestID, receipt.Fingerprint[:], receipt.Expires, receipt.Status, resultRevision, receipt.Data})
+	}
+	b, err := cborx.Marshal([]any{uint64(2), a, encodedReceipts})
 	if err != nil {
 		return nil, err
 	}
@@ -691,20 +872,81 @@ func encodeStates(states []scheduledState) ([]byte, error) {
 }
 
 func decodeStates(data []byte) ([]scheduledState, error) {
+	states, _, err := decodeStateDocument(data)
+	return states, err
+}
+
+func decodeStateDocument(data []byte) ([]scheduledState, []mutationReceipt, error) {
 	var root []any
-	if cborx.Unmarshal(data, &root) != nil || len(root) != 2 || root[0] != uint64(1) {
-		return nil, ErrSchedulerMalformed
+	if cborx.Unmarshal(data, &root) != nil || len(root) < 2 || root[0] != uint64(1) && root[0] != uint64(2) {
+		return nil, nil, ErrSchedulerMalformed
 	}
 	rows, ok := root[1].([]any)
 	if !ok || len(rows) > maxAnnouncements {
-		return nil, ErrSchedulerMalformed
+		return nil, nil, ErrSchedulerMalformed
+	}
+	var receipts []mutationReceipt
+	if root[0] == uint64(1) {
+		if len(root) != 2 {
+			return nil, nil, ErrSchedulerMalformed
+		}
+	} else {
+		if len(root) != 3 {
+			return nil, nil, ErrSchedulerMalformed
+		}
+		encodedReceipts, receiptsOK := root[2].([]any)
+		if !receiptsOK || len(encodedReceipts) > maxMutationReceipts {
+			return nil, nil, ErrSchedulerMalformed
+		}
+		receipts = make([]mutationReceipt, 0, len(encodedReceipts))
+		seenReceipts := make(map[id.ID]bool, len(encodedReceipts))
+		for _, rawReceipt := range encodedReceipts {
+			fields, fieldsOK := rawReceipt.([]any)
+			requestBytes, requestOK := []byte(nil), false
+			fingerprintBytes, fingerprintOK := []byte(nil), false
+			var expires uint64
+			var expiresOK bool
+			var status uint64
+			var statusOK bool
+			if fieldsOK && len(fields) == 6 {
+				requestBytes, requestOK = fields[0].([]byte)
+				fingerprintBytes, fingerprintOK = fields[1].([]byte)
+				expires, expiresOK = fields[2].(uint64)
+				status, statusOK = fields[3].(uint64)
+			}
+			if !fieldsOK || len(fields) != 6 || !requestOK || len(requestBytes) != 16 || !fingerprintOK || len(fingerprintBytes) != 32 || !expiresOK || expires == 0 || expires > math.MaxInt64 || !statusOK || status > 9 {
+				return nil, nil, ErrSchedulerMalformed
+			}
+			var receipt mutationReceipt
+			copy(receipt.RequestID[:], requestBytes)
+			copy(receipt.Fingerprint[:], fingerprintBytes)
+			receipt.Expires = expires
+			receipt.Status = status
+			if receipt.RequestID.IsZero() || seenReceipts[receipt.RequestID] {
+				return nil, nil, ErrSchedulerMalformed
+			}
+			seenReceipts[receipt.RequestID] = true
+			if fields[4] != nil {
+				revision, revisionOK := fields[4].(uint64)
+				if !revisionOK || revision == 0 || revision > math.MaxInt64 {
+					return nil, nil, ErrSchedulerMalformed
+				}
+				receipt.Revision = cloneUint64(&revision)
+			}
+			data, dataOK := fields[5].([]byte)
+			if !dataOK || len(data) > 2400 || len(data) > 0 && cborx.ExpectMajor(data, cborx.MajorArray) != nil {
+				return nil, nil, ErrSchedulerMalformed
+			}
+			receipt.Data = append([]byte(nil), data...)
+			receipts = append(receipts, receipt)
+		}
 	}
 	out := make([]scheduledState, 0, len(rows))
 	seen := map[id.ID]bool{}
 	for _, raw := range rows {
 		a, ok := raw.([]any)
 		if !ok || (len(a) != 14 && len(a) != 15) || a[0] != uint64(1) {
-			return nil, ErrSchedulerMalformed
+			return nil, nil, ErrSchedulerMalformed
 		}
 		idb, iok := a[1].([]byte)
 		destb, dok := a[2].([]byte)
@@ -723,46 +965,46 @@ func decodeStates(data []byte) ([]scheduledState, error) {
 		if len(a) == 15 {
 			groupBytes, groupOK := a[14].([]byte)
 			if !groupOK || len(groupBytes) != 16 {
-				return nil, ErrSchedulerMalformed
+				return nil, nil, ErrSchedulerMalformed
 			}
 			copy(groupID[:], groupBytes)
 		}
 		if !iok || len(idb) != 16 || !dok || len(destb) != 16 || !tok || !kok || !zok || !daok || !hok || hour > 23 || !mok || minute > 59 || !wok || weekday > 6 || !rok || !eok || enabledValue > 1 || !ook || !sok || status > uint64(occurrenceSkipped) {
-			return nil, ErrSchedulerMalformed
+			return nil, nil, ErrSchedulerMalformed
 		}
 		var aid, did id.ID
 		copy(aid[:], idb)
 		copy(did[:], destb)
 		if seen[aid] {
-			return nil, ErrSchedulerMalformed
+			return nil, nil, ErrSchedulerMalformed
 		}
 		seen[aid] = true
 		value := Announcement{ID: aid, DestinationID: did, Text: txt, Schedule: Schedule{Kind: ScheduleKind(kind), Timezone: zone, Date: date, Hour: int(hour), Minute: int(minute), Weekday: time.Weekday(weekday), Revision: rev}, Enabled: enabledValue == 1}
 		if err := validateAnnouncement(value); err != nil {
-			return nil, ErrSchedulerMalformed
+			return nil, nil, ErrSchedulerMalformed
 		}
 		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID}
 		if len(rawOcc) == 1 && rawOcc[0] == uint64(0) {
 			if state.Status != occurrenceNone {
-				return nil, ErrSchedulerMalformed
+				return nil, nil, ErrSchedulerMalformed
 			}
 		} else {
 			if len(rawOcc) != 5 || rawOcc[0] != uint64(1) {
-				return nil, ErrSchedulerMalformed
+				return nil, nil, ErrSchedulerMalformed
 			}
 			ts, tok := rawOcc[1].(uint64)
 			local, lok := rawOcc[2].(string)
 			oRev, orok := rawOcc[3].(uint64)
 			key, kok := rawOcc[4].(string)
 			if !tok || !lok || !orok || !kok || oRev != rev || key == "" || (state.Status == occurrenceNone) {
-				return nil, ErrSchedulerMalformed
+				return nil, nil, ErrSchedulerMalformed
 			}
 			if ts > math.MaxInt64 {
-				return nil, ErrSchedulerMalformed
+				return nil, nil, ErrSchedulerMalformed
 			}
 			state.Occurrence = Occurrence{At: time.Unix(int64(ts), 0).UTC(), LocalDate: local, Revision: oRev, Key: key}
 		}
 		out = append(out, state)
 	}
-	return out, nil
+	return out, receipts, nil
 }
