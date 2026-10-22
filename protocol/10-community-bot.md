@@ -278,7 +278,7 @@ nested array. Kind is the existing text, call or interaction group kind. Text an
 call groups require this installation's community. Interaction groups preserve
 `01`'s null community, target equal to this bot's account and no external sender;
 the helper additionally persists their installation/community association and
-eligible human participant. Interaction creation requires null external sender;
+eligible human participant and authenticated participant device. Interaction creation requires null external sender;
 text/call creation requires the public key. External join is unavailable for
 interaction groups; their membership uses ordinary signed Add/Welcome processing.
 Welcome expectations, participants and actual bindings must agree with that

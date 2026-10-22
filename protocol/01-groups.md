@@ -71,14 +71,15 @@ of the legacy v1 kind-3 binding:
   0,                       ; media_version
   installation_id,         ; bstr, 16 bytes
   community_id,            ; bstr, 16 bytes, installation's community scope
-  participant_user_id      ; bstr, 16 bytes, the single eligible human participant
+  participant_user_id,     ; bstr, 16 bytes, the single eligible human participant
+  participant_device_id    ; bstr, 16 bytes, the authenticated human device admitted as a leaf
 ]
 ```
 
-All five IDs in the v2 form MUST be nonzero. A v2 decoder MUST require exactly eleven fields,
+All six IDs in the v2 form MUST be nonzero. A v2 decoder MUST require exactly twelve fields,
 the null legacy community slot, kind 3, and the stated protocol versions. Legacy v1 kind-3
 bindings remain valid for existing human interaction groups; Bot admission MUST require v2 and
-must also validate the installation and participant against the server-authoritative admission
+must also validate the installation, participant user and participant device against the server-authoritative admission
 contract. This binding format alone does not authorize a participant or enable Bot admission.
 
 Rules:

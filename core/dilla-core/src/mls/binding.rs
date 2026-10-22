@@ -4,7 +4,7 @@
 
 use crate::cbor::{Encoder, decode_strict};
 use crate::error::ProtocolError;
-use crate::ids::{CommunityId, InstanceId};
+use crate::ids::{CommunityId, DeviceId, InstanceId};
 use openmls::extensions::{ExternalSender, ExternalSendersExtension, SenderExtensionIndex};
 use openmls::prelude::*;
 
@@ -168,6 +168,8 @@ pub struct DillaInteractionBinding {
     pub installation_id: [u8; 16],
     pub community_id: CommunityId,
     pub participant_user_id: [u8; 16],
+    /// The specific authenticated participant device whose leaf is admitted to the group.
+    pub participant_device_id: DeviceId,
     pub policy_version: u64,
     pub e2ee_version: u64,
     pub media_version: u64,
@@ -175,11 +177,11 @@ pub struct DillaInteractionBinding {
 
 impl DillaInteractionBinding {
     /// Encode v2 as `[2, instance, null, bot, 3, policy, e2ee, media, installation,
-    /// community, participant]`. The null in position 2 preserves the established kind-3
+    /// community, participant_user, participant_device]`. The null in position 2 preserves the established kind-3
     /// semantics; the appended community is the installation scope.
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::with_capacity(128);
-        e.array(11)
+        e.array(12)
             .uint(2)
             .bytes(self.instance_id.as_bytes())
             .null()
@@ -190,7 +192,8 @@ impl DillaInteractionBinding {
             .uint(self.media_version)
             .bytes(&self.installation_id)
             .bytes(self.community_id.as_bytes())
-            .bytes(&self.participant_user_id);
+            .bytes(&self.participant_user_id)
+            .bytes(self.participant_device_id.as_bytes());
         e.into_vec()
     }
 
@@ -198,7 +201,7 @@ impl DillaInteractionBinding {
     /// protocol versions and all identity IDs are checked before returning a typed value.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
         decode_strict(bytes, |d| {
-            d.array(11)?;
+            d.array(12)?;
             let version = d.uint()?;
             let instance_id = InstanceId::from_bytes(d.bytes_exact::<16>()?);
             let legacy_community_id = d.opt_bytes_exact::<16>()?;
@@ -210,6 +213,7 @@ impl DillaInteractionBinding {
             let installation_id = d.bytes_exact::<16>()?;
             let community_id = CommunityId::from_bytes(d.bytes_exact::<16>()?);
             let participant_user_id = d.bytes_exact::<16>()?;
+            let participant_device_id = DeviceId::from_bytes(d.bytes_exact::<16>()?);
             Ok((
                 version,
                 instance_id,
@@ -222,6 +226,7 @@ impl DillaInteractionBinding {
                 installation_id,
                 community_id,
                 participant_user_id,
+                participant_device_id,
             ))
         })
         .map_err(|_| ProtocolError::Binding)
@@ -238,12 +243,14 @@ impl DillaInteractionBinding {
                 installation_id,
                 community_id,
                 participant_user_id,
+                participant_device_id,
             )| {
                 let ids_nonzero = instance_id.as_bytes() != &[0; 16]
                     && bot_user_id != [0; 16]
                     && installation_id != [0; 16]
                     && community_id.as_bytes() != &[0; 16]
-                    && participant_user_id != [0; 16];
+                    && participant_user_id != [0; 16]
+                    && participant_device_id.as_bytes() != &[0; 16];
                 if version != 2
                     || legacy_community_id.is_some()
                     || kind != u64::from(GroupKind::Interaction.as_u8())
@@ -259,6 +266,7 @@ impl DillaInteractionBinding {
                     installation_id,
                     community_id,
                     participant_user_id,
+                    participant_device_id,
                     policy_version,
                     e2ee_version,
                     media_version,
@@ -311,7 +319,7 @@ pub fn instance_sender_index() -> SenderExtensionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ChannelId, CommunityId, InstanceId};
+    use crate::ids::{ChannelId, CommunityId, DeviceId, InstanceId};
     use tls_codec::Serialize as _;
 
     fn binding() -> DillaBinding {
@@ -356,6 +364,7 @@ mod tests {
             installation_id: [0x33; 16],
             community_id: CommunityId::from_bytes([0x44; 16]),
             participant_user_id: [0x55; 16],
+            participant_device_id: DeviceId::from_bytes([0x66; 16]),
             policy_version: 9,
             e2ee_version: 1,
             media_version: 0,
@@ -366,8 +375,29 @@ mod tests {
     fn interaction_v2_binding_round_trips_and_keeps_legacy_community_null() {
         let b = interaction_v2();
         let bytes = b.encode();
-        assert_eq!(bytes[0], 0x8b, "an 11-element array head");
+        assert_eq!(bytes[0], 0x8c, "a 12-element array head");
         assert_eq!(DillaInteractionBinding::decode(&bytes).unwrap(), b);
+
+        // The earlier in-development 11-field v2 shape did not bind a device. It must not be
+        // accepted as an authenticated participant-device binding.
+        let mut missing_device = crate::cbor::Encoder::new();
+        missing_device
+            .array(11)
+            .uint(2)
+            .bytes(b.instance_id.as_bytes())
+            .null()
+            .bytes(&b.bot_user_id)
+            .uint(3)
+            .uint(b.policy_version)
+            .uint(1)
+            .uint(0)
+            .bytes(&b.installation_id)
+            .bytes(b.community_id.as_bytes())
+            .bytes(&b.participant_user_id);
+        assert_eq!(
+            DillaInteractionBinding::decode(&missing_device.into_vec()),
+            Err(ProtocolError::Binding)
+        );
 
         // Legacy kind-3 bindings remain readable for existing human interaction groups. Bot
         // admission must separately require the typed v2 contract.
@@ -409,6 +439,9 @@ mod tests {
             |x: &mut DillaInteractionBinding| x.installation_id = [0; 16],
             |x: &mut DillaInteractionBinding| x.community_id = CommunityId::from_bytes([0; 16]),
             |x: &mut DillaInteractionBinding| x.participant_user_id = [0; 16],
+            |x: &mut DillaInteractionBinding| {
+                x.participant_device_id = DeviceId::from_bytes([0; 16])
+            },
             |x: &mut DillaInteractionBinding| x.e2ee_version = 2,
             |x: &mut DillaInteractionBinding| x.media_version = 1,
         ] {
@@ -437,7 +470,7 @@ mod tests {
         // The original community slot must stay null; the installation community is appended.
         let mut wrong_slot = crate::cbor::Encoder::new();
         wrong_slot
-            .array(11)
+            .array(12)
             .uint(2)
             .bytes(b.instance_id.as_bytes())
             .bytes(b.community_id.as_bytes())
@@ -448,7 +481,8 @@ mod tests {
             .uint(0)
             .bytes(&b.installation_id)
             .bytes(b.community_id.as_bytes())
-            .bytes(&b.participant_user_id);
+            .bytes(&b.participant_user_id)
+            .bytes(b.participant_device_id.as_bytes());
         assert_eq!(
             DillaInteractionBinding::decode(&wrong_slot.into_vec()),
             Err(ProtocolError::Binding)
