@@ -16,6 +16,8 @@ const CALL = new Uint8Array(16).fill(0x0d);
 const COMMUNITY = new Uint8Array(16).fill(0x0e);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
+// The MLS ProposalRef of an instance-originated Remove (SHA-256 sized, ciphersuite 0x0001).
+const REF = new Uint8Array(32).fill(0x0f);
 
 type Case = { name: string; op: number; n: number; group_id: string; payload: string; frame: string };
 
@@ -55,6 +57,10 @@ export function frameVectors() {
     frame('commit_ack', 12, 6, GROUP, [1]),
     frame('mls.handshake', 16, 6, GROUP, [4127, 41, 1, 3, new Uint8Array([0xde, 0xad])]),
     frame('mls.handshake from the instance', 16, 7, GROUP, [4128, 41, 0, null, new Uint8Array([0xbe])]),
+    // UP6b (R-UP12): kind 3 `withdrawn`, the instance withdrawing one of its own absence Removes. The
+    // sender is null (the instance) and the blob is the deterministic CBOR [proposal_ref(bstr)].
+    // Served only to a client that set caps bit 0 or asked GET .../handshakes with kinds=3.
+    frame('mls.handshake withdrawn', 16, 8, GROUP, [4131, 41, 3, null, encode([REF] as never)]),
     frame('mls.commit_needed', 17, 0, GROUP, [41, [new Uint8Array(32).fill(0x0c)], 2000, 1]),
     frame('mls.epoch_changed', 18, 8, GROUP, [42, 4129]),
     // web3.7 (R29): the 7th element is the upload class the host stored, 0 for a post and 1 for
@@ -124,7 +130,30 @@ export function frameVectors() {
     // op 55 is server-to-client as op 54 is: the instance's code is E_FRAME_TYPE, and a client
     // decoder refuses four elements, not three, as E_FRAME_SHAPE.
     { name: 'afk_away with 4 elements', frame: hex(encode([55, 0, null, [COMMUNITY, USER, 1758659040, 1]])), code: 'E_FRAME_TYPE' },
+    // op 16 is server-to-client: the instance's code is E_FRAME_TYPE at the opcode check. A client
+    // decoder refuses a kind-3 (withdrawn) row whose blob is not a one-element array of a bstr, or
+    // whose sender is not null, as E_FRAME_SHAPE (UP6b).
+    { name: 'mls.handshake withdrawn blob with two refs', frame: hex(encode([16, 8, GROUP, [4131, 41, 3, null, encode([REF, REF] as never)]])), code: 'E_FRAME_TYPE' },
+    { name: 'mls.handshake withdrawn with a sender', frame: hex(encode([16, 8, GROUP, [4131, 41, 3, 2, encode([REF] as never)]])), code: 'E_FRAME_TYPE' },
   ];
+
+  // UP6b: the `withdrawn` row's blob as a core decodes it before it applies the row. `ref` is the
+  // ProposalRef the row names; each reject is refused with the core's input error.
+  const withdrawn = {
+    cases: [
+      { name: 'one 32-byte ref', blob: hex(encode([REF] as never)), ref: hex(REF) },
+      { name: 'a one-byte ref', blob: hex(encode([new Uint8Array([0x01])] as never)), ref: '01' },
+    ],
+    rejects: [
+      { name: 'a bare bstr', blob: hex(encode(REF as never)), code: 'E_CORE_INPUT' },
+      { name: 'an empty array', blob: hex(encode([] as never)), code: 'E_CORE_INPUT' },
+      { name: 'two refs', blob: hex(encode([REF, REF] as never)), code: 'E_CORE_INPUT' },
+      { name: 'a uint instead of a bstr', blob: hex(encode([7] as never)), code: 'E_CORE_INPUT' },
+      { name: 'an empty ref', blob: hex(encode([new Uint8Array(0)] as never)), code: 'E_CORE_INPUT' },
+      { name: 'trailing bytes', blob: hex(encode([REF] as never)) + '00', code: 'E_CORE_INPUT' },
+      { name: 'a non-minimal array head', blob: '9801' + hex(encode(REF as never)), code: 'E_CORE_INPUT' },
+    ],
+  };
 
   return {
     version: 1,
@@ -132,5 +161,6 @@ export function frameVectors() {
       'gateway frames (02-delivery-service.md). frame = deterministic CBOR of [op, n, group_id, payload]; payload is the payload array alone. rejects = byte strings a conforming decoder must refuse with the named code.',
     cases,
     rejects,
+    withdrawn,
   };
 }

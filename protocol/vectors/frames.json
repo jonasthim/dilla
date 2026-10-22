@@ -123,6 +123,14 @@
       "frame": "841007500707070707070707070707070707070785191020182900f641be"
     },
     {
+      "name": "mls.handshake withdrawn",
+      "op": 16,
+      "n": 8,
+      "group_id": "07070707070707070707070707070707",
+      "payload": "85191023182903f658238158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "frame": "841008500707070707070707070707070707070785191023182903f658238158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    },
+    {
       "name": "mls.commit_needed",
       "op": 17,
       "n": 0,
@@ -375,6 +383,67 @@
       "name": "afk_away with 4 elements",
       "frame": "84183700f684500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e50090909090909090909090909090909091a68d301e001",
       "code": "E_FRAME_TYPE"
+    },
+    {
+      "name": "mls.handshake withdrawn blob with two refs",
+      "frame": "841008500707070707070707070707070707070785191023182903f658458258200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f58200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "code": "E_FRAME_TYPE"
+    },
+    {
+      "name": "mls.handshake withdrawn with a sender",
+      "frame": "8410085007070707070707070707070707070707851910231829030258238158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "code": "E_FRAME_TYPE"
     }
-  ]
+  ],
+  "withdrawn": {
+    "cases": [
+      {
+        "name": "one 32-byte ref",
+        "blob": "8158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "ref": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+      },
+      {
+        "name": "a one-byte ref",
+        "blob": "814101",
+        "ref": "01"
+      }
+    ],
+    "rejects": [
+      {
+        "name": "a bare bstr",
+        "blob": "58200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "an empty array",
+        "blob": "80",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "two refs",
+        "blob": "8258200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f58200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "a uint instead of a bstr",
+        "blob": "8107",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "an empty ref",
+        "blob": "8140",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "trailing bytes",
+        "blob": "8158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f00",
+        "code": "E_CORE_INPUT"
+      },
+      {
+        "name": "a non-minimal array head",
+        "blob": "980158200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "code": "E_CORE_INPUT"
+      }
+    ]
+  }
 }

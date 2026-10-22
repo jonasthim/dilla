@@ -47,6 +47,16 @@ no hold naming the group, or one whose `until` has passed or lies beyond the lon
 sends exactly one self-`Remove`. A page's own unload (`pagehide`) does not: an update reload holds
 through it.
 
+The room sweep's `Remove` of a held leaf is an *absence* `Remove`, which the instance may withdraw
+(`02` invariant 6, "Withdrawal"): when the device itself resumes, and its call start passes every
+check up to the token mint, the instance withdraws the absence `Remove` of that device's own
+membership, and of no other, and publishes a `withdrawn` handshake row (kind 3). Members take that
+proposal out of their queues, so a device that resumes keeps its leaf even when every member dropped
+at once and each queue held the `Remove` of its own leaf, which OpenMLS refuses to commit. The
+`Remove`s of the members that have not resumed stand: the first device back commits them, and those
+devices then join afresh by external commit. A device that really left is therefore removed within
+the same sweep window as before; nobody else's resume can keep its leaf.
+
 Groups use MLS ciphersuite `0x0001`. Handshake messages (Proposal, Commit) are sent as
 `PublicMessage`; application data as `PrivateMessage`. Application data MUST be padded so that the
 `PrivateMessage` ciphertext length is a multiple of 256 bytes (RFC 9420 §6.3.1 padding field).

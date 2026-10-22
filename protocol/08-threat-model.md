@@ -127,6 +127,22 @@ Stated plainly in the product's documentation and onboarding:
   stops seeing the device (plus any time the SFU or the instance is down, when the sweep cannot
   run). The client's hold adds no server-side grace; a returning device whose leaf the sweep
   removed is refused (`E_LEAF_NOT_CURRENT`), forgets the group and joins afresh.
+- The instance can withdraw one of its own absence `Remove`s (`02` invariant 6, "Withdrawal",
+  handshake kind 3). Only the instance withdraws, and only a `Remove` it marked `withdrawable` when it
+  issued it because a device stayed out of, or left, its call's room; a revocation's, a kick's, a
+  ban's, an eviction's or a barred device's `Remove` is never withdrawable. Clients drop a queued
+  proposal on a `withdrawn` row only when it is a `Remove` from the instance's external sender, so a
+  member's proposal, an `Add` or an `Update` can never be withdrawn this way, and no route lets a
+  member write a kind-3 row: the kind comes from the instance's own code paths. A withdrawal needs
+  the departed device itself to pass its call start (an authenticated session, `view_channel` and
+  `connect`, not barred, a current leaf), and it withdraws only that device's own membership's
+  `Remove`: no other member's resume can keep a departed leaf, so a device that really left is
+  removed within the normal sweep window, and it gets no new media without a token. A malicious
+  member cannot withdraw and cannot block a `Remove`: committing stays open to every member, and a
+  commit that omits a standing `Remove` is refused as before. A malicious instance could withdraw
+  its own absence `Remove`s, which it could equally never have issued: call presence is already the
+  instance's word, and it gains no power over members' proposals, which clients never drop on its
+  say-so.
 - A follower tab receives no group material, timeline/search slices, plaintext, or `base_key`.
   Its “use this tab” notice is only `{t:'takeover',instance:<hex>,nonce:<16-byte random hex>}`.
   The leader closes command admission, drains accepted work, stops gateway and sync, pauses its
