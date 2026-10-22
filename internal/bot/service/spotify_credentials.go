@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 
 const (
 	spotifyCredentialArea     = uint64(8)
-	spotifyCredentialVersion  = uint64(1)
+	spotifyCredentialVersion  = uint64(2)
 	maxSpotifyCredentialState = 20 << 10
 )
 
@@ -44,6 +45,15 @@ type spotifyTokenExchanger interface {
 	Refresh(context.Context, string) (spotifyauth.Token, error)
 }
 
+type spotifyAccountProfiler interface {
+	AccountID(context.Context, string) (string, error)
+}
+type spotifyHTTPProfiler struct{}
+
+func (spotifyHTTPProfiler) AccountID(ctx context.Context, access string) (string, error) {
+	return spotifyauth.Profile(ctx, (*http.Client)(nil), access)
+}
+
 type spotifyHTTPExchanger struct{ clientID, redirect string }
 
 func (e spotifyHTTPExchanger) Exchange(ctx context.Context, code, verifier string) (spotifyauth.Token, error) {
@@ -60,21 +70,25 @@ type SpotifyCredentials struct {
 	exchanger spotifyTokenExchanger
 	clock     func() time.Time
 	binding   native.Binding
+	profile   spotifyAccountProfiler
+	guard     *SpotifyAccountGuard
 }
 
-func NewSpotifyCredentials(runtime spotifyCredentialRuntime, n spotifyCredentialNative, clientID, redirectURL string) (*SpotifyCredentials, error) {
+func NewSpotifyCredentials(runtime spotifyCredentialRuntime, n spotifyCredentialNative, clientID, redirectURL string, guard *SpotifyAccountGuard) (*SpotifyCredentials, error) {
 	b := native.Binding{}
 	if n != nil {
 		b = n.Binding()
 	}
-	if runtime == nil || n == nil || b.Instance.IsZero() || b.Community.IsZero() || b.Installation.IsZero() || strings.TrimSpace(clientID) == "" || strings.ContainsAny(clientID, "\r\n\x00") || !strings.HasPrefix(redirectURL, "https://") {
+	if runtime == nil || n == nil || guard == nil || b.Instance.IsZero() || b.Community.IsZero() || b.Installation.IsZero() || strings.TrimSpace(clientID) == "" || strings.ContainsAny(clientID, "\r\n\x00") || !strings.HasPrefix(redirectURL, "https://") {
 		return nil, ErrSpotifyCredentials
 	}
-	return newSpotifyCredentials(runtime, n, spotifyHTTPExchanger{clientID: clientID, redirect: redirectURL}), nil
+	s := newSpotifyCredentials(runtime, n, spotifyHTTPExchanger{clientID: clientID, redirect: redirectURL})
+	s.profile, s.guard = spotifyHTTPProfiler{}, guard
+	return s, nil
 }
 
 func newSpotifyCredentials(runtime spotifyCredentialRuntime, n spotifyCredentialNative, x spotifyTokenExchanger) *SpotifyCredentials {
-	return &SpotifyCredentials{runtime: runtime, native: n, exchanger: x, clock: time.Now, binding: n.Binding()}
+	return &SpotifyCredentials{runtime: runtime, native: n, exchanger: x, profile: spotifyHTTPProfiler{}, clock: time.Now, binding: n.Binding()}
 }
 
 // Link claims the brokered PKCE receipt and saves the exchanged token with revision CAS.
@@ -83,14 +97,25 @@ func (s *SpotifyCredentials) Link(ctx context.Context) error {
 	if s == nil || ctx == nil || s.runtime == nil || s.native == nil || s.exchanger == nil {
 		return ErrSpotifyCredentials
 	}
+	unlock, err := s.guard.lockInstallation(ctx, s.binding.Installation.String())
+	if err != nil {
+		return ErrSpotifyCredentials
+	}
+	defer unlock()
 	state, revision, err := s.read(ctx)
 	if err != nil {
 		return err
 	}
+	if state != nil && state.legacy {
+		state, revision, err = s.migrateLegacy(ctx, state, revision)
+		if err != nil {
+			return ErrSpotifyCredentials
+		}
+	}
 	claim, err := s.runtime.ClaimSpotifyCode(ctx, s.binding.Installation)
 	if errors.Is(err, client.ErrSpotifyClaimNotFound) {
 		if state != nil {
-			return nil
+			return s.validateAccount(state)
 		}
 		return ErrSpotifyNoPending
 	}
@@ -101,13 +126,23 @@ func (s *SpotifyCredentials) Link(ctx context.Context) error {
 		return ErrSpotifyCredentials
 	}
 	if state != nil && state.attempt == claim.Attempt {
-		return nil
+		return s.validateAccount(state)
 	}
 	tok, err := s.exchanger.Exchange(ctx, claim.Code, claim.Verifier)
 	if err != nil {
 		return ErrSpotifyCredentials
 	}
-	newState, err := s.fromToken(claim.Attempt, tok)
+	if s.profile == nil || s.guard == nil {
+		return ErrSpotifyCredentials
+	}
+	accountID, err := s.profile.AccountID(ctx, tok.AccessToken)
+	if err != nil || !validSpotifyAccountID(accountID) {
+		return ErrSpotifyCredentials
+	}
+	if err = s.guard.Bind(accountID); err != nil {
+		return err
+	}
+	newState, err := s.fromToken(claim.Attempt, tok, accountID)
 	if err != nil {
 		return err
 	}
@@ -122,12 +157,26 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 	if s == nil || ctx == nil || s.native == nil || s.exchanger == nil {
 		return spotifyauth.Token{}, ErrSpotifyCredentials
 	}
+	unlock, err := s.guard.lockInstallation(ctx, s.binding.Installation.String())
+	if err != nil {
+		return spotifyauth.Token{}, ErrSpotifyCredentials
+	}
+	defer unlock()
 	state, revision, err := s.read(ctx)
 	if err != nil {
 		return spotifyauth.Token{}, err
 	}
 	if state == nil {
 		return spotifyauth.Token{}, ErrSpotifyCredentials
+	}
+	if state.legacy {
+		state, revision, err = s.migrateLegacy(ctx, state, revision)
+		if err != nil {
+			return spotifyauth.Token{}, ErrSpotifyCredentials
+		}
+	}
+	if err := s.validateAccount(state); err != nil {
+		return spotifyauth.Token{}, err
 	}
 	if time.Unix(state.expires, 0).After(s.clock().Add(30 * time.Second)) {
 		return spotifyauth.Token{AccessToken: state.access, RefreshToken: state.refresh, TokenType: "Bearer", ExpiresIn: int64(time.Unix(state.expires, 0).Sub(s.clock()).Seconds())}, nil
@@ -136,13 +185,13 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 	if err != nil {
 		return spotifyauth.Token{}, ErrSpotifyCredentials
 	}
-	updated, err := s.fromToken(state.attempt, tok)
+	updated, err := s.fromToken(state.attempt, tok, state.accountID)
 	if err != nil {
 		return spotifyauth.Token{}, err
 	}
 	if err = s.save(ctx, updated, revision); err != nil {
 		latest, _, readErr := s.read(ctx)
-		if readErr == nil && latest != nil && latest.attempt == state.attempt && latest.refresh == updated.refresh && latest.access == updated.access && latest.expires == updated.expires {
+		if readErr == nil && latest != nil && latest.attempt == state.attempt && latest.refresh == updated.refresh && latest.access == updated.access && latest.accountID == updated.accountID && latest.expires == updated.expires {
 			return tok, nil
 		}
 		return spotifyauth.Token{}, err
@@ -153,7 +202,9 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 type spotifyCredentialState struct {
 	attempt         id.ID
 	access, refresh string
+	accountID       string
 	expires         int64
+	legacy          bool
 }
 
 func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState, uint64, error) {
@@ -174,11 +225,11 @@ func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState,
 		return nil, v.Revision, ErrSpotifyState
 	}
 	var a []any
-	if cborx.ExpectMajor(v.Value, cborx.MajorArray) != nil || cborx.Unmarshal(v.Value, &a) != nil || len(a) != 8 {
+	if cborx.ExpectMajor(v.Value, cborx.MajorArray) != nil || cborx.Unmarshal(v.Value, &a) != nil || len(a) == 0 {
 		return nil, v.Revision, ErrSpotifyState
 	}
 	version, ok := a[0].(uint64)
-	if !ok || version != spotifyCredentialVersion {
+	if !ok || (version != 1 && version != spotifyCredentialVersion) || (version == 1 && len(a) != 8) || (version == spotifyCredentialVersion && len(a) != 9) {
 		return nil, v.Revision, ErrSpotifyState
 	}
 	instance, iok := spotifyStateID(a[1])
@@ -193,11 +244,20 @@ func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState,
 	}
 	access, aok := a[5].(string)
 	refresh, rok := a[6].(string)
-	expiry, eok := a[7].(uint64)
-	if !aok || !rok || !eok || !validSpotifySecret(access) || !validSpotifySecret(refresh) || expiry == 0 || expiry > math.MaxInt64 {
+	var accountID string
+	var expiryValue any
+	legacy := version == 1
+	if legacy {
+		expiryValue = a[7]
+	} else {
+		accountID, _ = a[7].(string)
+		expiryValue = a[8]
+	}
+	expiry, eok := expiryValue.(uint64)
+	if !aok || !rok || (!legacy && !validSpotifyAccountID(accountID)) || !eok || !validSpotifySecret(access) || !validSpotifySecret(refresh) || expiry == 0 || expiry > math.MaxInt64 {
 		return nil, v.Revision, ErrSpotifyState
 	}
-	return &spotifyCredentialState{attempt: attempt, access: access, refresh: refresh, expires: int64(expiry)}, v.Revision, nil
+	return &spotifyCredentialState{attempt: attempt, access: access, refresh: refresh, accountID: accountID, expires: int64(expiry), legacy: legacy}, v.Revision, nil
 }
 
 func spotifyStateID(v any) (id.ID, bool) {
@@ -210,16 +270,16 @@ func spotifyStateID(v any) (id.ID, bool) {
 	return out, true
 }
 
-func (s *SpotifyCredentials) fromToken(attempt id.ID, t spotifyauth.Token) (*spotifyCredentialState, error) {
+func (s *SpotifyCredentials) fromToken(attempt id.ID, t spotifyauth.Token, accountID string) (*spotifyCredentialState, error) {
 	now := s.clock()
-	if attempt.IsZero() || !validSpotifySecret(t.AccessToken) || !validSpotifySecret(t.RefreshToken) || t.ExpiresIn <= 0 || t.ExpiresIn > 365*24*60*60 || now.Unix() > math.MaxInt64-t.ExpiresIn {
+	if attempt.IsZero() || !validSpotifyAccountID(accountID) || !validSpotifySecret(t.AccessToken) || !validSpotifySecret(t.RefreshToken) || t.ExpiresIn <= 0 || t.ExpiresIn > 365*24*60*60 || now.Unix() > math.MaxInt64-t.ExpiresIn {
 		return nil, ErrSpotifyCredentials
 	}
-	return &spotifyCredentialState{attempt: attempt, access: t.AccessToken, refresh: t.RefreshToken, expires: now.Unix() + t.ExpiresIn}, nil
+	return &spotifyCredentialState{attempt: attempt, access: t.AccessToken, refresh: t.RefreshToken, accountID: accountID, expires: now.Unix() + t.ExpiresIn}, nil
 }
 
 func (s *SpotifyCredentials) save(ctx context.Context, st *spotifyCredentialState, revision uint64) error {
-	body, err := cborx.Marshal([]any{spotifyCredentialVersion, s.binding.Instance, s.binding.Community, s.binding.Installation, st.attempt, st.access, st.refresh, uint64(st.expires)})
+	body, err := cborx.Marshal([]any{spotifyCredentialVersion, s.binding.Instance, s.binding.Community, s.binding.Installation, st.attempt, st.access, st.refresh, st.accountID, uint64(st.expires)})
 	if err != nil || len(body) > maxSpotifyCredentialState {
 		return ErrSpotifyState
 	}
@@ -231,6 +291,69 @@ func (s *SpotifyCredentials) save(ctx context.Context, st *spotifyCredentialStat
 		return ErrSpotifyConflict
 	}
 	return nil
+}
+
+func (s *SpotifyCredentials) migrateLegacy(ctx context.Context, legacy *spotifyCredentialState, revision uint64) (*spotifyCredentialState, uint64, error) {
+	if legacy == nil || !legacy.legacy || s.profile == nil || s.guard == nil || s.exchanger == nil {
+		return nil, revision, ErrSpotifyCredentials
+	}
+	tok := spotifyauth.Token{AccessToken: legacy.access, RefreshToken: legacy.refresh, ExpiresIn: legacy.expires - s.clock().Unix()}
+	if tok.ExpiresIn <= 30 {
+		var err error
+		tok, err = s.exchanger.Refresh(ctx, legacy.refresh)
+		if err != nil {
+			return nil, revision, ErrSpotifyCredentials
+		}
+	}
+	accountID, err := s.profile.AccountID(ctx, tok.AccessToken)
+	if err != nil || !validSpotifyAccountID(accountID) {
+		return nil, revision, ErrSpotifyCredentials
+	}
+	if err = s.guard.Bind(accountID); err != nil {
+		return nil, revision, ErrSpotifyCredentials
+	}
+	updated, err := s.fromToken(legacy.attempt, tok, accountID)
+	if err != nil {
+		return nil, revision, ErrSpotifyCredentials
+	}
+	if err = s.save(ctx, updated, revision); err != nil {
+		return nil, revision, ErrSpotifyCredentials
+	}
+	updated.legacy = false
+	return updated, revision + 1, nil
+}
+
+// ValidateAccount verifies persisted installation state against the global account binding.
+func (s *SpotifyCredentials) ValidateAccount(ctx context.Context) error {
+	if s == nil || ctx == nil {
+		return ErrSpotifyCredentials
+	}
+	unlock, err := s.guard.lockInstallation(ctx, s.binding.Installation.String())
+	if err != nil {
+		return ErrSpotifyCredentials
+	}
+	defer unlock()
+	state, revision, err := s.read(ctx)
+	if err != nil {
+		return err
+	}
+	if state == nil {
+		return nil
+	}
+	if state.legacy {
+		state, _, err = s.migrateLegacy(ctx, state, revision)
+		if err != nil {
+			return ErrSpotifyCredentials
+		}
+	}
+	return s.validateAccount(state)
+}
+
+func (s *SpotifyCredentials) validateAccount(state *spotifyCredentialState) error {
+	if s.guard == nil || state == nil {
+		return ErrSpotifyCredentials
+	}
+	return s.guard.Bind(state.accountID)
 }
 
 func (s *SpotifyCredentials) key() []byte {

@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -338,6 +339,14 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 }
 
 func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, logger *slog.Logger) error {
+	var spotifyGuard *service.SpotifyAccountGuard
+	if cfg.SpotifyClientID != "" {
+		var err error
+		spotifyGuard, err = service.NewSpotifyAccountGuard(cfg.StateDir)
+		if err != nil {
+			return errors.New("Spotify account guard unavailable")
+		}
+	}
 	installations, err := runtime.ListInstallations(ctx)
 	if err != nil {
 		return errors.New("installation discovery failed")
@@ -370,6 +379,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
+		membershipReady := false
 		if ensureErr == nil {
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
@@ -381,6 +391,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					if ensureErr == nil {
 						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						if ensureErr == nil {
+							membershipReady = true
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
 								ensureErr = pollerErr
@@ -393,24 +404,33 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									ensureErr = pollErr
 								}
 							}
+							var scheduler *announcements.Scheduler
+							scheduler, scheduleErr := service.NewAnnouncementScheduler(nativeClient, result.Session, api)
+							if scheduleErr == nil {
+								scheduleErr = scheduler.RunDue(ctx)
+							}
+							ensureErr = errors.Join(ensureErr, scheduleErr)
 						}
 					}
 				}
 			}
 		}
-		if ensureErr == nil && cfg.SpotifyClientID != "" {
-			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL)
+		if membershipReady && cfg.SpotifyClientID != "" {
+			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL, spotifyGuard)
+			if linkErr == nil {
+				linkErr = credentials.ValidateAccount(ctx)
+			}
 			if linkErr == nil {
 				linkErr = credentials.Link(ctx)
 			}
 			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) {
 				logger.Error("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
-				ensureErr = linkErr
+				ensureErr = errors.Join(ensureErr, linkErr)
 			}
 		}
 		closeErr := nativeClient.Close()
 		if ensureErr != nil || closeErr != nil {
-			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_spotify_link")
+			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_service")
 			continue
 		}
 		succeeded++
