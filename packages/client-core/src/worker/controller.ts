@@ -271,6 +271,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'kickMember',
   'banMember',
   'unbanMember',
+  'getMemberTimeout',
+  'setMemberTimeout',
+  'clearMemberTimeout',
   'loadBans',
   'loadInvites',
   'revokeInvite',
@@ -363,6 +366,9 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   kickMember: ['communityId', 'userId'],
   banMember: ['communityId', 'userId'],
   unbanMember: ['communityId', 'userId'],
+  getMemberTimeout: ['communityId', 'userId'],
+  setMemberTimeout: ['communityId', 'userId', 'requestId'],
+  clearMemberTimeout: ['communityId', 'userId', 'requestId'],
   loadBans: ['communityId'],
   loadInvites: ['communityId'],
   revokeInvite: ['communityId', 'inviteId'],
@@ -459,6 +465,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'kickMember',
     'banMember',
     'unbanMember',
+    'getMemberTimeout',
+    'setMemberTimeout',
+    'clearMemberTimeout',
     'loadBans',
     'loadInvites',
     'revokeInvite',
@@ -552,6 +561,12 @@ function invalid(command: Record<string, unknown>): string | null {
       const caps = command.capabilities;
       if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
+    }
+  }
+  if (m === 'setMemberTimeout') {
+    const expires = command.expires;
+    if (typeof expires !== 'string' || !SEQ.test(expires) || BigInt(expires) > 0xffff_ffff_ffff_ffffn) {
+      return 'expires is not a valid Unix-second timestamp';
     }
   }
   if (m === 'send') {
@@ -1121,6 +1136,9 @@ export class Controller {
       case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
       case 'banMember': return this.admin.banMember(command.communityId, command.userId, command.reason, command.seconds);
       case 'unbanMember': return this.admin.unbanMember(command.communityId, command.userId);
+      case 'getMemberTimeout': return this.getMemberTimeout(command.communityId, command.userId);
+      case 'setMemberTimeout': return this.setMemberTimeout(command);
+      case 'clearMemberTimeout': return this.clearMemberTimeout(command);
       case 'loadBans': return this.admin.loadBans(command.communityId);
       case 'loadInvites': return this.admin.loadInvites(command.communityId);
       case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
@@ -1140,6 +1158,24 @@ export class Controller {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.getBotInstallation(fromHex(communityId));
     return row === null ? null : botInstallationView(row);
+  }
+
+  private async getMemberTimeout(communityId: string, userId: string): Promise<string | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const expires = await this.routes.getMemberTimeout(fromHex(communityId), fromHex(userId));
+    return expires === null ? null : expires.toString();
+  }
+
+  private async setMemberTimeout(command: Extract<Command, { m: 'setMemberTimeout' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.putMemberTimeout(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId), BigInt(command.expires));
+    return null;
+  }
+
+  private async clearMemberTimeout(command: Extract<Command, { m: 'clearMemberTimeout' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.deleteMemberTimeout(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId));
+    return null;
   }
 
   private async configureBotInstallation(command: Extract<Command, { m: 'configureBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {

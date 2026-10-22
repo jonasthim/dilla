@@ -1635,6 +1635,37 @@ describe('the built-in AFK channel routes (web3.9)', () => {
   });
 });
 
+describe('member timeout routes', () => {
+  const REQUEST = fill(16, 0x41);
+
+  it('reads an active timeout as a bigint timestamp', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [1_800_000_000]));
+    await expect(routes.getMemberTimeout(COMMUNITY, PEER_USER)).resolves.toBe(1_800_000_000n);
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout` });
+  });
+
+  it('reads an absent timeout as null', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [null]));
+    await expect(routes.getMemberTimeout(COMMUNITY, PEER_USER)).resolves.toBeNull();
+  });
+
+  it('writes the request id and absolute expiry, then decodes the expiry', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [REQUEST, 1_800_000_000]));
+    await expect(routes.putMemberTimeout(COMMUNITY, PEER_USER, REQUEST, 1_800_000_000n)).resolves.toBe(1_800_000_000n);
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout`, body: encode([REQUEST, 1_800_000_000]) });
+  });
+
+  it('clears a timeout with its request id and expects no content', async () => {
+    const { routes, t } = setup();
+    t.replies.push(noContent());
+    await expect(routes.deleteMemberTimeout(COMMUNITY, PEER_USER, REQUEST)).resolves.toBeUndefined();
+    expect(t.seen[0]).toMatchObject({ method: 'DELETE', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/timeout`, body: encode([REQUEST]) });
+  });
+});
+
 describe('managed community bot installation routes', () => {
   const installation = [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1, 1_800_000_000];
 

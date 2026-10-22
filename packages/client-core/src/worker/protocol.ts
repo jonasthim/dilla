@@ -113,6 +113,9 @@ export type Command =
   | { m: 'kickMember'; communityId: string; userId: string }
   | { m: 'banMember'; communityId: string; userId: string; reason: string; seconds: number | null }  // 3600..3_153_600_000
   | { m: 'unbanMember'; communityId: string; userId: string }
+  | { m: 'getMemberTimeout'; communityId: string; userId: string } // → Unix-second timestamp string|null
+  | { m: 'setMemberTimeout'; communityId: string; userId: string; requestId: string; expires: string } // expires is Unix seconds
+  | { m: 'clearMemberTimeout'; communityId: string; userId: string; requestId: string }
   | { m: 'loadBans'; communityId: string }      // slice bans:<cid>
   | { m: 'loadInvites'; communityId: string }   // slice invites:<cid>, live only
   | { m: 'revokeInvite'; communityId: string; inviteId: string }

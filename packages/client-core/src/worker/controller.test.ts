@@ -18,6 +18,39 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('bridges member timeout reads and writes with decimal Unix seconds', async () => {
+    const w = world();
+    const getMemberTimeout = vi.fn(() => Promise.resolve(1_800_000_000n));
+    const putMemberTimeout = vi.fn(() => Promise.resolve(1_800_000_000n));
+    const deleteMemberTimeout = vi.fn(() => Promise.resolve());
+    Object.assign(w.routes, { getMemberTimeout, putMemberTimeout, deleteMemberTimeout });
+    await toReady(w);
+    w.call(991, { m: 'getMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER) });
+    await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true, value: '1800000000' }));
+    expect(getMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER);
+
+    const requestId = new Uint8Array(16).fill(0x55);
+    w.call(992, { m: 'setMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER),
+      requestId: toHex(requestId), expires: '1800000000' });
+    await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true, value: null }));
+    expect(putMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId, 1_800_000_000n);
+
+    w.call(993, { m: 'clearMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId) });
+    await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: true, value: null }));
+    expect(deleteMemberTimeout).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
+  });
+
+  it('rejects malformed timeout timestamps before an HTTP route call', async () => {
+    const w = world();
+    const putMemberTimeout = vi.fn();
+    Object.assign(w.routes, { putMemberTimeout });
+    await toReady(w);
+    w.call(994, { m: 'setMemberTimeout', communityId: toHex(COMMUNITY), userId: toHex(STRANGER),
+      requestId: '55'.repeat(16), expires: '01' });
+    await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(putMemberTimeout).not.toHaveBeenCalled();
+  });
+
   it('returns full AFK settings through the authenticated settings route', async () => {
     const w = world();
     await toReady(w);

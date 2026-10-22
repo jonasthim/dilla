@@ -534,6 +534,26 @@ export class Routes {
   async deleteBan(communityId: Uint8Array, userId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/bans/${id('userId', userId)}`, 'write', true);
   }
+  /** GET /v1/communities/{id}/members/{user_id}/timeout: [expires|null], as Unix seconds. */
+  async getMemberTimeout(communityId: Uint8Array, userId: Uint8Array): Promise<bigint | null> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'read', true)), 1);
+    return opt(a[0], u64);
+  }
+  /** PUT .../timeout: [request_id, expires]. The request id is stable across HTTP retries. */
+  async putMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array, expires: bigint): Promise<bigint> {
+    if (expires < 0n || expires > 0xffff_ffff_ffff_ffffn) throw new RangeError('E_ROUTE_INPUT: expires must be uint64');
+    const a = atLeast(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`,
+      'write', true, { body: encode([inputId('requestId', requestId), expires]) })), 2);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'timeout response request id mismatch');
+    const answeredExpires = u64(a[1]);
+    if (answeredExpires !== expires) throw new CborError('E_CBOR_SHAPE', 'timeout response expiry mismatch');
+    return answeredExpires;
+  }
+  /** DELETE .../timeout: [request_id]; the server answers 204 No Content. */
+  async deleteMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'write', true,
+      { body: encode([inputId('requestId', requestId)]), ok: [204] });
+  }
   /** GET /v1/communities/{id}/bans: [[user_id, reason, by_user, created, expires|null, username, display]]; the last two
    *  are absent from an older instance and read as ''. */
   async listBans(communityId: Uint8Array): Promise<BanRow[]> {
