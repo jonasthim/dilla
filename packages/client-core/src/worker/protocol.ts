@@ -20,6 +20,8 @@ export type Command =
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
+  // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
+  | { m: 'listModerationCases'; communityId: string; offset: 0 }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
   | { m: 'listSelfRoles'; communityId: string }

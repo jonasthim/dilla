@@ -18,6 +18,16 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('keeps moderation case listing typed but unavailable until an authenticated interaction transport exists', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(10_199, { m: 'listModerationCases', communityId: toHex(COMMUNITY), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
+    w.call(10_198, { m: 'listModerationCases', communityId: toHex(COMMUNITY), offset: 1 });
+    await vi.waitFor(() => expect(w.ret(10_198)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.getBotInstallation).not.toHaveBeenCalled();
+  });
+
   it('signs a sequence confirmed in the active community timeline and preserves server moderation refusals', async () => {
     const w = world();
     w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,

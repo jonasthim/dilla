@@ -194,6 +194,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'listModerationCases',
   'getBotJoinRole',
   'configureBotJoinRole',
   'listSelfRoles',
@@ -321,6 +322,7 @@ const UTF8 = new TextEncoder();
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  listModerationCases: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
   listSelfRoles: ['communityId'],
@@ -415,6 +417,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'listModerationCases',
     'getBotJoinRole',
     'configureBotJoinRole',
     'listSelfRoles',
@@ -584,6 +587,7 @@ function invalid(command: Record<string, unknown>): string | null {
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
   if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
+  if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -1097,6 +1101,7 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'listModerationCases': return Promise.reject(new Refusal('E_UNAVAILABLE', 'authenticated encrypted interaction transport is unavailable'));
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
