@@ -259,6 +259,9 @@ func validateHelperExecutable(path string) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		os.Exit(runDoctorCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	fs := flag.NewFlagSet("dillabot", flag.ExitOnError)
 	configPath := fs.String("config", "/etc/dilla/bot.toml", "path to the bot service TOML config")
 	_ = fs.Parse(os.Args[1:])
