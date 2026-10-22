@@ -2073,6 +2073,48 @@ impl Relay {
         seq
     }
 
+    /// A member's proposal from `leaf`, queued and listed as `propose` does the instance's.
+    pub fn propose_from(&mut self, message: MlsMessageOut, leaf: u64) -> u64 {
+        let seq = self.propose(message);
+        self.handshakes
+            .iter_mut()
+            .find(|h| h.seq == seq)
+            .expect("the row just appended")
+            .sender = Some(leaf);
+        seq
+    }
+
+    /// UP6b: the instance withdraws an outstanding proposal of its own. It leaves the listing and a
+    /// `withdrawn` row (kind 3, sender null, blob `[ref]`) is appended; the public view keeps it
+    /// queued, as the delivery service does (correction C3). Answers the row's seq.
+    pub fn withdraw(&mut self, reference: &[u8]) -> u64 {
+        self.unlist(reference);
+        let mut blob = Encoder::new();
+        blob.array(1).bytes(reference);
+        self.push_handshake(3, blob.into_vec())
+    }
+
+    /// Takes a proposal out of the listing alone: no row is appended (a client that missed it).
+    pub fn unlist(&mut self, reference: &[u8]) {
+        self.proposals.retain(|p| p.reference != reference);
+    }
+
+    /// The reference of the listed proposal appended at `seq`.
+    pub fn reference_at(&self, seq: u64) -> Vec<u8> {
+        let blob = &self
+            .handshakes
+            .iter()
+            .find(|h| h.seq == seq)
+            .expect("a handshake at that seq")
+            .blob;
+        self.proposals
+            .iter()
+            .find(|p| &p.blob == blob)
+            .expect("listed")
+            .reference
+            .clone()
+    }
+
     /// GET /v1/groups/{id}/proposals: [[ref, kind, target_leaf|null, blob, void]].
     pub fn proposals_body(&self) -> Vec<u8> {
         let mut e = Encoder::new();

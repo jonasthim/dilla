@@ -871,6 +871,71 @@ impl DillaGroup {
         Ok(())
     }
 
+    /// UP6b (protocol/02 invariant 6, "Withdrawal"): takes the queued proposal named by `reference`
+    /// out of the queue, but only when it is a `Remove` whose sender is the group's external sender
+    /// (the instance). A `withdrawn` row names nothing else: a member's proposal, an `Add`, an
+    /// `Update` or an unknown reference is left as it is, and the answer is `false`.
+    pub fn withdraw_instance_remove(
+        &mut self,
+        provider: &DillaProvider,
+        reference: &[u8],
+    ) -> Result<bool, MlsError> {
+        let found = self
+            .group
+            .pending_proposals()
+            .find(|p| {
+                p.proposal_reference_ref().as_slice() == reference
+                    && matches!(p.sender(), Sender::External(_))
+                    && matches!(p.proposal(), Proposal::Remove(_))
+            })
+            .map(|p| p.proposal_reference_ref().clone());
+        let Some(found) = found else {
+            return Ok(false);
+        };
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            group
+                .remove_pending_proposal(provider.storage(), &found)
+                .map_err(openmls)?;
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(true)
+    }
+
+    /// UP6b's fallback for a client that missed a `withdrawn` row (correction I4): takes every
+    /// queued instance `Remove` (external sender) whose reference `listed` does not name out of the
+    /// queue, and answers the references it took. `commit_build` passes the delivery service's
+    /// listing, which never names a withdrawn proposal; member proposals and Adds stay queued.
+    pub fn drop_unlisted_instance_removes(
+        &mut self,
+        provider: &DillaProvider,
+        listed: impl Fn(&[u8]) -> bool,
+    ) -> Result<Vec<Vec<u8>>, MlsError> {
+        let refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = self
+            .group
+            .pending_proposals()
+            .filter(|p| {
+                matches!(p.sender(), Sender::External(_))
+                    && matches!(p.proposal(), Proposal::Remove(_))
+                    && !listed(p.proposal_reference_ref().as_slice())
+            })
+            .map(|p| p.proposal_reference_ref().clone())
+            .collect();
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let group = &mut self.group;
+        provider.storage().transaction(|| {
+            for r in &refs {
+                group
+                    .remove_pending_proposal(provider.storage(), r)
+                    .map_err(openmls)?;
+            }
+            Ok::<(), MlsError>(())
+        })?;
+        Ok(refs.iter().map(|r| r.as_slice().to_vec()).collect())
+    }
+
     /// Takes every queued `Add` that `keep` refuses back out of the queue, so the next
     /// `self_update` (which consumes the whole queue) does not commit it. `keep` answers
     /// `Ok(false)` to drop an Add and an error to refuse; on an error nothing is removed.

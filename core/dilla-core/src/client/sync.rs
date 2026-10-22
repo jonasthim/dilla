@@ -442,7 +442,7 @@ impl ClientCore {
             let result = this.write(|ctx, u| {
                 for item in &proposals {
                     if item.void { continue; }
-                    let _ = (&item.reference, item.kind, item.target_leaf);
+                    let _ = (item.kind, item.target_leaf);
                     let Ok(message) = wire::protocol_message(&item.blob) else { continue; };
                     if message.epoch().as_u64() != group.epoch() { continue; }
                     match group.process_message(ctx.provider, message) {
@@ -471,6 +471,26 @@ impl ClientCore {
                             if e.code == E_CORE_STORAGE || e.code == E_CORE_RELOAD { return Err(e); }
                             group = DillaGroup::load(ctx.provider, &GroupId::from_slice(id))?.ok_or_else(absent)?;
                         }
+                    }
+                }
+                // UP6b, correction I4: a client that missed a `withdrawn` row still holds the
+                // withdrawn instance `Remove`, and a commit that applies it is refused (409
+                // `withdrawn`). The listing never names a withdrawn proposal, so every queued
+                // instance `Remove` it does not name is taken out (a member's proposal and an Add
+                // stay). `call_rotate` takes no listing and relies on the row.
+                if !rotate {
+                    let listed: std::collections::HashSet<&[u8]> =
+                        proposals.iter().map(|item| item.reference.as_slice()).collect();
+                    let dropped = group
+                        .drop_unlisted_instance_removes(ctx.provider, |r| listed.contains(r))?;
+                    for reference in dropped {
+                        u.with_conn(|c| {
+                            c.execute(
+                                "DELETE FROM app_proposals WHERE group_id=?1 AND ref=?2",
+                                params![id.as_slice(), reference],
+                            )?;
+                            Ok(())
+                        })?;
                     }
                 }
                 if rotate {
@@ -709,6 +729,24 @@ impl ClientCore {
                     let mut epoch_changed = false;
                     let mut stop = false;
                     match &row {
+                        // UP6b: a `withdrawn` row (kind 3) takes the named instance `Remove` out of
+                        // the queue, and only that (protocol/02 invariant 6, "Withdrawal"). Any
+                        // other proposal under the ref, an unknown or an already-committed ref is
+                        // a no-op; the cursor moves past the row either way. It is not an MLS
+                        // message, so it never joins the heal tail.
+                        Row::Handshake(h) if h.kind == wire::HANDSHAKE_WITHDRAWN => {
+                            checked("handshakes: epoch", h.epoch)?;
+                            let reference = wire::decode_withdrawn_blob(&h.blob)?;
+                            if group.withdraw_instance_remove(ctx.provider, &reference)? {
+                                u.with_conn(|c| {
+                                    c.execute(
+                                        "DELETE FROM app_proposals WHERE group_id=?1 AND ref=?2",
+                                        params![id.as_slice(), &reference],
+                                    )?;
+                                    Ok(())
+                                })?;
+                            }
+                        }
                         Row::Handshake(h) => {
                             let hs_epoch = checked("handshakes: epoch", h.epoch)?;
                             u.with_conn(|c| {

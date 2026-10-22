@@ -964,6 +964,39 @@ pub fn run_frames() -> SuiteReport {
             hex(e.as_slice()),
         ));
     }
+    // UP6b: a `withdrawn` row's blob, decoded as a client applies it (`mls::decode_withdrawn_blob`):
+    // the ref of each case, and every reject refused (the client answers it `E_CORE_INPUT`).
+    let withdrawn = &doc["withdrawn"];
+    for case in withdrawn["cases"].as_array().unwrap_or(&Vec::new()) {
+        let name = case["name"].as_str().unwrap_or("?");
+        let blob = unhex(case["blob"].as_str().unwrap_or(""));
+        let got = crate::mls::decode_withdrawn_blob(&blob)
+            .map_or_else(|_| "refused".to_owned(), |r| hex(&r));
+        cases.push(CaseReport::compare(
+            format!("withdrawn {name}"),
+            "ref",
+            expect_str(&case["ref"]),
+            got.clone(),
+        ));
+        let again = hex(&crate::mls::encode_withdrawn_blob(&unhex(&got)));
+        cases.push(CaseReport::compare(
+            format!("withdrawn {name}"),
+            "blob",
+            expect_str(&case["blob"]),
+            again,
+        ));
+    }
+    for reject in withdrawn["rejects"].as_array().unwrap_or(&Vec::new()) {
+        let name = reject["name"].as_str().unwrap_or("?");
+        let blob = unhex(reject["blob"].as_str().unwrap_or(""));
+        let refused = crate::mls::decode_withdrawn_blob(&blob).is_err();
+        cases.push(CaseReport::compare(
+            format!("withdrawn reject {name}"),
+            "blob",
+            "rejected",
+            if refused { "rejected" } else { "accepted" },
+        ));
+    }
     SuiteReport {
         name: "frames",
         cases,
