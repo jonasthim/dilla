@@ -155,6 +155,10 @@ type Deps struct {
 	// BotEnrolled runs after a new bot identity, membership and role commit, so
 	// the composition root can bring its channel groups in line with the new member.
 	BotEnrolled func(context.Context, store.BotInstallationRow)
+	// BotJoinRoleGranted refreshes derived channel eligibility and live clients
+	// after a new episode-bound automatic role grant commits. It is not called
+	// for an idempotent receipt replay.
+	BotJoinRoleGranted func(context.Context, id.ID, id.ID)
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket

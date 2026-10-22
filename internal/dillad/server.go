@@ -438,6 +438,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
 		}
 	}
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
+		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot join role grant failed",
+				"community", communityID.String(), "user", memberID.String(), "err", err)
+		}
+		if callRoutes != nil && o.SFU != nil {
+			callRoutes.RequestSync(ctx, communityID, &memberID, nil)
+		}
+		botRoleNotify.Changed(ctx, communityID)
+	}
 
 	mux := server.NewMux()
 	api.Register(mux, deps)

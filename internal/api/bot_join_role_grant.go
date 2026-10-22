@@ -52,6 +52,7 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var receipt store.BotJoinRoleGrantReceipt
+	granted := false
 	noPolicy := false
 	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), cid); err != nil {
@@ -116,6 +117,7 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		if err := roles.selfRoleCandidate(r, tx, cid, policy.ApprovedBy, receipt.RoleID, bits, snap); err != nil {
 			return server.Errorf(server.CodeForbidden, "join role approval is no longer valid")
 		}
+		granted = true
 		return nil
 	})
 	if err != nil {
@@ -128,6 +130,9 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 	if noPolicy {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	if granted && d.BotJoinRoleGranted != nil {
+		d.BotJoinRoleGranted(afterCommit(r), cid, req.MemberID)
 	}
 	_ = server.WriteCBOR(w, http.StatusOK, []any{receipt.RequestID, receipt.InstallationID, receipt.CommunityID, receipt.UserID, receipt.EpisodeID, receipt.RoleID})
 }

@@ -23,7 +23,14 @@ func TestBotJoinRoleGrantRejectsHumanSession(t *testing.T) {
 }
 
 func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
-	handler, deps := newTestAPI(t)
+	grantNotifications := 0
+	var notifiedCommunity, notifiedMember id.ID
+	handler, deps := newTestAPIWired(t, func(d *api.Deps) {
+		d.BotJoinRoleGranted = func(_ context.Context, community, member id.ID) {
+			grantNotifications++
+			notifiedCommunity, notifiedMember = community, member
+		}
+	})
 	ctx := context.Background()
 	owner, _, _ := seedAPISession(t, deps)
 	now := deps.Clock.Now().Unix()
@@ -96,6 +103,9 @@ func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("grant = %d (%x), want 200", first.Code, first.Body.Bytes())
 	}
+	if grantNotifications != 1 || notifiedCommunity != cid || notifiedMember != target {
+		t.Fatalf("first grant notifications = %d for %s/%s, want once for %s/%s", grantNotifications, notifiedCommunity, notifiedMember, cid, target)
+	}
 	var receipt []any
 	if err := cborx.Unmarshal(first.Body.Bytes(), &receipt); err != nil || len(receipt) != 6 {
 		t.Fatalf("receipt = %#v, %v", receipt, err)
@@ -109,6 +119,9 @@ func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	retry := postCBORAuth(handler, path, body, token)
 	if retry.Code != http.StatusOK || !bytes.Equal(retry.Body.Bytes(), first.Body.Bytes()) {
 		t.Fatalf("retry = %d (%x), want stable receipt %x", retry.Code, retry.Body.Bytes(), first.Body.Bytes())
+	}
+	if grantNotifications != 1 {
+		t.Fatalf("receipt retry produced %d grant notifications, want one", grantNotifications)
 	}
 	oldEpisode := mustMemberEpisode(t, deps.Repo, cid, staleTarget)
 	if err := deps.Repo.DeleteMember(ctx, cid, staleTarget); err != nil {
@@ -127,6 +140,9 @@ func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	lost := postCBORAuth(handler, path, mustCBOR(t, []any{id.New(), staleTarget, mustMemberEpisode(t, deps.Repo, cid, staleTarget)}), token)
 	if lost.Code != http.StatusForbidden {
 		t.Fatalf("grant after approver authority loss = %d (%x), want 403", lost.Code, lost.Body.Bytes())
+	}
+	if grantNotifications != 1 {
+		t.Fatalf("refused grants produced %d notifications, want one", grantNotifications)
 	}
 	held, err := deps.Repo.ListMemberRoles(ctx, cid, staleTarget)
 	if err != nil {
