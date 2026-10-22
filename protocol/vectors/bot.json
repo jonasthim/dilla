@@ -964,6 +964,11 @@
       "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070400"
     },
     {
+      "name": "receipt initial next sequence is not one",
+      "kind": "group_registration_receipt",
+      "hex": "8650a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150333333333333333333333333333333335820b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870070402"
+    },
+    {
       "name": "keypackage_publication: nonminimal CBOR array head",
       "kind": "keypackage_publication",
       "hex": "9800"

@@ -28,12 +28,14 @@ type vectorCorpus struct {
 	Rejects []vectorCase `json:"rejects"`
 }
 type vectorCase struct {
-	Name        string         `json:"name"`
-	Kind        string         `json:"kind"`
-	Hex         string         `json:"hex"`
-	Body        string         `json:"body"`
-	PreimageHex string         `json:"preimage_hex"`
-	Context     *vectorContext `json:"context"`
+	Name                string         `json:"name"`
+	Kind                string         `json:"kind"`
+	Hex                 string         `json:"hex"`
+	Body                string         `json:"body"`
+	PreimageHex         string         `json:"preimage_hex"`
+	RegistrationBodyHex string         `json:"registration_body_hex"`
+	RegistrationSHA256  string         `json:"registration_sha256"`
+	Context             *vectorContext `json:"context"`
 }
 type vectorContext struct {
 	Community   string `json:"community"`
@@ -183,6 +185,48 @@ func TestKeyPackageResultWorstCaseFitsHelperPayload(t *testing.T) {
 	}
 }
 
+func TestGroupRegistrationCodecBoundsAndHash(t *testing.T) {
+	var group id.ID
+	for i := range group {
+		group[i] = 0x33
+	}
+	body, err := cborx.Marshal([]any{group, []byte{1}, []byte{2}, []byte{3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := GroupRegistrationHash(body)
+	if err != nil || hex.EncodeToString(hash[:]) != "b4dfefdcb5ea9714fdfc57b25030aaeae6d876d78e9ba007f0dea64b846e1870" {
+		t.Fatalf("registration hash=%x err=%v", hash, err)
+	}
+	request := GroupRegistrationRequest{OperationID: fixtureID(1), RegistrationBody: body}
+	encoded, err := EncodeGroupRegistrationRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeGroupRegistrationRequest(encoded)
+	if err != nil || !bytes.Equal(decoded.RegistrationBody, body) {
+		t.Fatalf("request roundtrip: %#v %v", decoded, err)
+	}
+	request.ExpectedGeneration = uint64(math.MaxInt64) + 1
+	if _, err := EncodeGroupRegistrationRequest(request); err == nil {
+		t.Fatal("accepted generation above int64")
+	}
+
+	receipt := GroupRegistrationReceipt{OperationID: fixtureID(1), GroupID: group, RegistrationSHA256: hash, AcceptedGeneration: math.MaxInt64, InitialEpoch: math.MaxInt64, NextSequence: 1}
+	encoded, err = EncodeGroupRegistrationReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedReceipt, err := DecodeGroupRegistrationReceipt(encoded)
+	if err != nil || decodedReceipt != receipt {
+		t.Fatalf("receipt roundtrip: %#v %v", decodedReceipt, err)
+	}
+	receipt.NextSequence = 2
+	if _, err := EncodeGroupRegistrationReceipt(receipt); err == nil {
+		t.Fatal("accepted non-initial next sequence")
+	}
+}
+
 func keyPackageUploadAtLength(t *testing.T, target int) []byte {
 	t.Helper()
 	bigLen := target - 72 // outer array + 2-byte 32-item array head + 5-byte large bstr head + 31 small packages + fallback
@@ -308,6 +352,29 @@ func roundTripVector(t *testing.T, tc vectorCase, raw []byte) []byte {
 		if err == nil {
 			got, err = EncodeKeyPackageResolution(v)
 		}
+	case "group_registration_request":
+		var v GroupRegistrationRequest
+		v, err = DecodeGroupRegistrationRequest(raw)
+		if err == nil {
+			got, err = EncodeGroupRegistrationRequest(v)
+		}
+		if err == nil && tc.RegistrationBodyHex != "" {
+			body, e := hex.DecodeString(tc.RegistrationBodyHex)
+			if e != nil || !bytes.Equal(v.RegistrationBody, body) {
+				t.Fatalf("registration body mismatch: %x %v", v.RegistrationBody, e)
+			}
+			hash, e := GroupRegistrationHash(v.RegistrationBody)
+			want, _ := hex.DecodeString(tc.RegistrationSHA256)
+			if e != nil || !bytes.Equal(hash[:], want) {
+				t.Fatalf("registration hash mismatch: %x %v", hash, e)
+			}
+		}
+	case "group_registration_receipt":
+		var v GroupRegistrationReceipt
+		v, err = DecodeGroupRegistrationReceipt(raw)
+		if err == nil {
+			got, err = EncodeGroupRegistrationReceipt(v)
+		}
 	default:
 		t.Fatalf("unknown vector kind %q", tc.Kind)
 	}
@@ -403,6 +470,18 @@ func roundTripVectorErr(tc vectorCase, raw []byte) ([]byte, error) {
 			return nil, e
 		}
 		return EncodeKeyPackageResolution(v)
+	case "group_registration_request":
+		v, e := DecodeGroupRegistrationRequest(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeGroupRegistrationRequest(v)
+	case "group_registration_receipt":
+		v, e := DecodeGroupRegistrationReceipt(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeGroupRegistrationReceipt(v)
 	default:
 		return nil, invalid()
 	}

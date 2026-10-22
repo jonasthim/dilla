@@ -134,8 +134,7 @@ impl Receipt {
             || !valid_id(self.group_id)
             || self.accepted_generation > MAX_I64
             || self.initial_epoch > MAX_I64
-            || self.next_sequence == 0
-            || self.next_sequence > MAX_I64
+            || self.next_sequence != 1
         {
             return Err(CodecError::Value);
         }
