@@ -334,6 +334,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotSendOperations)(nil)).Elem(),
 		// Task 5: managed group registration acceptance receipts.
 		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
+		// Task 6: durable structural events, cursors, and retention floor.
+		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -64,6 +65,26 @@ type Repository interface {
 	BotKeyPackagePublications
 	BotGroupRegistrationReceipts
 	BotSendOperations
+	BotStructuralEvents
+}
+
+// BotStructuralEventPage is a bounded snapshot of the community event stream.
+// Floor is the greatest sequence removed by retention; a cursor below it has a gap.
+type BotStructuralEventPage struct {
+	Events       []protocol.Event
+	NextSequence uint64
+	HighWater    uint64
+	Floor        uint64
+}
+
+// BotStructuralEvents stores canonical structural events and per-installation
+// acknowledgements. Append, prune, and ack require the caller's transaction.
+type BotStructuralEvents interface {
+	AppendBotStructuralEvent(context.Context, protocol.Event) (protocol.Event, error)
+	ListBotStructuralEvents(context.Context, id.ID, uint64, int32) (BotStructuralEventPage, error)
+	PruneBotStructuralEvents(context.Context, int64) (int64, error)
+	AckBotStructuralEvents(context.Context, id.ID, id.ID, uint64) error
+	GetBotStructuralEventAck(context.Context, id.ID, id.ID) (uint64, error)
 }
 
 type Instance interface {
