@@ -224,15 +224,13 @@ func TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly(t *testing.T) {
 	community := id.New()
 	voice, textChannel := id.New(), id.New()
 	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
-	store, err := persistence.New(n, community)
-	if err != nil {
-		t.Fatal(err)
-	}
 	starts := 0
-	queues, err := restoreMusicSupervisors(context.Background(), community, []client.Channel{
-		{ID: voice, CommunityID: community, Kind: 1},
-		{ID: textChannel, CommunityID: community, Kind: 0},
-	}, store, session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+	queues, err := restoreMusicQueuesIfEnabled(context.Background(), community, botMusicCapability, func(context.Context, id.ID) ([]client.Channel, error) {
+		return []client.Channel{
+			{ID: voice, CommunityID: community, Kind: 1},
+			{ID: textChannel, CommunityID: community, Kind: 0},
+		}, nil
+	}, n, session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
 		starts++
 		return session.Options{}, errors.New("provider must stay unavailable during restore")
 	}})
@@ -254,5 +252,19 @@ func TestUnavailableMusicQueueStarterFailsClosed(t *testing.T) {
 	})
 	if !errors.Is(err, errMusicPCMUnavailable) {
 		t.Fatalf("unavailable provider error = %v, want %v", err, errMusicPCMUnavailable)
+	}
+}
+
+func TestMusicRuntimeWithoutApprovedCapabilityDoesNotLoadOrRestore(t *testing.T) {
+	loads := 0
+	runtime, err := restoreMusicQueuesIfEnabled(context.Background(), id.New(), 1<<1, func(context.Context, id.ID) ([]client.Channel, error) {
+		loads++
+		return nil, nil
+	}, nil, unavailableMusicQueueStarter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime != nil || loads != 0 {
+		t.Fatalf("runtime=%v inventory loads=%d; disabled music capability must skip restoration", runtime, loads)
 	}
 }

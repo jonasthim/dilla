@@ -25,7 +25,6 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
@@ -423,14 +422,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
-							channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
-							if channelsErr == nil {
-								var musicStore *persistence.Store
-								musicStore, channelsErr = persistence.New(nativeClient, installation.CommunityID)
-								if channelsErr == nil {
-									musicQueues, channelsErr = restoreMusicSupervisors(ctx, installation.CommunityID, channels, musicStore, unavailableMusicQueueStarter())
-								}
-							}
+							musicQueues, channelsErr := restoreMusicQueuesIfEnabled(ctx, installation.CommunityID, result.Installation.Capabilities, result.Session.Channels, nativeClient, unavailableMusicQueueStarter())
 							if channelsErr != nil {
 								logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
 								ensureErr = errors.Join(ensureErr, channelsErr)

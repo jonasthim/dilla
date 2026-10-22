@@ -17,6 +17,7 @@ import (
 const (
 	musicVoiceChannelKind = 1
 	maxMusicSupervisors   = 512
+	botMusicCapability    = 1 << 0 // protocol/10-community-bot.md: capability bit 0
 )
 
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
@@ -163,6 +164,24 @@ func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []cl
 		runtime.supervisors[channel.ID] = supervisor
 	}
 	return runtime, nil
+}
+
+func restoreMusicQueuesIfEnabled(ctx context.Context, community id.ID, capabilities uint64, loadChannels func(context.Context, id.ID) ([]client.Channel, error), stateNative persistence.Native, starter session.QueueStarter) (*musicQueueRuntime, error) {
+	if capabilities&botMusicCapability == 0 {
+		return nil, nil
+	}
+	if loadChannels == nil || stateNative == nil {
+		return nil, errors.New("music runtime dependencies unavailable")
+	}
+	channels, err := loadChannels(ctx, community)
+	if err != nil {
+		return nil, err
+	}
+	store, err := persistence.New(stateNative, community)
+	if err != nil {
+		return nil, err
+	}
+	return restoreMusicSupervisors(ctx, community, channels, store, starter)
 }
 
 func closeMusicSupervisors(queues map[id.ID]*music.Supervisor) {
