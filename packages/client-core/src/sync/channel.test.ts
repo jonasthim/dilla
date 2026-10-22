@@ -230,12 +230,12 @@ describe('opening a channel (rule 6)', () => {
     expect(ds.welcomesFor(ME.device)).toEqual([]);
   });
 
-  it('returns at once, without a request, for a group that is already active', async () => {
+  it('checks removals without repeating group join for an already active group', async () => {
     const first = await open(null);
     await settle();
     ds.resetCalls();
     expect(await open(first.groupId)).toEqual({ groupId: first.groupId, state: 2 });
-    expect(ds.calls).toEqual([]);
+    expect(ds.calls.map(call => call.route)).toEqual(['getModerationRemovals']);
   });
 
   it('registers once when the same channel is opened twice at the same time', async () => {
