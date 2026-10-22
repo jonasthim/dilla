@@ -50,8 +50,11 @@ fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
         SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("participant DSK");
     let bot_credential = credential(0x21, 0x22, &bot_signer);
     let participant_credential = credential(0x31, 0x32, &participant_signer);
+    // The joiner's private KeyPackage state belongs to another device and is not part of the
+    // creator's transaction; only the creator's provider state is expected to roll back here.
+    let participant_provider = provider();
     let package = build_key_package(
-        &provider,
+        &participant_provider,
         &participant_signer,
         participant_credential,
         false,
