@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,21 +14,45 @@ import (
 )
 
 type evidenceState struct {
-	binding native.Binding
-	value   native.StateValue
-	reads   int
+	binding  native.Binding
+	value    native.StateValue
+	reads    int
+	rows     map[string]native.StateValue
+	writes   int
+	writeErr error
 }
 
 func (s *evidenceState) Binding() native.Binding { return s.binding }
 func (s *evidenceState) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	s.reads++
-	if area != evidenceStateArea || string(key) != string(evidenceKey(s.binding, testEvidenceID)) {
+	if area != evidenceStateArea {
 		return native.StateValue{}, errors.New("unexpected evidence state address")
+	}
+	if value, ok := s.rows[string(key)]; ok {
+		return value, nil
+	}
+	if string(key) == string(evidenceKey(s.binding, testEvidenceID)) {
+		return s.value, nil
 	}
 	return s.value, nil
 }
-func (*evidenceState) StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error) {
-	return nil, errors.New("unused")
+func (s *evidenceState) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	s.writes++
+	if s.writeErr != nil {
+		return nil, s.writeErr
+	}
+	if s.rows == nil {
+		s.rows = make(map[string]native.StateValue)
+	}
+	if len(changes) != 1 || changes[0].Area != evidenceStateArea || changes[0].ExpectedRevision != 0 {
+		return nil, errors.New("unexpected evidence state transaction")
+	}
+	key := string(changes[0].Key)
+	if _, exists := s.rows[key]; exists {
+		return nil, errors.New("evidence state conflict")
+	}
+	s.rows[key] = native.StateValue{Revision: 1, Value: append([]byte(nil), changes[0].Value...)}
+	return []uint64{1}, nil
 }
 
 type evidenceAuthority struct {
@@ -46,8 +71,9 @@ var testEvidenceID = id.ID{1}
 
 func encodedEvidence(t *testing.T, binding native.Binding, evidenceID id.ID) native.StateValue {
 	t.Helper()
+	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	body, err := cborx.Marshal([]any{uint64(1), binding.Instance, binding.Community, binding.Installation,
-		evidenceID, id.ID{2}, "remove", string(RuleDuplicate), "bounded excerpt", uint64(time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC).Unix())})
+		evidenceID, evidenceID, id.ID{2}, "remove", string(RuleDuplicate), "accepted reason", "bounded excerpt", uint64(created.Unix()), uint64(created.Add(EvidenceRetention).Unix())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,4 +124,100 @@ func TestEvidenceReadFailsClosedBeforeEncryptedStateRead(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEvidenceWriterRoundTripsOnlyInstallationBoundEncryptedState(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding}
+	input := validEvidenceInput()
+	if err := NewEvidenceWriter(state).Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewEvidenceReader(state, &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true})
+	got, err := reader.Read(context.Background(), id.ID{6}, input.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != input.OperationID || got.OperationID != input.OperationID || got.MessageID != input.MessageID || got.Action != input.Action || got.Rule != input.Rule || got.Reason != input.Reason || got.Excerpt != input.Excerpt || !got.ExpiresAt.Equal(input.CreatedAt.Add(EvidenceRetention)) {
+		t.Fatalf("evidence round trip = %+v", got)
+	}
+	wrongBindingValue := state.rows[string(evidenceKey(binding, input.OperationID))]
+	wrongBinding := &evidenceState{binding: native.Binding{Instance: binding.Instance, Community: binding.Community, Installation: id.ID{9}}, rows: map[string]native.StateValue{
+		string(evidenceKey(native.Binding{Instance: binding.Instance, Community: binding.Community, Installation: id.ID{9}}, input.OperationID)): wrongBindingValue,
+	}}
+	if _, err := NewEvidenceReader(wrongBinding, &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}).Read(context.Background(), id.ID{6}, input.OperationID); !errors.Is(err, ErrEvidenceAccess) {
+		t.Fatalf("reader with different installation binding = %v", err)
+	}
+	var expiredRow []any
+	if err := cborx.Unmarshal(wrongBindingValue.Value, &expiredRow); err != nil {
+		t.Fatal(err)
+	}
+	created := uint64(time.Now().UTC().Add(-EvidenceRetention - time.Hour).Unix())
+	expiredRow[11] = created
+	expiredRow[12] = created + uint64(EvidenceRetention/time.Second)
+	expiredBody, err := cborx.Marshal(expiredRow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredState := &evidenceState{binding: binding, rows: map[string]native.StateValue{
+		string(evidenceKey(binding, input.OperationID)): {Revision: 1, Value: expiredBody},
+	}}
+	if _, err := NewEvidenceReader(expiredState, &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}).Read(context.Background(), id.ID{6}, input.OperationID); !errors.Is(err, ErrEvidenceAccess) {
+		t.Fatalf("expired evidence read = %v", err)
+	}
+}
+
+func TestEvidenceWriterBoundsSensitiveFieldsAndHidesStateErrors(t *testing.T) {
+	state := &evidenceState{binding: native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}}
+	for _, tc := range []struct {
+		name string
+		edit func(*EvidenceInput)
+	}{
+		{"empty reason", func(e *EvidenceInput) { e.Reason = "" }},
+		{"oversized reason", func(e *EvidenceInput) { e.Reason = string(make([]byte, MaxEvidenceReasonBytes+1)) }},
+		{"oversized excerpt", func(e *EvidenceInput) { e.Excerpt = string(make([]byte, ExcerptMaxBytes+1)) }},
+		{"invalid action", func(e *EvidenceInput) { e.Action = Action("ban") }},
+		{"missing message", func(e *EvidenceInput) { e.MessageID = id.ID{} }},
+		{"expired input", func(e *EvidenceInput) { e.CreatedAt = time.Now().UTC().Add(-EvidenceRetention - time.Second) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := validEvidenceInput()
+			tc.edit(&input)
+			if err := NewEvidenceWriter(state).Save(context.Background(), input); err == nil {
+				t.Fatal("invalid evidence was accepted")
+			}
+		})
+	}
+	secret := "sensitive reason text"
+	state.writeErr = errors.New(secret)
+	input := validEvidenceInput()
+	input.Reason = secret
+	err := NewEvidenceWriter(state).Save(context.Background(), input)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("write failure leaked sensitive text: %v", err)
+	}
+}
+
+func TestEvidenceWriterUsesOperationIDIdempotently(t *testing.T) {
+	state := &evidenceState{binding: native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}}
+	writer := NewEvidenceWriter(state)
+	input := validEvidenceInput()
+	if err := writer.Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Save(context.Background(), input); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if state.writes != 1 {
+		t.Fatalf("state writes after identical retry = %d, want 1", state.writes)
+	}
+	input.Reason = "different reason"
+	if err := writer.Save(context.Background(), input); !errors.Is(err, ErrEvidenceConflict) {
+		t.Fatalf("operation ID reused with different evidence = %v", err)
+	}
+}
+
+func validEvidenceInput() EvidenceInput {
+	return EvidenceInput{OperationID: id.ID{1}, MessageID: id.ID{2}, Action: ActionRemove, Rule: RuleDuplicate,
+		Reason: "Repeated message", Excerpt: "bounded excerpt", CreatedAt: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 }
