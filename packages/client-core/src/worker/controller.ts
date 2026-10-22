@@ -127,7 +127,7 @@ E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN 
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
@@ -268,6 +268,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callShare',
   'callRefresh',
   'callStats',
+  'callNote',
   'loadVoice',
   'callDecline',
   'renameCommunity',
@@ -495,6 +496,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callShare',
     'callRefresh',
     'callStats',
+    'callNote',
     'loadVoice',
     'callDecline',
     'renameCommunity',
@@ -537,6 +539,8 @@ const deviceLabel = (value: unknown): string | null => {
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
+/** fix/firefox-misrouted-audio: the stable codes a page may note for Diagnostics (callNote); nothing else is taken. */
+const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE']);
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
@@ -694,6 +698,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
+  if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
     || (command.communityId === null) === (command.channelId === null))) return 'loadVoice needs exactly one id';
   if (m === 'callDecline' && (typeof command.ringTs !== 'number' || !Number.isSafeInteger(command.ringTs) || command.ringTs < 0)) {
@@ -1196,6 +1201,7 @@ export class Controller {
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
+      case 'callNote': this.recordError(command.code); return Promise.resolve(null);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);
       case 'deleteCommunity': return this.admin.deleteCommunity(command.communityId);
