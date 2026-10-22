@@ -47,6 +47,8 @@ export const admin = {
   'admin.bot.status.disabled': 'Disabled',
   'admin.bot.status.failed': 'Failed',
   'admin.bot.status.unavailable': 'Status unavailable',
+  'admin.bot.status.refresh': 'Refresh status',
+  'admin.bot.status.refreshing': 'Refreshing…',
   'admin.bot.none': 'No bot is installed for this server.',
   'admin.bot.staged': 'This staged installation has no capabilities yet and cannot perform server actions.',
   'admin.bot.capabilities': 'Enabled capability constraints: {names}.',

@@ -53,6 +53,24 @@ describe('the server bot settings', () => {
     expect(screen.queryByText(/reason|excerpt|case #/i)).not.toBeInTheDocument();
   });
 
+  it('manually refreshes installation status and capabilities from the server', async () => {
+    const initial = { ...ROW, state: 2 as const, capabilities: 1 };
+    const refreshed = { ...ROW, state: 3 as const, capabilities: 3 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(refreshed);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+
+    await screen.findByText(en['admin.bot.status.joining']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.status.refresh'] }));
+
+    expect(await screen.findByText(en['admin.bot.status.ready'])).toBeInTheDocument();
+    expect(screen.getByText(/music, welcome messages/)).toBeInTheDocument();
+    expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
+  });
+
   it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
     spotifySession.clear();
     vi.mocked(authorizeSpotify).mockClear();

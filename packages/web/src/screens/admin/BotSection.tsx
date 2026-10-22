@@ -51,6 +51,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const roles = useSlice(`roles:${communityId}`);
   const access = useSlice(`permissions:${communityId}`);
   const [installation, setInstallation] = useState<Installation | null>(null);
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
+  const [statusRefreshError, setStatusRefreshError] = useState<string | null>(null);
+  const [statusPollGeneration, setStatusPollGeneration] = useState(0);
   const [joinRole, setJoinRole] = useState<JoinRoleSetting | null>(null);
   const [joinRoleValue, setJoinRoleValue] = useState('');
   const [joinRoleLoadedFor, setJoinRoleLoadedFor] = useState<string | null>(null);
@@ -73,6 +76,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     let canceled = false;
     statusPollAttempts.current = { communityId, attempts: 0 };
     setInstallation(null);
+    setStatusRefreshing(false);
+    setStatusRefreshError(null);
     setJoinRole(null);
     setJoinRoleValue('');
     setJoinRoleLoadedFor(null);
@@ -152,12 +157,35 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       canceled = true;
       if (statusTimer !== undefined) window.clearTimeout(statusTimer);
     };
-  }, [client, communityId, installationCommunityId, installationState, loadedFor]);
+  }, [client, communityId, installationCommunityId, installationState, loadedFor, statusPollGeneration]);
 
   const current = loadedFor === communityId;
   const currentInstallation = current && installation?.communityId === communityId ? installation : null;
   const currentError = current ? error : null;
   const busy = busyFor === communityId;
+  const refreshStatus = () => {
+    if (!current || statusRefreshing) return;
+    const generation = readGeneration.current;
+    setStatusRefreshing(true);
+    setStatusRefreshError(null);
+    void client.call({ m: 'getBotInstallation', communityId }).then(value => {
+      if (generation !== readGeneration.current) return;
+      const refreshed = value as Installation | null;
+      if (refreshed !== null && refreshed.communityId !== communityId) return;
+      if (editingCapabilitiesRef.current) {
+        setInstallation(previous => previous === null || refreshed === null ? refreshed : { ...previous, state: refreshed.state });
+      } else {
+        setInstallation(refreshed);
+        setSelectedCapabilities(refreshed?.capabilities ?? 0);
+      }
+      statusPollAttempts.current = { communityId, attempts: 0 };
+      setStatusPollGeneration(value => value + 1);
+    }).catch((e: unknown) => {
+      if (generation === readGeneration.current) setStatusRefreshError(errorMessage(errorOf(e)));
+    }).finally(() => {
+      if (generation === readGeneration.current) setStatusRefreshing(false);
+    });
+  };
   const enable = () => {
     if (busy || !current || currentError !== null || factors === undefined || access?.loaded !== true || !access.manageCommunity) return;
     setStepUpPurpose('bot');
@@ -282,6 +310,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           {bot ? <div className="dw-bot-identity"><Avatar name={bot.display || bot.username} size="sm" /><span>{bot.display || bot.username}</span></div> : null}
           <p role="status" aria-live="polite">{status}</p>
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
+          <Button aria-disabled={statusRefreshing || undefined} onClick={refreshStatus}>
+            {statusRefreshing ? t('admin.bot.status.refreshing') : t('admin.bot.status.refresh')}
+          </Button>
         </SettingsRow>
       ) : null}
       {canEditInstallationCapabilities && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
@@ -355,6 +386,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
         <p role="note">{t('admin.bot.moderationLog.unavailable')}</p>
       </section>
       {currentError === null ? null : <p role="alert">{currentError}</p>}
+      {statusRefreshError === null ? null : <p role="alert">{statusRefreshError}</p>}
       <div>
         {enabled ? <Button aria-disabled={busy || undefined} onClick={disable}>{busy ? t('admin.bot.disabling') : t('admin.bot.disable')}</Button>
           : <Button variant="accent" aria-disabled={busy || enableUnavailable || undefined}
