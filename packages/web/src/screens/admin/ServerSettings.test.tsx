@@ -48,7 +48,7 @@ const navNames = () => within(screen.getByRole('navigation', { name: en['admin.n
 describe('ServerSettings tabs', () => {
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'channels', 'roles', 'invites', 'bans', 'delete server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'delete server']);
   });
   it('shows the roles tab only with manageRoles, after channels', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
@@ -68,7 +68,11 @@ describe('ServerSettings tabs', () => {
   });
   it('shows overview for manageCommunity and invites for createInvite', () => {
     setup({ ...NONE, manageCommunity: true, createInvite: true });
-    expect(navNames()).toEqual(['overview', 'invites', 'leave server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'invites', 'leave server']);
+  });
+  it('shows the bot tab only to manageCommunity members', () => {
+    setup({ ...NONE, manageChannels: true });
+    expect(navNames()).not.toContain('bot');
   });
   it('shows no tab as forbidden while the permissions are loading', () => {
     setup({ ...NONE, loaded: false });

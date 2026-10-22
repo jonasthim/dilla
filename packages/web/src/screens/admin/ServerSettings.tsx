@@ -11,10 +11,12 @@ import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
 import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
+import { BotSection } from './BotSection.tsx';
 import { FooterSlot, type Announce } from './shared.ts';
 
 export type AdminTab =
   | 'overview'
+  | 'bot'
   | 'channels'
   | 'roles'
   | 'invites'
@@ -62,6 +64,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   const tabs: { id: AdminTab; label: string }[] = [];
   if (access !== undefined && loaded) {
     if (access.manageCommunity) tabs.push({ id: 'overview', label: t('admin.nav.overview') });
+    if (access.manageCommunity) tabs.push({ id: 'bot', label: t('admin.nav.bot') });
     if (access.manageChannels) tabs.push({ id: 'channels', label: t('admin.nav.channels') });
     if (access.manageRoles) tabs.push({ id: 'roles', label: t('roles.tab') });
     if (access.createInvite) tabs.push({ id: 'invites', label: t('admin.nav.invites') });
@@ -86,6 +89,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
       footer={active === 'overview' ? <div ref={setFooterEl} /> : undefined}>
       {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {active === 'overview' ? <FooterSlot.Provider value={footerEl}><OverviewSection {...common} /></FooterSlot.Provider> : null}
+      {active === 'bot' ? <BotSection {...common} /> : null}
       {active === 'channels' ? <ChannelsSection {...common} /> : null}
       {active === 'roles' ? <RolesSection {...common} /> : null}
       {active === 'invites' ? <InvitesSection {...common} /> : null}
