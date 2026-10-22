@@ -250,6 +250,19 @@ func authorizeMessageRemoval(r *http.Request, repo store.Repository, communityID
 }
 
 func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Repository, s auth.Session, communityID id.ID) error {
+	if err := h.requireBotFeed(r, repo, s, communityID); err != nil {
+		return err
+	}
+	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
+	if err != nil || installation.Capabilities&uint8(botCapRemoval) == 0 {
+		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
+	}
+	return nil
+}
+
+// Reading deletion markers is necessary for every authorized Bot group member,
+// including installations that cannot request a removal themselves.
+func (h *moderationRemovalAPI) requireBotFeed(r *http.Request, repo store.Repository, s auth.Session, communityID id.ID) error {
 	if err := requireBotWire(s.WireVersion); err != nil {
 		return err
 	}
@@ -258,8 +271,8 @@ func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Rep
 		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
 	}
 	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
-	if err != nil || installation.UserID == nil || *installation.UserID != s.UserID || installation.DeviceID == nil || *installation.DeviceID != s.DeviceID || installation.Capabilities&uint8(botCapRemoval) == 0 {
-		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
+	if err != nil || installation.UserID == nil || *installation.UserID != s.UserID || installation.DeviceID == nil || *installation.DeviceID != s.DeviceID {
+		return server.Errorf(server.CodeForbidden, "ready Bot installation required")
 	}
 	return nil
 }
@@ -316,7 +329,7 @@ func (h *moderationRemovalAPI) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user.Kind == 1 {
-		if err := h.requireBotRemoval(r, h.deps.Repo, s, *group.CommunityID); err != nil {
+		if err := h.requireBotFeed(r, h.deps.Repo, s, *group.CommunityID); err != nil {
 			server.WriteError(w, err)
 			return
 		}

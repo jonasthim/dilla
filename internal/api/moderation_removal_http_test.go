@@ -203,3 +203,68 @@ func doCBORAuth(h http.Handler, method, path string, body []byte, token string) 
 	h.ServeHTTP(rec, req)
 	return rec
 }
+
+func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) {
+	h, deps := newTestAPI(t)
+	ctx := t.Context()
+	owner, _, _ := seedAPISession(t, deps)
+	community := seedBotCommunity(t, deps, owner.ID)
+	now := deps.Clock.Now().Unix()
+	bot, device, installation, runtime := id.New(), id.New(), id.New(), id.New()
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x43}, ed25519.SeedSize))
+	verified := now
+	if err := deps.Repo.CreateUser(ctx, store.UserRow{ID: bot, Username: "feedbot" + bot.String()[:8], Display: "Feed Bot", Kind: 1,
+		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateDevice(ctx, store.DeviceRow{ID: device, UserID: bot, DSKPub: key.Public().(ed25519.PublicKey), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: bot, Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotRuntime(ctx, store.BotRuntimeRow{ID: runtime, TokenHash: bytes.Repeat([]byte{0x28}, 32), Created: now, Rotated: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: community, RuntimeID: &runtime,
+		UserID: &bot, DeviceID: &device, State: store.BotInstallationReady, Revision: 1,
+		ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+		t.Fatal(err)
+	}
+	token := "removal-feed-bot-session"
+	if err := deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: auth.TokenHash(token), DeviceID: device, UserID: bot,
+		Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation,
+		UserID: bot, DeviceID: device, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	group := id.New()
+	if err := deps.Repo.CreateGroup(ctx, store.GroupRow{GroupID: group, Binding: []byte{0x80}, Kind: 0, CommunityID: &community,
+		TargetID: id.New(), Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1,
+		PolicyVersion: 1, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.ReplaceMembers(ctx, group, 0, []store.MemberRow{{GroupID: group, UserID: bot, DeviceID: device,
+		SignatureKey: key.Public().(ed25519.PublicKey)}}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/groups/" + group.String() + "/moderation/removals"
+	if response := doCBORAuth(h, http.MethodGet, path+"?after=0&limit=1", nil, token); response.Code != http.StatusOK {
+		t.Fatalf("bot without removal capability cannot read feed: %d %x", response.Code, response.Body.Bytes())
+	}
+	proof := protocol.RemovalProof{RequestID: id.New(), ActorUser: bot, ActorDevice: device, CommunityID: community,
+		GroupID: group, TargetSequence: 1, Expires: uint64(now + 20)}
+	preimage, err := protocol.RemovalPreimage(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postBody, _ := cborx.Marshal([]any{preimage[len("dilla moderation removal v1"):], ed25519.Sign(key, preimage)})
+	if response := doCBORAuth(h, http.MethodPost, path, postBody, token); response.Code != http.StatusForbidden {
+		t.Fatalf("bot without removal capability posted removal: %d %x", response.Code, response.Body.Bytes())
+	}
+}
