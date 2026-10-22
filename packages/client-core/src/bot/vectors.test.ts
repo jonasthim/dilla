@@ -5,9 +5,9 @@ import * as bot from './protocol.ts';
 import * as kp from './keypackage.ts';
 import { encode } from '../cbor/index.ts';
 
-type VectorKind = 'request' | 'response' | 'removal' | 'event' | 'receipt' | 'helper_request' | 'helper_response' | 'keypackage_publication' | 'keypackage_publication_receipt' | 'keypackage_intent' | 'keypackage_intent_result' | 'keypackage_resolution';
+type VectorKind = 'request' | 'response' | 'removal' | 'event' | 'receipt' | 'helper_request' | 'helper_response' | 'keypackage_publication' | 'keypackage_publication_receipt' | 'keypackage_intent' | 'keypackage_intent_result' | 'keypackage_resolution' | 'group_registration_request' | 'group_registration_receipt';
 type Context = { community: string; group?: string; actor_user?: string; actor_device?: string; now: string };
-type Vector = { name: string; kind: VectorKind; hex?: string; body?: string; preimage_hex?: string; context?: Context };
+type Vector = { name: string; kind: VectorKind; hex?: string; body?: string; preimage_hex?: string; context?: Context; registration_body_hex?: string; registration_sha256?: string };
 type Vectors = { cases: Vector[]; rejects: Vector[] };
 type Decoded =
   | { kind: 'request'; value: bot.BotRequest }
@@ -21,7 +21,9 @@ type Decoded =
   | { kind: 'keypackage_publication_receipt'; value: kp.KeyPackagePublicationReceipt }
   | { kind: 'keypackage_intent'; value: kp.KeyPackageIntent }
   | { kind: 'keypackage_intent_result'; value: kp.KeyPackageIntentResult }
-  | { kind: 'keypackage_resolution'; value: kp.KeyPackageResolution };
+  | { kind: 'keypackage_resolution'; value: kp.KeyPackageResolution }
+  | { kind: 'group_registration_request'; value: bot.BotGroupRegistrationRequest }
+  | { kind: 'group_registration_receipt'; value: bot.BotGroupRegistrationReceipt };
 
 const vectors = JSON.parse(readFileSync(new URL('../../../../protocol/vectors/bot.json', import.meta.url), 'utf8')) as Vectors;
 
@@ -64,6 +66,8 @@ function decodeVector(kind: VectorKind, hex: string, body?: string): Decoded {
     case 'keypackage_intent': return { kind, value: kp.decodeKeyPackageIntent(fromHex(hex)) };
     case 'keypackage_intent_result': return { kind, value: kp.decodeKeyPackageIntentResult(fromHex(hex)) };
     case 'keypackage_resolution': return { kind, value: kp.decodeKeyPackageResolution(fromHex(hex)) };
+    case 'group_registration_request': return { kind, value: bot.decodeBotGroupRegistrationRequest(fromHex(hex)) };
+    case 'group_registration_receipt': return { kind, value: bot.decodeBotGroupRegistrationReceipt(fromHex(hex)) };
   }
 }
 
@@ -81,6 +85,8 @@ function encodeVector(decoded: Decoded): Uint8Array | string {
     case 'keypackage_intent': return kp.encodeKeyPackageIntent(decoded.value);
     case 'keypackage_intent_result': return kp.encodeKeyPackageIntentResult(decoded.value);
     case 'keypackage_resolution': return kp.encodeKeyPackageResolution(decoded.value);
+    case 'group_registration_request': return bot.encodeBotGroupRegistrationRequest(decoded.value);
+    case 'group_registration_receipt': return bot.encodeBotGroupRegistrationReceipt(decoded.value);
   }
 }
 
@@ -156,10 +162,10 @@ describe('shared bot protocol vectors', () => {
     expect(() => kp.encodeKeyPackageIntent({ operationId: new Uint8Array(16).fill(1), count: 33n, lastResort: 0n, expectedGeneration: 0n })).toThrow(kp.KeyPackageCodecError);
   });
 
-  it('roundtrips every valid canonical encoding and checks contexts', () => {
+  it('roundtrips every valid canonical encoding and checks contexts', async () => {
     expect(vectors.cases.length).toBeGreaterThanOrEqual(37);
     const kinds = new Set(vectors.cases.map((vector) => vector.kind));
-    expect([...kinds].sort()).toEqual(['event', 'helper_request', 'helper_response', 'keypackage_intent', 'keypackage_intent_result', 'keypackage_publication', 'keypackage_publication_receipt', 'keypackage_resolution', 'receipt', 'removal', 'request', 'response']);
+    expect([...kinds].sort()).toEqual(['event', 'group_registration_receipt', 'group_registration_request', 'helper_request', 'helper_response', 'keypackage_intent', 'keypackage_intent_result', 'keypackage_publication', 'keypackage_publication_receipt', 'keypackage_resolution', 'receipt', 'removal', 'request', 'response']);
 
     for (const vector of vectors.cases) {
       const hex = vector.hex;
@@ -175,6 +181,20 @@ describe('shared bot protocol vectors', () => {
         expect(toHex(bodyPayload(encoded)), vector.name).toBe(hex);
       }
       if (vector.context !== undefined) checkContext(decoded, vector.context);
+      if (decoded.kind === 'group_registration_request') {
+        if (vector.registration_body_hex === undefined) throw new Error(`registration vector ${vector.name} is missing its body`);
+        expect(toHex(decoded.value.registrationBody), vector.name).toBe(vector.registration_body_hex);
+        if (vector.registration_sha256 === undefined) throw new Error(`registration vector ${vector.name} is missing its hash`);
+        const domain = new TextEncoder().encode('dilla bot group registration v1\0');
+        const preimage = new Uint8Array(domain.length + decoded.value.registrationBody.length);
+        preimage.set(domain);
+        preimage.set(decoded.value.registrationBody, domain.length);
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+        expect(toHex(hash), vector.name).toBe(vector.registration_sha256);
+      }
+      if (decoded.kind === 'group_registration_receipt' && vector.registration_sha256 !== undefined) {
+        expect(toHex(decoded.value.registrationSHA256), vector.name).toBe(vector.registration_sha256);
+      }
       if (vector.preimage_hex !== undefined) {
         if (decoded.kind !== 'removal') throw new Error(`non-removal vector ${vector.name} has a preimage`);
         expect(toHex(bot.removalPreimage(decoded.value)), vector.name).toBe(vector.preimage_hex);

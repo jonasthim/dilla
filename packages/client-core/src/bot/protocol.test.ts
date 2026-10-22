@@ -62,4 +62,39 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeSendReceipt({ ...receipt, sendResponse: { ...receipt.sendResponse!, sequence: 2n } })).toThrow(bot.BotError);
     expect(() => bot.encodeSendReceipt({ ...receipt, outcome: bot.SendOutcome.UnknownAfterRestore })).toThrow(bot.BotError);
   });
+
+  it('roundtrips managed group registration and binds its receipt to the request', async () => {
+    const registrationBody = encode([id(5), new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])]);
+    const request = { operationId: id(6), expectedGeneration: (1n << 63n) - 1n, registrationBody };
+    const encodedRequest = bot.encodeBotGroupRegistrationRequest(request);
+    expect(bot.decodeBotGroupRegistrationRequest(encodedRequest)).toEqual(request);
+
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array([
+      ...new TextEncoder().encode('dilla bot group registration v1\0'), ...registrationBody,
+    ])));
+    const receipt = {
+      operationId: id(6), groupId: id(5), registrationSHA256: digest,
+      acceptedGeneration: request.expectedGeneration, initialEpoch: 0n, nextSequence: 1n,
+    };
+    const encodedReceipt = bot.encodeBotGroupRegistrationReceipt(receipt);
+    const decodedReceipt = bot.decodeBotGroupRegistrationReceipt(encodedReceipt);
+    expect(decodedReceipt).toEqual(receipt);
+    await expect(bot.validateBotGroupRegistrationReceipt(decodedReceipt, request)).resolves.toBeUndefined();
+    await expect(bot.validateBotGroupRegistrationReceipt({ ...decodedReceipt, registrationSHA256: new Uint8Array(32) }, request)).rejects.toThrow(bot.BotError);
+  });
+
+  it('rejects invalid managed group registration bounds and bodies', () => {
+    const body = encode([id(5), new Uint8Array(), new Uint8Array(), new Uint8Array()]);
+    const request = { operationId: id(6), expectedGeneration: 0n, registrationBody: body };
+    expect(() => bot.encodeBotGroupRegistrationRequest({ ...request, operationId: new Uint8Array(16) })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationRequest({ ...request, expectedGeneration: 1n << 63n })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationRequest({ ...request, registrationBody: new Uint8Array() })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationRequest({ ...request, registrationBody: encode([new Uint8Array(16), new Uint8Array(), new Uint8Array(), new Uint8Array()]) })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationRequest({ ...request, registrationBody: encode([id(5), 1n, new Uint8Array(), new Uint8Array()]) })).toThrow(bot.BotError);
+    expect(() => bot.decodeBotGroupRegistrationRequest(new Uint8Array([0x83, 0x50, ...new Uint8Array(16), 0, 0x58, 1, 0x00]))).toThrow(bot.BotError);
+    const receipt = { operationId: id(6), groupId: id(5), registrationSHA256: new Uint8Array(31), acceptedGeneration: 0n, initialEpoch: 0n, nextSequence: 1n };
+    expect(() => bot.encodeBotGroupRegistrationReceipt(receipt)).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationReceipt({ ...receipt, registrationSHA256: new Uint8Array(32), acceptedGeneration: 1n << 63n })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotGroupRegistrationReceipt({ ...receipt, registrationSHA256: new Uint8Array(32), nextSequence: 0n })).toThrow(bot.BotError);
+  });
 });

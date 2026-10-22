@@ -157,6 +157,101 @@ export const encodeBotResponse = (response: BotResponse) =>
 export const decodeBotResponse = (body: string) =>
   guarded(() => readResponse(bodyDecode(body)));
 
+const GROUP_REGISTRATION_BODY_MAX = 65_505;
+const STORED_MAX = (1n << 63n) - 1n;
+
+export interface BotGroupRegistrationRequest {
+  operationId: Uint8Array;
+  expectedGeneration: bigint;
+  registrationBody: Uint8Array;
+}
+
+export interface BotGroupRegistrationReceipt {
+  operationId: Uint8Array;
+  groupId: Uint8Array;
+  registrationSHA256: Uint8Array;
+  acceptedGeneration: bigint;
+  initialEpoch: bigint;
+  nextSequence: bigint;
+}
+
+function registrationGroup(body: Uint8Array): Uint8Array {
+  if (body.length === 0 || body.length > GROUP_REGISTRATION_BODY_MAX) fail('E_BOT_RANGE');
+  const fields = arr(decode(body), 4);
+  const group = id(fields[0]);
+  bytes(fields[1]); bytes(fields[2]); bytes(fields[3]);
+  return group;
+}
+
+function groupRegistrationRequestValue(request: BotGroupRegistrationRequest): CborInput[] {
+  id(request.operationId);
+  uint(request.expectedGeneration, 0n, STORED_MAX);
+  registrationGroup(bytes(request.registrationBody));
+  return [request.operationId, request.expectedGeneration, request.registrationBody];
+}
+
+export function encodeBotGroupRegistrationRequest(request: BotGroupRegistrationRequest): Uint8Array {
+  return guarded(() => encode(groupRegistrationRequestValue(request)));
+}
+
+export function decodeBotGroupRegistrationRequest(raw: Uint8Array): BotGroupRegistrationRequest {
+  return guarded(() => {
+    if (raw.length > GROUP_REGISTRATION_BODY_MAX + 64) fail('E_BOT_SIZE');
+    const fields = arr(decode(raw), 3);
+    const request = {
+      operationId: id(fields[0]),
+      expectedGeneration: uint(fields[1], 0n, STORED_MAX),
+      registrationBody: bytes(fields[2]),
+    };
+    groupRegistrationRequestValue(request);
+    return request;
+  });
+}
+
+function groupRegistrationReceiptValue(receipt: BotGroupRegistrationReceipt): CborInput[] {
+  id(receipt.operationId);
+  id(receipt.groupId);
+  bytes(receipt.registrationSHA256, 32);
+  uint(receipt.acceptedGeneration, 0n, STORED_MAX);
+  uint(receipt.initialEpoch, 0n, STORED_MAX);
+  if (uint(receipt.nextSequence, 1n, STORED_MAX) !== 1n) fail('E_BOT_RANGE');
+  return [receipt.operationId, receipt.groupId, receipt.registrationSHA256,
+    receipt.acceptedGeneration, receipt.initialEpoch, receipt.nextSequence];
+}
+
+export function encodeBotGroupRegistrationReceipt(receipt: BotGroupRegistrationReceipt): Uint8Array {
+  return guarded(() => encode(groupRegistrationReceiptValue(receipt)));
+}
+
+export function decodeBotGroupRegistrationReceipt(raw: Uint8Array): BotGroupRegistrationReceipt {
+  return guarded(() => {
+    const fields = arr(decode(raw), 6);
+    const receipt = {
+      operationId: id(fields[0]), groupId: id(fields[1]), registrationSHA256: bytes(fields[2], 32),
+      acceptedGeneration: uint(fields[3], 0n, STORED_MAX), initialEpoch: uint(fields[4], 0n, STORED_MAX),
+      nextSequence: uint(fields[5], 1n, STORED_MAX),
+    };
+    groupRegistrationReceiptValue(receipt);
+    return receipt;
+  });
+}
+
+export async function validateBotGroupRegistrationReceipt(
+  receipt: BotGroupRegistrationReceipt,
+  request: BotGroupRegistrationRequest,
+): Promise<void> {
+  groupRegistrationReceiptValue(receipt);
+  const group = registrationGroup(request.registrationBody);
+  const domain = enc.encode('dilla bot group registration v1\0');
+  const preimage = new Uint8Array(domain.length + request.registrationBody.length);
+  preimage.set(domain); preimage.set(request.registrationBody, domain.length);
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+  if (!equalId(receipt.operationId, request.operationId) || !equalId(receipt.groupId, group) ||
+      receipt.acceptedGeneration !== request.expectedGeneration || !equalId(receipt.registrationSHA256, hash)) {
+    fail('E_BOT_RECEIPT');
+  }
+}
+
 export function validateBotResponseContext(response: BotResponse, community: Uint8Array): void {
   if (!equalId(response.communityId, community)) fail('E_BOT_COMMUNITY');
 }
