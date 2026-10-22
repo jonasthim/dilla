@@ -25,7 +25,9 @@ import (
 )
 
 var relayCfg = api.CallsConfig{LiveKitURL: testLiveKitURL, TURNSecret: testTURNSecret,
-	TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour, MaxPublishers: 2}
+	TURNURLs: []string{"turns:chat.example.test:443?transport=tcp"}, CredentialTTL: time.Hour, MaxPublishers: 2,
+	// A participant limit, so a route that counted the room (callFull) would ask the SFU (review M4).
+	MaxVoiceParticipants: 25}
 
 var errFakeSFU = errors.New("the SFU does not answer")
 
@@ -44,11 +46,135 @@ func relayAnswer(t *testing.T, body []byte) [][]cbor.RawMessage {
 	return ice
 }
 
-// sfuCalls is everything the stub SFU was asked: rooms opened and closed, tokens, pushes, removals.
+// sfuCalls is everything the stub SFU was asked: rooms opened and closed, tokens, pushes, removals,
+// and the reads (room sids, the room list, a room's participants).
 func sfuCalls(s *stubSFU) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.created) + len(s.deleted) + len(s.mints) + len(s.updates) + len(s.removed) + len(s.removedIDs)
+	return len(s.created) + len(s.deleted) + len(s.mints) + len(s.updates) + len(s.removed) + len(s.removedIDs) + s.reads
+}
+
+// relayEnv is a live call on an instance with TURN and a relay: the owner started it, and member is a
+// current leaf of its group. room is the call's LiveKit room.
+type relayEnv struct {
+	e         *env
+	stub      *stubSFU
+	calls     *api.Calls
+	relay     *fakeRelay
+	callID    id.ID
+	room      string
+	member    id.ID
+	memberDev id.ID
+	memberTok string
+}
+
+func newRelayEnv(t *testing.T) *relayEnv {
+	t.Helper()
+	e, ch, tok, group, stub, calls := callEnvCalls(t, relayCfg)
+	relay := &fakeRelay{}
+	calls.WithRelay(relay)
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	_, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	member, memberDev, memberTok := joinedMember(t, e, ch, group, "member")
+	return &relayEnv{e: e, stub: stub, calls: calls, relay: relay, callID: decodeCall(t, body).CallID,
+		room: stub.minted()[0][0], member: member, memberDev: memberDev, memberTok: memberTok}
+}
+
+func (r *relayEnv) mintedFor(dev id.ID) int {
+	r.relay.mu.Lock()
+	defer r.relay.mu.Unlock()
+	n := 0
+	for _, d := range r.relay.minted {
+		if d == dev {
+			n++
+		}
+	}
+	return n
+}
+
+// Review I1: a device barred between the route's gates and its mint does not leave with the
+// credential. The re-read after the mint refuses it (403 E_FORBIDDEN) and cuts its relay as of now,
+// which covers the credential just minted. Control: unbarred, the same request is 200 and cuts nothing.
+func TestTheRelayRouteCutsADeviceBarredDuringItsMint(t *testing.T) {
+	r := newRelayEnv(t)
+	if status, body := r.e.Do(http.MethodPost, relayPath(r.callID), r.memberTok, []any{}); status != http.StatusOK {
+		t.Fatalf("the control = %d %s, want 200", status, r.e.ErrCode(body))
+	}
+	if r.relay.has(r.memberDev) {
+		t.Fatal("the control cut the device's relay")
+	}
+	r.relay.mu.Lock()
+	r.relay.onMint = func(dev id.ID) {
+		if dev != r.memberDev {
+			return
+		}
+		if err := r.e.Repo.RevokeDevice(t.Context(), dev, r.e.Clk.Now().Unix()); err != nil {
+			t.Errorf("RevokeDevice: %v", err)
+		}
+	}
+	r.relay.mu.Unlock()
+	before := r.mintedFor(r.memberDev)
+	status, body := r.e.Do(http.MethodPost, relayPath(r.callID), r.memberTok, []any{})
+	if status != http.StatusForbidden || r.e.ErrCode(body) != "E_FORBIDDEN" {
+		t.Fatalf("a device barred during its mint = %d %s, want 403 E_FORBIDDEN", status, r.e.ErrCode(body))
+	}
+	if r.mintedFor(r.memberDev) != before+1 {
+		t.Fatal("the request never reached the mint: the test changes nothing between the gates and the mint")
+	}
+	if !r.relay.has(r.memberDev) {
+		t.Fatal("the credential minted for a device barred during its mint was not cut")
+	}
+}
+
+// Review I1: a device cut from the relay in the request's own millisecond (the cut lands after the
+// request began) gets 429 E_RATE_LIMITED with a few milliseconds to wait, and no credential.
+func TestTheRelayRouteRefusesACutDuringTheRequest(t *testing.T) {
+	r := newRelayEnv(t)
+	rev := server.NewRelayRevocations(2*time.Hour, r.e.Clk)
+	r.calls.WithRelay(rev)
+	// The fake clock stands still, so the cut is at the request's begun: Mint refuses it.
+	rev.Revoke(r.memberDev, r.e.Clk.Now())
+	status, body := r.e.Do(http.MethodPost, relayPath(r.callID), r.memberTok, []any{})
+	if status != http.StatusTooManyRequests || r.e.ErrCode(body) != "E_RATE_LIMITED" {
+		t.Fatalf("a relay request in its cut's millisecond = %d %s, want 429 E_RATE_LIMITED", status, r.e.ErrCode(body))
+	}
+	if ms := retryAfterOf(t, body); ms == 0 || ms > 1000 {
+		t.Fatalf("retry_after_ms = %d, want a few milliseconds", ms)
+	}
+	// Once the clock passes the cut, the device (still entitled) gets a credential issued after it.
+	r.e.Clk.Advance(2 * time.Millisecond)
+	status, body = r.e.Do(http.MethodPost, relayPath(r.callID), r.memberTok, []any{})
+	if status != http.StatusOK {
+		t.Fatalf("the relay after the cut's millisecond = %d %s, want 200", status, r.e.ErrCode(body))
+	}
+	ice := relayAnswer(t, body)
+	var user string
+	mustUnmarshal(t, ice[0][1], &user)
+	ms, err := strconv.ParseInt(user[strings.LastIndex(user, ":")+1:], 10, 64)
+	if err != nil || cutCovers(rev, r.memberDev, time.UnixMilli(ms)) {
+		t.Fatalf("the credential %q is covered by the cut", user)
+	}
+}
+
+// Review I1: a device whose demotion or removal in the call has not landed in the SFU gets 503
+// E_UNAVAILABLE with retry_after_ms 2000 and no credential (the isPending half of the pending check;
+// TestTheRelayRouteRefusesAPendingRelayCut covers relayPending). The route never drives the repair.
+func TestTheRelayRouteRefusesAPendingDemotion(t *testing.T) {
+	r := newRelayEnv(t)
+	r.calls.MarkPending(r.callID, r.memberDev, r.room)
+	r.stub.mu.Lock()
+	r.stub.failUpdates = 1000
+	r.stub.failRemovals = 1000
+	r.stub.mu.Unlock()
+	before := r.mintedFor(r.memberDev)
+	status, body := r.e.Do(http.MethodPost, relayPath(r.callID), r.memberTok, []any{})
+	if status != http.StatusServiceUnavailable || r.e.ErrCode(body) != "E_UNAVAILABLE" || retryAfterOf(t, body) != 2000 {
+		t.Fatalf("the relay under a pending demotion = %d %s, want 503 E_UNAVAILABLE with retry_after_ms 2000",
+			status, r.e.ErrCode(body))
+	}
+	if r.mintedFor(r.memberDev) != before {
+		t.Fatal("a credential was minted for a device whose repair is pending")
+	}
 }
 
 // A device that is not in the call gets nothing, answered as the neighbouring call routes answer:
@@ -118,7 +244,8 @@ func TestTheRelayRouteRefusesABarredDevice(t *testing.T) {
 // A device whose relay cut the media relay has not acknowledged gets 503 E_UNAVAILABLE with
 // retry_after_ms 2000, as at the start and at share, and nothing is minted for it.
 func TestTheRelayRouteRefusesAPendingRelayCut(t *testing.T) {
-	b := newBarredEnv(t)
+	// Review M5: on an instance with TURN, so a credential could be minted and the check below can fail.
+	b := newRelayEnv(t)
 	relay := &ackRelay{unacked: map[id.ID]bool{}}
 	b.calls.WithRelay(relay)
 	relay.Revoke(b.memberDev, time.Now())
@@ -214,6 +341,10 @@ func TestTheRelayRouteMakesNoSFUCall(t *testing.T) {
 	stub.mu.Lock()
 	stub.createFail = errFakeSFU
 	stub.fail = errFakeSFU
+	// Review M4: the reads fail too, and are counted (sfuCalls), so a route that asked the SFU who is in
+	// the room (callFull) or which rooms it holds would be seen.
+	stub.listFail = errFakeSFU
+	stub.roomsFail = errFakeSFU
 	stub.mu.Unlock()
 	for range 3 {
 		if status, resp := e.Do(http.MethodPost, relayPath(call), tok, []any{}); status != http.StatusOK {

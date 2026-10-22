@@ -23,6 +23,9 @@ type fakeRelay struct {
 	mu      sync.Mutex
 	revoked []id.ID
 	minted  []id.ID
+	// onMint, when set, runs inside Mint after the mint is recorded and outside the lock: a test changes
+	// the device's entitlement between a route's gates and its post-mint re-check.
+	onMint func(device id.ID)
 }
 
 func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
@@ -33,8 +36,12 @@ func (f *fakeRelay) Revoke(device id.ID, _ time.Time) {
 
 func (f *fakeRelay) Mint(device id.ID, _ time.Time) (time.Time, time.Duration) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.minted = append(f.minted, device)
+	hook := f.onMint
+	f.mu.Unlock()
+	if hook != nil {
+		hook(device)
+	}
 	return time.Now(), 0
 }
 

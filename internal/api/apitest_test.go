@@ -415,12 +415,15 @@ type stubSFU struct {
 	roomsFail error
 	// sids is the LiveKit room sid of each room the stub holds, set by setSID (none: "").
 	sids map[string]string
+	// reads counts the SFU reads asked of the stub: RoomSID, Rooms and Participants.
+	reads int
 }
 
 // RoomSID is sfu.Server's: the sid of the room the stub holds under that name now.
 func (s *stubSFU) RoomSID(_ context.Context, room string) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reads++
 	return s.sids[room], s.rooms[room], nil
 }
 
@@ -439,6 +442,7 @@ func (s *stubSFU) setSID(room, sid string) {
 
 func (s *stubSFU) Rooms(ctx context.Context) ([]string, error) {
 	s.mu.Lock()
+	s.reads++
 	if s.hang {
 		s.mu.Unlock()
 		<-ctx.Done()
@@ -602,6 +606,7 @@ func (s *stubSFU) lastPerms() map[string]*livekit.ParticipantPermission {
 func (s *stubSFU) Participants(_ context.Context, room string) ([]*livekit.ParticipantInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reads++
 	if s.listFail != nil {
 		return nil, s.listFail
 	}
