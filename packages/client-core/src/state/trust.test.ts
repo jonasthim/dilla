@@ -119,3 +119,43 @@ describe('readDeviceListHistory', () => {
     await expect(readDeviceListHistory(routes as never, USER, 0n)).rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
   });
 });
+
+// Negative cases of the trust refresh after PR #72: the read the slices are cut from, and the slicing itself.
+describe('trust refresh: the history read and its slices', () => {
+  it('refuses a reordered, repeated or gapped history before anything is sliced', async () => {
+    for (const [head, pages] of [
+      [3, { 0: [2, 1, 3] }],
+      [3, { 0: [1, 1, 2] }],
+      [3, { 0: [1, 3] }],
+      // Across pages: a gap, and a page that starts again below where the last one ended.
+      [4, { 0: [1, 2], 2: [4] }],
+      [3, { 0: [1, 2], 2: [2, 3] }],
+    ] as [number, Record<number, number[]>][]) {
+      await expect(readDeviceListHistory(routes([head, head], pages), id16(2), 0n), JSON.stringify(pages))
+        .rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    }
+    // From a cached version: the first page must start right after the version below it.
+    await expect(readDeviceListHistory(routes([3, 3], { 1: [3] }), id16(2), 2n)).rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+  });
+  it('refuses a head below the cached version without reading a page', async () => {
+    const r = routes([1, 1], { 0: [1], 1: [2] });
+    const pages = vi.spyOn(r, 'getDeviceListHistory');
+    await expect(readDeviceListHistory(r, id16(2), 2n)).rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    expect(pages).not.toHaveBeenCalled();
+  });
+  it('accepts a head exactly at the cached version: a refresh that finds nothing new', async () => {
+    const result = await readDeviceListHistory(routes([2, 2], {}), id16(2), 2n);
+    expect(result).toEqual({ head: list(2), history: history([2]) });
+  });
+  it('slices [v1, v2] at a cached v2 to the served v2 row itself, and nothing else', () => {
+    expect(historyFrom(history([1, 2]), 2n)).toEqual(history([2]));
+    expect(historyFrom(history([2]), 2n)).toEqual(history([2]));
+  });
+  it('answers null, never a partial or empty slice, for an input that leaves nothing to slice', () => {
+    expect(historyFrom(encode([]), 0n)).toBeNull();
+    expect(historyFrom(history([1, 2]), 3n)).toBeNull();
+    // One malformed row makes the whole slice null, not the rows around it.
+    expect(historyFrom(encode([[1, new Uint8Array([1]), new Uint8Array(64), key32(1)], [2, new Uint8Array([2])]]), 1n)).toBeNull();
+    expect(historyFrom(encode(7), 0n)).toBeNull();
+  });
+});
