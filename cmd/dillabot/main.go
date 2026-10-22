@@ -399,7 +399,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					}
 					if ensureErr == nil {
 						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
-						if ensureErr == nil {
+						// A 409 means required MLS joins are still pending. Keep
+						// reconciling membership, but do not call Ready-only bot APIs.
+						if ensureErr == nil && ready {
 							membershipReady = true
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
