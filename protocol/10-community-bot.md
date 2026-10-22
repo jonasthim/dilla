@@ -299,28 +299,52 @@ The current registration check also authenticates only the registering Bot
 leaf. A participant tuple copied from an event, URL, helper request or MLS
 binding remains caller-declared data.
 
-The future admission path must use one server-authenticated typed admission
-result bound to the current Bot session and installation. It must identify the
-installation, community, Bot account and device, participant account and
-device, group id, and the server's current eligibility decision and revision.
-The native core must verify the result under a server verification key obtained
-through the established instance trust path; a key or expected tuple supplied
-alongside the result is not a trust anchor. The result must be rejected when
-expired, replayed for another group or installation, or superseded by a newer
-eligibility revision. The exact signature format, key distribution, issuance
-route and stable error mapping remain open protocol work and must be specified
-before enabling the operation.
+The proposed issuance route is
+`POST /v1/bot-runtime/installations/{installation}/interaction-admissions`,
+under the current wire-3 Bot session for that installation, in joining or ready
+state. Its request is `[request_id,group_id,participant_user,participant_device]`.
+The server requires the participant to be a current, non-banned member of the
+installation community and the selected device to be active in that user's
+latest valid signed device list. This decision authorizes membership in the
+interaction group only; the Bot dispatcher still checks each operation's
+permissions at use time.
+
+The response is `[payload_bstr,signature_bstr]`. The payload is strict
+deterministic CBOR `[1,admission_id,instance_id,installation_id,community_id,
+bot_user_id,bot_device_id,participant_user_id,participant_device_id,group_id,
+eligibility_revision,not_after]`. All IDs are nonzero bstr16; revision and
+`not_after` are server uint values at most signed-int64 max. The instance signs
+`ASCII("dilla bot interaction admission v1") || 0x00 || payload` with the
+Ed25519 private key corresponding to its published instance external-sender
+public key. The native core pins that public key when opening the installation
+from authenticated instance metadata and stores it with the Bot binding; a
+caller-supplied key or expected tuple is never a trust anchor. Changing the
+pinned key requires an explicit trusted instance-key transition, not an
+admission retry.
+
+The core rejects an invalid signature, any tuple mismatch, `not_after` earlier
+than authenticated server time, an admission replayed for another operation or
+group, or an `eligibility_revision` older than the latest admission known for
+that installation and participant. The server increments that revision when
+membership, ban state or the participant's active device set changes, and
+rechecks it under the same transaction fence as group registration. Registration
+and recovery receipts bind the admission id and payload hash in addition to
+the existing installation, operation, body and generation fields. This receipt
+does not replace authenticated group state or permit a stale retry to regenerate
+an MLS mutation.
 
 After verifying that result, the core must inspect the authenticated MLS
 GroupInfo and tree and require a v2 interaction binding equal to the result in
-all immutable fields. Its authenticated roster must contain the Bot's
-registered device and exactly the selected human device, with no other human
-account or device. Each leaf credential must match its account's current
-signature-verified device list, including the complete Bot credential match
-required by managed Bot registration. Binding equality alone is insufficient.
-The server must independently enforce the same admission tuple and roster
-constraints when it accepts registration and every later Add, Remove, Welcome
-or resync; a valid initial receipt must not authorize a changed roster.
+all immutable fields. The initial authenticated roster contains exactly two
+leaves: the Bot's registered device and the selected human device. Each leaf
+credential must match its account's current signature-verified device list,
+including the complete Bot credential match required by managed Bot
+registration. Binding equality alone is insufficient. The server must
+independently enforce the same admission tuple and exact roster when it accepts
+registration, later Adds or Removes, Welcome acknowledgement or resync; a
+valid initial receipt must not authorize a changed roster. A participant device
+replacement requires a fresh admission and a committed removal of the old leaf
+before the new device becomes actionable.
 
 The core must persist the verified admission tuple and receipt atomically with
 the group state and its registration or Welcome outcome. Recovery and duplicate
