@@ -985,7 +985,9 @@ export class ModelCore implements CorePort {
    *  pin_messages / mention_everyone, and the role hexes anyone may mention. */
   private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string>; mentionable: Set<string> }>();
 
-  constructor(readonly me: Peer) {
+  readonly instancePinChecks: Uint8Array[] = [];
+
+  constructor(readonly me: Peer, private readonly instance?: { instanceId: Id; externalSenderPub: Uint8Array }) {
     // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
     this.trustPins.set(toHex(me.user), { userId: me.user.slice(), umk: fakeDskPub(me.user), firstSeen: 0n, verified: true, changedUmk: null, blocked: null });
   }
@@ -1001,10 +1003,12 @@ export class ModelCore implements CorePort {
     this.calls.push({ m: 'close', g: '' });
   }
   identity(): IdentityInfo {
-    return { phase: 2, instanceId: null, userId: this.me.user, deviceId: this.me.device, username: 'model', listPublished: true };
+    return { phase: 2, instanceId: this.instance?.instanceId ?? null, userId: this.me.user, deviceId: this.me.device, username: 'model', listPublished: true };
   }
-  instanceSignerKeyMatches(): void {
-    throw coreError('E_CORE_STATE', 'not modelled');
+  instanceSignerKeyMatches(observedKey: Uint8Array): void {
+    this.instancePinChecks.push(observedKey.slice());
+    if (this.instance === undefined) throw coreError('E_CORE_STATE', 'not modelled');
+    if (!same(this.instance.externalSenderPub, observedKey)) throw coreError('E_CORE_STATE', 'instance external-sender key changed');
   }
   signupBegin(): string {
     throw coreError('E_CORE_STATE', 'not modelled');

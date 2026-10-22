@@ -59,7 +59,7 @@ export interface HarnessOptions {
 export async function harness(opts: HarnessOptions = {}) {
   const clock = new ManualClock();
   const ds = new ModelDs();
-  const model = new ModelCore(ME);
+  const model = new ModelCore(ME, INSTANCE);
   for (const p of [ME, PEER, THIRD, FOURTH]) ds.own(p.user, p.device);
   for (const p of [ME, PEER, THIRD, FOURTH]) ds.publishList(p.user, [{ device: p.device }]);
   const seed = (p: Peer): void => { const row = ds.listRow(p.user); if (row !== undefined) model.trustList(p.user, row.version, row.blob); };
@@ -263,6 +263,14 @@ export async function harness(opts: HarnessOptions = {}) {
   };
 }
 export type World = Awaited<ReturnType<typeof harness>>;
+
+describe('call harness startup', () => {
+  it('enters ready only after checking the model instance signer pin', async () => {
+    const w = await harness();
+    expect(w.slice('account')).toMatchObject({ phase: 'ready' });
+    expect(w.model.instancePinChecks).toEqual([INSTANCE.externalSenderPub]);
+  });
+});
 
 /** A voice_state frame as the gateway hands it over (op 50). */
 export function voiceFrame(peer: Peer, call: Id, flags: number): Frame {
