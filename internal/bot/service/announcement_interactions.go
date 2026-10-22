@@ -155,7 +155,7 @@ func (h AnnouncementInteractions) put(ctx context.Context, actor InteractionActo
 		return InteractionResult{}, err
 	}
 	revision := value.Schedule.Revision
-	return InteractionResult{Status: 0, Revision: &revision, Data: cborEmptyArray()}, nil
+	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 }
 
 func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionActor, _ protocol.Request) (InteractionResult, error) {
