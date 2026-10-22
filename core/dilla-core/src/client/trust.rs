@@ -538,9 +538,13 @@ fn apply_verdict(
         i64::from(leaf_index),
         code
     ];
+    // Any other failure re-labels only rows still waiting for the list. A revocation re-labels every
+    // row `revalidate_pending` could still release (its reason set), exactly the rows whose
+    // evidence the DELETE below drops: no row keeps a releasable reason without its evidence.
     let relabelled = c.execute(
         "UPDATE app_messages SET reason=?5 WHERE group_id=?1 AND status=1 \
-         AND (reason='E_DEVICE_LIST_STALE' OR (?5='E_DEVICE_REVOKED' AND reason='E_DEVICE_UNLISTED')) \
+         AND (reason='E_DEVICE_LIST_STALE' OR (?5='E_DEVICE_REVOKED' AND reason IN \
+         ('E_UMK_CHANGED','E_CREDENTIAL','E_DEVICE_UNLISTED','E_TIER_MISMATCH'))) \
          AND seq IN (SELECT seq FROM app_pending_history \
          WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND sender_leaf=?4)",
         held,

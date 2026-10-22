@@ -553,3 +553,77 @@ fn a_revoked_devices_held_message_says_revoked_and_never_opens() {
         assert_eq!((row.status, row.reason.as_str()), (1, "E_DEVICE_REVOKED"));
     }
 }
+
+/// v3: v2 with `device` named revoked (added to it first when v2 does not name it).
+fn revoking(v2: &DeviceList, device: &RawPeer) -> DeviceList {
+    let mut entries = v2.unsigned.entries.clone();
+    if !entries
+        .iter()
+        .any(|e| e.device_id.as_bytes() == &device.device)
+    {
+        entries.push(sec_entry(device));
+    }
+    for entry in entries
+        .iter_mut()
+        .filter(|e| e.device_id.as_bytes() == &device.device)
+    {
+        entry.revoked_at = Some(NOW + 4);
+    }
+    sec_next(v2, entries, 0xf2)
+}
+
+/// A row held as unlisted (its device was never on the list) whose device a later list then names
+/// revoked: the row takes E_DEVICE_REVOKED and keeps no evidence (the unlisted-then-revoked branch).
+#[test]
+fn a_row_held_unlisted_takes_revoked_when_a_later_list_revokes_its_device() {
+    let mut w = world();
+    cache_v2(&mut w);
+    assert_rogue_unreadable(&w);
+    assert_eq!(
+        retained(&w, w.rogue_seq),
+        1,
+        "an unlisted row keeps its evidence"
+    );
+    let v2 = w.v2.clone();
+    let v3 = revoking(&v2, &w.rogue);
+    assert_eq!(ingest(&mut w, BOB, &[&v2, &v3]).map(|v| v.0), Ok(3));
+    let row = w.alice.row_at(&GROUP, w.rogue_seq);
+    assert_eq!(
+        (row.status, row.reason.as_str(), row.body.as_str()),
+        (1, "E_DEVICE_REVOKED", "")
+    );
+    assert_eq!(retained(&w, w.rogue_seq), 0);
+    assert_eq!(revalidate(&mut w, ROGUE), 0);
+}
+
+/// A row held under any other releasable reason (a changed key, a failed credential, a tier
+/// mismatch) whose device is then revoked: it takes E_DEVICE_REVOKED with its evidence gone, never
+/// a releasable reason without evidence ("Compare the number" forever). Reaching each reason
+/// through real keys needs a key change and its verification first; the held row's stored state is
+/// what the revocation acts on, so it is set directly.
+#[test]
+fn a_row_held_for_any_releasable_reason_takes_revoked_when_its_device_is_revoked() {
+    for reason in ["E_UMK_CHANGED", "E_CREDENTIAL", "E_TIER_MISMATCH"] {
+        let mut w = world();
+        w.alice
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_messages SET reason=?3 WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), w.bob2_seq as i64, reason],
+            )
+            .unwrap();
+        assert_eq!(retained(&w, w.bob2_seq), 1);
+        let (v1, v2) = (w.v1.clone(), w.v2.clone());
+        let v3 = revoking(&v2, &w.bob2);
+        assert_eq!(ingest(&mut w, BOB, &[&v1, &v2, &v3]).map(|v| v.0), Ok(3));
+        let row = w.alice.row_at(&GROUP, w.bob2_seq);
+        assert_eq!(
+            (row.status, row.reason.as_str(), row.body.as_str()),
+            (1, "E_DEVICE_REVOKED", ""),
+            "a row held as {reason}"
+        );
+        assert_eq!(retained(&w, w.bob2_seq), 0, "a row held as {reason}");
+    }
+}
