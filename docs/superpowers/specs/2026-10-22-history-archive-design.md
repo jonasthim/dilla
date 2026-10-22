@@ -467,7 +467,7 @@ All `E` (an enrolled session), deterministic CBOR (`09` § Encoding). Full rules
 |---|---|
 | Component | `packages/web/src/screens/settings/History.tsx` (`History`), rendered first in `Privacy.tsx` |
 | Banner | `packages/web/src/screens/HistoryBanner.tsx` (`HistoryBanner`), the `history.bannerDismissed` record of the prefs IndexedDB store (`prefs.ts`: `readHistoryBannerDismissed`, `writeHistoryBannerDismissed`) |
-| Strings | `packages/web/src/strings/history.ts` (`history.*`, merged in `en.ts`), plus `signin.done.bodyNoHistory`, `onboarding.keys.history`, `shell.log.emptyRestoring`, `shell.log.emptyHistory` in their existing files |
+| Strings | `packages/web/src/strings/history.ts` (`history.*`, merged in `en.ts`), plus `signin.done.bodyNoHistory`, `onboarding.keys.history` and `shell.log.emptyRestoring` in their existing files; the existing `shell.log.emptyMade` (`nothing here yet.`, `en.ts:226`) is reused |
 | Flow | `docs/design/flows/19-message-history.md`; test `packages/web/src/strings/strings.flow19.test.ts` |
 | e2e | `e2e/web/history.spec.ts` |
 
@@ -666,7 +666,7 @@ below.
 - **Files:** new `core/dilla-core/src/client/history.rs`, `client/mod.rs` (`mod history;`), `client/schema.rs`
   (`APP_HISTORY`, the five meta key consts, the call in `migrate_conn`'s every-open block), `client/identity.rs`
   (`signup_begin`, `signup_reset`, `enrol_complete`, `device_list_revoke`: install keys; `Recovered` gains the rk-derived
-  `HistoryKeys`), new `core/dilla-core/tests/client_history.rs`. `messages.rs` and `sync.rs` are not edited: the merge
+  `HistoryKeys`), new `core/dilla-core/tests/client_history.rs` (tests 11 and 30), `core/dilla-core/tests/client_support/mod.rs` (`ready_core_with_key`), `core/dilla-core/tests/client_identity.rs` (tests 17–20, on its private fixtures). `messages.rs` and `sync.rs` are not edited: the merge
   calls their existing `pub(super)` helpers.
 - **Recipe:** §K.5–§K.8.
 - **Tests:** §K.9.2 (30 tests).
@@ -765,9 +765,10 @@ below.
 
 - **Lane** C. **Depends on** C2. **Model** sonnet. **Review** sonnet.
 - **Files:** new `packages/client-core/src/history/restore.ts`, `history/restore.test.ts`; `sync/engine.ts` (the
-  `onActivated` dependency and its call in `activate`, §C.7.3), `sync/engine.test.ts`, the test helpers that build
-  engine deps (`sync/testing/*`, every place that constructs `SyncDeps`, to add `onActivated: () => {}`),
-  `worker/controller.ts` (start after `refreshAfterReady`, `historyUseKey`, timeline refresh of touched groups,
+  `onActivated` dependency and its call in `activate`, §C.7.3), `sync/engine.test.ts`,
+  `sync/testing/harness.ts` (the one test construction of `SyncDeps`, the `new SyncEngine({ … })` at line 57: add
+  `onActivated: (groupId) => { activated.push(toHex(groupId)); },` with an `activated: string[]` it returns beside
+  `changes`), `worker/controller.ts` (start after `refreshAfterReady`, `historyUseKey`, timeline refresh of touched groups,
   `restoring` in `refreshTimeline`, unpark on activation and at each ready, enrol path), `worker/controller.test.ts`.
 - **Recipe:** §C.5, §C.7.
 - **Tests:** §C.9.4 and the controller cases of §C.9.5 that name C3.
@@ -777,7 +778,7 @@ below.
 - **Lane** W, ∥ from the start. **Depends on** —. **Model** haiku. **Review** sonnet.
 - **Files:** new `packages/web/src/strings/history.ts`, `strings/en.ts` (spread `history`; change `signin.done.body`
   and `onboarding.browser.oneBrowser`; add `signin.done.bodyNoHistory`, `onboarding.keys.history`,
-  `shell.log.emptyRestoring`, `shell.log.emptyHistory`), `strings/strings.test.ts` (the two pinned lines), new
+  `shell.log.emptyRestoring`), `strings/strings.test.ts` (the two pinned lines), new
   `docs/design/flows/19-message-history.md`, new `strings/strings.flow19.test.ts`.
 - **Recipe:** §U.4 (every key and value, byte for byte), §U.5.
 - **Tests:** `strings.flow19.test.ts` (§U.7.1); `strings.test.ts` updated pins; `check:copy`.
@@ -797,9 +798,10 @@ below.
 
 - **Lane** W. **Depends on** W2. **Model** sonnet. **Review** sonnet.
 - **Files:** `screens/SignIn.tsx`, `SignIn.test.tsx`, `screens/Onboarding.tsx`, `Onboarding.test.tsx`,
-  `screens/conversation/*` where the timeline top and empty state render (the component that renders
-  `shell.log.empty`), its test, new `screens/HistoryBanner.tsx`, new `HistoryBanner.test.tsx`, `screens/Shell.tsx`
-  (mount the banner), `prefs.ts`, `prefs.test.ts`.
+  `packages/web/src/screens/conversation/Conversation.tsx` (the `MessageLog` at lines 273–275: its `emptyLabel` and its
+  first child, §U.3) and its test `screens/conversation/Conversation.test.tsx`, new
+  `screens/HistoryBanner.tsx`, new `HistoryBanner.test.tsx`, `screens/Shell.tsx` (the `banner={<>…</>}` slot of
+  `AppShell` at lines 1722–1726, §U.3), `prefs.ts`, `prefs.test.ts`.
 - **Recipe:** §U.3.
 - **Tests:** §U.7.3.
 
@@ -818,18 +820,18 @@ below.
   (lines 175 and 451: the `onboarding.browser.oneBrowser` copy and its table row), `docs/design/flows/03-sign-in.md`
   (lines 871 and 890: the `signin.done.body` copy and its table row, plus a row for `signin.done.bodyNoHistory`),
   `packages/ui/src/OnboardingFrame/OnboardingFrame.stories.tsx` (line 29: the story's browser paragraph takes the new
-  `onboarding.browser.oneBrowser` wording), `docs/deploy/releases/v0.1.0-web3.13.md`.
-- **Recipe:** §U.6, §10 (release-note paragraph verbatim), §11 (table row), §S.3 (settings).
+  `onboarding.browser.oneBrowser` wording), `docs/deploy/releases/v0.1.0-web3.13.md`, and
+  `protocol/07-versioning.md` (replace the row's `<release-date>` with the merge date, §P.6).
+- **Recipe:** §U.6, §10 (release-note paragraph verbatim), §11 (table row), §S.3 (settings), §P.6.
 - **Tests:** `check:docs`; the flow tests that pin flows 01 and 03 (`strings.test.ts` and any `strings.flowNN.test.ts`
   reading those files) stay green; `npm test -w @dilla/ui` for the story.
 
 #### D2 — Screenshots
 
 - **Lane** W, ∥ D1. **Depends on** E1. **Model** sonnet. **Review** sonnet (by eye).
-- **Files:** `e2e/scripts/shoot-docs.mjs` (a `HISTORY_SHOTS` block), `docs/user/screenshots/*`, and
-  `protocol/07-versioning.md` (replace the row's `<release-date>` with the merge date, §P.6).
-- **Recipe:** §U.8.3, §P.6.
-- **Tests:** the shoot run; the new images reviewed by eye at 1280 px and 390 px; `check:docs`.
+- **Files:** `e2e/scripts/shoot-docs.mjs` (a `HISTORY_SHOTS` block), `docs/user/screenshots/*`.
+- **Recipe:** §U.8.3.
+- **Tests:** the shoot run; the new images reviewed by eye at 1280 px and 390 px.
 
 ## 14. Open questions
 
@@ -1375,9 +1377,50 @@ the FTS5 index, so tests 23–24 can search); the trigger-only tests 1–3 may i
 `APP_AUTHORITY` and `APP_HISTORY` directly (hence `APP_SCHEMA_V4` is `pub(super)`). Rows are written directly, and
 tests call the free functions of
 §K.7 (with `RustCrypto::default()` for crypto and randomness and an `Own` built in the test): **1–10, 12–16 and 21–29**.
-**Integration** tests (`core/dilla-core/tests/client_history.rs`) go through the public `ClientCore` API and the
-existing harness of `tests/client_identity.rs` (signup, sign-in with the key, a shown row through a send): **11, 17–20
-and 30**.
+**Integration** tests go through the public `ClientCore` API, on harnesses that already exist: **11, 17–20 and 30**.
+
+- **A shown row in a text group** comes from `tests/client_support/mod.rs` (shared by `tests/client_threads.rs`,
+  `client_groups.rs` and others through `mod client_support;`): `ready_core(user, username) -> Core` (line 800, a
+  signed-up core in phase 2 over an in-memory store), `Instance::generate()` (line 1322), `Relay::new(group_id)`
+  (line 1470), `Core::create_and_register(&mut self, relay, instance)` (line 874, a registered `text` group of
+  `CHANNEL` in `COMMUNITY`), and `Core::send(&mut self, relay, group_id, body, now) -> ([u8; 16], u64)` (line 1018),
+  which stores this device's own post as a shown status-0 row. `tests/client_threads.rs:22-25` and `:227` use exactly
+  this sequence.
+- `ready_core` drops the recovery key `signup_begin` returns, and tests 11 and 30 need it. K2 adds one helper beside it
+  in `client_support/mod.rs`, a copy of `ready_core` (lines 800–828) that keeps the key:
+
+  ```rust
+  /// ready_core, keeping the recovery key text signup_begin returned (message history tests).
+  pub fn ready_core_with_key(user: u8, username: &str) -> (Core, String)
+  ```
+
+  Its body is `ready_core`'s, with `let rk_text = core.signup_begin(&INSTANCE).expect("signup_begin");` in place of the
+  discarded call, answering `(Core { … }, rk_text)`.
+- **Tests 11 and 30** live in a new `core/dilla-core/tests/client_history.rs` (`mod client_support; use
+  client_support::*;`). Test 11's steps: `let (mut me, rk_text) = ready_core_with_key(0xa1, "alice"); let instance =
+  Instance::generate(); let mut relay = Relay::new(GROUP); me.create_and_register(&mut relay, &instance);
+  me.core.history_set_server(true, 1)?;` (history on, generation 1; the signup installed the write keys) then
+  `me.send(&mut relay, &GROUP, "saved", NOW)`, then `me.core.history_take(512, 1_000_000)` must answer one put, which
+  `history::open_row` opens with the `sk` and `k_auth` of `history::derive_keys(&RustCrypto::default(),
+  &recovery_key_from_base32(&recovery_key_normalise(&rk_text))?)` (both key functions are re-exported by
+  `dilla_core::identity`, `identity/mod.rs:23-25`; `GROUP` and `NOW` are `client_support` constants, `mod.rs:38` and
+  `:43`) to an `Entry` whose envelope body is `saved`. Test 30 opens a
+  `ready_core` store, reads `sqlite_master` through `me.probe` for the two tables and four triggers, and reads the
+  `schema` meta as 5.
+- **Tests 17–20** need a full signup and a second core signing in with the key. Those fixtures exist only in
+  `tests/client_identity.rs`, private to it: `signed_up()` (line 1752, a core signed up and published, with the key
+  text), `material_of(core, rk_text, reg, put_v1) -> Material` (line 2039, the root object, the v1 list and the parsed
+  key), `second()` (line 2072, a core with an enrolment registered for `USER`), `seal_with` (1852), `state_plain` (1869),
+  `pins()` (1739) and `as_typed` (1887). The `enrol_complete` call of
+  `enrol_complete_adds_this_browser_to_the_list_the_root_object_vouches_for` (lines 2324–2343) is the template. So
+  tests 17–20 are added **to `tests/client_identity.rs`** under a `// Message history (K2)` heading, using those
+  fixtures as they are: 17 calls `signed_up()` and reads `history_keys` and `history_restore` with the file's
+  `meta(c, k)` helper (line 86); 18 runs the 2324–2343 template and compares the restore record's `sk` with
+  `history::derive_keys` of `m.rk`; 19 calls `history_unlock` on `signed_up()`'s core with another valid key
+  (`recovery_key_base32(&[0x0c; 32])`) and the core's own `sealed_objects()` root; 20 starts from a core whose
+  `history_keys` meta row was deleted (with the file's `ConnHandle`), stores two shown rows through raw `INSERT`s into
+  `app_messages` and `app_groups` on that handle, then unlocks with the real key and calls `history_set_server(true,
+  1)`.
 
 1. `history_put_queues_a_shown_row_of_a_text_group`: with `history_on`, inserting a status-0 type-0 row with an
    envelope in a kind-0 group queues `op 0`.
@@ -1889,8 +1932,12 @@ Every authz case is written red first.
 - `TestHistoryOffNeedsAStepUp`: with the `stepUp(t, h, token, 0, password)` helper of `auth_test.go:561` (which
   reads its answer with `stepUpToken`, `auth_test.go:568`): `[0, null]` → `403 E_STEP_UP`, nothing deleted; a spent
   token → `403 E_STEP_UP`; a fresh token → `[0, 2]`.
-- `TestHistoryOffNeedsAStepUpWithoutAFactor`: an account holding no factor (the test seeds one with none) still gets
-  `403 E_STEP_UP` for `[0, null]`: the handler never takes `requireStepUp`'s no-factor pass.
+- No test seeds an account without a factor: the handler is strict (no token is `403 E_STEP_UP`, §S.4.3), and an
+  account that owes a factor never reaches a history route, because the forced-factor gate refuses it first. That gate
+  has its own tests, which stay green: `TestAnAccountThatOwesASecondFactorReachesOnlyTheAllowList`
+  (`internal/dillad/factor_owed_test.go:306`), `TestEveryMountedRouteIsADocumentedRoute` (`:242`, which also requires
+  the five new routes in `09`, so S3 needs S5), `TestTheBootReconcileMarksAnAccountWithoutAUsableFactor` (`:392`) and
+  `TestASignUpOwesASecondFactorUntilItIsSatisfied` (`internal/api/factor_owed_test.go:28`).
 - `TestHistoryOffDeletesEverythingAndBumpsTheGeneration`: after off, entries and tombstones are gone and `GET` answers
   `[0, 2, 0, 0, quota]`.
 - `TestHistoryOnAgainBumpsTheGeneration`: on after off → `[1, 3]`; on when on → unchanged.
@@ -2225,7 +2272,10 @@ registers a group (`channel.ts:177`), and after a call's join (`controller.ts:95
 
   `historyUnpark` merges the parked rows of every group now held, which includes `_g`; it is cheap when nothing is
   parked (one indexed query).
-- Every test helper that builds `SyncDeps` adds `onActivated: () => {}`.
+- `SyncDeps` is built in exactly two places: the controller's `parts.sync({ … })` (`controller.ts:1543`; the default
+  part is `sync: (d) => new SyncEngine(d)` at line 93) and the engine test harness (`sync/testing/harness.ts:57`). The
+  worker test double at `worker/world.ts:476` only captures the deps the controller passes, so it needs no change. Both
+  constructions gain `onActivated`.
 - The ready backstop of §C.7.2 stays.
 
 ### C.8 What the page reads
@@ -2408,13 +2458,20 @@ the section also writes the banner flag (§U.3).
   the done step's button.)
 - **Sign-up, the recovery-key step** (`Onboarding.tsx`, step 3): add one paragraph `onboarding.keys.history` after
   `onboarding.keys.loss`. The browser step keeps `onboarding.browser.oneBrowser` (its value changes in W1).
-- **Timeline top** (the conversation log's top, where it shows nothing more to load): when the timeline slice's
-  `restoring` is true and `hasEarlier` is false, one line `history.timeline` as a `d-label` (lower contrast, not a
-  banner), `role="status"`.
-- **Empty channel**: `restoring` → `shell.log.emptyRestoring`; else history `available && enabled && keys` →
-  `shell.log.emptyHistory`; else `shell.log.empty` (unchanged).
-- **Banner** (`HistoryBanner.tsx`, mounted by `Shell` where the other persistent banners are, at the top of the
-  conversation pane on a computer and on Home on a phone): shown when `available && enabled && !keys` and the banner
+- **Timeline top** (`packages/web/src/screens/conversation/Conversation.tsx`, the `MessageLog` at lines 273–275):
+  `MessageLog` has no top slot and none is added. Its first child, before `{items.map(…)}`, becomes
+  `{p.timeline?.restoring === true && !p.timeline.hasEarlier && items.length > 0 ? <p className="d-label"
+  role="status">{t('history.timeline')}</p> : null}`, so the line sits above the oldest loaded message (lower contrast,
+  not a banner).
+- **Empty channel**: the same `MessageLog`'s `emptyLabel` (line 274 today: `t(madeHere(client, p.channelId) ?
+  'shell.log.emptyMade' : 'shell.log.empty')`) becomes: `p.timeline?.restoring` → `shell.log.emptyRestoring`; else
+  `madeHere(…)` or history `available && enabled && keys` (from `useSlice('history')`) → `shell.log.emptyMade`
+  (existing, `nothing here yet.`); else `shell.log.empty` (unchanged).
+- **Banner** (`HistoryBanner.tsx`): mounted in `Shell.tsx`, in the `banner={<>…</>}` slot of `AppShell` (lines
+  1722–1726), right after `{banner}` (line 1725). It does not go inside the `banner` constant (lines 1363–1399), whose
+  condition lists the other persistent banners (root mismatch, own trust, client too old, removals, trust alerts,
+  command errors). The slot is `AppShell`'s, so the banner shows wherever `AppShell` shows its banners, on a computer
+  and on a phone. It is shown when `available && enabled && !keys` and the banner
   flag reads false. `Banner tone="info"` with `history.banner` and its one `action`, `history.banner.open`, which opens
   Settings → Privacy and focuses the history heading. Opening the Privacy section (from the banner or from Settings)
   writes the flag `true`, so the banner shows until that section has been opened once. It also goes when keys exist.
@@ -2486,7 +2543,6 @@ Changed and added in existing files (`en.ts` or the file that holds the key toda
 | `onboarding.browser.oneBrowser` (changed) | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Your earlier messages are restored there.` |
 | `onboarding.keys.history` (new) | `Your messages are also saved on {instance}, locked with this key, so a new browser can get them back. Anyone who has this key can read them.` |
 | `shell.log.emptyRestoring` (new) | `nothing here yet. Older messages are still being restored.` |
-| `shell.log.emptyHistory` (new) | `nothing here yet.` |
 
 `shell.log.empty` keeps its value. `shell.log.*` starts lower case like `shell.log.empty` (it is chrome in the log's
 mono style). `history.off.busy` uses U+2026.
@@ -2495,7 +2551,7 @@ mono style). `history.off.busy` uses U+2026.
 
 `docs/design/flows/19-message-history.md`, in the shape of flow 17: `# Flow 19 — Message history`, then `## States`
 (the status table of §U.1 and the banner's rule), `## Sign-in and sign-up` (§U.3), `## Copy` with every pair of §U.4
-as one line `` `key='value'` `` (37 pairs: the 31 new `history.*` keys and the 6 changed or new ones), and
+as one line `` `key='value'` `` (36 pairs: the 31 new `history.*` keys and the 5 changed or new ones), and
 `## Not in this flow` (new-member history; files; native pairing).
 
 ### U.6 User docs and README (task D1)
@@ -2521,11 +2577,11 @@ as one line `` `key='value'` `` (37 pairs: the 31 new `history.*` keys and the 6
 
 #### U.7.1 `strings.flow19.test.ts` (W1)
 
-- "strings: every flow-19 copy key equals en.ts byte for byte, and every new key is in the flow": 37 pairs; each equals
+- "strings: every flow-19 copy key equals en.ts byte for byte, and every new key is in the flow": 36 pairs; each equals
   `en`; none matches a `FORBIDDEN` word; every `en` key matching `/^history\./` is listed.
 - "chrome is lower case and notices are sentence case; no exclamation, no reassurance": lower case for
   `history.toggle`, `history.useKey`, `history.restoreAgain`, `history.off.confirm`, `history.key.submit`,
-  `history.banner.open`, `shell.log.emptyRestoring`, `shell.log.emptyHistory`; upper case
+  `history.banner.open`, `shell.log.emptyRestoring`; upper case
   first for every other pair; no pair matches `/!|\bsecure\b|\bsafe\b|\bprotected\b/i`.
 - "the trade-off is said the same way in three places": `history.risk` and `onboarding.keys.history` each contain
   `recovery key` or `this key`, and `history.risk` contains `including old messages`.
@@ -2847,7 +2903,7 @@ every other CBOR route".
 
 ### P.6 `07-versioning.md`
 
-Add the row (S5 writes the placeholder `<release-date>` literally; D2 replaces it with the merge date):
+Add the row (S5 writes the placeholder `<release-date>` literally; D1 replaces it with the merge date):
 
 > | <release-date> | e2ee 1, media 1, wire 2 | **Additive.** Saved message history: `06` § History and § Restore replace the unserved chunk archive and manifest; `03` derives `SK_hist`/`PK_hist`, `K_hauth`, `K_hid` and `K_hdel` from the recovery key and gives browsers the history write keys; `09` § History adds `GET`/`PUT /v1/history`, `POST /v1/history/entries`, `POST /v1/history/entries/delete` and `GET /v1/history/entries`; `02` adds `409 E_HISTORY_STALE`; `vectors/history.json` (frozen from the Rust core). Schema 00024 adds `history_state`, `history_entries` and `history_tombstones`; `migrate down` drops them and every saved history. No version bump |
 
