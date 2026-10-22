@@ -97,3 +97,12 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 	}
 	assertRead(id.ID{})
 }
+
+func TestBotJoinRoleReadRequiresReadyInstallation(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	path := "/v1/communities/" + cid.String() + "/bot-join-role"
+	if status, body := e.Do(http.MethodGet, path, ownerTok, nil); status != http.StatusNotFound {
+		t.Fatalf("read without installation = %d (%x), want 404", status, body)
+	}
+}
