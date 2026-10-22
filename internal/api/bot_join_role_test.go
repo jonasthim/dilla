@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -45,9 +46,35 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot-join-role"
+	assertRead := func(want id.ID) {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, path, ownerTok, nil)
+		if status != http.StatusOK {
+			t.Fatalf("read approved role = %d (%x), want 200", status, body)
+		}
+		var response []any
+		if err := cborx.Unmarshal(body, &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response) != 2 {
+			t.Fatalf("read response = %#v, want two fields", response)
+		}
+		if want.IsZero() {
+			if response[0] != nil {
+				t.Fatalf("approved role = %#v, want null", response[0])
+			}
+		} else if got, ok := response[0].([]byte); !ok || string(got) != string(want[:]) {
+			t.Fatalf("approved role = %#v, want %s", response[0], want)
+		}
+		if got, ok := response[1].([]byte); !ok || string(got) != string(installation.ID[:]) {
+			t.Fatalf("installation = %#v, want %s", response[1], installation.ID)
+		}
+	}
+	assertRead(id.ID{})
 	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), role}); status != http.StatusOK {
 		t.Fatalf("configure approved role = %d (%x), want 200", status, body)
 	}
+	assertRead(role)
 	policy, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID)
 	if err != nil || policy.RoleID != role || policy.ApprovedBy != community.Owner {
 		t.Fatalf("policy = %+v, %v", policy, err)
@@ -61,4 +88,5 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 	if _, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID); err != store.ErrNotFound {
 		t.Fatalf("policy after clear = %v, want not found", err)
 	}
+	assertRead(id.ID{})
 }

@@ -1,12 +1,58 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
+
+func (h *Roles) getBotJoinRole(w http.ResponseWriter, r *http.Request) {
+	cid, actor, err := h.selfRoleCommunity(r, h.repo)
+	if err != nil {
+		h.fail(w, r, "get bot join role", err)
+		return
+	}
+	snap, err := LoadSnapshot(r.Context(), h.repo, cid, actor.UserID, nil)
+	if err != nil {
+		h.fail(w, r, "get bot join role", notFound(err))
+		return
+	}
+	if !snap.Resolve(actor.UserID).Has(PermManageRoles) {
+		h.fail(w, r, "get bot join role", server.Errorf(server.CodeForbidden, "manage_roles required"))
+		return
+	}
+	installation, err := h.repo.GetActiveBotInstallationByCommunity(r.Context(), cid)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil)) {
+		h.fail(w, r, "get bot join role", server.Errorf(server.CodeNotFound, "ready community bot not found"))
+		return
+	}
+	if err != nil {
+		h.fail(w, r, "get bot join role", err)
+		return
+	}
+	bot, err := h.repo.GetUser(r.Context(), *installation.UserID)
+	if err != nil || bot.Kind != 1 {
+		h.fail(w, r, "get bot join role", server.Errorf(server.CodeNotFound, "ready community bot not found"))
+		return
+	}
+	if _, err := h.repo.GetMember(r.Context(), cid, bot.ID); err != nil {
+		h.fail(w, r, "get bot join role", server.Errorf(server.CodeNotFound, "ready community bot not found"))
+		return
+	}
+	policy, err := h.repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(r.Context(), installation.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		_ = server.WriteCBOR(w, http.StatusOK, []any{nil, installation.ID})
+		return
+	}
+	if err != nil {
+		h.fail(w, r, "get bot join role", err)
+		return
+	}
+	_ = server.WriteCBOR(w, http.StatusOK, []any{policy.RoleID, installation.ID})
+}
 
 type botJoinRoleRequest struct {
 	_         struct{} `cbor:",toarray"`

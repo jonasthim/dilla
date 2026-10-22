@@ -47,6 +47,7 @@ func (h *Roles) RegisterSelfRoles(mux *server.Mux) {
 	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/{role_id}", h.selectSelfRole)
 	mux.HandleFunc("PUT /v1/communities/{id}/role-panels", h.registerRolePanel)
 	mux.HandleFunc("PUT /v1/communities/{id}/bot-join-role", h.configureBotJoinRole)
+	mux.HandleFunc("GET /v1/communities/{id}/bot-join-role", h.getBotJoinRole)
 }
 
 func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
