@@ -141,6 +141,28 @@ func TestNewMusicQueueStarterRejectsMissingProviderConfiguration(t *testing.T) {
 	}
 }
 
+func TestMusicQueueStarterIsolatesUnavailableProvider(t *testing.T) {
+	channel, community, group := id.New(), id.New(), id.New()
+	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}}
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{
+		Community: community, Channel: channel, Calls: calls, YouTubePCM: runtimePCM{},
+		Encoder: runtimeEncoder{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("YouTube-only configuration rejected: %v", err)
+	}
+	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:1234567890123456789012"})
+	if err == nil {
+		t.Fatal("Spotify request succeeded without a Spotify PCM provider")
+	}
+	if calls.channel != (id.ID{}) {
+		t.Fatal("unavailable provider triggered a call before failing closed")
+	}
+	if _, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"}); err != nil {
+		t.Fatalf("configured YouTube provider unavailable: %v", err)
+	}
+}
+
 func TestMusicQueueStarterRejectsCallForDifferentChannel(t *testing.T) {
 	calls := &runtimeCalls{call: client.Call{CallID: id.New(), GroupID: id.New(), LiveKitURL: "wss://relay.example", Token: "token"}}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: id.New(), Channel: id.New(), Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: runtimePCM{}, LeaseManager: testLeaseManager(t), Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})

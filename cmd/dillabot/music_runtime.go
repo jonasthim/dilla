@@ -39,7 +39,6 @@ type musicRuntimeDeps struct {
 // metadata-only YouTube resolver provides live audio.
 func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 	if deps.Community.IsZero() || deps.Channel.IsZero() || deps.Calls == nil ||
-		deps.SpotifyPCM == nil || deps.YouTubePCM == nil || deps.LeaseManager == nil ||
 		deps.Encoder == nil || deps.Epochs == nil || deps.Lifetime <= 0 || deps.Lifetime > 30*time.Minute {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
@@ -58,6 +57,12 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		case music.ProviderYouTube:
 			pcm = deps.YouTubePCM
 		default:
+			return session.Options{}, session.ErrInvalid
+		}
+		if pcm == nil {
+			return session.Options{}, session.ErrInvalid
+		}
+		if track.Provider == music.ProviderSpotify && deps.LeaseManager == nil {
 			return session.Options{}, session.ErrInvalid
 		}
 		call, err := deps.Calls.StartCall(ctx, deps.Channel)
