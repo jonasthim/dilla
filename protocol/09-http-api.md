@@ -1629,10 +1629,11 @@ its `hello` frame; an instance that changes `limits.max_ciphertext_bytes` moves 
 Every HTTP response under `/v1` carries `X-Dilla-Generation: <uint>`, so an HTTP-only client notices
 a restore without holding a gateway connection.
 
-A client treats a `401` as "signed out or revoked" only when it carries this header. A `401` without it comes
-from something in front of the instance (a reverse proxy's login page, or its error while the instance is down); it
-says nothing about the session, so the client neither re-authenticates nor signs out, and counts the instance as
-unreachable.
+A `401` without this header comes from something in front of the instance (a reverse proxy's login page, or its
+error while the instance is down) and says nothing about the session. A client treats it as unreachable, not as
+revoked, in three places only: the gateway ticket mint (the gateway probes instead of going idle), the HTTP client's
+re-authentication retry (none is attempted), and `POST /v1/devices/{id}/sessions` during establish (not a refusal, so
+nothing is signed out). Sign-out and the sign-in steps still accept any `401`.
 
 ## Operational endpoints
 
