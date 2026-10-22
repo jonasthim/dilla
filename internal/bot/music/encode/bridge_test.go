@@ -56,6 +56,28 @@ func TestBridgeEncodesPCMToBoundedOpusPackets(t *testing.T) {
 	}
 }
 
+func TestPumpPCMDoesNotOverwriteFragmentedSampleFrames(t *testing.T) {
+	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	var written bytes.Buffer
+	activity := make(chan struct{}, 1)
+	err := pumpPCM(&singleByteReader{source: bytes.NewReader(pcm)}, &written, 2, activity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(written.Bytes(), pcm) {
+		t.Fatalf("fragmented PCM changed: got %v, want %v", written.Bytes(), pcm)
+	}
+}
+
+type singleByteReader struct{ source *bytes.Reader }
+
+func (r *singleByteReader) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return r.source.Read(p)
+}
+
 func TestBridgeRejectsNonInterruptibleSource(t *testing.T) {
 	provider, _ := media.NewLiveOpusProvider(1)
 	err := Bridge(context.Background(), bytes.NewReader(nil), 44100, 2, provider)

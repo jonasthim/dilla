@@ -143,47 +143,8 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 	}
 	pumpErr := make(chan error, 1)
 	go func() {
-		buf := make([]byte, maxPCMReadBytes)
-		frameBytes := channels * 2
-		pending := 0
-		for {
-			n, readErr := pcm.Read(buf[pending:])
-			n += pending
-			if n > pending {
-				if n%frameBytes != 0 {
-					pending = n % frameBytes
-					// Preserve only the incomplete sample frame for the next read.
-					copy(buf[:pending], buf[n-pending:n])
-					n -= pending
-				} else {
-					pending = 0
-				}
-				if n > 0 {
-					if err := writeAll(stdin, buf[:n]); err != nil {
-						pumpErr <- err
-						_ = stdin.Close()
-						return
-					}
-					signal(activity)
-				}
-			}
-			if readErr != nil {
-				if readErr != io.EOF {
-					pumpErr <- readErr
-				} else if pending != 0 {
-					pumpErr <- io.ErrUnexpectedEOF
-				} else {
-					pumpErr <- nil
-				}
-				_ = stdin.Close()
-				return
-			}
-			if n == 0 {
-				pumpErr <- io.ErrNoProgress
-				_ = stdin.Close()
-				return
-			}
-		}
+		pumpErr <- pumpPCM(pcm, stdin, channels, activity)
+		_ = stdin.Close()
 	}()
 
 	checked := &checkedOggReader{source: stdout}
@@ -241,6 +202,40 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 	}
 	_ = provider.CloseInput()
 	return nil
+}
+
+// pumpPCM preserves incomplete interleaved sample frames across short reads.
+// Write the complete prefix before moving the trailing bytes to the front;
+// moving them first corrupts the prefix that is about to be encoded.
+func pumpPCM(source io.Reader, target io.Writer, channels int, activity chan<- struct{}) error {
+	buf := make([]byte, maxPCMReadBytes)
+	frameBytes := channels * 2
+	pending := 0
+	for {
+		read, readErr := source.Read(buf[pending:])
+		total := pending + read
+		complete := total - total%frameBytes
+		if complete > 0 {
+			if err := writeAll(target, buf[:complete]); err != nil {
+				return err
+			}
+			signal(activity)
+		}
+		pending = total - complete
+		copy(buf[:pending], buf[complete:total])
+		if readErr != nil {
+			if readErr != io.EOF {
+				return readErr
+			}
+			if pending != 0 {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		}
+		if read == 0 {
+			return io.ErrNoProgress
+		}
+	}
 }
 
 func validOpusHeader(header *oggreader.OggHeader) bool {
