@@ -199,6 +199,28 @@ export async function botVectors() {
  const admissionSignature = await sign(admissionKey.privateKey,
   concat(new TextEncoder().encode('dilla bot interaction admission v1\0'), admissionPayload));
  const admissionProof = encode([admissionPayload, admissionSignature]);
+ const snapshotSeed=new Uint8Array(32);snapshotSeed[0]=0x41;
+ const snapshotKey=await keyFromSeed(snapshotSeed);
+ const snapshotAdmissionPayload=encode([
+  1n,id(1),id(2),id(3),id(4),id(5),id(6),id(7),id(8),id(9),7n,130n,
+ ]);
+ const snapshotAdmissionSignature=await sign(snapshotKey.privateKey,
+  concat(new TextEncoder().encode('dilla bot interaction admission v1\0'),snapshotAdmissionPayload));
+ const list = (user:number, umk:number, ssk:number, bindingSig:number, blobValue:number,
+  listSig:number, prevHash:number) => {
+  const blob=new Uint8Array([0x82,blobValue,0x01]);
+  const digest=createHash('sha256').update(blob).digest();
+  return [id(user),new Uint8Array(32).fill(umk),new Uint8Array(32).fill(ssk),
+   new Uint8Array(64).fill(bindingSig),3n,blob,new Uint8Array(64).fill(listSig),
+   new Uint8Array(32).fill(prevHash),new Uint8Array(digest)];
+ };
+ const snapshotPayload=encode([1n,id(10),id(1),snapshotAdmissionPayload,snapshotAdmissionSignature,
+  100n,7n,9n,1n,0n,id(2),id(11),snapshotKey.publicKey,
+  [id(2),id(3),id(4),id(5),id(6),id(7),id(8),id(9)],
+  list(5,0x10,0x11,0x12,0x10,0x13,0x14),
+  list(7,0x20,0x21,0x22,0x20,0x23,0x24)]);
+ const snapshotSignature=await sign(snapshotKey.privateKey,
+  concat(new TextEncoder().encode('dilla bot interaction context snapshot v1\0'),snapshotPayload));
  return {version:1,cases,rejects,admission_proof:{
   seed:hex(admissionSeed),public_key:hex(admissionKey.publicKey),
   payload_hex:hex(admissionPayload),proof_hex:hex(admissionProof),
@@ -206,6 +228,7 @@ export async function botVectors() {
   ids:{admission:hex(id(1)),instance:hex(id(2)),installation:hex(id(3)),community:hex(id(4)),
    bot_user:hex(id(5)),bot_device:hex(id(6)),participant_user:hex(id(7)),
    participant_device:hex(id(8)),group:hex(id(9))},
- }};
+ },interaction_context_snapshot:{seed:hex(snapshotSeed),public_key:hex(snapshotKey.publicKey),
+  payload_hex:hex(snapshotPayload),signature_hex:hex(snapshotSignature)}};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}
