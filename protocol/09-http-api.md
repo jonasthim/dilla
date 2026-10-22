@@ -282,6 +282,8 @@ CBOR API request, not a public redirect endpoint.
 | `PUT /v1/communities/{id}/role-panels` | E (manage_roles) | `[request_id, channel_id, message_seq, options]`; each option is `[emoji, role_id]` | `[request_id, option_count]` |
 | `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id, expected_installation_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant; 409 if the active installation changed |
 | `GET /v1/communities/{id}/bot-join-role` | E (manage_roles) | Empty | `[role_id/null, installation_id]` for a ready installation; 404 when none is ready |
+| `GET /v1/communities/{community}/bot/members/{member}/episode` | E (ready Bot session, wire v3, roles capability) | Empty | `[member_id, episode_id]` for the current membership episode; 404 when the member is absent |
+| `POST /v1/communities/{community}/bot/join-role-grants` | E (ready Bot session, wire v3, roles capability) | `[request_id, member_id, episode_id]` | `[request_id, installation_id, community_id, member_id, episode_id, role_id]` immutable grant receipt; 204 when the episode is current but no join role is configured; 404 for a stale episode; repeated identical requests return the same receipt |
 | `PUT /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id, expires_unix]` | `[request_id, expires_unix]` |
 | `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |
 | `GET /v1/communities/{id}/members/{user_id}/timeout` | E (member or moderate_members) | — | `[expires_unix|null]` |

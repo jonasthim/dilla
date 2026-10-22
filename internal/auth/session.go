@@ -1219,6 +1219,14 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		actorID, ok := pathID(r, "actor")
 		return ok && !actorID.IsZero(), nil
+	case "POST /v1/communities/{community}/bot/join-role-grants":
+		return ready && communityPath("community"), nil
+	case "GET /v1/communities/{community}/bot/members/{member}/episode":
+		if !ready || !communityPath("community") {
+			return false, nil
+		}
+		memberID, ok := pathID(r, "member")
+		return ok && !memberID.IsZero(), nil
 	case "POST /v1/bot-runtime/installations/{installation}/keypackages",
 		"GET /v1/bot-runtime/installations/{installation}/keypackages",
 		"GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}":
