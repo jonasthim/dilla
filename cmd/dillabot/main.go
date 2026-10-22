@@ -26,7 +26,6 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -516,8 +515,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
+											handlers := service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID}.Handlers()
 											dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-												map[protocol.Operation]service.InteractionHandlerSpec{}, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+												handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
 										}
 										if interactionErr == nil {
 											runtime := newInteractionEventRuntime(interactionPoller, newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
