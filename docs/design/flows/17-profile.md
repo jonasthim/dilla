@@ -4,7 +4,7 @@
 
 | State | UI |
 |---|---|
-| Settings → profile | the first section of the nav (`settings.nav.profile`); a `Profile` heading (`profile.title`), the line `profile.body`, then three fields: `profile.display.label`, `profile.status.label` (hint `profile.status.hint`) and `profile.bio.label` (a several-line field, hint `profile.bio.hint`), and `profile.save` |
+| Settings → profile | the first section of the nav (`settings.nav.profile`); a `Profile` heading (`profile.title`), the line `profile.body`, then three fields: `profile.display.label`, `profile.status.label` (hint `profile.status.hint`, then `profile.serverReads`) and `profile.bio.label` (a several-line field, hint `profile.bio.hint`, then `profile.serverReads`), and `profile.save` |
 | nothing changed | `profile.save` is disabled |
 | something changed | `profile.save` is enabled; only the changed fields are sent, and an empty one clears the field |
 | a stored display name that fails the rule (it was kept from before) | no error: a field is checked only when it has been changed, so status and bio save as usual |
@@ -47,6 +47,7 @@ Opening the section focuses its heading (as every settings section). A refused s
 `profile.status.hint='One line, up to 190 characters.'`
 `profile.bio.label='bio'`
 `profile.bio.hint='Up to 500 characters. Shown on your profile card.'`
+`profile.serverReads='The server can read this, like your display name.'` (web3.12.1: a second quiet hint line under the status message and the bio, in the field's description after the hint)
 `profile.save='save'`
 `profile.saved='Profile saved'`
 `profile.error.display='Enter a display name.'`

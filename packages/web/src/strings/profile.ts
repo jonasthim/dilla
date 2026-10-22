@@ -7,6 +7,7 @@ export const profile = {
   'profile.status.hint': 'One line, up to 190 characters.',
   'profile.bio.label': 'bio',
   'profile.bio.hint': 'Up to 500 characters. Shown on your profile card.',
+  'profile.serverReads': 'The server can read this, like your display name.',
   'profile.save': 'save',
   'profile.saved': 'Profile saved',
   'profile.error.display': 'Enter a display name.',

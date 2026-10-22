@@ -47,6 +47,18 @@ export function signedHeadList(head: Uint8Array): Uint8Array {
   try { return bin(arr(decode(head), 4)[1]); } catch { return stale(); }
 }
 
+/**
+ * The rows of a history read by readDeviceListHistory from `version` on, or null when it holds none. The core anchors an
+ * ingest on the list it caches (trust.rs ingest_leaf: the first row is the cached version), so once one leaf's ingest
+ * cached a newer version, the user's other leaves are ingested from that version, not from where the read began.
+ */
+export function historyFrom(history: Uint8Array, version: bigint): Uint8Array | null {
+  try {
+    const rows = decodeBoundedArray(history, MAX_VERSIONS).filter((row) => u64(arr(row, 4)[0]) >= version);
+    return rows.length === 0 ? null : encode(rows);
+  } catch { return null; }
+}
+
 /** The server supplies bytes; the Rust core authenticates all signatures and leaf evidence. */
 export async function readDeviceListHistory(routes: ReaderRoutes, userId: Id, cachedVersion: bigint): Promise<{ head: Uint8Array; history: Uint8Array }> {
   if (!(userId instanceof Uint8Array) || userId.length !== 16 || cachedVersion < 0n) stale();

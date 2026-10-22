@@ -31,6 +31,17 @@ describe('Settings → Profile', () => {
     expect(screen.getByText(t('profile.body'))).toBeInTheDocument();
   });
 
+  it('web3.12.1: under the status message and the bio a quiet line says the server can read them, in each field\'s description', () => {
+    setup();
+    const line = t('profile.serverReads');
+    expect(line).toBe('The server can read this, like your display name.');
+    expect(screen.getAllByText(line)).toHaveLength(2);
+    for (const p of screen.getAllByText(line)) expect(p).toHaveClass('d-text-field__hint');
+    expect(status()).toHaveAccessibleDescription(`${t('profile.status.hint')} ${line}`);
+    expect(bio()).toHaveAccessibleDescription(`${t('profile.bio.hint')} ${line}`);
+    expect(display()).not.toHaveAccessibleDescription(expect.stringContaining(line));
+  });
+
   it('falls back to the username while the display name is not known yet', () => {
     const fake = new FakeClient();
     fake.set('account', account());

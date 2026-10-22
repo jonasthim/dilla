@@ -69,25 +69,27 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel, des
     opener.current = null;
     target?.focus();
   };
-  // The <dialog> element is opened and closed from this effect. The browser's own focus return on close() covers only
-  // an opener still in the document and a dialog that stays mounted, so the return target is resolved here instead.
-  // This effect runs after the children's, so a marked element inside wins over the dialog itself.
-  // The opener is read in a layout effect, before any child's effect can move focus into the still-closed dialog.
+  // The <dialog> element is opened in the effect below and closed in this layout effect. The browser's own focus return
+  // on close() covers only an opener still in the document and a dialog that stays mounted, so the return target is
+  // resolved here instead. The opener is read here too, before any child's effect can move focus into the still-closed dialog.
+  // The close runs in the commit that empties the dialog: a passive effect left an open <dialog> with nothing in it
+  // until React's next task, and an Escape landing there was that empty dialog's cancel, so a settings frame under it
+  // stayed open.
   useLayoutEffect(() => {
-    const el = ref.current; if (!el || !open || el.open) return;
+    const el = ref.current; if (!el) return;
+    if (!open) { if (el.open) { provisional.current = null; giveBack(el); } return; }
+    if (el.open) return;
     const active = document.activeElement;
     opener.current = active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : null;
-  }, [open]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  // This effect runs after the children's, so a marked element inside wins over the dialog itself.
   useEffect(() => {
-    const el = ref.current; if (!el) return;
-    if (open && !el.open) {
-      el.showModal();
-      const target = marked(el);
-      const start = target ?? (initialFocus === 'close' ? el.querySelector<HTMLElement>('.d-dialog__footer button') : null) ?? el;
-      start.focus();
-      provisional.current = target === null ? start : null;
-    }
-    if (!open && el.open) { provisional.current = null; giveBack(el); }
+    const el = ref.current; if (!el || !open || el.open) return;
+    el.showModal();
+    const target = marked(el);
+    const start = target ?? (initialFocus === 'close' ? el.querySelector<HTMLElement>('.d-dialog__footer button') : null) ?? el;
+    start.focus();
+    provisional.current = target === null ? start : null;
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   // After every render while open: a marked element that has just arrived takes over a provisional start, once.
   useEffect(() => {

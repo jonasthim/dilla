@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, it, expect, vi } from 'vitest';
@@ -113,6 +114,22 @@ describe('SettingsFrame', () => {
     rerender(<SettingsFrame {...p} open={false} />);
     expect(close).toHaveBeenCalledTimes(1);
     close.mockRestore();
+  });
+
+  it('closes the native dialog in the commit that empties it, before any passive effect runs', () => {
+    // As Dialog's: a later sibling's layout effect sees what a key event before React's next task would meet.
+    const seen: string[] = [];
+    function Probe({ open }: { open: boolean }) {
+      useLayoutEffect(() => {
+        const el = document.querySelector('dialog');
+        seen.push(`${String(open)}:${String(el?.open)}:${String(el?.childElementCount)}`);
+      }, [open]);
+      return null;
+    }
+    const p = props();
+    const { rerender } = render(<><SettingsFrame {...p} /><Probe open /></>);
+    rerender(<><SettingsFrame {...p} open={false} /><Probe open={false} /></>);
+    expect(seen.at(-1)).toBe('false:false:0');
   });
 
   it('renders no content while closed', () => {

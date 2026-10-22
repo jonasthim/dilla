@@ -1069,10 +1069,11 @@ remove this browser" and "forget this browser"](screenshots/settings-devices.png
   "This device signed in with your password but is not in the device list, so it cannot read anything.
   Removing it needs no recovery key."
 - **rename**: every device that is not removed has one. "Name this device" starts this browser on a suggestion such as
-  "Firefox on Linux" and another device on its current name; **Save** stores it, and saving an empty field clears the
-  name. A named device shows its name with the first eight characters of its id beside it, and the remove dialogs show
-  both. The name is stored readable by the server, which could change it, so check a device by its id before you
-  remove it. Your other devices see the new name after **refresh**.
+  "Firefox on Linux" and another device on its current name. Under the field, "The server can change it, so check a
+  device by its id before you remove it." and a quiet line "The server can read this, like your display name."
+  **Save** stores it (up to 64 characters), and saving an empty field clears the name. A named device shows its name
+  with the first eight characters of its id beside it, and the remove dialogs show both. Your other devices see the
+  new name after **refresh**.
 - **sign out and remove this browser**: "This browser is removed from your account and its data here is
   cleared. You can sign in again later with your password and recovery key. Enter the key to confirm."
   **Sign out** removes it and reloads to the first page.
@@ -1310,7 +1311,8 @@ profile card. If the save fails, "Could not save your profile. Try again." shows
 
 The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
 breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
-and are not end-to-end encrypted: do not put anything in them that the host should not read. There is no picture yet.
+and are not end-to-end encrypted: do not put anything in them that the host should not read. A quiet line under each
+of the two fields says so: "The server can read this, like your display name." There is no picture yet.
 Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers

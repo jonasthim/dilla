@@ -7,6 +7,8 @@ export interface TextFieldProps {
   onChange(value: string): void;
   type?: 'text' | 'password';
   hint?: string;
+  /** A second quiet line under the hint, in the same style (who can read the value, say); part of the description. */
+  note?: string;
   error?: string;
   required?: boolean;
   disabled?: boolean;
@@ -24,16 +26,17 @@ export interface TextFieldProps {
 }
 
 /**
- * A labelled single-line field (several lines with `multiline`). The hint and the error are the input's
+ * A labelled single-line field (several lines with `multiline`). The hint, the note and the error are the input's
  * description, in that order; an error marks the field invalid and is
  * announced as an alert. Paste, copy and cut are never intercepted (WCAG 3.3.8).
  */
 export function TextField({
-  id, label, value, onChange, type, hint, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, multiline, rows, initialFocus,
+  id, label, value, onChange, type, hint, note, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, multiline, rows, initialFocus,
 }: TextFieldProps) {
   const hintId = `${id}-hint`;
+  const noteId = `${id}-note`;
   const errorId = `${id}-error`;
-  const described = [hint ? hintId : null, error ? errorId : null].filter((x): x is string => x !== null);
+  const described = [hint ? hintId : null, note ? noteId : null, error ? errorId : null].filter((x): x is string => x !== null);
   const describedBy = described.length > 0 ? described.join(' ') : undefined;
   return (
     <div className="d-text-field" data-invalid={error ? 'true' : undefined}>
@@ -52,6 +55,7 @@ export function TextField({
           data-autofocus={initialFocus ? '' : undefined} />
       )}
       {hint ? <p id={hintId} className="d-text-field__hint">{hint}</p> : null}
+      {note ? <p id={noteId} className="d-text-field__hint">{note}</p> : null}
       {error ? <p id={errorId} className="d-text-field__error" role="alert">{error}</p> : null}
     </div>
   );

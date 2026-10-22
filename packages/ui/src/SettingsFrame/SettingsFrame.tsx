@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SettingsFrame.css';
@@ -37,7 +37,11 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
   useEffect(() => {
     const el = ref.current; if (!el) return;
     if (open && !el.open) { if (modeless) el.show(); else el.showModal(); titleRef.current?.focus(); }
-    if (!open && el.open) el.close();
+  }, [open]);
+  // The close runs in the commit that empties the frame (as Dialog's does), so no key event meets an open, empty frame.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open && el.open) el.close();
   }, [open]);
   // A frame torn down while open still hands focus back.
   useEffect(() => {
