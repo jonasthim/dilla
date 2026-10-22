@@ -11,8 +11,29 @@ use openmls_traits::OpenMlsProvider;
 use rusqlite::params;
 use tls_codec::Deserialize as _;
 
+const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = 5;
+
 fn rejected() -> ClientError {
     ClientError::new(E_CORE_INPUT, "interaction group creation evidence rejected")
+}
+
+fn snapshot_is_fresh(snapshot_now: u64, not_after: u64, local_now: u64) -> bool {
+    snapshot_now <= local_now.saturating_add(INTERACTION_CLOCK_TOLERANCE_SECS)
+        && not_after > local_now.saturating_sub(INTERACTION_CLOCK_TOLERANCE_SECS)
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::snapshot_is_fresh;
+
+    #[test]
+    fn freshness_allows_only_five_seconds_of_shared_host_clock_skew() {
+        assert!(snapshot_is_fresh(105, 106, 100));
+        assert!(!snapshot_is_fresh(106, 200, 100));
+        assert!(snapshot_is_fresh(90, 96, 100));
+        assert!(!snapshot_is_fresh(90, 95, 100));
+        assert!(!snapshot_is_fresh(90, 94, 100));
+    }
 }
 
 impl ClientCore {
@@ -21,6 +42,9 @@ impl ClientCore {
     /// participant is Added and merged. Its authenticated v2 context and exact roster are checked
     /// before app group or upload-intent rows are written. The outer storage unit also contains
     /// every nested OpenMLS provider transaction, so a rejected candidate leaves no MLS state.
+    /// The caller must serialize operations for this Bot identity: snapshot trust pins are read
+    /// before the write unit, and a second `ClientCore` sharing this store must not mutate them
+    /// concurrently between verification and candidate creation.
     pub fn bot_interaction_group_create(
         &mut self,
         operation_id: &[u8; 16],
@@ -46,20 +70,35 @@ impl ClientCore {
             ));
         }
 
-        // This is a read-only verification against the persisted instance key and both signed
-        // device-list pins. It runs before the write unit; no caller-supplied roster is accepted.
-        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        // The durable exact-input check precedes freshness checks so a completed request remains
+        // replayable after its signed snapshot expires. A conflicting reuse still fails the hash.
         let intent = bot_intents::write(operation_id, scope.installation_id, 2, |e| {
-            e.array(4)
+            // Bind the complete Expected tuple as well as the signed proof and real KeyPackage.
+            e.array(14)
                 .bytes(group_id)
                 .bytes(snapshot_wire)
+                .bytes(expected.instance.as_bytes())
+                .bytes(expected.installation.as_bytes())
+                .bytes(expected.community.as_bytes())
+                .bytes(expected.bot_user.as_bytes())
+                .bytes(expected.bot_device.as_bytes())
+                .bytes(expected.participant_user.as_bytes())
+                .bytes(expected.participant_device.as_bytes())
                 .bytes(expected.group.as_bytes())
+                .uint(expected.minimum_eligibility_revision)
+                .uint(expected.server_now)
+                .uint(expected.policy_version)
                 .bytes(participant_key_package);
         })?;
         if let Some(result) = bot_intents::retry(self, intent, group_id)? {
             return Ok(result);
         }
         bot_intents::ensure_no_pending_for_group(self, group_id)?;
+
+        // This is a read-only verification against the persisted instance key and both signed
+        // device-list pins. New creates must also be fresh against the shared host clock; caller
+        // supplied server_now is bound to the snapshot but is not itself a clock authority.
+        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
         if self
             .read(|c| super::groups::group_row(c, group_id))?
             .is_some()
@@ -101,6 +140,16 @@ impl ClientCore {
             };
             let key_package = crate::public_group::validate_key_package(ctx.provider.crypto(), input)
                 .map_err(|_| rejected())?;
+
+            // Re-sample after acquiring the outer write transaction, immediately before the
+            // first provider mutation, so lock contention cannot admit an expired snapshot.
+            let local_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| rejected())?
+                .as_secs();
+            if !snapshot_is_fresh(snapshot.now, snapshot.not_after, local_now) {
+                return Err(rejected());
+            }
 
             let mut candidate = DillaGroup::create_interaction(
                 ctx.provider,

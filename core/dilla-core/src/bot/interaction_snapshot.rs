@@ -1,7 +1,7 @@
 //! Verification of the signed, read-only interaction context transport snapshot.
 //!
-//! This does not authenticate an MLS roster or enable group creation. That requires the native
-//! candidate-group inspection boundary, which is intentionally still unavailable.
+//! This verifies only the signed snapshot, admission proof, and device lists. The native
+//! transaction-local create path must still authenticate the actual MLS context and roster.
 
 use crate::{
     cbor::{Decoder, decode_strict},
@@ -40,6 +40,8 @@ pub struct Snapshot {
     pub admission_id: MsgId,
     pub admission_payload: Vec<u8>,
     pub admission_signature: [u8; 64],
+    /// Exclusive admission expiry recovered from the instance-signed proof.
+    pub not_after: u64,
     pub now: u64,
     pub min_revision: u64,
     pub policy: u64,
@@ -132,6 +134,8 @@ pub fn verify(
     if admission.admission != s.admission_id {
         return Err(CodecError::Context);
     }
+    let mut s = s;
+    s.not_after = admission.not_after;
     validate_list(&s.bot)?;
     validate_list(&s.participant)?;
     Ok(s)
@@ -191,6 +195,7 @@ fn decode_payload(payload: &[u8]) -> Result<Snapshot, CodecError> {
             admission_id,
             admission_payload,
             admission_signature,
+            not_after: 0,
             now,
             min_revision,
             policy,

@@ -906,21 +906,15 @@ mod interaction_snapshot_tests {
                 tests::{make_snapshot, signed_list},
             },
         },
-        ids::{CommunityId, DeviceId, MsgId},
-        mls::{
-            CIPHERSUITE, ConnHandle, DILLA_BINDING, DillaInteractionBinding, build_key_package,
-            leaf_capabilities,
-        },
+        ids::{DeviceId, MsgId},
+        mls::{CIPHERSUITE, ConnHandle, build_key_package},
     };
     use ed25519_dalek::SigningKey;
-    use openmls::extensions::{Extension, RequiredCapabilitiesExtension};
-    use openmls::prelude::{
-        BasicCredential, CredentialType, Extensions, GroupContext, GroupId, MlsGroup,
-        MlsGroupCreateConfig,
-    };
+    use openmls::prelude::{BasicCredential, GroupId, MlsGroup, MlsMessageOut};
     use openmls_basic_credential::SignatureKeyPair;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
+    use tls_codec::Serialize;
 
     const INSTANCE: [u8; 16] = [0x11; 16];
     const COMMUNITY: [u8; 16] = [0x22; 16];
@@ -937,6 +931,27 @@ mod interaction_snapshot_tests {
     }
     fn counts(c: &Connection) -> (i64, i64, i64, i64) {
         c.query_row("SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents),(SELECT count(*) FROM app_bot_keypackage_intents),(SELECT count(*) FROM app_meta WHERE k LIKE 'bot_welcome/v1/%')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
+    }
+    fn openmls_row_count(c: &Connection) -> i64 {
+        let mut statement = c
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'openmls_%'")
+            .unwrap();
+        let tables = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        tables
+            .into_iter()
+            .try_fold(0_i64, |total, table| {
+                let quoted = table.replace('"', "\"\"");
+                let count =
+                    c.query_row(&format!("SELECT count(*) FROM \"{quoted}\""), [], |row| {
+                        row.get::<_, i64>(0)
+                    })?;
+                Ok::<_, rusqlite::Error>(total + count)
+            })
+            .unwrap()
     }
 
     #[test]
@@ -1026,7 +1041,7 @@ mod interaction_snapshot_tests {
     }
 
     #[test]
-    fn stored_interaction_inspector_accepts_authenticated_two_leaf_group_read_only() {
+    fn interaction_create_authenticates_two_leaves_and_retries_after_expiry() {
         let connection = conn();
         let instance_key = SigningKey::from_bytes(&[42; 32]);
         let mut core = ClientCore::open(connection.clone()).unwrap();
@@ -1125,6 +1140,10 @@ mod interaction_snapshot_tests {
             c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,1,?2,?3,?4,NULL)", rusqlite::params![HUMAN_USER.as_slice(), participant_blob, participant_umk.public().as_slice(), participant_ssk.public().as_slice()]).unwrap();
         }
 
+        let fixture_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let expected = Expected {
             instance: mid(INSTANCE),
             installation: mid(INSTALLATION),
@@ -1135,7 +1154,7 @@ mod interaction_snapshot_tests {
             participant_device: mid(HUMAN_DEVICE),
             group: mid([0x99; 16]),
             minimum_eligibility_revision: 11,
-            server_now: 100,
+            server_now: fixture_now,
             policy_version: 3,
         };
         let wire = make_snapshot(
@@ -1143,46 +1162,9 @@ mod interaction_snapshot_tests {
             &bot_snapshot_list,
             &participant_snapshot_list,
             &instance_key,
-            101,
+            fixture_now + 8,
         );
-        let binding = DillaInteractionBinding {
-            instance_id: crate::ids::InstanceId::from_bytes(INSTANCE),
-            bot_user_id: BOT_USER,
-            installation_id: INSTALLATION,
-            community_id: CommunityId::from_bytes(COMMUNITY),
-            participant_user_id: HUMAN_USER,
-            participant_device_id: DeviceId::from_bytes(HUMAN_DEVICE),
-            policy_version: 3,
-            e2ee_version: 1,
-            media_version: 0,
-        };
-        let extensions = Extensions::<GroupContext>::try_from(vec![
-            Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
-                &[DILLA_BINDING],
-                &[],
-                &[CredentialType::Basic],
-            )),
-            binding.to_extension(),
-        ])
-        .unwrap();
-        let config = MlsGroupCreateConfig::builder()
-            .ciphersuite(CIPHERSUITE)
-            .use_ratchet_tree_extension(false)
-            .with_group_context_extensions(extensions)
-            .capabilities(leaf_capabilities())
-            .build();
         let group_id = GroupId::from_slice(expected.group.as_bytes());
-        let mut group = MlsGroup::new_with_group_id(
-            &core.provider,
-            core.signer.as_ref().unwrap(),
-            &config,
-            group_id.clone(),
-            openmls::prelude::CredentialWithKey {
-                credential: BasicCredential::new(credential_bytes.clone()).into(),
-                signature_key: core.signer.as_ref().unwrap().public().into(),
-            },
-        )
-        .unwrap();
         let kp = build_key_package(
             &core.provider,
             &participant_signer,
@@ -1193,19 +1175,126 @@ mod interaction_snapshot_tests {
             false,
         )
         .unwrap();
-        group
-            .add_members(
-                &core.provider,
-                core.signer.as_ref().unwrap(),
-                &[kp.key_package().clone()],
+        let kp_wire = MlsMessageOut::from(kp.key_package().clone())
+            .tls_serialize_detached()
+            .unwrap();
+        let operation = [0x98; 16];
+        let created = core
+            .bot_interaction_group_create(
+                &operation,
+                expected.group.as_bytes(),
+                &wire,
+                &expected,
+                &kp_wire,
             )
             .unwrap();
-        group.merge_pending_commit(&core.provider).unwrap();
-        drop(group);
-        connection.lock().unwrap().execute(
-            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,3,?2,?3,2)",
-            rusqlite::params![expected.group.as_bytes().as_slice(), COMMUNITY.as_slice(), HUMAN_USER.as_slice()],
-        ).unwrap();
+        let result_fields = crate::cbor::decode_strict(&created, |d| {
+            d.array(5)?;
+            Ok((
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+            ))
+        })
+        .unwrap();
+        assert_eq!(result_fields.0, expected.group.as_bytes());
+        assert!(result_fields.1.len() > 0 && result_fields.2.len() > 0);
+        assert!(result_fields.3.len() > 0 && result_fields.4.len() > 0);
+
+        std::thread::sleep(std::time::Duration::from_secs(14));
+        let replay = core
+            .bot_interaction_group_create(
+                &operation,
+                expected.group.as_bytes(),
+                &wire,
+                &expected,
+                &kp_wire,
+            )
+            .expect("exact operation replay survives snapshot expiry");
+        assert_eq!(replay, created);
+        let mut changed_time = expected.clone();
+        changed_time.server_now = fixture_now + 9;
+        assert_eq!(
+            core.bot_interaction_group_create(
+                &operation,
+                expected.group.as_bytes(),
+                &wire,
+                &changed_time,
+                &kp_wire,
+            )
+            .expect_err("changed Expected server time conflicts on operation reuse")
+            .code,
+            E_CORE_STATE
+        );
+        let mut conflicting_expected = expected.clone();
+        conflicting_expected.participant_user = mid([0x79; 16]);
+        assert_eq!(
+            core.bot_interaction_group_create(
+                &operation,
+                expected.group.as_bytes(),
+                &wire,
+                &conflicting_expected,
+                &kp_wire,
+            )
+            .expect_err("reused operation with changed expected tuple conflicts")
+            .code,
+            E_CORE_STATE
+        );
+
+        let app_counts: (i64, i64) = connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(app_counts, (1, 1));
+        let group = MlsGroup::load(core.provider.storage(), &group_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.epoch().as_u64(), 1);
+        assert_eq!(group.members().count(), 2);
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for (group_bytes, snapshot_now, expiry) in [
+            ([0xa1; 16], current_time - 100, current_time - 99),
+            ([0xa2; 16], current_time + 100, current_time + 200),
+        ] {
+            let mut stale_expected = expected.clone();
+            stale_expected.group = mid(group_bytes);
+            stale_expected.server_now = snapshot_now;
+            let stale_wire = make_snapshot(
+                &stale_expected,
+                &bot_snapshot_list,
+                &participant_snapshot_list,
+                &instance_key,
+                expiry,
+            );
+            let before_counts = counts(&connection.lock().unwrap());
+            let before_openmls = openmls_row_count(&connection.lock().unwrap());
+            assert!(
+                core.bot_interaction_group_create(
+                    &[group_bytes[0]; 16],
+                    &group_bytes,
+                    &stale_wire,
+                    &stale_expected,
+                    &kp_wire,
+                )
+                .is_err()
+            );
+            assert_eq!(counts(&connection.lock().unwrap()), before_counts);
+            assert_eq!(
+                openmls_row_count(&connection.lock().unwrap()),
+                before_openmls
+            );
+        }
 
         let before = counts(&connection.lock().unwrap());
         let admission = core
