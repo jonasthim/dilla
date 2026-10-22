@@ -63,9 +63,15 @@ const OUTAGE_LINES: RegExp[] = [
   /^(Failed to fetch \{room: .*ConnectionError: Failed to fetch|NetworkError when attempting to fetch resource\. JSHandle@object$)/s,
   /^room connection has timed out \(signal\) (\{room: |JSHandle@object$)/,
   /^requested room does not exist (\{room: .*ConnectionError: requested room does not exist|JSHandle@object$)/s,
+  // UP7b: a reconnect that reaches the restarted API (or SFU) sooner can be told to leave by the SFU, which no longer holds
+  // that participant; livekit-client logs it and ends the room, and the page rejoins through a start.
+  /^Received leave request while trying to \(re\)connect (\{room: .*ConnectionError: Received leave request|JSHandle@object$)/s,
   // The peer connection an outage or the SFU's restart closed takes its data channels with it.
   /^DataChannel error on (lossy|reliable): User-Initiated Abort, reason= ?(\{room: |JSHandle@object$)/,
   /^publisher data channel '[A-Z_]+' closed unexpectedly ?(\{room: |JSHandle@object$)/,
+  // UP7b: with the instance noticed within 2 s, the peers come back almost together, and livekit-client logs a track whose
+  // publication reached it before that participant's own join update (it adds the track once the participant arrives).
+  /^Tried to add a track for a participant, that's not present\. Sid: PA_[A-Za-z0-9]+ ?(\{room: |JSHandle@object$)/,
 ];
 
 interface Peer { name: typeof NAMES[number]; person: Person; device: string; requests: UpgradeRecord['requests'] }
@@ -351,13 +357,17 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const sinceAnswer = peers.map((_, i) => Math.round(back[i] - answerAt));
       // The first one back resumes within 5 s: from its join (phase joining) to its session connected, with no wait on a
       // standing Remove (the original bug: a join that waited REJOIN_WAIT_MS on E_REMOVE_PENDING and gave up). When it
-      // starts that join after the instance answers is the page's recovery backoff or its gateway's reconnect (R-UP8, both
-      // capped at 30 s): measured from the answer, and bounded by 30 s for every device.
+      // starts that join after the instance answers is its gateway's probe (UP7b, about 2 s) and the page's immediate
+      // attempt once online (R-UP8): the first is bounded by 5 s from the answer below, every device by 30 s.
       const first = order[0];
       const joiningAt = (await history(pages[first])).calls.slice(callsFrom[first]).find((c) => c.phase === 'joining')?.at ?? Number.NaN;
       const resumeMs = Math.round(back[first] - joiningAt);
       timings['A2.firstResumeMs'] = resumeMs;
       expect(resumeMs, `the first back (${peers[first].name}) resumes within 5 s of starting its join`).toBeLessThanOrEqual(5000);
+      // UP7b (R-UP8): the gateway probes an unreachable instance about every 2 s and reconnects on its first answer, and the
+      // page's recovery attempts at once when the gateway is online: the first device is back within 5 s of the answer.
+      timings['A2.firstBackSinceAnswerMs'] = sinceAnswer[first];
+      expect(sinceAnswer[first], `the first back (${peers[first].name}) is back within 5 s of the API answering`).toBeLessThanOrEqual(5000);
       for (const i of order) expect(sinceAnswer[i], `${peers[i].name} is back within 30 s of the instance answering`).toBeLessThanOrEqual(30_000);
       expect(Math.max(...sinceAnswer), 'all three are back within 90 s of the API answering').toBeLessThanOrEqual(90_000);
       await allHear();

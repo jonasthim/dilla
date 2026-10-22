@@ -1497,6 +1497,19 @@ export class Controller {
           return minted.ticket;
         },
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
+        // UP7b (R-UP8): while the instance cannot be reached, the gateway probes it with one plain GET /v1/instance (no
+        // retry, bounded by the probe interval). Any answer of the instance counts, a 401 included; a proxy's 502, 503
+        // or 504 and a network failure do not.
+        probe: async () => {
+          try {
+            const response = await this.deps.fetch(`${this.deps.origin}/v1/instance`, { method: 'GET', cache: 'no-store',
+              credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(GATEWAY.probeMs) });
+            try { await response.body?.cancel(); } catch { /* nothing to read */ }
+            return response.status < 502 || response.status > 504;
+          } catch {
+            return false;
+          }
+        },
       });
       this.gateway = gateway;
       gateway.subscribe((e) => { this.onGateway(e); });

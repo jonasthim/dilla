@@ -1241,3 +1241,23 @@ describe('UP7 fix round 1', () => {
     expect(h.started).toHaveLength(1);
   });
 });
+
+describe('UP7b: the instance answering again', () => {
+  it('after a 10-minute outage, the held restore attempts within 100 ms of the instance answering, whatever its backoff', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    for (let i = 0; i < 400; i++) h.failures.push(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK', status: 0, retryAfterMs: null }));
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    await advance(600_000);
+    // Backed off to 30 s apart: the next attempt of its own would be up to 30 s away.
+    await advance(1_000);
+    const before = h.started.length;
+    h.failures.length = 0;
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    await advance(100);
+    expect(h.started).toHaveLength(before + 1);
+    await until(() => h.v.session !== null, 1_000);
+    expect(h.v.notice).toBeNull();
+  });
+});

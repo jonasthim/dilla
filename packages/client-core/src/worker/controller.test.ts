@@ -1565,6 +1565,32 @@ it('ignores incoming typing frames after an open channel loses membership', asyn
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
 });
 
+// UP7b (R-UP8): the gateway's outage probe is one plain GET /v1/instance, no retry: any answer from the instance counts
+// (a 401 too), while a proxy's 502, 503 or 504 and a network failure do not.
+it('the outage probe asks /v1/instance once and counts any answer of the instance', async () => {
+  let status = 200;
+  let fail = false;
+  const asked: string[] = [];
+  const fetchFn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    asked.push(`${init?.method ?? 'GET'} ${input instanceof Request ? input.url : input.toString()}`);
+    return fail ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(new Response(null, { status }));
+  }) as unknown as typeof fetch;
+  const w = world({ fetch: fetchFn });
+  await toReady(w);
+  const deps = w.gatewayDeps.value!;
+  const probe = (): Promise<boolean> => deps.probe!();
+  asked.length = 0;
+  expect(await probe()).toBe(true);
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toMatch(/^GET .*\/v1\/instance$/);
+  status = 401;
+  expect(await probe()).toBe(true);
+  for (const s of [502, 503, 504]) { status = s; expect(await probe()).toBe(false); }
+  fail = true;
+  expect(await probe()).toBe(false);
+  expect(asked).toHaveLength(6);
+});
+
 // expires_ts is on the instance's clock (L-HTTP-96: now + 10 s there). Read against this browser's clock, a lagging
 // instance made every indicator expire on arrival (task 10: the test host's clock lags, so no browser ever showed one).
 it('reads a typing expiry on the instance clock and holds it at most the relay window here', async () => {

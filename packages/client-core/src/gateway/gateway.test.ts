@@ -135,7 +135,7 @@ class FakeSocket {
 
 const flush = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness(opts: { random?: number; mint?: () => Promise<string> } = {}) {
+function harness(opts: { random?: number; mint?: () => Promise<string>; probe?: () => Promise<boolean> } = {}) {
   const clock = new FakeClock();
   const events: GatewayEvent[] = [];
   let minted = 0;
@@ -150,6 +150,7 @@ function harness(opts: { random?: number; mint?: () => Promise<string> } = {}) {
     random: () => opts.random ?? 0,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
+    ...(opts.probe !== undefined ? { probe: opts.probe } : {}),
   };
   const gw = new Gateway(deps);
   gw.subscribe((e) => events.push(e));
@@ -181,7 +182,7 @@ beforeEach(() => {
 describe('Gateway connect', () => {
   it('pins the timing constants', () => {
     expect(GATEWAY).toEqual({ heartbeatMaxMs: 15000, ackTimeoutMs: 10000, helloTimeoutMs: 15000,
-      reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500 });
+      reconnectBaseMs: 500, reconnectCapMs: 30000, reconnectJitterMs: 500, probeMs: 1500, probeJitterMs: 500 });
     expect(CLIENT_CLOSE).toEqual({ normal: 1000, version: 4006, helloTimeout: 4100, heartbeatTimeout: 4101,
       undecodable: 4102, tooLarge: 4109 });
   });
@@ -809,5 +810,58 @@ describe('Gateway revocation and stop', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// UP7b (R-UP8): an instance that comes back after a long outage is noticed within about 2 s, not at the end of a 30 s
+// reconnect backoff. While the instance cannot be reached (a ticket mint with no answer), a cheap probe runs every
+// probeMs plus jitter; its first answer reconnects at once. A refusal the instance answers (a 503) keeps the backoff.
+describe('UP7b: the outage probe', () => {
+  const unreachable = () => new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: '', retryAfterMs: null, extra: [] });
+
+  it('after a long outage, the instance answering is noticed within 2 s and the gateway reconnects at once', async () => {
+    let up = false;
+    let probes = 0;
+    const h = harness({
+      mint: () => (up ? Promise.resolve('t') : Promise.reject(unreachable())),
+      probe: () => { probes += 1; return Promise.resolve(up); },
+    });
+    h.gw.start();
+    // Ten minutes down: the backoff has reached its 30 s cap.
+    for (let t = 0; t < 600_000; t += 100) { h.clock.advance(100); await flush(); }
+    expect(h.gw.status).toBe('waiting');
+    expect(FakeSocket.instances).toHaveLength(0);
+    // Probes are cheap and spaced: about one per probeMs, never a burst.
+    expect(probes).toBeGreaterThan(300);
+    expect(probes).toBeLessThanOrEqual(600_000 / GATEWAY.probeMs + 1);
+    up = true;
+    const answered = h.clock.now;
+    while (FakeSocket.instances.length === 0 && h.clock.now - answered < 5_000) { h.clock.advance(50); await flush(); }
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.clock.now - answered).toBeLessThanOrEqual(GATEWAY.probeMs + GATEWAY.probeJitterMs);
+    expect(GATEWAY.probeMs + GATEWAY.probeJitterMs).toBeLessThanOrEqual(2_000);
+  });
+
+  it('the probe is jittered, so many clients do not probe in step', async () => {
+    const delays = new Set<number>();
+    for (const r of [0, 0.5, 0.99]) {
+      FakeSocket.instances = [];
+      const h = harness({ random: r, mint: () => Promise.reject(unreachable()), probe: () => Promise.resolve(false) });
+      h.gw.start();
+      for (let i = 0; i < 6; i++) { h.clock.advance(h.clock.pending()[0] ?? 0); await flush(); }
+      delays.add(h.clock.pending()[0] ?? -1);
+    }
+    expect(delays.size).toBe(3);
+  });
+
+  it('a refusal the instance answered (503) keeps the ordinary backoff and runs no probe', async () => {
+    let probes = 0;
+    const h = harness({
+      mint: () => Promise.reject(new DillaHttpError({ status: 503, code: 'E_UNAVAILABLE', detail: '', retryAfterMs: null, extra: [] })),
+      probe: () => { probes += 1; return Promise.resolve(true); },
+    });
+    h.gw.start();
+    for (let t = 0; t < 120_000; t += 100) { h.clock.advance(100); await flush(); }
+    expect(probes).toBe(0);
   });
 });
