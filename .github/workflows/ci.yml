@@ -114,6 +114,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-ui-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-ui-key.outputs.suffix }}-chromium-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-ui-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (chromium)
         timeout-minutes: 8
@@ -355,6 +356,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (chromium+firefox+webkit)
         timeout-minutes: 8
@@ -441,6 +443,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (chromium+firefox)
         timeout-minutes: 8
@@ -593,6 +596,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-key.outputs.suffix }}-chromium-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (chromium)
         timeout-minutes: 8
@@ -673,6 +677,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-key.outputs.suffix }}-firefox-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (firefox)
         timeout-minutes: 8
@@ -754,6 +759,7 @@ jobs:
           key: apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (webkit)
         timeout-minutes: 8
