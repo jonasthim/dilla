@@ -245,6 +245,13 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.none='No bot is installed for this server.'`
 - `admin.bot.staged='This staged installation has no capabilities yet and cannot perform server actions.'`
 - `admin.bot.capabilities='Enabled capability constraints: {names}.'`
+- `admin.bot.capabilities.select='Capabilities for this bot'`
+- `admin.bot.capabilities.permissionCeiling='Choose only what this bot needs. Disabled options reflect permissions shown here; the server checks your full current permission ceiling again when you save.'`
+- `admin.bot.capabilities.permissionUnavailable='Your current permission summary does not allow this capability.'`
+- `admin.bot.capabilities.edit='Edit capabilities'`
+- `admin.bot.capabilities.save='Save capabilities'`
+- `admin.bot.capabilities.cancel='Cancel capability changes'`
+- `admin.bot.capabilities.updated='Bot capabilities updated.'`
 - `admin.bot.capability.music='music'`
 - `admin.bot.capability.welcome='welcome messages'`
 - `admin.bot.capability.roles='role management'`
@@ -253,6 +260,12 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.capability.removal='message removal'`
 - `admin.bot.capability.kick='kicking members'`
 - `admin.bot.capability.ban='banning members'`
+- `admin.bot.capability.requires.music='Requires Connect and Speak in voice channels; the server verifies both.'`
+- `admin.bot.capability.requires.roles='Requires Manage Roles.'`
+- `admin.bot.capability.requires.warnings='Requires Moderate Members.'`
+- `admin.bot.capability.requires.removal='Requires Manage Messages; the server verifies this permission.'`
+- `admin.bot.capability.requires.kick='Requires Kick Members.'`
+- `admin.bot.capability.requires.ban='Requires Ban Members.'`
 - `admin.bot.enable='Enable bot'`
 - `admin.bot.disable='Disable bot'`
 - `admin.bot.enabling='Enabling…'`
