@@ -576,6 +576,9 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 2 && parts[0] == "calls" && method == http.MethodDelete {
 		return http.StatusNoContent, true
 	}
+	if len(parts) == 4 && parts[0] == "groups" && parts[2] == "moderation" && parts[3] == "removals" && method == http.MethodGet {
+		return http.StatusOK, true
+	}
 	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "members" && method == http.MethodGet {
 		return 200, true
 	}
