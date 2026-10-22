@@ -312,6 +312,14 @@ describe('MessageRow mention colour dot', () => {
       expect(container.querySelector('.d-message-row__gutter')).toHaveTextContent('10:06 PM');
       expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveTextContent('10:06 PM');
     });
+    it('shows gutterTime in the gutter and the full time as its title, while the head keeps the full time', () => {
+      const { container } = render(<MessageRow author="ada" time="Oct 21, 2026, 3:49 PM" gutterTime="3:49 PM" body={BODY} state="ok" grouped />);
+      const gutter = container.querySelector('.d-message-row__gutter') as HTMLElement;
+      expect(gutter).toHaveTextContent(/^3:49 PM$/);
+      expect(gutter).toHaveAttribute('title', 'Oct 21, 2026, 3:49 PM');
+      expect(gutter).toHaveAttribute('aria-hidden', 'true');
+      expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveTextContent('Oct 21, 2026, 3:49 PM');
+    });
     it('keeps the row named by its author and time for a screen reader', () => {
       render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" grouped />);
       expect(screen.getByRole('article', { name: /ada.*21:02/ })).toBeInTheDocument();

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
-import { formatDay } from '../../strings/index.ts';
+import { formatDay, formatTime } from '../../strings/index.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
@@ -413,6 +413,25 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     const full = row.querySelector('.d-message-row__head .d-message-row__time')?.textContent ?? '';
     expect(full).not.toBe('');
     expect(row.querySelector('.d-message-row__gutter')).toHaveTextContent(full);
+  });
+  it('shows only the time of day in the gutter of a grouped row from an earlier day, with the full date as its title', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'a', { ts: NOON - DAY }), peerRow(P2, '2', 'b', { ts: NOON - DAY + 60 })] });
+    const row = rowOf(P2);
+    const gutter = row.querySelector('.d-message-row__gutter') as HTMLElement;
+    expect(gutter.textContent).toBe(formatTime(NOON - DAY + 60));
+    expect(gutter.textContent).not.toMatch(/\d{4}/);
+    expect(gutter.textContent).not.toContain(formatDay(NOON - DAY + 60));
+    expect(gutter).toHaveAttribute('aria-hidden', 'true');
+    // The head keeps the day for a screen reader, and the title carries it for a pointer.
+    const head = row.querySelector('.d-message-row__head .d-message-row__time')?.textContent ?? '';
+    expect(head).toContain(formatDay(NOON - DAY + 60));
+    expect(gutter).toHaveAttribute('title', head);
+  });
+  it('leaves a grouped row from today as it was: the time of day, and no extra title text', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'one', { ts: NOON }), peerRow(P2, '2', 'two', { ts: NOON + 3 * MIN })] });
+    const gutter = rowOf(P2).querySelector('.d-message-row__gutter') as HTMLElement;
+    expect(gutter.textContent).toBe(formatTime(NOON + 3 * MIN));
+    expect(gutter.getAttribute('title')).toBe(gutter.textContent);
   });
   it('starts a new group after a gap of more than 7 minutes, and at another author', () => {
     renderConversation({ items: [
