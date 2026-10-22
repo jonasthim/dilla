@@ -222,7 +222,9 @@ func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) 
 				t.Fatal(err)
 			}
 			panel := store.RolePanelRow{CommunityID: cid, ChannelID: channel.ID, MessageSeq: 17, AuthorID: bot, InstallationID: installation}
-			options := []store.RolePanelOptionRow{{Emoji: "✅", RoleID: roleA.ID}, {Emoji: "🟦", RoleID: roleB.ID}}
+			// The API returns role-panel options in bytewise emoji order, independent
+			// of insertion order and database locale.
+			options := []store.RolePanelOptionRow{{Emoji: "🟦", RoleID: roleB.ID}, {Emoji: "✅", RoleID: roleA.ID}}
 			if err := repo.SetRolePanel(ctx, panel, options); err == nil {
 				t.Fatal("panel write outside transaction succeeded")
 			}
@@ -237,7 +239,7 @@ func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) 
 			if err != nil || len(gotOptions) != 2 || gotOptions[0].Emoji != "✅" || gotOptions[0].RoleID != roleA.ID || gotOptions[1].Emoji != "🟦" || gotOptions[1].RoleID != roleB.ID {
 				t.Fatalf("options = %+v, %v", gotOptions, err)
 			}
-			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, options[:1]) }); err != nil {
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, options[1:2]) }); err != nil {
 				t.Fatalf("replace panel: %v", err)
 			}
 			gotOptions, err = repo.ListRolePanelOptions(ctx, panel.ChannelID, panel.MessageSeq)

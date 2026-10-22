@@ -142,7 +142,7 @@ func (r *Repo) ListRolePanelOptions(ctx context.Context, channel id.ID, seq uint
 	if r.inTx {
 		q = r.tx
 	}
-	rows, err := q.QueryContext(ctx, `SELECT emoji,role_id FROM role_panel_options WHERE channel_id=? AND message_seq=? ORDER BY emoji`, channel, int64(seq))
+	rows, err := q.QueryContext(ctx, `SELECT emoji,role_id FROM role_panel_options WHERE channel_id=? AND message_seq=? ORDER BY emoji COLLATE BINARY`, channel, int64(seq))
 	if err != nil {
 		return nil, wrap(err)
 	}
