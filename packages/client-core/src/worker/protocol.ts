@@ -118,6 +118,7 @@ export type Command =
   | { m: 'callRelease' }                                                                 // → null
   | { m: 'callShare'; on: boolean }                                                      // → null
   | { m: 'callRefresh' }                                                                 // → { token, iceServers }
+  | { m: 'callRelay' }                                                                   // → { iceServers } (UP11-b)
   | { m: 'callStats'; report: CallStatsReport }                                          // → null
   | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null
   | { m: 'callDecline'; callId: string; ringTs: number }                                 // ringTs: op 53's expires_ts → null

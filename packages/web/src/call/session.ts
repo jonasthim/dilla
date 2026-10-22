@@ -1419,15 +1419,17 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     interface IceEpisode { tries: number; timer: unknown; busy: boolean; done: boolean }
     let episode: IceEpisode | null = null;
     /** UP11: fresh relay credentials for the reconnect of `ep`, retried while it lasts (RECONNECT_ICE_BACKOFF_MS). A
-     *  credential that lands after its episode ended is still applied: it is the newest one. */
+     *  credential that lands after its episode ended is still applied: it is the newest one. UP11-b: callRelay, the
+     *  credentials alone; a start (callRefresh) would re-open a room the SFU lost, and the reconnect would then meet a
+     *  room that does not know this participant (STATE_MISMATCH). */
     const refreshReconnecting = (ep: IceEpisode): void => {
       if (ended || episode !== ep || ep.done || ep.busy) return;
       ep.timer = null;
       ep.busy = true;
-      deps.bridge.call({ m: 'callRefresh' }).then((answer) => {
+      deps.bridge.call({ m: 'callRelay' }).then((answer) => {
         ep.busy = false;
         if (ended) return;
-        const { iceServers } = answer as { token: string; iceServers: IceServerTuple[] };
+        const { iceServers } = answer as { iceServers: IceServerTuple[] };
         refreshIceServers(room, iceServers);
         scheduleIce(iceServers);
         ep.done = true;

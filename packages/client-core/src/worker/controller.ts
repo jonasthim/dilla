@@ -269,6 +269,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callRelease',
   'callShare',
   'callRefresh',
+  'callRelay',
   'callStats',
   'loadVoice',
   'callDecline',
@@ -499,6 +500,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callRelease',
     'callShare',
     'callRefresh',
+    'callRelay',
     'callStats',
     'loadVoice',
     'callDecline',
@@ -1206,6 +1208,7 @@ export class Controller {
       case 'callRelease': return this.calls.release();
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
+      case 'callRelay': return this.calls.relay();
       case 'callStats': return this.calls.stats(command.report);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);

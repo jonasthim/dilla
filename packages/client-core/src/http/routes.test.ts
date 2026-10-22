@@ -1280,6 +1280,22 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     await expect(routes.startCall(CHANNEL, '')).rejects.toThrow();
   });
 
+  // UP11-b: the relay credentials alone, for a call this device is in; the instance opens no room for it.
+  it('relayCall is POST /v1/calls/{call_id}/relay [] and reads [ice_servers]', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(200, [ICE]));
+    expect(await routes.relayCall(CALL)).toEqual(ICE);
+    expect(`${t.seen[0].method} ${new URL(t.seen[0].url).pathname}`).toBe(`POST /v1/calls/${hex(CALL)}/relay`);
+    expect(t.seen[0].body).toEqual(encode([]));
+    expect(http.requests[0].bucket).toBe('write');
+    t.replies.push(cborReply(200, [[]]));
+    expect(await routes.relayCall(CALL)).toEqual([]);
+    t.replies.push(cborReply(200, [[['turn:x', 'user']]]));
+    await expect(routes.relayCall(CALL)).rejects.toThrow();
+    t.replies.push(cborReply(200, []));
+    await expect(routes.relayCall(CALL)).rejects.toThrow();
+  });
+
   it('share, unshare and stats map onto their routes', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent(), noContent(), noContent());

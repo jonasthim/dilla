@@ -2179,7 +2179,7 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
   | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
-  | 'endCallIfAlone'
+  | 'endCallIfAlone' | 'relayCall'
   // v0.1.0-web3.1: the create flow (internal/api communities.go, channels.go, invites.go), so a suite creates its server
   // and its channels through the client path.
   | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite'
@@ -2916,6 +2916,13 @@ export class ModelDs {
           return { channelId: this.liveCalls.get(channel)!.channelId, callId: s.callId!, participants: s.participants }; })),
       startCall: (channelId) => this.call(d, 'startCall', null, null, () => this.startCall(d, channelId)),
       shareCall: (callId) => this.call(d, 'shareCall', null, null, () => { this.liveCall(callId); }),
+      // UP11-b: a current leaf of the live call's group gets the relay list alone; nothing else changes.
+      relayCall: (callId) => this.call(d, 'relayCall', null, null, () => {
+        const call = this.liveCall(callId);
+        const g = this.groups.get(toHex(call.groupId));
+        if (g === undefined || g.closed || !g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+        return [[['turn:model.test:3478?transport=udp'], 'user', 'credential']] as [string[], string, string][];
+      }),
       unshareCall: () => this.call(d, 'unshareCall', null, null, () => undefined),
       // L-HTTP-102's conditional DELETE (?if_alone=1): a current leaf of the call's open group ends it only while it is the
       // group's only member (409 E_CALL_NOT_ALONE otherwise, false); true once it has ended.

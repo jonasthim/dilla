@@ -37,7 +37,7 @@ const LABELS: Record<string, string> = {
   getChannelCall: 'GET channel call', getCommunityCalls: 'GET community calls', postGroup: 'POST group', getGroupInfo: 'GET group info',
   getGroupTree: 'GET group tree', postResync: 'POST resync', startCall: 'POST calls', postProposal: 'POST proposal', postCommit: 'POST commit',
   declineCall: 'POST decline', getDeviceList: 'GET device list', shareCall: 'POST share', unshareCall: 'DELETE share', postCallStats: 'POST stats',
-  endCallIfAlone: 'DELETE call', listMembers: 'GET members',
+  endCallIfAlone: 'DELETE call', listMembers: 'GET members', relayCall: 'POST relay',
 };
 
 interface Posted { message: FromWorker; transfer: Transferable[] }
@@ -980,12 +980,15 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     await w.call({ m: 'callShare', on: false });
     const fresh = await w.call({ m: 'callRefresh' }) as { token: string; iceServers: unknown[] };
     expect(fresh).toEqual({ token: expect.any(String) as string, iceServers: expect.any(Array) as unknown[] });
+    // UP11-b: the relay credentials alone, for the live call by its id: no start, so no room is (re)opened.
+    const relay = await w.call({ m: 'callRelay' }) as { iceServers: unknown[] };
+    expect(relay).toEqual({ iceServers: [[['turn:model.test:3478?transport=udp'], 'user', 'credential']] });
     w.server.answer('POST stats', 429, 'E_RATE_LIMITED', 4000);
     expect(await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] })).toBeNull();
     await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] });
-    expect(w.server.routes()).toEqual(['POST share', 'DELETE share', 'POST calls', 'POST stats', 'POST stats']);
+    expect(w.server.routes()).toEqual(['POST share', 'DELETE share', 'POST calls', 'POST relay', 'POST stats', 'POST stats']);
     await w.call({ m: 'callLeave', reason: 'user' });
-    for (const command of [{ m: 'callShare', on: true }, { m: 'callRefresh' }, { m: 'callStats', report: [0, null, 0, 0, 0, 0] }]) {
+    for (const command of [{ m: 'callShare', on: true }, { m: 'callRefresh' }, { m: 'callRelay' }, { m: 'callStats', report: [0, null, 0, 0, 0, 0] }]) {
       expect(await codeOf(w.call(command))).toBe('E_NO_CALL');
     }
   });

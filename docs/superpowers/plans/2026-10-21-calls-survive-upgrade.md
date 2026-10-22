@@ -679,14 +679,31 @@ Found by UP4's compat job (investigation `compat-inv`, ruling UP11). When the re
   - Six useCall tests: the absence Remove while reconnecting recovers and rejoins; a recovery started that way stops and says `voice.removedNotMember` once the re-read says `E_NOT_FOUND`. Controls: the same Remove while connected; `E_NOT_FOUND` while reconnecting; a plain Remove whose re-read says `E_NOT_FOUND` within the hold; the AFK cut while reconnecting.
   - e2e: `upgrade.spec.ts --grep compat` with `DILLA_SFU_BIN` set to the web3.12.3 release binary passes 3/3 (carol's gap is about 19 to 21 s).
   - The normal spec on chromium passed 1/3 locally. Run 2 missed B2's 5 s reload limit at 5.6 s, a check that flaked before UP11.
-- **Open, needs a ruling.** Run 1 passed every assertion, but the console guard caught three `Received leave request … [leave reason 6]` (STATE_MISMATCH) lines in step A.
+- **Round 1 finding, resolved by ruling UP11-b (option b).** Run 1 passed every assertion, but the console guard caught three `Received leave request … [leave reason 6]` (STATE_MISMATCH) lines in step A.
   - Cause: `callRefresh` is a full `startCall`, and its `CreateRoom` re-opens the room that the SFU restart lost. The pages' livekit resume then finds the room without its participant, and is told STATE_MISMATCH instead of the tolerated "requested room does not exist". The pages then rejoin as before: all back and heard in 7.8 s.
   - The same refresh also counts as an old-page start in step A's "at most once" check, so a refresh plus a recovery start before the reload would fail it.
   - Options:
     - (a) Tolerate reason 6 inside the outage window (`outage-lines.ts` plus the `upgrade-lines.spec.ts` pins), and leave refresh starts out of that count.
     - (b) Add a credential-only refresh route at the API that opens no room (protocol/09 and `internal/api`).
     - (c) Refresh only once livekit's resume has failed, which leaves less margin before the sweep's Remove.
-- **Docs.** protocol/09 § Relays: the client re-POSTs the calls route on every reconnect, with the retry schedule, and how the reconnecting removal is read.
+- **Round 2 (UP11-b): a credentials-only route.**
+  - `POST /v1/calls/{call_id}/relay []` → `200 [ice_servers]` (`internal/api/callrelayroute.go`).
+  - Gates: the start's, read from the call's row: `view_channel` (404), `connect`, a current leaf of the call's group (`E_LEAF_NOT_CURRENT`), not barred, no pending repair or relay cut (503).
+  - The mint is `iceServers`, in the same order against the relay's cuts, with the start's entitlement re-read after it. The relay's credential floor is untouched.
+  - No `CreateRoom`, no token, no SFU call at all. It goes behind the session middleware (owed factor: `E_FACTOR_REQUIRED`) and the per-device write bucket, as `share` does.
+  - client-core: `Routes.relayCall` and the `callRelay` command. `session.ts`'s reconnect refresh uses it. `callRefresh` stays the TTL refresh.
+  - Tests:
+    - Go (red first): refusals (unknown or ended call, no view, no connect, no leaf, barred, pending cut), a fresh credential for a leaf, an empty list without TURN, no SFU call on a counting stub SFU with a control start.
+    - Composition: owed factor and the write bucket, the same as `share`.
+    - client-core: the route, and the command with its `E_NO_CALL`.
+    - web: the session tests count `callRelay`, and the reconnect makes no `callRefresh`.
+  - e2e:
+    - compat 3/3; carol's gap is 18.7–21.0 s.
+    - `reload.spec` passes.
+    - The normal chromium `upgrade.spec` passed 4 of 5 runs, with **no leave reason 6 in step A in any run** and the reason-4 pin unchanged. Old-page starts in step A are at most one each (recovery starts only).
+    - The failing run (run 3) is the older step-A resume race: carol's reloaded page's resume commit got 409 against bob's commit, and it rejoined through a resync and a second start ("exactly one start"). It is seen before UP11 in up6c-tail-e2e-upgrade-cr2.log and up7b2-e2e-upgrade-cr.log. It is not UP11.
+    - B2's 5 s check held in every run (max 3.6 s). Its 5.6 s miss in round 1 predates UP11, so it is recorded, not fixed.
+- **Docs.** protocol/09 § Voice has the route's row. § Relays says the client fetches through it on every reconnect, gives the retry schedule, and says how the reconnecting removal is read.
 
 **Order and dependencies:**
 1. UP1: every later task reads `version --json`, `media.json`, the capability or `--idle`.

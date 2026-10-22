@@ -5327,6 +5327,7 @@ describe('call commands in the worker (task 6)', () => {
       { m: 'callLeave', reason: 'user' }, { m: 'callLeave', reason: 'pagehide' }, { m: 'callLeave', reason: 'switch' },
       { m: 'callShare', on: true }, { m: 'callShare', on: false },
       { m: 'callRefresh' },
+      { m: 'callRelay' },
       { m: 'callStats', report: [3, null, 40, 0, 0, 1_048_576] },
       { m: 'callStats', report: [0, 2, 0, 1000, 7, 0] },
       { m: 'loadVoice', communityId: HEXID, channelId: null },
@@ -5337,7 +5338,7 @@ describe('call commands in the worker (task 6)', () => {
     commands.forEach((command, i) => { w.call(7100 + i, command); });
     await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
     const expected: Record<string, string | null> = {
-      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callStats: 'E_NO_CALL',
+      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callRelay: 'E_NO_CALL', callStats: 'E_NO_CALL',
       callLeave: null, callDecline: null,
     };
     commands.forEach((command, i) => {

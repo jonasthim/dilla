@@ -28,7 +28,7 @@ export const SWEEP_JOIN_WAIT_MS = 5000;
 export { HOLD_MS };
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
-  | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
+  | 'declineCall' | 'postCommit' | 'endCallIfAlone' | 'relayCall'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
 export interface CallDeps {
@@ -926,6 +926,14 @@ export class CallController {
     const live = this.requireLive();
     const started = await this.deps.routes.startCall(live.channelId, live.vdec);
     return { token: started.token, iceServers: started.iceServers };
+  }
+
+  /** callRelay (UP11-b): fresh relay credentials for the live call, by its id, and nothing else. A media reconnect asks
+   *  this rather than `refresh`: a start opens the call's room, which re-opens one the SFU lost in a restart, and the
+   *  reconnect then meets a room that does not know this participant. */
+  async relay(): Promise<{ iceServers: CallJoinResult['iceServers'] }> {
+    const live = this.requireLive();
+    return { iceServers: await this.deps.routes.relayCall(live.callId) };
   }
 
   async stats(report: CallStats): Promise<null> {

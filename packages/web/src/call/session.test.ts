@@ -198,7 +198,7 @@ function fakes(o: Options = {}) {
     caps: [64_000, 2_500_000, 0], epoch: joinEpoch.toString(),
   };
   let refreshAnswer = { token: 'tok2', iceServers: [[['turn:sfu.example:3478'], '1700007200:dev:1700003300', 'cred2']] };
-  /** UP11: the next callRefresh calls fail with these, in order; `refreshHeld`, while set, keeps each one waiting on it. */
+  /** UP11: the next callRelay calls fail with these, in order; `refreshHeld`, while set, keeps each one waiting on it. */
   const refreshFails: Error[] = [];
   let refreshHeld: Promise<void> | null = null;
   const bridge = {
@@ -217,11 +217,14 @@ function fakes(o: Options = {}) {
         case 'callShare':
           if (cmd.on) share(true);
           return null;
-        case 'callRefresh': {
+        case 'callRefresh':
+          return refreshAnswer;
+        // UP11-b: the relay credentials alone (POST /v1/calls/{call_id}/relay), which a reconnect asks for.
+        case 'callRelay': {
           if (refreshHeld !== null) await refreshHeld;
           const failure = refreshFails.shift();
           if (failure !== undefined) throw failure;
-          return refreshAnswer;
+          return { iceServers: refreshAnswer.iceServers };
         }
         case 'callStats':
           if (o.statsError) throw o.statsError;
@@ -683,9 +686,11 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(2);
   });
 
-  /** UP11: a callRefresh refusal as the worker reports it (pageCallError reads `code` and `retryAfterMs`). */
+  /** UP11: a callRelay refusal as the worker reports it (pageCallError reads `code` and `retryAfterMs`). */
   const refusal = (code: string, retryAfterMs: number | null = null) => Object.assign(new Error(code), { code, retryAfterMs });
-  const refreshes = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRefresh').length;
+  /** UP11-b: the reconnect asks callRelay (the credentials alone), never callRefresh (a start, which opens the room). */
+  const refreshes = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRelay').length;
+  const starts = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRefresh').length;
   const FRESH = [{ urls: ['turn:sfu.example:3478'], username: '1700007200:dev:1700003300', credential: 'cred2' }];
 
   it('UP11: a reconnecting room asks for fresh relay credentials at once and hands them to its reconnect; one per episode', async () => {
@@ -696,6 +701,7 @@ describe('the page call session (L-WEB-50)', () => {
     await flush();
     expect(call.state.phase).toBe('reconnecting');
     expect(refreshes(f)).toBe(1);
+    expect(starts(f)).toBe(0);
     expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
     // The same episode says reconnecting again (a resume, then a full reconnect): no second refresh.
     f.room.emit('reconnecting');
@@ -788,13 +794,16 @@ describe('the page call session (L-WEB-50)', () => {
     await flush();
     f.room.emit('reconnected');
     expect(refreshes(f)).toBe(1);
-    // The first credential's refresh (at 1700003300) does not run: the fresh one expires at 1700007200.
+    expect(starts(f)).toBe(0);
+    // The first credential's refresh (at 1700003300) does not run: the fresh one expires at 1700007200. The TTL refresh
+    // stays callRefresh.
     await f.advance(3_300_000);
-    expect(refreshes(f)).toBe(1);
+    expect(starts(f)).toBe(0);
     await f.advance(6_900_000 - 3_300_000 - 1);
-    expect(refreshes(f)).toBe(1);
+    expect(starts(f)).toBe(0);
     await f.advance(1);
-    expect(refreshes(f)).toBe(2);
+    expect(starts(f)).toBe(1);
+    expect(refreshes(f)).toBe(1);
   });
 
   it('sends one callStats report per 10 s while connected', async () => {
