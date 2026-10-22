@@ -11,33 +11,19 @@ import (
 	"time"
 )
 
-func TestPCMStarterStreamsDecodedPCMFromCanonicalVideo(t *testing.T) {
+func TestPCMStarterFailsClosedWithoutProductionNetworkSandbox(t *testing.T) {
 	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "yt-args")
-	ytdlp := writeScript(t, dir, "yt-dlp", `printf '%s\n' "$@" > "$ARGS_FILE"
-printf 'encoded audio'`)
-	ffmpeg := writeScript(t, dir, "ffmpeg", `cat`)
-	_ = os.Setenv("ARGS_FILE", argsFile)
-	t.Cleanup(func() { _ = os.Unsetenv("ARGS_FILE") })
+	marker := filepath.Join(dir, "invoked")
+	ytdlp := writeScript(t, dir, "yt-dlp", `touch "$MARKER"; printf encoded`)
+	ffmpeg := writeScript(t, dir, "ffmpeg", `touch "$MARKER"; cat`)
+	t.Setenv("MARKER", marker)
 
 	pcm, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		t.Fatal(err)
+	if pcm != nil || !errors.Is(err, ErrSandboxUnavailable) {
+		t.Fatalf("Start = (%v, %v), want nil and ErrSandboxUnavailable", pcm, err)
 	}
-	got, err := io.ReadAll(pcm)
-	closeErr := pcm.Close()
-	if err != nil || closeErr != nil {
-		t.Fatalf("read/close = %v/%v", err, closeErr)
-	}
-	if string(got) != "encoded audio" {
-		t.Fatalf("PCM = %q", got)
-	}
-	args, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "--ignore-config") || !strings.Contains(string(args), "--no-playlist") || !strings.Contains(string(args), "https://www.youtube.com/watch?v=aqz-KE-bpKQ") {
-		t.Fatalf("yt-dlp args = %q", args)
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unsandboxed subprocess started: stat error = %v", statErr)
 	}
 }
 
@@ -53,37 +39,6 @@ func TestPCMStarterRejectsAnythingButCanonicalVideoBeforeStartingProcesses(t *te
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("yt-dlp invoked for invalid input, stat error = %v", err)
-	}
-}
-
-func TestPCMStarterBoundsDecodedOutput(t *testing.T) {
-	dir := t.TempDir()
-	pcm, err := (PCMStarter{YTDLP: writeScript(t, dir, "yt-dlp", `printf encoded`), FFmpeg: writeScript(t, dir, "ffmpeg", `printf 123456`), MaxPCMBytes: 5}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := io.ReadAll(pcm)
-	if !errors.Is(err, ErrPCMLimit) || string(got) != "12345" {
-		t.Fatalf("ReadAll = %q, %v; want 12345 and ErrPCMLimit", got, err)
-	}
-	_ = pcm.Close()
-}
-
-func TestPCMStarterCancellationKillsBothProcesses(t *testing.T) {
-	dir := t.TempDir()
-	ytdlp := writeScript(t, dir, "yt-dlp", `sleep 30`)
-	ffmpeg := writeScript(t, dir, "ffmpeg", `cat >/dev/null; sleep 30`)
-	ctx, cancel := context.WithCancel(context.Background())
-	pcm, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg}).Start(ctx, "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	_ = pcm.Close()
-	select {
-	case <-pcm.(*boundedPCM).done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("child process group did not stop after cancellation")
 	}
 }
 
