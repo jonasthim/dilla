@@ -9,10 +9,11 @@
 #   - `dillad media --idle`, run as dillad, exits 0: no room has participants, none is younger than
 #     60 s, and the API says no call token was minted in the last 60 s. Any other exit (busy, the
 #     API does not answer, a dillad too old to know --idle) means not now.
-# It works for a web3.11 media server too, which knows nothing of this. A media server that reports
-# the installed release on media.sock (or in its media.json) is never restarted. This runs as root
-# and never executes anything reached through /proc: a dillad process can execve a binary of its
-# own and keep its pid, so /proc/<pid>/exe is only ever stat'ed.
+# It works for a web3.11 media server too, which knows nothing of this. Whether the SFU runs the
+# installed binary is decided by executable identity only (inode and SHA-256), never by what it
+# says about itself. This runs as root and never executes anything reached through /proc: a dillad
+# process can execve a binary of its own and keep its pid, so /proc/<pid>/exe is only stat'ed and
+# hashed, as data.
 #
 # The TURN handoff (one time): when the SFU being replaced does not serve TURN (its media.json does
 # not list "turn", or it has none) and the installed dillad does, the API still holds turn.listen.
@@ -58,6 +59,8 @@ json_get() {
 }
 unquote() { v="${1#\"}"; printf '%s' "${v%\"}"; }
 has_turn() { case "$1" in *'"turn"'*) return 0 ;; esac; return 1; }
+# sha256_of FILE: FILE's SHA-256, read as data.
+sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
 
 main_pid() {
 	p="$(systemctl show -P MainPID dilla-media 2>/dev/null)"
@@ -157,27 +160,38 @@ if [ "$turn_configured" -eq 1 ] && [ "$before_turn" -eq 0 ] && has_turn "$(json_
 	handoff=1
 fi
 
-if [ "$before_valid" -eq 1 ] && [ -n "$installed_version" ] && [ "$MS_VERSION" = "$installed_version" ]; then
-	# The SFU reports the installed release. Only a handoff that never happened is left: the SFU
-	# came up on this binary on its own (systemd restarted it after a crash) while the API still
-	# held turn.listen. Once per media process, so a port that cannot be bound for another reason
-	# never restarts the API in a loop.
-	if [ "$handoff" -ne 1 ] || [ "$MS_LEVEL" -lt 2 ]; then
+# Whether the SFU runs the installed binary is decided by executable identity alone (R-UP4): the
+# inode of /proc/<pid>/exe and its SHA-256, both read as data, against $BIN. A binary replaced in
+# place has a new inode, so an SFU on the deleted old one never matches. What the SFU says about
+# itself is never asked here: a stale or compromised process could claim the installed release and
+# so never be moved onto a patched binary.
+running="$(stat -L -c '%d:%i' "$ROOT/proc/$pid/exe" 2>/dev/null)" || exit 0
+installed="$(stat -L -c '%d:%i' "$BIN" 2>/dev/null)" || exit 0
+same=0
+if [ "$running" = "$installed" ]; then
+	running_sum="$(sha256_of "$ROOT/proc/$pid/exe")"
+	installed_sum="$(sha256_of "$BIN")"
+	[ -z "$running_sum" ] || [ "$running_sum" != "$installed_sum" ] || same=1
+fi
+
+if [ "$same" -eq 1 ]; then
+	# The SFU runs the installed binary, so its report can be used for its level and capabilities.
+	# Only a handoff that never happened is left: the SFU came up on this binary on its own
+	# (systemd restarted it after a crash) while the API still held turn.listen. Once per media
+	# process, so a port that cannot be bound for another reason never restarts the API in a loop.
+	if [ "$handoff" -ne 1 ] || [ "$before_valid" -ne 1 ] || [ "$MS_LEVEL" -lt 2 ]; then
 		exit 0
 	fi
 	[ "$(cat "$MARK" 2>/dev/null)" != "$pid" ] || exit 0
 	idle || exit 0
 	echo "$pid" >"$MARK"
-	log "dilla-media (pid $pid) runs the installed $installed_version but has not bound turn.listen, which dilla still holds; its rooms are idle: restarting dilla to hand TURN over"
+	log "dilla-media (pid $pid) runs the installed ${installed_version:-dillad} but has not bound turn.listen, which dilla still holds; its rooms are idle: restarting dilla to hand TURN over"
 	restart_api_for_handoff
 fi
 
-# Otherwise the inode of the running executable decides (R-UP4): it is only compared, never run.
-running="$(stat -L -c '%d:%i' "$ROOT/proc/$pid/exe" 2>/dev/null)" || exit 0
-installed="$(stat -L -c '%d:%i' "$BIN" 2>/dev/null)" || exit 0
-[ "$running" != "$installed" ] || exit 0
+# Another executable: an older SFU, whatever it says about itself. Restart it once it is idle.
 idle || exit 0
-log "dilla-media runs ${MS_VERSION:-an older dillad} (pid $pid), not the installed $BIN; its rooms are idle: restarting it"
+log "dilla-media (pid $pid) runs another executable than the installed $BIN${MS_VERSION:+ (it reports $MS_VERSION)}; its rooms are idle: restarting it"
 if ! systemctl restart dilla-media; then
 	log "error: dilla-media did not restart; read journalctl -o cat -u dilla-media"
 	exit 1

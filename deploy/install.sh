@@ -764,10 +764,11 @@ UNIT
 #   - `dillad media --idle`, run as dillad, exits 0: no room has participants, none is younger than
 #     60 s, and the API says no call token was minted in the last 60 s. Any other exit (busy, the
 #     API does not answer, a dillad too old to know --idle) means not now.
-# It works for a web3.11 media server too, which knows nothing of this. A media server that reports
-# the installed release on media.sock (or in its media.json) is never restarted. This runs as root
-# and never executes anything reached through /proc: a dillad process can execve a binary of its
-# own and keep its pid, so /proc/<pid>/exe is only ever stat'ed.
+# It works for a web3.11 media server too, which knows nothing of this. Whether the SFU runs the
+# installed binary is decided by executable identity only (inode and SHA-256), never by what it
+# says about itself. This runs as root and never executes anything reached through /proc: a dillad
+# process can execve a binary of its own and keep its pid, so /proc/<pid>/exe is only stat'ed and
+# hashed, as data.
 #
 # The TURN handoff (one time): when the SFU being replaced does not serve TURN (its media.json does
 # not list "turn", or it has none) and the installed dillad does, the API still holds turn.listen.
@@ -813,6 +814,8 @@ json_get() {
 }
 unquote() { v="${1#\"}"; printf '%s' "${v%\"}"; }
 has_turn() { case "$1" in *'"turn"'*) return 0 ;; esac; return 1; }
+# sha256_of FILE: FILE's SHA-256, read as data.
+sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
 
 main_pid() {
 	p="$(systemctl show -P MainPID dilla-media 2>/dev/null)"
@@ -912,27 +915,38 @@ if [ "$turn_configured" -eq 1 ] && [ "$before_turn" -eq 0 ] && has_turn "$(json_
 	handoff=1
 fi
 
-if [ "$before_valid" -eq 1 ] && [ -n "$installed_version" ] && [ "$MS_VERSION" = "$installed_version" ]; then
-	# The SFU reports the installed release. Only a handoff that never happened is left: the SFU
-	# came up on this binary on its own (systemd restarted it after a crash) while the API still
-	# held turn.listen. Once per media process, so a port that cannot be bound for another reason
-	# never restarts the API in a loop.
-	if [ "$handoff" -ne 1 ] || [ "$MS_LEVEL" -lt 2 ]; then
+# Whether the SFU runs the installed binary is decided by executable identity alone (R-UP4): the
+# inode of /proc/<pid>/exe and its SHA-256, both read as data, against $BIN. A binary replaced in
+# place has a new inode, so an SFU on the deleted old one never matches. What the SFU says about
+# itself is never asked here: a stale or compromised process could claim the installed release and
+# so never be moved onto a patched binary.
+running="$(stat -L -c '%d:%i' "$ROOT/proc/$pid/exe" 2>/dev/null)" || exit 0
+installed="$(stat -L -c '%d:%i' "$BIN" 2>/dev/null)" || exit 0
+same=0
+if [ "$running" = "$installed" ]; then
+	running_sum="$(sha256_of "$ROOT/proc/$pid/exe")"
+	installed_sum="$(sha256_of "$BIN")"
+	[ -z "$running_sum" ] || [ "$running_sum" != "$installed_sum" ] || same=1
+fi
+
+if [ "$same" -eq 1 ]; then
+	# The SFU runs the installed binary, so its report can be used for its level and capabilities.
+	# Only a handoff that never happened is left: the SFU came up on this binary on its own
+	# (systemd restarted it after a crash) while the API still held turn.listen. Once per media
+	# process, so a port that cannot be bound for another reason never restarts the API in a loop.
+	if [ "$handoff" -ne 1 ] || [ "$before_valid" -ne 1 ] || [ "$MS_LEVEL" -lt 2 ]; then
 		exit 0
 	fi
 	[ "$(cat "$MARK" 2>/dev/null)" != "$pid" ] || exit 0
 	idle || exit 0
 	echo "$pid" >"$MARK"
-	log "dilla-media (pid $pid) runs the installed $installed_version but has not bound turn.listen, which dilla still holds; its rooms are idle: restarting dilla to hand TURN over"
+	log "dilla-media (pid $pid) runs the installed ${installed_version:-dillad} but has not bound turn.listen, which dilla still holds; its rooms are idle: restarting dilla to hand TURN over"
 	restart_api_for_handoff
 fi
 
-# Otherwise the inode of the running executable decides (R-UP4): it is only compared, never run.
-running="$(stat -L -c '%d:%i' "$ROOT/proc/$pid/exe" 2>/dev/null)" || exit 0
-installed="$(stat -L -c '%d:%i' "$BIN" 2>/dev/null)" || exit 0
-[ "$running" != "$installed" ] || exit 0
+# Another executable: an older SFU, whatever it says about itself. Restart it once it is idle.
 idle || exit 0
-log "dilla-media runs ${MS_VERSION:-an older dillad} (pid $pid), not the installed $BIN; its rooms are idle: restarting it"
+log "dilla-media (pid $pid) runs another executable than the installed $BIN${MS_VERSION:+ (it reports $MS_VERSION)}; its rooms are idle: restarting it"
 if ! systemctl restart dilla-media; then
 	log "error: dilla-media did not restart; read journalctl -o cat -u dilla-media"
 	exit 1
@@ -1141,10 +1155,17 @@ media_state() {
 sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
 
 # sfu_level: what the running SFU is (R-UP3). Sets SFU_PID, SFU_VERSION, SFU_LEVEL (empty when it
-# cannot be told) and SFU_FROM, where the answer came from. In order: the running process's own
-# report on media.sock, its media.json, and for a media server older than web3.12 the SHA-256 of its
-# executable. Nothing reached through /proc is ever executed: a dillad process can execve a binary of
-# its own and keep its pid, and this runs as root.
+# cannot be told) and SFU_FROM, where the answer came from.
+#
+# Identity comes first, from the executable alone: the SHA-256 of /proc/<pid>/exe, read as data,
+# against the installed dillad, dillad.prev (root's own files) and the pinned web3.11 releases.
+# Nothing reached through /proc is ever executed: a dillad process can execve a binary of its own
+# and keep its pid, and this runs as root. An executable that matches none of them is unknown, and
+# unknown means a restart, whatever the process says about itself.
+#
+# Only once the executable is known is the process's own report used for its level: on media.sock,
+# then its media.json (pid = MainPID), and only when it names the version that executable is. A
+# web3.11 executable has no report and is level 1, the baseline CI proves (R-UP1).
 sfu_level() {
 	SFU_PID="$(media_main_pid)"
 	SFU_VERSION=""
@@ -1154,41 +1175,45 @@ sfu_level() {
 		SFU_FROM="dilla-media is not running"
 		return 0
 	fi
-	if media_self; then
-		SFU_VERSION="$SELF_VERSION"
-		SFU_LEVEL="$SELF_LEVEL"
-		SFU_FROM="its media.sock"
-		return 0
-	fi
-	if media_state; then
-		SFU_VERSION="$MS_VERSION"
-		SFU_LEVEL="$MS_LEVEL"
-		SFU_FROM="its media.json"
-		return 0
-	fi
-	[ -z "$MS_STALE" ] || log "ignoring $MEDIA_DATA/media.json: $MS_STALE, so an earlier process left it"
-	# No report: the SHA-256 of the running executable, read as data, against the installed and the
-	# previous dillad (root's own files, asked for their version as dillad) and the pinned releases.
-	# Only v0.1.0-web3.11, the level-1 baseline CI proves (R-UP1), gets a level this way; anything
-	# else is unknown, and unknown means a restart.
 	SFU_FROM="the SHA-256 of $PROC/$SFU_PID/exe"
 	sl_sum="$(sha256_of "$PROC/$SFU_PID/exe")"
 	case "$sl_sum" in '' | *[!0-9a-f]*) return 0 ;; esac
 	[ "${#sl_sum}" -eq 64 ] || return 0
-	SFU_VERSION="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $2; exit }')"
-	if [ -z "$SFU_VERSION" ]; then
+	sl_is="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $2; exit }')"
+	if [ -z "$sl_is" ]; then
 		for sl_cand in "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"; do
 			[ -f "$sl_cand" ] && [ ! -L "$sl_cand" ] || continue
-			# Only a file no one but its owner can write is asked.
+			# Only a file no one but its owner can write is asked its version.
 			[ -z "$(find "$sl_cand" -perm /022 2>/dev/null)" ] || continue
 			[ "$(sha256_of "$sl_cand")" = "$sl_sum" ] || continue
-			SFU_VERSION="$(runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || SFU_VERSION=""
+			sl_is="$(runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
 			SFU_FROM="$SFU_FROM, which is $sl_cand"
 			break
 		done
 	fi
-	case "$SFU_VERSION" in *[!A-Za-z0-9.+_-]*) SFU_VERSION="" ;; esac
-	[ "$SFU_VERSION" != 0.1.0-web3.11 ] || SFU_LEVEL=1
+	case "$sl_is" in *[!A-Za-z0-9.+_-]*) sl_is="" ;; esac
+	if [ -z "$sl_is" ]; then
+		SFU_FROM="$SFU_FROM, which is no dillad this installer knows"
+		return 0
+	fi
+	SFU_VERSION="$sl_is"
+	if [ "$sl_is" = 0.1.0-web3.11 ]; then
+		SFU_LEVEL=1
+		return 0
+	fi
+	# A known executable of web3.12 or later: its own report gives the level, if it is that version.
+	if media_self && [ "$SELF_VERSION" = "$sl_is" ]; then
+		SFU_LEVEL="$SELF_LEVEL"
+		SFU_FROM="$SFU_FROM, and its media.sock"
+		return 0
+	fi
+	if media_state && [ "$MS_VERSION" = "$sl_is" ]; then
+		SFU_LEVEL="$MS_LEVEL"
+		SFU_FROM="$SFU_FROM, and its media.json"
+		return 0
+	fi
+	[ -z "$MS_STALE" ] || log "ignoring $MEDIA_DATA/media.json: $MS_STALE, so an earlier process left it"
+	SFU_FROM="$SFU_FROM, without a report that names it"
 	return 0
 }
 
@@ -1275,22 +1300,21 @@ upgrade_lock() {
 # wait_media_ready VERSION NOTIFY: the RUNNING dilla-media is VERSION and ready, within MEDIA_WAIT
 # seconds. It never takes the installed binary's word for it: once restarts are decoupled the
 # installed dillad and the running one can differ, so a probe run from the installed binary would
-# pass and prove nothing. For a dillad that sends READY=1 (NOTIFY 1): the unit is active (which a
-# Type=notify unit is only after READY), media.json's pid is the MainPID and names VERSION, and the
-# process itself answers on media.sock with VERSION and that pid. For an older one (no media.sock):
-# the unit is active, the running executable's SHA-256 is the installed binary's, and only then the
-# authenticated RoomService probe. A start that failed may still come up through systemd's
-# Restart=on-failure, so the wait does not end at the first failure.
+# pass and prove nothing. First, always, identity: the unit is active (which a Type=notify unit is
+# only after READY) and the running executable's SHA-256, read as data, is the installed binary's.
+# Then, for a dillad that sends READY=1 (NOTIFY 1): media.json's pid is the MainPID and names
+# VERSION, and the process itself answers on media.sock with VERSION and that pid. For an older one
+# (no media.sock): the authenticated RoomService probe. A start that failed may still come up
+# through systemd's Restart=on-failure, so the wait does not end at the first failure.
 wait_media_ready() {
 	wmr_i=0
 	while :; do
 		if systemctl is-active --quiet dilla-media; then
-			if [ "$2" -eq 1 ]; then
-				if media_state && [ "$MS_VERSION" = "$1" ] && media_self && [ "$SELF_VERSION" = "$1" ]; then return 0; fi
-			else
-				wmr_sum="$(sha256_of "$PROC/$(media_main_pid)/exe")"
-				if [ -n "$wmr_sum" ] && [ "$wmr_sum" = "$(sha256_of "$BIN_DIR/dillad")" ] &&
-					runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+			wmr_sum="$(sha256_of "$PROC/$(media_main_pid)/exe")"
+			if [ -n "$wmr_sum" ] && [ "$wmr_sum" = "$(sha256_of "$BIN_DIR/dillad")" ]; then
+				if [ "$2" -eq 1 ]; then
+					if media_state && [ "$MS_VERSION" = "$1" ] && media_self && [ "$SELF_VERSION" = "$1" ]; then return 0; fi
+				elif runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 					return 0
 				fi
 			fi
