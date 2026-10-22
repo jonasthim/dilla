@@ -30,9 +30,11 @@ func (f *removalSignerFake) SignRemoval(_ context.Context, request, group id.ID,
 }
 
 type removalSessionFake struct {
-	bodies [][]byte
-	err    error
-	errs   []error
+	bodies       [][]byte
+	err          error
+	errs         []error
+	receipt      client.ModerationRemovalReceipt
+	emptyReceipt bool
 }
 
 func (f *removalSessionFake) AcceptModerationRemoval(_ context.Context, _ id.ID, body []byte) (client.ModerationRemovalReceipt, error) {
@@ -40,16 +42,27 @@ func (f *removalSessionFake) AcceptModerationRemoval(_ context.Context, _ id.ID,
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]
-		return client.ModerationRemovalReceipt{}, err
+		if err != nil {
+			return client.ModerationRemovalReceipt{}, err
+		}
 	}
-	return client.ModerationRemovalReceipt{}, f.err
+	if f.err != nil {
+		return client.ModerationRemovalReceipt{}, f.err
+	}
+	if f.receipt.ActionID.IsZero() {
+		if f.emptyReceipt {
+			return client.ModerationRemovalReceipt{}, nil
+		}
+		return client.ModerationRemovalReceipt{ActionID: testID(88), Revision: 23}, nil
+	}
+	return f.receipt, nil
 }
 
 func removalAction(action moderation.Action) ModerationAction {
 	now := time.Unix(1_800_000_000, 0)
 	return ModerationAction{Community: testID(1).String(), Group: testID(2).String(), Channel: testID(3).String(),
 		Actor: testID(4).String(), Message: testID(5).String(), SourceRevision: 17,
-		Decision: moderation.Decision{Action: action, Rules: []moderation.Rule{moderation.RuleRate}}, ReceivedAt: now}
+		Decision: moderation.Decision{Action: action, Rules: []moderation.Rule{moderation.RuleRate}}, ReceivedAt: now, runtimeGenerated: true}
 }
 
 func TestModerationRemovalBackendRefusesUnsupportedActions(t *testing.T) {
@@ -89,6 +102,29 @@ func TestModerationRemovalBackendUsesStableBoundOperationOnRetry(t *testing.T) {
 	}
 	if n.groups[0] != testID(2) || n.targets[0] != 17 {
 		t.Fatalf("signed wrong source: group=%s target=%d", n.groups[0], n.targets[0])
+	}
+}
+
+func TestModerationRemovalBackendReturnsTypedServerAcceptance(t *testing.T) {
+	binding := native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}
+	n := &removalSignerFake{binding: binding}
+	s := &removalSessionFake{receipt: client.ModerationRemovalReceipt{ActionID: testID(77), Revision: 31}}
+	b, err := newModerationRemovalBackend(n, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := removalAction(moderation.ActionRemove)
+	accepted, err := b.AcceptModerationAction(context.Background(), action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.matches(action, binding) || accepted.actionID != s.receipt.ActionID || accepted.serverRevision != s.receipt.Revision {
+		t.Fatalf("typed acceptance = %+v", accepted)
+	}
+	s.receipt = client.ModerationRemovalReceipt{}
+	s.emptyReceipt = true
+	if _, err := b.AcceptModerationAction(context.Background(), action); !errors.Is(err, client.ErrProtocol) {
+		t.Fatalf("empty server receipt error = %v", err)
 	}
 }
 

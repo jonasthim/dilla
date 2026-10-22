@@ -22,7 +22,7 @@ import (
 const (
 	moderationCaseStateArea   = uint64(4)
 	moderationPurgeCursorArea = uint64(8)
-	moderationCaseVersion     = uint64(1)
+	moderationCaseVersion     = uint64(2)
 	moderationCaseRetention   = 90 * 24 * time.Hour
 	moderationCaseScanLimit   = uint64(100)
 	moderationCaseMaxValue    = 16 << 10
@@ -36,6 +36,7 @@ var (
 	ErrModerationCaseConflict           = errors.New("moderation case conflicts with existing source revision")
 	ErrModerationCaseBinding            = errors.New("moderation case belongs to another installation or community")
 	ErrModerationEnforcementUnavailable = errors.New("moderation enforcement backend unavailable")
+	ErrModerationAcceptanceMismatch     = errors.New("accepted moderation action does not match requested source")
 )
 
 type moderationCaseNative interface {
@@ -52,16 +53,45 @@ type ModerationEnforcementBackend interface {
 	EnforceModerationAction(context.Context, ModerationAction) error
 }
 
+type acceptedModerationEnforcementBackend interface {
+	AcceptModerationAction(context.Context, ModerationAction) (AcceptedModerationAction, error)
+}
+
+// AcceptedModerationAction is created only after the authenticated server
+// endpoint returns its immutable action ID and community revision.
+type AcceptedModerationAction struct {
+	actionID       id.ID
+	serverRevision uint64
+	community      id.ID
+	group          id.ID
+	targetSequence uint64
+	operationID    id.ID
+	action         moderation.Action
+}
+
+func (a AcceptedModerationAction) matches(request ModerationAction, binding native.Binding) bool {
+	community, cErr := id.Parse(request.Community)
+	group, gErr := id.Parse(request.Group)
+	message, mErr := id.Parse(request.Message)
+	return cErr == nil && gErr == nil && mErr == nil && request.Decision.Action == moderation.ActionRemove &&
+		!a.actionID.IsZero() && a.serverRevision > 0 && a.serverRevision <= math.MaxInt64 && a.community == binding.Community && a.community == community &&
+		a.group == group && a.targetSequence == request.SourceRevision && a.action == moderation.ActionRemove &&
+		a.operationID == moderationRemovalOperationID(group, message, request.SourceRevision)
+}
+
 // ModerationCase is an installation-bound record stored in encrypted helper
 // app state. Excerpt is retained only as a bounded, explicitly supplied preview.
 type ModerationCase struct {
-	Community, Channel, Actor, Message string
-	SourceRevision                     uint64
-	Rules                              []moderation.Rule
-	Action                             moderation.Action
-	Timeout                            time.Duration
-	Excerpt                            string
-	ReceivedAt                         time.Time
+	Community, Group, Channel, Actor, Message string
+	SourceRevision                            uint64
+	Rules                                     []moderation.Rule
+	Action                                    moderation.Action
+	Timeout                                   time.Duration
+	Excerpt                                   string
+	ReceivedAt                                time.Time
+	ServerActionID                            id.ID
+	ServerOperationID                         id.ID
+	ServerRevision                            uint64
 }
 
 // Reason is deterministic from the matched rules and contains no message text.
@@ -110,27 +140,39 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		return err
 	}
 	key := moderationCaseKey(row.Message, row.SourceRevision)
-	encoded, err := encodeModerationCase(row, s.binding)
-	if err != nil {
-		return err
-	}
 	current, err := s.native.StateGet(ctx, moderationCaseStateArea, key)
 	if err != nil {
 		return err
 	}
 	if current.Revision > 0 && !current.Tombstone {
-		if err := s.matchExisting(current.Value, encoded); err != nil {
-			return err
+		existing, decodeErr := decodeModerationCase(current.Value, s.binding)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if !sameModerationCaseRequest(existing, row) {
+			return ErrModerationCaseConflict
 		}
 		return nil
 	}
 	if action.Decision.Action != moderation.ActionLog {
-		if s.backend == nil {
+		backend, ok := s.backend.(acceptedModerationEnforcementBackend)
+		if !ok {
 			return ErrModerationEnforcementUnavailable
 		}
-		if err = s.backend.EnforceModerationAction(ctx, action); err != nil {
-			return err
+		accepted, acceptErr := backend.AcceptModerationAction(ctx, action)
+		if acceptErr != nil {
+			return ErrModerationEnforcementUnavailable
 		}
+		if !accepted.matches(action, s.binding) {
+			return ErrModerationAcceptanceMismatch
+		}
+		row.ServerActionID = accepted.actionID
+		row.ServerOperationID = accepted.operationID
+		row.ServerRevision = accepted.serverRevision
+	}
+	encoded, err := encodeModerationCase(row, s.binding)
+	if err != nil {
+		return err
 	}
 	if _, err = s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationCaseStateArea, Key: key,
 		ExpectedRevision: current.Revision, Value: encoded}}); err == nil {
@@ -150,8 +192,8 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 }
 
 func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error) {
-	if a.Community != s.binding.Community.String() || a.SourceRevision == 0 || a.ReceivedAt.IsZero() || a.ReceivedAt.UnixMilli() <= 0 || a.ReceivedAt.UnixMilli() > math.MaxInt64 || a.ReceivedAt.After(s.now().Add(time.Minute)) ||
-		!validModerationCaseID(a.Channel) || !validModerationCaseID(a.Actor) || !validModerationCaseID(a.Message) || len(a.Decision.Rules) == 0 {
+	if !a.runtimeGenerated || a.Community != s.binding.Community.String() || a.SourceRevision == 0 || a.ReceivedAt.IsZero() || a.ReceivedAt.UnixMilli() <= 0 || a.ReceivedAt.UnixMilli() > math.MaxInt64 || a.ReceivedAt.After(s.now().Add(time.Minute)) ||
+		!validModerationCaseID(a.Group) || !validModerationCaseID(a.Channel) || !validModerationCaseID(a.Actor) || !validModerationCaseID(a.Message) || len(a.Decision.Rules) == 0 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	if a.Decision.Action != moderation.ActionLog && a.Decision.Action != moderation.ActionRemove && a.Decision.Action != moderation.ActionWarn && a.Decision.Action != moderation.ActionTimeout {
@@ -174,7 +216,7 @@ func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error
 	if a.Decision.Action != moderation.ActionTimeout && a.Decision.Timeout != 0 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	return ModerationCase{Community: a.Community, Channel: a.Channel, Actor: a.Actor, Message: a.Message, SourceRevision: a.SourceRevision,
+	return ModerationCase{Community: a.Community, Group: a.Group, Channel: a.Channel, Actor: a.Actor, Message: a.Message, SourceRevision: a.SourceRevision,
 		Rules: rules, Action: a.Decision.Action, Timeout: a.Decision.Timeout, Excerpt: moderation.Excerpt(a.Excerpt), ReceivedAt: a.ReceivedAt}, nil
 }
 
@@ -196,8 +238,15 @@ func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
 	for i, rule := range c.Rules {
 		rules[i] = string(rule)
 	}
-	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, c.Community, c.Channel, c.Actor, c.Message,
-		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli())})
+	if c.Action == moderation.ActionLog {
+		if !c.ServerActionID.IsZero() || !c.ServerOperationID.IsZero() || c.ServerRevision != 0 {
+			return nil, ErrModerationCaseState
+		}
+	} else if c.Action != moderation.ActionRemove || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 {
+		return nil, ErrModerationAcceptanceMismatch
+	}
+	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, c.Community, c.Group, c.Channel, c.Actor, c.Message,
+		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli()), c.ServerActionID, c.ServerRevision, c.ServerOperationID})
 	if err != nil || len(raw) > moderationCaseMaxValue {
 		return nil, ErrModerationCaseState
 	}
@@ -206,7 +255,7 @@ func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
 
 func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, error) {
 	var a []any
-	if len(raw) == 0 || len(raw) > moderationCaseMaxValue || cborx.CheckDeterministic(raw) != nil || cborx.Unmarshal(raw, &a) != nil || len(a) != 14 || a[0] != moderationCaseVersion {
+	if len(raw) == 0 || len(raw) > moderationCaseMaxValue || cborx.CheckDeterministic(raw) != nil || cborx.Unmarshal(raw, &a) != nil || len(a) != 18 || a[0] != moderationCaseVersion {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	instance, iok := moderationCaseID(a[1])
@@ -224,20 +273,23 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 	if c.Community, ok = str(4); !ok || c.Community != binding.Community.String() {
 		return ModerationCase{}, ErrModerationCaseBinding
 	}
-	if c.Channel, ok = str(5); !ok {
+	if c.Group, ok = str(5); !ok {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	if c.Actor, ok = str(6); !ok {
+	if c.Channel, ok = str(6); !ok {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	if c.Message, ok = str(7); !ok {
+	if c.Actor, ok = str(7); !ok {
+		return ModerationCase{}, ErrModerationCaseState
+	}
+	if c.Message, ok = str(8); !ok {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	var uok bool
-	if c.SourceRevision, uok = a[8].(uint64); !uok || c.SourceRevision == 0 {
+	if c.SourceRevision, uok = a[9].(uint64); !uok || c.SourceRevision == 0 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	arr, ok := a[9].([]any)
+	arr, ok := a[10].([]any)
 	if !ok || len(arr) == 0 || len(arr) > 3 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
@@ -251,25 +303,61 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 		seen[rule] = true
 		c.Rules = append(c.Rules, rule)
 	}
-	action, ok := a[10].(string)
+	action, ok := a[11].(string)
 	c.Action = moderation.Action(action)
 	if !ok || (c.Action != moderation.ActionLog && c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	ms, ok := a[11].(uint64)
+	ms, ok := a[12].(uint64)
 	if !ok || ms > uint64(moderation.MaxTimeout/time.Millisecond) || c.Action == moderation.ActionTimeout && ms == 0 || c.Action != moderation.ActionTimeout && ms != 0 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	c.Timeout = time.Duration(ms) * time.Millisecond
-	if c.Excerpt, ok = a[12].(string); !ok || !utf8.ValidString(c.Excerpt) || len(c.Excerpt) > moderation.ExcerptMaxBytes {
+	if c.Excerpt, ok = a[13].(string); !ok || !utf8.ValidString(c.Excerpt) || len(c.Excerpt) > moderation.ExcerptMaxBytes {
 		return ModerationCase{}, ErrModerationCaseState
 	}
-	timestamp, ok := a[13].(uint64)
+	timestamp, ok := a[14].(uint64)
 	if !ok || timestamp == 0 || timestamp > math.MaxInt64 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	c.ReceivedAt = time.UnixMilli(int64(timestamp))
+	if c.ServerActionID, ok = moderationCaseID(a[15]); !ok {
+		return ModerationCase{}, ErrModerationCaseState
+	}
+	if c.ServerRevision, ok = a[16].(uint64); !ok {
+		return ModerationCase{}, ErrModerationCaseState
+	}
+	if c.ServerOperationID, ok = moderationCaseID(a[17]); !ok {
+		return ModerationCase{}, ErrModerationCaseState
+	}
+	if c.Action == moderation.ActionLog {
+		if !c.ServerActionID.IsZero() || !c.ServerOperationID.IsZero() || c.ServerRevision != 0 {
+			return ModerationCase{}, ErrModerationCaseState
+		}
+	} else {
+		group, groupErr := id.Parse(c.Group)
+		message, messageErr := id.Parse(c.Message)
+		if c.Action != moderation.ActionRemove || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
+			groupErr != nil || messageErr != nil || c.ServerOperationID != moderationRemovalOperationID(group, message, c.SourceRevision) {
+			return ModerationCase{}, ErrModerationCaseState
+		}
+	}
 	return c, nil
+}
+
+func sameModerationCaseRequest(existing, requested ModerationCase) bool {
+	if existing.Community != requested.Community || existing.Group != requested.Group || existing.Channel != requested.Channel ||
+		existing.Actor != requested.Actor || existing.Message != requested.Message || existing.SourceRevision != requested.SourceRevision ||
+		existing.Action != requested.Action || existing.Timeout != requested.Timeout || existing.Excerpt != requested.Excerpt ||
+		!existing.ReceivedAt.Equal(requested.ReceivedAt) || len(existing.Rules) != len(requested.Rules) {
+		return false
+	}
+	for i := range existing.Rules {
+		if existing.Rules[i] != requested.Rules[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func moderationCaseID(v any) (id.ID, bool) {
@@ -292,9 +380,9 @@ func (s *ModerationCaseSink) matchExisting(raw, expected []byte) error {
 	return nil
 }
 
-// List returns one bounded page ordered by the deterministic case key. The
-// returned cursor can be supplied to the next call; an empty cursor ends paging.
-func (s *ModerationCaseSink) List(ctx context.Context, after []byte, limit uint64) ([]ModerationCase, []byte, error) {
+// list is the unguarded storage primitive. Callers must use ModerationCaseReader
+// so current view_audit_log permission is checked before scanning encrypted state.
+func (s *ModerationCaseSink) list(ctx context.Context, after []byte, limit uint64) ([]ModerationCase, []byte, error) {
 	if s == nil || ctx == nil || limit == 0 || limit > moderationCaseScanLimit || after != nil && (len(after) == 0 || len(after) > moderationCaseMaxCursor) {
 		return nil, nil, ErrModerationCaseState
 	}

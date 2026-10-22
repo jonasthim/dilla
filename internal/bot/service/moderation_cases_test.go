@@ -108,8 +108,8 @@ func (f moderationCaseEnforcerFunc) EnforceModerationAction(ctx context.Context,
 }
 
 func sampleModerationAction(n *moderationCaseNativeFake, revision uint64) ModerationAction {
-	return ModerationAction{Community: n.binding.Community.String(), Channel: id.New().String(), Actor: id.New().String(), Message: id.New().String(),
-		SourceRevision: revision, Decision: moderation.Decision{Action: moderation.ActionLog, Rules: []moderation.Rule{moderation.RuleMentions}}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0)}
+	return ModerationAction{Community: n.binding.Community.String(), Group: id.New().String(), Channel: id.New().String(), Actor: id.New().String(), Message: id.New().String(),
+		SourceRevision: revision, Decision: moderation.Decision{Action: moderation.ActionLog, Rules: []moderation.Rule{moderation.RuleMentions}}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0), runtimeGenerated: true}
 }
 
 func TestModerationCaseSinkDeduplicatesAndRejectsConflictingSourceRevision(t *testing.T) {
@@ -165,7 +165,7 @@ func TestModerationCaseSinkBoundsExcerptAndRejectsMalformedOrWrongBindingState(t
 	if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
 		t.Fatal(err)
 	}
-	cases, _, err := sink.List(context.Background(), nil, 10)
+	cases, _, err := sink.list(context.Background(), nil, 10)
 	if err != nil || len(cases) != 1 {
 		t.Fatalf("list = %d cases, %v", len(cases), err)
 	}
@@ -175,13 +175,13 @@ func TestModerationCaseSinkBoundsExcerptAndRejectsMalformedOrWrongBindingState(t
 	other := *n
 	other.binding = native.Binding{Instance: id.New(), Community: id.New(), Installation: id.New()}
 	wrongSink, _ := NewModerationCaseSink(&other, nil, time.Now)
-	if _, _, err := wrongSink.List(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseBinding) {
+	if _, _, err := wrongSink.list(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseBinding) {
 		t.Fatalf("wrong binding list error = %v", err)
 	}
 	bad := newModerationCaseNative()
 	bad.rows["mc1-malformed"] = native.StateValue{Revision: 1, Value: []byte{0x80}}
 	badSink, _ := NewModerationCaseSink(bad, nil, time.Now)
-	if _, _, err := badSink.List(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseState) {
+	if _, _, err := badSink.list(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseState) {
 		t.Fatalf("malformed state error = %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {
 	if err != nil || removed != 0 || next != nil {
 		t.Fatalf("final purge page = %d, cursor %q, err %v", removed, next, err)
 	}
-	cases, _, err := sink.List(context.Background(), nil, 10)
+	cases, _, err := sink.list(context.Background(), nil, 10)
 	if err != nil || len(cases) != 1 || cases[0].Message != fresh.Message {
 		t.Fatalf("remaining cases = %#v, %v", cases, err)
 	}
@@ -242,7 +242,7 @@ func TestModerationCasePurgeResumesAfterRestartFromEncryptedCursor(t *testing.T)
 	if err != nil || removed != 0 || !n.cursor.Tombstone {
 		t.Fatalf("terminal purge = %d, cursor=%+v, err=%v", removed, n.cursor, err)
 	}
-	cases, _, err := restarted.List(context.Background(), nil, 10)
+	cases, _, err := restarted.list(context.Background(), nil, 10)
 	if err != nil || len(cases) != 0 {
 		t.Fatalf("remaining cases = %d, err=%v", len(cases), err)
 	}

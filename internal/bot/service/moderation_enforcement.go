@@ -56,14 +56,21 @@ func newModerationRemovalBackend(n moderationRemovalSigner, session moderationRe
 }
 
 func (b *ModerationRemovalBackend) EnforceModerationAction(ctx context.Context, action ModerationAction) error {
+	_, err := b.AcceptModerationAction(ctx, action)
+	return err
+}
+
+// AcceptModerationAction returns a typed, source-bound record only after the
+// server reports the immutable accepted action ID and community revision.
+func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, action ModerationAction) (AcceptedModerationAction, error) {
 	if b == nil || ctx == nil {
-		return ErrModerationActionSource
+		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
 	if action.Decision.Action != moderation.ActionRemove {
-		return ErrModerationActionUnsupported
+		return AcceptedModerationAction{}, ErrModerationActionUnsupported
 	}
-	if len(action.Decision.Rules) == 0 || action.Decision.Timeout != 0 {
-		return ErrModerationActionSource
+	if !action.runtimeGenerated || len(action.Decision.Rules) == 0 || action.Decision.Timeout != 0 {
+		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
 	community, communityErr := id.Parse(action.Community)
 	group, groupErr := id.Parse(action.Group)
@@ -74,19 +81,19 @@ func (b *ModerationRemovalBackend) EnforceModerationAction(ctx context.Context, 
 		community.IsZero() || group.IsZero() || channel.IsZero() || actor.IsZero() || message.IsZero() || community != b.binding.Community ||
 		action.SourceRevision == 0 || action.SourceRevision > math.MaxInt64 || action.ReceivedAt.IsZero() ||
 		action.ReceivedAt.Unix() <= 0 || action.ReceivedAt.Unix() > math.MaxInt64-30 {
-		return ErrModerationActionSource
+		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return AcceptedModerationAction{}, err
 	}
 	request := moderationRemovalOperationID(group, message, action.SourceRevision)
 	now := uint64(action.ReceivedAt.Unix())
 	expires := now + 30
 	signed, err := b.native.SignRemoval(ctx, request, group, action.SourceRevision, expires, now)
 	if err != nil {
-		return err
+		return AcceptedModerationAction{}, err
 	}
-	_, err = b.session.AcceptModerationRemoval(ctx, group, signed)
+	receipt, err := b.session.AcceptModerationRemoval(ctx, group, signed)
 	var apiErr *client.APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "E_REMOVAL_PROOF_EXPIRED" {
 		// The server checked for an existing receipt before this typed refusal,
@@ -95,16 +102,23 @@ func (b *ModerationRemovalBackend) EnforceModerationAction(ctx context.Context, 
 		// especially an unknown network outcome, must replay the original proof.
 		currentUnix := time.Now().Unix()
 		if currentUnix <= 0 || currentUnix > math.MaxInt64-30 {
-			return err
+			return AcceptedModerationAction{}, err
 		}
 		current := uint64(currentUnix)
 		signed, signErr := b.native.SignRemoval(ctx, request, group, action.SourceRevision, current+30, current)
 		if signErr != nil {
-			return signErr
+			return AcceptedModerationAction{}, signErr
 		}
-		_, err = b.session.AcceptModerationRemoval(ctx, group, signed)
+		receipt, err = b.session.AcceptModerationRemoval(ctx, group, signed)
 	}
-	return err
+	if err != nil {
+		return AcceptedModerationAction{}, err
+	}
+	if receipt.ActionID.IsZero() || receipt.Revision == 0 || receipt.Revision > math.MaxInt64 {
+		return AcceptedModerationAction{}, client.ErrProtocol
+	}
+	return AcceptedModerationAction{actionID: receipt.ActionID, serverRevision: receipt.Revision, community: community,
+		group: group, targetSequence: action.SourceRevision, operationID: request, action: moderation.ActionRemove}, nil
 }
 
 func moderationRemovalOperationID(group, message id.ID, revision uint64) id.ID {

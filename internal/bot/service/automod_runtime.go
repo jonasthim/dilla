@@ -18,6 +18,7 @@ type ModerationAction struct {
 	Decision                                  moderation.Decision
 	Excerpt                                   string
 	ReceivedAt                                time.Time
+	runtimeGenerated                          bool
 }
 
 // ModerationActionSink is the application boundary for logging, warnings, or
@@ -94,7 +95,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	}
 	action := ModerationAction{Community: event.Community.String(), Channel: event.Channel.String(),
 		Group: event.Group.String(), Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
-		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt}
+		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt, runtimeGenerated: true}
 	if err := r.sink.ApplyModerationAction(ctx, action); err != nil {
 		return decision, err
 	}
