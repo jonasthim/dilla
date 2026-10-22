@@ -16,10 +16,12 @@ import (
 func interactionID(n byte) id.ID { var v id.ID; v[15] = n; return v }
 
 type interactionNativeFake struct {
-	binding native.Binding
-	group   native.GroupInfo
-	groups  map[id.ID]native.GroupInfo
-	err     error
+	binding        native.Binding
+	group          native.GroupInfo
+	groups         map[id.ID]native.GroupInfo
+	err            error
+	interaction    native.InteractionGroupInspectResult
+	interactionErr error
 }
 
 func (f *interactionNativeFake) Binding() native.Binding { return f.binding }
@@ -28,6 +30,18 @@ func (f *interactionNativeFake) InspectGroup(_ context.Context, group id.ID) (na
 		return info, f.err
 	}
 	return f.group, f.err
+}
+func (f *interactionNativeFake) InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error) {
+	return f.interaction, f.interactionErr
+}
+
+type interactionSnapshotSource interface {
+	InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
+}
+type interactionSnapshotSourceFunc func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
+
+func (f interactionSnapshotSourceFunc) InteractionSnapshot(ctx context.Context, event native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+	return f(ctx, event)
 }
 
 func interactionFixture(t *testing.T, handlers map[protocol.Operation]InteractionHandlerSpec) (*InteractionDispatcher, native.GroupEvent, native.Binding) {
@@ -116,6 +130,59 @@ func TestInteractionDispatcherRefusesUnboundInteractionGroup(t *testing.T) {
 	}}
 	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) {
 		t.Fatalf("unbound interaction group error = %v, want context refusal", err)
+	}
+}
+
+func TestInteractionDispatcherAcceptsKind3OnlyAfterSnapshotMatchesNativeParticipant(t *testing.T) {
+	called := false
+	d, event, binding := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
+		protocol.OpOverviewGet: {Handle: func(_ context.Context, actor InteractionActor, _ protocol.Request) (InteractionResult, error) {
+			called = true
+			if actor.User != interactionID(6) || actor.Device != interactionID(7) {
+				t.Errorf("actor = %+v, want authenticated participant", actor)
+			}
+			return InteractionResult{Status: 0}, nil
+		}},
+	})
+	body := interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil)
+	event.Body = &body
+	participant := interactionID(6)
+	device := interactionID(7)
+	n := d.native.(*interactionNativeFake)
+	n.group = native.GroupInfo{ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2}
+	expected := native.InteractionGroupExpected{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: interactionID(10), BotDevice: interactionID(11), ParticipantUser: participant, ParticipantDevice: device, Group: event.Group, PolicyVersion: 3, ServerNow: 100}
+	source := interactionSnapshotSourceFunc(func(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error) {
+		return expected, []byte{0x81}, nil
+	})
+	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) {
+		t.Fatalf("kind-3 dispatch without configured trusted source = %v, want refusal", err)
+	}
+	d, err := newInteractionDispatcherWithSnapshots(d.native, d.handlers, d.now, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.interaction = native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community, BotUser: expected.BotUser, ParticipantUser: participant, ParticipantDevice: device, PolicyVersion: 3, E2EEVersion: 1, MediaVersion: 0}, BotDevice: expected.BotDevice, Epoch: 1, State: 2}
+	got, err := d.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interactionResponse(t, got).Status != 0 || !called {
+		t.Fatalf("kind-3 result = %s, handler called=%v", got, called)
+	}
+	called = false
+	forged := event
+	forged.SenderUser = interactionID(99)
+	if _, err := d.Dispatch(context.Background(), forged); !errors.Is(err, protocol.ErrContext) || called {
+		t.Fatalf("forged event actor error=%v handler called=%v; want refusal before handler", err, called)
+	}
+	n.interaction.Binding.ParticipantDevice = interactionID(98)
+	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) || called {
+		t.Fatalf("native participant mismatch error=%v handler called=%v; want fail-closed refusal", err, called)
+	}
+	n.interaction.Binding.ParticipantDevice = device
+	n.interactionErr = errors.New("snapshot signature rejected by native core")
+	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) || called {
+		t.Fatalf("native snapshot refusal error=%v handler called=%v; want fail-closed refusal", err, called)
 	}
 }
 

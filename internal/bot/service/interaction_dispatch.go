@@ -29,6 +29,11 @@ var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay
 type interactionNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
+	InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error)
+}
+
+type InteractionSnapshotProvider interface {
+	InteractionSnapshot(context.Context, native.GroupEvent) (native.InteractionGroupExpected, []byte, error)
 }
 
 // InteractionActor is copied solely from the authenticated native event.
@@ -79,20 +84,34 @@ type interactionReplay struct {
 // native helper; a Go GroupEvent value does not prove its own provenance.
 // Replays are retained in a bounded, process-local cache.
 type InteractionDispatcher struct {
-	mu       sync.Mutex
-	native   interactionNative
-	binding  native.Binding
-	now      func() uint64
-	handlers map[protocol.Operation]InteractionHandlerSpec
-	entries  map[interactionReplayKey]*list.Element
-	order    list.List
+	mu        sync.Mutex
+	native    interactionNative
+	binding   native.Binding
+	now       func() uint64
+	snapshots InteractionSnapshotProvider
+	handlers  map[protocol.Operation]InteractionHandlerSpec
+	entries   map[interactionReplayKey]*list.Element
+	order     list.List
 }
 
 func NewInteractionDispatcher(n *native.Client, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64) (*InteractionDispatcher, error) {
 	return newInteractionDispatcher(n, handlers, now)
 }
 
+// NewInteractionDispatcherWithSnapshots enables kind-3 dispatch after the provider
+// obtains a fresh server-signed snapshot for the event's recorded participant.
+func NewInteractionDispatcherWithSnapshots(n *native.Client, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64, snapshots InteractionSnapshotProvider) (*InteractionDispatcher, error) {
+	if snapshots == nil {
+		return nil, errors.New("missing interaction snapshot provider")
+	}
+	return newInteractionDispatcherWithSnapshots(n, handlers, now, snapshots)
+}
+
 func newInteractionDispatcher(n interactionNative, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64) (*InteractionDispatcher, error) {
+	return newInteractionDispatcherWithSnapshots(n, handlers, now, nil)
+}
+
+func newInteractionDispatcherWithSnapshots(n interactionNative, handlers map[protocol.Operation]InteractionHandlerSpec, now func() uint64, snapshots InteractionSnapshotProvider) (*InteractionDispatcher, error) {
 	if n == nil || now == nil {
 		return nil, errors.New("missing interaction dispatcher dependency")
 	}
@@ -107,7 +126,7 @@ func newInteractionDispatcher(n interactionNative, handlers map[protocol.Operati
 		}
 		registered[operation] = handler
 	}
-	return &InteractionDispatcher{native: n, binding: binding, now: now, handlers: registered, entries: make(map[interactionReplayKey]*list.Element)}, nil
+	return &InteractionDispatcher{native: n, binding: binding, now: now, snapshots: snapshots, handlers: registered, entries: make(map[interactionReplayKey]*list.Element)}, nil
 }
 
 // Register adds or replaces a handler. Missing operations return the protocol's
@@ -136,7 +155,22 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	// Native kind-3 groups lack a typed installation and participant binding.
 	// Do not infer that authority from fields supplied by a Go event. Admit
 	// them only after the core can authenticate that binding end to end.
-	if group.ID != event.Group || group.State != 2 || group.Community == nil || *group.Community != d.binding.Community || group.Target != event.Channel || group.Kind != 0 {
+	if group.ID != event.Group || group.State != 2 || group.Community == nil || *group.Community != d.binding.Community || group.Target != event.Channel {
+		return "", protocol.ErrContext
+	}
+	if group.Kind == 3 {
+		if d.snapshots == nil || event.SenderKind != 0 || event.SenderTier != 0 {
+			return "", protocol.ErrContext
+		}
+		expected, snapshot, snapshotErr := d.snapshots.InteractionSnapshot(ctx, event)
+		if snapshotErr != nil || len(snapshot) == 0 || expected.Instance != d.binding.Instance || expected.Installation != d.binding.Installation || expected.Community != d.binding.Community || expected.Group != event.Group || expected.ParticipantUser != event.SenderUser || expected.ParticipantDevice != event.SenderDevice {
+			return "", protocol.ErrContext
+		}
+		inspected, inspectErr := d.native.InspectInteractionGroup(ctx, expected, snapshot)
+		if inspectErr != nil || inspected.Binding.Instance != expected.Instance || inspected.Binding.Installation != expected.Installation || inspected.Binding.Community != expected.Community || inspected.Binding.BotUser != expected.BotUser || inspected.BotDevice != expected.BotDevice || inspected.Binding.ParticipantUser != expected.ParticipantUser || inspected.Binding.ParticipantDevice != expected.ParticipantDevice || inspected.Binding.PolicyVersion != expected.PolicyVersion || inspected.Binding.E2EEVersion != 1 || inspected.Binding.MediaVersion != 0 || inspected.Epoch == 0 || inspected.State != 2 {
+			return "", protocol.ErrContext
+		}
+	} else if group.Kind != 0 {
 		return "", protocol.ErrContext
 	}
 	request, err := protocol.DecodeRequest(*event.Body)
