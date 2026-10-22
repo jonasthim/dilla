@@ -367,7 +367,8 @@ export function joinFailureKey(code: string): StringKey | null {
     // The page is gone (pagehide during the start): nobody reads it.
     case 'E_ABORTED': return null;
     // A trust refusal sets the call phase blocked, whose notice says why (flow 06).
-    case 'E_UMK_CHANGED': case 'E_CREDENTIAL': case 'E_DEVICE_UNLISTED': case 'E_TIER_MISMATCH': case 'E_BINDING': return null;
+    case 'E_UMK_CHANGED': case 'E_CREDENTIAL': case 'E_DEVICE_UNLISTED': case 'E_DEVICE_REVOKED': case 'E_TIER_MISMATCH': case 'E_BINDING':
+      return null;
     default: return 'voice.failed';
   }
 }

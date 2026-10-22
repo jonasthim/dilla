@@ -29,6 +29,7 @@ struct World {
     relay: Relay,
     alice: Core,
     bob: RawPeer,
+    bob2: RawPeer,
     rogue: RawPeer,
     rot: RawPeer,
     v1: DeviceList,
@@ -96,6 +97,7 @@ fn world() -> World {
         relay,
         alice,
         bob,
+        bob2,
         rogue,
         rot,
         v1,
@@ -167,16 +169,16 @@ fn cache_v2(w: &mut World) -> CachedRow {
 }
 
 /// The rogue leaf's verdict is E_DEVICE_UNLISTED (Alice's quarantine row for exactly that leaf),
-/// and its held message stays unreadable. The held row keeps the reason it was held under
-/// (E_DEVICE_LIST_STALE: held for Bob's list), which the core does not rewrite; a message the
-/// leaf sends once the list is cached is refused E_DEVICE_UNLISTED outright
+/// and its held message stays unreadable. The row was held for Bob's list (E_DEVICE_LIST_STALE:
+/// wait for the list); once the leaf is judged, it carries the verdict (E_DEVICE_UNLISTED: the
+/// device must be added to the list), as a message the leaf sends after the verdict does
 /// (`assert_rogue_refused_now`).
 fn assert_rogue_unreadable(w: &World) {
     let row = w.alice.row_at(&GROUP, w.rogue_seq);
     assert_eq!(
         (row.status, row.reason.as_str(), row.body.as_str()),
-        (1, "E_DEVICE_LIST_STALE", ""),
-        "the unlisted device's held message stays unreadable"
+        (1, "E_DEVICE_UNLISTED", ""),
+        "the unlisted device's held message stays unreadable, for the reason it is unreadable"
     );
     let verdict: Vec<String> = {
         let db = w.alice.probe.lock().unwrap();
@@ -454,4 +456,174 @@ fn an_empty_history_is_refused_with_and_without_a_cached_list() {
         Err("E_DEVICE_LIST_STALE")
     );
     assert_eq!(cached(&w), Some(before));
+}
+
+// The held row's reason after the verdict.
+
+/// A row held for the list and re-labelled E_DEVICE_UNLISTED when its leaf was judged is still
+/// held, not retracted: once a later signed list names the device, it is released.
+#[test]
+fn a_held_row_labelled_unlisted_is_released_once_a_later_list_names_the_device() {
+    let mut w = world();
+    cache_v2(&mut w);
+    assert_rogue_unreadable(&w);
+    let v2 = w.v2.clone();
+    let mut entries = v2.unsigned.entries.clone();
+    entries.push(sec_entry(&w.rogue));
+    let v3 = sec_next(&v2, entries, 0xf2);
+    assert_eq!(ingest(&mut w, ROGUE, &[&v2, &v3]), Ok((3, 0, 2)));
+    assert_eq!(revalidate(&mut w, ROGUE), 1);
+    let row = w.alice.row_at(&GROUP, w.rogue_seq);
+    assert_eq!((row.status, row.body.as_str()), (0, "rogue comet"));
+}
+
+/// The re-label is the judged leaf's only: a sibling's row held for the same list, whose leaf the
+/// same ingest found valid, keeps waiting for its own revalidation.
+#[test]
+fn only_the_judged_leafs_held_rows_take_its_verdict() {
+    let mut w = world();
+    cache_v2(&mut w);
+    let bob2_row = w.alice.row_at(&GROUP, w.bob2_seq);
+    assert_eq!(
+        (bob2_row.status, bob2_row.reason.as_str()),
+        (1, "E_DEVICE_LIST_STALE"),
+        "a valid leaf's held row waits for its revalidation, not a failure"
+    );
+    assert_eq!(revalidate(&mut w, BOB2), 1);
+    assert_bob2_readable(&w);
+    assert_rogue_unreadable(&w);
+}
+
+fn retained(w: &World, seq: u64) -> i64 {
+    w.alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM app_pending_history WHERE group_id=?1 AND seq=?2",
+            rusqlite::params![GROUP.as_slice(), seq as i64],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// A device the sender revoked (its entry carries `revoked_at`) is not a device the sender never
+/// added: its held message takes E_DEVICE_REVOKED, its retained evidence is dropped, and it never
+/// opens, not even if a later list names the device unrevoked. A message it sends after the
+/// revocation is refused the same way and not retained.
+#[test]
+fn a_revoked_devices_held_message_says_revoked_and_never_opens() {
+    let mut w = world();
+    let (v1, v2) = (w.v1.clone(), w.v2.clone());
+    let mut entries = v2.unsigned.entries.clone();
+    assert_eq!(entries[1].device_id.as_bytes(), &BOB2);
+    entries[1].revoked_at = Some(NOW + 4);
+    let v3 = sec_next(&v2, entries, 0xf2);
+    assert_eq!(ingest(&mut w, BOB, &[&v1, &v2, &v3]).map(|v| v.0), Ok(3));
+    let row = w.alice.row_at(&GROUP, w.bob2_seq);
+    assert_eq!(
+        (row.status, row.reason.as_str(), row.body.as_str()),
+        (1, "E_DEVICE_REVOKED", "")
+    );
+    assert_eq!(
+        retained(&w, w.bob2_seq),
+        0,
+        "a revoked device's held message is final"
+    );
+    assert_eq!(revalidate(&mut w, BOB2), 0);
+    assert_eq!(ingest(&mut w, BOB2, &[&v3]), Err("E_DEVICE_REVOKED"));
+
+    let after = w.bob2.send(&mut w.relay, "after the revocation");
+    w.alice.sync(&w.relay);
+    let row = w.alice.row_at(&GROUP, after);
+    assert_eq!(
+        (row.status, row.reason.as_str(), row.body.as_str()),
+        (1, "E_DEVICE_REVOKED", "")
+    );
+    assert_eq!(retained(&w, after), 0);
+
+    // A later list that names the device unrevoked: the leaf validates again, the old rows stay shut.
+    let mut entries = v3.unsigned.entries.clone();
+    entries[1].revoked_at = None;
+    let v4 = sec_next(&v3, entries, 0xf2);
+    assert_eq!(ingest(&mut w, BOB2, &[&v3, &v4]).map(|v| v.0), Ok(4));
+    assert_eq!(revalidate(&mut w, BOB2), 0);
+    for seq in [w.bob2_seq, after] {
+        let row = w.alice.row_at(&GROUP, seq);
+        assert_eq!((row.status, row.reason.as_str()), (1, "E_DEVICE_REVOKED"));
+    }
+}
+
+/// v3: v2 with `device` named revoked (added to it first when v2 does not name it).
+fn revoking(v2: &DeviceList, device: &RawPeer) -> DeviceList {
+    let mut entries = v2.unsigned.entries.clone();
+    if !entries
+        .iter()
+        .any(|e| e.device_id.as_bytes() == &device.device)
+    {
+        entries.push(sec_entry(device));
+    }
+    for entry in entries
+        .iter_mut()
+        .filter(|e| e.device_id.as_bytes() == &device.device)
+    {
+        entry.revoked_at = Some(NOW + 4);
+    }
+    sec_next(v2, entries, 0xf2)
+}
+
+/// A row held as unlisted (its device was never on the list) whose device a later list then names
+/// revoked: the row takes E_DEVICE_REVOKED and keeps no evidence (the unlisted-then-revoked branch).
+#[test]
+fn a_row_held_unlisted_takes_revoked_when_a_later_list_revokes_its_device() {
+    let mut w = world();
+    cache_v2(&mut w);
+    assert_rogue_unreadable(&w);
+    assert_eq!(
+        retained(&w, w.rogue_seq),
+        1,
+        "an unlisted row keeps its evidence"
+    );
+    let v2 = w.v2.clone();
+    let v3 = revoking(&v2, &w.rogue);
+    assert_eq!(ingest(&mut w, BOB, &[&v2, &v3]).map(|v| v.0), Ok(3));
+    let row = w.alice.row_at(&GROUP, w.rogue_seq);
+    assert_eq!(
+        (row.status, row.reason.as_str(), row.body.as_str()),
+        (1, "E_DEVICE_REVOKED", "")
+    );
+    assert_eq!(retained(&w, w.rogue_seq), 0);
+    assert_eq!(revalidate(&mut w, ROGUE), 0);
+}
+
+/// A row held under any other releasable reason (a changed key, a failed credential, a tier
+/// mismatch) whose device is then revoked: it takes E_DEVICE_REVOKED with its evidence gone, never
+/// a releasable reason without evidence ("Compare the number" forever). Reaching each reason
+/// through real keys needs a key change and its verification first; the held row's stored state is
+/// what the revocation acts on, so it is set directly.
+#[test]
+fn a_row_held_for_any_releasable_reason_takes_revoked_when_its_device_is_revoked() {
+    for reason in ["E_UMK_CHANGED", "E_CREDENTIAL", "E_TIER_MISMATCH"] {
+        let mut w = world();
+        w.alice
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_messages SET reason=?3 WHERE group_id=?1 AND seq=?2",
+                rusqlite::params![GROUP.as_slice(), w.bob2_seq as i64, reason],
+            )
+            .unwrap();
+        assert_eq!(retained(&w, w.bob2_seq), 1);
+        let (v1, v2) = (w.v1.clone(), w.v2.clone());
+        let v3 = revoking(&v2, &w.bob2);
+        assert_eq!(ingest(&mut w, BOB, &[&v1, &v2, &v3]).map(|v| v.0), Ok(3));
+        let row = w.alice.row_at(&GROUP, w.bob2_seq);
+        assert_eq!(
+            (row.status, row.reason.as_str(), row.body.as_str()),
+            (1, "E_DEVICE_REVOKED", ""),
+            "a row held as {reason}"
+        );
+        assert_eq!(retained(&w, w.bob2_seq), 0, "a row held as {reason}");
+    }
 }
