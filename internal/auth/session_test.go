@@ -516,6 +516,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
+		{name: "ready bot can upload to own community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: ownGroup.String()},
+		{name: "ready bot can read own community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
 		{name: "ready bot can read own channel call", pattern: "GET /v1/channels/{id}/call", method: http.MethodGet, pathName: "id", pathValue: voiceChannel.ID.String()},
 		{name: "ready bot can read own community calls", pattern: "GET /v1/communities/{id}/calls", method: http.MethodGet, pathName: "id", pathValue: community.ID.String()},
@@ -534,6 +537,27 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 			h.ServeHTTP(w, r)
 			if !called {
 				t.Fatalf("route refused; response=%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, pattern, method, pathName, pathValue string
+	}{
+		{name: "ready bot cannot upload to foreign community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignGroup.String()},
+		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequest(tc.method, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+renewed.Token)
+			r.Pattern = tc.pattern
+			r.SetPathValue(tc.pathName, tc.pathValue)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called {
+				t.Fatal("foreign community route reached handler")
 			}
 		})
 	}

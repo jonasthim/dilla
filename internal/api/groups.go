@@ -99,6 +99,7 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	}
 	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
 	h.RegisterBotRegistration(mux, sessions)
+	h.RegisterBotMessages(mux, sessions)
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
 	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
 }

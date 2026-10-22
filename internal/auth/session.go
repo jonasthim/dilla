@@ -1334,6 +1334,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return communityPathForBot(ctx, s.repo, bot)
 	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
 		"GET /v1/communities/{community}/bot/receipts/{operation}",
+		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
 		"POST /v1/groups/{group}/bot/messages", "POST /v1/groups/{group}/moderation/removals",
 		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
 		if !ready {
