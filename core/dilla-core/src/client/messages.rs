@@ -512,20 +512,17 @@ fn decode_bot_send_row(bytes: &[u8]) -> Result<BotSendRow, ClientError> {
     Ok(row)
 }
 
-fn decode_bot_send_operation(
-    bytes: &[u8],
-) -> Result<
-    (
-        [u8; 16],
-        [u8; 16],
-        [u8; 16],
-        [u8; 16],
-        [u8; 16],
-        [u8; 32],
-        [u8; 16],
-    ),
-    ClientError,
-> {
+type BotSendOperationTuple = (
+    [u8; 16],
+    [u8; 16],
+    [u8; 16],
+    [u8; 16],
+    [u8; 16],
+    [u8; 32],
+    [u8; 16],
+);
+
+fn decode_bot_send_operation(bytes: &[u8]) -> Result<BotSendOperationTuple, ClientError> {
     decode_strict(bytes, |d| {
         d.array(8)?;
         if d.uint()? != 1 {
@@ -1667,7 +1664,7 @@ impl ClientCore {
                     u.with_conn(|c| {
                         c.execute(
                             "UPDATE app_outbox SET state=1,epoch=?2 WHERE msg_id=?1",
-                            params![msg_id.as_slice(), stored_epoch as i64],
+                            params![msg_id.as_slice(), stored_epoch],
                         )?;
                         let key = bot_send_attempt_key(&intent.operation, &intent.attempt);
                         let raw = super::schema::meta_get(c, &key)?.ok_or_else(|| {
@@ -1695,7 +1692,7 @@ impl ClientCore {
                     u.with_conn(|c| {
                         c.execute(
                             "UPDATE app_outbox SET state=1,epoch=?2 WHERE msg_id=?1",
-                            params![msg_id.as_slice(), stored_epoch as i64],
+                            params![msg_id.as_slice(), stored_epoch],
                         )?;
                         Ok(())
                     })?;
