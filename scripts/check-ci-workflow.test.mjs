@@ -1931,3 +1931,7 @@ test('a release without the sfu-compat gate is reported', () => {
 test('a release that counts four assets is reported', () => {
   assertReported(releaseProblems((t) => t.replace('-eq 5', '-eq 4')), '-eq 5');
 });
+
+test('a release job without actions: read is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('      actions: read\n', '')), 'actions: read');
+});

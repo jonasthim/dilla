@@ -1028,6 +1028,10 @@ export function checkReleaseWorkflow(root) {
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
   }
+  // UP4: the gate reads ci.yml's jobs through the API; without actions: read it would 403 only at release time.
+  if ('release' in jobs && !/^ {4}permissions:\n(?: {6}\S.*\n)*? {6}actions: read$/m.test(jobs.release)) {
+    problems.push(`${file}: job "release" needs permissions: actions: read for the sfu-compat gate`);
+  }
   if ('tag' in jobs && !/^ {6}version: \$\{\{ steps\.tag\.outputs\.version \}\}$/m.test(jobs.tag)) {
     problems.push(`${file}: job "tag" must output version: \${{ steps.tag.outputs.version }}`);
   }

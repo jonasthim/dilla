@@ -181,6 +181,16 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+/** The jobs of a CI run: GitHub's jobs answer ({ jobs }), or one job object per line (gh api --paginate --jq '.jobs[]'). */
+export function readJobs(path) {
+  const text = readFileSync(path, 'utf8').trim();
+  if (text.startsWith('{') && !text.includes('\n')) {
+    const one = JSON.parse(text);
+    return Array.isArray(one.jobs) ? one.jobs : [one];
+  }
+  return text === '' ? [] : text.split('\n').map((l) => JSON.parse(l));
+}
+
 function setOutput(name, value) {
   process.stdout.write(`${name}=${value}\n`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
@@ -214,6 +224,9 @@ export function main(argv) {
       const tag = need(f, 'tag');
       const previous = readPrevious(f['previous-dir']);
       const meta = buildReleaseJson({ tag, versionJson: readJson(need(f, 'version-json')), previous });
+      if (f.notes !== undefined && !existsSync(f.notes) && meta.sfu_restart === 'required') {
+        throw new Error(`${f.notes} does not exist, and this release needs a media server restart ("required" against ${previous.tag || 'no previous release'}): its notes must announce it`);
+      }
       if (f.notes !== undefined && existsSync(f.notes)) {
         const row = notesRow(readFileSync(f.notes, 'utf8'));
         if (row === null) throw new Error(`${f.notes} has no "Media server (SFU)" row in its Versions table; release.json says ${meta.sfu_restart}`);
@@ -253,7 +266,7 @@ export function main(argv) {
     }
     case 'gate': {
       // gate --jobs FILE: FILE is the jobs of the CI run (GitHub's jobs API answer).
-      const verdict = compatGate(readJson(need(f, 'jobs')).jobs ?? []);
+      const verdict = compatGate(readJobs(need(f, 'jobs')));
       process.stdout.write(`${verdict.reason}\n`);
       return verdict.ok ? 0 : 1;
     }

@@ -7,8 +7,8 @@ import { BASELINE_TAG, notesNewestFirst, sfuRestart, treeLevels } from './releas
  * with the sfu_restart that release.yml will compute for them: the same rule (scripts/release-meta.mjs) over the tree's
  * min_sfu_media_level (internal/sfu/level.go) and the previous release's level. The previous release is the next older
  * notes file with such a row (its first "level N" is its media level); with none, there is no release.json before it, so it
- * is v0.1.0-web3.11 at media level 1. Notes without the row are not checked here (older releases have none); release.yml
- * refuses to publish a release whose notes lack it.
+ * is v0.1.0-web3.11 at media level 1. Notes without the row are not checked here (older releases have none). `release-meta.mjs write` (release.yml)
+ * refuses a release whose notes file has no such row, and a release that needs a restart ("required") without a notes file.
  */
 export function checkReleaseMeta(root) {
   const problems = [];

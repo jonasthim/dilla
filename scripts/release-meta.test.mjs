@@ -108,6 +108,17 @@ test('the release gate wants a green sfu-compat job and takes nothing else for o
   assert.equal(compatGate([]).ok, false);
 });
 
+test('the jobs file reads as one answer or as one job per line (paginated)', () => {
+  const dir = tmp();
+  const job = (name, conclusion) => ({ name, conclusion });
+  writeFileSync(join(dir, 'answer.json'), JSON.stringify({ jobs: [job('go', 'success')] }));
+  writeFileSync(join(dir, 'lines.json'), `${JSON.stringify(job('go', 'success'))}\n${JSON.stringify(job('sfu-compat', 'success'))}\n`);
+  writeFileSync(join(dir, 'single.json'), JSON.stringify(job('sfu-compat', 'success')));
+  assert.equal(cli('gate', '--jobs', join(dir, 'answer.json')).status, 1);
+  assert.equal(cli('gate', '--jobs', join(dir, 'lines.json')).status, 0);
+  assert.equal(cli('gate', '--jobs', join(dir, 'single.json')).status, 0);
+});
+
 test('the CI run is the newest completed push run', () => {
   assert.equal(pickRun([{ id: 1, status: 'completed', event: 'push', created_at: '2026-10-01' }, { id: 2, status: 'completed', event: 'push', created_at: '2026-10-02' }, { id: 3, status: 'in_progress', event: 'push', created_at: '2026-10-03' }, { id: 4, status: 'completed', event: 'pull_request', created_at: '2026-10-04' }]).id, 2);
   assert.equal(pickRun([]), null);
@@ -135,6 +146,22 @@ test('CLI write: release.json from a version file and a previous dir, refusing n
   assert.match(r.stderr, /no "Media server \(SFU\)" row/);
   // No notes file: nothing to compare with, release.json is still written.
   r = cli('write', '--tag', 'v0.1.0-web3.12', '--version-json', join(dir, 'version.json'), '--previous-dir', prev, '--notes', join(dir, 'missing.md'), '--out', join(dir, 'y.json'));
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('CLI write refuses a missing notes file when sfu_restart is required, and allows it when-idle', () => {
+  const dir = tmp();
+  const prev = join(dir, 'previous');
+  mkdirSync(prev);
+  writeFileSync(join(prev, 'previous-tag'), 'v0.1.0-web3.11\n');
+  const missing = join(dir, 'missing.md');
+  writeFileSync(join(dir, 'version.json'), JSON.stringify(version({ min_sfu_media_level: 2 })));
+  let r = cli('write', '--tag', 'v0.1.0-web3.12', '--version-json', join(dir, 'version.json'), '--previous-dir', prev, '--notes', missing, '--out', join(dir, 'x.json'));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /missing\.md does not exist.*required/);
+  assert.throws(() => readFileSync(join(dir, 'x.json')));
+  writeFileSync(join(dir, 'version.json'), JSON.stringify(version()));
+  r = cli('write', '--tag', 'v0.1.0-web3.12', '--version-json', join(dir, 'version.json'), '--previous-dir', prev, '--notes', missing, '--out', join(dir, 'y.json'));
   assert.equal(r.status, 0, r.stderr);
 });
 
