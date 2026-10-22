@@ -1036,14 +1036,15 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.camera).toBe(false);
   });
 
-  it('an unexpected room disconnect ends the call and posts callLeave("lost") (WB client I3)', async () => {
+  it('an unexpected room disconnect ends the call and holds it: the worker gets callHold, not callLeave (WB client I3, UP7)', async () => {
     const f = fakes();
     const call = await start(f);
     f.room.emit('disconnected');
     await flush();
     expect(call.state.phase).toBe('ended');
     expect(call.state.error).toBe('E_DISCONNECTED');
-    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'lost' });
+    expect(f.calls).toContainEqual({ m: 'callHold', channelId: CH });
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
     f.pushKeys(callId, keysFor(2n));
     expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
   });
@@ -1180,7 +1181,10 @@ describe('the whole-branch fix wave', () => {
       f.room.emit('disconnected', reason);
       await flush();
       expect(call.state).toMatchObject({ phase: 'ended', error: code });
-      expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'lost' }]);
+      // UP7 (R-UP6): a lost connection is held (callHold); a closed room or a removal leaves as before.
+      const held = code === 'E_DISCONNECTED';
+      expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual(held ? [] : [{ m: 'callLeave', reason: 'lost' }]);
+      expect(f.calls.filter((c) => c.m === 'callHold')).toEqual(held ? [{ m: 'callHold', channelId: CH }] : []);
     });
 
   // m2: the room's own end is heard from the moment joinCall resolves, not only after the microphone is published.
@@ -3735,4 +3739,94 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------------------------
+// UP7 (Q1 = B, R-UP6): the update reload holds the call, and the next page's resume is a fast path.
+// ---------------------------------------------------------------------------------------------
+describe('UP7: the held call and the resume', () => {
+  const later2 = <T,>() => {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+
+  it("leave('hold') posts callHold, waits for its answer, then disconnects the room with no callLeave", async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    const answer = later2<null>();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => (cmd.m === 'callHold' ? (f.order.push('callHold'), f.calls.push(cmd), answer.promise) : original(cmd)));
+    const done = call.leave('hold');
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callHold')).toEqual([{ m: 'callHold', channelId: CH }]);
+    // Nothing of the room goes before the worker holds the group (its marker persisted).
+    expect(f.order.slice(f.order.indexOf('callHold'))).toEqual(['callHold']);
+    answer.resolve(null);
+    await done;
+    expect(f.order.slice(f.order.indexOf('callHold'))).toEqual(['callHold', 'manager.dispose', 'room.disconnect', 'manager.dispose', 'room.disconnect', 'worker.terminate', 'lock.release']);
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
+    expect(call.state.phase).toBe('ended');
+    // A pagehide after it (the reload itself) posts nothing more.
+    window.dispatchEvent(new Event('pagehide'));
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([]);
+  });
+
+  it('a resume asks for the microphone in parallel with callJoin, gates before the connect and marks its budget', async () => {
+    const f = fakes();
+    const join = later2<unknown>();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => {
+      if (cmd.m !== 'callJoin') return original(cmd);
+      f.calls.push(cmd);
+      return join.promise;
+    });
+    const seen: unknown[] = [];
+    const marks: string[] = [];
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: {
+      gate: async (a) => { seen.push(a); marks.push('gate'); },
+      mark: (m) => { marks.push(m); },
+    } });
+    await flush();
+    // callJoin is out and the microphone is asked for while it runs.
+    expect(f.calls.map((c) => c.m)).toEqual(['callJoin']);
+    expect(f.gum).toHaveBeenCalledTimes(1);
+    expect(f.deps.joinCall).not.toHaveBeenCalled();
+    f.pushKeys(callId, keysFor(1n));
+    join.resolve({ callId, groupId: GROUP, livekitUrl: 'wss://sfu.example/rtc', token: 'tok', iceServers: [], caps: [64_000, 2_500_000, 0],
+      epoch: '1', resumed: true, expired: false });
+    const call = await started;
+    expect(seen).toEqual([{ resumed: true, expired: false }]);
+    expect(marks).toEqual(['token', 'gate', 'connected', 'published']);
+    expect(call.state.phase).toBe('connected');
+    await call.leave('user');
+  });
+
+  it('a gate that refuses ends the resume before the connect: no LiveKit join, the microphone stopped, one callLeave', async () => {
+    let stopped = 0;
+    const track = { kind: 'audio', stop: () => { stopped += 1; } };
+    const f = fakes({ getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] }) as unknown as MediaStream });
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: {
+      gate: async () => { throw new Error('E_ABORTED'); },
+    } }).catch((e: unknown) => e);
+    const r = await outcome;
+    expect(r).toMatchObject({ code: 'E_ABORTED' });
+    expect(f.deps.joinCall).not.toHaveBeenCalled();
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'user' }]);
+    await flush();
+    expect(stopped).toBe(1);
+    expect(f.contexts.every((c) => c.state === 'closed')).toBe(true);
+  });
+
+  it('a refused callJoin carries the instance\'s retry_after_ms to the page', async () => {
+    const f = fakes();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => (cmd.m === 'callJoin'
+      ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', status: 503, retryAfterMs: 2_500 }))
+      : original(cmd)));
+    const r = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, resume: { gate: async () => undefined } }).catch((e: unknown) => e);
+    expect(r).toMatchObject({ code: 'E_UNAVAILABLE', retryAfterMs: 2_500 });
+  });
 });

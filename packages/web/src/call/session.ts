@@ -13,7 +13,7 @@ import {
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
 import { reportProcessorStatus } from './processor-status.ts';
-import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
+import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type MicResult, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
@@ -85,8 +85,13 @@ export interface PageCallState {
    */
   error: string | null;
 }
-/** 'lost' (WB client I3): the room ended on its own; media stops first and the worker hears callLeave 'lost'. */
-export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost';
+/** 'lost' (WB client I3): the room ended on its own; media stops first. A room lost with E_DISCONNECTED is held (UP7,
+ *  R-UP6): the worker hears callHold, so the call group is kept for the recovery's resume; any other end (E_CALL_ENDED,
+ *  E_REMOVED) posts callLeave 'lost' as before.
+ *  'hold' (UP7, Q1 = B): the update reload. callHold is posted and answered first (the worker keeps the call group and
+ *  persists its callKeep marker), then the LiveKit room is disconnected with no MLS leave, so the SFU frees the old
+ *  participant at once, and the media goes. The next page resumes the held group. */
+export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost' | 'hold';
 export interface PageCall {
   readonly state: PageCallState;
   subscribe(fn: () => void): () => void;
@@ -213,23 +218,38 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /**
+   * UP7 (Q1 = B): the resume of a call group held across an update reload, the fast path. The microphone is acquired in
+   * parallel with callJoin (the worker's catch-up, media epoch and token mint) instead of before it, and `gate` is awaited
+   * between callJoin's answer and the LiveKit connect: it rejects (any error) to cancel the start before anything reaches
+   * the SFU, and the start then ends as a failed one does (media released, callLeave 'user': the worker's one self-Remove).
+   * `mark` hears the budget's marks (token, connected, published).
+   */
+  resume?: {
+    gate(answer: { resumed: boolean; expired: boolean }): Promise<void>;
+    mark?(name: 'token' | 'connected' | 'published'): void;
+  };
 }
 
-/** A refusal or failure of the session, by code only (copy maps codes, never error text). */
+/** A refusal or failure of the session, by code only (copy maps codes, never error text). `retryAfterMs` (UP7, R-UP8):
+ *  the instance's own wait for a transient refusal (503 E_UNAVAILABLE, 429), carried from the worker's error. */
 export class PageCallError extends Error {
   readonly code: string;
-  constructor(code: string) {
+  readonly retryAfterMs: number | null;
+  constructor(code: string, retryAfterMs: number | null = null) {
     super(code);
     this.name = 'PageCallError';
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
 const CODE = /^E_[A-Z0-9_]+/;
 export function pageCallError(err: unknown): PageCallError {
   if (err instanceof PageCallError) return err;
-  const code = (err as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && CODE.test(code)) return new PageCallError(code);
+  const { code, retryAfterMs } = (err ?? {}) as { code?: unknown; retryAfterMs?: unknown };
+  const retry = typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : null;
+  if (typeof code === 'string' && CODE.test(code)) return new PageCallError(code, retry);
   const fromMessage = err instanceof Error ? CODE.exec(err.message)?.[0] : undefined;
   return new PageCallError(fromMessage ?? 'E_INTERNAL');
 }
@@ -393,17 +413,27 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     : null;
   // A refused device at the start leaves the system default playing.
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
-  let mic: Awaited<ReturnType<typeof acquireMic>>;
-  try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
-  } catch (err) {
-    closeCtx();
-    throw err;
-  }
-  if (opts.signal?.aborted === true) {
-    if ('track' in mic) mic.track.stop();
-    closeCtx();
-    throw new PageCallError('E_ABORTED');
+  // UP7 (Q1 = B): a resume acquires the microphone in parallel with callJoin (below); `micPending` is that capture until
+  // it is taken. Every other start asks for it first.
+  let mic!: MicResult;
+  let micTaken = false;
+  let micPending: Promise<MicResult> | null = null;
+  if (opts.resume === undefined) {
+    try {
+      mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+      micTaken = true;
+    } catch (err) {
+      closeCtx();
+      throw err;
+    }
+    if (opts.signal?.aborted === true) {
+      if ('track' in mic) mic.track.stop();
+      closeCtx();
+      throw new PageCallError('E_ABORTED');
+    }
+  } else {
+    if (opts.signal?.aborted === true) { closeCtx(); throw new PageCallError('E_ABORTED'); }
+    micPending = acquireMic(deps.media, opts.input, false);
   }
   let roster = new Map<string, { userId: string; leaf: number }>();
   let selfLeaf = -1;
@@ -422,7 +452,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const statusOwner = Symbol('microphone');
   let aborted = false;
   let joinedSession: CallSession | null = null;
-  const stopMic = (): void => { if ('track' in mic) mic.track.stop(); };
+  /** Stops the microphone, or (a resume's capture not taken yet) the one its pending capture yields. */
+  const stopMic = (): void => {
+    if (micTaken) { if ('track' in mic) mic.track.stop(); return; }
+    void micPending?.then((late) => { if ('track' in late) late.track.stop(); }, () => undefined);
+  };
   /** A pagehide, or the page's abort (WB client I1), during startup: everything stops now, nothing waits. */
   const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
@@ -484,6 +518,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     throw await abandon(err, false);
   }
   if (aborted) throw new PageCallError('E_ABORTED');
+  // UP7 (Q1 = B): the resume's gate (the page's AFK verdict, read in parallel with the worker's resume) and its
+  // microphone, both before the key is taken and before anything reaches the SFU. A gate that refuses ends the start as a
+  // failed one: media released, then callLeave 'user' (the worker's one self-Remove of the resumed leaf).
+  if (opts.resume !== undefined) {
+    opts.resume.mark?.('token');
+    try {
+      await opts.resume.gate({ resumed: join.resumed === true, expired: join.expired === true });
+    } catch (err) {
+      throw await abandon(err, true);
+    }
+    if (aborted) throw new PageCallError('E_ABORTED');
+    const taken = await (micPending ?? Promise.resolve<MicResult>({ mic: 'missing' }));
+    if (aborted) { if ('track' in taken) taken.track.stop(); throw new PageCallError('E_ABORTED'); }
+    mic = taken;
+    micTaken = true;
+  }
   let joinEpoch: bigint;
   let caps: CallCaps;
   try {
@@ -517,6 +567,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   }
   if (session === null) throw await abandon(joinError ?? new PageCallError('E_INTERNAL'), true);
   joinedSession = session;
+  opts.resume?.mark?.('connected');
   // WB client m2: the room's end and its reconnects are heard from here on, not only once the microphone is published.
   let onRoomEnd: (reason: unknown) => void = (reason) => { endedBy ??= endCodeOf(reason); };
   let onRoomReconnecting: () => void = () => undefined;
@@ -960,6 +1011,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.muted || mode === 'ptt') mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
+        opts.resume?.mark?.('published');
       } catch {
         mic.track.stop();
         micTrack = null;
@@ -1363,6 +1415,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     onRoomEnd = (reason) => {
       if (ended) return;
       set({ error: endCodeOf(reason) });
+      // UP7 (R-UP6): a lost connection (E_DISCONNECTED) holds the call group (callHold, below); a closed room or a removal
+      // posts callLeave 'lost' as before.
       void leave('lost');
     };
     const onSubscribed = (track: unknown, pub: unknown, participant: unknown): void => {
@@ -1427,8 +1481,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (leaving !== null) return leaving;
       stopEverything();
       const post = (r: 'user' | 'pagehide' | 'switch' | 'lost') => deps.bridge.call({ m: 'callLeave', reason: r }).then(() => undefined, () => undefined);
+      const hold = () => deps.bridge.call({ m: 'callHold', channelId: target.channelId }).then(() => undefined, () => undefined);
       const releaseAll = () => release().catch(() => undefined).finally(stopCaptures);
-      if (reason === 'pagehide') {
+      if (reason === 'hold') {
+        // UP7 (Q1 = B): the update reload. The worker holds the group (and persists its marker) before anything else; then
+        // the room is disconnected with no MLS leave, so the SFU frees this participant at once, and the media goes.
+        leaving = hold().then(() => {
+          try { manager.dispose(); } catch { /* released below */ }
+          return Promise.resolve(room.disconnect()).catch(() => undefined);
+        }).then(releaseAll);
+      } else if (reason === 'pagehide') {
         // The page is going away: nothing here may wait. callLeave is posted, then media stops in this same task.
         void post('pagehide');
         try { manager.dispose(); } catch { /* released below */ }
@@ -1436,7 +1498,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         leaving = releaseAll();
       } else if (reason === 'blocked' || reason === 'removed' || reason === 'lost') {
         // Keys must stop before anything else: media first, then the worker’s leave.
-        leaving = releaseAll().then(() => post(reason === 'lost' ? 'lost' : 'user'));
+        const held = reason === 'lost' && state.error === 'E_DISCONNECTED';
+        leaving = releaseAll().then(() => (held ? hold() : post(reason === 'lost' ? 'lost' : 'user')));
       } else {
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);

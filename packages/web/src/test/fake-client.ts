@@ -134,10 +134,12 @@ export class FakeSession implements PageCall {
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
   readonly dropKeys = vi.fn((upTo?: bigint) => { this.log.push(upTo === undefined ? 'dropKeys' : `dropKeys:${upTo}`); });
   // As the real session: a person's leave posts callLeave with its reason; a block or removal posts 'user' after stopping.
-  readonly leave = vi.fn((reason: 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed') => {
+  // UP7: 'hold' (the update reload) posts callHold for the session's channel instead.
+  readonly leave = vi.fn((reason: 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'hold') => {
     this.log.push(`leave:${reason}`);
     const posted = reason === 'blocked' || reason === 'removed' ? 'user' : reason;
-    return this.leaveGate.then(() => this.bridge?.call({ m: 'callLeave', reason: posted })).then(() => {
+    return this.leaveGate.then(() => this.bridge?.call(posted === 'hold' ? { m: 'callHold', channelId: this.channelId }
+      : { m: 'callLeave', reason: posted })).then(() => {
       this.log.push(`left:${reason}`); this.update({ phase: 'ended' });
     });
   });
@@ -154,6 +156,8 @@ export class FakeSession implements PageCall {
   });
   readonly setOutput = vi.fn((id: string) => { this.log.push(`output:${id}`); return Promise.resolve(); });
   private readonly bridge: Pick<CoreClient, 'call'> | null;
+  /** UP7: the channel the session's callHold names (a test sets it). */
+  channelId = '';
   constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }
   get muted(): boolean { return this.state.muted; }
   get deafened(): boolean { return this.state.deafened; }
@@ -274,7 +278,16 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     localDecodeList: () => 'vp8',
     browserDeps: bridge => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
     startPageCall: vi.fn<VoiceModule['startPageCall']>(async (deps, target, opts) => {
-      await deps.bridge.call({ m: 'callJoin', channelId: target.channelId, vdec: target.vdec });
+      const answer = await deps.bridge.call({ m: 'callJoin', channelId: target.channelId, vdec: target.vdec }) as { resumed?: boolean; expired?: boolean } | null;
+      // UP7: as the real session, a resume's gate runs between callJoin's answer and the connect; a refusal leaves.
+      if (opts.resume !== undefined) {
+        try {
+          await opts.resume.gate({ resumed: answer?.resumed === true, expired: answer?.expired === true });
+        } catch (e) {
+          await deps.bridge.call({ m: 'callLeave', reason: 'user' });
+          throw e;
+        }
+      }
       // As the real session: the page's abort ends a start that has not connected yet (WB client I1).
       await new Promise<void>((resolve, reject) => {
         void startGate.then(resolve);
@@ -287,6 +300,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       });
       startedWith.push((opts.audioContext ?? null) as unknown as FakeCallContext | null);
       const session = new FakeSession(log, deps.bridge);
+      session.channelId = target.channelId;
       if (o.audioBlocked === 'at-start') session.state = { ...session.state, audioBlocked: true };
       if (o.audioBlocked === 'same-tick') {
         const subscribe = session.subscribe.bind(session);

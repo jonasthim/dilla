@@ -1,5 +1,5 @@
 import type { EventEmitter } from 'events';
-import { Room, type RoomConnectOptions, type RoomEvent, type RoomOptions, type TrackPublishDefaults } from 'livekit-client';
+import { Room, type ReconnectContext, type ReconnectPolicy, type RoomConnectOptions, type RoomEvent, type RoomOptions, type TrackPublishDefaults } from 'livekit-client';
 import { createMediaWorker, DillaE2EEManager, type EpochKeys } from './manager';
 import { isVoiceSupported } from './support';
 import { installDillaCodecPreferences } from './codec-preferences';
@@ -32,9 +32,37 @@ export interface CallSession {
 const E2EE_WAIT_MS = 10_000;
 const STATUS_EVENT = 'participantEncryptionStatusChanged' satisfies `${RoomEvent}`;
 
+/** UP7 (R-UP8): how long the signalling resume keeps trying, and the longest wait between two attempts. */
+export const RECONNECT_WINDOW_MS = 90_000;
+export const RECONNECT_DELAY_CAP_MS = 5_000;
+/** LiveKit's own first steps (DefaultReconnectPolicy), then the cap. */
+const RECONNECT_STEPS_MS = [0, 300, 1_200, 2_700];
+
+/**
+ * UP7 (R-UP8): an API restart (an upgrade) drops LiveKit's signalling, which reaches the SFU through the API's /rtc gate,
+ * while the media to the SFU flows on. livekit-client's DefaultReconnectPolicy gives up after ten attempts (about 45 s);
+ * this one keeps resuming for RECONNECT_WINDOW_MS, at most RECONNECT_DELAY_CAP_MS apart, so a restart of a few seconds
+ * is bridged by a resume with no new join.
+ * The SFU side holds as long: livekit-server v1.13.7 marks a participant whose signalling closed as such and closes it
+ * only if its ICE never connected (rtc/participant.go:1039-1044, HandleSignalSourceClose). Once connected it stays for as
+ * long as its media flows; only an ICE failure ends it, 15 s after the media stops (rtc/transport.go:81-83:
+ * iceDisconnectedTimeout 10 s + iceFailedTimeout 5 s) plus the 5 s disconnect cleanup (participant.go:77). That is
+ * longer than 90 s whenever the media flows, so internal/sfu/config.go needs no change. (Read from the v1.13.7 source;
+ * the acceptance e2e, UP9, restarts the API under a live call.)
+ */
+export class DillaReconnectPolicy implements ReconnectPolicy {
+  nextRetryDelayInMs(context: ReconnectContext): number | null {
+    const left = RECONNECT_WINDOW_MS - context.elapsedMs;
+    if (left <= 0) return null;
+    const step = RECONNECT_STEPS_MS[context.retryCount] ?? RECONNECT_DELAY_CAP_MS;
+    return Math.min(step, RECONNECT_DELAY_CAP_MS, left);
+  }
+}
+
 /** interfaces.md c.2: the dilla publish defaults (DEV-08, DEV-09: RED and backup codecs off under E2EE anyway). */
 export const ROOM_DEFAULTS: Partial<RoomOptions> = {
   adaptiveStream: false,
+  reconnectPolicy: new DillaReconnectPolicy(),
   dynacast: false,
   // web3.9 V-1: LiveKit's default disconnects the room on beforeunload, so a navigation the browser later cancels dropped
   // the call through the lost-room path (E_DISCONNECTED). The page session's own pagehide leave owns page leave.

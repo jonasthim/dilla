@@ -1545,7 +1545,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     void update.store.load(updateScope).then(async restored => {
       if (!active) return;
       if (restored !== null && !restoreApplied.current && typeof restored.state === 'object' && restored.state !== null) {
-        const saved = restored.state as { draft?: { channelId?: unknown; text?: unknown }; call?: { channelId?: unknown; camera?: unknown; sharing?: unknown } | null;
+        const saved = restored.state as { draft?: { channelId?: unknown; text?: unknown };
+          call?: { channelId?: unknown; camera?: unknown; sharing?: unknown; held?: unknown; at?: unknown; gone?: unknown } | null;
           conversationId?: unknown;
           side?: Side | null; threadDraft?: { channelId?: unknown; rootMsgId?: unknown; text?: unknown } | null;
           membersOpen?: unknown; tab?: unknown; ui?: unknown; view?: unknown;
@@ -1586,7 +1587,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           upgradeRejoinUntil.current = Date.now() + 120_000;
           if (saved.call.camera === true) setPendingCamera(saved.call.channelId);
           if (saved.call.sharing === true) setSharingStopped(true);
-          callRestoreRef.current(saved.call.channelId, saved.call.camera === true, saved.call.sharing === true);
+          // UP7 (Q1 = B): a call the reload held (callHold) resumes at once; a call saved by an older page, or one that
+          // had already ended, takes the restore's ordinary path.
+          const { held, at, gone } = saved.call;
+          const keep = held === true && typeof at === 'number' && Number.isFinite(at) && typeof gone === 'number' && Number.isFinite(gone)
+            ? { at, gone: Math.min(gone, at) } : null;
+          callRestoreRef.current(saved.call.channelId, saved.call.camera === true, saved.call.sharing === true, keep);
         }
         if (restored.files.length > 0 && owner !== null) {
           await client.call({ m: 'attachFiles', channelId: owner, files: restored.files });
@@ -1644,13 +1650,19 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       try {
         const files = targetId === null ? [] : await client.call({ m: 'checkpointFiles', channelId: targetId }) as File[];
         const resumeId = call.channelId ?? call.recoveryChannelId ?? recentUpdateCall?.channelId ?? null;
+        // UP7 (Q1 = B): a call this page is in, or recovering, is held across the reload: the worker keeps its group
+        // (callHold) and the next page resumes it at once. `at` and `gone` (wall ms) let that page tell an expired hold and
+        // apply late-rejoin to it only then (R-UP9).
+        const held = call.channelId !== null || call.recoveryChannelId !== null;
         await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab: homeSelected ? 'dms' : 'channels', view: captureViewPlace(),
           search: { open: searchOpen, query: searchQuery, scope: searchScope, id: searchId },
           call: resumeId === null ? null
             : { channelId: resumeId,
               camera: call.state?.camera ?? (call.recoveryChannelId !== null ? call.recoveryCamera : recentUpdateCall?.camera ?? false),
-              sharing: call.state?.sharing ?? (call.recoveryChannelId !== null ? call.recoverySharing : recentUpdateCall?.sharing ?? false) } }, files);
-        if (call.session !== null) await call.session.leave('user');
+              sharing: call.state?.sharing ?? (call.recoveryChannelId !== null ? call.recoverySharing : recentUpdateCall?.sharing ?? false),
+              ...(held ? { held: true, at: Date.now(), gone: call.absentSince() } : {}) } }, files);
+        // UP7: callHold in place of the person's leave (which self-Removed): the group outlives the page.
+        if (held) await call.holdForReload();
         update.reload();
       } catch {
         updating.current = false;

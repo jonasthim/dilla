@@ -164,6 +164,46 @@ describe('voice in the shell', () => {
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
     expect(save.mock.calls[0]?.[1]).toMatchObject({ call: { channelId: GENV } });
   });
+  it('UP7 (Q1 = B): a new build mid-call holds the call (callHold, no callLeave), saves the hold, then reloads', async () => {
+    let changed!: (entry: string) => void;
+    const order: string[] = [];
+    const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockImplementation(() => { order.push('save'); return Promise.resolve(); });
+    const reload = vi.fn(() => { order.push('reload'); });
+    const app = await inVoice({ update: { currentEntry: '/assets/old.js',
+      watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+      store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload } });
+    const base = app.client.handler;
+    app.client.handler = command => { if (command.m === 'callHold' || command.m === 'callLeave') order.push(command.m); return base(command); };
+    act(() => changed('/assets/new.js'));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(order).toEqual(['save', 'callHold', 'reload']);
+    expect(app.client.callsOf('callHold')).toEqual([{ m: 'callHold', channelId: GENV }]);
+    expect(app.client.callsOf('callLeave')).toEqual([]);
+    expect(app.session.leave).toHaveBeenCalledWith('hold');
+    const saved = save.mock.calls[0]?.[1] as { call: { channelId: string; held: boolean; at: number; gone: number } };
+    expect(saved.call).toMatchObject({ channelId: GENV, held: true });
+    expect(typeof saved.call.at).toBe('number');
+    expect(saved.call.gone).toBeLessThanOrEqual(saved.call.at);
+  });
+  it('UP7 (Q1 = B): a held call restored after the reload joins at once, without waiting for the recovery tick', async () => {
+    const app = renderVoiceShell({ update: { currentEntry: '/assets/new.js', watch: () => () => undefined,
+      store: { save: () => Promise.resolve(),
+        load: () => Promise.resolve({ state: { call: { channelId: GENV, camera: false, sharing: false, held: true, at: Date.now(), gone: Date.now() } }, files: [] }),
+        remove: () => Promise.resolve() }, reload: vi.fn() } });
+    app.client.handler = command => {
+      if (command.m === 'callJoin') {
+        app.client.set('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+        return Promise.resolve({ resumed: true, expired: false });
+      }
+      return Promise.resolve(null);
+    };
+    const t0 = performance.now();
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1), { timeout: 900 });
+    expect(performance.now() - t0).toBeLessThan(900);
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.client.callsOf('callLeave')).toEqual([]);
+    expect(app.client.callsOf('callRelease')).toEqual([]);
+  });
   it('reopens a community voice room closed while an update is in progress', async () => {
     let changed!: (entry: string) => void;
     const app = await inVoice({ update: { currentEntry: '/assets/old.js',
