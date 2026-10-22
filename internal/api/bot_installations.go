@@ -108,6 +108,7 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/enroll", d.EnrollBotInstallation)
 	m.Handle("PUT /v1/bot-runtime/installations/{installation}/credential", botSession("PUT /v1/bot-runtime/installations/{installation}/credential", http.HandlerFunc(d.FinalizeBotCredential)))
 	m.Handle("POST /v1/bot-runtime/installations/{installation}/ready", botSession("POST /v1/bot-runtime/installations/{installation}/ready", http.HandlerFunc(d.MarkBotReady)))
+	registerBotSpotifyAttempt(m, d)
 }
 
 func botInstallationValue(row store.BotInstallationRow) []any {

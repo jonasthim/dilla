@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -146,6 +147,16 @@ func (c *Config) Validate() error {
 
 	if c.Instance.Domain == "" {
 		add("instance.domain is required: certmagic, WebAuthn's RPID, the TURN realm and the OIDC redirect all derive from it")
+	}
+	if (c.BotSpotify.ClientID == "") != (c.BotSpotify.RedirectURL == "") {
+		add("bot_spotify.client_id and bot_spotify.redirect_url must be configured together")
+	} else if len(c.BotSpotify.ClientID) > 256 || strings.TrimSpace(c.BotSpotify.ClientID) != c.BotSpotify.ClientID || strings.ContainsAny(c.BotSpotify.ClientID, "\r\n\t ") {
+		add("bot_spotify.client_id must be a bounded public application identifier")
+	} else if c.BotSpotify.RedirectURL != "" {
+		u, err := url.Parse(c.BotSpotify.RedirectURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+			add("bot_spotify.redirect_url must be an exact HTTPS URI registered with Spotify")
+		}
 	}
 	if !c.BehindProxy() && !c.Instance.PublicIP.IsValid() {
 		add("instance.public_ip is required unless tls.mode = \"behind_proxy\": LiveKit would otherwise STUN-discover its own address")

@@ -141,6 +141,11 @@ type Deps struct {
 	BotIdentity *botidentity.Verifier
 	// BotRuntime authenticates operator credentials independently of human device sessions.
 	BotRuntime *botruntime.Manager
+	// BotSpotifyClientID and BotSpotifyRedirectURL are public OAuth configuration.
+	// The redirect must be the exact HTTPS URI registered with Spotify.
+	BotSpotifyClientID    string
+	BotSpotifyRedirectURL string
+	botSpotify            *botSpotifyBroker
 	// BotRevoked runs after disable/removal commits to close online transport and prompt MLS removals.
 	BotRevoked func(context.Context, store.BotInstallationRow, bool)
 }
@@ -176,6 +181,9 @@ const maxCBORBody = 64 << 10
 // route that exists in the document and not in the binary is a missing line
 // here rather than a forgotten wiring in a composition root.
 func Register(m *server.Mux, d Deps) {
+	if d.botSpotify == nil {
+		d.botSpotify = newBotSpotifyBroker(d.Clock)
+	}
 	if d.UploadMeter == nil && d.Config != nil {
 		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
 	}

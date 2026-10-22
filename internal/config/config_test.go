@@ -172,6 +172,30 @@ func TestAPepperFileIsRefused(t *testing.T) {
 	}
 }
 
+func TestBotSpotifyOAuthConfigRequiresPairedExactHTTPSRedirect(t *testing.T) {
+	for _, tc := range []struct {
+		name, client, redirect string
+		wantErr                bool
+	}{
+		{"disabled", "", "", false},
+		{"complete", "public-id", "https://chat.example/settings/music/callback", false},
+		{"missing redirect", "public-id", "", true},
+		{"insecure redirect", "public-id", "http://chat.example/callback", true},
+		{"userinfo redirect", "public-id", "https://user@chat.example/callback", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base()
+			c.BotSpotify.ClientID = tc.client
+			c.BotSpotify.RedirectURL = tc.redirect
+			err := c.Validate()
+			gotErr := err != nil && strings.Contains(err.Error(), "bot_spotify.")
+			if gotErr != tc.wantErr {
+				t.Fatalf("Bot Spotify validation error=%v wantErr=%v; all errors: %v", gotErr, tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestNoFieldIsATimeDuration(t *testing.T) {
 	var forbidden = reflect.TypeOf(time.Duration(0))
 	var walk func(reflect.Type, string)
