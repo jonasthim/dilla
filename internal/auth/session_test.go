@@ -476,6 +476,8 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining cannot use generic key package publication", pattern: "POST /v1/keypackages", method: http.MethodPost, wantNext: false},
 		{name: "joining can publish through its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/keypackages", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
 		{name: "joining can read its publication receipt", pattern: "GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", method: http.MethodGet, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can register its first group through the scoped route", pattern: "POST /v1/bot-runtime/installations/{installation}/groups", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
+		{name: "joining can probe a foreign registration path for indistinguishable 404", pattern: "GET /v1/bot-runtime/installations/{installation}/groups/{operation}", method: http.MethodGet, pathName: "installation", pathValue: id.New().String(), wantNext: true},
 		{name: "joining can list its device-scoped welcomes", pattern: "GET /v1/welcomes", method: http.MethodGet, wantNext: true},
 		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
 		{name: "joining can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost, wantNext: true},

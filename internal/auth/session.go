@@ -1217,6 +1217,12 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		"GET /v1/bot-runtime/installations/{installation}/keypackages",
 		"GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}":
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "POST /v1/bot-runtime/installations/{installation}/groups",
+		"GET /v1/bot-runtime/installations/{installation}/groups/{operation}":
+		// The handler turns a foreign installation path into the protocol's indistinguishable 404.
+		// Letting the session reach it reveals no receipt and keeps the cross-installation result
+		// independent of middleware's otherwise-global 403 refusal.
+		return phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":

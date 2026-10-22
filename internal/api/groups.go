@@ -98,6 +98,7 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
 	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
+	h.RegisterBotRegistration(mux, sessions)
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
 	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
 }
@@ -164,6 +165,10 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	session, err := sessionOf(r)
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	if session.Bot != nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bots must use the installation-scoped group registration route"))
 		return
 	}
 	out, err := h.DS.Register(r.Context(), ds.RegisterRequest{
@@ -353,7 +358,11 @@ func dsError(err error) error {
 		}
 		return server.RateLimited(ms)
 	default:
-		return server.Errorf(server.Code(e.Code), "%s", e.Detail)
+		converted := server.Errorf(server.Code(e.Code), "%s", e.Detail)
+		if e.Status != 0 && e.Status != converted.Status() {
+			return server.WithStatus(e.Status, converted)
+		}
+		return converted
 	}
 }
 

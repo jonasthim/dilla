@@ -124,8 +124,12 @@ func TestRegisterAsksTheChannelSourceWhoMayRegister(t *testing.T) {
 			}
 			_, err = h.ds.Register(context.Background(), req)
 
-			if len(h.channels.asked) != 1 {
-				t.Fatalf("MayRegister was asked %d times, want once", len(h.channels.asked))
+			wantCalls := 1
+			if c.refuse == nil {
+				wantCalls = 2 // early refusal check plus the transaction-fenced acceptance recheck
+			}
+			if len(h.channels.asked) != wantCalls {
+				t.Fatalf("MayRegister was asked %d times, want %d", len(h.channels.asked), wantCalls)
 			}
 			q := h.channels.asked[0]
 			if q.user != req.Session.UserID {

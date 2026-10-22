@@ -371,6 +371,17 @@ func (openChannels) MayRegister(context.Context, id.ID, ds.Binding) error { retu
 func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
 	t.Helper()
 	handler, deps := newTestAPI(t)
+	return newGroupsAPIWithHandler(t, handler, deps, channels, policy...)
+}
+
+func newGroupsAPIWithRepository(t *testing.T, repo store.Repository, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
+	t.Helper()
+	handler, deps := newTestAPIWithRepository(t, repo, nil)
+	return newGroupsAPIWithHandler(t, handler, deps, channels, policy...)
+}
+
+func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
+	t.Helper()
 	mux, ok := handler.(*server.Mux)
 	if !ok {
 		t.Fatalf("newTestAPI returned %T, want *server.Mux", handler)
