@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -51,6 +51,23 @@ describe('Dialog', () => {
     // unmounting the element instead drops it on the document body.
     expect(close).toHaveBeenCalledTimes(1);
     close.mockRestore();
+  });
+  it('closes the native dialog in the commit that empties it, before any passive effect runs', () => {
+    // A later sibling's layout effect runs after Dialog's own and before any passive effect: what it sees is what a key
+    // event between the commit and React's next task meets. An open, empty dialog there took that Escape as its own
+    // cancel, and the settings frame under it stayed open (WebKit CI run 39668959443).
+    const seen: string[] = [];
+    function Probe({ open }: { open: boolean }) {
+      useLayoutEffect(() => {
+        const el = document.querySelector('dialog');
+        seen.push(`${String(open)}:${String(el?.open)}:${String(el?.childElementCount)}`);
+      }, [open]);
+      return null;
+    }
+    const tree = (open: boolean) => <><Dialog open={open} title="New category" onClose={() => {}}><p>Name it.</p></Dialog><Probe open={open} /></>;
+    const { rerender } = render(tree(true));
+    rerender(tree(false));
+    expect(seen.at(-1)).toBe('false:false:0');
   });
   it('gives every dialog its own title id', () => {
     render(
