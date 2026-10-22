@@ -38,6 +38,16 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
+  it('states music provider setup honestly without collecting account credentials', async () => {
+    const { fake } = setup({ ...ROW, state: 3, capabilities: 1 });
+    expect(await screen.findByText(en['admin.bot.music.spotifyUnavailable'])).toBeInTheDocument();
+    expect(screen.getByText(en['admin.bot.music.spotifyHelp'])).toBeInTheDocument();
+    expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
+    expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors']);
+  });
+
   it('shows staged status and asks for step-up before enabling through the worker', async () => {
     const { fake, user, announce } = setup();
     expect(await screen.findByText(en['admin.bot.none'])).toBeInTheDocument();

@@ -112,6 +112,17 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
         </SettingsRow>
       ) : null}
+      <section aria-labelledby={`${base}-music-title`}>
+        <h3 id={`${base}-music-title`}>{t('admin.bot.music.title')}</h3>
+        <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
+          <p>{t('admin.bot.music.spotifyUnavailable')}</p>
+          <p>{t('admin.bot.music.spotifyHelp')}</p>
+        </SettingsRow>
+        <SettingsRow id={`${base}-youtube-row`} label={t('admin.bot.music.youtube')}>
+          <p>{t('admin.bot.music.providerUnknown')}</p>
+          <p>{t('admin.bot.music.youtubeHelp')}</p>
+        </SettingsRow>
+      </section>
       {currentError === null ? null : <p role="alert">{currentError}</p>}
       <div>
         {enabled ? <Button aria-disabled={busy || undefined} onClick={disable}>{busy ? t('admin.bot.disabling') : t('admin.bot.disable')}</Button>
