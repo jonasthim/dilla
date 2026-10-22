@@ -70,7 +70,17 @@ type Repository interface {
 	BotGroupRegistrationReceipts
 	BotSendOperations
 	BotStructuralEvents
+	BotInteractionEligibility
 	ModerationRemovals
+}
+
+// BotInteractionEligibility exposes the monotonic eligibility fence for one
+// user in one community. Reads happen in a transaction and lock the row on
+// PostgreSQL so admission issuance and group registration can share a fence.
+// Database triggers advance it whenever membership, bans, or device state
+// changes. This primitive does not itself authorize interaction admission.
+type BotInteractionEligibility interface {
+	GetBotInteractionEligibilityRevision(context.Context, id.ID, id.ID) (uint64, error)
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may

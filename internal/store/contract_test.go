@@ -351,6 +351,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
 		// Task 6: durable structural events, cursors, and retention floor.
 		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
+		// Kind-3 admission groundwork: transaction-fenced participant eligibility revision.
+		reflect.TypeOf((*store.BotInteractionEligibility)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 	} {

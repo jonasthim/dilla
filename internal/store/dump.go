@@ -45,6 +45,9 @@ const (
 // the structure, readable and blob tables — and a restore replays it front to
 // back.
 var DumpTables = []string{
+	// Restored before its source rows so their revision triggers run during replay.
+	// This can only advance the fence and conservatively invalidates old tickets.
+	"bot_interaction_eligibility_revisions",
 	"instances", "instance_settings", "users", "user_presence", "devices", "device_lists", "sessions",
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
 	"webauthn_credentials", "webauthn_ceremonies", "oidc_identities", "login_attempts",
