@@ -199,6 +199,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		preimage := append([]byte("dilla bot interaction admission v1\x00"), payload...)
 		return ed25519.Sign(private, preimage), nil
 	}
+	deps.SignBotInteractionContext = func(payload []byte) ([]byte, error) {
+		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
+		preimage := append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)
+		return ed25519.Sign(private, preimage), nil
+	}
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
 	sessions.Assertions = deps.Assertions

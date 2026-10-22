@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
@@ -32,6 +34,9 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 		d.ExternalSenderPub = append(ed25519.PublicKey(nil), private.Public().(ed25519.PublicKey)...)
 		d.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
 			return ed25519.Sign(private, append([]byte("dilla bot interaction admission v1\x00"), payload...)), nil
+		}
+		d.SignBotInteractionContext = func(payload []byte) ([]byte, error) {
+			return ed25519.Sign(private, append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)), nil
 		}
 	})
 	ctx := context.Background()
@@ -92,6 +97,43 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 	if issued.Code != 200 {
 		t.Fatalf("issue admission = %d %x", issued.Code, issued.Body.Bytes())
 	}
+	contextPath := "/v1/bot-runtime/installations/" + installationID.String() + "/interaction-admissions/context"
+	contextBody := mustCBOR(t, []any{requestID, group, participant, participantDevice})
+	unauthorized := postCBORAuth(h, contextPath, contextBody, "invalid-session")
+	if unauthorized.Code == 200 {
+		t.Fatal("unauthorized interaction context request succeeded")
+	}
+	wrongInstall := postCBORAuth(h, "/v1/bot-runtime/installations/"+id.New().String()+"/interaction-admissions/context", contextBody, token)
+	if wrongInstall.Code == 200 {
+		t.Fatal("cross-installation interaction context request succeeded")
+	}
+	contextResponse := postCBORAuth(h, contextPath, contextBody, token)
+	if contextResponse.Code != 200 {
+		t.Fatalf("interaction context = %d %x", contextResponse.Code, contextResponse.Body.Bytes())
+	}
+	var signedContext []any
+	if err := cborx.Unmarshal(contextResponse.Body.Bytes(), &signedContext); err != nil || len(signedContext) != 2 {
+		t.Fatalf("decode signed context: %v, %#v", err, signedContext)
+	}
+	contextPayload, payloadOK := signedContext[0].([]byte)
+	contextSignature, signatureOK := signedContext[1].([]byte)
+	if !payloadOK || !signatureOK || !ed25519.Verify(private.Public().(ed25519.PublicKey), append([]byte("dilla bot interaction context snapshot v1\x00"), contextPayload...), contextSignature) {
+		t.Fatal("context signature did not verify")
+	}
+	var contextFields []any
+	if err := cborx.Unmarshal(contextPayload, &contextFields); err != nil || len(contextFields) != 16 || contextFields[0] != uint64(1) {
+		t.Fatalf("decode context payload: %v, fields=%d", err, len(contextFields))
+	}
+	if _, ok := contextFields[14].([]any); !ok {
+		t.Fatal("Bot signed device-list material missing")
+	}
+	if _, ok := contextFields[15].([]any); !ok {
+		t.Fatal("participant signed device-list material missing")
+	}
+	oversized := postCBORAuth(h, contextPath, bytes.Repeat([]byte{0}, (64<<10)+1), token)
+	if oversized.Code == 200 {
+		t.Fatal("oversized interaction context request succeeded")
+	}
 	session, err := deps.Sessions.Resolve(ctx, token)
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +168,9 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, participant, &disabledAt) }); err != nil {
 		t.Fatal(err)
 	}
-	if err := load(base); err == nil {
-		t.Fatal("disabled participant accepted")
+	staleAccount := postCBORAuth(h, contextPath, contextBody, token)
+	if staleAccount.Code == 200 {
+		t.Fatal("disabled participant interaction context accepted")
 	}
 	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, participant, nil) }); err != nil {
 		t.Fatal(err)

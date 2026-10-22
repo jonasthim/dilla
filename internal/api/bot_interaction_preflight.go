@@ -33,6 +33,10 @@ type BotInteractionPreflightRequest struct {
 // only reads durable state; callers must not treat loading or MLS preflight as
 // authorization to persist a group registration.
 func (d Deps) LoadBotInteractionRegistrationPreflight(ctx context.Context, req BotInteractionPreflightRequest) (ds.InteractionRegistrationPreflight, error) {
+	return d.loadBotInteractionRegistrationPreflight(ctx, req, nil)
+}
+
+func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req BotInteractionPreflightRequest, snapshot *botInteractionContextSnapshot) (ds.InteractionRegistrationPreflight, error) {
 	var out ds.InteractionRegistrationPreflight
 	if req.Session.Bot == nil || req.InstallationID.IsZero() || req.AdmissionRequestID.IsZero() || req.GroupID.IsZero() || req.ParticipantUserID.IsZero() || req.ParticipantDeviceID.IsZero() {
 		return out, errors.New("api: incomplete managed Bot interaction preflight request")
@@ -166,6 +170,10 @@ func (d Deps) LoadBotInteractionRegistrationPreflight(ctx context.Context, req B
 		if err := cborx.Unmarshal(receipt.Payload, &payload); err != nil || payload.Version != 1 || payload.InstanceID != instance.InstanceID || payload.InstallationID != installation.ID || payload.CommunityID != installation.CommunityID || payload.BotUserID != bot.ID || payload.BotDeviceID != botDevice.ID || payload.ParticipantUserID != participant.ID || payload.ParticipantDeviceID != participantDevice.ID || payload.GroupID != req.GroupID || payload.EligibilityRevision != minimumRevision || payload.NotAfter <= uint64(now) || payload.NotAfter != uint64(receipt.NotAfter) {
 			return errors.New("api: interaction admission receipt does not match current trusted context")
 		}
+		canonicalPayload, err := cborx.Marshal(payload)
+		if err != nil || !bytes.Equal(canonicalPayload, receipt.Payload) || !ed25519.Verify(d.ExternalSenderPub, append([]byte("dilla bot interaction admission v1\x00"), receipt.Payload...), receipt.Signature) {
+			return errors.New("api: interaction admission proof is noncanonical or invalid")
+		}
 		requestBytes, err := cborx.Marshal([]any{req.GroupID, participant.ID, participantDevice.ID})
 		if err != nil {
 			return err
@@ -179,6 +187,18 @@ func (d Deps) LoadBotInteractionRegistrationPreflight(ctx context.Context, req B
 			MinimumEligibilityRevision: minimumRevision, ExpectedPolicyVersion: community.PolicyVersion, ExpectedE2EEVersion: 1, ExpectedMediaVersion: 0,
 			ReceiptPayload: append([]byte(nil), receipt.Payload...), ReceiptSignature: append([]byte(nil), receipt.Signature...), PinnedInstanceKey: append(ed25519.PublicKey(nil), d.ExternalSenderPub...),
 			BotDeviceList: botEntries, ParticipantDeviceList: participantEntries, Now: uint64(now),
+		}
+		if snapshot != nil {
+			*snapshot = botInteractionContextSnapshot{
+				RequestID: req.AdmissionRequestID, AdmissionPayload: append([]byte(nil), receipt.Payload...),
+				AdmissionSignature: append([]byte(nil), receipt.Signature...), Now: uint64(now),
+				MinimumEligibilityRevision: minimumRevision, PolicyVersion: community.PolicyVersion,
+				E2EEVersion: 1, MediaVersion: 0, InstanceID: instance.InstanceID,
+				InstanceKeyID: instance.ExternalSenderKeyID, InstanceSignerPub: append([]byte(nil), d.ExternalSenderPub...),
+				Expected:    out.Expected,
+				Bot:         interactionSnapshotDeviceList{UserID: bot.ID, UMKPub: append([]byte(nil), bot.UMKPub...), SSKPub: append([]byte(nil), bot.SSKPub...), SSKBindingSignature: append([]byte(nil), bot.SigUMKSSK...), Version: botList.Version, Blob: append([]byte(nil), botList.Blob...), Signature: append([]byte(nil), botList.SSKSignature...), PrevHash: append([]byte(nil), botList.PrevHash...)},
+				Participant: interactionSnapshotDeviceList{UserID: participant.ID, UMKPub: append([]byte(nil), participant.UMKPub...), SSKPub: append([]byte(nil), participant.SSKPub...), SSKBindingSignature: append([]byte(nil), participant.SigUMKSSK...), Version: participantList.Version, Blob: append([]byte(nil), participantList.Blob...), Signature: append([]byte(nil), participantList.SSKSignature...), PrevHash: append([]byte(nil), participantList.PrevHash...)},
+			}
 		}
 		return nil
 	})

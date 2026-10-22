@@ -40,6 +40,7 @@ type botInteractionAdmissionPayload struct {
 func (d Deps) registerBotInteractionAdmissions(m *server.Mux) {
 	botSession := BotSessionRoute(d.Sessions, d.Limiter)
 	m.Handle("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", botSession("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", http.HandlerFunc(d.issueBotInteractionAdmission)))
+	d.registerBotInteractionContext(m)
 }
 
 func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Request) {

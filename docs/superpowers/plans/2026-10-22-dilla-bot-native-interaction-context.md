@@ -73,6 +73,23 @@ revision, policy and instance generation, then consume the exact admission recei
 the group registration. A client snapshot can expire or become stale between preparation and
 registration.
 
+## HTTP/API snapshot contract
+
+`POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` now returns a
+read-only versioned snapshot as `[payload, signature]`. The request is the same four-item tuple as
+admission issuance. The route uses the authenticated Bot session and installation binding; its
+loader captures admission proof, server time, eligibility floor, policy and binding versions, key
+identity, and both verified signed device-list records inside the same transaction and eligibility
+fence. Each list record carries UMK/SSK keys, the UMK-to-SSK binding signature, list version, blob,
+SSK signature, previous hash, and SHA-256 of the blob. The response is canonical CBOR array v1 and
+is signed under `dilla bot interaction context snapshot v1\0` using the instance external-sender
+key whose public half is already pinned under the included key ID. Signed list blobs are capped at
+64 KiB each and the payload at 160 KiB.
+
+This route only provides transport material. The native helper still must verify the snapshot
+signature against its stored pin and validate user-key/device-list trust locally before kind-3
+preparation can be enabled. The final registrar remains authoritative and rechecks mutable state.
+
 ## Tests required before enabling the operation
 
 1. A Rust helper test starts from a pinned native Bot store and accepts only an authentic signed

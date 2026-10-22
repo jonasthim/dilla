@@ -335,6 +335,22 @@ Every later identity reconciliation checks discovery against the stored key.
 Changing the pinned key requires an explicit trusted instance-key transition,
 not an admission retry.
 
+The read-only context endpoint returns `[snapshot_payload_bstr,
+snapshot_signature_bstr]`. Its canonical CBOR payload is array v1
+`[1,request_id,admission_id,admission_payload,admission_signature,server_now,
+eligibility_revision,policy_version,e2ee_version,media_version,instance_id,
+external_sender_key_id,instance_signer_pub,expected_tuple,bot_list,
+participant_list]`. `expected_tuple` is the eight IDs in the admission tuple order.
+Each list is `[user_id,umk_pub32,ssk_pub32,sig_umk_ssk64,version,blob,
+ssk_signature64,prev_hash32,sha256_blob32]`. The instance signs
+`ASCII("dilla bot interaction context snapshot v1") || 0x00 || payload` with
+the same pinned external-sender key. The included public key and key ID are
+descriptive and must match the client's existing pin. Each list blob is at most
+64 KiB and the snapshot payload is at most 160 KiB. This snapshot proves which
+server context was read together; it is not authorization to register a group.
+The registrar still checks current state and consumes the admission receipt
+atomically with registration.
+
 The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
 than authenticated server time, an admission replayed for another operation or
 group, or an `eligibility_revision` older than the latest admission known for
@@ -683,6 +699,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id, expected_generation, registration_body]` | `201` new / `200` replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; proof issuance only, kind-3 registration remains refused |
+| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
