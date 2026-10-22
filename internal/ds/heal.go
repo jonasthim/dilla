@@ -910,6 +910,9 @@ func checkReseededBinding(stored, uploaded []byte) error {
 	if err != nil {
 		return errCommitInvalid("reseed", "the reseeded tree's binding does not decode: "+err.Error())
 	}
+	if want.V != 1 || got.V != 1 {
+		return errCommitInvalid("reseed", "the stored and reseeded legacy dilla_binding versions must both be 1")
+	}
 	sameCommunity := (want.CommunityID == nil) == (got.CommunityID == nil) &&
 		(want.CommunityID == nil || *want.CommunityID == *got.CommunityID)
 	if got.Kind != want.Kind || got.TargetID != want.TargetID || !sameCommunity {
@@ -927,7 +930,7 @@ func decodeReseededInteractionBinding(raw []byte) (interactionBindingV2, error) 
 	if err := cborx.Unmarshal(raw, &b); err != nil {
 		return interactionBindingV2{}, err
 	}
-	if b.Version != 2 || b.LegacyCommunityID != nil || b.Kind != 3 || b.E2EEVersion != 1 || b.MediaVersion != 0 ||
+	if b.Version != 2 || b.LegacyCommunityID != nil || b.Kind != 3 || b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 ||
 		b.InstanceID.IsZero() || b.BotUserID.IsZero() || b.InstallationID.IsZero() || b.CommunityID.IsZero() ||
 		b.ParticipantUserID.IsZero() || b.ParticipantDeviceID.IsZero() {
 		return interactionBindingV2{}, errors.New("invalid v2 interaction binding")

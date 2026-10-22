@@ -37,6 +37,20 @@ func TestCheckReseededBindingPreservesV1Semantics(t *testing.T) {
 	}
 }
 
+func TestCheckReseededBindingRejectsV2MarkerInLegacyShape(t *testing.T) {
+	want := Binding{InstanceID: id.New(), TargetID: id.New(), Kind: 3, E2EEVersion: 1}
+	stored := healBindingV1ForTest(t, want)
+	wrongVersion := want
+	wrongVersion.V = 2
+	uploaded, err := cborx.Marshal(wrongVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkReseededBinding(stored, uploaded); err == nil {
+		t.Fatal("accepted an eight-field v2 marker as a legacy v1 binding")
+	}
+}
+
 func TestCheckReseededBindingAcceptsSameV2IdentityAndPolicySnapshotChange(t *testing.T) {
 	want := interactionBindingV2{InstanceID: id.New(), BotUserID: id.New(), Kind: 3, PolicyVersion: 4, E2EEVersion: 1, InstallationID: id.New(), CommunityID: id.New(), ParticipantUserID: id.New(), ParticipantDeviceID: id.New()}
 	got := want
@@ -89,5 +103,13 @@ func TestCheckReseededBindingRefusesMalformedOrMixedVersions(t *testing.T) {
 				t.Fatal("accepted malformed or mixed binding versions")
 			}
 		})
+	}
+}
+
+func TestCheckReseededBindingRejectsZeroV2PolicyVersion(t *testing.T) {
+	b := interactionBindingV2{InstanceID: id.New(), BotUserID: id.New(), Kind: 3, E2EEVersion: 1, InstallationID: id.New(), CommunityID: id.New(), ParticipantUserID: id.New(), ParticipantDeviceID: id.New()}
+	encoded := healBindingV2ForTest(t, b)
+	if err := checkReseededBinding(encoded, encoded); err == nil {
+		t.Fatal("accepted a v2 interaction binding with no policy version")
 	}
 }
