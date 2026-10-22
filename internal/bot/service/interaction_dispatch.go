@@ -152,9 +152,8 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	if err != nil {
 		return "", err
 	}
-	// Native kind-3 groups lack a typed installation and participant binding.
-	// Do not infer that authority from fields supplied by a Go event. Admit
-	// them only after the core can authenticate that binding end to end.
+	// GroupEvent fields alone do not prove a kind-3 installation or participant
+	// binding. Require a fresh signed context and native MLS inspection first.
 	if group.ID != event.Group || group.State != 2 || group.Community == nil || *group.Community != d.binding.Community || group.Target != event.Channel {
 		return "", protocol.ErrContext
 	}
