@@ -36,6 +36,7 @@ import (
 // calls Register beside `api.Register`.
 type Groups struct {
 	DS      *ds.DS
+	Deps    Deps  // trusted read dependencies for human current interaction-context proofs
 	MaxBody int64 // §5.3's cap for this group of routes; zero means maxDSBody
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
@@ -104,6 +105,7 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	h.RegisterBotRegistration(mux, sessions)
 	h.RegisterBotMessages(mux, sessions)
 	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
+	mux.Handle("GET /v1/groups/{id}/interaction-admission-context", enrolled(dsMeter(h.Limiter, dsClassRead, h.currentInteractionAdmissionContext)))
 	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
 }
 

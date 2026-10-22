@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 const interactionAdmissionDomain = "dilla bot interaction admission v1\x00"
@@ -23,6 +25,151 @@ type AuthenticatedInteractionRegistration struct {
 	Binding   []byte
 	LeafCount uint64
 	Roster    []mlswasi.RosterLeaf
+}
+
+// InteractionGroupLeaf is one current leaf read from imported PublicGroup state.
+// It is returned only after the leaf count, authenticated identities, persisted
+// member projection and immutable kind-3 registration receipt have been checked.
+type InteractionGroupLeaf struct {
+	LeafIndex    uint32
+	UserID       id.ID
+	DeviceID     id.ID
+	SignatureKey []byte
+}
+
+// CurrentBotInteractionGroupContext is a read-only proof input for a human-facing
+// admission context. The registration receipt is immutable acceptance evidence;
+// Binding and Roster describe the currently persisted, WASI-authenticated MLS state.
+type CurrentBotInteractionGroupContext struct {
+	Registration store.BotGroupRegistrationReceipt
+	Binding      BotInteractionGroupBinding
+	Epoch        uint64
+	LeafCount    uint64
+	TreeHash     []byte
+	Roster       []InteractionGroupLeaf
+}
+
+// CurrentBotInteractionGroupContext loads the accepted kind-3 registration and imports
+// the current persisted MLS state under the group's local and repository locks. It refuses
+// state whose public roster does not exactly match the two leaves accepted at registration.
+func (d *DS) CurrentBotInteractionGroupContext(ctx context.Context, groupID id.ID) (CurrentBotInteractionGroupContext, error) {
+	var out CurrentBotInteractionGroupContext
+	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || groupID.IsZero() {
+		return out, errors.New("ds: current kind-3 interaction context dependencies unavailable")
+	}
+	unlock := d.lock(groupID)
+	defer unlock()
+	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockGroup(ctx, groupID); err != nil {
+			return err
+		}
+		row, err := tx.GetGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		registration, err := tx.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if !validCurrentInteractionRegistration(row, registration, d.opts.Keys.InstanceID) {
+			return errors.New("ds: accepted kind-3 registration and current group row disagree")
+		}
+		var binding interactionBindingV2
+		if err := cborx.Unmarshal(row.Binding, &binding); err != nil {
+			return errors.New("ds: current kind-3 group binding is malformed")
+		}
+		canonicalBinding, err := cborx.Marshal(binding)
+		if err != nil || !bytes.Equal(canonicalBinding, row.Binding) || binding.Version != 2 || binding.LegacyCommunityID != nil || binding.Kind != 3 ||
+			binding.InstanceID != d.opts.Keys.InstanceID || binding.InstallationID != registration.InstallationID || binding.CommunityID != registration.CommunityID ||
+			binding.BotUserID != registration.UserID || binding.ParticipantUserID.IsZero() || binding.ParticipantDeviceID.IsZero() || binding.BotUserID == binding.ParticipantUserID ||
+			binding.PolicyVersion == 0 || binding.E2EEVersion != 1 || binding.MediaVersion != 0 || binding.PolicyVersion != row.PolicyVersion {
+			return errors.New("ds: current kind-3 binding does not match accepted receipt")
+		}
+		if len(row.PublicGroupState) == 0 {
+			return errors.New("ds: current kind-3 group has no persisted public state")
+		}
+		instance, err := d.opts.Wasm.Acquire(ctx)
+		if err != nil {
+			return err
+		}
+		defer instance.Release()
+		group, err := instance.PublicGroupImport(ctx, row.PublicGroupState, groupID[:])
+		if err != nil {
+			return errors.New("ds: current kind-3 public state cannot be imported")
+		}
+		defer group.Close(ctx)
+		state, err := group.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(state.GroupID, groupID[:]) || !bytes.Equal(state.Binding, row.Binding) || state.Epoch != row.Epoch ||
+			!bytes.Equal(state.TreeHash, row.TreeHash) || state.LeafCount != 2 || len(state.Members) != 2 {
+			return errors.New("ds: current kind-3 MLS state is not the exact accepted two-leaf group")
+		}
+		members, err := tx.ListMembers(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if len(members) != 2 {
+			return errors.New("ds: current kind-3 member projection is not exactly two leaves")
+		}
+		byLeaf := make(map[uint32]store.MemberRow, len(members))
+		for _, member := range members {
+			if member.GroupID != groupID {
+				return errors.New("ds: current kind-3 member projection names another group")
+			}
+			if _, exists := byLeaf[member.LeafIndex]; exists {
+				return errors.New("ds: current kind-3 member projection has duplicate leaves")
+			}
+			byLeaf[member.LeafIndex] = member
+		}
+		roster := make([]InteractionGroupLeaf, 0, 2)
+		seenLeaves := make(map[uint32]struct{}, 2)
+		for _, leaf := range state.Members {
+			deviceID, userID, err := decodeCredentialIdentity(leaf.CredentialIdentity)
+			if err != nil || userID.IsZero() || deviceID.IsZero() || len(leaf.SignatureKey) != ed25519.PublicKeySize {
+				return errors.New("ds: current kind-3 MLS leaf has no valid authenticated identity")
+			}
+			member, ok := byLeaf[leaf.LeafIndex]
+			if _, duplicate := seenLeaves[leaf.LeafIndex]; duplicate || !ok || member.UserID != userID || member.DeviceID != deviceID || !bytes.Equal(member.SignatureKey, leaf.SignatureKey) {
+				return errors.New("ds: current kind-3 MLS roster differs from the stored member projection")
+			}
+			seenLeaves[leaf.LeafIndex] = struct{}{}
+			roster = append(roster, InteractionGroupLeaf{LeafIndex: leaf.LeafIndex, UserID: userID, DeviceID: deviceID, SignatureKey: append([]byte(nil), leaf.SignatureKey...)})
+		}
+		if len(seenLeaves) != len(byLeaf) {
+			return errors.New("ds: current kind-3 member projection contains a leaf absent from MLS state")
+		}
+		if !containsInteractionLeaf(roster, binding.BotUserID, registration.DeviceID) || !containsInteractionLeaf(roster, binding.ParticipantUserID, binding.ParticipantDeviceID) {
+			return errors.New("ds: current kind-3 MLS roster does not match the accepted Bot and participant")
+		}
+		out = CurrentBotInteractionGroupContext{
+			Registration: registration,
+			Binding: BotInteractionGroupBinding{InstanceID: binding.InstanceID, BotUserID: binding.BotUserID, InstallationID: binding.InstallationID,
+				CommunityID: binding.CommunityID, ParticipantUserID: binding.ParticipantUserID, ParticipantDeviceID: binding.ParticipantDeviceID,
+				PolicyVersion: binding.PolicyVersion, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion},
+			Epoch: state.Epoch, LeafCount: state.LeafCount, TreeHash: append([]byte(nil), state.TreeHash...), Roster: roster,
+		}
+		return nil
+	})
+	return out, err
+}
+
+func validCurrentInteractionRegistration(row store.GroupRow, receipt store.BotGroupRegistrationReceipt, instanceID id.ID) bool {
+	return row.GroupID == receipt.GroupID && row.Kind == 3 && row.CommunityID != nil && *row.CommunityID == receipt.CommunityID &&
+		row.ClosedAt == nil && !row.EpochUnknown && receipt.InstallationID != (id.ID{}) && receipt.OperationID != (id.ID{}) &&
+		receipt.UserID != (id.ID{}) && receipt.DeviceID != (id.ID{}) && receipt.CommunityID != (id.ID{}) && len(receipt.BodySHA256) == sha256.Size &&
+		receipt.Generation > 0 && receipt.Epoch == 1 && receipt.NextSeq == 1 && receipt.AcceptedAt >= 0 && len(row.Binding) > 0 &&
+		len(row.TreeHash) == sha256.Size && row.ExternalSenderKeyID != (id.ID{}) && instanceID != (id.ID{}) && row.E2EEVersion == 1 && row.MediaVersion == 0
+}
+
+func containsInteractionLeaf(roster []InteractionGroupLeaf, userID, deviceID id.ID) bool {
+	for _, leaf := range roster {
+		if leaf.UserID == userID && leaf.DeviceID == deviceID {
+			return true
+		}
+	}
+	return false
 }
 
 // InteractionRegistrationExtractor must import the submitted GroupInfo/tree through WASI and

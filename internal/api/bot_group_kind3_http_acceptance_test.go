@@ -292,6 +292,10 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	externalSenderKey := ed25519.NewKeyFromSeed(externalSenderSeed[:])
 	h.deps.ExternalSenderPub = externalSenderKey.Public().(ed25519.PublicKey)
 	h.deps.DeviceLists = ds.NewDeviceLists(h.deps.Repo, h.wasm)
+	h.deps.SignBotCurrentInteractionContext = func(payload []byte) ([]byte, error) {
+		return ed25519.Sign(externalSenderKey, append([]byte("dilla bot current interaction context v1\x00"), payload...)), nil
+	}
+	h.groups.Deps = h.deps
 	h.groups.LoadBotInteractionPreflight = h.deps.LoadBotInteractionRegistrationPreflight
 
 	if _, ok := h.deps.Repo.(store.BotInteractionEligibility); !ok {
@@ -382,6 +386,46 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if hookCalls.Load() != 0 {
 		t.Fatalf("AfterRegister ran for kind-3 interaction: %d calls", hookCalls.Load())
 	}
+	// Only the exact participant device from the accepted v2 binding can obtain a
+	// signed snapshot, and the envelope verifies under the currently published key.
+	participant := idFromHex(t, meta.ParticipantUserID)
+	participantDevice := idFromHex(t, meta.ParticipantDeviceID)
+	humanToken := "kind3-human-context"
+	humanHash := auth.TokenHash(humanToken)
+	now := h.deps.Clock.Now().Unix()
+	if err := h.deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: humanHash, DeviceID: participantDevice, UserID: participant, Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.deps.Sessions.RecordCapabilities(ctx, humanHash, 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	contextPath := "/v1/groups/" + groupID.String() + "/interaction-admission-context"
+	contextResponse := h.do(t, http.MethodGet, contextPath, humanToken, nil)
+	if contextResponse.Code != http.StatusOK {
+		t.Fatalf("human current context: %d %x", contextResponse.Code, contextResponse.Body.Bytes())
+	}
+	var envelope []any
+	if err := cborx.Unmarshal(contextResponse.Body.Bytes(), &envelope); err != nil || len(envelope) != 2 {
+		t.Fatalf("context envelope: %v (%d items)", err, len(envelope))
+	}
+	payload, ok := envelope[0].([]byte)
+	if !ok {
+		t.Fatalf("context payload type %T", envelope[0])
+	}
+	signature, ok := envelope[1].([]byte)
+	if !ok || !ed25519.Verify(h.deps.ExternalSenderPub, append([]byte("dilla bot current interaction context v1\x00"), payload...), signature) {
+		t.Fatalf("current context signature invalid")
+	}
+	var proof []any
+	if err := cborx.Unmarshal(payload, &proof); err != nil || len(proof) != 18 || proof[0] != uint64(1) {
+		t.Fatalf("current context proof invalid: %v (%d fields)", err, len(proof))
+	}
+	if _, _, wrongHuman := seedAPISession(t, h.deps); h.do(t, http.MethodGet, contextPath, wrongHuman, nil).Code < 400 {
+		t.Fatal("nonparticipant human obtained current interaction context")
+	}
+	if h.do(t, http.MethodGet, contextPath, token, nil).Code < 400 {
+		t.Fatal("managed Bot session obtained human current interaction context")
+	}
 
 	// Expire and compact the server proof. A new valid Bot session then exercises only the durable
 	// operation+admission-consumption replay path through HTTP.
@@ -395,7 +439,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	}
 	newToken := "kind3-http-replay-after-compaction"
 	newHash := auth.TokenHash(newToken)
-	now := h.deps.Clock.Now().Unix()
+	now = h.deps.Clock.Now().Unix()
 	if err := h.deps.Repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.CreateSession(ctx, store.SessionRow{TokenHash: newHash, DeviceID: idFromHex(t, meta.BotDeviceID), UserID: idFromHex(t, meta.BotUserID), Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
 			return err

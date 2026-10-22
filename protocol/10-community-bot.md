@@ -702,6 +702,7 @@ are never reactivated; a new enable creates a new identity and installation id.
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
+| `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
@@ -712,6 +713,36 @@ Human `/v1/accounts` cannot enroll Bot credentials. Claims last ten minutes, are
 bound to the runtime credential and installation, and repeat requests return the
 same unexpired claim. Enrollment stores its operation result transactionally;
 repeat matching requests return the same account/device, not a second identity.
+
+The human `GET /v1/groups/{id}/interaction-admission-context` is a read-only
+Welcome-processing input. The path id is only a lookup hint: the server resolves
+the immutable accepted registration receipt, imports the currently persisted MLS
+public state, and refuses unless its canonical v2 binding and exact two-leaf
+authenticated roster still agree with that receipt. The enrolled, non-Bot session
+must be the participant user and device named by that binding. At issuance the
+server also requires that participant and Bot accounts/devices remain active,
+both remain community members and are not currently banned, both devices remain
+in their users' verified signed device lists, the Bot installation remains
+joining or ready, and the current policy still matches the binding. This route
+does not mutate group, admission, receipt, or Welcome state.
+
+The payload is deterministic CBOR fixed-position array v1:
+`[version,instance_id,instance_key_id,instance_signer_pub,issued_at,not_after,
+registration,binding,current_epoch,leaf_count,tree_hash,roster,
+eligibility_revision,policy_version,e2ee_version,media_version,bot_device_list,
+participant_device_list]`. `registration` is
+`[installation_id,operation_id,bot_user_id,bot_device_id,community_id,group_id,
+body_sha256,generation,accepted_epoch,next_seq,accepted_at]`; `binding` is
+`[instance_id,installation_id,community_id,bot_user_id,participant_user_id,
+participant_device_id,policy_version,e2ee_version,media_version]`; each roster
+entry is `[leaf_index,user_id,device_id,signature_key]`. Each device-list record
+uses the existing snapshot tuple `[user_id,umk_pub,ssk_pub,ssk_binding_signature,
+version,blob,signature,prev_hash,hash]`. The response signature is Ed25519 over
+`ASCII("dilla bot current interaction context v1") || 0x00 || payload`; clients MUST treat
+the proof as a short-lived snapshot (30 seconds), verify the signature against
+the advertised instance key and check its current-state fields before offering
+or processing a Welcome. It is distinct from the Bot-only pre-registration
+context snapshot above.
 For an already committed enrollment, a live runtime credential may replay the
 same operation id and exact payload for that installation after claim expiry.
 The stored result is bound to the original runtime credential id; authorization

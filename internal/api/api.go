@@ -64,6 +64,10 @@ type Deps struct {
 	// domain, using the same instance key as admission proofs.
 	SignBotInteractionContext func(payload []byte) ([]byte, error)
 
+	// SignBotCurrentInteractionContext signs a human-authenticated current-group context
+	// proof under the dedicated current-interaction domain.
+	SignBotCurrentInteractionContext func(payload []byte) ([]byte, error)
+
 	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
 	// and is passed from the same composition options as the gateway.
 	WireVersions  []uint64
