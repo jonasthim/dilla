@@ -1029,6 +1029,47 @@ func TestRunCancellationStopsReconnectWait(t *testing.T) {
 	}
 }
 
+func TestRunCancellationDuringHandshakeDoesNotWaitForPeerClose(t *testing.T) {
+	connected := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"dilla.v1"}})
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		close(connected)
+		<-r.Context().Done() // Deliberately never read or answer a close frame.
+	}))
+	defer server.Close()
+	instance := testID(91)
+	httpClient, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instance, AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, err := New(Config{Client: httpClient, AllowLoopbackHTTP: true, ExpectedDeviceID: testID(92), ExpectedUserID: testID(93)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- gw.Run(ctx, func(context.Context) (string, error) { return "session", nil }) }()
+	select {
+	case <-connected:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("gateway did not connect")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after handshake cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run waited for a peer close frame after cancellation")
+	}
+}
+
 func TestRunClosesConnectionWhenHeartbeatAckIsMissing(t *testing.T) {
 	instance, device, user := testID(1), testID(2), testID(3)
 	closed := make(chan struct{}, 1)

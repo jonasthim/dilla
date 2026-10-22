@@ -280,7 +280,14 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		cancel()
 		return false, 0, errTransport
 	}
-	defer func() { cancel(); _ = ws.Close(websocket.StatusNormalClosure, "reconnect") }()
+	defer func() {
+		cancel()
+		if parent.Err() != nil {
+			_ = ws.CloseNow()
+		} else {
+			_ = ws.Close(websocket.StatusNormalClosure, "reconnect")
+		}
+	}()
 	if ws.Subprotocol() != "dilla.v1" {
 		return false, 0, ErrProtocol
 	}
@@ -405,7 +412,13 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	go c.writePump(conn, writerDone)
 	defer func() {
 		cancel()
-		_ = ws.Close(websocket.StatusNormalClosure, "reconnect")
+		if parent.Err() != nil {
+			// Cancellation must not wait for a peer that never answers a WebSocket
+			// close frame. Close performs a handshake with its own five-second wait.
+			_ = ws.CloseNow()
+		} else {
+			_ = ws.Close(websocket.StatusNormalClosure, "reconnect")
+		}
 		<-readerDone
 		<-writerDone
 		if ackTimer != nil {
