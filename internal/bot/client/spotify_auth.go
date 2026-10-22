@@ -9,7 +9,10 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-var ErrSpotifyClaim = errors.New("bot client: invalid Spotify authorization claim")
+var (
+	ErrSpotifyClaim         = errors.New("bot client: invalid Spotify authorization claim")
+	ErrSpotifyClaimNotFound = errors.New("bot client: no pending Spotify authorization")
+)
 
 // SpotifyCodeClaim is the short-lived PKCE handoff from the installation broker.
 // Its code and verifier are credentials and must not be logged or persisted.
@@ -34,6 +37,10 @@ func (r *Runtime) ClaimSpotifyCode(ctx context.Context, installation id.ID) (Spo
 	}
 	raw, _, err := r.c.do(ctx, r.token, http.MethodPost, "bot-runtime/installations/"+i+"/spotify/claim", nil, nil, MaxSmallBody, true)
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && apiErr.Code == "E_NOT_FOUND" {
+			return out, ErrSpotifyClaimNotFound
+		}
 		return out, err
 	}
 	a, err := decode(raw, 3)

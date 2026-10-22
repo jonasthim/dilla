@@ -63,3 +63,25 @@ func TestRuntimeClaimSpotifyCodeRejectsMalformedReceipt(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeClaimSpotifyCodeDistinguishesNoPendingReceipt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusNotFound)
+		body, _ := cborx.Marshal([]any{"E_NOT_FOUND", "", nil})
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	c, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client(), InstanceID: testID(1), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.discovered.Store(true)
+	r, err := c.Runtime("runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.ClaimSpotifyCode(context.Background(), testID(7)); err != ErrSpotifyClaimNotFound {
+		t.Fatalf("got %v", err)
+	}
+}

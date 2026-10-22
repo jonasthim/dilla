@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,6 +44,8 @@ type config struct {
 	StateDir              string        `toml:"state_dir"`
 	ReconcileIntervalText string        `toml:"reconcile_interval"`
 	AllowLoopbackHTTP     bool          `toml:"allow_loopback_http"`
+	SpotifyClientID       string        `toml:"spotify_client_id"`
+	SpotifyRedirectURL    string        `toml:"spotify_redirect_url"`
 	InstanceID            id.ID         `toml:"-"`
 	ReconcileInterval     time.Duration `toml:"-"`
 }
@@ -69,6 +72,13 @@ func loadConfig(path string) (config, error) {
 	var errs []error
 	if c.BaseURL == "" {
 		errs = append(errs, errors.New("base_url is required"))
+	}
+	if c.SpotifyClientID != "" || c.SpotifyRedirectURL != "" {
+		redirect, parseErr := url.Parse(c.SpotifyRedirectURL)
+		if c.SpotifyClientID == "" || len(c.SpotifyClientID) > 256 || strings.ContainsAny(c.SpotifyClientID, "\r\n\x00") ||
+			parseErr != nil || redirect.Scheme != "https" || redirect.Host == "" || redirect.User != nil || redirect.Fragment != "" || len(c.SpotifyRedirectURL) > 2048 {
+			errs = append(errs, errors.New("spotify_client_id and spotify_redirect_url must form a valid HTTPS OAuth pair"))
+		}
 	}
 	c.InstanceID, err = id.Parse(c.InstanceIDText)
 	if err != nil || c.InstanceID.IsZero() {
@@ -388,9 +398,19 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 			}
 		}
+		if ensureErr == nil && cfg.SpotifyClientID != "" {
+			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, cfg.SpotifyClientID, cfg.SpotifyRedirectURL)
+			if linkErr == nil {
+				linkErr = credentials.Link(ctx)
+			}
+			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) {
+				logger.Error("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
+				ensureErr = linkErr
+			}
+		}
 		closeErr := nativeClient.Close()
 		if ensureErr != nil || closeErr != nil {
-			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_or_membership")
+			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_spotify_link")
 			continue
 		}
 		succeeded++
