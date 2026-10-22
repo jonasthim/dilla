@@ -56,7 +56,7 @@ func (r *Repo) RemoveReactionRoleGrant(ctx context.Context, g store.ReactionRole
 		return store.ErrNotFound
 	}
 	var remaining int64
-	if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?) + (SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, g.CommunityID, g.UserID, g.RoleID, g.CommunityID, g.UserID, g.RoleID).Scan(&remaining); err != nil {
+	if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?) + (SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?) + (SELECT COUNT(*) FROM bot_join_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, g.CommunityID, g.UserID, g.RoleID, g.CommunityID, g.UserID, g.RoleID, g.CommunityID, g.UserID, g.RoleID).Scan(&remaining); err != nil {
 		return err
 	}
 	if remaining == 0 {
@@ -125,7 +125,7 @@ func (r *Repo) RemoveReactionRolePanelGrants(ctx context.Context, community, cha
 	}
 	for _, p := range pairs {
 		var count int
-		if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, community, p.user, p.role, community, p.user, p.role).Scan(&count); err != nil {
+		if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM bot_join_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, community, p.user, p.role, community, p.user, p.role, community, p.user, p.role).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count == 0 {
@@ -219,7 +219,7 @@ func (r *Repo) RemoveReactionRoleChannelGrants(ctx context.Context, community, c
 	}
 	for _, p := range pairs {
 		var count int
-		if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, community, p.user, p.role, community, p.user, p.role).Scan(&count); err != nil {
+		if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM bot_join_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, community, p.user, p.role, community, p.user, p.role, community, p.user, p.role).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count == 0 {

@@ -60,6 +60,7 @@ type Repository interface {
 	VoiceSessions
 	RolePanels
 	ReactionRoleGrantSources
+	BotJoinRoleGrants
 	BotRuntimes
 	BotInstallations
 	BotClaims
@@ -78,6 +79,29 @@ type Repository interface {
 type BotJoinRolePolicy interface {
 	SetBotJoinRolePolicy(ctx context.Context, installationID, roleID, approverID id.ID, approvedAt int64) error
 	GetBotJoinRolePolicy(ctx context.Context, installationID id.ID) (BotJoinRolePolicyRow, error)
+}
+
+// BotJoinRoleGrants binds one bot-triggered role assignment to a stable
+// membership episode. The receipt is immutable for a request and episode.
+type BotJoinRoleGrants interface {
+	GrantBotJoinRoleForEpisode(context.Context, BotJoinRoleGrantRequest) (BotJoinRoleGrantReceipt, bool, error)
+}
+
+type BotJoinRoleGrantRequest struct {
+	RequestID      id.ID
+	InstallationID id.ID
+	CommunityID    id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+}
+
+type BotJoinRoleGrantReceipt struct {
+	RequestID      id.ID
+	InstallationID id.ID
+	CommunityID    id.ID
+	UserID         id.ID
+	EpisodeID      id.ID
+	RoleID         id.ID
 }
 
 type BotJoinRolePolicyRow struct {

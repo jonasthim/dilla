@@ -105,10 +105,10 @@ var DumpTables = []string{
 	// restore that dropped it would reset every end-to-end encrypted channel's slow mode.
 	"slowmode_marks",
 	// 020_bot_installations.sql: runtime before installation, then claim/operation/session children.
-	"bot_runtimes", "bot_installations", "bot_join_role_policy", "bot_claims", "bot_operations", "bot_session_bindings",
+	"bot_runtimes", "bot_installations", "bot_join_role_policy", "bot_join_role_grant_receipts", "bot_claims", "bot_operations", "bot_session_bindings",
 	// 032_role_panels.sql: panels reference both channels and installations;
 	// options reference panels and roles. Restore them only after all parents.
-	"role_panels", "role_panel_options", "reaction_role_grant_sources",
+	"role_panels", "role_panel_options", "reaction_role_grant_sources", "bot_join_role_grant_sources",
 	// 023_bot_keypackage_publications.sql: receipts are children of installations, users and devices.
 	"bot_keypackage_publication_receipts",
 	// 024_bot_sends.sql: logical operations before their immutable attempt children.

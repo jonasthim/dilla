@@ -100,7 +100,7 @@ func (r *Repo) SetRolePanel(ctx context.Context, panel store.RolePanelRow, optio
 		}
 		for _, u := range affected {
 			var count int
-			if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, panel.CommunityID, u, prior.role, panel.CommunityID, u, prior.role).Scan(&count); err != nil {
+			if err := r.tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM member_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)+(SELECT COUNT(*) FROM bot_join_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=?)`, panel.CommunityID, u, prior.role, panel.CommunityID, u, prior.role, panel.CommunityID, u, prior.role).Scan(&count); err != nil {
 				return wrap(err)
 			}
 			if count == 0 {
