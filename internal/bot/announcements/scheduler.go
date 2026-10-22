@@ -192,7 +192,7 @@ func (s *Scheduler) PutWithReceipt(ctx context.Context, requestID id.ID, fingerp
 	if err != nil {
 		return MutationOutcome{}, err
 	}
-	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint); found || lookupErr != nil {
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
 	states, err = putAnnouncement(states, value, s.now().UTC())
@@ -280,7 +280,7 @@ func (s *Scheduler) DeleteWithReceipt(ctx context.Context, requestID id.ID, fing
 	if err != nil {
 		return MutationOutcome{}, err
 	}
-	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint); found || lookupErr != nil {
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
 	i := findAnnouncement(states, announcementID)
@@ -332,9 +332,9 @@ func (s *Scheduler) nextMutationReceipts(requestID id.ID, fingerprint [32]byte, 
 	return kept, nil
 }
 
-func findMutationReceipt(receipts []mutationReceipt, requestID id.ID, fingerprint [32]byte) (MutationOutcome, bool, error) {
+func findMutationReceipt(receipts []mutationReceipt, requestID id.ID, fingerprint [32]byte, now uint64) (MutationOutcome, bool, error) {
 	for _, receipt := range receipts {
-		if receipt.RequestID != requestID {
+		if receipt.RequestID != requestID || receipt.Expires <= now {
 			continue
 		}
 		if receipt.Fingerprint != fingerprint {

@@ -291,6 +291,47 @@ func TestSchedulerMutationReceiptReplaysOriginalConflictAfterStateChanges(t *tes
 	}
 }
 
+func TestSchedulerMutationReceiptReuseAfterExpiryIgnoresOldFingerprint(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		reuseFingerprint bool
+	}{
+		{name: "same fingerprint", reuseFingerprint: true},
+		{name: "changed fingerprint", reuseFingerprint: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+			s, n, _, _, destination := schedulerFixture(t, &now)
+			requestID := schedulerID(64)
+			fingerprint := [32]byte{10, 11, 12}
+			if err := s.Put(context.Background(), dailyAnnouncement(destination, "revision one", 1)); err != nil {
+				t.Fatal(err)
+			}
+			first, err := s.PutWithReceipt(context.Background(), requestID, fingerprint, uint64(now.Unix()+1), dailyAnnouncement(destination, "receipt result", 2))
+			if err != nil || first.Status != 0 || first.Revision == nil || *first.Revision != 2 {
+				t.Fatalf("first mutation result=%+v err=%v", first, err)
+			}
+
+			now = now.Add(2 * time.Second)
+			newFingerprint := fingerprint
+			if !tt.reuseFingerprint {
+				newFingerprint = [32]byte{13, 14, 15}
+			}
+			second, err := s.PutWithReceipt(context.Background(), requestID, newFingerprint, uint64(now.Unix()+20), dailyAnnouncement(destination, "revision three", 3))
+			if err != nil || second.Status != 0 || second.Revision == nil || *second.Revision != 3 {
+				t.Fatalf("reused request ID result=%+v err=%v, want new revision 3", second, err)
+			}
+			states, receipts, err := decodeStateDocument(n.value.Value)
+			if err != nil || len(states) != 1 || states[0].Announcement.Schedule.Revision != 3 || states[0].Announcement.Text != "revision three" {
+				t.Fatalf("state after expired receipt reuse=%+v err=%v", states, err)
+			}
+			if len(receipts) != 1 || receipts[0].RequestID != requestID || receipts[0].Fingerprint != newFingerprint || receipts[0].Expires != uint64(now.Unix()+20) {
+				t.Fatalf("expired receipt was not pruned/replaced: %+v", receipts)
+			}
+		})
+	}
+}
+
 func TestSchedulerLateOccurrenceSendsOnceWithStableOperationAcrossRestart(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
 	s, n, sender, _, destination := schedulerFixture(t, &now)
