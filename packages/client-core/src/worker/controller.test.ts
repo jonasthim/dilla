@@ -1611,6 +1611,30 @@ it('advances the instance clock from the ticket by the time elapsed here, and dr
     .toEqual([[toHex(STRANGER), 1_700_000_024_000]]);
 });
 
+// A timer can fire a millisecond before Date.now() reaches the deadline it was set for (Firefox does, under load). The
+// expiry sweep then finds the row not yet over; it must look again at the deadline, or the row outlives its window for good
+// (CI run 39828967265: the indicator was still up 90 s after the signal's expiry).
+it('drops a typing row whose expiry timer fired a millisecond early', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    let nowMs = 1_700_000_000_000;
+    const w = world({ now: () => nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'frame', frame: {
+      op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 4n],
+    } });
+    const rows = (): unknown[] => w.last<unknown[]>(`typing:${toHex(CHANNEL)}`) ?? [];
+    expect(rows()).toHaveLength(1);
+    nowMs += 3_999;                                           // the 4 s timer fires with 1 ms still to go on the clock
+    vi.advanceTimersByTime(4_000);
+    nowMs += 1;
+    vi.advanceTimersByTime(1);
+    expect(rows()).toEqual([]);
+  } finally { vi.useRealTimers(); }
+});
+
 it('clears incoming typing on membership loss without local typing', async () => {
   const w = world();
   await toReady(w);

@@ -1715,7 +1715,18 @@ export class Controller {
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
     this.incomingTyping.set(channelId, rows);
     this.publishTyping(channelId);
-    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+    this.deps.setTimeout(() => this.sweepTyping(channelId), Math.max(0, expiry - this.deps.now()));
+  }
+
+  /** The expiry timer. It may fire a millisecond before the clock reaches the deadline it was set for (Firefox does, under
+   *  load); the row is then still live and nothing else would sweep it, so while any row remains it looks again when the
+   *  nearest one is due. */
+  private sweepTyping(channelId: string): void {
+    this.publishTyping(channelId);
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined || rows.size === 0) return;
+    const wait = Math.min(...rows.values()) - this.deps.now();
+    if (wait > 0 && wait <= 10_000) this.deps.setTimeout(() => this.sweepTyping(channelId), wait);
   }
 
   private publishTyping(channelId: string): void {
