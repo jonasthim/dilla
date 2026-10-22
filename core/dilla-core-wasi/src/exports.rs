@@ -1570,9 +1570,10 @@ mod tests {
     /// the applied items grew the leaf's `signature_key` (hardening C); 5 since
     /// `public_group_state` grew `leaf_count` (hardening G); 6 since it grew `external_senders`
     /// (DS-MEMBERSHIP-01); 7 since `verify_credential` was exported (DILLA-BOT-04); 8 since
-    /// `validate_key_package` appended the leaf credential identity (DILLA-BOT-04 Task5).
+    /// `validate_key_package` appended the leaf credential identity (DILLA-BOT-04 Task5); 9 since
+    /// `public_group_roster_extract` was exported.
     #[test]
-    fn dilla_abi_reports_version_eight() {
+    fn dilla_abi_reports_version_nine() {
         let out = dispatch("dilla_abi", &version_only());
         let abi = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(6)?;
@@ -1589,24 +1590,24 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            abi, 8,
-            "ABI v8: validate_key_package returns credential bytes"
+            abi, 9,
+            "ABI v9: public_group_roster_extract exports authenticated roster descriptors"
         );
-        assert_eq!(dilla_core::ABI_VERSION, 8);
+        assert_eq!(dilla_core::ABI_VERSION, 9);
     }
 
     /// An older ABI request must now be refused outright — there is no compatibility
     /// shim (§3).
     #[test]
     fn an_abi_version_two_request_is_refused() {
-        for old in [2u64, 3, 4, 5, 6, 7] {
+        for old in [2u64, 3, 4, 5, 6, 7, 8] {
             let r = req(|e| {
                 e.array(1).uint(old);
             });
             let (code, detail) = failure(&dispatch("dilla_abi", &r));
             assert_eq!(code, crate::abi::E_ABI_VERSION);
             assert!(
-                detail.contains(&old.to_string()) && detail.contains('8'),
+                detail.contains(&old.to_string()) && detail.contains('9'),
                 "detail: {detail}"
             );
         }
