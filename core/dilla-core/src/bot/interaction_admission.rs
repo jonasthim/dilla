@@ -254,6 +254,64 @@ mod tests {
     }
 
     #[test]
+    fn shared_go_issuer_admission_proof_vector_verifies_strictly() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../protocol/vectors/bot.json"))
+                .expect("bot vector corpus JSON");
+        let vector = &corpus["admission_proof"];
+        let bytes = |field: &str| hex::decode(vector[field].as_str().unwrap()).unwrap();
+        let ids = &vector["ids"];
+        let id = |field: &str| {
+            MsgId::from_bytes(
+                hex::decode(ids[field].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let proof = bytes("proof_hex");
+        let payload = bytes("payload_hex");
+        let seed: [u8; 32] = bytes("seed").try_into().unwrap();
+        let key = SigningKey::from_bytes(&seed);
+        assert_eq!(
+            key.verifying_key().to_bytes().as_slice(),
+            bytes("public_key")
+        );
+        let expected = Expected {
+            instance: id("instance"),
+            installation: id("installation"),
+            community: id("community"),
+            bot_user: id("bot_user"),
+            bot_device: id("bot_device"),
+            participant_user: id("participant_user"),
+            participant_device: id("participant_device"),
+            group: id("group"),
+            minimum_eligibility_revision: vector["minimum_eligibility_revision"].as_u64().unwrap(),
+            server_now: vector["server_now"].as_u64().unwrap(),
+        };
+        // The payload itself is carried byte-for-byte inside the signed proof.
+        let (encoded_payload, _): (Vec<u8>, Vec<u8>) = decode_strict(&proof, |d| {
+            d.array(2)?;
+            Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec()))
+        })
+        .unwrap();
+        assert_eq!(encoded_payload, payload);
+        let admission =
+            verify_with_pinned_instance_key(&proof, &key.verifying_key().to_bytes(), &expected)
+                .expect("Go issuer vector verifies");
+        assert_eq!(admission.admission, id("admission"));
+        assert_eq!(admission.eligibility_revision, 11);
+        assert_eq!(admission.not_after, vector["not_after"].as_u64().unwrap());
+
+        let mut mutated = proof;
+        *mutated.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            verify_with_pinned_instance_key(&mutated, &key.verifying_key().to_bytes(), &expected),
+            Err(CodecError::Context)
+        );
+    }
+
+    #[test]
     fn exact_signed_tuple_and_fresh_revision_are_required() {
         let key = SigningKey::from_bytes(&[42; 32]);
         let expected = expected();

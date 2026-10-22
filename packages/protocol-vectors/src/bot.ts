@@ -1,6 +1,8 @@
 import { encode } from './cbor.ts';
 import { hex } from './bytes.ts';
 import { createHash } from 'node:crypto';
+import { keyFromSeed, sign } from './ed25519.ts';
+import { concat } from './bytes.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
@@ -12,7 +14,7 @@ const app = (op:number,args:unknown[],channel:boolean,mutation:boolean,name:stri
   return {name,kind:'request',hex:hex(raw),body,context};
 };
 const cbor = (v:unknown) => hex(encode(v as never));
-export function botVectors() {
+export async function botVectors() {
  const inputs: Array<[number,unknown[],boolean,boolean,string]> = [
   [0,[],false,false,'overview.get'],[1,[2n],false,false,'settings.get'],[2,[2n,encode([1n,'x'])],false,true,'settings.put'],
   [10,[],true,false,'music.state'],[11,['search'],true,false,'music.search'],[12,['enqueue'],true,true,'music.enqueue'],
@@ -186,6 +188,24 @@ export function botVectors() {
  const malformedOuter=[['nonminimal CBOR array head','9800'],['trailing CBOR item','8000'],['CBOR map root','a0'],['indefinite CBOR array','9fff']] as const;
  for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
   for(const [name,hexValue] of malformedOuter)rejects.push({name:`${kind}: ${name}`,kind,hex:hexValue});
- return {version:1,cases,rejects};
+ // Cross-language server-signed interaction admission proof. All IDs are fixed
+ // repeated-byte values and the seed is public test material, so Go and Rust
+ // can independently reproduce the exact canonical payload and signature.
+ const admissionSeed = new Uint8Array(32).fill(0x41);
+ const admissionKey = await keyFromSeed(admissionSeed);
+ const admissionPayload = encode([
+  1n, id(1), id(2), id(3), id(4), id(5), id(6), id(7), id(8), id(9), 11n, 130n,
+ ]);
+ const admissionSignature = await sign(admissionKey.privateKey,
+  concat(new TextEncoder().encode('dilla bot interaction admission v1\0'), admissionPayload));
+ const admissionProof = encode([admissionPayload, admissionSignature]);
+ return {version:1,cases,rejects,admission_proof:{
+  seed:hex(admissionSeed),public_key:hex(admissionKey.publicKey),
+  payload_hex:hex(admissionPayload),proof_hex:hex(admissionProof),
+  server_now:100,minimum_eligibility_revision:11,not_after:130,
+  ids:{admission:hex(id(1)),instance:hex(id(2)),installation:hex(id(3)),community:hex(id(4)),
+   bot_user:hex(id(5)),bot_device:hex(id(6)),participant_user:hex(id(7)),
+   participant_device:hex(id(8)),group:hex(id(9))},
+ }};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}

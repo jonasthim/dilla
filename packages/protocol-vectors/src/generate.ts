@@ -421,7 +421,7 @@ export async function main() {
   writeFileSync(join(VECTORS_DIR, 'identity.json'), j(await identityVectors()));
   writeFileSync(join(VECTORS_DIR, 'frames.json'), j(frameVectors()));
   writeFileSync(join(VECTORS_DIR, 'attachment.json'), j(await attachmentVectors()));
-  writeFileSync(join(VECTORS_DIR, 'bot.json'), j(botVectors()));
+  writeFileSync(join(VECTORS_DIR, 'bot.json'), j(await botVectors()));
   console.log(`vectors written to ${VECTORS_DIR}`);
 }
 
