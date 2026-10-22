@@ -64,13 +64,14 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [editingCapabilities, setEditingCapabilities] = useState(false);
   const editingCapabilitiesRef = useRef(false);
   const readGeneration = useRef(0);
+  const statusPollAttempts = useRef({ communityId, attempts: 0 });
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
 
   useEffect(() => {
     const generation = ++readGeneration.current;
     let canceled = false;
-    let statusTimer: number | undefined;
+    statusPollAttempts.current = { communityId, attempts: 0 };
     setInstallation(null);
     setJoinRole(null);
     setJoinRoleValue('');
@@ -82,29 +83,6 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setSelectedCapabilities(0);
     setEditingCapabilities(false);
     editingCapabilitiesRef.current = false;
-    const scheduleStatusRefresh = (attempt: number): void => {
-      if (canceled || attempt >= BOT_STATUS_POLL_LIMIT) return;
-      statusTimer = window.setTimeout(() => {
-        statusTimer = undefined;
-        if (canceled || generation !== readGeneration.current) return;
-        void client.call({ m: 'getBotInstallation', communityId }).then(value => {
-          if (canceled || generation !== readGeneration.current) return;
-          const next = value as Installation | null;
-          if (next !== null && next.communityId !== communityId) return;
-          if (editingCapabilitiesRef.current) {
-            // Keep the edit's revision and mask together. If the server changed
-            // capabilities meanwhile, saving with this older revision must conflict.
-            setInstallation(current => current === null || next === null ? next : { ...current, state: next.state });
-          } else {
-            setInstallation(next);
-            setSelectedCapabilities(next?.capabilities ?? 0);
-          }
-          if (next !== null && next.state <= 2) scheduleStatusRefresh(attempt + 1);
-        }).catch(() => {
-          if (!canceled && generation === readGeneration.current) scheduleStatusRefresh(attempt + 1);
-        });
-      }, BOT_STATUS_POLL_INTERVAL_MS);
-    };
     void client.call({ m: 'getBotInstallation', communityId }).then(value => {
       if (canceled || generation !== readGeneration.current) return;
       const loadedInstallation = value as Installation | null;
@@ -112,7 +90,6 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       setInstallation(loadedInstallation);
       setSelectedCapabilities(loadedInstallation?.capabilities ?? 0);
       setLoadedFor(communityId);
-      if (loadedInstallation !== null && loadedInstallation.state <= 2) scheduleStatusRefresh(0);
     }).catch((e: unknown) => {
       if (canceled || generation !== readGeneration.current) return;
       setError(errorMessage(errorOf(e)));
@@ -132,9 +109,50 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     void client.call({ m: 'refreshFactors' }).catch(() => undefined);
     return () => {
       canceled = true;
-      if (statusTimer !== undefined) window.clearTimeout(statusTimer);
     };
   }, [client, communityId]);
+
+  const installationCommunityId = installation?.communityId;
+  const installationState = installation?.state;
+  useEffect(() => {
+    if (loadedFor !== communityId || installationCommunityId !== communityId || installationState === undefined
+      || installationState > 2) return;
+    const generation = readGeneration.current;
+    let canceled = false;
+    let statusTimer: number | undefined;
+    const scheduleStatusRefresh = (): void => {
+      if (canceled || statusPollAttempts.current.communityId !== communityId
+        || statusPollAttempts.current.attempts >= BOT_STATUS_POLL_LIMIT) return;
+      statusTimer = window.setTimeout(() => {
+        statusTimer = undefined;
+        if (canceled || generation !== readGeneration.current) return;
+        statusPollAttempts.current.attempts += 1;
+        void client.call({ m: 'getBotInstallation', communityId }).then(value => {
+          if (canceled || generation !== readGeneration.current) return;
+          const next = value as Installation | null;
+          if (next !== null && next.communityId !== communityId) return;
+          if (editingCapabilitiesRef.current) {
+            // Keep the edit's revision and mask together. If the server changed
+            // capabilities meanwhile, saving with this older revision must conflict.
+            setInstallation(previous => previous === null || next === null ? next : { ...previous, state: next.state });
+          } else {
+            setInstallation(next);
+            setSelectedCapabilities(next?.capabilities ?? 0);
+          }
+          // A state transition restarts this effect; unchanged transient states
+          // continue the same bounded loop without creating a second poller.
+          if (next !== null && next.state <= 2 && next.state === installationState) scheduleStatusRefresh();
+        }).catch(() => {
+          if (!canceled && generation === readGeneration.current) scheduleStatusRefresh();
+        });
+      }, BOT_STATUS_POLL_INTERVAL_MS);
+    };
+    scheduleStatusRefresh();
+    return () => {
+      canceled = true;
+      if (statusTimer !== undefined) window.clearTimeout(statusTimer);
+    };
+  }, [client, communityId, installationCommunityId, installationState, loadedFor]);
 
   const current = loadedFor === communityId;
   const currentInstallation = current && installation?.communityId === communityId ? installation : null;

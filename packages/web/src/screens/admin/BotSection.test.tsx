@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PhoneLayoutProvider } from '../../../../ui/src/internal/phoneLayout.ts';
 import { CoreProvider } from '../../core/context.tsx';
@@ -19,7 +19,7 @@ const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, 
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
   banMembers: true, moderateMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 
-function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true) {
+function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true, fakeTimers = false) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
@@ -37,7 +37,7 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
     return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
   };
   const announce = vi.fn();
-  const user = userEvent.setup();
+  const user = fakeTimers ? userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) : userEvent.setup();
   const view = render(<PhoneLayoutProvider value={phone}><div className="d-root"><CoreProvider client={fake}>
     <ServerSettings communityId={SERVER} tab="bot" onTab={vi.fn()} onClose={vi.fn()} announce={announce} />
   </CoreProvider></div></PhoneLayoutProvider>);
@@ -329,6 +329,37 @@ describe('the server bot settings', () => {
       expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(fake.callsOf('getBotInstallation')).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts polling when a newly enabled bot moves from absent to Pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const { fake } = setup(null, false, false, true, true);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByText(en['admin.bot.none'])).toBeInTheDocument();
+      let polls = 0;
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') {
+          polls += 1;
+          return Promise.resolve({ ...ROW, state: 3, revision: `${polls + 1}`, userId: '77'.repeat(16) });
+        }
+        if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+        if (command.m === 'configureBotInstallation') return Promise.resolve({ ...ROW, state: 0, revision: '1' });
+        return Promise.resolve(null);
+      };
+      act(() => { fireEvent.click(screen.getByRole('button', { name: en['admin.bot.enable'] })); });
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText(en['factorSettings.stepUp.password']), { target: { value: 'local-password' } });
+        fireEvent.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+        await Promise.resolve(); await Promise.resolve();
+      });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
+      expect(fake.callsOf('getBotInstallation')).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }
