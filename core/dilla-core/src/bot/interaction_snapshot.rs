@@ -226,7 +226,7 @@ fn encode_bytes(b: &[u8]) -> Vec<u8> {
     out
 }
 
-fn validate_list(x: &SnapshotList) -> Result<(), CodecError> {
+pub(super) fn validate_list(x: &SnapshotList) -> Result<(), CodecError> {
     if x.user.as_bytes().iter().all(|b| *b == 0)
         || x.version == 0
         || x.version > MAX_I64

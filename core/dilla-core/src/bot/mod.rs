@@ -4,6 +4,7 @@
 //! authenticated context, while dispatchers remain responsible for authorization and state.
 
 pub mod group_registration;
+pub mod human_interaction_context;
 pub mod interaction_admission;
 pub mod interaction_snapshot;
 pub mod keypackage;
