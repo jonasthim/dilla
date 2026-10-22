@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -124,6 +125,37 @@ func TestMusicSnapshotBridgeRejectsStaleAndMissingSessions(t *testing.T) {
 	if got := runtime.supervisors[channel]; got != supervisor {
 		t.Fatal("failed refresh replaced the current supervisor")
 	}
+}
+
+func TestMusicSnapshotCommitCallbackRefreshesPausedMetadataAndToleratesMissingRuntime(t *testing.T) {
+	installation, community, channel := id.New(), id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queues, err := restoreMusicSupervisors(context.Background(), community, []client.Channel{{ID: channel, CommunityID: community, Kind: musicVoiceChannelKind}}, store, unavailableMusicQueueStarter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := &musicQueueRegistry{runtimes: map[id.ID]*retainedMusicRuntime{installation: {community: community, queues: queues, native: n}}}
+	defer registry.Close()
+	next, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpPause})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 0, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback := musicSnapshotCommitCallback(registry, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	callback(context.Background(), installation, community, channel, saved.Revision)
+	if state := queues.supervisors[channel].State(); state.Revision != saved.Revision || !state.Paused {
+		t.Fatalf("retained state=%+v, want paused revision %d", state, saved.Revision)
+	}
+	// Reconcile may tear down a runtime between the commit and this callback.
+	// That condition is logged and leaves the committed snapshot for later restore.
+	musicSnapshotCommitCallback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(context.Background(), installation, community, channel, saved.Revision)
 }
 
 func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *testing.T) {

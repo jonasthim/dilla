@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -22,6 +23,20 @@ const (
 )
 
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
+
+// musicSnapshotCommitCallback adapts an authorized persistence commit to the
+// retained metadata runtime. The starter is deliberately unavailable so this
+// bridge can refresh paused snapshots without opening a voice call or PCM path.
+func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, uint64) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(ctx context.Context, installation, community, channel id.ID, revision uint64) {
+		if err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, revision, unavailableMusicQueueStarter()); err != nil {
+			logger.Warn("persisted music queue snapshot could not refresh retained runtime", "installation_id", installation.String(), "community_id", community.String(), "channel_id", channel.String(), "revision", revision, "error", err.Error())
+		}
+	}
+}
 
 type musicQueueRuntime struct {
 	mu          sync.Mutex

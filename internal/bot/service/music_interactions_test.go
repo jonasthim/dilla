@@ -76,6 +76,33 @@ func TestMusicInteractionsRecheckDJAndPersistOnlyQueueState(t *testing.T) {
 	}
 }
 
+func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *testing.T) {
+	channel, community, installation := interactionID(5), interactionID(2), interactionID(3)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	var commits []uint64
+	h := MusicInteractions{Store: store, Authority: authority, InstallationID: installation, CommunityID: community,
+		OnPersistedSnapshot: func(_ context.Context, gotInstallation, gotCommunity, gotChannel id.ID, revision uint64) {
+			if gotInstallation != installation || gotCommunity != community || gotChannel != channel {
+				t.Errorf("bridge context=(%s,%s,%s), want (%s,%s,%s)", gotInstallation, gotCommunity, gotChannel, installation, community, channel)
+			}
+			if store.snapshot.Revision != revision {
+				t.Errorf("bridge revision=%d before store revision=%d", revision, store.snapshot.Revision)
+			}
+			commits = append(commits, revision)
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0)}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
+	if err != nil || result.Status != 0 || len(commits) != 1 || commits[0] != 1 {
+		t.Fatalf("successful commit result=%+v err=%v bridge revisions=%v", result, err, commits)
+	}
+	request.Revision = uint64Ptr(0)
+	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
+	if err != nil || result.Status != interactionStatusConflict || len(commits) != 1 {
+		t.Fatalf("conflicting commit result=%+v err=%v bridge revisions=%v, want no second notification", result, err, commits)
+	}
+}
+
 func TestMusicInteractionsNonDJCannotMutateAndEmergencyStopIsNarrow(t *testing.T) {
 	channel := id.New()
 	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}

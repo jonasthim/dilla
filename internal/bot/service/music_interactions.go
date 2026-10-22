@@ -38,9 +38,13 @@ type musicStateStore interface {
 // MusicInteractions updates only encrypted queue state. It does not control
 // audio; a playback supervisor must consume these revisions separately.
 type MusicInteractions struct {
-	Store       musicStateStore
-	Authority   MusicInteractionAuthority
-	CommunityID id.ID
+	Store          musicStateStore
+	Authority      MusicInteractionAuthority
+	InstallationID id.ID
+	CommunityID    id.ID
+	// OnPersistedSnapshot refreshes a retained paused runtime after a successful
+	// queue-state commit. It receives only server-bound identity and the saved revision.
+	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, uint64)
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -174,6 +178,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	}
 	if err != nil {
 		return InteractionResult{}, err
+	}
+	if h.OnPersistedSnapshot != nil {
+		h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.Revision)
 	}
 	revision := saved.Revision
 	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
