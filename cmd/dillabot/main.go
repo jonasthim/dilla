@@ -389,6 +389,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				if ensureErr == nil {
 					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
 					if ensureErr == nil {
+						// Newly joined MLS members are not actionable until their
+						// signed device-list history has been checked by the core.
+						var trust *service.SourceTrust
+						trust, ensureErr = service.NewSourceTrust(nativeClient)
+						if ensureErr == nil {
+							_, ensureErr = trust.TrustPendingLeaves(ctx, result.Session)
+						}
+					}
+					if ensureErr == nil {
 						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						if ensureErr == nil {
 							membershipReady = true
