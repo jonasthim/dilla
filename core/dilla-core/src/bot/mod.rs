@@ -4,6 +4,7 @@
 //! authenticated context, while dispatchers remain responsible for authorization and state.
 
 pub mod group_registration;
+pub mod interaction_admission;
 pub mod keypackage;
 
 use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
