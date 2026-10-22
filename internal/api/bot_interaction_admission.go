@@ -102,6 +102,11 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		if s.Bot.State != installation.State || s.Bot.CommunityID != installation.CommunityID {
 			return server.Errorf(server.CodeForbidden, "Bot session installation state is stale")
 		}
+		// Disable and tombstone mutations take this same user-row lock before
+		// their eligibility trigger advances the revision fence.
+		if err := tx.LockUserForDeviceRegistration(r.Context(), req.ParticipantUser); err != nil {
+			return err
+		}
 		// Lock eligibility before reading device/list state. Device and signed-list
 		// triggers use this row, so a concurrent change either precedes these reads
 		// or advances the fence after this transaction commits.

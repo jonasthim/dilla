@@ -1,6 +1,6 @@
 -- +goose Up
 CREATE TABLE bot_interaction_admission_receipts (
-  installation_id BLOB NOT NULL CHECK(length(installation_id)=16),
+  installation_id BLOB NOT NULL REFERENCES bot_installations(id) ON DELETE CASCADE CHECK(length(installation_id)=16),
   request_id BLOB NOT NULL CHECK(length(request_id)=16),
   request_hash BLOB NOT NULL CHECK(length(request_hash)=32),
   payload BLOB NOT NULL,

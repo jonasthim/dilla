@@ -40,6 +40,16 @@ func TestBotInteractionAdmissionReceiptPersistsPerInstallationRequest(t *testing
 			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotInteractionAdmissionReceipt(ctx, changed) }); err != nil {
 				t.Fatalf("same request ID after retention: %v", err)
 			}
+			deleteInstallation := `DELETE FROM bot_installations WHERE id=?`
+			if engine == "postgres" {
+				deleteInstallation = `DELETE FROM bot_installations WHERE id=$1`
+			}
+			if _, err := rawWriteDB(t, repo).ExecContext(ctx, deleteInstallation, r.InstallationID); err != nil {
+				t.Fatalf("delete installation: %v", err)
+			}
+			if _, err := repo.GetBotInteractionAdmissionReceipt(ctx, r.InstallationID, r.RequestID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("receipt after installation deletion=%v, want cascade not found", err)
+			}
 		})
 	}
 }

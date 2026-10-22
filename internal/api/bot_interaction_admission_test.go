@@ -204,6 +204,33 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	if expiredConflict.Code != http.StatusConflict {
 		t.Fatalf("expired request ID reused for another group = %d %x, want 409", expiredConflict.Code, expiredConflict.Body.Bytes())
 	}
+	var currentPayload []any
+	if err := cborx.Unmarshal(renewed[0].([]byte), &currentPayload); err != nil || len(currentPayload) != 12 {
+		t.Fatalf("renewed payload decode: %v", err)
+	}
+	issuedRevision := currentPayload[10].(uint64)
+	disabledAt := deps.Clock.Now().Unix()
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, participant, &disabledAt) }); err != nil {
+		t.Fatalf("disable participant: %v", err)
+	}
+	var latestRevision uint64
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error {
+		var err error
+		latestRevision, err = tx.(store.BotInteractionEligibility).GetBotInteractionEligibilityRevision(ctx, community, participant)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if latestRevision <= issuedRevision {
+		t.Fatalf("disable did not invalidate issued revision: issued=%d latest=%d", issuedRevision, latestRevision)
+	}
+	disabledAdmission := postCBORAuth(h, path, mustCBOR(t, []any{id.New(), group, participant, participantDevice}), token)
+	if disabledAdmission.Code != http.StatusForbidden {
+		t.Fatalf("disabled participant admission=%d, want 403", disabledAdmission.Code)
+	}
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, participant, nil) }); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := deps.Repo.PutBan(ctx, store.BanRow{CommunityID: community, UserID: participant, ByUser: owner.ID, Created: now}); err != nil {
 		t.Fatal(err)

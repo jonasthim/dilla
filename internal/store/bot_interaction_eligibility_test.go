@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -133,6 +134,73 @@ func TestBotInteractionEligibilityRevisionFencesMembershipBanAndDeviceChanges(t 
 			}
 			if got := interactionEligibilityRevision(t, repo, community, user); got != 10 {
 				t.Fatalf("rejoin revision = %d, want 10", got)
+			}
+			at := int64(16)
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, user, &at) }); err != nil {
+				t.Fatalf("disable account: %v", err)
+			}
+			if got := interactionEligibilityRevision(t, repo, community, user); got != 11 {
+				t.Fatalf("account disable revision = %d, want 11", got)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, user, nil) }); err != nil {
+				t.Fatalf("enable account: %v", err)
+			}
+			if got := interactionEligibilityRevision(t, repo, community, user); got != 12 {
+				t.Fatalf("account enable revision = %d, want 12", got)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.TombstoneUser(ctx, user, 17) }); err != nil {
+				t.Fatalf("tombstone account: %v", err)
+			}
+			if got := interactionEligibilityRevision(t, repo, community, user); got != 13 {
+				t.Fatalf("account tombstone revision = %d, want 13", got)
+			}
+		})
+	}
+}
+
+func TestBotInteractionEligibilityAccountDisableSerializesWithAdmissionFence(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			community, user := seedCommunity(ctx, t, repo), seedUser(ctx, t, repo).ID
+			if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: user, Joined: 30}); err != nil {
+				t.Fatal(err)
+			}
+			locked, release := make(chan struct{}), make(chan struct{})
+			admissionDone := make(chan error, 1)
+			go func() {
+				admissionDone <- repo.Tx(ctx, func(tx store.Repository) error {
+					if err := tx.LockUserForDeviceRegistration(ctx, user); err != nil {
+						return err
+					}
+					if _, err := tx.(store.BotInteractionEligibility).GetBotInteractionEligibilityRevision(ctx, community, user); err != nil {
+						return err
+					}
+					close(locked)
+					<-release
+					return nil
+				})
+			}()
+			<-locked
+			disabled := make(chan error, 1)
+			go func() {
+				at := int64(31)
+				disabled <- repo.Tx(ctx, func(tx store.Repository) error { return tx.SetUserDisabled(ctx, user, &at) })
+			}()
+			select {
+			case err := <-disabled:
+				t.Fatalf("disable passed the admission's locked user row: %v", err)
+			case <-time.After(75 * time.Millisecond):
+			}
+			close(release)
+			if err := <-admissionDone; err != nil {
+				t.Fatalf("admission fence transaction: %v", err)
+			}
+			if err := <-disabled; err != nil {
+				t.Fatalf("disable after admission fence: %v", err)
+			}
+			if got := interactionEligibilityRevision(t, repo, community, user); got != 2 {
+				t.Fatalf("revision after concurrent disable = %d, want 2", got)
 			}
 		})
 	}
