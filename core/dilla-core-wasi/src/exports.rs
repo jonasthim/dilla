@@ -1111,6 +1111,78 @@ mod tests {
     const FIXTURE_GROUP_INFO: &[u8] =
         include_bytes!("../../../testkit/fixtures/ds-1500/group_info.mls");
 
+    /// Makes a one-leaf MLS group whose tree and GroupInfo are both valid for their own pairing.
+    /// A caller supplies the credential bytes so tests can exercise a Dilla-signature failure
+    /// without corrupting the enclosing MLS leaf signature or GroupInfo authentication.
+    fn small_authenticated_material(
+        signer: &SignatureKeyPair,
+        identity: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use openmls_rust_crypto::OpenMlsRustCrypto;
+        use tls_codec::Serialize as _;
+
+        let provider = OpenMlsRustCrypto::default();
+        let binding = dilla_core::mls::DillaBinding {
+            v: 1,
+            instance_id: dilla_core::ids::InstanceId::from_bytes([0x11; 16]),
+            community_id: None,
+            target_id: [0x22; 16],
+            kind: dilla_core::mls::GroupKind::Pairing,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        let config = dilla_core::mls::create_config(&binding, None).expect("config");
+        let group_id = GroupId::from_slice(&[0x33; 16]);
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity.to_vec()).into(),
+            signature_key: signer.public().into(),
+        };
+        let group = MlsGroup::new_with_group_id(&provider, signer, &config, group_id, credential)
+            .expect("create one-leaf MLS group");
+        let tree = group
+            .export_ratchet_tree()
+            .tls_serialize_detached()
+            .expect("serialize tree");
+        let group_info = group
+            .export_group_info(provider.crypto(), signer, false)
+            .expect("export GroupInfo")
+            .tls_serialize_detached()
+            .expect("serialize GroupInfo");
+        (tree, group_info)
+    }
+
+    fn roster_test_identity(credential_dsk: &[u8; 32]) -> Vec<u8> {
+        use dilla_core::identity::{
+            CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner,
+        };
+        use dilla_core::ids::{DeviceId, UserId};
+
+        let umk = UmkSigner::from_bytes(&[0x51; 32]);
+        let ssk = SskSigner::from_bytes(&[0x52; 32]);
+        let user_id = UserId::from_bytes([0x53; 16]);
+        let device_id = DeviceId::from_bytes([0x54; 16]);
+        CredentialIdentity {
+            v: 1,
+            umk_pub: umk.public(),
+            user_id,
+            device_id,
+            kind: Kind::User,
+            tier: Tier::Browser,
+            signer_tier: SignerTier::Browser,
+            ssk_pub: ssk.public(),
+            sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+            sig_ssk_dev: ssk.sign_device(
+                &device_id,
+                credential_dsk,
+                Kind::User,
+                Tier::Browser,
+                SignerTier::Browser,
+            ),
+        }
+        .encode()
+    }
+
     #[test]
     fn roster_extraction_authenticates_the_group_and_every_member_credential() {
         let out = dispatch(
@@ -1153,6 +1225,62 @@ mod tests {
             }),
         ));
         assert_ne!(code, "");
+    }
+
+    #[test]
+    fn roster_extraction_rejects_a_different_valid_tree_for_the_signed_group_info() {
+        let signer = SignatureKeyPair::new(SignatureScheme::ED25519).expect("keygen");
+        let dsk: [u8; 32] = signer.public().try_into().expect("Ed25519 public key");
+        let identity = roster_test_identity(&dsk);
+        let (tree_a, info_a) = small_authenticated_material(&signer, &identity);
+        let (tree_b, _info_b) = small_authenticated_material(&signer, &identity);
+        assert_ne!(tree_a, tree_b, "independent group trees should differ");
+
+        let (code, detail) = failure(&dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(&tree_b)
+                    .bytes(&info_a);
+            }),
+        ));
+        assert_eq!(code, crate::abi::E_ABI_STATE);
+        assert!(detail.contains("TreeHashMismatch"), "{detail}");
+    }
+
+    #[test]
+    fn roster_extraction_rejects_an_invalid_dilla_signature_in_authenticated_mls_material() {
+        let signer = SignatureKeyPair::new(SignatureScheme::ED25519).expect("keygen");
+        let wrong_dsk = [0xa5; 32];
+        let identity = roster_test_identity(&wrong_dsk);
+        let (tree, group_info) = small_authenticated_material(&signer, &identity);
+
+        let (code, detail) = failure(&dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(&tree)
+                    .bytes(&group_info);
+            }),
+        ));
+        assert_eq!(code, "E_CREDENTIAL", "{detail}");
+    }
+
+    #[test]
+    fn roster_extraction_rejects_oversized_group_info_before_decoding() {
+        let oversized = vec![0; 64 * 1024 + 1];
+        let (code, detail) = failure(&dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(FIXTURE_TREE)
+                    .bytes(&oversized);
+            }),
+        ));
+        assert_eq!(code, "E_ROSTER_LIMIT", "{detail}");
     }
 
     /// Creates the fixture group and returns `(handle, epoch, group_id, tree_hash)`.
