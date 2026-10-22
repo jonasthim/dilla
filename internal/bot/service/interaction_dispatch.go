@@ -25,6 +25,7 @@ const (
 
 var ErrInteractionRequestIDConflict = errors.New("bot interaction request id reused with different input")
 var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay cache is full")
+var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay is no longer authorized")
 
 type interactionNative interface {
 	Binding() native.Binding
@@ -279,6 +280,38 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	response.Revision = result.Revision
 	response.Data = append([]byte{}, result.Data...)
 	return finish()
+}
+
+// ReauthorizeReadReplay reruns a registered read handler and discards its
+// response. It is used before resuming a durable response whose send has not
+// yet been accepted, so revoked or expired reads remain pending without
+// changing the response already bound to that event.
+func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event native.GroupEvent) error {
+	if d == nil || event.Body == nil {
+		return protocol.ErrInvalid
+	}
+	request, err := protocol.DecodeRequest(*event.Body)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	handler, ok := d.handlers[request.Operation]
+	d.mu.Unlock()
+	if !ok || !handler.RecomputeOnReplay {
+		return nil
+	}
+	body, err := d.Dispatch(ctx, event)
+	if err != nil {
+		return err
+	}
+	response, err := protocol.DecodeResponse(body)
+	if err != nil {
+		return err
+	}
+	if response.RequestID != request.RequestID || response.CommunityID != d.binding.Community || response.Status != 0 {
+		return ErrInteractionReadReplayNotAuthorized
+	}
+	return nil
 }
 
 func (d *InteractionDispatcher) begin(ctx context.Context, key interactionReplayKey, fingerprint [32]byte) (*interactionReplay, bool, error) {

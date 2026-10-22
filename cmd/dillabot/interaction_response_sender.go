@@ -19,11 +19,11 @@ type durableInteractionResponseSender struct {
 	outbox *service.InteractionResponseOutbox
 }
 
-func (s durableInteractionResponseSender) ResumeInteractionResponse(ctx context.Context, event native.GroupEvent) (bool, error) {
+func (s durableInteractionResponseSender) ResumeInteractionResponse(ctx context.Context, event native.GroupEvent, preflight func(context.Context) error) (bool, error) {
 	if s.outbox == nil {
 		return false, errors.New("missing interaction response outbox")
 	}
-	receipt, found, err := s.outbox.Resume(ctx, event)
+	receipt, found, err := s.outbox.ResumeWithPreflight(ctx, event, preflight)
 	if err != nil || !found {
 		return false, err
 	}

@@ -162,6 +162,33 @@ func TestSendUnknownReceiptIsTerminal(t *testing.T) {
 	}
 }
 
+func TestSendWithPreflightChecksOnlyUnacceptedAttempts(t *testing.T) {
+	c, n, s, in := sendFixture()
+	preflightCalls := 0
+	blocked := errors.New("read authorization revoked")
+	preflight := func(context.Context) error {
+		preflightCalls++
+		return blocked
+	}
+
+	// A durable accepted receipt is authoritative and can be confirmed without
+	// reauthorizing or changing the immutable attempt.
+	accepted := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptAccepted)
+	s.receipts[in.AttemptID] = accepted
+	got, err := c.sendWithPreflight(context.Background(), s, in, preflight)
+	if err != nil || got.Outcome != protocol.ReceiptAccepted || preflightCalls != 0 || n.prepareCalls != 0 {
+		t.Fatalf("accepted replay receipt=%+v err=%v preflight=%d prepares=%d", got, err, preflightCalls, n.prepareCalls)
+	}
+
+	// With no server receipt, current authorization is required before preparing
+	// or posting the saved response.
+	delete(s.receipts, in.AttemptID)
+	got, err = c.sendWithPreflight(context.Background(), s, in, preflight)
+	if !errors.Is(err, blocked) || preflightCalls != 1 || n.prepareCalls != 0 || s.posts != 0 {
+		t.Fatalf("blocked replay receipt=%+v err=%v preflight=%d prepares=%d posts=%d", got, err, preflightCalls, n.prepareCalls, s.posts)
+	}
+}
+
 func TestSendAllowsSuccessorOnlyAfterClosedAttemptAndNewEpoch(t *testing.T) {
 	c, n, s, in := sendFixture()
 	prev := sendID(10)

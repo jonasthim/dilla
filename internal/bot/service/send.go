@@ -79,6 +79,14 @@ func (s *SendCoordinator) Send(ctx context.Context, session *client.Session, in 
 }
 
 func (s *SendCoordinator) send(ctx context.Context, session sendSession, in SendInput) (protocol.SendReceipt, error) {
+	return s.sendWithPreflight(ctx, session, in, nil)
+}
+
+// sendWithPreflight checks authorization after looking up a durable receipt.
+// A receipt already accepted by the server remains authoritative and is
+// confirmed unchanged; an attempt with no receipt must pass preflight before
+// any native preparation or network send can occur.
+func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSession, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
 	if s == nil || session == nil || in.OperationID.IsZero() || in.AttemptID.IsZero() || in.GroupID.IsZero() || in.ExpectedGeneration == 0 || in.ExpectedGeneration > math.MaxInt64 || in.OriginalNow > math.MaxInt64 || len(in.RequestBody) == 0 || in.PredecessorAttemptID != nil && in.PredecessorAttemptID.IsZero() {
 		return protocol.SendReceipt{}, errors.New("invalid send input")
 	}
@@ -113,6 +121,11 @@ func (s *SendCoordinator) send(ctx context.Context, session sendSession, in Send
 	}
 	if !errors.Is(lookupErr, client.ErrBotSendReceiptNotFound) {
 		return protocol.SendReceipt{}, lookupErr
+	}
+	if preflight != nil {
+		if err := preflight(ctx); err != nil {
+			return protocol.SendReceipt{}, err
+		}
 	}
 	group, err := s.native.InspectGroup(ctx, in.GroupID)
 	if err != nil {

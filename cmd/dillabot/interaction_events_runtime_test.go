@@ -31,9 +31,13 @@ func (f interactionDispatcherFunc) Dispatch(ctx context.Context, event native.Gr
 	return f(ctx, event)
 }
 
+func (interactionDispatcherFunc) ReauthorizeReadReplay(context.Context, native.GroupEvent) error {
+	return nil
+}
+
 type interactionResponseSenderFunc func(context.Context, native.GroupEvent, string) (bool, error)
 
-func (f interactionResponseSenderFunc) ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error) {
+func (f interactionResponseSenderFunc) ResumeInteractionResponse(context.Context, native.GroupEvent, func(context.Context) error) (bool, error) {
 	return false, nil
 }
 
@@ -46,13 +50,24 @@ type interactionResumingSender struct {
 	sends   int
 }
 
-func (s *interactionResumingSender) ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error) {
+func (s *interactionResumingSender) ResumeInteractionResponse(context.Context, native.GroupEvent, func(context.Context) error) (bool, error) {
 	return s.resumed, nil
 }
 
 func (s *interactionResumingSender) SendInteractionResponse(context.Context, native.GroupEvent, string) (bool, error) {
 	s.sends++
 	return true, nil
+}
+
+type interactionPreflightResumingSender struct{ calls int }
+
+func (s *interactionPreflightResumingSender) ResumeInteractionResponse(ctx context.Context, _ native.GroupEvent, preflight func(context.Context) error) (bool, error) {
+	s.calls++
+	return false, preflight(ctx)
+}
+
+func (*interactionPreflightResumingSender) SendInteractionResponse(context.Context, native.GroupEvent, string) (bool, error) {
+	return false, errors.New("denied replay reached a fresh send")
 }
 
 func TestInteractionEventHandlerDispatchesOnlyNativeInteractionGroups(t *testing.T) {
@@ -172,13 +187,54 @@ func TestInteractionEventHandlerResumesCommittedResponseBeforeDispatch(t *testin
 			return "response", nil
 		}),
 		sender,
-	)
+	).(interactionEventHandler)
 	if err := handler.HandleGroupEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
 	if dispatches != 0 || sender.sends != 0 {
 		t.Fatalf("dispatches=%d fresh sends=%d; committed response must resume before dispatch", dispatches, sender.sends)
 	}
+}
+
+func TestInteractionEventHandlerKeepsRevokedPendingReadResponseUnacknowledged(t *testing.T) {
+	event := native.GroupEvent{DeliveryID: 6, Group: id.New()}
+	denied := errors.New("read permission revoked")
+	dispatches := 0
+	sender := &interactionPreflightResumingSender{}
+	guarded := readReplayGuardDispatcher{interactionDispatcherFunc: interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+		dispatches++
+		return "response", nil
+	}), authorize: func(context.Context, native.GroupEvent) error { return denied }}
+	handler := newInteractionEventHandler(
+		interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
+			return native.GroupInfo{ID: group, Kind: 3}, nil
+		}),
+		guarded,
+		sender,
+	).(interactionEventHandler)
+	// The saved outbox response must remain pending and must not fall through
+	// to dispatch after the fresh authorization check denies it.
+	acked := false
+	poller := interactionPollerFunc(func(ctx context.Context, h service.GroupEventHandler) (service.GroupEventPollResult, error) {
+		if err := h.HandleGroupEvent(ctx, event); err != nil {
+			return service.GroupEventPollResult{}, err
+		}
+		acked = true
+		return service.GroupEventPollResult{Handled: 1, AcknowledgedThrough: event.DeliveryID}, nil
+	})
+	_, err := newInteractionEventRuntime(poller, handler).Drain(context.Background())
+	if !errors.Is(err, denied) || acked || sender.calls != 1 || dispatches != 0 {
+		t.Fatalf("Drain err=%v acked=%v resume checks=%d dispatches=%d", err, acked, sender.calls, dispatches)
+	}
+}
+
+type readReplayGuardDispatcher struct {
+	interactionDispatcherFunc
+	authorize func(context.Context, native.GroupEvent) error
+}
+
+func (d readReplayGuardDispatcher) ReauthorizeReadReplay(ctx context.Context, event native.GroupEvent) error {
+	return d.authorize(ctx, event)
 }
 
 func TestInteractionEventRuntimeSerializesAndBoundsDrain(t *testing.T) {

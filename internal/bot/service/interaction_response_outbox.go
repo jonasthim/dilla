@@ -38,10 +38,11 @@ type interactionResponseOutboxNative interface {
 // handler effects idempotent: a crash after a handler's side effect but before
 // this record is committed can cause that handler to run again on redelivery.
 type InteractionResponseOutbox struct {
-	native  interactionResponseOutboxNative
-	session *client.Session
-	binding native.Binding
-	sendFn  func(context.Context, SendInput) (protocol.SendReceipt, error)
+	native   interactionResponseOutboxNative
+	session  *client.Session
+	binding  native.Binding
+	sendFn   func(context.Context, SendInput) (protocol.SendReceipt, error)
+	resumeFn func(context.Context, SendInput, func(context.Context) error) (protocol.SendReceipt, error)
 }
 
 // NewInteractionResponseOutbox wires the durable response outbox to the
@@ -64,6 +65,9 @@ func newInteractionResponseOutboxWithCoordinator(n interactionResponseOutboxNati
 	o.sendFn = func(ctx context.Context, in SendInput) (protocol.SendReceipt, error) {
 		return coordinator.Send(ctx, session, in)
 	}
+	o.resumeFn = func(ctx context.Context, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+		return coordinator.sendWithPreflight(ctx, session, in, preflight)
+	}
 	return o, nil
 }
 
@@ -75,7 +79,16 @@ func newInteractionResponseOutbox(n interactionResponseOutboxNative, send func(c
 	if b.Instance.IsZero() || b.Community.IsZero() || b.Installation.IsZero() {
 		return nil, errors.New("invalid interaction response outbox binding")
 	}
-	return &InteractionResponseOutbox{native: n, binding: b, sendFn: send}, nil
+	o := &InteractionResponseOutbox{native: n, binding: b, sendFn: send}
+	o.resumeFn = func(ctx context.Context, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+		if preflight != nil {
+			if err := preflight(ctx); err != nil {
+				return protocol.SendReceipt{}, err
+			}
+		}
+		return send(ctx, in)
+	}
+	return o, nil
 }
 
 type interactionResponseRecord struct {
@@ -143,6 +156,14 @@ func (o *InteractionResponseOutbox) Send(ctx context.Context, event native.Group
 // no response has been committed yet. A found record is identity-checked
 // against the redelivered event before any send occurs.
 func (o *InteractionResponseOutbox) Resume(ctx context.Context, event native.GroupEvent) (receipt protocol.SendReceipt, found bool, err error) {
+	return o.ResumeWithPreflight(ctx, event, nil)
+}
+
+// ResumeWithPreflight resumes an immutable response. The preflight is passed
+// into the send coordinator, which checks for an already accepted server
+// receipt first and calls the preflight only when the saved attempt remains
+// unaccepted and may still be sent.
+func (o *InteractionResponseOutbox) ResumeWithPreflight(ctx context.Context, event native.GroupEvent, preflight func(context.Context) error) (receipt protocol.SendReceipt, found bool, err error) {
 	if o == nil || ctx == nil || o.sendFn == nil {
 		return protocol.SendReceipt{}, false, errors.New("invalid interaction response outbox")
 	}
@@ -153,7 +174,16 @@ func (o *InteractionResponseOutbox) Resume(ctx context.Context, event native.Gro
 	input := SendInput{OperationID: record.OperationID, AttemptID: record.AttemptID, GroupID: record.Group,
 		RequestBody: append([]byte(nil), record.ResponseBody...), OriginalNow: record.OriginalNow,
 		ExpectedGeneration: record.ExpectedGeneration}
-	receipt, err = o.sendFn(ctx, input)
+	if o.resumeFn != nil {
+		receipt, err = o.resumeFn(ctx, input, preflight)
+	} else {
+		if preflight != nil {
+			if err = preflight(ctx); err != nil {
+				return protocol.SendReceipt{}, true, err
+			}
+		}
+		receipt, err = o.sendFn(ctx, input)
+	}
 	return receipt, true, err
 }
 

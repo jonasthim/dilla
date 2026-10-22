@@ -281,6 +281,26 @@ func TestInteractionDispatcherRecomputesReadResponseAfterPermissionRevocation(t 
 	}
 }
 
+func TestInteractionDispatcherRefusesReadReplayAfterPermissionRevocation(t *testing.T) {
+	allowed := true
+	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
+		protocol.OpOverviewGet: {RecomputeOnReplay: true, Handle: func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error) {
+			if !allowed {
+				return InteractionResult{Status: interactionStatusForbidden}, nil
+			}
+			return InteractionResult{Status: 0, Data: cborEmptyArray()}, nil
+		}},
+	})
+	event.Body = ptrString(interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil))
+	if err := d.ReauthorizeReadReplay(context.Background(), event); err != nil {
+		t.Fatalf("authorized read replay: %v", err)
+	}
+	allowed = false
+	if err := d.ReauthorizeReadReplay(context.Background(), event); err == nil {
+		t.Fatal("read replay remained authorized after permission revocation")
+	}
+}
+
 func TestInteractionDispatcherReplaysSameLogicalRequestAcrossNativeRedelivery(t *testing.T) {
 	calls := 0
 	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{

@@ -114,6 +114,30 @@ func TestInteractionResponseOutboxRestartReusesExactPersistedResponseAndSendIden
 	}
 }
 
+func TestInteractionResponseOutboxKeepsRevokedPendingResponseUnsent(t *testing.T) {
+	ctx := context.Background()
+	state, firstSender, event := responseOutboxFixture(t)
+	first := newResponseOutbox(t, state, firstSender)
+	if _, err := first.Send(ctx, event, []byte("private response"), interactionID(30), interactionID(31), 123, 8); err != nil {
+		t.Fatal(err)
+	}
+	savedValue := append([]byte(nil), state.value.Value...)
+	retrySender := &responseOutboxSender{}
+	retry := newResponseOutbox(t, state, retrySender)
+	revoked := errors.New("read permission revoked")
+	preflightCalls := 0
+	_, found, err := retry.ResumeWithPreflight(ctx, event, func(context.Context) error {
+		preflightCalls++
+		return revoked
+	})
+	if !found || !errors.Is(err, revoked) || preflightCalls != 1 || len(retrySender.inputs) != 0 {
+		t.Fatalf("found=%v err=%v checks=%d sends=%d", found, err, preflightCalls, len(retrySender.inputs))
+	}
+	if string(state.value.Value) != string(savedValue) {
+		t.Fatal("denied replay changed the immutable outbox record")
+	}
+}
+
 func TestInteractionResponseOutboxRejectsConflictingEventRequestIdentity(t *testing.T) {
 	ctx := context.Background()
 	state, sender, event := responseOutboxFixture(t)

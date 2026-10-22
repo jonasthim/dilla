@@ -26,10 +26,11 @@ type interactionEventInspection interface {
 
 type interactionEventDispatcher interface {
 	Dispatch(context.Context, native.GroupEvent) (string, error)
+	ReauthorizeReadReplay(context.Context, native.GroupEvent) error
 }
 
 type interactionEventResponseSender interface {
-	ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error)
+	ResumeInteractionResponse(context.Context, native.GroupEvent, func(context.Context) error) (bool, error)
 	SendInteractionResponse(context.Context, native.GroupEvent, string) (bool, error)
 }
 
@@ -59,7 +60,9 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	}
 	// Resume a committed response before dispatch so a retry does not rerun the
 	// dispatcher when its exact response is already durable.
-	resumed, err := h.sender.ResumeInteractionResponse(ctx, event)
+	resumed, err := h.sender.ResumeInteractionResponse(ctx, event, func(preflightCtx context.Context) error {
+		return h.dispatcher.ReauthorizeReadReplay(preflightCtx, event)
+	})
 	if err != nil {
 		return err
 	}
