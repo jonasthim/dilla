@@ -11,9 +11,11 @@ archives=/var/cache/apt/archives
 
 case "${1:-}" in
 key)
-  # ImageVersion is set in the runner's environment (not in the workflow `env` context).
+  # The release only, not the runner image build: one release runs on many image builds at once, so a
+  # build in the key made almost every restore miss. apt checks each cached deb against the signed
+  # index and uses it only when it is the version it needs, so a deb from another build is harmless.
   . /etc/os-release
-  echo "${ID}-${VERSION_ID}-${ImageVersion:-unknown}"
+  echo "${ID}-${VERSION_ID}"
   ;;
 prepare)
   mkdir -p "$dir"
