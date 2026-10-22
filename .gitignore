@@ -1,5 +1,6 @@
 # build outputs
 /target/
+**/target/
 /dist/
 /node_modules/
 **/node_modules/
