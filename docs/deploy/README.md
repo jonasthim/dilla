@@ -663,6 +663,23 @@ not yet a supported coordinated Bot backup/restore procedure or restore acceptan
 `dillad` restore alone must not be represented as a complete Bot restore. Those packaging,
 diagnostics and coordinated restore steps remain release blockers.
 
+For a registration whose server response is uncertain, the Bot retains the exact pending native
+group and stops automatic retries. In a development installation, stop `dillabot` before running
+the offline recovery command because the helper holds an exclusive state lock:
+
+```sh
+sudo systemctl stop dillabot
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dilla/bot.toml
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dilla/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
+sudo systemctl start dillabot
+```
+
+The first command lists only identifiers, a registration hash, and server status. The recovery
+action succeeds only when the server returns a receipt matching the stored operation, group,
+registration body hash, and generation. An absent or mismatched receipt leaves the pending state
+unchanged; do not discard it or reissue the registration by hand. This is an operator repair path,
+not a completed installation or backup workflow.
+
 ## 4. Backup and restore
 
 Backups hold no end-to-end-encrypted plaintext: they contain ciphertext, server-readable channel content, revealed report envelopes, TLS material and the instance keys.
