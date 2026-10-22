@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -118,6 +120,86 @@ func TestInteractionRegistrationCompletedRetryDoesNotRecreate(t *testing.T) {
 	if f.n.createCalls != 1 {
 		t.Fatalf("native create calls=%d, want 1", f.n.createCalls)
 	}
+}
+
+func TestInteractionRegistrationRecoveryDiagnosticsAreReadOnly(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	intent := pendingInteractionRecoveryIntent(f, []byte{1, 2, 3})
+	putInteractionRecoveryIntent(t, f, intent)
+	f.s.receipt = &client.BotGroupRegistrationReceipt{OperationID: intent.Operation, GroupID: intent.Group, RegistrationSHA256: interactionRegistrationHash(intent.Body), AcceptedGeneration: intent.Generation, InitialEpoch: 1, NextSequence: 1}
+
+	got, err := f.coordinator.InspectInteractionRegistrationRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("InspectInteractionRegistrationRecovery: %v", err)
+	}
+	if len(got) != 1 || got[0].Operation != intent.Operation || got[0].Group != intent.Group || got[0].ReceiptStatus != "present" || got[0].GroupStatus != "absent" {
+		t.Fatalf("diagnostic = %+v", got)
+	}
+	if f.n.registered != 0 || f.s.registerCalls != 0 {
+		t.Fatalf("diagnostic caused mutation: registered=%d posts=%d", f.n.registered, f.s.registerCalls)
+	}
+}
+
+func TestInteractionRegistrationManualRecoveryRequiresExactAuthoritativeReceipt(t *testing.T) {
+	t.Run("matching receipt resolves without repost", func(t *testing.T) {
+		f := newInteractionRegistrationFixture(t)
+		intent := pendingInteractionRecoveryIntent(f, []byte{1, 2, 3})
+		putInteractionRecoveryIntent(t, f, intent)
+		r := client.BotGroupRegistrationReceipt{OperationID: intent.Operation, GroupID: intent.Group, RegistrationSHA256: interactionRegistrationHash(intent.Body), AcceptedGeneration: intent.Generation, InitialEpoch: 1, NextSequence: 1}
+		f.s.receipt = &r
+
+		got, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group)
+		if err != nil || got.Receipt != r || got.Usable || f.n.registered != 1 || f.s.registerCalls != 0 {
+			t.Fatalf("recovery result=%+v err=%v registered=%d posts=%d", got, err, f.n.registered, f.s.registerCalls)
+		}
+		v, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(intent.Group))
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved, err := decodeInteractionRegistrationIntent(v.Value)
+		if err != nil || saved.Phase != 2 || saved.ManualRecovery {
+			t.Fatalf("saved recovery state=%+v err=%v", saved, err)
+		}
+	})
+
+	for _, mutate := range []struct {
+		name   string
+		change func(*client.BotGroupRegistrationReceipt)
+	}{
+		{"operation", func(r *client.BotGroupRegistrationReceipt) { r.OperationID = id.New() }},
+		{"group", func(r *client.BotGroupRegistrationReceipt) { r.GroupID = id.New() }},
+		{"body hash", func(r *client.BotGroupRegistrationReceipt) { r.RegistrationSHA256[0] ^= 1 }},
+		{"generation", func(r *client.BotGroupRegistrationReceipt) { r.AcceptedGeneration++ }},
+	} {
+		t.Run("reject mismatched "+mutate.name, func(t *testing.T) {
+			f := newInteractionRegistrationFixture(t)
+			intent := pendingInteractionRecoveryIntent(f, []byte{4, 5, 6})
+			putInteractionRecoveryIntent(t, f, intent)
+			r := client.BotGroupRegistrationReceipt{OperationID: intent.Operation, GroupID: intent.Group, RegistrationSHA256: interactionRegistrationHash(intent.Body), AcceptedGeneration: intent.Generation, InitialEpoch: 1, NextSequence: 1}
+			mutate.change(&r)
+			f.s.receipt = &r
+			f.s.ignoreReceiptOperation = true
+			if _, err := f.coordinator.RecoverInteractionRegistration(context.Background(), intent.Group); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+				t.Fatalf("recovery error=%v, want exact receipt refusal", err)
+			}
+			if f.n.registered != 0 || f.s.registerCalls != 0 {
+				t.Fatalf("mismatched receipt caused side effects: native=%d posts=%d", f.n.registered, f.s.registerCalls)
+			}
+		})
+	}
+}
+
+func pendingInteractionRecoveryIntent(f *interactionRegistrationFixture, body []byte) interactionRegistrationIntent {
+	return interactionRegistrationIntent{Operation: id.New(), AdmissionRequest: id.New(), Group: f.request.Group, ParticipantUser: f.request.ParticipantUser, ParticipantDevice: f.request.ParticipantDevice, BotUser: f.botUser, BotDevice: f.botDevice, MinimumRevision: 4, Policy: 3, Generation: 8, Body: body, Submitted: true, ManualRecovery: true}
+}
+
+func putInteractionRecoveryIntent(t *testing.T, f *interactionRegistrationFixture, intent interactionRegistrationIntent) {
+	t.Helper()
+	value, err := encodeInteractionRegistrationIntent(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.n.values = map[string]native.StateValue{registrationStateMapKey(interactionRegistrationStateArea, interactionRegistrationKey(intent.Group)): {Revision: 1, Value: value}}
 }
 
 func TestInteractionRegistrationObtainsExactPackageAfterServerContext(t *testing.T) {
@@ -478,6 +560,28 @@ func (n *interactionRegistrationNativeFake) StateGet(_ context.Context, area uin
 	}
 	return n.values[registrationStateMapKey(area, key)], nil
 }
+func (n *interactionRegistrationNativeFake) StateScan(_ context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
+	var keys [][]byte
+	for encoded := range n.values {
+		if len(encoded) == 0 || encoded[0] != byte(area) {
+			continue
+		}
+		keys = append(keys, []byte(strings.TrimPrefix(encoded, string([]byte{byte(area)}))))
+	}
+	sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i], keys[j]) < 0 })
+	page := native.StatePage{}
+	for _, key := range keys {
+		if after != nil && bytes.Compare(key, after) <= 0 {
+			continue
+		}
+		if uint64(len(page.Entries)) >= limit {
+			page.Next = append([]byte(nil), page.Entries[len(page.Entries)-1].Key...)
+			break
+		}
+		page.Entries = append(page.Entries, native.StateEntry{Key: append([]byte(nil), key...), Revision: n.values[registrationStateMapKey(area, key)].Revision, Value: append([]byte(nil), n.values[registrationStateMapKey(area, key)].Value...), Tombstone: n.values[registrationStateMapKey(area, key)].Tombstone})
+	}
+	return page, nil
+}
 func (n *interactionRegistrationNativeFake) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
 	if n.values == nil {
 		n.values = map[string]native.StateValue{}
@@ -513,6 +617,7 @@ type interactionRegistrationSessionFake struct {
 	lateReceipt                 *client.BotGroupRegistrationReceipt
 	hideReceiptCalls            uint64
 	receipt                     *client.BotGroupRegistrationReceipt
+	ignoreReceiptOperation      bool
 	requestIDs                  []id.ID
 	expected                    []any
 	currentEpisode              id.ID
@@ -602,7 +707,7 @@ func (s *interactionRegistrationSessionFake) BotGroupRegistrationReceipt(_ conte
 		s.hideReceiptCalls--
 		return client.BotGroupRegistrationReceipt{}, client.ErrRegistrationReceiptNotFound
 	}
-	if s.receipt == nil || s.receipt.OperationID != operation {
+	if s.receipt == nil || (s.receipt.OperationID != operation && !s.ignoreReceiptOperation) {
 		if s.lateReceipt != nil && s.receiptCalls >= 3 {
 			// The in-flight POST commits immediately after the next retry's
 			// endpoint decided

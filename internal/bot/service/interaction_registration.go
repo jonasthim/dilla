@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -43,6 +44,9 @@ type interactionRegistrationNativeAPI interface {
 type interactionRegistrationDiscoveryAPI interface {
 	Discover(context.Context) (client.Discovery, error)
 }
+type interactionRegistrationStateScanAPI interface {
+	StateScan(context.Context, uint64, []byte, uint64) (native.StatePage, error)
+}
 type interactionRegistrationSessionAPI interface {
 	IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
 	BotInteractionContextSnapshot(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
@@ -81,6 +85,19 @@ type InteractionRegistrationResult struct {
 	Receipt        client.BotGroupRegistrationReceipt
 	PendingWelcome []byte
 	Usable         bool
+}
+
+// InteractionRegistrationRecoveryDiagnostic is a read-only view of one
+// durable intent that has been stopped for operator recovery.
+type InteractionRegistrationRecoveryDiagnostic struct {
+	Installation       id.ID
+	Operation          id.ID
+	Group              id.ID
+	Generation         uint64
+	RegistrationSHA256 [32]byte
+	Phase              uint64
+	ReceiptStatus      string
+	GroupStatus        string
 }
 
 type interactionRegistrationIntent struct {
@@ -264,6 +281,113 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrInteractionRegistrationOutcomeUnknown, err)
 	}
 	return InteractionRegistrationResult{}, fmt.Errorf("%w: registration response lost: %v", ErrInteractionRegistrationOutcomeUnknown, postErr)
+}
+
+// InspectInteractionRegistrationRecovery lists manual-recovery intents and
+// checks their server receipt and group status without changing native or
+// server state. ReceiptStatus is present, absent, mismatch, or unavailable;
+// GroupStatus is present, absent, or unavailable.
+func (c *InteractionRegistrationCoordinator) InspectInteractionRegistrationRecovery(ctx context.Context) ([]InteractionRegistrationRecoveryDiagnostic, error) {
+	if c == nil {
+		return nil, errors.New("missing interaction registration coordinator")
+	}
+	scanner, ok := c.native.(interactionRegistrationStateScanAPI)
+	if !ok {
+		return nil, errors.New("native state scanning is unavailable")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []InteractionRegistrationRecoveryDiagnostic
+	var after []byte
+	for {
+		page, err := scanner.StateScan(ctx, interactionRegistrationStateArea, after, 100)
+		if err != nil {
+			return nil, fmt.Errorf("scan interaction registration state: %w", err)
+		}
+		for _, entry := range page.Entries {
+			if entry.Tombstone || entry.Revision == 0 || !bytes.HasPrefix(entry.Key, []byte(interactionRegistrationStatePrefix)) {
+				continue
+			}
+			in, err := decodeInteractionRegistrationIntent(entry.Value)
+			if err != nil || !bytes.Equal(entry.Key, interactionRegistrationKey(in.Group)) {
+				return nil, ErrInteractionRegistrationRecovery
+			}
+			if !in.ManualRecovery {
+				continue
+			}
+			diagnostic := InteractionRegistrationRecoveryDiagnostic{Installation: c.installation, Operation: in.Operation, Group: in.Group, Generation: in.Generation, RegistrationSHA256: interactionRegistrationHash(in.Body), Phase: in.Phase}
+			receipt, err := c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
+			switch {
+			case err == nil:
+				if validInteractionReceipt(in, receipt) {
+					diagnostic.ReceiptStatus = "present"
+				} else {
+					diagnostic.ReceiptStatus = "mismatch"
+				}
+			case errors.Is(err, client.ErrRegistrationReceiptNotFound):
+				diagnostic.ReceiptStatus = "absent"
+			default:
+				diagnostic.ReceiptStatus = "unavailable"
+			}
+			_, err = c.session.GroupInfo(ctx, in.Group)
+			switch {
+			case err == nil:
+				diagnostic.GroupStatus = "present"
+			case apiNotFound(err):
+				diagnostic.GroupStatus = "absent"
+			default:
+				diagnostic.GroupStatus = "unavailable"
+			}
+			out = append(out, diagnostic)
+		}
+		if len(page.Next) == 0 {
+			break
+		}
+		if bytes.Equal(after, page.Next) {
+			return nil, ErrInteractionRegistrationRecovery
+		}
+		after = append(after[:0], page.Next...)
+	}
+	return out, nil
+}
+
+// RecoverInteractionRegistration resolves a submitted manual-recovery intent
+// only after the server returns a receipt matching the original operation,
+// body hash, and accepted generation. It never repeats the registration POST.
+func (c *InteractionRegistrationCoordinator) RecoverInteractionRegistration(ctx context.Context, group id.ID) (InteractionRegistrationResult, error) {
+	if c == nil || group.IsZero() {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := interactionRegistrationKey(group)
+	value, err := c.native.StateGet(ctx, interactionRegistrationStateArea, key)
+	if err != nil || value.Revision == 0 || value.Tombstone {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	in, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || in.Group != group || !in.ManualRecovery || !in.Submitted || len(in.Body) == 0 || in.Phase > 1 {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	receipt, err := c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
+	if err != nil {
+		return InteractionRegistrationResult{}, fmt.Errorf("%w: authoritative receipt unavailable: %v", ErrInteractionRegistrationManualRecovery, err)
+	}
+	if !validInteractionReceipt(in, receipt) || (in.Phase == 1 && in.Receipt != receipt) {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	in.Phase = 1
+	in.Receipt = receipt
+	in.ManualRecovery = false
+	revision, err := c.saveInteractionRegistration(ctx, key, value.Revision, in)
+	if err != nil {
+		return InteractionRegistrationResult{}, err
+	}
+	return c.resolveInteractionReceipt(ctx, key, revision, in, receipt)
+}
+
+func validInteractionReceipt(in interactionRegistrationIntent, r client.BotGroupRegistrationReceipt) bool {
+	return r.OperationID == in.Operation && r.GroupID == in.Group && r.RegistrationSHA256 == interactionRegistrationHash(in.Body) && r.AcceptedGeneration == in.Generation && r.InitialEpoch == interactionRegistrationInitialEpoch && r.NextSequence == interactionRegistrationInitialSequence
 }
 
 // InteractionSnapshot reloads the durable registration binding and asks the
