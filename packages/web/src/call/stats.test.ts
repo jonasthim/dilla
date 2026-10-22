@@ -26,7 +26,7 @@ function media(sent: number, failed: number): DillaMediaStats {
     decrypted: {}, decryptedByTrack: {}, decryptedByTrackKid: {}, verifiedByTrack: {}, verified: {},
     emptyFrames: { send: 0, recv: 0 } as unknown as DillaMediaStats['emptyFrames'], emptyFramesByTrack: {},
     dropped: { aeadFail: failed, foreignLeaf: 0, senderMismatch: 0 } as unknown as DillaMediaStats['dropped'],
-    droppedByTrack: {}, passedThrough: 0, currentEpoch: '1', knownKids: [], sifTrailerLen: 0,
+    droppedByTrack: {}, passedThrough: 0, currentEpoch: '1', knownKids: [], sifTrailerLen: 0, misrouteRecovered: 0, misrouteMissed: 0,
   };
 }
 

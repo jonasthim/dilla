@@ -1317,6 +1317,25 @@ it('never reads a contact with a stored blocked verdict as verified, right after
   expect(row).not.toHaveProperty('unlisted');
 });
 
+// fix/firefox-misrouted-audio: the page's media layer notes a recovered misroute; Diagnostics shows its stable code.
+// Only codes on the call-note list are taken, so the page cannot write arbitrary text into Diagnostics.
+it('callNote records E_MEDIA_MISROUTE in diagnostics and refuses any other code', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.call(7400, { m: 'callNote', code: 'E_MEDIA_MISROUTE' });
+  await vi.waitFor(() => expect(w.ret(7400)).toMatchObject({ ok: true, value: null }));
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code)).toEqual(['E_MEDIA_MISROUTE']);
+  const bad: unknown[] = [{ m: 'callNote', code: 'E_INTERNAL' }, { m: 'callNote', code: 'hello' }, { m: 'callNote' }, { m: 'callNote', code: 1 }];
+  bad.forEach((command, i) => { w.call(7410 + i, command); });
+  await vi.waitFor(() => { for (let i = 0; i < bad.length; i++) expect(w.ret(7410 + i)).toBeDefined(); });
+  bad.forEach((command, i) => {
+    expect(w.ret(7410 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+  });
+  // A refused note is a refused command (recorded as E_BAD_INPUT), never the code it carried.
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code).filter((c) => c !== 'E_BAD_INPUT')).toEqual(['E_MEDIA_MISROUTE']);
+});
+
 it('never keeps a verified contact when trust_state fails: the last rows read pending until the core answers (R3)', async () => {
   const w = world();
   w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);

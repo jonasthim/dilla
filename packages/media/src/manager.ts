@@ -4,7 +4,9 @@ import type {
   RemoteTrackPublication, Room, RoomEvent,
 } from 'livekit-client';
 import type { DillaBlockOptions, DillaMediaStats, DillaTransformOptions, FromWorker, SlotId, ToWorker } from './protocol';
+import { MisrouteWatch } from './misroute';
 import { codecFromMime, isDeviceIdentity, kindMatchesSource, sourceToSlot } from './slots';
+import { isFirefox } from './support';
 import { MEDIA_WASM_URL } from './wasm-url';
 
 // livekit-client 2.22.3 event names as their string values, checked against the enums at compile time, so this
@@ -128,11 +130,22 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
   private readonly guardedSenders = new WeakSet<object>();
   private readonly publishedSenders = new WeakMap<LocalTrack, RTCRtpSender>();
   private nextStatsId = 1;
+  /** fix/firefox-misrouted-audio: re-subscribes a peer whose audio Firefox put on a spare receiver (misroute.ts). */
+  private readonly misroute: MisrouteWatch;
+  private misrouteRecovered = 0;
+  private misrouteMissed = 0;
 
-  constructor(worker: Worker, opts?: { log?: Log; initTimeoutMs?: number }) {
+  /** `userAgent` (tests): the agent isFirefox() reads; the browser's own by default. */
+  constructor(worker: Worker, opts?: { log?: Log; initTimeoutMs?: number; userAgent?: string }) {
     super();
     this.worker = worker;
     this.log = opts?.log ?? (() => undefined);
+    this.misroute = new MisrouteWatch({
+      enabled: opts?.userAgent === undefined ? isFirefox() : isFirefox(opts.userAgent),
+      log: (level, msg) => this.log(level, msg),
+      onRecover: (identity) => { this.misrouteRecovered += 1; this.emitSafe('misrouteRecovered', identity); },
+      onMiss: () => { this.misrouteMissed += 1; },
+    });
     this.ready = new Promise<void>((resolve, reject) => {
       this.ack = resolve;
       this.failReady = reject;
@@ -164,8 +177,14 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       r.on(ev, fn);
       this.unsubscribe.push(() => r.off(ev, fn));
     };
-    on(ROOM.trackSubscribed, (track: RemoteTrack, pub: RemoteTrackPublication, p: RemoteParticipant) => this.mapTrack(track, pub, p));
-    on(ROOM.trackUnsubscribed, (track: RemoteTrack) => this.post({ kind: 'detach', trackId: track.mediaStreamID }));
+    on(ROOM.trackSubscribed, (track: RemoteTrack, pub: RemoteTrackPublication, p: RemoteParticipant) => {
+      this.mapTrack(track, pub, p);
+      this.guard('misroute watch', () => this.misroute.subscribed(track as unknown as { kind: unknown; receiver?: RTCRtpReceiver }, pub, p));
+    });
+    on(ROOM.trackUnsubscribed, (track: RemoteTrack) => {
+      this.post({ kind: 'detach', trackId: track.mediaStreamID });
+      this.guard('misroute watch', () => this.misroute.unsubscribed(track as unknown as { kind: unknown; receiver?: RTCRtpReceiver }));
+    });
     on(ROOM.signalConnected, () => this.onSignalConnected());
     on(ROOM.participantConnected, (p: RemoteParticipant) => this.updateRemote(p));
     on(ROOM.participantDisconnected, (p: RemoteParticipant) => this.inRosterStatus.delete(p.identity));
@@ -206,7 +225,10 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     // (Room.ts:534-535, 763-764), and that listener emits TrackSubscribed synchronously (Room.ts:1595, 1703). RTCEngine
     // is a Node `events` emitter (RTCEngine.ts:140), so prependListener puts this attach first: the transform exists
     // before anything else learns of the track.
-    const onTrack = (track: MediaStreamTrack, _stream: MediaStream, receiver: RTCRtpReceiver): void => this.attachReceiver(track, receiver);
+    const onTrack = (track: MediaStreamTrack, _stream: MediaStream, receiver: RTCRtpReceiver): void => {
+      this.attachReceiver(track, receiver);
+      this.guard('misroute watch', () => this.misroute.receiverAdded(receiver));
+    };
     e.prependListener(MEDIA_TRACK_ADDED, onTrack);
     this.unsubscribe.push(() => e.off(MEDIA_TRACK_ADDED, onTrack));
   }
@@ -347,6 +369,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     clearTimeout(this.initTimer);
     this.guard('dispose: clearKeys', () => this.post({ kind: 'clearKeys' }));
     for (const u of this.unsubscribe.splice(0)) this.guard('dispose: unsubscribe', u);
+    this.guard('dispose: misroute watch', () => this.misroute.dispose());
     this.settleAll(new Error('E_NO_EPOCH: the manager is disposed'));
     this.setLocalStatus(false);
     this.removeAllListeners();
@@ -403,6 +426,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     // is decoded or rendered on either path.
     this.guard('failWorker: clearKeys', () => this.post({ kind: 'clearKeys' }));
     this.guard('failWorker: terminate', () => this.worker.terminate());
+    this.guard('failWorker: misroute watch', () => this.misroute.dispose()); // nothing plays any more: nothing to recover
     this.settleAll(err);
     this.setLocalStatus(false);
     this.emitSafe('encryptionError', err, this.room?.localParticipant.identity);
@@ -432,7 +456,8 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
       case 'stats': {
         const p = this.pendingStats.get(m.id);
         this.pendingStats.delete(m.id);
-        p?.resolve(m.data);
+        // The misroute counts live here, on the main thread; the worker reports its own counters only.
+        p?.resolve({ ...m.data, misrouteRecovered: this.misrouteRecovered, misrouteMissed: this.misrouteMissed });
         return;
       }
       case 'seqExhausted':

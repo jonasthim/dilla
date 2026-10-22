@@ -96,5 +96,9 @@ export interface DillaMediaStats {
   currentEpoch: string;
   knownKids: string[];
   sifTrailerLen: number;
+  // fix/firefox-misrouted-audio: re-subscriptions of a peer whose audio Firefox put on a spare receiver (recovered), and
+  // repeat cases the watch only logged (missed). Counted by the manager on the main thread; 0 in the worker's own copy.
+  misrouteRecovered: number;
+  misrouteMissed: number;
 }
 // Mirrored on globalThis.__dillaMediaStats (a module-scoped const is invisible to Playwright worker.evaluate; G35).

@@ -21,6 +21,8 @@ export function newStats(): DillaMediaStats {
     currentEpoch: '',
     knownKids: [],
     sifTrailerLen: 0,
+    misrouteRecovered: 0,
+    misrouteMissed: 0,
   };
 }
 

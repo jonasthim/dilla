@@ -290,7 +290,8 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     const req = w.last('stats')!;
     const data = { passedThrough: 0, currentEpoch: '5' } as unknown as DillaMediaStats;
     w.reply({ kind: 'stats', id: req.msg.id, data });
-    await expect(p).resolves.toBe(data);
+    // The worker's counters, with the main thread's misroute counts over them (fix/firefox-misrouted-audio).
+    await expect(p).resolves.toEqual({ ...data, misrouteRecovered: 0, misrouteMissed: 0 });
   });
 
   // WB security I1: a call held after a refused rekey drops every media key at once; the next epoch installs as usual.
@@ -1171,5 +1172,99 @@ describe('a sender stopped for want of a transform stays dead (N3)', () => {
     await microtasks();
     expect(lp.unpublishTrack).toHaveBeenCalledWith(again);
     expect(errors.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// fix/firefox-misrouted-audio: the manager feeds the misroute watch (misroute.ts) from MediaTrackAdded and
+// TrackSubscribed, counts each case in its stats and emits it, and stops it on unsubscribe and on leave.
+describe('the Firefox misroute watch through the manager', () => {
+  const FIREFOX_UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0';
+  const CHROMIUM_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+
+  /** A receiver with createEncodedStreams (attach) and an inbound-rtp count the test moves. */
+  const rx = () => {
+    const r = {
+      packets: 0, reads: 0,
+      createEncodedStreams: () => ({ readable: new ReadableStream(), writable: new WritableStream() }),
+      async getStats() { r.reads += 1; return new Map([['in', { type: 'inbound-rtp', packetsReceived: r.packets }]]); },
+    };
+    return r;
+  };
+
+  function firefoxSetup(userAgent = FIREFOX_UA) {
+    const w = new FakeWorker();
+    const logs: string[] = [];
+    const m = new DillaE2EEManager(w as unknown as Worker, { userAgent, log: (level, msg) => logs.push(`${level} ${msg}`) });
+    const lp = Object.assign(new Emitter(), { identity: DEV_LOCAL, isE2EEEnabled: true, unpublishTrack: vi.fn(async () => undefined) });
+    const room = Object.assign(new Emitter(), { localParticipant: lp, remoteParticipants: new Map<string, any>() });
+    const engine = new Emitter();
+    m.setup(room as unknown as Room);
+    m.setupEngine(engine);
+    w.reply({ kind: 'initAck', v: 1, scriptTransform: false });
+    const bound = rx();
+    const spare = rx();
+    engine.emit('mediaTrackAdded', remoteTrack('rx-bound', 'audio'), {}, bound);
+    engine.emit('mediaTrackAdded', remoteTrack('rx-spare', 'audio'), {}, spare);
+    const pub = { source: 'microphone', trackSid: 'TR_carol', trackInfo: { encryption: 1 }, setSubscribed: vi.fn() };
+    const track = { kind: 'audio', mediaStreamID: 'rx-bound', receiver: bound };
+    const carol = { identity: DEV_B, sid: 'PA_carol' };
+    return { w, m, room, bound, spare, pub, track, carol, logs };
+  }
+
+  async function watchWindow(spare: { packets: number }): Promise<void> {
+    for (let i = 0; i < 8; i++) { spare.packets += 25; await vi.advanceTimersByTimeAsync(500); }
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  it('re-subscribes a misrouted peer once, emits misrouteRecovered and counts it in stats()', async () => {
+    vi.useFakeTimers();
+    const { w, m, room, spare, pub, track, carol, logs } = firefoxSetup();
+    const seen: string[] = [];
+    m.on('misrouteRecovered', (identity: string) => seen.push(identity));
+    room.emit('trackSubscribed', track, pub, carol);
+    await watchWindow(spare);
+    expect(pub.setSubscribed.mock.calls).toEqual([[false], [true]]);
+    expect(seen).toEqual([DEV_B]);
+    expect(logs.some((l) => l.startsWith('error E_MEDIA_MISROUTE'))).toBe(true);
+    // The re-subscription misroutes again: only logged and counted as a miss.
+    room.emit('trackSubscribed', track, pub, carol);
+    await watchWindow(spare);
+    expect(pub.setSubscribed).toHaveBeenCalledTimes(2);
+    const p = m.stats();
+    await vi.advanceTimersByTimeAsync(0);
+    const data = { verified: {}, decrypted: {}, passedThrough: 0, misrouteRecovered: 0, misrouteMissed: 0 } as unknown as DillaMediaStats;
+    w.reply({ kind: 'stats', id: w.last('stats')!.msg.id, data });
+    const s = await p;
+    expect(s.misrouteRecovered).toBe(1);
+    expect(s.misrouteMissed).toBe(1);
+  });
+
+  it('never runs on Chromium', async () => {
+    vi.useFakeTimers();
+    const { room, bound, spare, pub, track, carol } = firefoxSetup(CHROMIUM_UA);
+    room.emit('trackSubscribed', track, pub, carol);
+    await watchWindow(spare);
+    expect(pub.setSubscribed).not.toHaveBeenCalled();
+    expect(bound.reads + spare.reads).toBe(0);
+  });
+
+  it('stops on unsubscribe and on leave (dispose)', async () => {
+    vi.useFakeTimers();
+    const a = firefoxSetup();
+    a.room.emit('trackSubscribed', a.track, a.pub, a.carol);
+    await vi.advanceTimersByTimeAsync(500);
+    a.room.emit('trackUnsubscribed', a.track, a.pub, a.carol);
+    await watchWindow(a.spare);
+    expect(a.pub.setSubscribed).not.toHaveBeenCalled();
+
+    const b = firefoxSetup();
+    b.room.emit('trackSubscribed', b.track, b.pub, b.carol);
+    await vi.advanceTimersByTimeAsync(500);
+    b.m.dispose();
+    const reads = b.bound.reads;
+    await watchWindow(b.spare);
+    expect(b.pub.setSubscribed).not.toHaveBeenCalled();
+    expect(b.bound.reads).toBe(reads);
   });
 });
