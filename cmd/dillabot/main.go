@@ -359,6 +359,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		result, ensureErr := lifecycle.Ensure(ctx)
+		ready := false
 		if ensureErr == nil {
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
@@ -367,6 +368,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 				if ensureErr == nil {
 					_, ensureErr = membership.ReconcileOnce(ctx, result.Session)
+					if ensureErr == nil {
+						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
+					}
 				}
 			}
 		}
@@ -376,7 +380,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		succeeded++
-		logger.Info("bot installation identity and membership reconciled", "installation_id", installation.ID.String())
+		logger.Info("bot installation identity and membership reconciled", "installation_id", installation.ID.String(), "ready", ready)
 	}
 	if succeeded != eligible {
 		return fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
