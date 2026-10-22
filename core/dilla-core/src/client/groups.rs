@@ -1235,6 +1235,28 @@ impl ClientCore {
                 } else {
                     return Err(ClientError::new(E_BINDING, "interaction Welcome contains another device"));
                 }
+                let signed_list = if credential.user_id.as_bytes()
+                    == context.registration.bot_user.as_bytes()
+                {
+                    &context.bot
+                } else {
+                    &context.participant
+                };
+                let verdict = unit.with_conn(|c| {
+                    super::trust::validate_interaction_leaf(
+                        c,
+                        id,
+                        group.epoch(),
+                        actual_tree_hash,
+                        member.index.u32(),
+                        &credential,
+                        dsk,
+                        signed_list,
+                    )
+                })?;
+                verdict.map_err(|code| {
+                    ClientError::new(code, "interaction Welcome identity is not trusted")
+                })?;
                 leaves.push((
                     member.index.u32() as u64,
                     crate::bot::interaction_admission::AuthenticatedRosterLeaf {

@@ -786,6 +786,35 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
         .map_err(failure)
 }
 
+/// Bind a server-signed current-context list to the MLS leaf's complete identity chain and this
+/// device's existing pin/cache. The proof's signature cannot establish a user's UMK or SSK pin.
+pub(super) fn validate_interaction_leaf(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    epoch: u64,
+    tree_hash: [u8; 32],
+    leaf_index: u32,
+    credential: &CredentialIdentity,
+    dsk_pub: [u8; 32],
+    snapshot: &crate::bot::interaction_snapshot::SnapshotList,
+) -> Result<Result<(), &'static str>, StorageError> {
+    if snapshot.user.as_bytes() != credential.user_id.as_bytes()
+        || snapshot.umk != credential.umk_pub
+        || snapshot.ssk != credential.ssk_pub
+    {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    let leaf = LeafEvidence {
+        group_id: *group_id,
+        epoch,
+        tree_hash,
+        leaf_index,
+        credential: credential.clone(),
+        dsk_pub,
+    };
+    leaf_verdict(c, &leaf)
+}
+
 /// The one judgement of an authenticated leaf against its user's pin and cached signed list.
 /// The outer error is storage; the inner one the verdict code. Rule 2 (the pinned UMK) is
 /// decided before rule 3 (the newest signed list), as `protocol/03-identity.md` orders them:
@@ -1908,6 +1937,96 @@ mod tests {
     };
     use crate::ids::{DeviceId, UserId};
 
+    fn interaction_snapshot(
+        leaf: &LeafEvidence,
+        list: &DeviceList,
+    ) -> crate::bot::interaction_snapshot::SnapshotList {
+        use crate::ids::MsgId;
+        let blob = list.encode();
+        crate::bot::interaction_snapshot::SnapshotList {
+            user: MsgId::from_bytes(*leaf.credential.user_id.as_bytes()),
+            umk: leaf.credential.umk_pub,
+            ssk: leaf.credential.ssk_pub,
+            binding_signature: leaf.credential.sig_umk_ssk,
+            version: list.unsigned.version,
+            signature: list.sig_ssk,
+            prev_hash: list.unsigned.prev_hash,
+            hash: crate::identity::sha256(&blob),
+            blob,
+        }
+    }
+
+    fn interaction_trust_db(
+        leaf: &LeafEvidence,
+        list: &DeviceList,
+        with_pin: bool,
+    ) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE app_meta(k TEXT PRIMARY KEY,v BLOB);
+             CREATE TABLE app_trust_pins(user_id BLOB PRIMARY KEY,umk_pub BLOB,first_seen INTEGER,verified INTEGER,changed_umk BLOB);
+             CREATE TABLE app_device_lists(user_id BLOB PRIMARY KEY,version INTEGER,list BLOB,umk_pub BLOB,ssk_pub BLOB,credential BLOB);",
+        )
+        .expect("trust tables");
+        if with_pin {
+            write_pin(
+                &db,
+                leaf.credential.user_id.as_bytes(),
+                &Pin {
+                    umk: leaf.credential.umk_pub,
+                    first_seen: 1,
+                    verified: true,
+                    changed: None,
+                },
+            )
+            .expect("write pin");
+        }
+        db.execute(
+            "INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                leaf.credential.user_id.as_bytes().as_slice(),
+                list.unsigned.version as i64,
+                list.encode(),
+                leaf.credential.umk_pub.as_slice(),
+                leaf.credential.ssk_pub.as_slice(),
+            ],
+        )
+        .expect("cache signed list");
+        db
+    }
+
+    fn substitute_leaf_keys(leaf: &mut LeafEvidence, seed: u8) -> DeviceList {
+        let umk = UmkSigner::from_bytes(&[seed; 32]);
+        let ssk = SskSigner::from_bytes(&[seed.wrapping_add(1); 32]);
+        leaf.credential.umk_pub = umk.public();
+        leaf.credential.ssk_pub = ssk.public();
+        leaf.credential.sig_umk_ssk = umk.sign_ssk(&ssk.public());
+        leaf.credential.sig_ssk_dev = ssk.sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            leaf.credential.kind,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+        let unsigned = crate::identity::DeviceListUnsigned {
+            v: 1,
+            user_id: leaf.credential.user_id,
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![crate::identity::DeviceEntry {
+                device_id: leaf.credential.device_id,
+                dsk_pub: leaf.dsk_pub,
+                tier: leaf.credential.tier,
+                added_at: 1,
+                revoked_at: None,
+            }],
+        };
+        DeviceList {
+            sig_ssk: ssk.sign_device_list(&unsigned),
+            unsigned,
+        }
+    }
+
     fn fixture() -> (LeafEvidence, DeviceList) {
         let umk = UmkSigner::from_bytes(&[0x41; 32]);
         let ssk = SskSigner::from_bytes(&[0x42; 32]);
@@ -1958,6 +2077,67 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
+    }
+
+    #[test]
+    fn interaction_welcome_rejects_self_consistent_substituted_identity_keys() {
+        let (trusted_leaf, list) = fixture();
+        let trusted_snapshot = interaction_snapshot(&trusted_leaf, &list);
+        let db = interaction_trust_db(&trusted_leaf, &list, true);
+        let mut substituted = trusted_leaf.clone();
+        let substituted_list = substitute_leaf_keys(&mut substituted, 0x90);
+        assert_ne!(substituted.credential.umk_pub, trusted_snapshot.umk);
+        assert_ne!(substituted.credential.ssk_pub, trusted_snapshot.ssk);
+        substituted
+            .credential
+            .verify_signatures(&substituted.dsk_pub)
+            .expect("the substituted key chain is internally valid");
+
+        let mismatched_snapshot = validate_interaction_leaf(
+            &db,
+            &substituted.group_id,
+            substituted.epoch,
+            substituted.tree_hash,
+            substituted.leaf_index,
+            &substituted.credential,
+            substituted.dsk_pub,
+            &trusted_snapshot,
+        )
+        .expect("signed-list key comparison");
+        assert_eq!(mismatched_snapshot, Err(E_CREDENTIAL));
+
+        let self_consistent_snapshot = interaction_snapshot(&substituted, &substituted_list);
+        let unpinned_key = validate_interaction_leaf(
+            &db,
+            &substituted.group_id,
+            substituted.epoch,
+            substituted.tree_hash,
+            substituted.leaf_index,
+            &substituted.credential,
+            substituted.dsk_pub,
+            &self_consistent_snapshot,
+        )
+        .expect("local pin lookup");
+        assert_eq!(unpinned_key, Err(E_CREDENTIAL));
+    }
+
+    #[test]
+    fn interaction_welcome_requires_an_existing_user_pin() {
+        let (leaf, list) = fixture();
+        let snapshot = interaction_snapshot(&leaf, &list);
+        let db = interaction_trust_db(&leaf, &list, false);
+        let result = validate_interaction_leaf(
+            &db,
+            &leaf.group_id,
+            leaf.epoch,
+            leaf.tree_hash,
+            leaf.leaf_index,
+            &leaf.credential,
+            leaf.dsk_pub,
+            &snapshot,
+        )
+        .expect("trust lookup");
+        assert_eq!(result, Err(E_DEVICE_LIST_STALE));
     }
 
     #[test]
