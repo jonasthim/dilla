@@ -333,6 +333,10 @@ export const TILE_POLL_MS = 1_000;
 /** ICE credentials are refreshed this long before the expiry their username carries (DEV-53). */
 export const ICE_EARLY_MS = 300_000;
 const ICE_RETRY_MS = 30_000;
+/** UP11: while the room reconnects, fresh relay credentials are asked for at once, then after these waits (the last one
+ *  repeats), never sooner than a transient refusal’s retry_after_ms. A relay that restarted with the API refuses every
+ *  credential minted before its start, and livekit’s reconnects reuse room.engine.rtcConfig, so only a fresh one passes. */
+export const RECONNECT_ICE_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 5_000];
 /** How long a share waits for the SFU’s new permission. */
 export const SHARE_WAIT_MS = 10_000;
 
@@ -1388,12 +1392,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       later(linkTick, LINK_EVERY_MS);
     };
+    /** The one TTL refresh pending (UP11: a refresh while reconnecting restarts it from its own answer). */
+    let iceTimer: unknown = null;
     const scheduleIce = (list: IceServerTuple[], retry = false): void => {
       if (ended) return;
+      cancel(iceTimer);
+      iceTimer = null;
       const expiry = iceExpiryMs(list);
       if (expiry === null && !retry) return;
       const delay = retry || expiry === null ? ICE_RETRY_MS : Math.max(ICE_RETRY_MS, expiry - ICE_EARLY_MS - deps.now());
-      later(() => { void refreshIce(list); }, delay);
+      iceTimer = later(() => { void refreshIce(list); }, delay);
     };
     const refreshIce = async (current: IceServerTuple[]): Promise<void> => {
       try {
@@ -1406,12 +1414,50 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
     };
 
+    /** UP11: the reconnecting episode in progress (from the room’s reconnecting to its reconnected or end): its tries,
+     *  its pending retry, and whether a refresh is in flight or has landed. At most one of each per episode. */
+    interface IceEpisode { tries: number; timer: unknown; busy: boolean; done: boolean }
+    let episode: IceEpisode | null = null;
+    /** UP11: fresh relay credentials for the reconnect of `ep`, retried while it lasts (RECONNECT_ICE_BACKOFF_MS). A
+     *  credential that lands after its episode ended is still applied: it is the newest one. */
+    const refreshReconnecting = (ep: IceEpisode): void => {
+      if (ended || episode !== ep || ep.done || ep.busy) return;
+      ep.timer = null;
+      ep.busy = true;
+      deps.bridge.call({ m: 'callRefresh' }).then((answer) => {
+        ep.busy = false;
+        if (ended) return;
+        const { iceServers } = answer as { token: string; iceServers: IceServerTuple[] };
+        refreshIceServers(room, iceServers);
+        scheduleIce(iceServers);
+        ep.done = true;
+      }, (err: unknown) => {
+        ep.busy = false;
+        if (ended || episode !== ep) return;
+        const step = RECONNECT_ICE_BACKOFF_MS[Math.min(ep.tries, RECONNECT_ICE_BACKOFF_MS.length - 1)];
+        ep.tries += 1;
+        ep.timer = later(() => { refreshReconnecting(ep); }, Math.max(step, pageCallError(err).retryAfterMs ?? 0));
+      });
+    };
+    const endEpisode = (): void => {
+      if (episode !== null) cancel(episode.timer);
+      episode = null;
+    };
+
     // ---- room events
     const onPeople = (): void => { applyGains(); refresh(); };
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
-    onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
-    onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
+    onRoomReconnecting = () => {
+      if (ended) return;
+      linkTotals = null;
+      set({ phase: 'reconnecting', link: undefined });
+      if (episode === null) {
+        episode = { tries: 0, timer: null, busy: false, done: false };
+        refreshReconnecting(episode);
+      }
+    };
+    onRoomReconnected = () => { endEpisode(); if (!ended) set({ phase: 'connected' }); };
     onRoomEnd = (reason) => {
       if (ended) return;
       set({ error: endCodeOf(reason) });

@@ -198,6 +198,9 @@ function fakes(o: Options = {}) {
     caps: [64_000, 2_500_000, 0], epoch: joinEpoch.toString(),
   };
   let refreshAnswer = { token: 'tok2', iceServers: [[['turn:sfu.example:3478'], '1700007200:dev:1700003300', 'cred2']] };
+  /** UP11: the next callRefresh calls fail with these, in order; `refreshHeld`, while set, keeps each one waiting on it. */
+  const refreshFails: Error[] = [];
+  let refreshHeld: Promise<void> | null = null;
   const bridge = {
     onCallKeys: vi.fn((l: (id: string, k: CallKeys) => void) => {
       order.push('onCallKeys');
@@ -214,8 +217,12 @@ function fakes(o: Options = {}) {
         case 'callShare':
           if (cmd.on) share(true);
           return null;
-        case 'callRefresh':
+        case 'callRefresh': {
+          if (refreshHeld !== null) await refreshHeld;
+          const failure = refreshFails.shift();
+          if (failure !== undefined) throw failure;
           return refreshAnswer;
+        }
         case 'callStats':
           if (o.statsError) throw o.statsError;
           return null;
@@ -286,6 +293,8 @@ function fakes(o: Options = {}) {
     audioHost, subscribeTrack, unsubscribeTrack, contexts, audio, media,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
+    refreshFails,
+    holdRefresh: (p: Promise<void> | null) => { refreshHeld = p; },
     setNow: (t: number) => { now = t; },
   };
 }
@@ -672,6 +681,120 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(1);
     await f.advance(1);
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(2);
+  });
+
+  /** UP11: a callRefresh refusal as the worker reports it (pageCallError reads `code` and `retryAfterMs`). */
+  const refusal = (code: string, retryAfterMs: number | null = null) => Object.assign(new Error(code), { code, retryAfterMs });
+  const refreshes = (f: ReturnType<typeof fakes>) => f.calls.filter((c) => c.m === 'callRefresh').length;
+  const FRESH = [{ urls: ['turn:sfu.example:3478'], username: '1700007200:dev:1700003300', credential: 'cred2' }];
+
+  it('UP11: a reconnecting room asks for fresh relay credentials at once and hands them to its reconnect; one per episode', async () => {
+    const f = fakes({ iceUsername: '1700003600:dev:1700000000', now: 1_700_000_000_000 });
+    const call = await start(f);
+    expect(refreshes(f)).toBe(0);
+    f.room.emit('reconnecting');
+    await flush();
+    expect(call.state.phase).toBe('reconnecting');
+    expect(refreshes(f)).toBe(1);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    // The same episode says reconnecting again (a resume, then a full reconnect): no second refresh.
+    f.room.emit('reconnecting');
+    await f.advance(20_000);
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    // A new episode is a new refresh.
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+  });
+
+  it('UP11: a refresh in flight is not asked for twice when the episode says reconnecting again', async () => {
+    const f = fakes();
+    await start(f);
+    let open!: () => void;
+    f.holdRefresh(new Promise<void>((r) => { open = r; }));
+    f.room.emit('reconnecting');
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    f.holdRefresh(null);
+    open();
+    await flush();
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+  });
+
+  it('UP11: a failed refresh while reconnecting retries after 1, 2, 4, 5, 5 s, then stops once one lands', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(...['E_UNAVAILABLE', 'E_NETWORK', 'E_NETWORK', 'E_NETWORK', 'E_NETWORK'].map((c) => refusal(c)));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    for (const [gap, total] of [[1_000, 2], [2_000, 3], [4_000, 4], [5_000, 5], [5_000, 6]] as const) {
+      await f.advance(gap - 1);
+      expect(refreshes(f)).toBe(total - 1);
+      await f.advance(1);
+      expect(refreshes(f)).toBe(total);
+    }
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+    await f.advance(60_000);
+    expect(refreshes(f)).toBe(6);
+  });
+
+  it('UP11: a transient refusal’s retry_after_ms is waited for before the next refresh', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(refusal('E_UNAVAILABLE', 7_000), refusal('E_RATE_LIMITED', 500));
+    f.room.emit('reconnecting');
+    await flush();
+    await f.advance(7_000 - 1);
+    expect(refreshes(f)).toBe(1);
+    await f.advance(1);
+    expect(refreshes(f)).toBe(2);
+    // A retry_after shorter than the backoff keeps the backoff (2 s, the second step).
+    await f.advance(2_000 - 1);
+    expect(refreshes(f)).toBe(2);
+    await f.advance(1);
+    expect(refreshes(f)).toBe(3);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
+  it('UP11: a reconnect that comes through, or a leave, cancels the pending retry; no timer outlives its episode', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.refreshFails.push(refusal('E_NETWORK'), refusal('E_NETWORK'));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+    // The next episode starts its own backoff from 1 s, then the leave stops it.
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+    await call.leave('user');
+    expect(f.timers.size).toBe(0);
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(2);
+  });
+
+  it('UP11: the refresh while reconnecting restarts the TTL refresh from its answer; the old schedule is gone', async () => {
+    const f = fakes({ iceUsername: '1700003600:dev:1700000000', now: 1_700_000_000_000 });
+    await start(f);
+    f.room.emit('reconnecting');
+    await flush();
+    f.room.emit('reconnected');
+    expect(refreshes(f)).toBe(1);
+    // The first credential's refresh (at 1700003300) does not run: the fresh one expires at 1700007200.
+    await f.advance(3_300_000);
+    expect(refreshes(f)).toBe(1);
+    await f.advance(6_900_000 - 3_300_000 - 1);
+    expect(refreshes(f)).toBe(1);
+    await f.advance(1);
+    expect(refreshes(f)).toBe(2);
   });
 
   it('sends one callStats report per 10 s while connected', async () => {

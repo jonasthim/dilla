@@ -655,6 +655,39 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
 - **`docs/user/voice.md`:** a "During a server upgrade" line (the call continues, or the page reloads and you are back within a few seconds with no click) and a troubleshooting row (the microphone prompt after an update in Firefox).
 - **Gate:** `check:docs`, `check:copy`.
 
+### Task UP11 (opus): a relayed call refreshes its relay credentials on reconnect and recovers
+Found by UP4's compat job (investigation `compat-inv`, ruling UP11). When the relay runs in the API process, an API-only restart drops relayed callers for good. That is the compat transition behind a proxy, and every public-mode install on 443, always.
+- **Why it fails.**
+  - The restarted relay refuses every credential issued before its start (the process-start floor, R-UP11). That stays: it is a security property.
+  - livekit-client reuses `room.engine.rtcConfig` for its ICE restart and its full reconnect, and the page fetched fresh `ice_servers` only on the TTL timer. So every reconnect was refused.
+  - After about 30 s the room sweep's absence Remove landed. The worker's `lost()` set phase `removed` with no error, so the page said "You were removed from voice." and recovered nothing.
+- **Fix 1, `packages/web/src/call/session.ts`.**
+  - On the room's `reconnecting`, the page sends `callRefresh` at once and applies the answer with `refreshIceServers`, so the next resume or full reconnect allocates with a credential that passes.
+  - It is one refresh per reconnecting episode, which runs from `reconnecting` to `reconnected` or the end. A second `reconnecting` in the same episode, or a refresh in flight, asks for nothing more.
+  - A failure is retried after 1, 2 and 4 s, then every 5 s (`RECONNECT_ICE_BACKOFF_MS`), never sooner than the refusal's `retry_after_ms`.
+  - `reconnected` cancels the pending retry, and a leave cancels every timer.
+  - The answer restarts the TTL refresh, so a single TTL timer exists at any time.
+- **Fix 2, the safety net, `packages/web/src/screens/voice/useCall.tsx`.**
+  - A plain removal can reach the slice while the page session is `reconnecting`. "Plain" means phase `removed`, no error code: the absence Remove of a lost media path. The media stops as before, but the decision waits for the removal hold (`sayRemoved`: `REMOVED_HOLD_MS` plus the fresh AFK read).
+  - The AFK sweep's reason still says `afk.moved` or `afk.elsewhere`.
+  - If the worker's re-read now says `E_NOT_FOUND` (a kick, a ban or a deleted server: the channel is gone for this device), the call still ends as a removal.
+  - Otherwise it runs the lost-connection recovery (`E_DISCONNECTED` semantics: late rejoin and the AFK checks apply) and rejoins. `lostRemoved` lets that recovery's attempts accept the plain removed phase for that channel.
+  - A removal while `connected`, or one that carries a code, is unchanged.
+- **Unchanged.** The relay floor, dillad, the test host and client-core.
+- **Tests (each red first).**
+  - Six session tests: refresh at once, one per episode, no second refresh while one is in flight, the backoff, `retry_after_ms`, cleanup on reconnected and on leave, and the TTL restart.
+  - Six useCall tests: the absence Remove while reconnecting recovers and rejoins; a recovery started that way stops and says `voice.removedNotMember` once the re-read says `E_NOT_FOUND`. Controls: the same Remove while connected; `E_NOT_FOUND` while reconnecting; a plain Remove whose re-read says `E_NOT_FOUND` within the hold; the AFK cut while reconnecting.
+  - e2e: `upgrade.spec.ts --grep compat` with `DILLA_SFU_BIN` set to the web3.12.3 release binary passes 3/3 (carol's gap is about 19 to 21 s).
+  - The normal spec on chromium passed 1/3 locally. Run 2 missed B2's 5 s reload limit at 5.6 s, a check that flaked before UP11.
+- **Open, needs a ruling.** Run 1 passed every assertion, but the console guard caught three `Received leave request … [leave reason 6]` (STATE_MISMATCH) lines in step A.
+  - Cause: `callRefresh` is a full `startCall`, and its `CreateRoom` re-opens the room that the SFU restart lost. The pages' livekit resume then finds the room without its participant, and is told STATE_MISMATCH instead of the tolerated "requested room does not exist". The pages then rejoin as before: all back and heard in 7.8 s.
+  - The same refresh also counts as an old-page start in step A's "at most once" check, so a refresh plus a recovery start before the reload would fail it.
+  - Options:
+    - (a) Tolerate reason 6 inside the outage window (`outage-lines.ts` plus the `upgrade-lines.spec.ts` pins), and leave refresh starts out of that count.
+    - (b) Add a credential-only refresh route at the API that opens no room (protocol/09 and `internal/api`).
+    - (c) Refresh only once livekit's resume has failed, which leaves less margin before the sweep's Remove.
+- **Docs.** protocol/09 § Relays: the client re-POSTs the calls route on every reconnect, with the retry schedule, and how the reconnecting removal is read.
+
 **Order and dependencies:**
 1. UP1: every later task reads `version --json`, `media.json`, the capability or `--idle`.
 2. UP2 ∥ UP5: disjoint files (`internal/api`; `cmd/dilla-testhost` and `e2e/web/support`).

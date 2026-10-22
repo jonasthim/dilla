@@ -1248,6 +1248,15 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   relay's own lookup, and the room sweep removes such a device from every call room within its
   period. A client keeps fresh servers by repeating `POST /v1/channels/{id}/calls` before
   `turn.credential_ttl` runs out and handing the new list to its peer connection for that restart.
+  It also re-POSTs the route at once whenever its media connection starts reconnecting, and hands
+  the new list to that reconnect: a relay in the API process (on 443, or on `turn.listen` while the
+  SFU serves no relay) restarts with the API and refuses the credential the client holds, while the
+  call itself, in the SFU, goes on. A refused or unanswered re-POST is retried after 1, 2 and 4
+  seconds and then every 5 seconds while the reconnect lasts, never before its `retry_after_ms`;
+  one answer is enough for each reconnect. A client removed from the call group while it is
+  reconnecting that way (the room sweep's absence Remove) treats the removal as a lost connection
+  and rejoins, unless the removal says why: the AFK sweep's reason, or the channel no longer
+  readable for this device (`404`: a kick, a ban or a deleted server).
   The relay checks the username strictly: exactly three fields, both numbers unsigned decimal
   digits without a leading zero, the device a device id, the issue time no more than 2 seconds
   ahead of its clock, and a lifetime no longer than `turn.credential_ttl` and those 2 seconds

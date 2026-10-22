@@ -402,6 +402,91 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
   });
 });
 
+describe('UP11: a Remove while the media is reconnecting is a lost connection, not a removal', () => {
+  const GONE = { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null };
+  /** The worker's call slice says removed with `error` (a kick or ban: E_NOT_FOUND, the server is gone). */
+  const cutWith = (h: ReturnType<typeof harness>, error: typeof GONE) => {
+    act(() => { h.client.set('call', callState({ phase: 'removed', channelId: GENV, callId: GENV, error })); });
+    act(() => h.view.rerender({ afk: { channels: AFK_SET } }));
+  };
+
+  it('the absence Remove lands while reconnecting: the media stops, nothing says removed, and the recovery rejoins', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await waitFor(() => expect(general.leave).toHaveBeenCalledWith('removed'));
+    expect(h.v.session).toBeNull();
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: REMOVED_HOLD_MS + 4_000 });
+    expect(h.started[1].channelId).toBe(GENV);
+    expect(h.v.notice).toBeNull();
+    expect(h.v.lasting).toBe('');
+    expect(h.said).not.toContain(t('voice.removed'));
+  });
+
+  it('control: the same Remove while connected still ends the call as a removal, with no rejoin', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    h.cut();
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('control: a kick or ban (E_NOT_FOUND) while reconnecting still ends the call, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    cutWith(h, GONE);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('control: a plain Remove while reconnecting whose re-read then says the server is gone ends the call, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await flush();
+    // The worker's re-read of the channel answers 404 within the hold: this device was kicked or banned.
+    cutWith(h, GONE);
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.removed' }), HELD);
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('a recovery so started that then learns the server is gone (E_NOT_FOUND) stops, rejoins nothing and says why', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.cut();
+    await waitFor(() => expect(h.v.recoveryChannelId).toBe(GENV), HELD);
+    cutWith(h, GONE);
+    await wait(1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+    expect(h.v.lasting).toBe(t('voice.removedNotMember'));
+  });
+
+  it('control: the AFK sweep’s cut while reconnecting says afk.moved, with no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    act(() => general.update({ phase: 'reconnecting' }));
+    h.setAfk(A, { pending: true, seq: 2 });
+    h.cut();
+    await waitFor(() => expect(h.v.lasting).toBe(MOVED));
+    await wait(REMOVED_HOLD_MS + 1_500);
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+});
+
 describe('AW5: a restore or a recovery never rejoins where the person is away (R-AW7)', () => {
   it('recovery after sleep while away: no rejoin', async () => {
     const h = harness();

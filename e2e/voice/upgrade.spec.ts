@@ -17,9 +17,10 @@
 //       10 min ahead.
 //   A   a full restart, no input: the API stops, the SFU restarts, the API starts with a new build; all three connected in
 //       the channel and hearing each other within 90 s of the API answering.
-// compat (UP4's CI job): with DILLA_SFU_BIN set to the previous release's dillad, only B1 runs. A web3.11 SFU serves no TURN,
-// so the API serves the relay and its restart drops carol's: she is exempt from B1's uninterrupted checks and must be heard
-// again within 90 s.
+// compat (UP4's CI job): with DILLA_SFU_BIN set to the previous release's dillad, only B1 runs. That SFU (web3.12.3 and
+// earlier) serves no TURN, so the API serves the relay, and its restart drops carol's and refuses her earlier credential:
+// she is exempt from B1's uninterrupted checks and must be heard again within 90 s, by the fresh credential her page
+// fetches as it reconnects (UP11).
 // Measured timings are logged as `UP9 timings …` lines.
 import { resolve } from 'node:path';
 import type { Browser, Page } from '@playwright/test';

@@ -282,6 +282,9 @@ export function useCall(o: UseCallOptions): CallView {
   const [recoverySharing, setRecoverySharing] = useState(false);
   const [recentlyEnded, setRecentlyEnded] = useState<CallView['recentlyEnded']>(null);
   const recoveryRef = useRef<string | null>(null);
+  /** UP11: the channel whose plain removal (no reason code) this page recovers as a lost connection; the recovery’s
+   *  attempts accept that removed phase for it. A new session clears it. */
+  const lostRemoved = useRef<string | null>(null);
   const recoveryCameraRef = useRef(false);
   const [joining, setJoining] = useState(false);
   const [announcement, setAnnouncement] = useState('');
@@ -615,6 +618,7 @@ export function useCall(o: UseCallOptions): CallView {
 
   const attach = useCallback((next: PageCall, id: string) => {
     answered.current = false;
+    lostRemoved.current = null;
     attachedAt.current = Date.now();
     // AW5: a pending read this call starts under is the server's earlier one, cleared at this admission (the read of its
     // own community, or for a DM call the one its pending reason is read from).
@@ -1312,13 +1316,39 @@ export function useCall(o: UseCallOptions): CallView {
         // Off the stage, nothing else would say why the call ended (review I6).
         // The bookkeeping is never held; only the visible notice and the spoken line wait (the hold changes timing, not words).
         removedFrom.current = id;
-        sayRemoved(id, () => {
+        const sayIt = (): void => {
           setNotice({ channelId: id, key: 'voice.removed' });
           // The worker's re-read may have said the channel is gone for this device meanwhile: that line is the right one.
           const now = client.get('call');
           const gone = now?.channelId === id && now.phase === 'removed' && now.error?.code === 'E_NOT_FOUND';
           if (!live.current.stageShown(id)) setLasting(t(gone ? 'voice.removedNotMember' : 'voice.removed'));
-        });
+        };
+        // UP11: a plain Remove (no reason code) that lands while this page’s media is reconnecting is the room sweep’s
+        // absence Remove of a lost media path (a relay that restarted with the API), not a kick: it is recovered as a
+        // lost connection is. The hold still decides first: the AFK sweep’s reason says afk.moved, and the worker’s
+        // re-read answering E_NOT_FOUND (a kick, a ban, a deleted server) ends the call as a removal, as before.
+        if (now?.error == null && s.state.phase === 'reconnecting') {
+          armGoneFrom(id, true);
+          const camera = s.state.camera;
+          const sharing = s.state.sharing;
+          const since = awayAtAttach.current?.channelId === id ? awayAtAttach.current.since : null;
+          sayRemoved(id, () => {
+            const after = client.get('call');
+            if (after?.channelId !== id || after.phase !== 'removed' || after.error != null) { sayIt(); return; }
+            // removedFrom stays: a later E_NOT_FOUND from the worker’s re-read ends this recovery and still says why.
+            lostRemoved.current = id;
+            recoveryRef.current = id;
+            recoveryMark.current = { since };
+            recoveryWindow.current = null;
+            recoveryHeld.current = null;
+            setRecoveryChannelId(id);
+            recoveryCameraRef.current = camera;
+            setRecoveryCamera(camera);
+            setRecoverySharing(sharing);
+          });
+        } else {
+          sayRemoved(id, sayIt);
+        }
       }
       setPauseFocusPending(false);
       teardown(s, phase);
@@ -1399,6 +1429,7 @@ export function useCall(o: UseCallOptions): CallView {
       const phase = client.get('call')?.phase;
       const removedCode = client.get('call')?.error?.code;
       if (phase === 'blocked' || (phase === 'removed' && removedCode !== 'E_DISCONNECTED'
+        && !(removedCode === undefined && lostRemoved.current === recoveryChannelId)
         && !(removedCode === 'E_CALL_ENDED' && live.current.recoverEnded?.(recoveryChannelId)))) {
         // Fix round 3 (B2-n2): an upgrade's recovery that outlived its window ends as a lost call, not silently.
         if (phase === 'removed' && removedCode === 'E_CALL_ENDED') { endRecoveryRef.current(recoveryChannelId, 'gone'); return; }
