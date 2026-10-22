@@ -141,7 +141,7 @@ These are not in this version:
 | D16 | **No drag on phones or from touch** (ruling 11). A long-press is the menu; move to lives in the sheet. |
 | D17 | **A move's automatic join reuses the old call's audio context** (ruling 12), so the target call's audio is not blocked for want of a user gesture. The old session hands it over with `releaseContext(): AudioContext \| null` during the switch, and the new join takes it as `made` (§U.8.6). A context that is not running is closed instead and the join goes ahead without one; the existing `voice.audioStart` ("turn on audio") press then appears. |
 | D18 | **e2e browsers** (ruling 13): the menu, sheet and drag-UI specs run on chromium, firefox and webkit, and their names join the webkit `testMatch` whitelist. SFU enforcement and a move landing in the target call run on chromium and firefox (the voice suite). |
-| D19 | **Model tiers per task** (ruling 14): server has no opus implementation, and opus reviews S5, S6a and S6b; client-core T6 is on opus; UI W6 is on opus, with opus reviews of W2, W4 and E2. Everything else is sonnet; strings and docs are haiku. |
+| D19 | **Model tiers per task** (ruling 14): server has no opus implementation, and opus reviews S5, S6a and S6b; client-core T6 is on opus; UI W6 is on opus, with opus reviews of W2, W4 (now W4a and W4b) and E2. Everything else is sonnet; strings and docs are haiku. |
 | D20 | **Mention** inserts `@{username} ` into the current conversation's draft and focuses the composer; with no conversation open the item is hidden (Discord opens nothing). |
 | D21 | **Everything the original design left to the builder is decided here:** the route shapes and op numbers (§8), how ActionMenu grows submenus, a slider and a phone sheet (§U.2), how the drag works (§U.6), the exact copy (§U.9), mention (D20), and the task split and order (§11). |
 
@@ -305,7 +305,7 @@ Every layer uses exactly these spellings. Nothing else names these things.
 | Advisory | `admin/voicemod.ts`: `voiceModAccess`, `voiceChannelOf`, `NO_VOICE_MOD`, `VoiceModAccess {local, serverMute, serverDeafen, move, disconnect, moveTargets}`, `VoiceModSnapshot`, `canJoin` |
 | Settings | `SETTINGS.voiceLocalMute(hex)` = `voice.localMute.<hex>` (`'1'` or absent); `isLocallyMuted(settings, hex)` |
 | Media | `SpeakerPolicy.setServerDeafened(on: boolean)` |
-| Web call | `volume.ts` `localMutesFromSettings`, `gainOf(…, localMuted)`; `PageCallOptions.localMutes`; session `releaseContext(): AudioContext | null`, `setLocalMute(userId, on)`, `applyServerVoice(mod: { muted: boolean; deafened: boolean })`; `PageCallOptions.serverVoice` |
+| Web call | `volume.ts` `volumeOf` (moved from `VoiceView.tsx`), `localMutesFromSettings`, `gainOf(…, localMuted)`; `PageCallOptions.localMutes`; session `releaseContext(): AudioContext | null`, `setLocalMute(userId, on)`, `applyServerVoice(mod: { muted: boolean; deafened: boolean })`; `PageCallOptions.serverVoice` |
 
 ### 8.6 UI and web
 
@@ -318,7 +318,7 @@ Every layer uses exactly these spellings. Nothing else names these things.
 | web menus (`packages/web/src/screens/menus/`) | `MenuHost.tsx` (`MenuHostProvider`, `useContextMenu`, `useOpenMenu`, `MenuSurface`, `BuiltMenu`, `SurfaceHandler`), `native.ts` (`keepsNativeMenu`), `long-press.ts` (`LONG_PRESS_MS`, `LONG_PRESS_SLOP_PX`, `CLICK_SUPPRESS_MS`, `createLongPress`), `clipboard.ts` (`copyText`, `copyImage`), models `person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, shared types `groups.ts` (`Group`, `MenuItemModel`, `NotifyMode`), `drop-verdict.ts` (`dropVerdict`, `canDrag`, `DropInput`, `DropVerdict`, `DropRefusal`), `MenuActionRegistry.tsx` (`MenuActionRegistry`, `RowActions`, `MenuActionProvider`, `useRowActions`, `rowActionsOf`), hooks `usePersonMenu.tsx`, `useVoiceMod.ts`, `use<Surface>Menu.tsx` |
 | web other | `ModFlows` (new export of `screens/admin/Moderation.tsx`, beside `KickFlow` and `BanFlow`); `LeaveFlow` (from `DangerSection.tsx`); `toggleRole` (from `MemberRolesFlow.tsx`); `OpenCard.source` gains `'menu'` |
 | Strings | modules `strings/personMenu.ts` (`person.menu.*`), `strings/voiceMod.ts` (`voice.mod.*`), `strings/menus.ts` (`menu.*`); `perm.*` in `strings/perm.ts`; flow doc `docs/design/flows/18-context-menus-and-voice-moderation.md` with `strings.flow18.test.ts` |
-| Test-only | the build define `__DILLA_E2E_HOOKS__` (true only when built with `DILLA_E2E_HOOKS=1`) and the page global `__dillaE2E.serverDeafClientOff`, read by `SpeakerPolicy` (§C.11); absent from release builds (`packages/web/scripts/check-no-e2e-hooks.mjs`) |
+| Test-only | the build define `__DILLA_E2E_HOOKS__` (true only when built with `DILLA_E2E_HOOKS=1`) and the page global `__dillaE2E.serverDeafClientOff`, read by `SpeakerPolicy` (§C.11); only in the separate `dilla-web-dist-e2e-hooks` CI artifact; absent from release builds and from the shared `dilla-web-dist` (`packages/web/scripts/check-no-e2e-hooks.mjs`) |
 
 ## 9. Compatibility with older clients
 
@@ -350,7 +350,7 @@ A device with an older tab open is as capable as that tab: `DeviceCaps` is the A
   - lint, typecheck, `check:copy`, `check:css` and `check:docs`.
   - e2e: the web suite (`person-menu`, `context-menus`, `phone-menu`) on chromium, firefox and webkit; the voice suite (`voice-moderation`) on chromium-voice and firefox-voice, covering drag, Escape cancel, an invalid drop, keyboard move to, server mute enforced by the SFU (a muted person's audio doesn't reach a listener), server deafen, disconnect, self drag and a move landing in the target call.
   - axe on the menu, the submenu, the sheet and its pushed page, in all three themes.
-- **Reviews.** Opus reviews the authz (rights, owner rule, overwrites: S6a, S6b, W2, W4), the move signal and its enforcement (S6b, T6, W6, E2), and the grant changes (S5).
+- **Reviews.** Opus reviews the authz (rights, owner rule, overwrites: S6a, S6b, W2, W4a, W4b), the move signal and its enforcement (S6b, T6, W6, E2), and the grant changes (S5).
 - **Every fixture reachable.** The e2e specs start from an empty instance and build their servers, roles and channels through the shipping client.
 
 ## 11. Tasks
@@ -364,13 +364,13 @@ Four lanes run in **parallel working copies**, because their files are disjoint.
 | **S** server | `internal/`, `protocol/` | S1 ∥ S2 ∥ S3 ∥ S4 → S5 → S6a → S6b; S7 alongside S5 and S6 |
 | **C** client-core and media | `packages/client-core`, `packages/media`, plus the few web literals and strings named below | T1 → T2 → T3 → T4 → T5 → T6 → T7; M1 ∥ from the start |
 | **U** ui | `packages/ui` | U1 ∥ U3 → U2 (after U1), U4 (after U3) → U5 |
-| **W** web, e2e, docs | `packages/web/src/screens`, `e2e/`, `docs/user`, `README.md` | W1 ∥ from the start; then W2, W3 → W4 → W5 → W7 → W6 → E1 ∥ E2 → D1 ∥ D2 |
+| **W** web, e2e, docs | `packages/web/src/screens`, `e2e/`, `docs/user`, `README.md` | W1 ∥ from the start; then W2, W3 → W4a → W4b → W5 → W7 → W6 → E1 ∥ E2 → D1 ∥ D2 |
 
 Cross-lane dependencies (a task never starts before these have merged into the lane's base):
 
 - **S1 → T2**: T2's vector test reads `protocol/vectors/permissions.json`.
-- **T4 → W2**, **T5 → W4**: the web consumes `voiceModAccess` and the commands.
-- **U2 → W3**, **U3, U4 → W4**, **U5 → W7**: the web mounts the ui components.
+- **T4 → W2**, **T5 → W4a**: the web consumes `voiceModAccess` and the commands.
+- **U2 → W3**, **U3, U4 → W4b**, **U5 → W7**: the web mounts the ui components.
 - **T1, T3, T6, M1 → W6**: the page follows `call.move`, `serverMuted`, `voice.localMute.<hex>` and the speaker policy.
 - **S6b → E2**: the voice e2e needs the real routes.
 - UI follows the client-core interfaces: no W task starts on a client-core name that is not merged; the names are frozen in §8, so U tasks and W1 start at once.
@@ -383,21 +383,21 @@ Waves (each wave's tasks run together):
 | 2 | S5, S7 | T2 (needs S1) | U2, U4 | — |
 | 3 | S6a | T3, then T4 | U5 | W3 |
 | 4 | S6b | T5 | — | W2 (needs T4) |
-| 5 | — | T6, then T7 | — | W4 (needs T5) |
+| 5 | — | T6, then T7 | — | W4a (needs T5), then W4b |
 | 6 | — | — | — | W5, then W7 |
 | 7 | — | — | — | W6 (needs T6, M1) |
 | 8 | — | — | — | E1, E2 (needs S6b) |
 | 9 | — | — | — | D1, D2 |
 
-Shared-file hazards, which is why each lane is sequential: `packages/client-core/src/index.ts` (T1, T3, T4), `worker/controller.ts` (T1, T5, T6), `http/routes.ts` (T1, T2), `VoiceChannelRow.tsx` (U3, U4, U5), `Shell.tsx` (W3, W4, W5, W7, W6), `internal/api/calls.go` (S4 interface, then S5, S6a, S6b).
+Shared-file hazards, which is why each lane is sequential: `packages/client-core/src/index.ts` (T1, T3, T4), `worker/controller.ts` (T1, T5, T6), `http/routes.ts` (T1, T2), `VoiceChannelRow.tsx` (U3, U4, U5), `Shell.tsx` (W3, W4b, W5, W7, W6), `internal/api/calls.go` (S4 interface, then S5, S6a, S6b).
 
 ### 11.2 Tiers (ruling 14, M12)
 
 | Tier | Implementation | Review |
 |---|---|---|
-| **opus** | T6, W6 (2) | S5, S6a, S6b, T6, W2, W4, W6, E2 (8) |
-| **sonnet** | S1, S2, S3, S4, S5, S6a, S6b, T1, T2, T3, T4, T5, T7, M1, U1, U2, U3, U4, U5, W2, W3, W4, W5, W7, E1, E2, D2 (27) | all other 24 |
-| **haiku** | S7, W1, D1 (3) | — |
+| **opus** | T6, W6 (2) | S5, S6a, S6b, T6, W2, W4a, W4b, W6, E2 (9) |
+| **sonnet** | S1, S2, S3, S4, S5, S6a, S6b, S7, T1, T2, T3, T4, T5, T7, M1, U1, U2, U3, U4, U5, W2, W3, W4a, W4b, W5, W7, E1, E2, D2 (29) | all other 24 |
+| **haiku** | W1, D1 (2) | — |
 
 If S5's `reconcileOutcome` change or S6b's `modCut` fails its first opus review, the fix round goes to opus.
 
@@ -456,7 +456,7 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 
 #### S7 — Protocol docs
 
-- **Lane** S, alongside S5 and S6 (the names are frozen in §8). **Depends on** —. **Model** haiku. **Review** sonnet.
+- **Lane** S, alongside S5 and S6 (the names are frozen in §8). **Depends on** —. **Model** sonnet (it composes the protocol prose from the recipe). **Review** sonnet.
 - **Files:** `protocol/02-delivery-service.md`, `protocol/09-http-api.md` (except the permissions row, which is S1's), `protocol/08-*.md`, `protocol/07-versioning.md`. The release notes are D2's.
 - **Recipe:** §S.5.5 (pending row), §S.6 (audit bullet), §S.7 (ops 56/57 rows and paragraph, snapshot rows), §S.4.5 (start answer), §S.1.0 (`E_NOT_IN_VOICE` row and prose), and:
   - protocol/08: "Server deafen: the SFU stops forwarding audio; the person stays in the call's MLS group and holds its key; a modified client can resubscribe until the instance's next pass, at most about 30 s × ceil(live rooms / 64) (the room sweep runs every 30 s and covers 64 rooms a pass), and it is re-applied on every join and every audio publish." and "A move only within the moved person's own rights: the instance tells the device to move, and it joins through its normal join; it never moves media or hands out keys."
@@ -564,7 +564,7 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 #### W2 — Pure menu models and the drop verdict
 
 - **Lane** W. **Depends on** T4 (and T2 through it). **Model** sonnet. **Review** **opus** (advisory authz mirrors the server's rules; reads `admin/voicemod.ts` too).
-- **Files:** new `packages/web/src/screens/menus/groups.ts`, `person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, `drop-verdict.ts`, their tests; `screens/admin/MemberRolesFlow.tsx` (`roleChoices`, `toggleRole` extracted).
+- **Files:** new `packages/web/src/screens/menus/groups.ts`, `person-menu.ts` (`personMenu`, `roleChoices`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, `drop-verdict.ts`, their tests; `screens/admin/MemberRolesFlow.tsx` (`roleChoices`, `toggleRole` extracted).
 - **Recipe:** §U.5 (with §U.5.0, the shared types), §U.6.2 (`dropVerdict`, `canDrag`: the one definition).
 - **Tests:** one `it` per truth-table row (`person-menu.test.ts` 18 rows plus `roleChoices`, `personInputs`, move-to exclusions; `message-menu`, `channel-menu`, `voice-channel-menu`, `category-menu`, `server-menu`, `dm-menu`, `link-menu`, `attachment-menu`), `drop-verdict.test.ts`; `MemberRolesFlow.test.tsx` stays green.
 
@@ -575,23 +575,30 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 - **Recipe:** §U.3 (with §U.3.8, the action registry).
 - **Tests:** `native.test.ts`, `long-press.test.ts`, `MenuHost.test.tsx`, `MenuActionRegistry.test.tsx` of §U.10.2.
 
-#### W4 — The person surface
+#### W4a — The person menu's inputs and the mover's feedback (pure)
 
-- **Lane** W. **Depends on** W1, W2, W3, U3, U4, T5. **Model** sonnet. **Review** **opus**.
-- **Files:** new `packages/web/src/screens/menus/usePersonMenu.tsx`, new `useVoiceMod.ts`, `screens/admin/Moderation.tsx` (new export `ModFlows`), `screens/admin/MemberCardHost.tsx` (`'menu'` source), `screens/admin/MemberPane.tsx`, `Shell.tsx`, `VoiceView.tsx` (export `volumeOf`, labels), new `Shell.personMenu.test.tsx`.
-- **Recipe:** §U.5.1.4, §U.5.1.5, §U.8.3.
+- **Lane** W. **Depends on** W1, W2, T5. **Model** sonnet. **Review** **opus** (the inputs feed the advisory authz).
+- **Files:** `packages/web/src/screens/menus/person-menu.ts` (`PersonSources`, `personInputs`), new `person-inputs.test.ts`, new `screens/menus/useVoiceMod.ts` and `useVoiceMod.test.tsx`, `packages/web/src/call/volume.ts` (export `volumeOf`), `screens/voice/VoiceView.tsx` (import it).
+- **Recipe:** §U.5.1.4 (the signature and the field table), §U.8.3.
+- **Tests:** `person-inputs.test.ts` and `useVoiceMod.test.tsx` of §U.10.2.
+
+#### W4b — The person surface wiring
+
+- **Lane** W. **Depends on** W4a, W3, U3, U4. **Model** sonnet. **Review** **opus**.
+- **Files:** new `packages/web/src/screens/menus/usePersonMenu.tsx`, `screens/admin/Moderation.tsx` (new export `ModFlows`), `screens/admin/MemberCardHost.tsx` (`'menu'` source), `screens/admin/MemberPane.tsx`, `screens/Shell.tsx` (sources for `personInputs`, the person handler, `ModFlows`, the `modNotice` banner), `VoiceView.tsx` (labels), new `screens/Shell.personMenu.test.tsx`.
+- **Recipe:** §U.5.1.5, §U.8.3 (the banner).
 - **Tests:** `Shell.personMenu.test.tsx` of §U.10.2.
 
 #### W5 — The other surfaces
 
-- **Lane** W. **Depends on** W4 (Shell order), W1, W2, W3, U3. **Model** sonnet. **Review** sonnet.
+- **Lane** W. **Depends on** W4b (Shell order), W1, W2, W3, U3. **Model** sonnet. **Review** sonnet.
 - **Files:** `packages/web/src/screens/conversation/Conversation.tsx`, `screens/conversation/ThreadView.tsx`, `screens/conversation/MessageItem.tsx` (`useRowActions` per row), `screens/conversation/Attachments.tsx` (`useRowActions` per card), `screens/Shell.tsx`, `screens/admin/ChannelsSection.tsx` (export `DeleteChannel`), `screens/admin/DangerSection.tsx` (extract `LeaveFlow`), `screens/menus/use{Message,Link,Attachment,Channel,VoiceChannel,Category,Server,Dm}Menu.tsx`, new tests.
 - **Recipe:** §U.5.2–§U.5.9, §U.3.8 (row actions); `InviteFlow` (`screens/Create.tsx`) mounted in Shell.
 - **Tests:** `screens/Shell.contextMenus.test.tsx`, `screens/conversation/Conversation.menu.test.tsx`, `screens/conversation/ThreadView.menu.test.tsx`.
 
 #### W7 — Drag wiring in Shell
 
-- **Lane** W. **Depends on** W5 (Shell order), U5, W2, W4. **Model** sonnet. **Review** sonnet.
+- **Lane** W. **Depends on** W5 (Shell order), U5, W2, W4b. **Model** sonnet. **Review** sonnet.
 - **Files:** `packages/web/src/screens/Shell.tsx` (`voice.drag`), `Shell.personMenu.test.tsx` (drag cases).
 - **Recipe:** §U.6.4.
 - **Tests:** Shell drag cases: a valid drop calls `voiceMove`; this device's own row switches; an AFK drop announces `voice.mod.drag.afk`; Escape announces `Move cancelled.`; no `voice.drag` on a phone.
@@ -600,12 +607,13 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 
 - **Lane** W. **Depends on** W7 (Shell order), T1, T3, T6, M1, U4. **Model** **opus**. **Review** **opus** (M12).
 - **Files:** `packages/web/src/screens/voice/useCall.tsx`, `screens/voice/VoiceView.tsx`, `packages/web/src/call/session.ts`, `call/volume.ts`, `Shell.tsx` (held props), new `useCall.mod.test.tsx`, new `VoiceView.mod.test.tsx`, `call/session.test.ts`, `call/volume.test.ts`.
+- **First step:** check whether a session started with `audioContext: null` reports `audioBlocked: true` once connected (the state §U.8.6 relies on). If it doesn't, make it so in `call/session.ts`, with the test below, before anything else.
 - **Recipe:** §C.8, §C.10 (web half), §U.7.5, §U.8.1, §U.8.2, §U.8.4, §U.8.6 (the `AudioContext` hand-off, D17).
-- **Tests:** `useCall.mod.test.tsx` and `VoiceView.mod.test.tsx` of §U.10.2 (including the two hand-off cases of §U.8.6); `session.test.ts`: the three `releaseContext` cases of §U.8.6, "a server mute unpublishes the microphone and screen audio and keeps the own mute", "a permission-refused mic publish while serverMuted is not a call error", "applyServerVoice with deafened calls the speaker policy"; `volume.test.ts`: "a locally muted user's voice gain is 0 and the stream gain is unchanged".
+- **Tests:** `useCall.mod.test.tsx` and `VoiceView.mod.test.tsx` of §U.10.2 (including the two hand-off cases of §U.8.6); `session.test.ts`: "a session started with audioContext null reports audioBlocked true once connected, and startAudio clears it" (the first step), the three `releaseContext` cases of §U.8.6, "a server mute unpublishes the microphone and screen audio and keeps the own mute", "a permission-refused mic publish while serverMuted is not a call error", "applyServerVoice with deafened calls the speaker policy"; `volume.test.ts`: "a locally muted user's voice gain is 0 and the stream gain is unchanged".
 
 #### E1 — Web e2e
 
-- **Lane** W. **Depends on** W4, W5; in the lane it runs after W6. **Model** sonnet. **Review** sonnet.
+- **Lane** W. **Depends on** W4b, W5; in the lane it runs after W6. **Model** sonnet. **Review** sonnet.
 - **Files:** new `e2e/web/person-menu.spec.ts`, `e2e/web/context-menus.spec.ts`, `e2e/web/phone-menu.spec.ts`, `e2e/playwright.web.config.ts` (webkit `testMatch`).
 - **Recipe:** §U.10.3 (web suite).
 - **Tests:** the three specs on chromium, firefox and webkit.
@@ -613,9 +621,9 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 #### E2 — Voice e2e
 
 - **Lane** W, ∥ E1. **Depends on** W6, W7, S6b, M1. **Model** sonnet. **Review** **opus** (enforcement claims).
-- **Files:** new `e2e/voice/voice-moderation.spec.ts`; the test-only build switch: `packages/web/vite.config.ts` (define `__DILLA_E2E_HOOKS__`), `.github/workflows/ci.yml` (the web build that makes the `dilla-web-dist` artifact sets `DILLA_E2E_HOOKS=1`), `.github/workflows/release.yml` (builds without it, then runs the check), new `packages/web/scripts/check-no-e2e-hooks.mjs`.
+- **Files:** new `e2e/voice/voice-moderation.spec.ts`; `e2e/playwright.voice.config.ts` (`testIgnore` unless `DILLA_VOICEMOD_E2E=1`); the test-only build: `packages/web/vite.config.ts` (define `__DILLA_E2E_HOOKS__`), `packages/web/package.json` (`build:e2e-hooks`), `.github/workflows/ci.yml` (the hook check on the shared `dilla-web-dist`, the separate `dilla-web-dist-e2e-hooks` artifact, and the new `voice-moderation-e2e` job), `.github/workflows/release.yml` (the hook check after the release build), new `packages/web/scripts/check-no-e2e-hooks.mjs`.
 - **Recipe:** §U.10.3 (voice suite, written out with its per-case mute steps), §C.11 (the hook).
-- **Tests:** the spec on chromium-voice and firefox-voice; `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist` passes on a build without `DILLA_E2E_HOOKS` and fails on one with it.
+- **Tests:** the spec on chromium-voice and firefox-voice in the `voice-moderation-e2e` job; the existing voice jobs skip it; `check-no-e2e-hooks.mjs` passes on `packages/web/dist` and fails on `packages/web/dist-e2e-hooks`.
 
 #### D1 — User docs and README
 
@@ -2617,8 +2625,13 @@ How the page uses them (contract; §U.5.1.4):
 
   `setServerDeafened(true)` returns at once, changing nothing, while `serverDeafClientOff()` is true.
   - **Where it is defined:** `packages/web/vite.config.ts` adds `define: { __DILLA_E2E_HOOKS__: JSON.stringify(process.env.DILLA_E2E_HOOKS === '1') }` (the media package is bundled by the web build, as `__DILLA_NOISE_MODE__` is through `scripts/noise-build.mjs`).
-  - **Where it is set:** the CI web build that produces the `dilla-web-dist` artifact for the e2e jobs (`.github/workflows/ci.yml`, the `npm run build -w @dilla/web` step at :527) runs with `DILLA_E2E_HOOKS=1`; the page flag is set only by `e2e/voice/voice-moderation.spec.ts` (§U.10.3), on mira's context.
-  - **Why it is absent from production:** `.github/workflows/release.yml:112` builds without the variable, and then runs the new `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist`, which fails if any file under `dist` contains `__dillaE2E`.
+  - **Where it is set (ruling, final round):** the shared CI artifact `dilla-web-dist` stays release-identical, with no hooks: `test:dist` and `go test -tags webdist ./internal/web/...` keep using it. A second build makes a separate artifact, `dilla-web-dist-e2e-hooks`, used only by the voice moderation e2e job:
+    - `packages/web/package.json` gains `"build:e2e-hooks": "DILLA_E2E_HOOKS=1 vite build --config vite.config.ts --outDir dist-e2e-hooks && node scripts/write-manifest.mjs dist-e2e-hooks && node scripts/check-entry-chunk.mjs dist-e2e-hooks"`;
+    - in `.github/workflows/ci.yml`, the web build job (the `npm run build -w @dilla/web` step at :527) keeps its step, adds `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist` right after it, then runs `npm run build:e2e-hooks -w @dilla/web` and uploads `packages/web/dist-e2e-hooks` as `dilla-web-dist-e2e-hooks`;
+    - a new job, `voice-moderation-e2e` (chromium-voice and firefox-voice), downloads `dilla-web-dist-e2e-hooks` into `packages/web/dist` (the voice config's `webRoot`) and runs `DILLA_VOICEMOD_E2E=1 npx playwright test -c e2e/playwright.voice.config.ts voice-moderation`;
+    - `e2e/playwright.voice.config.ts` sets `testIgnore: process.env.DILLA_VOICEMOD_E2E === '1' ? [] : ['**/voice-moderation.spec.ts']`, so the existing voice jobs, on the hook-free artifact, never run this spec;
+    - the page flag is set only by `e2e/voice/voice-moderation.spec.ts` (§U.10.3), on mira's context.
+  - **Why it is absent from production:** `.github/workflows/release.yml:112` builds without the variable, and then runs the new `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist`, which fails if any file under `dist` contains `__dillaE2E`. The same check runs on the shared CI artifact (above).
 
 ### C.12 Tests
 
@@ -3099,8 +3112,8 @@ On a phone a message's text can't be selected. Its sheet has "copy text", as Dis
 A pane registers one handler per surface (§U.3.2), but the actions belong to rows: a message's reply, pin and delete live in its `MessageItem`, an attachment's open and save in its card. Each row registers its actions under a key, and the pane's `run(el, id)` finds the row's key on the element.
 
 ```ts
-/** One row's actions: `run` takes a menu item id; `value` a slider's value. */
-export interface RowActions { run(id: string): void; value?(id: string, v: number): void }
+/** One row's actions: `run` takes a menu item id (a copy item returns copyText's promise, which the pane announces); `value` a slider's value. */
+export interface RowActions { run(id: string): void | Promise<boolean>; value?(id: string, v: number): void }
 /** Rows' actions keyed by their `data-menu-key`. */
 export interface MenuActionRegistry {
   set(key: string, actions: RowActions): void;
@@ -3120,7 +3133,20 @@ export function rowActionsOf(registry: MenuActionRegistry, el: Element): RowActi
 
 - **Placement.** `MenuActionProvider` sits directly inside `MenuHostProvider` in Shell, around the same `dw-menu-root` element (W3), so Conversation, ThreadView and every row share one registry.
 - **Keys.** `data-menu-key` is rendered by ui from a new optional prop `menuKey?: string` on `MessageRow` (on the row element, beside `data-menu="message"`) and on `AttachmentCard` (on the card root). Message rows use `message:<seq>`; a thread pane's rows `thread:<seq>`; attachment cards `attachment:<seq>:<index>`. The lightbox image uses its card's key.
-- **Use.** `MessageItem` calls `useRowActions('message:' + seq, { run: (id) => … })`, mapping `react`, `edit`, `reply`, `thread`, `copyText`, `pin`, `delete`, `copyId` to its existing `RowEvent` handlers (§U.5.2). The card in `screens/conversation/Attachments.tsx` registers `open`, `save`, `copyImage` (§U.5.4). The link menu needs no row: its actions read the `href` of `el`.
+- **Use.** `MessageItem` (`screens/conversation/MessageItem.tsx`) calls `useRowActions('message:' + item.seq, { run })` for a row with `item.state === 'ok'`, `item.msgId !== null` and `item.seq !== null` (the rows that have a toolbar), with `emit = (event: RowEvent) => p.onEvent(item, event)` (`MessageItem.tsx:64`) and `RowEvent` as defined at `MessageItem.tsx:26-29`:
+
+  | Menu id | What `run` does | Arguments, as the toolbar passes them (`MessageItem.tsx:88-95`) |
+  |---|---|---|
+  | `react` | `emit({ kind: 'react', anchor })` | `anchor` = `rowEl.current?.querySelector<HTMLElement>('[data-action="react"]') ?? rowEl.current`: the toolbar's react button (`MessageToolbar.tsx:52` renders `data-action={item.id}`), else the row |
+  | `reply` | `emit({ kind: 'reply' })` | none |
+  | `thread` | `p.onOpenThread?.(item.msgId!)` (not a `RowEvent`: the toolbar calls `openThread` too) | the message id |
+  | `edit` | `emit({ kind: 'edit' })` | none |
+  | `pin` | `emit({ kind: 'pin', on: !item.pinned })` | `on`: the opposite of the row's pin |
+  | `delete` | `emit({ kind: 'delete' })` | none; the pane's `onRowEvent` (`Conversation.tsx:178`, `ThreadView.tsx:99` `onRow`) runs the existing confirm |
+  | `copyText` | `return copyText(plainBody(item.body, p.book))` | the whole message as plain text (`plainBody` from `shell-model.ts`) |
+  | `copyId` | `return copyText(item.msgId!)` | the message id |
+
+  `RowEvent` kinds `toggle`, `jump`, `retry` and `discard` are not menu items. `RowActions.run` is `(id: string) => void | Promise<boolean>`: a copy item returns `copyText`'s promise, and the pane hook announces `menu.copied.text` / `menu.copied.messageId` (or `menu.copied.image` for an attachment's `copyImage`) on `true` and `menu.copy.blocked` on `false`. The card in `screens/conversation/Attachments.tsx` registers `open`, `save`, `copyImage` (§U.5.4). The link menu needs no row: its actions read the `href` of `el`.
 - **The pane handler.** `useMessageMenu`'s `run(el, id)` is `rowActionsOf(registry, el)?.run(id)`. A row that unmounted while its menu was open has no entry, and the item does nothing.
 
 ---
@@ -3346,12 +3372,83 @@ Footnotes:
 - **Target**: `members:${cid}` finds the member: `isMember`, `roleIds`, `username`, `isBot = kind === 1`. In a DM, `allMembers` plus `dm.members`.
 - **Voice**: search `voiceSlice` for a participant with `userId`. Its channel id is `voice.channelId`. Away roster people are excluded.
   - `sameCall = call.channelId === voice.channelId`. For a DM, `voice` = the DM call when `call.channelId === dm.id` and the peer is in its tiles.
-  - `volume = volumeOf(settings, userId)` (`VoiceView.tsx:42`, export it).
+  - `volume = volumeOf(settings, userId)` (moved to `call/volume.ts`, below).
   - `mutedForMe = isLocallyMuted(settings, userId)`.
 - **Access**: `source = voiceChannelOf(voiceSlice, voiceChannelIds, userId)`; `mod = voiceModAccess({ owner, everyoneId: access.overwritesLoaded ? access.everyoneId : '', roles, members, overwrites, voiceChannels: voiceChannelIds, afkChannelId: afk?.channelId ?? null }, selfId, userId, source, call.state?.phase === 'in' || call.state?.phase === 'paused' ? call.channelId : null)`. Any missing slice gives `NO_VOICE_MOD`.
 - **Server state**: `serverMuted` / `serverDeafened` = any of the target's devices in `voice[source]` has `VOICE_FLAG.serverMute` / `VOICE_FLAG.serverDeaf` in its flags.
 
-Put this in a pure helper `personInputs(...)` in `person-menu.ts`, so it is tested too.
+These rules are one pure function in `person-menu.ts` (task W4a), with this exact signature. Shell reads each source with `useSlice` and passes them in; nothing else is read.
+
+```ts
+import type { AFKState, CallState, ChannelSummary, CommunityAccess, DmSummary, MemberSummary, OverwriteSummary,
+  RoleSummary, VoiceState } from '@dilla/client-core';
+
+/** Everything personInputs reads. Each field names its source. */
+export interface PersonSources {
+  /** `account` slice: the signed-in user id (hex). */
+  selfId: string;
+  /** The opened element's `data-user-id`. */
+  userId: string;
+  /** The shell's open server (`community?.id` in Shell) when the element sits outside a DM view; null in a DM
+   *  conversation, Home or the DM list. */
+  community: null | {
+    id: string;
+    /** `communities` slice: `.find(c => c.id === id).owner`. */
+    ownerId: string;
+    /** `permissions:<id>` (undefined while unread). */
+    access: CommunityAccess | undefined;
+    /** `roles:<id>` ?? []. */
+    roles: readonly RoleSummary[];
+    /** `members:<id>` ?? []. */
+    members: readonly MemberSummary[];
+    /** `overwrites:<id>` ?? {}. */
+    overwrites: Readonly<Record<string, readonly OverwriteSummary[]>>;
+    /** `channels:<id>` ?? []. */
+    channels: readonly ChannelSummary[];
+    /** `afk:<id>` (undefined while unread, null while loading). */
+    afk: AFKState | null | undefined;
+  };
+  /** In a DM conversation: its row of the `dms` slice; else null. */
+  dm: DmSummary | null;
+  /** Shell's `allMembers` (`Shell.tsx:217`, every listed server's members merged): the DM fallback for a target's name. */
+  knownMembers: readonly MemberSummary[];
+  /** `voice` slice. */
+  voice: VoiceState;
+  /** `call` slice. */
+  call: CallState;
+  /** `settings` slice. */
+  settings: Readonly<Record<string, string>>;
+  /** Shell: `composer !== null && reasonKey === null` (`Shell.tsx:1121-1127`): a composer is open and accepting text. */
+  composerOpen: boolean;
+}
+
+export function personInputs(s: PersonSources): PersonMenuInput;
+```
+
+How each `PersonMenuInput` field is made:
+
+| Field | Value |
+|---|---|
+| `selfId` | `s.selfId` |
+| `target.userId` | `s.userId` |
+| member `m` | `s.community ? s.community.members.find(x => x.userId === s.userId) : s.knownMembers.find(x => x.userId === s.userId)` |
+| `target.username` | `m?.username ?? ''` |
+| `target.isBot` | `m?.kind === 1` |
+| `target.isMember` | `s.community ? m !== undefined : true` |
+| `target.roleIds` | `m?.roleIds ?? []` |
+| `inCall` (local) | `s.call.phase === 'in' \|\| s.call.phase === 'paused'` |
+| `voiceIds` (local) | `s.community.channels.filter(c => c.kind === 1).sort((a, b) => a.position - b.position \|\| (a.id < b.id ? -1 : 1)).map(c => c.id)` |
+| `source` (local) | `voiceChannelOf(s.voice, voiceIds, s.userId)` (the away roster is never in `voice`) |
+| `snap` (local) | `{ owner: ownerId, everyoneId: access?.loaded && access.overwritesLoaded ? access.everyoneId : '', roles, members, overwrites, voiceChannels: voiceIds, afkChannelId: afk?.channelId ?? null }` |
+| `community` | null when `s.community` is null; else `{ id, ownerId, access, roles, mod, channelNames }` |
+| `community.mod` | `voiceModAccess(snap, s.selfId, s.userId, source, inCall ? s.call.channelId : null)` |
+| `community.channelNames` | `Object.fromEntries(voice channels.map(c => [c.id, c.name]))` |
+| rows `r` (local) | `s.voice[source]?.participants.filter(p => p.userId === s.userId) ?? []` |
+| `voice` (server) | `source === null ? null : { channelId: source, serverMuted: r.some(p => (p.flags & VOICE_FLAG.serverMute) !== 0), serverDeafened: r.some(p => (p.flags & VOICE_FLAG.serverDeaf) !== 0), sameCall: inCall && s.call.channelId === source, mutedForMe: isLocallyMuted(s.settings, s.userId), volume: volumeOf(s.settings, s.userId) }` |
+| `voice` (DM) | when `s.dm !== null && inCall && s.call.channelId === s.dm.id && s.voice[s.dm.id]?.participants.some(p => p.userId === s.userId)`: `{ channelId: s.dm.id, serverMuted: false, serverDeafened: false, sameCall: true, mutedForMe, volume }` as above; else null |
+| `canMention` | `s.composerOpen && username !== '' && (s.community ? isMember : s.dm?.members.includes(s.userId) === true)` |
+
+`volumeOf` moves out of `screens/voice/VoiceView.tsx:42` into `packages/web/src/call/volume.ts` as an export (same body), and VoiceView imports it; `isLocallyMuted`, `voiceChannelOf`, `voiceModAccess` and `VOICE_FLAG` come from `@dilla/client-core`.
 
 ##### U.5.1.5 Running the ids
 
@@ -3826,7 +3923,7 @@ The polite announcer says `menu.copied.*` or `menu.copy.blocked`. Mark as read a
 ```
 
 - `useCall.join(id: string, made?: AudioContext | null)` is unchanged in shape (`useCall.tsx:624`): the follow of §U.8.1 passes the released context as `made`, so `const ctx = made !== undefined ? made : (deps.createCallContext?.() ?? null)` takes it and `deps.createCallContext` is not called. The old session's `leave('switch')` then runs as today.
-- With `made === null` the join goes ahead without a context: `PageCallOptions.audioContext` is `null`, the session reports `audioBlocked: true` once connected, and the existing `voice.audioBlocked` announcement and the `voice.audioStart` press ("turn on audio", `startAudio`, `useCall.tsx:1034`) appear; the press makes and starts a context inside the person's gesture.
+- With `made === null` the join goes ahead without a context: `PageCallOptions.audioContext` is `null`, the session reports `audioBlocked: true` once connected (W6 checks this first and makes it true if it isn't), and the existing `voice.audioBlocked` announcement and the `voice.audioStart` press ("turn on audio", `startAudio`, `useCall.tsx:1034`) appear; the press makes and starts a context inside the person's gesture.
 - A person's own switch (a press) is unchanged: it makes a fresh context in the press and never calls `releaseContext`.
 - Tests:
   - `session.test.ts`: `releaseContext returns a running context, and the following leave('switch') does not close it`; `releaseContext closes a suspended context and returns null`; `a second releaseContext returns null`.
@@ -4126,7 +4223,9 @@ The other 35 keys are sentences: each starts with a capital letter or with a `{p
 #### U.10.2 vitest (web)
 
 **Models**: one file per model, one `it` per truth-table row, asserting the exact id list:
-- `person-menu.test.ts`: the 18 rows of §U.5.1.3, plus `roleChoices` cases (locked, lacking, everyone excluded, checked from held), `personInputs` with fixtures, and move to exclusions (current, AFK, target can't join, I can't join);
+- `person-menu.test.ts`: the 18 rows of §U.5.1.3, plus `roleChoices` cases (locked, lacking, everyone excluded, checked from held), and move to exclusions (current, AFK, target can't join, I can't join) (W2);
+- `person-inputs.test.ts` (W4a): one case per row of the `personInputs` table: a member and a non-member; a bot; access unread or overwrites unloaded → `NO_VOICE_MOD`; `source` in channel position order; `sameCall` only while phase is `in` or `paused`; the folded server flags on any device; `mutedForMe` and `volume` from settings; the DM call; `canMention` with the composer closed, a nameless target, and a DM peer not in the DM;
+- `useVoiceMod.test.tsx` (W4a): one case per outcome row of §U.8.3 (announcement and banner, disconnect's `E_NOT_IN_VOICE` as success);
 - `message-menu.test.ts`, `channel-menu.test.ts`, `voice-channel-menu.test.ts`, `category-menu.test.ts`, `server-menu.test.ts`, `dm-menu.test.ts`, `link-menu.test.ts`, `attachment-menu.test.ts` (`canCopyImage` false hides copyImage);
 - `drop-verdict.test.ts`: each of the eight rules in priority order; `canDrop` and the refusal come from one call (a refused input's `ok` is false and its `reason` is the announced one); for a non-local mover with Move Members, the ok targets equal `mod.moveTargets`; `canDrag(mod, away)` for local, owner (NO_VOICE_MOD), away, no move and move.
 
@@ -4230,7 +4329,7 @@ The other 35 keys are sentences: each starts with a capital letter or with a `{p
 **Voice suite** (`e2e/playwright.voice.config.ts`, chromium-voice and firefox-voice). `e2e/voice/voice-moderation.spec.ts` (task E2), on the `test` fixture of `e2e/voice/support/peer-browser.ts`:
 
 - **People.** One `VoicePeer` hosts the instance (`VoicePeer.start()`, handed to `peerBrowser.track`). The three participants are `Person` pages: `const ada = await peerBrowser.open('ada')`, then `'björn'` and `'mira'`; each is onboarded with `onboard(person, peer, display)` and they meet with `introduce(peer, [ada, björn, mira])` (`support/voice.ts`). Ada creates the server, so she is its owner; she creates voice channels `harbour`, `general` and `vault`.
-- **Mira's hook** (for case 6). Right after `peerBrowser.open('mira')` and before `onboard`: `await mira.context.addInitScript(() => { (window as unknown as { __dillaE2E?: { serverDeafClientOff: boolean } }).__dillaE2E = { serverDeafClientOff: true }; })` then `await mira.page.reload()`. It acts only in a build with `DILLA_E2E_HOOKS=1` (the CI `dilla-web-dist` build, §C.11) and only on a server deafen: mira's own `SpeakerPolicy` then does not unsubscribe, so only the instance can stop her hearing.
+- **Mira's hook** (for case 6). Right after `peerBrowser.open('mira')` and before `onboard`: `await mira.context.addInitScript(() => { (window as unknown as { __dillaE2E?: { serverDeafClientOff: boolean } }).__dillaE2E = { serverDeafClientOff: true }; })` then `await mira.page.reload()`. It acts only in a build with `DILLA_E2E_HOOKS=1` (the `dilla-web-dist-e2e-hooks` artifact this spec alone runs on, §C.11) and only on a server deafen: mira's own `SpeakerPolicy` then does not unsubscribe, so only the instance can stop her hearing.
 - **Noise.** `noiseOff(page)` for all three: RNNoise removes the fake 1 kHz tone.
 - **Measuring one sender.** `audibleLevel(page)` and `audible(page)` read the loudest of **every** remote track on the page. Each audio check therefore first mutes every sender but the one measured, with the panel control `selfMute(p) = p.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true }).click()`, and confirms it with `sendsNoAudio(p)`. `AUDIBLE_RMS` (0.005) is the line between sound and silence.
 
