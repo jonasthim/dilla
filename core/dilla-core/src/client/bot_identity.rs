@@ -1309,7 +1309,8 @@ mod interaction_snapshot_tests {
             &renewed_wire,
             &renewed_expected,
             &kp_wire,
-        ).expect("fresh native create after proven absence");
+        )
+        .expect("fresh native create after proven absence");
         let rebuilt_state: (i64, i64) = connection.lock().unwrap().query_row(
             "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents WHERE group_id=?1 AND state=0)",
             rusqlite::params![expected.group.as_bytes().as_slice()],
