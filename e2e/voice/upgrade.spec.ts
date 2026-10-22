@@ -446,6 +446,11 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       for (const p of peers) expect(replayA2[p.name].replay, `${p.name}: no frame refused as a replay since the drop`).toBe(0);
       const resumeCommits = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /\/commit$/.test(r.path) && r.at < allBackAt).map((r) => r.status));
       timings['A2.resumeCommits'] = Object.fromEntries(peers.map((p, i) => [p.name, resumeCommits[i]]));
+      // The first back's group requests in order (ms from the answer): which of its commits is the engine's elected one
+      // (after a GET proposals) and which the resume's own (after its start).
+      timings['A2.firstBackTrace'] = peers[first].requests.slice(reqFrom[first])
+        .filter((r) => r.at <= allBackAt && (/\/v1\/groups\/[0-9a-f]{32}\/(commit|proposals)$/.test(r.path) || r.path === `/v1/channels/${voice}/calls`))
+        .map((r) => [Math.round(r.at - answerAt), r.method, r.path.replace(/[0-9a-f]{32}/g, '…'), r.status]);
       await carolRelayed('A2');
       timings.A2 = {
         apiDownToClientsMs: answerAt - stopAt, droppedAfterMs: droppedAt - stopAt, openMs: answerAt - openAt,

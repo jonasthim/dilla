@@ -58,7 +58,7 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
       expect(groupBefore).toBe(2);
       const leaves: string[] = [];
       const commits: string[] = [];
-      /** UP6c: alice's own-leaf Update commits (a resume commits a fresh epoch before it publishes). */
+      /** UP6c: alice's own commits (a resume commits a fresh epoch before it publishes). */
       const own: string[] = [];
       /** The positive control: the worker's own requests are observed here (its start of the call). */
       const starts: string[] = [];
@@ -77,17 +77,28 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
         served = true;
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entry: '/assets/index-next.js' }) });
       });
+      // UP6c fix round 1 (I2): the resume wins the race deterministically. The old participant's departure makes the
+      // instance propose the absence Remove of alice's leaf at once (callevents.go proposeLeave), and bob, elected,
+      // commits it within about 0.5 s: before the new page's resume reaches the instance, which then answers its start
+      // 403 E_LEAF_NOT_CURRENT and the page joins afresh. bob's commits are held here until alice's own resume commit has
+      // been answered (her start withdrew that Remove, so bob's held commit then conflicts and he catches up), or 30 s.
+      let releaseBob = (): void => {};
+      const bobGate = new Promise<void>((resolve) => { releaseBob = resolve; setTimeout(resolve, 30_000); });
+      let bobHeld = 0;
+      alice.context.on('requestfinished', (r) => {
+        if (r.method() === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/commit$/.test(new URL(r.url()).pathname)) releaseBob();
+      });
+      await bob.context.route(/\/v1\/groups\/[0-9a-f]{32}\/commit$/, async (route) => {
+        if (route.request().method() === 'POST') { bobHeld += 1; await bobGate; }
+        await route.fallback();
+      });
       // bob is the listener that does not reload: his media worker lives through alice's reload.
       const bobBefore = await replays(bob.page);
       const reloaded = alice.page.waitForEvent('load', { timeout: WAIT });
       await reloaded;
       await connected(alice.page);
       const marks = await resumeMarks(alice.page);
-      // The hold is never expired here. Whether the worker resumed it depends on a race this page cannot win alone: the
-      // old participant's departure makes the instance propose the absence Remove of alice's leaf at once
-      // (callevents.go proposeLeave), and bob commits it within about 0.5 s, before the new page's resume reaches the
-      // instance (403 E_LEAF_NOT_CURRENT: the worker forgets the group and joins it afresh). Logged, not asserted; see
-      // the UP7 report.
+      // The hold is never expired here, and with bob's commit held the worker resumes it (asserted below).
       expect(marks.answer?.expired, 'the hold had not expired').toBe(false);
       for (const name of ['pagehide', 'ready', 'token', 'connected', 'published']) expect(typeof marks[name], name).toBe('number');
       const budget = {
@@ -95,13 +106,13 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
         published: marks.published - marks.pagehide,
       };
       // eslint-disable-next-line no-console -- the measured budget is the point of this test (UP7: measure first)
-      console.log(`UP7 resume budget (ms from pagehide, ${test.info().project.name}): ${JSON.stringify(budget)} resumed=${String(marks.answer?.resumed)} externalJoin=${JSON.stringify(commits)} ownCommits=${String(own.length)}`);
+      console.log(`UP7 resume budget (ms from pagehide, ${test.info().project.name}): ${JSON.stringify(budget)} resumed=${String(marks.answer?.resumed)} externalJoin=${JSON.stringify(commits)} ownCommits=${String(own.length)} bobCommitsHeld=${String(bobHeld)}`);
       // Positive control: the new page's worker requests are seen (its start of the call), so an empty `leaves` means
       // none was sent. A resume needs no external commit; a lost race takes exactly one (the resync), seen here too.
       expect(starts.length, 'the worker\'s start of the call is observed').toBeGreaterThan(0);
-      expect(commits.length, 'no external join for a resume, exactly one for a lost race').toBe(marks.answer?.resumed === true ? 0 : 1);
-      // UP6c: a resume commits a fresh epoch (its own-leaf Update) before it publishes.
-      if (marks.answer?.resumed === true) expect(own.length, 'a resume commits a fresh epoch').toBeGreaterThan(0);
+      // The resume path was taken: the worker's join answer says so, and nothing joined externally.
+      expect(marks.answer?.resumed, 'the worker resumed the held call (not an external join)').toBe(true);
+      expect(commits, 'no external join').toEqual([]);
       expect(leaves, 'no self-Remove: the update reload never leaves').toEqual([]);
       // bob still lists alice's one device, and hears her again.
       await expect.poll(async () => (await callSlice(bob.page))?.roster.filter((r) => r.deviceId === a.device).length, { timeout: WAIT }).toBe(1);
@@ -113,6 +124,8 @@ test('a new build mid-call reloads at once and comes back into the call: no leav
       const bobAfter = await replays(bob.page);
       expect(bobAfter.worker, 'bob\'s media worker lived through alice\'s reload').toBe(bobBefore.worker);
       expect((bobAfter.replay ?? -1) - (bobBefore.replay ?? 0), 'bob refused no frame as a replay').toBe(0);
+      // UP6c: the resume committed a fresh epoch before it published.
+      expect(own.length, 'a resume commits a fresh epoch').toBeGreaterThan(0);
     });
   } finally {
     await peerBrowser.close(bob);
