@@ -67,7 +67,7 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
 - **Correction (UP6 review): the sweep's Remove makes a held leaf permanently doomed when everyone dropped.** Each member's OpenMLS queue holds the Removes, its own included, so nobody can commit and no external join is admitted. UP6b adds a protocol-level withdrawal (R-UP12) with this posture:
   - **Who can withdraw.** Only the instance, and only its own absence Removes, triggered by the departed device's own authenticated resume.
   - **What clients drop.** Only instance-originated Removes, nothing else.
-  - **The bound for a device that really left.** At worst about two sweep windows, once per hour. UP6b holds the attack analysis.
+  - **The bound for a device that really left.** The normal sweep window, unchanged. Only a device's own resume withdraws, and only its own Remove (Jonas: "Only its own"). UP6b holds the attack analysis.
 
 ## Binding rulings (R-UP*)
 - **R-UP1 The SFU's level, not a per-release flag.**
@@ -127,10 +127,10 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
     - A resume after `until` is still tried. The server's leaf check decides (`requireCurrentLeaf`; a removed or epoch-unknown leaf gives `E_LEAF_NOT_CURRENT`).
     - A resume from an expired marker loses the update-reload exemption and takes the normal late-rejoin path (R-UP9).
 - **R-UP12 A resume withdraws the absence Removes (UP6b, Jonas: "Only A, do it properly").**
-  - Atomically with the start's leaf check, the DS withdraws every outstanding absence Remove of that call group: the resumer's own, and those of the other members. That is the group-wide rule.
+  - Atomically with the start's leaf check, the DS withdraws the outstanding absence Remove of **the resuming device's own leaf only** (Jonas, 2026-10-22: "Only its own"). Other members' Removes stand. Their devices come back on their own resume if no commit has landed yet; otherwise they come back by an external join.
   - The withdrawal is published as handshake kind 3, which clients apply with `remove_pending_proposal`.
   - A commit that references a withdrawn ref gets 409.
-  - There is at most one group-wide withdrawal per membership per hour, and the sweep's absence clock restarts after it.
+  - The resumer is present again once admitted, so the sweep's own rule (the absence clock clears when a device is present) covers it. There is no cap and no clock reset.
 - **R-UP7 A pending cut is transient (fix b).**
   - These answer **503 `E_UNAVAILABLE` with `retry_after_ms`** instead of 403 or 500:
     - `isPending` at the start (`:606`);
@@ -404,13 +404,18 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
   - Also update the sqlc queries, `contract_test.go`, `dump.go`, and `wantSchemaVersion` to 24.
   - **`DS.WithdrawAbsenceRemoves(ctx, groupID, resumer device, leaf, added)`.** Under the group lock it does:
     1. checks that the resumer's membership `(leaf, added)` is still current;
-    2. for every outstanding, `withdrawable`, unwithdrawn Remove in the current epoch whose target is the resumer **or another member of the same call (R-UP12's group-wide rule)**: marks it withdrawn, `unqueueProposal`s it from the PublicGroup, and appends a kind-3 handshake row (fanned out as op 16 to bit-0 sessions);
+    2. for every outstanding, `withdrawable`, unwithdrawn Remove in the current epoch whose target is **the resumer's own membership `(leaf, added)`**: marks it withdrawn, `unqueueProposal`s it from the PublicGroup, and appends a kind-3 handshake row (fanned out as op 16 to bit-0 sessions);
     3. returns whether the resumer's own Remove was withdrawn.
     All of it is one store transaction.
   - **Commit:** a commit that references a ref marked withdrawn gets 409 `E_COMMIT_CONFLICT` "withdrawn", before any other check. The freeze (`commit.go:162`) counts only outstanding, unwithdrawn proposals.
   - **The start (`internal/api/calls.go`, the `requireCurrentLeaf` path `:585-591`, `:944`):** for a device whose leaf is current (the resume of R-UP6), call `WithdrawAbsenceRemoves` under the same group lock as the leaf check.
     - If a commit landed first, the leaf is gone: the start answers `E_LEAF_NOT_CURRENT`, and the device forgets the group and joins externally. That cannot deadlock, because the Remove is committed.
-  - **Absence clocks:** after a group-wide withdrawal, `absentSince` of the withdrawn memberships restarts at now. A **cap** of one group-wide withdrawal per membership per hour (stored in `calls.memMu` state; it resets on a restart, which only shortens the protection) means a device that is really gone is Removed again by the next sweep and stays removed.
+  - **Absence clocks:** unchanged. The resumer is admitted (its token) and is then present, so `trackAbsentLocked` forgets its absence. Another member's Remove is never touched, so a device that is really gone is removed exactly as today.
+  - **All dropped at once, and the first one resumes.** Its own Remove is withdrawn. Its queue still holds the others' Removes, which are not self-removals, so it can commit them. The elected commit removes the devices that have not yet resumed. Each of them then:
+    - gets `E_LEAF_NOT_CURRENT` at its start;
+    - forgets the group;
+    - joins externally. The Removes are committed, so the freeze is lifted and there is no `E_REMOVE_PENDING`.
+    A device that resumes before that commit withdraws its own Remove, and the commit (rebuilt after a 409) leaves it in.
 - **Testkit (`testkit/`):**
   - the DS model and the scenario runner gain the withdrawal, kind 3, the 409 and the capability bit;
   - a scenario named `all-drop-resume`.
@@ -423,13 +428,18 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
   - **A member cannot keep a departed member.** Withdrawal needs the *departed device itself* to pass the start: an authenticated session, permission to view and connect, not barred, and a current leaf. A device that is kicked, banned, revoked or barred fails those checks, and its Remove (not `withdrawable`) cannot be withdrawn anyway.
   - **A malicious member cannot block Removes.** It cannot withdraw, and committing is still open to every member. A commit that omits a withdrawable Remove is refused while that Remove is outstanding (invariant 6), as today.
   - **A malicious server** could withdraw its own absence Removes, which it could equally never have issued. Call presence is already the instance's word (protocol/08: the instance decides who is in the room). It gains no power over members' proposals, which clients refuse to drop by a `withdrawn` row. Members still see the leaf in the roster and the call code, as today.
-  - **The bound on a really departed device.** One group-wide withdrawal per membership per hour, then the normal sweep. So in the worst case a device that is gone holds a leaf for about two sweep windows (about 2 minutes) once per hour, instead of one window. It gets no new media without a token, and a token needs a current leaf plus admission.
+  - **The bound on a really departed device** is the normal sweep window, unchanged. No other device's resume can withdraw its Remove, so it never keeps a leaf longer than today. It gets no new media without a token, and a token needs a current leaf plus admission.
 - **Tests:**
   - **Go (`internal/ds`, `internal/api`, `-race`):**
-    - **three devices all drop, all resume, nobody is removed, and a rotation succeeds afterwards.** The sweep issues three Removes. The first resume withdraws all three (group-wide), the other two resume within 30 s, and an elected commit then succeeds with no Remove in it.
+    - **three devices all drop at once and all come back.** The sweep issues three Removes. The first device resumes, and its own Remove is withdrawn. Its elected commit may remove the other two, which then rejoin externally. Assert:
+      - all three end up connected in the same call within the acceptance window (90 s, as in UP9);
+      - no device sits in `E_REMOVE_PENDING`, and nothing deadlocks: no join waits out `REJOIN_WAIT_MS`;
+      - no rotation is blocked: the first commit succeeds, and a `call_rotate` after all three are back succeeds;
+      - variant: the second device resumes before the first commit, so it keeps its leaf (409, then a rebuild), and only the third rejoins externally.
     - **a commit racing the withdrawal:** the commit lands first, so the resume gets `E_LEAF_NOT_CURRENT` and an external join succeeds; the withdrawal lands first, so a commit built on the old queue gets 409 `withdrawn`, and the rebuild succeeds.
     - **a commit that references a withdrawn ref is refused** (409), and so is a replay of an earlier commit that carries it.
-    - **a member who really left is still removed:** of three, two resume and one never does. That one is Removed again by the sweep after the reset window, the Remove is committed, and its leaf is gone. A second group-wide withdrawal within the hour is refused (cap).
+    - **a member who really left is still removed:** of three, two resume and one never does. Its Remove is never withdrawn by the others' resumes, it is committed, and its leaf is gone within the normal sweep window;
+    - a resume withdraws only its own Remove: another member's outstanding Remove stays outstanding.
     - **attacks:**
       - a revocation's Remove cannot be withdrawn;
       - a barred or kicked device's start withdraws nothing (403);
@@ -553,7 +563,12 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
   - inbound audio frames keep increasing, with no gap over 1 s;
   - no new MLS epoch.
 - **B2, compatible release with a new build (Q1 = B):** restart the API with a new build. Every page reloads and resumes:
-  - **audio gap ≤ 5 s** per peer, measured from that peer's `pagehide` to its local track published again, and to the other peers' inbound frames from it resuming;
+  - **audio gap ≤ 5 s** per peer, measured from that peer's `pagehide` to its local track published again, and to the other peers' inbound frames from it resuming. This holds when the peers come back inside the sweep window, which is the normal update case and needs no Remove;
+- **A2, everyone gone longer than the sweep window** (API down more than about 60 s, all three lost):
+  - the first peer back resumes within 5 s of the API answering;
+  - the later peers may be removed by its commit and rejoin externally, so their gap is longer: **at most 30 s** after the API answers, and all three are connected within the 90 s window;
+  - no peer shows `E_REMOVE_PENDING`.
+  - Why: Jonas chose "Only its own", so a departed device's leaf lasts no longer than the normal window, and a later returner pays for that with one external join;
   - no `postGroup` and no external commit (request log);
   - the epoch is unchanged;
   - no `leftAway`, even with the AFK timeout set to 60 s and the page clock moved 10 min ahead.
@@ -638,7 +653,10 @@ In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → **UP6b** → UP7 (af
 - **A new handshake kind 3 (`withdrawn`),** sent only to clients that ask for it (caps bit 0, `kinds=3`). Wire stays 2.
   - Tabs from before web3.12 never see it, and until they reload their commits in such a group get `409`.
   - The core's protocol vectors changed, so **`dilla_core_wasi.wasm` has a new hash**. That is expected, and no ABI changed.
-- **Calls survive every member dropping at once:** the first device to resume keeps everyone's leaf, and the others resume within the window.
+- **Calls survive every member dropping at once.**
+  - Inside the sweep window (about 60 s), everyone resumes as before.
+  - After it, the first device back keeps its place, and the others rejoin the same call on their own with a fresh join. Their gap is longer, up to about 30 s after the server answers.
+  - This is deliberate: a device that really left keeps its key material no longer than the normal window.
 - **Unchanged:** wire 2, client store 5, ABI.
 - **Known limits:**
   - public-mode TURN on 443;
@@ -651,7 +669,7 @@ In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → **UP6b** → UP7 (af
   - the withdrawal and the leaf check run in one transaction under the group lock;
   - the 409 comes before every other commit check;
   - clients drop only external-sender Removes;
-  - the group-wide rule's cap and the absence-clock reset;
+  - a resume withdraws only the Remove of its own membership `(leaf, added)`, never another's;
   - old clients never receive kind 3 (both the gateway and HTTP paths), and the previous wasm tolerates the seq gap;
   - protocol/02 invariant 6, protocol/07 and protocol/08 match the code.
 - **E2EE (UP6, UP7):**
@@ -682,9 +700,10 @@ In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → **UP6b** → UP7 (af
 ## Decided
 - **The withdrawal (Jonas, 2026-10-22): "Only A, do it properly."** UP6b. Two refinements in the plan:
   - **(i) The row is marked, not deleted.** The withdrawn proposal row is marked (`withdrawn_at`) rather than deleted, so that the 409 can recognise a commit that references it. It is pruned with its epoch.
-  - **(ii) The group-wide rule** (R-UP12, open to Jonas). The first resume withdraws the absence Removes of every member of the call, not only its own.
-    - Without it, the first device to resume commits the others' Removes, and they come back by an external join. That would not meet "nobody is removed".
-    - The cost is that a device that really left keeps its leaf for at most about two sweep windows, once per hour.
+  - **(ii) Per device: "Only its own"** (Jonas, 2026-10-22). It replaces the group-wide rule the plan first proposed.
+    - A resuming device withdraws only the Remove of its own leaf.
+    - Later returners may be removed by the first device's commit, and they rejoin externally with a longer gap (UP9 A2).
+    - In exchange, a departed device's leaf lasts no longer than the normal sweep window.
 - **Q1 = B** (Jonas, 2026-10-21): reload at once and resume, with an audio gap of at most 5 s. The former UP8 (deferring the reload) is dropped.
 - **Q2 = B** (Jonas, 2026-10-21): TURN moves into `dilla-media` now (UP8). Public-mode `turns:` on 443 stays with the API by necessity, and the opt-in `turn.listen` covers it.
 - **Pre-flight review (opus): NEEDS-CHANGES, all 18 corrections applied.** One clarification, not a rejection:
