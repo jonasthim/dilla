@@ -1041,6 +1041,9 @@ func (d Deps) EnrollBotInstallation(w http.ResponseWriter, r *http.Request) {
 		}()})
 		return
 	}
+	if d.BotEnrolled != nil {
+		d.BotEnrolled(context.WithoutCancel(r.Context()), result)
+	}
 	d.write(w, r, http.StatusCreated, []any{*result.UserID, *result.DeviceID, func() string {
 		u, e := d.Repo.GetUser(r.Context(), *result.UserID)
 		if e != nil {

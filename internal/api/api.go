@@ -152,6 +152,9 @@ type Deps struct {
 	botSpotify            *botSpotifyBroker
 	// BotRevoked runs after disable/removal commits to close online transport and prompt MLS removals.
 	BotRevoked func(context.Context, store.BotInstallationRow, bool)
+	// BotEnrolled runs after a new bot identity, membership and role commit, so
+	// the composition root can bring its channel groups in line with the new member.
+	BotEnrolled func(context.Context, store.BotInstallationRow)
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket

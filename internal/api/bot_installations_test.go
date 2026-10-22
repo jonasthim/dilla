@@ -664,12 +664,108 @@ func TestRemoveManagedBotInstallationEmitsMembershipLeave(t *testing.T) {
 	}
 }
 
+func TestBotChannelSyncWaitsForKeyPackagesAndStaysBoundToItsInstallation(t *testing.T) {
+	_, deps := newTestAPI(t)
+	ownerA, ownerDeviceA, _ := seedAPISession(t, deps)
+	ownerB, ownerDeviceB, _ := seedAPISession(t, deps)
+	cidA := seedBotCommunity(t, deps, ownerA.ID)
+	cidB := seedBotCommunity(t, deps, ownerB.ID)
+	ctx := context.Background()
+	now := deps.Clock.Now().Unix()
+	botID, deviceID := id.New(), id.New()
+	device := store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: now}
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.CreateUser(ctx, store.UserRow{ID: botID, Username: "syncbot", Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+			return err
+		}
+		if err := tx.CreateBotDevice(ctx, device); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var activeRole id.ID
+	for _, cid := range []id.ID{cidA, cidB} {
+		role := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "bot viewer", Position: 1,
+			Allow: uint64(api.PermViewChannel | api.PermReadHistory | api.PermSendMessages), Created: now}
+		if err := deps.Repo.PutRole(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: botID, Joined: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.Repo.PutMemberRole(ctx, cid, botID, role.ID); err != nil {
+			t.Fatal(err)
+		}
+		if cid == cidA {
+			activeRole = role.ID
+		}
+	}
+	if err := deps.Repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.CreateBotInstallation(ctx, store.BotInstallationRow{ID: id.New(), CommunityID: cidA, UserID: &botID, DeviceID: &deviceID, RoleID: &activeRole,
+			State: store.BotInstallationJoining, Revision: 1, ApprovedBy: ownerA.ID, ApprovedAt: now, Created: now, Updated: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	channelA, channelB, groupA, groupB := id.New(), id.New(), id.New(), id.New()
+	for _, item := range []struct{ cid, channel, group, owner, ownerDevice id.ID }{
+		{cidA, channelA, groupA, ownerA.ID, ownerDeviceA.ID},
+		{cidB, channelB, groupB, ownerB.ID, ownerDeviceB.ID},
+	} {
+		c := item.cid
+		if err := deps.Repo.CreateChannel(ctx, store.ChannelRow{ID: item.channel, CommunityID: &c, Kind: api.ChannelText, Mode: api.ModeE2EE, Name: "encrypted", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.Repo.CreateGroup(ctx, store.GroupRow{GroupID: item.group, Binding: []byte{0x80}, Kind: api.GroupText, CommunityID: &c, TargetID: item.channel, Ciphersuite: 1, Epoch: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: now}); err != nil {
+			t.Fatal(err)
+		}
+		ownerDevice, err := deps.Repo.GetDevice(ctx, item.ownerDevice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.Repo.ReplaceMembers(ctx, item.group, 0, []store.MemberRow{{GroupID: item.group, UserID: item.owner, DeviceID: item.ownerDevice, SignatureKey: ownerDevice.DSKPub}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dsvc := &recordingDS{}
+	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
+		t.Fatalf("sync before KeyPackages: %v", err)
+	}
+	if got := dsvc.Adds; len(got) != 0 {
+		t.Fatalf("Adds before KeyPackages = %+v, want none", got)
+	}
+	ref := id.New()
+	if err := deps.Repo.PutKeyPackages(ctx, deviceID, []store.KeyPackageRow{{DeviceID: deviceID, KPRef: ref[:], Blob: []byte{1}, Expires: now + 3600, Created: now}}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := api.NewResolver(deps.Repo).Resolve(ctx, botID, store.ChannelRow{ID: channelA, CommunityID: &cidA, Kind: api.ChannelText, Mode: api.ModeE2EE})
+	if err != nil || !resolved.Has(api.PermViewChannel) {
+		t.Fatalf("bot channel permissions = %v, %v; want view", resolved, err)
+	}
+	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
+		t.Fatalf("sync after KeyPackages: %v", err)
+	}
+	channelMembers, _ := deps.Repo.ListChannelMembers(ctx, channelA)
+	packageCount, _ := deps.Repo.CountKeyPackages(ctx, deviceID, now)
+	if len(dsvc.Adds) != 1 || dsvc.Adds[0].Group != groupA || dsvc.Adds[0].Device != deviceID {
+		t.Fatalf("Adds after KeyPackages = %+v, channel members=%v packages=%d; want only bot device %s in bound group %s (foreign group %s must remain untouched)", dsvc.Adds, channelMembers, packageCount, deviceID, groupA, groupB)
+	}
+}
+
 func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, repo store.Repository) {
 	var manager *botruntime.Manager
+	var enrollmentHooks []store.BotInstallationRow
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
+		d.BotEnrolled = func(ctx context.Context, row store.BotInstallationRow) {
+			if ctx.Err() != nil {
+				t.Errorf("post-enrollment context is canceled: %v", ctx.Err())
+			}
+			enrollmentHooks = append(enrollmentHooks, row)
+		}
 	})
 	owner, _, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID)
@@ -802,6 +898,9 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	enrolled := doBotCBOR(h, http.MethodPost, enrollPath, enrollBody, authHeader)
 	if enrolled.Code != http.StatusCreated {
 		t.Fatalf("enroll = %d (%x)", enrolled.Code, enrolled.Body.Bytes())
+	}
+	if len(enrollmentHooks) != 1 || enrollmentHooks[0].CommunityID != cid || enrollmentHooks[0].UserID == nil || enrollmentHooks[0].DeviceID == nil {
+		t.Fatalf("post-commit enrollment hook = %+v, want exactly the enrolled community, user, and device", enrollmentHooks)
 	}
 	var enrollmentResult []any
 	if err := cborx.Unmarshal(enrolled.Body.Bytes(), &enrollmentResult); err != nil {

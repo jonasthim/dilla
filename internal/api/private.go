@@ -211,6 +211,59 @@ func syncChannelEligibility(ctx context.Context, repo store.Repository, dsvc DS,
 	return errors.Join(errs...)
 }
 
+// SyncBotChannelEligibility applies the ordinary per-member channel audience
+// reconciliation after a bot's enrollment transaction commits.
+func SyncBotChannelEligibility(ctx context.Context, repo store.Repository, dsvc DS, communityID, userID id.ID, now int64) error {
+	return syncChannelEligibility(ctx, repo, dsvc, communityID, userID, now)
+}
+
+// SyncEnrolledBotChannels retries channel reconciliation after the enrolled
+// bot device publishes KeyPackages. It only touches communities whose current
+// installation still binds that exact user and device.
+func SyncEnrolledBotChannels(ctx context.Context, repo store.Repository, dsvc DS, userID, deviceID id.ID, now int64) error {
+	communities, err := repo.ListCommunitiesForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, community := range communities {
+		installation, err := repo.GetActiveBotInstallationByCommunity(ctx, community.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if installation.RemovedAt != nil || installation.UserID == nil || *installation.UserID != userID ||
+			installation.DeviceID == nil || *installation.DeviceID != deviceID ||
+			(installation.State != store.BotInstallationJoining && installation.State != store.BotInstallationReady) {
+			continue
+		}
+		if err := syncChannelEligibility(ctx, repo, dsvc, community.ID, userID, now); err != nil {
+			errs = append(errs, err)
+		}
+		// Enrollment may already have materialised channel_members before this
+		// device had a KeyPackage. In that case the view verdict did not change,
+		// so syncChannelEligibility alone would skip the group. Re-run each live
+		// channel's group sync now that this device can be proposed.
+		channels, err := repo.ListChannels(ctx, community.ID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, channel := range channels {
+			if channel.Kind == ChannelCategory || channel.DeletedAt != nil {
+				continue
+			}
+			if err := SyncGroupMembers(ctx, repo, dsvc, channel, now); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // materialiseJoiner adds a user who has just joined a community to
 // channel_members of every channel of it that carries no MLS group — a
 // server-readable text channel — and that the resolver lets them view, the

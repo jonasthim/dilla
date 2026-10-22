@@ -429,6 +429,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			o.Log.ErrorContext(ctx, "prompting MLS removal for disabled bot device", "device", deviceID.String(), "err", err)
 		}
 	}
+	deps.BotEnrolled = func(ctx context.Context, installation store.BotInstallationRow) {
+		if installation.UserID == nil {
+			return
+		}
+		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, installation.CommunityID, *installation.UserID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot enrollment failed",
+				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
+		}
+	}
 
 	mux := server.NewMux()
 	api.Register(mux, deps)
@@ -463,9 +472,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// DM's group is populated only with devices that hold one (Plan 2 task 6). The hook runs after
 	// the 201, as AfterRegister does, and a failure is logged; the DM's next membership change
 	// re-derives it.
-	groups.AfterKeyPackages = func(ctx context.Context, userID, _ id.ID) {
+	groups.AfterKeyPackages = func(ctx context.Context, userID, deviceID id.ID) {
 		if err := api.SyncUserDMs(ctx, o.Repo, delivery, userID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing a user's DMs in line after a KeyPackage publish failed",
+				"user", userID, "err", err)
+		}
+		if err := api.SyncEnrolledBotChannels(ctx, o.Repo, delivery, userID, deviceID, o.Clock.Now().Unix()); err != nil {
+			o.Log.ErrorContext(ctx, "bringing a bot's channel groups in line after a KeyPackage publish failed",
 				"user", userID, "err", err)
 		}
 	}
