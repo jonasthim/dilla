@@ -408,9 +408,16 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								handler, handlerErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID)
 								if handlerErr != nil {
 									ensureErr = handlerErr
-								} else if _, pollErr := poller.PollOnce(ctx, result.Session, handler); pollErr != nil {
-									logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
-									ensureErr = pollErr
+								} else {
+									pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
+										return poller.PollOnce(pollCtx, result.Session, handler)
+									})
+									if pollErr != nil {
+										logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
+										ensureErr = pollErr
+									} else if pollResult.More {
+										logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
+									}
 								}
 							}
 							var scheduler *announcements.Scheduler
