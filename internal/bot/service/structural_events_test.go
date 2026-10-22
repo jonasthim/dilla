@@ -107,6 +107,24 @@ func TestStructuralEventGapRequiresReconciliationAndDoesNotAckOrApply(t *testing
 	}
 }
 
+func TestFailClosedStructuralEventLeavesCursorAndAckBeforeUnhandledEvent(t *testing.T) {
+	community := testID(1)
+	event := botprotocol.Event{ID: testID(2), CommunityID: community, Sequence: 1, Timestamp: 6, Kind: botprotocol.EventMemberJoin, Data: []any{testID(3), testID(4)}}
+	n := &structuralEventState{binding: native.Binding{Instance: testID(7), Community: community, Installation: testID(8)}}
+	s := &fakeStructuralEventSession{page: client.StructuralEventPage{Events: []botprotocol.Event{event}, NextSequence: 1, HighWater: 1}}
+	p, err := newStructuralEventPoller(n, StructuralEventPollerOptions{PageLimit: 10, PageBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.pollOnce(context.Background(), s, FailClosedStructuralEvent)
+	if !errors.Is(err, ErrStructuralEventUnhandled) {
+		t.Fatalf("error = %v, want unhandled event", err)
+	}
+	if n.value.Revision != 0 || len(s.acks) != 0 {
+		t.Fatalf("cursor revision=%d acknowledgements=%v", n.value.Revision, s.acks)
+	}
+}
+
 func TestStructuralEventPollerRetriesAckFromDurableCursorBeforeReading(t *testing.T) {
 	community := testID(1)
 	n := &structuralEventState{binding: native.Binding{Instance: testID(7), Community: community, Installation: testID(8)}}

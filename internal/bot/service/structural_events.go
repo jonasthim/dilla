@@ -23,6 +23,14 @@ const (
 )
 
 var ErrStructuralEventReconciliationRequired = errors.New("bot structural event history requires explicit reconciliation")
+var ErrStructuralEventUnhandled = errors.New("bot structural event has no configured handler")
+
+// FailClosedStructuralEvent is the production fallback until a concrete adapter
+// is configured for an event kind. Returning an error keeps the durable cursor
+// and server acknowledgement before that event, so later events cannot be skipped.
+func FailClosedStructuralEvent(_ context.Context, event botprotocol.Event) error {
+	return fmt.Errorf("%w: kind %d sequence %d", ErrStructuralEventUnhandled, event.Kind, event.Sequence)
+}
 
 type structuralEventNative interface {
 	Binding() native.Binding
