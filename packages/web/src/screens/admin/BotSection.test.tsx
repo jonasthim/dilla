@@ -75,7 +75,7 @@ describe('the server bot settings', () => {
     expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
-  it('saves one approved join-role setting with a request ID and explains assignment is not active', async () => {
+  it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };
     const { fake, user, announce } = setup(initial);
     fake.handler = command => {

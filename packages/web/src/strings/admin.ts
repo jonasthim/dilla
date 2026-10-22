@@ -34,7 +34,7 @@ export const admin = {
   'admin.bot.selfRoles.empty': 'No roles are currently available for self-service.',
   'admin.bot.selfRoles.saved': 'Self-service roles updated.',
   'admin.bot.joinRole.title': 'Join role',
-  'admin.bot.joinRole.honest': 'This saves a server setting only. The bot does not assign this role when someone joins yet.',
+  'admin.bot.joinRole.honest': 'A ready bot assigns this role on future joins. Existing members are unchanged.',
   'admin.bot.joinRole.requiresBot': 'A ready bot installation is required to configure this setting.',
   'admin.bot.joinRole.label': 'Role to configure',
   'admin.bot.joinRole.none': 'No role',
