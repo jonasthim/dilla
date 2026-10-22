@@ -333,6 +333,38 @@ describe('opening a channel (rule 6)', () => {
 });
 
 describe('human interaction Welcomes', () => {
+  it('does not activate an accepted Welcome when Sync stops during acknowledgement', async () => {
+    const group = ds.peerCreate(PEER, CHANNEL);
+    ds.detach(ME.device);
+    ds.peerCommit(group, PEER, [ME.device]);
+    ds.reattach(ME.device);
+
+    const deleting = deferred();
+    const deleteGate = deferred();
+    const routes = d.engine.deps.routes as typeof d.engine.deps.routes & {
+      getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+    };
+    routes.getInteractionAdmissionContext = () => Promise.resolve({ payload: new Uint8Array([1]), signature: new Uint8Array(64).fill(2) });
+    routes.deleteWelcome = async () => {
+      deleting.resolve();
+      await deleteGate.promise;
+    };
+    const interactionCore = d.engine.deps.core as typeof d.engine.deps.core & {
+      humanInteractionWelcomeApply?: () => { welcomeId: bigint; groupId: Id; outcome: 0 | 1 | 2 | 3; reason: string }[];
+    };
+    interactionCore.humanInteractionWelcomeApply = () => [{ welcomeId: 1n, groupId: group, outcome: 0, reason: '' }];
+    const activations: string[] = [];
+    d.engine.activate = (groupId) => { activations.push(toHex(groupId)); return Promise.resolve(); };
+
+    const polling = d.engine.pollWelcomes();
+    await deleting.promise;
+    d.engine.stop();
+    deleteGate.resolve();
+    await polling;
+
+    expect(activations).toEqual([]);
+  });
+
   it('fetches the signed current context before applying and acknowledging an unexpected Welcome', async () => {
     const group = ds.peerCreate(PEER, CHANNEL);
     ds.detach(ME.device);

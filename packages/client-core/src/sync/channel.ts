@@ -56,7 +56,7 @@ async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborVal
     }
 
     try { await s.deps.routes.deleteWelcome(welcomeId); } catch { /* accepted receipt makes the next poll safe */ }
-    if (outcome.outcome === 0) void s.queues.run(groupKey(group), () => s.activate(group)).catch(() => undefined);
+    if (outcome.outcome === 0 && !s.stopped()) void s.queues.run(groupKey(group), () => s.activate(group)).catch(() => undefined);
   }
 
   if (genericRows.length > 0) {
