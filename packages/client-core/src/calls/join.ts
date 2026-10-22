@@ -170,44 +170,63 @@ async function waitForRemove(d: JoinDeps, t: JoinTarget, refusal: JoinRefused, s
 
 /** The external join: a hard verdict refuses at the core's join and nothing is posted; a pending leaf is settled by one
  *  bounded list refresh, and the commit is posted only after call_join_check passes (RV-1). `tried.info` is the
- *  GroupInfo the commit was built on (the rejoin's wait compares it). */
+ *  GroupInfo the commit was built on (the rejoin's wait compares it). A commit of another member can land at any step
+ *  (bob committing the Remove a reloaded page's boot sweep proposed, as its rejoin starts): the reads and the post are
+ *  repeated, at most JOIN_READS_MAX times, while the group has moved under them. */
 async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { info: Uint8Array | null }): Promise<void> {
   const eg: ExpectedGroup = { groupId, communityId: t.communityId, channelId: t.channelId, policyVersion: d.policyVersion };
-  let body: Uint8Array;
   for (let reads = 1; ; reads++) {
     const info = await d.routes.getGroupInfo(groupId);
     tried.info = info;
     const tree = await d.routes.getGroupTree(groupId);
+    const again = (): boolean => reads < JOIN_READS_MAX && !d.cancelled();
+    let body: Uint8Array;
     try {
       body = d.core.callGroupJoinExternal(eg, info, tree);
-      break;
     } catch (e) {
       // The two reads are not one: a commit that lands between them (another member committing a Remove, a rotation)
       // serves a GroupInfo and a tree of different epochs, which the core refuses as E_CORE_INPUT before anything is
       // staged. Both are read again, a bounded number of times, as the text group's external join does.
-      if (codeOf(e) === 'E_CORE_INPUT' && reads < JOIN_READS_MAX && !d.cancelled()) continue;
+      if (codeOf(e) === 'E_CORE_INPUT' && again()) continue;
       throw refused(e, null);
     }
-  }
-  try {
-    try { d.core.callJoinCheck(groupId); }
-    catch (e) {
-      if (codeOf(e) !== 'E_DEVICE_LIST_STALE') throw e;
-      await d.refreshLeaves(groupId);
-      d.core.callJoinCheck(groupId);
+    try {
+      try { d.core.callJoinCheck(groupId); }
+      catch (e) {
+        if (codeOf(e) !== 'E_DEVICE_LIST_STALE') throw e;
+        await d.refreshLeaves(groupId);
+        d.core.callJoinCheck(groupId);
+      }
+    } catch (e) {
+      discard(d.core, groupId);
+      throw refused(e, null);
     }
-  } catch (e) {
-    discard(d.core, groupId);
-    throw refused(e, null);
+    if (d.cancelled()) { discard(d.core, groupId); throw stopped(null); }
+    let seq: bigint;
+    try { ({ seq } = await d.routes.postResync(groupId, body)); }
+    catch (e) {
+      discard(d.core, groupId);
+      // The same commit, landing after the tree read: the external commit was built on an epoch the group has left. A
+      // refusal is final only for the group it was built on, so when GroupInfo has changed since, both are read again.
+      if (again() && isStaleCommit(e) && await groupMovedSince(d, groupId, info)) continue;
+      throw refused(e, null);
+    }
+    d.core.groupJoined(groupId, seq);
+    return;
   }
-  if (d.cancelled()) { discard(d.core, groupId); throw stopped(null); }
-  let seq: bigint;
-  try { ({ seq } = await d.routes.postResync(groupId, body)); }
-  catch (e) {
-    discard(d.core, groupId);
-    throw refused(e, null);
-  }
-  d.core.groupJoined(groupId, seq);
+}
+
+/** The instance's refusals of a commit built on an epoch it has left: dillad answers 422 E_COMMIT_INVALID (rule
+ *  structural, its resync takes the epoch to commit against from the group itself), a lost race 409 E_COMMIT_CONFLICT.
+ *  409 E_REMOVE_PENDING is neither: the rejoin's own wait takes it. */
+function isStaleCommit(e: unknown): boolean {
+  return e instanceof DillaHttpError && ((e.status === 422 && e.code === 'E_COMMIT_INVALID') || (e.status === 409 && e.code === 'E_COMMIT_CONFLICT'));
+}
+
+/** True when the group's GroupInfo is no longer `info`, so a commit landed after it was read. A failed read says nothing. */
+async function groupMovedSince(d: JoinDeps, groupId: Id, info: Uint8Array): Promise<boolean> {
+  try { return toHex(await d.routes.getGroupInfo(groupId)) !== toHex(info); }
+  catch { return false; }
 }
 
 /** The join epoch's key through the gate; a pending leaf is read once more, any refusal leaves the joined group. */

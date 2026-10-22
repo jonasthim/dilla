@@ -477,6 +477,47 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(w.slice('call').phase).toBe('in');
   });
 
+  // The same commit, landing after both reads and before the resync is posted: the external commit was built on an epoch
+  // the group has left. The instance refuses it (dillad: 422 E_COMMIT_INVALID, rule structural, since its resync takes the
+  // epoch to commit against from the group itself; the model: 409 E_COMMIT_CONFLICT). The group has moved on, so the
+  // refusal says nothing of the join: it reads GroupInfo and tree again and builds the commit on the new epoch.
+  it.each([
+    ['422 E_COMMIT_INVALID (dillad: structural)', 422, 'E_COMMIT_INVALID'],
+    ['409 E_COMMIT_CONFLICT (a commit that lost the epoch)', 409, 'E_COMMIT_CONFLICT'],
+  ] as const)('a commit landing between the tree read and the resync (%s) makes the join read both again, not fail', async (_name, status, code) => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const held = w.server.hold('POST resync');
+    w.server.answer('POST resync', status, code);
+    const joined = w.call(JOIN(w));
+    await held.reached;
+    w.ds.peerCommit(w.callGroup, PEER);
+    held.release();
+    await joined;
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync',
+      'GET group info', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('a resync refused while the group has not moved fails the join at once, without a second commit', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.server.answer('POST resync', 422, 'E_COMMIT_INVALID');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_COMMIT_INVALID');
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'GET group info']);
+    expect(w.slice('call').phase).toBe('failed');
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+  });
+
+  it('a group that moves under every commit fails the join after a bounded number of reads', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    for (let i = 0; i < JOIN_READS_MAX + 2; i++) w.ds.inject('postResync', { before: () => { w.ds.peerCommit(w.callGroup, PEER); } });
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_COMMIT_CONFLICT');
+    expect(w.server.routes().filter((r) => r === 'POST resync').length).toBe(JOIN_READS_MAX);
+    expect(w.slice('call').phase).toBe('failed');
+  });
+
   it('a GroupInfo and tree that keep disagreeing fail the join after a bounded number of reads', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
     w.server.reset();
