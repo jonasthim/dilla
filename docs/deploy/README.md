@@ -776,6 +776,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
 | web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
+| web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
@@ -884,6 +885,30 @@ What this means for privacy:
   the rating is not a hard limit on what a member can attach (they can attach any file anyway).
 
 Rolling back to a release without GIFs leaves the `community_gifs:*` settings rows in the table, which nothing reads.
+
+### Upgrading with profile text: migration 00022
+
+**Release note.** New display names, status messages and bios refuse control, bidi, zero-width and other invisible characters
+(a joiner is kept where Persian, Sinhala, Devanagari and similar scripts, and emoji, need it); existing display names are kept
+as they are, and sign-up, rename and `PATCH /v1/accounts/me` apply the rule only to a new or changed name.
+
+Migration `00022_profile` adds two columns to `users`, `status_msg` (at most 190 characters) and `bio` (at most 500), both
+empty for every existing account. The server stores them readable, like the display name: they are not end-to-end
+encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes them (it answered 501 before), and
+`GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
+the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
+
+To go back run the rollback by hand above with `--to=21`. Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
+
+### Device names (schema 23)
+
+Migration `00023_device_labels` adds a nullable `label` column to `devices`, empty for every existing device. A person
+names a device in Settings → Devices (`PATCH /v1/devices/{device_id}`). The name is not part of the signed device list: the
+server stores it readable and could read or change it, so a client always shows the first characters of the device id
+beside it. It follows the same text rule as a display name (at most 64 characters, one line, no control or invisible
+character).
+
+To go back run the rollback by hand above with `--to=22`. Going down from 23 drops `devices.label` and discards every device name; the devices are kept.
 
 ## Capacity
 

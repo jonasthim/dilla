@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,26 +108,33 @@ func TestQueryHeadersAreByteIdenticalAcrossEngines(t *testing.T) {
 	}
 }
 
-// wantSchemaVersion is the goose version a fully migrated database reports: one
-// per embedded migration file, derived rather than written down so that the task
-// which adds a migration does not also have to edit two unrelated assertions.
-// Task 19's 00002_mls.sql was the first to make the number move off 1.
+// wantSchemaVersion is the goose version a fully migrated database reports: the highest version
+// among the embedded migration files, derived rather than written down so that the task which adds
+// a migration does not also have to edit two unrelated assertions. It is the highest number, not the
+// file count, because goose does not need the numbers to be contiguous: a branch that takes 00022
+// while 00021 is still unreleased reports 22 with 21 files.
 func wantSchemaVersion(t *testing.T) int64 {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var n int64
+	var highest int64
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			n++
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !strings.HasSuffix(e.Name(), ".sql") || !ok {
+			continue
 		}
+		v, err := strconv.ParseInt(num, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s does not start with a number: %v", e.Name(), err)
+		}
+		highest = max(highest, v)
 	}
-	if n == 0 {
+	if highest == 0 {
 		t.Fatal("no embedded migrations at all")
 	}
-	return n
+	return highest
 }
 
 func openSQLite(t *testing.T) *sql.DB {

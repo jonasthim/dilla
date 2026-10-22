@@ -293,6 +293,18 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
+// UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+	n, err := r.w.UpdateProfile(ctx, pgdb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.
 func (r *Repo) SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error {
 	n, err := r.w.SetFactorOwed(ctx, pgdb.SetFactorOwedParams{FactorOwed: boolInt(owed), ID: userID})
@@ -340,6 +352,14 @@ func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int6
 }
 
 // boolInt is a 0/1 flag column's value.
+// nullString is a nullable text argument: nil is SQL NULL.
+func nullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
 func boolInt(b bool) int64 {
 	if b {
 		return 1
@@ -362,6 +382,8 @@ func userRow(row pgdb.Users) store.UserRow {
 		DisabledAt: ptrInt64(row.DisabledAt),
 		DeletedAt:  ptrInt64(row.DeletedAt),
 		FactorOwed: row.FactorOwed == 1,
+		StatusMsg:  row.StatusMsg,
+		Bio:        row.Bio,
 	}
 }
 
@@ -402,6 +424,23 @@ func (r *Repo) ListDevicesByUser(ctx context.Context, userID id.ID) ([]store.Dev
 		out = append(out, deviceRow(row))
 	}
 	return out, nil
+}
+
+// SetDeviceLabel names (or, with nil, unnames) a device of userID. It is ErrNotFound unless the
+// device exists and is the user's: the owner is part of the UPDATE's WHERE, not a second read.
+func (r *Repo) SetDeviceLabel(ctx context.Context, userID, deviceID id.ID, label *string) error {
+	var v sql.NullString
+	if label != nil {
+		v = sql.NullString{String: *label, Valid: true}
+	}
+	n, err := r.w.SetDeviceLabel(ctx, pgdb.SetDeviceLabelParams{Label: v, ID: deviceID, UserID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repo) TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error {
@@ -527,7 +566,16 @@ func deviceRow(row pgdb.Devices) store.DeviceRow {
 		QuarantineReason: row.QuarantineReason,
 		LastSeen:         row.LastSeen,
 		Created:          row.Created,
+		Label:            ptrString(row.Label),
 	}
+}
+
+// ptrString is a nullable TEXT column as a pointer.
+func ptrString(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	return &v.String
 }
 
 // ---------------------------------------------------------------- Sessions

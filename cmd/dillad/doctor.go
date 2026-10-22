@@ -144,6 +144,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 			fail("database", err)
 		} else if version, err := repo.SchemaVersion(ctx); err != nil {
 			fail("database", err)
+		} else if err := doctorMigrations(ctx, cfg, db); err != nil {
+			fail("database", err)
 		} else {
 			add(ops.Leg{Name: "database", Status: ops.Green, Detail: fmt.Sprintf("schema version %d", version)})
 		}
@@ -412,4 +414,19 @@ func doctorWasiLeg(ctx context.Context) (mlswasi.ABIInfo, error) {
 	}
 	defer func() { _ = rt.Close(ctx) }()
 	return rt.ABI(ctx)
+}
+
+// doctorMigrations fails the database leg when the database skipped a migration (see migrationState).
+func doctorMigrations(ctx context.Context, cfg *config.Config, db *sql.DB) error {
+	provider, err := migrationProvider(cfg, db)
+	if err != nil {
+		return err
+	}
+	if current, target, err := provider.GetVersions(ctx); err != nil {
+		return err
+	} else if current > target {
+		return fmt.Errorf("database schema %d is newer than this binary's highest migration %d; this dillad will not serve it", current, target)
+	}
+	_, err = migrationState(ctx, provider)
+	return err
 }

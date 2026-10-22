@@ -32,6 +32,10 @@ type UserRow struct {
 	// FactorOwed is users.factor_owed (web3.6 S1): the account holds no second factor yet, so its
 	// enrolled sessions reach only protocol/09's `F` and `P` routes.
 	FactorOwed bool
+	// StatusMsg (at most 190 characters) and Bio (at most 500) are the account's profile text (EOD E6):
+	// readable by the server like Display; "" is none.
+	StatusMsg string
+	Bio       string
 }
 
 // UserFlag bits, recorded in protocol/09-http-api.md § Flags (NV8).
@@ -53,6 +57,9 @@ type DeviceRow struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+	// Label is the owner's name for the device, 1..64 characters, nil when unnamed. It is not in the
+	// signed device list (protocol/09).
+	Label *string
 }
 
 type DeviceListRow struct {

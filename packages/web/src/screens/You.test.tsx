@@ -12,7 +12,7 @@ import { You } from './You.tsx';
 
 const A = 'a1'.repeat(16);
 const dev = (id: string, over: Partial<DeviceSummary> = {}): DeviceSummary =>
-  ({ id, tier: 1, signerTier: 1, lastSeen: 1, revokedAt: null, listed: true, own: false, ...over });
+  ({ id, tier: 1, signerTier: 1, lastSeen: 1, revokedAt: null, listed: true, own: false, label: null, ...over });
 
 function setup(onOpenSettings = vi.fn()) {
   const fake = new FakeClient();

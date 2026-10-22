@@ -8,13 +8,14 @@ import { fileURLToPath } from 'node:url';
  * JOB_GATES (scripts/check-ci-workflow.mjs holds ci.yml to that table). A skipped job counts as passed for a required
  * check, so branch protection keeps working.
  *
- * Areas: go, core, web, e2e. `code` is true when anything other than docs changed. Docs-only changes (every file
+ * Areas: go, core, web, e2e, and text (the profile-text tables: the generator, the tables and the rule, which the
+ * `node` job's step that regenerates them against unicode.org runs for). `code` is true when anything other than docs changed. Docs-only changes (every file
  * under docs/ or a *.md at any depth, README.md and protocol/*.md included) set no area, so only the `docs` job runs.
  *
  * Fail safe: a push, any event that is not a pull request, a diff that cannot be computed, an empty diff and a file
  * no rule names all turn every area on.
  */
-export const AREAS = ['go', 'core', 'web', 'e2e'];
+export const AREAS = ['go', 'core', 'web', 'e2e', 'text'];
 
 /**
  * The path tables. A pattern with a slash matches the whole path (`**` crosses directories, `*` does not); a pattern
@@ -40,19 +41,27 @@ export const PATH_RULES = [
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
   { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
   { areas: ['e2e'], patterns: ['e2e/**'] },
+  // The generator, the tables it writes and the Go and TS rules that read them: `node`'s "profile-text tables are current" step.
+  { areas: ['text'], patterns: [
+    'scripts/gen-profile-text-tables.mjs', 'internal/auth/profile_tables.go', 'internal/auth/profile_text.go', 'internal/auth/testdata/rgi-zwj-sequences.txt',
+    'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
+  ] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
+  { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },
   // packages/media/scripts/check-protocol-schema.mjs compares @livekit/protocol with this Go golden.
   { areas: ['web'], patterns: ['internal/sfu/testdata/**'] },
 ];
 
 /** What an area drags in with it: the WASI core is used by the Go tests, and the browser suites run the server and the client together. */
 export const FORCES = {
-  ci: ['go', 'core', 'web', 'e2e'],
+  ci: ['go', 'core', 'web', 'e2e', 'text'],
   core: ['go', 'web', 'e2e'],
   go: ['e2e'],
   web: ['e2e'],
   e2e: [],
+  text: [],
 };
 
 /**
@@ -125,7 +134,7 @@ export function classifyFile(file) {
   return areas.length === 0 ? { unknown: true, areas: [] } : { areas };
 }
 
-const everything = () => ({ go: true, core: true, web: true, e2e: true, code: true });
+const everything = () => ({ go: true, core: true, web: true, e2e: true, text: true, code: true });
 
 /**
  * The outputs for a list of changed files. `null` (the diff could not be computed), an empty list and an unnamed

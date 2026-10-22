@@ -149,6 +149,7 @@ type Devices struct {
 	QuarantineReason string
 	LastSeen         int64
 	Created          int64
+	Label            sql.NullString
 }
 
 type ForkReports struct {
@@ -456,6 +457,8 @@ type Users struct {
 	DisabledAt sql.NullInt64
 	DeletedAt  sql.NullInt64
 	FactorOwed int64
+	StatusMsg  string
+	Bio        string
 }
 
 type VoiceSessions struct {

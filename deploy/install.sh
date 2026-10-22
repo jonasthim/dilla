@@ -1080,7 +1080,7 @@ doctor_and_report() {
 
 # schema_version BINARY: the database's schema version, as BINARY's `migrate status` reads it.
 schema_version() {
-	sv_out="$(runuser -u dillad -- "$1" migrate status --config="$CONF" 2>/dev/null)" || return 1
+	sv_out="$(runuser -u dillad -- "$1" migrate status --config="$CONF")" || return 1
 	sv="$(printf '%s\n' "$sv_out" | awk '$1 == "current" { sub(/,$/, "", $2); print $2; exit }')"
 	case "$sv" in '' | *[!0-9]*) return 1 ;; esac
 	printf '%s\n' "$sv"

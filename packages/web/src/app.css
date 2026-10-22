@@ -5,6 +5,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-settings-section { display: flex; flex-direction: column; gap: var(--group-gap); }
 .dw-settings-section h2, .dw-settings-section h3 { margin: 0; }
 .dw-settings-section p { margin: 0; color: var(--fg-2); }
+.dw-profile-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
+.dw-profile-form__actions { display: flex; align-items: center; gap: var(--group-gap); }
+.dw-profile-form__saved { min-height: 1lh; }
 .dw-device-list, .dw-notify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-notify-list > li + li { border-top: 1px solid var(--hairline); padding-top: var(--row-gap); }
 /* Buttons and controls side by side keep the group gap: --row-gap is 0 at compact density, where they would touch. */
@@ -285,3 +288,5 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-update-notice { position: fixed; z-index: 1000; inset-inline: 1rem; bottom: max(1rem, env(safe-area-inset-bottom)); max-width: 36rem; margin-inline: auto; display: grid; gap: .5rem; }
 /* I3: the keyboard table's caption names the table for assistive tech; the section heading above it is the visible title. */
 .dw-settings-section .d-keyboard-table__caption { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.dw-device-subject { font-variant-numeric: tabular-nums; margin: 0 0 0.5rem; }
+.dw-device-subject span { color: var(--fg-3); }

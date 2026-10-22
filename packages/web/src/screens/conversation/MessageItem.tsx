@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef, type PointerEvent } from 'react';
 import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
-import { formatGutterTime, t, type StringKey } from '../../strings/index.ts';
+import { t, type StringKey } from '../../strings/index.ts';
 import { authorName, knownName, markdownParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
@@ -111,7 +111,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     authorId={item.senderUser ?? undefined}
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
       openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? markdownParts(item.body, p.book, item.mention) : ''}
-    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal}
+    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

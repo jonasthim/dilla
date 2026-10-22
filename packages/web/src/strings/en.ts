@@ -28,6 +28,7 @@ import { stage } from './stage.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
+import { profile } from './profile.ts';
 import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
@@ -61,6 +62,7 @@ export const en = {
   ...afk,
   ...layout,
   ...home,
+  ...profile,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -309,6 +311,12 @@ export const en = {
   'devices.keyLabel': 'Recovery key',
   'devices.refresh': 'refresh',
   'devices.revoke': 'remove',
+  'devices.rename': 'rename',
+  'devices.renameTitle': 'Name this device',
+  'devices.renameBody': 'A name you will recognise. The server can read and change it, so check a device by its id before you remove it.',
+  'devices.renameLabel': 'Device name',
+  'devices.renameSave': 'Save',
+  'devices.renameSuggestion': '{browser} on {os}',
   'devices.signOut': 'sign out and remove this browser',
   'devices.forget': 'forget this browser',
   'devices.revokeTitle': 'Remove this device?',
@@ -447,6 +455,7 @@ export const en = {
   'shell.attachment.failed': 'could not open ({code})',
   'shell.attachment.tooLarge': 'too large to open in a browser',
   'shell.attachment.unnamed': 'file',
+  'shell.attachment.gif': 'GIF',
   'shell.message.attachmentGone': 'A file of this message is no longer on the server. Discard it and attach the file again.',
   'shell.attachment.bytes': '{n} B',
   'shell.attachment.kb': '{n} KB',
@@ -542,6 +551,7 @@ export const en = {
   'voice.removed': 'You were removed from voice.',
   'voice.removedNotMember': 'You were removed from this server, so you left its voice.',
   'voice.disconnected': 'The connection to voice was lost. Join again to continue.',
+  'voice.leftWhileAway': 'You left the call while away.',
   'voice.ended': 'Voice ended for everyone.',
   'voice.full': 'This voice is full.',
   'voice.sharersFull': 'Too many people are sharing. Try again when someone stops.',

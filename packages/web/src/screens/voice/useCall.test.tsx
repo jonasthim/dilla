@@ -766,3 +766,142 @@ describe('#37: a share without sound, and the stream mute', () => {
     expect(writes).toEqual([[`voice.streamVolume.${BOB_USER}`, '0'], [`voice.streamVolume.${BOB_USER}`, '70']]);
   });
 });
+
+/** The device is gone for `ms` (a closed lid, a sleep): the wall clock jumps; `perf` false keeps performance.now still, as
+ *  in browsers whose monotonic clock pauses during a suspend. */
+const clocks = { wall: 0, perf: 0, installed: false };
+function goneFor(ms: number, o: { perf?: boolean } = {}): void {
+  if (!clocks.installed) {
+    const realWall = Date.now.bind(Date);
+    const realPerf = performance.now.bind(performance);
+    vi.spyOn(Date, 'now').mockImplementation(() => realWall() + clocks.wall);
+    vi.spyOn(performance, 'now').mockImplementation(() => realPerf() + clocks.perf);
+    clocks.installed = true;
+  }
+  clocks.wall += ms;
+  if (o.perf !== false) clocks.perf += ms;
+}
+afterEach(() => { clocks.wall = 0; clocks.perf = 0; clocks.installed = false; });
+
+describe('late rejoin (Jonas 2026-10-21): a device gone longer than its server’s AFK timeout does not rejoin by itself', () => {
+  it('gone 10 s (a Wi-Fi blip, a quick sleep): the recovery rejoins as before', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(10_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.started[1].channelId).toBe(GENV);
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('gone 301 s with a 300 s timeout: no rejoin; the stage says voice.leftWhileAway and its join rejoins normally', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(301_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.v.lasting).toBe(t('voice.leftWhileAway'));
+    await wait(1_200);
+    expect(h.started).toHaveLength(1);
+    // The person's own join is an ordinary join.
+    act(() => h.v.join(GENV));
+    await waitFor(() => expect(h.started).toHaveLength(2));
+    expect(h.started[1].channelId).toBe(GENV);
+    await waitFor(() => expect(h.v.session).toBe(h.sessions[1]));
+  });
+
+  it('the larger clock counts: a monotonic clock that paused in the sleep does not hide a 6-minute absence', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(360_000, { perf: false });
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('gone 10 min on a server with AFK disabled (no AFK channel): the recovery rejoins as before', async () => {
+    const h = harness();
+    h.setAfk(A, { channelId: null });
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('a pending reason still wins: gone 301 s and swept says afk.moved, not leftWhileAway', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(301_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    h.setAfk(A, { pending: true, pendingReason: 1, seq: 7 });
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.moved', text: MOVED });
+    expect(h.started).toHaveLength(1);
+  });
+
+  /** Time passes awake for `ms`: both clocks move in steps under SUSPEND_GAP_MS, each seen by a liveness tick. */
+  const awakeFor = async (ms: number) => {
+    for (let done = 0; done < ms; done += 3_500) { goneFor(3_500); await wait(1_050); }
+  };
+
+  it('fix round 1 (I1): woken after 10 min, a tick sees the gap and the reconnect takes over 60 s: still no rejoin', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    // LiveKit noticed the dead link after the wake and keeps retrying while the Wi-Fi is slow to come back.
+    act(() => general.update({ phase: 'reconnecting' }));
+    await awakeFor(63_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
+    await wait(1_200);
+    expect(h.started).toHaveLength(1);
+  }, 40_000);
+
+  it('fix round 1 (I1): a suspend the call reconnected through is over: a short drop after it rejoins by itself', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    act(() => general.update({ phase: 'reconnecting' }));
+    act(() => general.update({ phase: 'connected' }));
+    await wait(1_200);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  });
+
+  it('fix round 2: stalls of a background tab (10 s gaps under 60 s apart, connected all along) never add up: a short drop rejoins', async () => {
+    const h = harness();
+    // A 1-minute timeout, so seven stalls added together (70 s) would pass it.
+    h.setAfk(A, { timeoutSeconds: 60 });
+    const general = await h.joined(GENV);
+    for (let i = 0; i < 7; i++) { goneFor(10_000); await wait(1_100); }
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  }, 20_000);
+
+  it('fix round 1 (I1): a suspend the connection stayed up through settles after 60 s: a later drop rejoins by itself', async () => {
+    const h = harness();
+    const general = await h.joined(GENV);
+    goneFor(600_000);
+    await wait(1_200);
+    await awakeFor(63_000);
+    act(() => general.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.started).toHaveLength(2), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  }, 40_000);
+
+  it('the upgrade restore keeps its own 120 s window: a long-gone clock does not end it', async () => {
+    const h = harness();
+    goneFor(600_000);
+    act(() => h.v.restore(GENV, false, false));
+    await waitFor(() => expect(h.started).toHaveLength(1), { timeout: 3_000 });
+    expect(h.v.notice).toBeNull();
+  });
+});

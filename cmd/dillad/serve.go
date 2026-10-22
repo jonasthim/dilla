@@ -183,7 +183,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: database schema %d is newer than this binary's highest migration %d: refusing to start: %w",
 			current, target, exit.Data)
 	}
-	if cfg.DB.AutoMigrate && current < target {
+	pending, err := migrationState(ctx, provider)
+	if err != nil {
+		return fmt.Errorf("serve: %w: %w", err, exit.Data)
+	}
+	if cfg.DB.AutoMigrate && pending {
 		// R35: migrate at start, after the pre-migration backup — which is
 		// taken only when there is a migration to run, so an ordinary restart
 		// leaves no file behind. A restored database is migrated here too.

@@ -425,6 +425,69 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
+  it('updateProfile sends only the changed fields and shows the saved (trimmed) profile on the account and the own member row, without reading the lists again', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const listReads = w.routes.listMembers.mock.calls.length;
+    const meReads = w.routes.getAccountMe.mock.calls.length;
+    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: ' on a call ', bio: 'hi' });
+    await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: true }));
+    expect(w.routes.patchMe).toHaveBeenCalledWith({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.routes.listMembers.mock.calls.length).toBe(listReads);
+    expect(w.routes.getAccountMe.mock.calls.length).toBe(meReads);
+    // Clearing a field drops it from the slices.
+    w.call(1005, { m: 'updateProfile', statusMsg: '' });
+    await vi.waitFor(() => expect(w.ret(1005)).toMatchObject({ ok: true }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+    expect(w.account()?.user?.bio).toBe('hi');
+  });
+  it('an account read that began before a save does not undo it', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice: number }>();
+    w.routes.getAccountMe.mockReturnValueOnce(stale.promise);
+    const refresh = (w.controller as unknown as { refreshPresenceChoice(): Promise<void> }).refreshPresenceChoice();
+    w.call(1010, { m: 'updateProfile', display: 'Ada', statusMsg: 'saved status' });
+    await vi.waitFor(() => expect(w.ret(1010)).toMatchObject({ ok: true }));
+    stale.resolve({ userId: USER, username: 'web', display: 'Old name', kind: 0, flags: 0n, presenceChoice: 3 });
+    await refresh;
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'saved status' });
+    // the read still brings what it is for: the presence choice
+    expect(w.account()?.presenceChoice).toBe('dnd');
+  });
+  it('a member list read that began before a save does not undo it on the own row', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: 0; nick: string; roleIds: Uint8Array[] }[]>();
+    w.routes.listMembers.mockReturnValueOnce(stale.promise);
+    const reload = (w.controller as unknown as { reloadMembers(id: string): Promise<void> }).reloadMembers(toHex(COMMUNITY));
+    w.call(1011, { m: 'updateProfile', display: 'Ada', bio: 'saved bio' });
+    await vi.waitFor(() => expect(w.ret(1011)).toMatchObject({ ok: true }));
+    stale.resolve([{ userId: USER, username: 'web', display: 'Old name', kind: 0, nick: '', roleIds: [] }]);
+    await reload;
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', bio: 'saved bio' });
+  });
+  it('updateProfile with nothing to change makes no request, and a field of the wrong type is E_BAD_INPUT', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(1002, { m: 'updateProfile' });
+    await vi.waitFor(() => expect(w.ret(1002)).toMatchObject({ ok: true }));
+    w.call(1003, { m: 'updateProfile', bio: 5 as unknown as string });
+    await vi.waitFor(() => expect(w.ret(1003)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.patchMe).not.toHaveBeenCalled();
+  });
+  it('updateProfile reports a refusal and leaves the account as it was', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.patchMe.mockRejectedValueOnce(new Error('refused'));
+    w.call(1004, { m: 'updateProfile', statusMsg: 'x' });
+    await vi.waitFor(() => expect(w.ret(1004)).toMatchObject({ ok: false }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+  });
   it('carries the account display name on the user, for a person who has joined no server yet', async () => {
     const w = world();
     w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Alice', kind: 0, flags: 0n, presenceChoice: 1 });
@@ -1033,9 +1096,9 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
       raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
     w.routes.listDevices.mockResolvedValue([
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
-      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
-      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: null },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n, label: null },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n, label: null },
     ]);
     return w;
   }
@@ -1104,9 +1167,9 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
   it('diagnostics counts only live devices and is set after ready without a page command (web3.9)', async () => {
     const w = world();
     const rows: DeviceRow[] = [
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
-      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n, lastSeen: 1_699_999_000n },
-      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: null },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n, lastSeen: 1_699_999_000n, label: null },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n, label: null },
     ];
     w.routes.listDevices.mockResolvedValue(rows);
     await toReady(w);
@@ -1124,7 +1187,7 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     w.call(9831, { m: 'refreshDevices' });
     await vi.waitFor(() => expect(w.routes.listDevices).toHaveBeenCalledTimes(2));
     const row = (id: Uint8Array, revokedAt: DeviceRow['revokedAt']): DeviceRow =>
-      ({ id, tier: 1, signerTier: 1, verifiedAt: null, revokedAt, lastSeen: 1_700_000_000n });
+      ({ id, tier: 1, signerTier: 1, verifiedAt: null, revokedAt, lastSeen: 1_700_000_000n, label: null });
     newer.resolve([row(DEVICE, null), row(OTHER_DEVICE, 1_699_000_000n), row(THIRD, null)]);
     await vi.waitFor(() => expect(w.ret(9831)).toMatchObject({ ok: true }));
     expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2);
@@ -3904,9 +3967,40 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(after.indexOf('refreshOwnDeviceList')).toBeGreaterThanOrEqual(0);
     expect(after.indexOf('refreshOwnDeviceList')).toBeLessThan(after.indexOf('listDevices'));
     expect(w.last<DeviceSummary[]>('devices')).toEqual([
-      { id: toHex(DEVICE), tier: 1, signerTier: 1, lastSeen: 1_700_000_000, revokedAt: null, listed: true, own: true },
-      { id: toHex(OTHER_DEVICE), tier: 1, signerTier: 1, lastSeen: 1_699_999_000, revokedAt: null, listed: false, own: false },
+      { id: toHex(DEVICE), tier: 1, signerTier: 1, lastSeen: 1_700_000_000, revokedAt: null, listed: true, own: true, label: 'work laptop' },
+      { id: toHex(OTHER_DEVICE), tier: 1, signerTier: 1, lastSeen: 1_699_999_000, revokedAt: null, listed: false, own: false, label: null },
     ]);
+  });
+
+  it('renameDevice names the device on the server, then republishes the device list with the name', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(2, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: '  phone  ' });
+    w.call(4, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: 'cafe\u0301' });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'phone');
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'caf\u00e9');
+    expect(w.calls.lastIndexOf('listDevices')).toBeGreaterThan(w.calls.indexOf('patchDevice'));
+    w.call(3, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: null });
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenLastCalledWith(OTHER_DEVICE, null);
+  });
+
+  it('renameDevice refuses a blank, a too long, a control-character or a non-string label, and a bad id, before any request', async () => {
+    const w = world();
+    await toReady(w);
+    const bad: unknown[] = ['', '   ', 'x'.repeat(65), 'two\nlines', 7, undefined, 'a\u202eb', 'a\u2066b', 'a\u200fb', 'a\u200eb',
+      'a\u2028b', 'a\u061cb', 'a\u200bb', 'a\u200db', 'a\ufeffb', 'a\u2060b', 'a\u2061b', 'a\u2065b', 'a\u206ab', 'a\u206fb', 'phone\u0085', 'a\u{E0041}b', 'a\u2800b'];
+    bad.forEach((label, i) => w.call(10 + i, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label }));
+    w.call(99, { m: 'renameDevice', deviceId: 'nothex', label: 'ok' });
+    await vi.waitFor(() => expect(w.ret(99)).toBeDefined());
+    for (let i = 0; i < bad.length; i++) {
+      await vi.waitFor(() => expect(w.ret(10 + i)).toBeDefined());
+      expect(w.ret(10 + i)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    }
+    expect(w.ret(99)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.patchDevice).not.toHaveBeenCalled();
   });
 
   it('signOutRevoke writes the state object, stops the engine and the gateway, publishes the list, then wipes to cleared', async () => {

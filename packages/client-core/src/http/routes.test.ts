@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { encode, type CborInput } from '../cbor';
+import { decode, encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE } from './routes';
+import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -77,7 +77,7 @@ function member(i: number): Uint8Array {
 interface Case {
   name: string;
   call(r: Routes): Promise<unknown>;
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   bucket: Bucket;
   idempotent: boolean;
@@ -274,12 +274,12 @@ const CASES: Case[] = [
     name: 'listMembers reads names and kind', call: (r) => r.listMembers(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/members`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [
-      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0],
+      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0, 'on a call', 'hello\nthere'],
       [BOT, 1_700_000_100, 'helper', [ROLE], 'bot1', 'Bot One', 1],
     ]),
     expected: [
-      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] },
-      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE] },
+      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: 'on a call', bio: 'hello\nthere' },
+      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE], statusMsg: '', bio: '' },
     ],
   },
   {
@@ -355,8 +355,14 @@ const CASES: Case[] = [
   {
     name: 'getAccountMe ignores an appended element', call: (r) => r.getAccountMe(),
     method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'appended later']),
-    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3 },
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'on a call', 'bio text', 'appended later']),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: 'on a call', bio: 'bio text' },
+  },
+  {
+    name: 'getAccountMe reads a status message and bio as empty from an instance that sends neither', call: (r) => r.getAccountMe(),
+    method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3]),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: '', bio: '' },
   },
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),
@@ -414,11 +420,28 @@ const CASES: Case[] = [
   {
     name: 'listDevices', call: (r) => r.listDevices(),
     method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
+    // The seventh element is the owner's label; a row of six (an instance before device names) has none.
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, 'work laptop'], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
     expected: [
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n },
-      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: 'work laptop' },
+      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n, label: null },
     ],
+  },
+  {
+    name: 'listDevices with a null label', call: (r) => r.listDevices(),
+    method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, null]]),
+    expected: [{ id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: null }],
+  },
+  {
+    name: 'patchDevice names a device', call: (r) => r.patchDevice(DEVICE, 'work laptop'),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode(['work laptop']),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'patchDevice with null clears the name', call: (r) => r.patchDevice(DEVICE, null),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode([null]),
+    reply: () => noContent(), expected: undefined,
   },
   {
     name: 'deleteSessions', call: (r) => r.deleteSessions(DEVICE),
@@ -1013,6 +1036,73 @@ describe('Routes: response shapes', () => {
   });
 });
 
+describe('Routes: patchMe', () => {
+  it('sends [display, status_msg, bio] with null for a field left alone', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: 'on a call' });
+    expect(t.seen[0].init.method).toBe('PATCH');
+    expect(t.seen[0].url).toBe('https://dilla.test/v1/accounts/me');
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'on a call', null]);
+  });
+  it('sends an empty string to clear a field', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ display: 'Ada', bio: '' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
+  });
+  it('sends the text trimmed', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: '  hello  ', bio: '\nbio\n' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'hello', 'bio']);
+  });
+  it('refuses a too long field before any request', async () => {
+    const { t, routes } = setup();
+    await expect(routes.patchMe({ display: 'x'.repeat(65) })).rejects.toThrow(/display/);
+    await expect(routes.patchMe({ statusMsg: 'x'.repeat(191) })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ statusMsg: 'a\nb' })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ bio: 'x'.repeat(501) })).rejects.toThrow(/bio/);
+    await expect(routes.patchMe({ bio: '   ' })).rejects.toThrow(/bio/);
+    expect(t.seen).toHaveLength(0);
+  });
+});
+
+// The mirror of internal/auth NormalizeUserText. Code points, never literals, so the test shows what it pins.
+describe('profileTextProblem', () => {
+  const glyph = (cp: number) => `a${String.fromCodePoint(cp)}b`;
+  const refused: Record<string, number> = {
+    tab: 0x09, nul: 0x00, esc: 0x1b, 'lone carriage return': 0x0d,
+    lrm: 0x200e, rlm: 0x200f, lre: 0x202a, rlo: 0x202e, lri: 0x2066, pdi: 0x2069,
+    'zero width space': 0x200b, zwnj: 0x200c, 'bare zwj': 0x200d, 'word joiner': 0x2060, bom: 0xfeff,
+    'arabic letter mark': 0x061c, 'line separator': 0x2028, 'paragraph separator': 0x2029,
+  };
+  it('names what is wrong: long, chars, blank', () => {
+    expect(profileTextProblem('x'.repeat(191), 190)).toBe('long');
+    expect(profileTextProblem('x'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem('   ', 190)).toBe('blank');
+    expect(profileTextProblem('\u00a0\u3000', 190)).toBe('blank');
+    expect(profileTextProblem('', 190)).toBeNull();
+    for (const [name, cp] of Object.entries(refused)) expect(profileTextProblem(glyph(cp), 190, true), name).toBe('chars');
+  });
+  it('allows a line break only in a multiline field, and an emoji joiner sequence in both', () => {
+    expect(profileTextProblem('a\nb', 190)).toBe('chars');
+    expect(profileTextProblem('a\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('a\r\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('\n \n', 500, true)).toBe('blank');
+    const zwj = String.fromCodePoint(0x200d);
+    const family = [0x1f468, 0x1f469, 0x1f467].map((cp) => String.fromCodePoint(cp)).join(zwj);
+    expect(profileTextProblem(family, 190)).toBeNull();
+  });
+  it('counts characters after NFC, not UTF-16 units', () => {
+    expect(profileTextProblem('e\u0301'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem(String.fromCodePoint(0x1f600).repeat(190), 190)).toBeNull();
+  });
+  it('profileTextValue is the NFC, trimmed text with CRLF as LF', () => {
+    expect(profileTextValue('  e\u0301\r\nx  ', true)).toBe('\u00e9\nx');
+  });
+});
+
 describe('Routes: member paging', () => {
   const row = (i: number) => [member(i), 1_700_000_000, '', [], `u${i}`, `U ${i}`, 0];
 
@@ -1027,7 +1117,7 @@ describe('Routes: member paging', () => {
       `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members?after=${hex(member(200))}`,
     ]);
     expect(members).toHaveLength(203);
-    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [] });
+    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' });
     expect(members[202].userId).toEqual(member(203));
   });
 
@@ -1112,7 +1202,7 @@ describe('Routes: web-2b deletes and blobs', () => {
   it('listMembers reads a null role list as empty', async () => {
     const { t, routes } = setup();
     t.replies.push(cborReply(200, [[USER, 1_700_000_000, '', null, 'jonas', 'Jonas', 0]]));
-    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] }]);
+    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' }]);
   });
 });
 

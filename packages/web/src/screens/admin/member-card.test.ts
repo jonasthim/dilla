@@ -11,16 +11,27 @@ describe('memberCardData', () => {
     const ctx = { selfId: 'x', ownerId: 'y', roles: [EVERYONE, MOD], access: undefined };
     expect(memberCardData(member, ctx).roles).toEqual([{ name: 'mods', color: 0x3498db }]);
   });
+
+  it('carries the status message and the bio, and leaves them empty when the member has none', () => {
+    const ctx = { selfId: 'x', ownerId: 'y', roles: [EVERYONE], access: undefined };
+    expect(memberCardData({ ...member, statusMsg: 'on a call', bio: 'one\ntwo' }, ctx)).toMatchObject({ status: 'on a call', bio: 'one\ntwo' });
+    expect(memberCardData(member, ctx)).toMatchObject({ status: '', bio: '' });
+  });
 });
 
 describe('dmCardData', () => {
   it('names the peer from the member row and offers message and compare only: no roles, owner, kick or ban', () => {
     const d = dmCardData(member.userId, member, { selfId: 'x', fallbackName: 'zed' });
-    expect(d).toEqual({ userId: member.userId, name: 'bob', username: 'bob', isOwner: false, isYou: false, roles: [], actions: ['message', 'compare'] });
+    expect(d).toEqual({ userId: member.userId, name: 'bob', username: 'bob', status: '', bio: '', isOwner: false, isYou: false, roles: [], actions: ['message', 'compare'] });
   });
   it('falls back to the DM name when no shared server lists the peer, with no username', () => {
     const d = dmCardData('ff'.repeat(16), undefined, { selfId: 'x', fallbackName: 'zed' });
     expect(d).toMatchObject({ name: 'zed', username: '', actions: ['message', 'compare'] });
+  });
+  it('shows the peer status message and bio from the member row', () => {
+    const d = dmCardData(member.userId, { ...member, statusMsg: 'away', bio: 'hi' }, { selfId: 'x', fallbackName: 'zed' });
+    expect(d).toMatchObject({ status: 'away', bio: 'hi' });
+    expect(dmCardData('ff'.repeat(16), undefined, { selfId: 'x', fallbackName: 'zed' })).toMatchObject({ status: '', bio: '' });
   });
   it('offers no actions on your own card', () => {
     expect(dmCardData(member.userId, member, { selfId: member.userId, fallbackName: '' })).toMatchObject({ isYou: true, actions: [] });

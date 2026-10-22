@@ -23,7 +23,8 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
+  BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes,
+  nameProblem, profileTextProblem, profileTextValue, type ChannelRow,
   type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -225,11 +226,13 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
+  'renameDevice',
   'signOutRevoke',
   'forgetBrowser',
   'markRead',
   'setSetting',
   'setPresenceChoice',
+  'updateProfile',
   'presenceActivity',
   'getAFKSettings',
   'setAFK',
@@ -290,6 +293,23 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setOverwrite',
   'setChannelPrivate',
 ]);
+/** The account's user entry with its profile read from `me`: the status message and bio only when set. */
+function profileOf(user: NonNullable<AccountState['user']>, me: { display: string; statusMsg?: string; bio?: string }): NonNullable<AccountState['user']> {
+  const next = { ...user, display: me.display };
+  if (me.statusMsg) next.statusMsg = me.statusMsg; else delete next.statusMsg;
+  if (me.bio) next.bio = me.bio; else delete next.bio;
+  return next;
+}
+
+/** The saved profile fields as a member row carries them: '' for a cleared one. */
+function savedOf(saved: { display?: string; statusMsg?: string; bio?: string }): { display?: string; statusMsg?: string; bio?: string } {
+  return {
+    ...(saved.display === undefined ? {} : { display: saved.display }),
+    ...(saved.statusMsg === undefined ? {} : { statusMsg: saved.statusMsg }),
+    ...(saved.bio === undefined ? {} : { bio: saved.bio }),
+  };
+}
+
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -342,6 +362,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   retrySend: ['msgId'],
   discardSend: ['msgId'],
   revokeDevice: ['deviceId'],
+  renameDevice: ['deviceId'],
   markRead: ['channelId'],
   openDm: ['userId'],
   editMessage: ['channelId', 'msgId'],
@@ -417,6 +438,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'discardSend',
     'refreshDevices',
     'revokeDevice',
+    'renameDevice',
     'signOutRevoke',
     'forgetBrowser',
     'refreshFactors',
@@ -434,6 +456,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'markRead',
     'setSetting',
     'setPresenceChoice',
+    'updateProfile',
     'presenceActivity',
     'getAFKSettings',
     'setAFK',
@@ -500,6 +523,15 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+/** A device name's length limit, in characters; the server applies the same shared text rule as to a display name. */
+const DEVICE_LABEL_MAX_CHARS = 64;
+/** A device name as the server stores it (NormalizeUserText, one line): null when the value is not a valid one. Empty is not
+ *  a name; clearing is null. */
+const deviceLabel = (value: unknown): string | null => {
+  if (typeof value !== 'string' || profileTextProblem(value, DEVICE_LABEL_MAX_CHARS, false) !== null) return null;
+  const label = profileTextValue(value);
+  return label === '' ? null : label;
+};
 
 /** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
@@ -639,6 +671,15 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
+  }
+  if (m === 'renameDevice' && command.label !== null && deviceLabel(command.label) === null) return 'label is not 1..64 characters without control or invisible characters';
+  if (m === 'updateProfile') {
+    for (const [field, max, multiline] of [['display', DISPLAY_MAX_CHARS, false], ['statusMsg', STATUS_MAX_CHARS, false], ['bio', BIO_MAX_CHARS, true]] as const) {
+      const value = command[field];
+      if (value === undefined) continue;
+      const problem = profileTextProblem(value, max, multiline);
+      if (problem !== null) return `${field}: ${problem}`;
+    }
   }
   if (m === 'setPresenceChoice' && !['online', 'idle', 'dnd', 'invisible'].includes(command.choice as string)) return 'invalid presence choice';
   if (m === 'setSetting') {
@@ -1105,11 +1146,13 @@ export class Controller {
       case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
       case 'revokeDevice': return this.revokeDevice(command.deviceId, command.recoveryKey);
+      case 'renameDevice': return this.renameDevice(command.deviceId, command.label);
       case 'signOutRevoke': return this.signOutRevoke(command.recoveryKey);
       case 'forgetBrowser': return this.forgetBrowser();
       case 'markRead': return this.markRead(command.channelId);
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
+      case 'updateProfile': return this.updateProfile(command);
       case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
@@ -1183,7 +1226,7 @@ export class Controller {
 
   private setAccount(patch: Partial<AccountState>): void {
     // The cached display name belongs to one signed-in user: any state that clears or revokes the user drops it.
-    if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
+    if (patch.user === null || patch.phase === 'revoked') { this.selfDisplay = null; this.profileSaved = null; }
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     // The status choice belongs to the signed-in account too: with the user gone, the next account starts from the default
@@ -2376,13 +2419,19 @@ export class Controller {
   private async readMembers(communityId: string): Promise<MemberRow[] | null> {
     const seq = (this.memberSeq.get(communityId) ?? 0) + 1;
     this.memberSeq.set(communityId, seq);
+    const profileAt = this.profileSeq;
     const rows = await this.routes.listMembers(fromHex(communityId));
-    return this.memberSeq.get(communityId) === seq ? rows : null;
+    if (this.memberSeq.get(communityId) !== seq) return null;
+    // A profile saved while this read was in flight is newer than what the read saw (N6): the own row keeps the saved text.
+    const saved = this.profileSeq !== profileAt ? this.profileSaved : null;
+    if (saved === null) return rows;
+    return rows.map((m) => (toHex(m.userId) === saved.userId ? { ...m, ...savedOf(saved) } : m));
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[], push = true): void {
     this.slices.set(`members:${communityId}`, rows.map((m) => ({
       userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
+      ...(m.statusMsg ? { statusMsg: m.statusMsg } : {}), ...(m.bio ? { bio: m.bio } : {}),
     })));
     // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
     // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
@@ -2915,6 +2964,10 @@ export class Controller {
     this.slices.set(`presence:${communityId}`, null);
   }
 
+  /** Bumped when a profile save lands; a read that began before it does not undo it (N6). */
+  private profileSeq = 0;
+  /** What the person saved this session (the trimmed text), per field, for the reads that were already in flight. */
+  private profileSaved: { userId: string; display?: string; statusMsg?: string; bio?: string } | null = null;
   /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
   private selfDisplay: { userId: string; display: string } | null = null;
   /** The cached display name, only for the user it was read for; another account never inherits it. */
@@ -2925,6 +2978,7 @@ export class Controller {
   private async refreshPresenceChoice(): Promise<void> {
     const seq = ++this.presenceChoiceReadSeq;
     const write = this.presenceChoiceWriteSeq;
+    const profileAt = this.profileSeq;
     try {
       const me = await this.routes.getAccountMe();
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
@@ -2933,9 +2987,44 @@ export class Controller {
       // Only the current user's own read counts: a read for another account (a switch while it was in flight) is not applied.
       const user = this.accountState.user;
       const mine = user !== null && toHex(me.userId) === user.id;
-      if (mine) this.selfDisplay = { userId: user.id, display: me.display };
-      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...user, display: me.display } } : {}) });
+      // A profile saved while this read was in flight is newer than what the read saw (N6): keep the saved text.
+      const saved = this.profileSeq !== profileAt && mine && this.profileSaved?.userId === user.id ? this.profileSaved : null;
+      const seen = saved === null ? me : { display: saved.display ?? me.display, statusMsg: saved.statusMsg ?? me.statusMsg, bio: saved.bio ?? me.bio };
+      if (mine) this.selfDisplay = { userId: user.id, display: seen.display };
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...profileOf(user, seen) } } : {}) });
     } catch { /* the next ready retries */ }
+  }
+
+  /** EOD E6: saves the given profile fields (a field left out is left alone, '' clears one), then shows the saved text on the
+   *  account and on the own row of every loaded member list, with no read: the server stored what was sent, trimmed. Other
+   *  people's edits arrive with their next member-list read. */
+  private async updateProfile(command: { display?: string; statusMsg?: string; bio?: string }): Promise<null> {
+    const saved = {
+      ...(command.display === undefined ? {} : { display: profileTextValue(command.display) }),
+      ...(command.statusMsg === undefined ? {} : { statusMsg: profileTextValue(command.statusMsg) }),
+      ...(command.bio === undefined ? {} : { bio: profileTextValue(command.bio, true) }),
+    };
+    if (Object.keys(saved).length === 0) return null;
+    await this.routes.patchMe(saved);
+    const user = this.accountState.user;
+    if (user === null) return null;
+    this.profileSaved = { ...(this.profileSaved?.userId === user.id ? this.profileSaved : {}), ...saved, userId: user.id };
+    this.profileSeq++;
+    const apply = <T extends { display?: string; statusMsg?: string; bio?: string }>(row: T): T => {
+      const next = { ...row, ...saved };
+      if (next.statusMsg === '') delete next.statusMsg;
+      if (next.bio === '') delete next.bio;
+      return next;
+    };
+    if (saved.display !== undefined) this.selfDisplay = { userId: user.id, display: saved.display };
+    this.setAccount({ user: apply(user) });
+    for (const community of this.slices.get('communities') ?? []) {
+      const key = `members:${community.id}` as const;
+      const rows = this.slices.get(key);
+      if (rows == null) continue;
+      this.slices.set(key, rows.map((m) => (m.userId === user.id ? apply(m) : m)));
+    }
+    return null;
   }
 
   private async setPresenceChoice(choice: PresenceChoice): Promise<null> {
@@ -3082,7 +3171,7 @@ export class Controller {
     const devices: DeviceSummary[] = rows.map((r) => {
       const id = toHex(r.id);
       return {
-        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen),
+        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen), label: r.label,
         revokedAt: r.revokedAt === null ? null : Number(r.revokedAt),
         listed: entries.some((e) => toHex(e.deviceId) === id && e.revokedAt === null),
         own: id === ownHex,
@@ -3193,6 +3282,15 @@ export class Controller {
       await this.routes.putBackup(1, signed.stateSealed);
       core.stateSealedUploaded();
     } catch { /* the next ready uploads it */ }
+    await this.refreshDevices();
+    return null;
+  }
+
+  /** Names (or, with null, unnames) one of the account's devices. The name is not in the signed device list, so no key
+   *  and no list change: the server stores it, and the list is read again so the slice shows what it holds. */
+  private async renameDevice(deviceId: string, label: string | null): Promise<null> {
+    this.requireCore();
+    await this.routes.patchDevice(fromHex(deviceId), label === null ? null : deviceLabel(label));
     await this.refreshDevices();
     return null;
   }

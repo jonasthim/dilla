@@ -36,7 +36,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Accounts", reflect.TypeOf((*store.Accounts)(nil)).Elem(), []string{
 			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled", "GetPresenceChoice", "ListPresenceChoices", "SetPresenceChoice",
-			"TombstoneUser",
+			"TombstoneUser", "UpdateProfile",
 			// dilla web3.6 S1: the owed second factor and its boot reconcile.
 			"MarkFactorOwedWithoutFactor", "SetFactorOwed",
 			// web3.6 review I2: the reconcile clears the mark from an account that holds a factor.
@@ -44,7 +44,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
-			"RevokeDevice", "TouchDevice",
+			"RevokeDevice", "SetDeviceLabel", "TouchDevice",
 			// dilla-web-2a task 5 (L-SQL-21): the device-list history read (L-HTTP-56) and the
 			// per-user device cap and enrolment rate (L-HTTP-54, Q04).
 			"CountLiveDevicesByUser", "ListDeviceCreationsSince", "ListDeviceListsAfter",

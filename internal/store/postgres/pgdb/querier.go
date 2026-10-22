@@ -398,6 +398,7 @@ type Querier interface {
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error
+	SetDeviceLabel(ctx context.Context, arg SetDeviceLabelParams) (int64, error)
 	SetFactorOwed(ctx context.Context, arg SetFactorOwedParams) (int64, error)
 	// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
 	// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
@@ -425,6 +426,8 @@ type Querier interface {
 	// number clients already hold. Zero rows is either an unknown community or a
 	// lost race; the adapter tells the two apart.
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
+	// A NULL argument leaves that column as it is, so a write names only the fields it changes.
+	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
 	// The quota counts each distinct blob a user uploaded once, however many

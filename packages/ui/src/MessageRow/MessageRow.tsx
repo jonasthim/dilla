@@ -55,10 +55,8 @@ export interface MessageRowProps {
   rowRef?: Ref<HTMLElement>;
   seq?: string | null;
   msgId?: string | null;
-  /** The row continues the author's run above it (the caller decides): the author and time are hidden, the time shows in the gutter on hover or focus. */
+  /** The row continues the author's run above it (the caller decides): the author and time are hidden, the full time shows in the gutter on hover or focus. */
   grouped?: boolean;
-  /** The grouped row's gutter time, compact enough for the avatar column and its gap (the full `time` stays for screen readers). */
-  gutterTime?: string;
   /** Phone only: the toolbar is rendered only while revealed. Off a phone the toolbar is always rendered. */
   revealed?: boolean;
   /** Phone only: a tap on the row body or Enter on the row asks to reveal (true); Escape or a second tap asks to hide (false). */
@@ -140,7 +138,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  */
 export function MessageRow({
   author, authorId, onOpenProfile, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, revealed, onReveal,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -192,7 +190,7 @@ export function MessageRow({
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
       {grouped === true
-        ? <span className="d-message-row__gutter" aria-hidden="true">{gutterTime ?? time}</span>
+        ? <span className="d-message-row__gutter" aria-hidden="true">{time}</span>
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
           onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} /></span>}
       <div className="d-message-row__main">

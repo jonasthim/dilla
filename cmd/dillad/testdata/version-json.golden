@@ -1,1 +1,1 @@
-{"version":"0.0.0-dev","revision":"REVISION","wire":[2],"schema":21,"media_level":2,"min_sfu_media_level":1,"media_capabilities":["turn"]}
+{"version":"0.0.0-dev","revision":"REVISION","wire":[2],"schema":23,"media_level":2,"min_sfu_media_level":1,"media_capabilities":["turn"]}

@@ -8,7 +8,7 @@ import { FakeClient } from '../../test/fake-client.ts';
 import { Diagnostics } from './Diagnostics.tsx';
 
 const dev = (id: string, revokedAt: number | null): DeviceSummary =>
-  ({ id, tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false });
+  ({ id, tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false, label: null });
 const withCore = (fake: FakeClient, ui: React.JSX.Element) => <CoreProvider client={fake}>{ui}</CoreProvider>;
 
 it('copies only stable codes and counts listed devices', async () => {

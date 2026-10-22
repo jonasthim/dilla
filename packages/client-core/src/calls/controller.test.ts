@@ -20,6 +20,7 @@ import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
 import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
 import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES } from './controller';
+import { JOIN_READS_MAX } from './join';
 import type { FromWorker } from '../worker/protocol';
 
 export const VOICE = idOf(0xc5, 1);
@@ -457,6 +458,33 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_CREDENTIAL' } });
     expect(w.model.group(w.callGroup)).toBeUndefined();
     expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
+  // A commit that lands between the two reads (bob committing the Remove a reloaded page's boot sweep proposed, as its
+  // rejoin starts) serves a GroupInfo and a tree of different epochs. The core refuses that pair (E_CORE_INPUT), and
+  // the join reads both again, as the text group's external join does, rather than failing the call.
+  it('a commit landing between the GroupInfo and tree reads makes the join read both again, not fail', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const held = w.server.hold('GET group tree');
+    const joined = w.call(JOIN(w));
+    await held.reached;
+    w.ds.peerCommit(w.callGroup, PEER);
+    held.release();
+    await joined;
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'GET group info', 'GET group tree',
+      'POST resync', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('a GroupInfo and tree that keep disagreeing fail the join after a bounded number of reads', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.model.callGroupJoinExternal = (): Uint8Array => { throw new CoreError('E_CORE_INPUT', 'info_body and tree_body disagree'); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CORE_INPUT');
+    expect(w.server.routes().filter((r) => r === 'GET group tree').length).toBe(JOIN_READS_MAX);
+    expect(w.server.routes()).not.toContain('POST resync');
+    expect(w.slice('call').phase).toBe('failed');
   });
 
   it('registers the call group when none is open and re-reads once on E_GROUP_EXISTS', async () => {
