@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
@@ -28,6 +29,10 @@ type pcmStart struct {
 	calls atomic.Int32
 	fail  bool
 }
+
+type plainPCMStart struct{ source *pcmStub }
+
+func (p plainPCMStart) Start(context.Context, string) (io.ReadCloser, error) { return p.source, nil }
 
 func (p *pcmStart) Start(context.Context, string) (io.ReadCloser, error) {
 	p.calls.Add(1)
@@ -183,5 +188,47 @@ func TestConcurrentCloseReleasesLeaseOnce(t *testing.T) {
 	wg.Wait()
 	if lease.released.Load() != 1 {
 		t.Fatalf("lease releases=%d", lease.released.Load())
+	}
+}
+
+func TestYouTubeSessionDoesNotAcquireInstallationSpotifyLease(t *testing.T) {
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o.Provider = "youtube"
+	o.Acquire = nil
+	o.PCM = plainPCMStart{source: &pcmStub{}}
+	o.Call.GroupID = o.Group
+	s, err := Start(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.released.Load() != 0 {
+		t.Fatal("YouTube session touched Spotify lease")
+	}
+	_ = s.Close()
+}
+
+func TestQueueStarterRejectsProviderMismatchBeforePlayback(t *testing.T) {
+	called := false
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
+		called = true
+		o := options(&pcmStart{lease: lease}, enc, pub, lease)
+		o.Provider = music.ProviderYouTube
+		o.Acquire = nil
+		o.PCM = plainPCMStart{source: &pcmStub{}}
+		o.Call.GroupID = o.Group
+		return o, nil
+	}}
+	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "track"})
+	if playback != nil {
+		_ = playback.Close()
+	}
+	if !called || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("mismatched provider was accepted: called=%v err=%v", called, err)
 	}
 }

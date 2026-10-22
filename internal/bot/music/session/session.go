@@ -40,6 +40,7 @@ type PublisherStarter interface {
 
 type Options struct {
 	Community, Channel id.ID
+	Provider           music.Provider
 	Track              string
 	Call               client.Call
 	Group              id.ID
@@ -50,23 +51,62 @@ type Options struct {
 	Epochs             livekit.EpochSource
 }
 
-// Start acquires the global lease before starting any Spotify audio. The
-// returned session owns every resource through publisher completion.
-func Start(ctx context.Context, o Options) (*Session, error) {
-	if ctx == nil || o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.Acquire == nil || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group {
+// OptionsForTrack supplies call credentials, provider PCM and epoch-bound
+// publisher dependencies for a queue track. Spotify options include Acquire;
+// YouTube options may omit the installation-wide lease.
+type OptionsForTrack func(context.Context, music.Track) (Options, error)
+
+type QueueStarter struct{ OptionsFor OptionsForTrack }
+
+func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playback, error) {
+	if s.OptionsFor == nil {
 		return nil, ErrInvalid
 	}
-	lease, err := o.Acquire(o.Community, o.Channel)
+	o, err := s.OptionsFor(ctx, track)
 	if err != nil {
 		return nil, err
 	}
-	if lease == nil {
+	if (track.Provider != music.ProviderSpotify && track.Provider != music.ProviderYouTube) ||
+		(o.Provider != "" && o.Provider != track.Provider) {
+		return nil, ErrInvalid
+	}
+	o.Provider = track.Provider
+	o.Track = track.CanonicalID
+	return Start(ctx, o)
+}
+
+// Start acquires the global lease before starting any Spotify audio. The
+// returned session owns every resource through publisher completion.
+func Start(ctx context.Context, o Options) (*Session, error) {
+	if ctx == nil || o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group {
+		return nil, ErrInvalid
+	}
+	provider := o.Provider
+	if provider == "" {
+		provider = music.ProviderSpotify
+	}
+	var lease Lease
+	var err error
+	if provider == music.ProviderSpotify {
+		if o.Acquire == nil {
+			return nil, ErrInvalid
+		}
+		lease, err = o.Acquire(o.Community, o.Channel)
+		if err != nil {
+			return nil, err
+		}
+	} else if provider != music.ProviderYouTube {
+		return nil, ErrInvalid
+	}
+	if provider == music.ProviderSpotify && lease == nil {
 		return nil, ErrInvalid
 	}
 	failed := true
 	defer func() {
 		if failed {
-			_ = lease.Release()
+			if lease != nil {
+				_ = lease.Release()
+			}
 		}
 	}()
 	if err = ctx.Err(); err != nil {
@@ -122,7 +162,9 @@ func (s *Session) finish(err error) {
 		s.mu.Unlock()
 		_ = s.publisher.Close()
 		_ = s.encoder.Close()
-		_ = s.lease.Release()
+		if s.lease != nil {
+			_ = s.lease.Release()
+		}
 		close(s.stop)
 	})
 }
