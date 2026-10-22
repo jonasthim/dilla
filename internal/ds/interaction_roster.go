@@ -44,6 +44,7 @@ type AuthenticatedInteractionLeaf struct {
 	DeviceID id.ID
 	DSKPub   []byte
 	Tier     uint8
+	Kind     uint8
 }
 
 // VerifyInteractionRoster checks a short-lived admission against trusted
@@ -92,6 +93,9 @@ func VerifyInteractionRoster(expected InteractionAdmissionTuple, minimumEligibil
 	}
 	if !interactionDeviceListContains(participantList, expected.ParticipantDeviceID, participant.DSKPub, participant.Tier) {
 		return fmt.Errorf("ds: participant leaf is absent from its active signed device list")
+	}
+	if bot.Kind != 1 || participant.Kind != 0 {
+		return fmt.Errorf("ds: interaction roster must contain a Bot leaf and a human participant leaf")
 	}
 	return nil
 }

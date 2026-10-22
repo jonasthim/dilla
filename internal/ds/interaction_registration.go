@@ -13,6 +13,7 @@ import (
 )
 
 const interactionAdmissionDomain = "dilla bot interaction admission v1\x00"
+const maxInteractionAdmissionPayload = 250
 
 // AuthenticatedInteractionRegistration contains identity and scope read back from the imported
 // MLS group, plus the credential-authenticated roster. LeafCount includes every occupied MLS leaf,
@@ -63,6 +64,9 @@ func (w WASIInteractionRegistrationExtractor) ExtractInteractionRegistration(ctx
 type InteractionRegistrationPreflight struct {
 	Expected                   InteractionAdmissionTuple
 	MinimumEligibilityRevision uint64
+	ExpectedPolicyVersion      uint64
+	ExpectedE2EEVersion        uint64
+	ExpectedMediaVersion       uint64
 	ReceiptPayload             []byte
 	ReceiptSignature           []byte
 	PinnedInstanceKey          ed25519.PublicKey
@@ -113,8 +117,11 @@ func PreflightKind3Registration(ctx context.Context, extractor InteractionRegist
 	if extractor == nil {
 		return errors.New("ds: kind-3 registration preflight has no WASI roster extractor")
 	}
-	if len(r.PinnedInstanceKey) != ed25519.PublicKeySize || len(r.ReceiptSignature) != ed25519.SignatureSize || len(r.ReceiptPayload) == 0 {
+	if len(r.PinnedInstanceKey) != ed25519.PublicKeySize || len(r.ReceiptSignature) != ed25519.SignatureSize || len(r.ReceiptPayload) == 0 || len(r.ReceiptPayload) > maxInteractionAdmissionPayload {
 		return errors.New("ds: kind-3 registration preflight has no valid pinned receipt material")
+	}
+	if r.ExpectedPolicyVersion == 0 || r.ExpectedE2EEVersion != 1 || r.ExpectedMediaVersion != 0 {
+		return errors.New("ds: kind-3 registration preflight has invalid trusted binding versions")
 	}
 	if !ed25519.Verify(r.PinnedInstanceKey, append([]byte(interactionAdmissionDomain), r.ReceiptPayload...), r.ReceiptSignature) {
 		return errors.New("ds: interaction admission receipt signature is invalid")
@@ -143,7 +150,7 @@ func PreflightKind3Registration(ctx context.Context, extractor InteractionRegist
 		return errors.New("ds: submitted registration group does not match trusted interaction group")
 	}
 	var binding interactionBindingV2
-	if err := cborx.Unmarshal(r.Registration.Binding, &binding); err != nil || binding.Version != 2 || binding.LegacyCommunityID != nil || binding.Kind != 3 || binding.InstanceID != r.Expected.InstanceID || binding.BotUserID != r.Expected.BotUserID || binding.InstallationID != r.Expected.InstallationID || binding.CommunityID != r.Expected.CommunityID || binding.ParticipantUserID != r.Expected.ParticipantUserID || binding.ParticipantDeviceID != r.Expected.ParticipantDeviceID {
+	if err := cborx.Unmarshal(r.Registration.Binding, &binding); err != nil || binding.Version != 2 || binding.LegacyCommunityID != nil || binding.Kind != 3 || binding.InstanceID != r.Expected.InstanceID || binding.BotUserID != r.Expected.BotUserID || binding.InstallationID != r.Expected.InstallationID || binding.CommunityID != r.Expected.CommunityID || binding.ParticipantUserID != r.Expected.ParticipantUserID || binding.ParticipantDeviceID != r.Expected.ParticipantDeviceID || binding.PolicyVersion != r.ExpectedPolicyVersion || binding.E2EEVersion != r.ExpectedE2EEVersion || binding.MediaVersion != r.ExpectedMediaVersion {
 		return errors.New("ds: submitted registration binding is not the admitted kind-3 group")
 	}
 	if len(r.Registration.GroupInfo) == 0 || len(r.Registration.RatchetTree) == 0 {
@@ -164,7 +171,7 @@ func PreflightKind3Registration(ctx context.Context, extractor InteractionRegist
 		var userID, deviceID id.ID
 		copy(userID[:], leaf.UserID)
 		copy(deviceID[:], leaf.DeviceID)
-		leaves[i] = AuthenticatedInteractionLeaf{UserID: userID, DeviceID: deviceID, DSKPub: append([]byte(nil), leaf.DSKPub...), Tier: leaf.Tier}
+		leaves[i] = AuthenticatedInteractionLeaf{UserID: userID, DeviceID: deviceID, DSKPub: append([]byte(nil), leaf.DSKPub...), Tier: leaf.Tier, Kind: leaf.Kind}
 	}
 	return VerifyInteractionRoster(r.Expected, r.MinimumEligibilityRevision, admission, leaves, r.BotDeviceList, r.ParticipantDeviceList, r.Now)
 }

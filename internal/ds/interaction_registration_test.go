@@ -28,7 +28,7 @@ type interactionReceiptWire struct {
 
 func interactionBindingForTest(t *testing.T, tuple InteractionAdmissionTuple) []byte {
 	t.Helper()
-	b, err := cborx.Marshal(interactionBindingV2{Version: 2, InstanceID: tuple.InstanceID, BotUserID: tuple.BotUserID, Kind: 3, PolicyVersion: 1, E2EEVersion: 1, MediaVersion: 1, InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, ParticipantUserID: tuple.ParticipantUserID, ParticipantDeviceID: tuple.ParticipantDeviceID})
+	b, err := cborx.Marshal(interactionBindingV2{Version: 2, InstanceID: tuple.InstanceID, BotUserID: tuple.BotUserID, Kind: 3, PolicyVersion: 1, E2EEVersion: 1, MediaVersion: 0, InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, ParticipantUserID: tuple.ParticipantUserID, ParticipantDeviceID: tuple.ParticipantDeviceID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func interactionBindingForTest(t *testing.T, tuple InteractionAdmissionTuple) []
 }
 
 func alteredInteractionBinding(tuple InteractionAdmissionTuple, field string) []byte {
-	b := interactionBindingV2{Version: 2, InstanceID: tuple.InstanceID, BotUserID: tuple.BotUserID, Kind: 3, InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, ParticipantUserID: tuple.ParticipantUserID, ParticipantDeviceID: tuple.ParticipantDeviceID}
+	b := interactionBindingV2{Version: 2, InstanceID: tuple.InstanceID, BotUserID: tuple.BotUserID, Kind: 3, PolicyVersion: 1, E2EEVersion: 1, InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, ParticipantUserID: tuple.ParticipantUserID, ParticipantDeviceID: tuple.ParticipantDeviceID}
 	switch field {
 	case "installation":
 		b.InstallationID = interactionID(80)
@@ -48,6 +48,12 @@ func alteredInteractionBinding(tuple InteractionAdmissionTuple, field string) []
 		b.ParticipantUserID = interactionID(83)
 	case "bot":
 		b.BotUserID = interactionID(84)
+	case "policy version":
+		b.PolicyVersion = 2
+	case "E2EE version":
+		b.E2EEVersion = 2
+	case "media version":
+		b.MediaVersion = 1
 	}
 	encoded, _ := cborx.Marshal(b)
 	return encoded
@@ -69,15 +75,19 @@ func TestPreflightKind3RegistrationVerifiesSignedReceiptAndAuthenticatedRoster(t
 	}
 	sig := ed25519.Sign(private, append([]byte("dilla bot interaction admission v1\x00"), payload...))
 	binding := interactionBindingForTest(t, tuple)
-	req := InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: 1, ReceiptPayload: payload, ReceiptSignature: sig, PinnedInstanceKey: private.Public().(ed25519.PublicKey), BotDeviceList: botList, ParticipantDeviceList: participantList, Now: 100, Registration: RegisterRequest{GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}}}
+	req := InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: 1, ExpectedPolicyVersion: 1, ExpectedE2EEVersion: 1, ExpectedMediaVersion: 0, ReceiptPayload: payload, ReceiptSignature: sig, PinnedInstanceKey: private.Public().(ed25519.PublicKey), BotDeviceList: botList, ParticipantDeviceList: participantList, Now: 100, Registration: RegisterRequest{GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}}}
 	extraLeaf := false
+	wrongBotKind := false
 	extractor := rosterExtractorFunc(func(_ context.Context, tree, info []byte) (AuthenticatedInteractionRegistration, error) {
 		if string(tree) != "\x02" || string(info) != "\x01" {
 			t.Fatal("extractor did not receive submitted tree and GroupInfo")
 		}
 		out := make([]mlswasi.RosterLeaf, len(leaves))
 		for i, leaf := range leaves {
-			out[i] = mlswasi.RosterLeaf{UserID: leaf.UserID[:], DeviceID: leaf.DeviceID[:], DSKPub: leaf.DSKPub, Tier: leaf.Tier, Kind: 0}
+			out[i] = mlswasi.RosterLeaf{UserID: leaf.UserID[:], DeviceID: leaf.DeviceID[:], DSKPub: leaf.DSKPub, Tier: leaf.Tier, Kind: leaf.Kind}
+		}
+		if wrongBotKind {
+			out[0].Kind = 0
 		}
 		count := uint64(2)
 		if extraLeaf {
@@ -94,6 +104,11 @@ func TestPreflightKind3RegistrationVerifiesSignedReceiptAndAuthenticatedRoster(t
 	if err := PreflightKind3Registration(context.Background(), extractor, req); err == nil {
 		t.Fatal("preflight accepted an MLS group with an extra leaf")
 	}
+	extraLeaf = false
+	wrongBotKind = true
+	if err := PreflightKind3Registration(context.Background(), extractor, req); err == nil {
+		t.Fatal("preflight accepted a human-kind Bot leaf")
+	}
 }
 
 func TestPreflightKind3RegistrationRejectsWrongGroupAndStaleOrInvalidReceipt(t *testing.T) {
@@ -103,7 +118,7 @@ func TestPreflightKind3RegistrationRejectsWrongGroupAndStaleOrInvalidReceipt(t *
 	payload, _ := cborx.Marshal(wire)
 	sig := ed25519.Sign(private, append([]byte("dilla bot interaction admission v1\x00"), payload...))
 	binding := interactionBindingForTest(t, tuple)
-	base := InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: 1, ReceiptPayload: payload, ReceiptSignature: sig, PinnedInstanceKey: private.Public().(ed25519.PublicKey), BotDeviceList: botList, ParticipantDeviceList: participantList, Now: 100, Registration: RegisterRequest{GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}}}
+	base := InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: 1, ExpectedPolicyVersion: 1, ExpectedE2EEVersion: 1, ExpectedMediaVersion: 0, ReceiptPayload: payload, ReceiptSignature: sig, PinnedInstanceKey: private.Public().(ed25519.PublicKey), BotDeviceList: botList, ParticipantDeviceList: participantList, Now: 100, Registration: RegisterRequest{GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}}}
 	extractor := rosterExtractorFunc(func(context.Context, []byte, []byte) (AuthenticatedInteractionRegistration, error) {
 		return AuthenticatedInteractionRegistration{GroupID: tuple.GroupID[:], Binding: binding, LeafCount: 2}, nil
 	})
@@ -133,9 +148,21 @@ func TestPreflightKind3RegistrationRejectsWrongGroupAndStaleOrInvalidReceipt(t *
 		{"wrong Bot binding", func(r *InteractionRegistrationPreflight) {
 			r.Registration.Binding = alteredInteractionBinding(tuple, "bot")
 		}},
+		{"wrong policy version", func(r *InteractionRegistrationPreflight) {
+			r.Registration.Binding = alteredInteractionBinding(tuple, "policy version")
+		}},
+		{"wrong E2EE version", func(r *InteractionRegistrationPreflight) {
+			r.Registration.Binding = alteredInteractionBinding(tuple, "E2EE version")
+		}},
+		{"wrong media version", func(r *InteractionRegistrationPreflight) {
+			r.Registration.Binding = alteredInteractionBinding(tuple, "media version")
+		}},
 		{"bad receipt signature", func(r *InteractionRegistrationPreflight) {
 			r.ReceiptSignature = append([]byte(nil), r.ReceiptSignature...)
 			r.ReceiptSignature[0] ^= 1
+		}},
+		{"oversized receipt payload", func(r *InteractionRegistrationPreflight) {
+			r.ReceiptPayload = make([]byte, maxInteractionAdmissionPayload+1)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

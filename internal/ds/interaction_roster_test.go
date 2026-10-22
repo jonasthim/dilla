@@ -18,7 +18,7 @@ func validInteractionRosterFixture() (InteractionAdmissionTuple, InteractionAdmi
 	participantDSK[0] = 6
 	tuple := InteractionAdmissionTuple{InstanceID: interactionID(7), InstallationID: interactionID(8), CommunityID: interactionID(9), BotUserID: botUser, BotDeviceID: botDevice, ParticipantUserID: participantUser, ParticipantDeviceID: participantDevice, GroupID: interactionID(10)}
 	admission := InteractionAdmission{Version: 1, AdmissionID: interactionID(11), InteractionAdmissionTuple: tuple, EligibilityRevision: 1, NotAfter: 200}
-	leaves := []AuthenticatedInteractionLeaf{{UserID: botUser, DeviceID: botDevice, DSKPub: botDSK, Tier: 0}, {UserID: participantUser, DeviceID: participantDevice, DSKPub: participantDSK, Tier: 1}}
+	leaves := []AuthenticatedInteractionLeaf{{UserID: botUser, DeviceID: botDevice, DSKPub: botDSK, Tier: 0, Kind: 1}, {UserID: participantUser, DeviceID: participantDevice, DSKPub: participantDSK, Tier: 1, Kind: 0}}
 	botList := []mlswasi.DeviceListEntry{{DeviceID: botDevice[:], DSKPub: botDSK, Tier: 0}}
 	participantList := []mlswasi.DeviceListEntry{{DeviceID: participantDevice[:], DSKPub: participantDSK, Tier: 1}}
 	return tuple, admission, leaves, botList, participantList
@@ -71,6 +71,12 @@ func TestVerifyInteractionRosterFailsClosedOnRosterAndAuthorityMismatches(t *tes
 		}},
 		{name: "admission revision is stale", mutate: func(_ *InteractionAdmissionTuple, admission *InteractionAdmission, _ *[]AuthenticatedInteractionLeaf, _ *[]mlswasi.DeviceListEntry, _ *[]mlswasi.DeviceListEntry) {
 			admission.EligibilityRevision = 1
+		}},
+		{name: "wrong Bot account kind", mutate: func(_ *InteractionAdmissionTuple, _ *InteractionAdmission, leaves *[]AuthenticatedInteractionLeaf, _ *[]mlswasi.DeviceListEntry, _ *[]mlswasi.DeviceListEntry) {
+			(*leaves)[0].Kind = 0
+		}},
+		{name: "wrong participant account kind", mutate: func(_ *InteractionAdmissionTuple, _ *InteractionAdmission, leaves *[]AuthenticatedInteractionLeaf, _ *[]mlswasi.DeviceListEntry, _ *[]mlswasi.DeviceListEntry) {
+			(*leaves)[1].Kind = 1
 		}},
 	}
 	for _, tc := range cases {
