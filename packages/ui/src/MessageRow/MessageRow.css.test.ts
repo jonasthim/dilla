@@ -20,9 +20,10 @@ describe('the grouped row gutter', () => {
     expect(gutter).toContain('margin-left: calc(-1 * var(--row-pad-x))');
     expect(gutter).toContain('margin-right: -0.75rem');
   });
-  it('is never clipped and never wraps', () => {
+  it('never wraps, and clips a string too long for it inside itself rather than under the content', () => {
     expect(gutter).toContain('white-space: nowrap');
-    expect(gutter).not.toMatch(/overflow\s*:/);
+    expect(gutter).toContain('overflow: hidden');
+    expect(gutter).toContain('text-overflow: clip');
   });
   it('shares the body’s line box so the time is on the first line of content', () => {
     expect(gutter).toContain('line-height: calc(var(--text-base) * var(--line-height))');
