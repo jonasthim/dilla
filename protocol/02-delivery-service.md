@@ -711,7 +711,11 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    listing does not name, from that commit only: it keeps them queued, so a commit refused and
    discarded leaves its queue as it was. The listing can be of a later epoch than the client's (a
    member's commit of that `Remove` won first), and the client must then process that commit,
-   which references the `Remove`. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
+   which references the `Remove`. The same holds for every proposal a client leaves out of its own
+   commit while another member may commit it: a proposed `Add` whose leaf fails this client's
+   validation (`03` § Leaf validation) and, in a call rotation, its own self-`Remove` (`01`).
+   Leaving a proposal out never takes it out of the queue; only a merged commit or a `withdrawn`
+   row does. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
    queued: its commits in that group are refused until its next epoch, which is a safe refusal
    because other members commit, and the instance never elects it (invariant 7). The same `Remove`
    proposed again within 30 seconds of the withdrawal (the `admissionJoinWindow` of `09` § Voice)

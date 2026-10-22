@@ -1983,6 +1983,27 @@ impl RawPeer {
         seq_of_answer(&answer)
     }
 
+    /// UP13: processes the proposal at the relay's handshake row `seq` and queues it, so this
+    /// peer's next `self_update` commits it by reference.
+    pub fn queue_proposal(&mut self, relay: &Relay, seq: u64) {
+        let row = relay
+            .handshakes
+            .iter()
+            .find(|h| h.seq == seq)
+            .expect("a handshake row at that seq");
+        let message = protocol_in(&row.blob).expect("a protocol message");
+        let group = self.group.as_mut().expect("joined");
+        match group
+            .process_message(&self.provider, message)
+            .expect("process the proposal")
+        {
+            DillaProcessed::Proposal(proposal) => group
+                .store_pending_proposal(&self.provider, *proposal)
+                .expect("queue"),
+            other => panic!("expected a proposal at seq {seq}, got {other:?}"),
+        }
+    }
+
     /// Processes and merges another member's commit, the relay's handshake row at `seq`.
     pub fn apply_commit(&mut self, relay: &Relay, seq: u64) {
         let row = relay
@@ -2046,6 +2067,11 @@ impl Relay {
     /// instance) and lists it as outstanding. Answers its seq.
     pub fn propose(&mut self, message: MlsMessageOut) -> u64 {
         let blob = message.tls_serialize_detached().expect("serialize");
+        self.propose_bytes(blob)
+    }
+
+    /// `propose` of an already serialized `MLSMessage` (a client core's own proposal body).
+    pub fn propose_bytes(&mut self, blob: Vec<u8>) -> u64 {
         let crypto = &self.crypto;
         let public = self.public.as_mut().expect("the group is registered");
         let reference = public

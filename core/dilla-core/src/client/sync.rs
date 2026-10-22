@@ -414,9 +414,10 @@ impl ClientCore {
     }
 
     /// `commit_build`'s body. With `rotate` (`call_rotate`), this device's own pending `Remove` of
-    /// its own leaf is taken out of its queue first: a rotation is an UpdatePath commit, and a
-    /// device never commits its own removal (OpenMLS refuses it); another member commits the
-    /// posted proposal.
+    /// its own leaf is left out of the commit: a rotation is an UpdatePath commit, and a device
+    /// never commits its own removal (OpenMLS refuses it); another member commits the posted
+    /// proposal. It stays queued (UP13), so a refused rotation, once aborted, can still process
+    /// that member's commit.
     pub(super) fn commit_build_inner(
         &mut self,
         id: &[u8; 16],
@@ -479,25 +480,27 @@ impl ClientCore {
                 // instance `Remove` it does not name is taken out (a member's proposal and an Add
                 // stay). `call_rotate` takes no listing and relies on the row.
                 //
-                // UP13: the drop is for this build only. The listing may be of a newer epoch (a
-                // member's commit of that Remove landed first), and that commit references the
-                // Remove: the proposals are queued again once the commit is staged (below), so an
-                // aborted build leaves the queue, and its app_proposals rows, as they were.
-                let mut unlisted = Vec::new();
+                // UP13: every drop below (an unlisted instance Remove, the own self-Remove of a
+                // rotation, a failed Add) is for this build only. A member's commit that won the
+                // epoch may reference what was dropped (the listing was of a newer epoch, a peer
+                // committed the self-Remove or an Add its own validation passed): the proposals
+                // are queued again once the commit is staged (below), so an aborted build leaves
+                // the queue, and its app_proposals rows, as they were.
+                let mut taken = Vec::new();
                 if !rotate {
                     let listed: std::collections::HashSet<&[u8]> =
                         proposals.iter().map(|item| item.reference.as_slice()).collect();
-                    unlisted = group
+                    taken = group
                         .drop_unlisted_instance_removes(ctx.provider, |r| listed.contains(r))?;
                 }
                 if rotate {
-                    group.withdraw_leave(ctx.provider)?;
+                    taken.extend(group.withdraw_leave(ctx.provider)?);
                 }
                 // Ruling 3 for the whole queue: `self_update` commits every queued proposal,
                 // including an Add that `group_apply` queued from a handshake row (it is never
                 // validated there) or that validated when an earlier commit was built. A queued
                 // Add whose leaf fails is taken out; one whose signed history is unknown refuses.
-                group.drop_queued_adds(ctx.provider, |kp| {
+                let failed = group.drop_queued_adds(ctx.provider, |kp| {
                     match u.with_conn(|c| Ok(super::trust::validate_proposed_add(c, kp)))? {
                         Ok(()) => Ok(true),
                         Err(e) if e.code == super::error::E_DEVICE_LIST_STALE => Err(e),
@@ -506,7 +509,9 @@ impl ClientCore {
                 })?;
                 let epoch = group.epoch();
                 let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
-                group.requeue(ctx.provider, unlisted)?;
+                // UP13: everything taken out above was for this commit only (see the drop).
+                group.requeue(ctx.provider, taken)?;
+                group.requeue(ctx.provider, failed)?;
                 u.with_conn(|c| set_pending(c, id, true))?;
                 let info = bundle.group_info.ok_or_else(|| ClientError::new(E_CORE_MLS, "the staged commit carries no GroupInfo"))?;
                 let mut out = Encoder::new();
