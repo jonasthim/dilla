@@ -77,7 +77,7 @@ feature is: a leaked recovery key now also opens your stored history.
    ids, padded sizes and upload order (§9), nothing that names a group, a person or a time.
 6. **Deletes are honoured.** A message deleted for everyone, its edits, and anything a trust check retracts are deleted
    from the saved history by your own browsers, which hold a per-entry delete token the server checks; the server keeps
-   the id as deleted so no late browser can put it back.
+   the id as deleted (with its delete hash, for 400 days) so no late browser can put it back.
 7. **No duplicates.** Several browsers save the same message under the same keyed id, and the server keeps the first.
    A restored row never collides with a row the browser received live.
 8. **Honest copy.** protocol/08, Settings → Privacy, the sign-up's recovery-key step, the user docs and the release
@@ -126,7 +126,7 @@ feature is: a leaked recovery key now also opens your stored history.
 | J7 | **The read key is erased after a restore** (2026-10-22, answering open question 1). "Restore again" in Settings → Privacy, with the recovery key, picks up history saved later. Built as D4. |
 | J8 | **Browsers from before this release get one banner** pointing to Settings → Privacy, shown until that section has been opened (open question 2). Built as D16 and §U.3. |
 | J9 | **The quota is 1 GiB per person, settable by the operator in dilla.toml** (`history.quota_bytes_per_user`). When it is full, new messages stop being saved and the person is told; nothing old is dropped (open question 3). Built as D18. |
-| J10 | **Turning history off needs a step-up**, the same check as account deletion (open question 4). Built as D15. |
+| J10 | **Turning history off needs you to confirm your password or passkey (step-up), as in Settings → Sign-in** (open question 4). It is not the account-deletion reauth window. Built as D15. |
 
 ### 5.2 My calls
 
@@ -138,15 +138,15 @@ feature is: a leaked recovery key now also opens your stored history.
 | D4 | **The read key is erased when the restore finishes**, or 7 days after it started, or when history is turned off, or at sign-out. A later "restore again" asks for the recovery key again. Confirmed by Jonas (J7). |
 | D5 | **One entry per message, not segments.** The unit is one DS row: one `(group_id, seq)`, one entry, immutable. Posts and every fold (edit, delete, reaction add/remove, pin, unpin) are their own entries, exactly as the local store keeps them. Dedupe, delete and "append" need no read-modify-write and no conflict resolution. Rejected: per-conversation or time segments (they need the read key on every writer to rewrite a segment for a delete, and a merge protocol between browsers writing the same segment; they also tell the server which entries are one conversation). |
 | D6 | **Entry ids are keyed hashes.** `entry_id = HMAC-SHA256(K_hid, "dilla history entry id v1" ‖ group_id ‖ seq_be8)[0..16]`. Every browser of the account computes the same id for the same DS row, so the server dedupes without learning the group or the sequence number. |
-| D7 | **Append-only, first writer wins, deletes are final.** The server keeps the first row stored for an id and drops later ones; a delete removes the row and keeps the id as deleted for ever (per generation, §7.5), so a late browser cannot put it back. A saved entry is never rewritten. |
-| D8 | **Deletes need the entry's delete token.** Each stored entry carries `del_hash = SHA-256("dilla history delete hash v1" ‖ del_token)[0..16]`, where `del_token = HMAC-SHA256(K_hdel, "dilla history delete token v1" ‖ entry_id)[0..16]`. A delete names the id and its token. A stolen session, which holds no `K_hdel`, cannot delete history entry by entry. |
+| D7 | **Append-only, first writer wins, deletes are final.** The server keeps the first row stored for an id and drops later ones; a delete removes the row and keeps the id as deleted, with its delete hash, for 400 days (per generation, §7.5), so a late browser cannot put it back. Each deleted id counts 64 bytes toward the quota. A saved entry is never rewritten. |
+| D8 | **Deletes need the entry's delete token.** Each stored entry carries `del_hash = SHA-256("dilla history delete hash v1" ‖ del_token)[0..16]`, where `del_token = HMAC-SHA256(K_hdel, "dilla history delete token v1" ‖ entry_id)[0..16]`. A delete names the id, its token and its hash; for an id the server does not hold, it records the id as deleted with that hash, and any later delete of the id must present the matching token. A stolen session, which holds neither `K_hid` nor `K_hdel`, can compute no id and no token, so it cannot delete history entry by entry. |
 | D9 | **What is saved is decided by SQLite triggers on `app_messages`**, so every path that shows, folds, releases, deletes or retracts a row is covered without touching each call site: a row that becomes shown (status 0, envelope present, type 0–6, `text` group) queues a put; a shown row whose envelope is dropped (status 2, a retraction to status 1, blanked edits) queues a delete; a deletion marker for a sequence never stored queues a delete. A local group deletion (leaving, a resync) deletes nothing from history. |
 | D10 | **Restore merges below the live floor only, and never replaces a row.** A restored entry is stored only when its group is held, its seq is below the group's `next_seq` (live sync owns everything from there), and no row is stored at `(group_id, seq)`. It goes through the same insert, fold and search-index path as a decrypted row, never re-queues itself, and raises the group's read marker so it counts toward no unread or mention badge. |
 | D11 | **Restored messages carry the saving browser's trust verdict.** The archive holds plaintext, not MLS messages, so signatures cannot be checked again. A restored row keeps its sender's user, device and authenticated signature key; any verdict this browser later records for that key retracts it as it would a live row, and a row whose sender key this browser already holds a failed verdict for is skipped. No per-message mark (Discord and Messenger show none); Settings → Privacy says the browser that saved the messages checked them. |
 | D12 | **Entries of groups this browser does not hold yet are parked** (in its encrypted store) and merged when the group arrives; parked rows older than 30 days are dropped (they belong to conversations you left). |
 | D13 | **Restore runs newest first**, then catches up what was saved while it ran, then finishes. A restore is resumable across reloads from a cursor in the store. |
 | D14 | **The account switch lives on the server** (`history_state`: enabled and a generation). Turning off deletes every entry and every deleted-id record and bumps the generation; turning on bumps it again. A browser that sees a new generation drops its queue and, when history is on, queues everything it holds (a backfill). Uploads name the generation; a stale one is `409 E_HISTORY_STALE`. |
-| D15 | **Turning history off needs a step-up**, as account deletion does: it deletes data of every browser of the account. Turning it on does not. Confirmed by Jonas (J10). |
+| D15 | **Turning history off needs a step-up token** (`POST /v1/auth/stepup` or the passkey step-up, as Settings → Sign-in uses them), always: the server checks the token itself and never takes `requireStepUp`'s pass for an account without a factor (§S.4.3). It deletes data of every browser of the account. Turning it on needs none. Confirmed by Jonas (J10). |
 | D16 | **Existing browsers save once their person enters the recovery key** in Settings → Privacy ("enter recovery key"), which also restores. A banner tells them until they have opened that section once (J8). New sign-ups get the write keys at sign-up; every sign-in gets them at the key step. |
 | D17 | **No store schema bump.** The new client tables and triggers are additive and created on every open, as web-3.5's three tables were; schema stays 5, so a client rollback opens the store (§11). |
 | D18 | **Quotas.** `history.quota_bytes_per_user` (default 1 GiB; 0 turns history off on the instance) and `history.upload_bytes_per_day` per device (default 256 MiB). A full history stops saving new entries (`507`) and says so; nothing old is dropped (J9). |
@@ -154,7 +154,7 @@ feature is: a leaked recovery key now also opens your stored history.
 | D20 | **No time is stored with an entry.** The server orders rows by an upload counter `n` and keeps no timestamp per entry. |
 | D21 | **The history's vectors are frozen from the Rust core** (`protocol/vectors/history.json`), as `permissions.json` is frozen from Go: the TS generator has no X25519 HPKE. |
 | D22 | **New routes, not the backups routes.** `/v1/backups` stays the two header objects; history gets `/v1/history` (§8.3). The unserved chunk archive of `06` § Archive and its SSK-signed manifest are retired: a browser holds no SSK and could never sign one. |
-| D23 | **Migration numbers.** On main the next free pair is `00024` / schema `022`. Voice moderation (`00024`/`022`) and calls-survive-upgrade (`00025`) merge first, so this design writes `00026_history_archive.sql` and schema file `024_history_archive.sql`; whoever merges this renumbers to the next free pair at rebase and updates `TestHistoryArchiveMigrationIsSchemaVersion26` to match. |
+| D23 | **Migration numbers.** This branch uses the next free numbers on main: migration `00024_history_archive.sql` and schema file `022_history_archive.sql`, on both engines. Renumbering happens at rebase, after voice moderation and calls-survive-upgrade merge (they take the same numbers first); `TestHistoryArchiveMigrationIsItsSchemaVersion` reads the number from the file name, so only the files (and the deploy-guide row of §11) change. |
 | D24 | **Account deletion deletes history** in the same transaction as the tombstone. The operator's revoke-all (`dillad admin … revoke-devices`) keeps it: it is the recovery reset, after which the person restores with the key. |
 | D25 | **Copy lives in a new `strings/history.ts`**, not in `privacy.ts` (the one file `check:copy` exempts), so the forbidden-word lint covers it. |
 | D26 | **Model tiers.** Opus implements K1 (crypto) and K2 (store triggers, queue and restore merge); opus reviews K1, K2, S3, S5 and the final branch. Everything else is sonnet; strings and docs are haiku (§13.2). |
@@ -200,7 +200,7 @@ Only what this design touches.
 - **Backups routes** (`internal/api/backups.go`, `09` § Backups): kinds 0 and 1 only; kind 2 (chunks) answers 404. The
   `backups` table allows kind 2 but nothing writes it. `06` § Archive (chunks and an SSK-signed manifest) was never
   served.
-- **Server pieces reused:** `LockUserForDeviceRegistration` (the per-user lock), `requireStepUp` (`internal/api/auth.go:1520`),
+- **Server pieces reused:** `LockUserForDeviceRegistration` (the per-user lock), `spendStepUp` and `requireStepUp` (`internal/api/auth.go`; history uses only `spendStepUp`, §S.4.3),
   `NewStateMeter` (`internal/api/blobmeter.go:58`, a per-key daily byte budget), `dsMeter` buckets in
   `internal/api/api.go:253-256`, `DumpTables` and `DumpPostgres` (`internal/store/dump.go`, buffers each table in
   memory), `dumpRowCounts` (`internal/ops/restore.go:730`, `counts[table] = n`), doctor legs (`internal/ops/doctor.go`,
@@ -213,10 +213,12 @@ Only what this design touches.
   `docs/design/flows/NN-*.md`; flow 18 is voice moderation's, so this is **flow 19**. `check:copy`
   (`scripts/check-ui-copy.mjs`) exempts only `strings/privacy.ts`.
 - **Copy to change:** `signin.done.body` ("Messages sent before now are not shown here."),
-  `onboarding.browser.oneBrowser` ("Messages sent before that browser joins are not shown in it."), `shell.log.empty`,
-  the README "what works" sentence "Messages sent before a new browser joins are not shown there.", and
-  `docs/user/getting-started.md` lines 108, 652, 701, 856. `perm.history.hint` (about new members) stays true and
-  stays.
+  `onboarding.browser.oneBrowser` ("Messages sent before that browser joins are not shown in it."), the README "what
+  works" sentence "Messages sent before a new browser joins are not shown there." and its "not in this version" item
+  (`README.md:54-55`), `docs/user/getting-started.md` lines 108, 652, 701, 856 and 1038, the copy tables of
+  `docs/design/flows/01-onboarding.md` (lines 175 and 451) and `03-sign-in.md` (lines 871 and 890), and the story text
+  in `packages/ui/src/OnboardingFrame/OnboardingFrame.stories.tsx:29`. `shell.log.empty` keeps its value (it stays
+  true while history is off), and `perm.history.hint` (about new members) stays true and stays.
 
 ## 7. How it works, end to end
 
@@ -248,7 +250,7 @@ The key is the same every time it is entered, so every derivation is the same: e
    `app_history_out`, in the same storage unit as the row.
 2. The uploader in the worker flushes when 256 operations are queued, or 20 s after the oldest unflushed one, or at
    each ready. `history_take(512, 1_000_000)` builds one batch: one HPKE setup, one sealed row per put (with its
-   `del_hash`), one `[entry_id, del_token]` per delete, at most 512 puts and 1 000 000 bytes of rows.
+   `del_hash`), one `[entry_id, del_token, del_hash]` per delete, at most 512 puts and 1 000 000 bytes of rows.
 3. `POST /v1/history/entries [generation, entries]` stores the puts; the server keeps the first row per id and drops
    later ones and deleted ids. `POST /v1/history/entries/delete [generation, items]` sends the deletes. On success of
    both, `history_done(taken)` removes exactly the queue rows taken (a row queued again meanwhile has a new `n` and
@@ -308,8 +310,9 @@ reloads.
 
 ### 7.5 Turning history off and on
 
-- **Off** (Settings → Privacy): the toggle opens a confirmation, then a step-up (password, app code, backup code or
-  passkey, through the existing `StepUpDialog`). `PUT /v1/history [0, stepup]` deletes every entry and every deleted-id
+- **Off** (Settings → Privacy): the toggle opens a confirmation, then you confirm your password or passkey (step-up,
+  through the existing `StepUpDialog`, as in Settings → Sign-in; the steps are §U.1.1). `PUT /v1/history [0, stepup]`,
+  which always needs the token, deletes every entry and every deleted-id
   record of the account, sets enabled to 0 and bumps the generation, in one transaction, and writes an audit row. Each
   browser learns it at its next ready (or at its next upload, `409 E_HISTORY_STALE`): it drops its queue and its read
   key, and its triggers stop queueing (`history_on` absent).
@@ -408,8 +411,8 @@ All `E` (an enrolled session), deterministic CBOR (`09` § Encoding). Full rules
 |---|---|---|---|
 | `GET /v1/history` | — | `[enabled(uint 0\|1), generation(uint), entries(uint), bytes(uint), quota(uint)]` | read |
 | `PUT /v1/history` | `[enabled(uint 0\|1), stepup(tstr\|null)]` | `200 [enabled, generation]` | write |
-| `POST /v1/history/entries` | `[generation(uint), entries([[entry_id(bstr 16), del_hash(bstr 16), row(bstr)]])]`, 1–512 entries | `200 [stored(uint), dropped(uint)]` | write, plus the device's history byte budget |
-| `POST /v1/history/entries/delete` | `[generation(uint), items([[entry_id(bstr 16), del_token(bstr 16)]])]`, 1–1024 items | `200 [deleted(uint), refused(uint)]` | write |
+| `POST /v1/history/entries` | `[generation(uint), entries([[entry_id(bstr 16), del_hash(bstr 16), row(bstr)]])]`, 1–512 entries | `200 [stored(uint), dropped(uint), entries(uint), bytes(uint)]` (the account's totals after the request) | write, plus the device's history byte budget |
+| `POST /v1/history/entries/delete` | `[generation(uint), items([[entry_id(bstr 16), del_token(bstr 16), del_hash(bstr 16)]])]`, 1–1024 items | `200 [deleted(uint), refused(uint), entries(uint), bytes(uint)]` | write |
 | `GET /v1/history/entries?generation=&before=&after=&limit=` | — | `[[n(uint), entry_id(bstr 16), row(bstr)]]`; newest first without `after`, ascending with it | read |
 
 | Code | Status | Where |
@@ -426,12 +429,12 @@ All `E` (an enrolled session), deterministic CBOR (`09` § Encoding). Full rules
 
 | Thing | Name |
 |---|---|
-| Tables | `history_state (user_id, enabled, generation, entries, bytes, updated)`, `history_entries (n, user_id, entry_id, del_hash, row)`, `history_tombstones (user_id, entry_id)` |
-| Files | `internal/store/{sqlite,postgres}/migrations/00026_history_archive.sql`, `…/schema/024_history_archive.sql`, `…/queries/history.sql` (D23: renumber at rebase) |
-| sqlc | `GetHistoryState`, `UpsertHistoryState`, `GetHistoryEntryHash`, `HistoryTombstoned`, `InsertHistoryEntry`, `DeleteHistoryEntry`, `InsertHistoryTombstone`, `ListHistoryEntriesBefore`, `ListHistoryEntriesAfter`, `DeleteHistoryEntriesOfUser`, `DeleteHistoryTombstonesOfUser`, `DeleteHistoryStateOfUser`, `HistoryTotals`, `HistoryUsersAtOrOver` |
+| Tables | `history_state (user_id, enabled, generation, entries, bytes, tombstones, updated)`, `history_entries (n, user_id, entry_id, del_hash, row)`, `history_tombstones (user_id, entry_id, del_hash, created)` |
+| Files | `internal/store/{sqlite,postgres}/migrations/00024_history_archive.sql`, `…/schema/022_history_archive.sql`, `…/queries/history.sql` (D23: renumber at rebase) |
+| sqlc | `GetHistoryState`, `UpsertHistoryState`, `GetHistoryEntryHash`, `GetHistoryTombstone`, `InsertHistoryEntry`, `DeleteHistoryEntry`, `InsertHistoryTombstone`, `CountOldHistoryTombstonesByUser`, `DecrementHistoryTombstones`, `DeleteOldHistoryTombstones`, `ListHistoryEntriesBefore`, `ListHistoryEntriesAfter`, `DeleteHistoryEntriesOfUser`, `DeleteHistoryTombstonesOfUser`, `DeleteHistoryStateOfUser`, `HistoryTotals`, `HistoryUsersAtOrOver` |
 | Store types | `store.HistoryState{Enabled bool; Generation uint64; Entries int64; Bytes int64}`, `store.HistoryPut{EntryID, DelHash, Row []byte}`, `store.HistoryRow{N int64; EntryID, Row []byte}`, `store.HistoryTotals{People, Entries, Bytes, NearFull int64}` |
-| Store methods (`store.HistoryStore`, embedded in `Repository`) | `GetHistoryState`, `PutHistoryState`, `GetHistoryEntryHash`, `HistoryTombstoned`, `InsertHistoryEntry`, `DeleteHistoryEntry`, `InsertHistoryTombstone`, `ListHistoryEntries`, `DeleteHistoryOfUser`, `HistoryTotals` |
-| API (`internal/api/history.go`, new) | handlers `GetHistory`, `PutHistory`, `PostHistoryEntries`, `PostHistoryDeletes`, `ListHistoryEntries`; helpers `historyEffective`, `decodeHistoryRow`, `historyQuota`; field `Deps.HistoryMeter *UploadMeter`; constants `historyRowMax = 81920`, `historyPutMax = 512`, `historyDeleteMax = 1024`, `historyPageMax = 512`, `historyPageBytes = 1 << 20`, `historyPutBodyCap = 1<<20 + 4096` |
+| Store methods (`store.HistoryStore`, embedded in `Repository`) | `GetHistoryState`, `PutHistoryState`, `GetHistoryEntryHash`, `GetHistoryTombstone`, `InsertHistoryEntry`, `DeleteHistoryEntry`, `InsertHistoryTombstone`, `PruneHistoryTombstones`, `ListHistoryEntries`, `DeleteHistoryOfUser`, `HistoryTotals` |
+| API (`internal/api/history.go`, new) | handlers `GetHistory`, `PutHistory`, `PostHistoryEntries`, `PostHistoryDeletes`, `ListHistoryEntries`; helpers `historyEffective`, `decodeHistoryRow`, `historyQuota`; field `Deps.HistoryMeter *UploadMeter`; constants `historyRowMax = 81920`, `historyPutMax = 512`, `historyDeleteMax = 1024`, `historyPageMax = 512`, `historyPageBytes = 1 << 20`, `historyPutBodyCap = 1<<20 + 4096`, `historyTombstoneBytes = 64`, `historyTombstoneTTL = 400 * 86400` (seconds) |
 | Config | `[history]` `quota_bytes_per_user` (1073741824), `upload_bytes_per_day` (268435456); Go `config.History{QuotaBytesPerUser, UploadBytesPerDay int64}` |
 | Audit actions | `history.off`, `history.on` |
 | Doctor | `ops.HistoryLeg(ctx, repo, cfg) Leg`, leg name `history` |
@@ -452,7 +455,7 @@ All `E` (an enrolled session), deterministic CBOR (`09` § Encoding). Full rules
 |---|---|
 | CorePort (`core-port.ts`) | `historyStatus(now)`, `historySetServer(enabled, generation)`, `historyUnlock({recoveryKey, rootSealed, now})`, `historyTake(maxRows, maxBytes)`, `historyDone(taken)`, `historyRestorePage(rows, now)`, `historyRestoreState()`, `historyRestoreCancel()`, `historyUnpark(now)`; types `HistoryCoreStatus`, `HistoryTake`, `HistoryRestoreResult`, `HistoryRestoreState` |
 | Routes (`http/routes.ts`) | `getHistory(): Promise<HistoryInfo>`, `setHistory(enabled, stepup): Promise<HistorySet>`, `postHistoryEntries(generation, entries): Promise<HistoryStored>`, `postHistoryDeletes(generation, items): Promise<HistoryDeleted>`, `getHistoryEntries(generation, cursor, limit): Promise<HistoryPageRow[]>` |
-| Error | `E_HISTORY_STALE` in `http/errors.ts`'s known codes |
+| Error | `E_HISTORY_STALE`, read from `DillaHttpError.code` (no `http/errors.ts` change) |
 | Modules (new) | `packages/client-core/src/history/state.ts` (`HistoryState`), `history/uploader.ts` (`HistoryUploader`), `history/restore.ts` (`HistoryRestore`), `history/slice.ts` (`historySlice`, `HistorySlice`) |
 | Commands (`worker/protocol.ts`) | `historyRefresh` (ready → null), `historySetEnabled {on: boolean; stepup: string \| null}` (ready → null), `historyUseKey {recoveryKey: string}` (ready → null) |
 | Slice | `history`: `HistorySlice` (§C.6); the timeline slice gains `restoring: boolean` |
@@ -463,7 +466,7 @@ All `E` (an enrolled session), deterministic CBOR (`09` § Encoding). Full rules
 | Thing | Name |
 |---|---|
 | Component | `packages/web/src/screens/settings/History.tsx` (`History`), rendered first in `Privacy.tsx` |
-| Banner | `packages/web/src/screens/HistoryBanner.tsx` (`HistoryBanner`), pref key `dilla.history.bannerDismissed` (`prefs.ts`) |
+| Banner | `packages/web/src/screens/HistoryBanner.tsx` (`HistoryBanner`), the `history.bannerDismissed` record of the prefs IndexedDB store (`prefs.ts`: `readHistoryBannerDismissed`, `writeHistoryBannerDismissed`) |
 | Strings | `packages/web/src/strings/history.ts` (`history.*`, merged in `en.ts`), plus `signin.done.bodyNoHistory`, `onboarding.keys.history`, `shell.log.emptyRestoring`, `shell.log.emptyHistory` in their existing files |
 | Flow | `docs/design/flows/19-message-history.md`; test `packages/web/src/strings/strings.flow19.test.ts` |
 | e2e | `e2e/web/history.spec.ts` |
@@ -476,7 +479,8 @@ Per account: whether history is on, a generation counter, the number of entries 
 
 Per entry: a 16-byte keyed id, a 16-byte delete hash, the row's length (the padded plaintext, a multiple of 256, plus
 about 70 bytes of framing and tag), the batch's 32-byte `enc` (shared by the rows uploaded together), and its upload
-position `n`. No time is stored with an entry. Deleted ids are kept as deleted.
+position `n`. No time is stored with an entry. Deleted ids are kept as deleted, with their delete hash and the day
+they were deleted (rounded down to the day), for 400 days.
 
 Per request (as for every route, and in its request log): which device uploaded or read, when, and how many entries.
 
@@ -511,7 +515,8 @@ The full protocol text is §P.3; the full copy is §U.4.
   to anyone, which a later restore shows; and it can delete entries of messages whose group and seq it knows. It cannot
   read the saved history (no read key after the restore). Its own messages are exposed as they are today.
 - **A stolen session** (a token, no store) can download rows it cannot open and fill the quota with junk (a denial of
-  service, shown as gaps and "full"). It cannot delete entries (no tokens) or turn history off (step-up).
+  service, shown as gaps and "full"). It cannot delete entries (it can compute no id or token), block a real entry
+  with a made-up deleted id, or turn history off (the step-up token is always required).
 - **The instance** can withhold or drop entries, serve an old copy (bringing back entries deleted since; the saved
   type-2 delete envelope hides an author's deleted message again), or refuse to delete. It cannot read, forge or move
   entries undetectably: the AAD binds the account and the id, and the id binds the group and seq.
@@ -550,8 +555,8 @@ key in Settings → Privacy."
   created on every open by `APP_HISTORY` in the idempotent block. An older client opening the store ignores the tables;
   the triggers fire on its inserts but queue nothing while `history_on` is absent, and only queue (never upload) while
   it is present, so a rollback of the web client loses nothing and a later upgrade uploads the queue. The deploy
-  guide's table gains a row "web3.13 | 5 | **26** | Two additive tables and four triggers in the browser store;
-  migration `00026_history_archive`; rolling back to web3.12 needs `migrate down --to=25` with the web3.13 binary
+  guide's table gains a row "web3.13 | 5 | **24** | Two additive tables and four triggers in the browser store;
+  migration `00024_history_archive`; rolling back to web3.12 needs `migrate down --to=23` with the web3.13 binary
   first and deletes every saved message history".
 - **Server rollback.** `migrate down` drops the three tables, and with them every saved history. The release notes and
   the deploy guide say so: "Rolling back deletes every person's saved message history; their browsers keep their own
@@ -563,7 +568,7 @@ key in Settings → Privacy."
 
 ## 12. Release, docs and gates
 
-- **Schema and rollback** in the release notes (stub by S5, finished by D1): migration `00026_history_archive` adds
+- **Schema and rollback** in the release notes (stub by S5, finished by D1): migration `00024_history_archive` adds
   `history_state`, `history_entries` and `history_tombstones`; `migrate down` drops them and every saved history; the
   release-note paragraph of §10 verbatim.
 - **Protocol docs** (S5, text in §P): `03` (keys, custody, recovery), `06` (§ History replaces § Archive and
@@ -596,13 +601,15 @@ writer.
 | Lane | Packages | Tasks |
 |---|---|---|
 | **K** Rust core | `core/dilla-core`, `core/dilla-core-wasm`, `protocol/vectors/history.json`, and the CorePort half in `packages/client-core/src/core-port.ts` and `testing/fake-core.ts` | K1 → K2 → K3 |
-| **S** server and protocol docs | `internal/`, `cmd/dillad/`, `protocol/*.md` | S1 ∥ S2 ∥ S5 → S3 → S4 |
+| **S** server and protocol docs | `internal/`, `cmd/dillad/`, `protocol/*.md`, `scripts/check-protocol-docs*` | S1 ∥ S2 ∥ S5 → S3 → S4 |
 | **C** client-core | `packages/client-core/src` (not `core-port.ts`) | C1 → C2 → C3 |
-| **W** web, e2e, docs | `packages/web/src`, `docs/design/flows`, `e2e/`, `docs/user`, `docs/deploy`, `README.md` | W1 ∥ from the start; W2 → W3 → E1 → D1 ∥ D2 |
+| **W** web, e2e, docs | `packages/web/src`, `packages/ui/src/OnboardingFrame/OnboardingFrame.stories.tsx` (D1), `docs/design/flows`, `e2e/`, `docs/user`, `docs/deploy`, `README.md` | W1 ∥ from the start; W2 → W3 → E1 → D1 ∥ D2 |
 
 Cross-lane dependencies (a task never starts before these have merged into the lane's base):
 
 - **K3 → C2**: the uploader and state call the CorePort methods.
+- **C1 → K3**: the fake core uses `testing/fake-history.ts`, which C1 adds.
+- **S5 → S3**: `CodeHistoryStale` lands with the 02 row in S5.
 - **K1 → S5**: the vectors file is frozen by K1, and `vectors/README.md`'s row names it.
 - **C2, C3 → W2, W3**: the web reads the `history` slice, the `restoring` flag and the three commands.
 - **S3, C3, W2, W3 → E1**: the e2e needs the real routes, the restore and the UI.
@@ -612,7 +619,7 @@ Waves (each wave's tasks run together):
 
 | Wave | K | S | C | W |
 |---|---|---|---|---|
-| 1 | K1 | S1, S2, S5 (all but the vectors row) | C1 | W1 |
+| 1 | K1 | S1, S2, S5 (all but the vectors row; with `CodeHistoryStale` and the check-docs edits) | C1 | W1 |
 | 2 | K2 | S3 | — | — |
 | 3 | K3 | S4, S5's vectors row | — | — |
 | 4 | — | — | C2 | — |
@@ -631,8 +638,10 @@ Shared-file hazards, which is why each lane is sequential: `core/dilla-core/src/
 | Tier | Implementation | Review |
 |---|---|---|
 | **opus** | K1, K2 (2) | K1, K2, S3, S5, and the whole-branch security review (4 + 1) |
-| **sonnet** | K3, S1, S2, S3, S4, C1, C2, C3, W2, W3, E1, D2 (12) | K3, S1, S2, S4, C1, C2, C3, W1, W2, W3, E1, D1, D2 (13) |
-| **haiku** | S5, W1, D1 (3) | — |
+| **sonnet** | K3, S1, S2, S3, S4, C1, C2, C3, W2, W3, E1, D1, D2 (13) | K3, S1, S2, S4, C1, C2, C3, W1, W2, W3, E1, D1, D2 (13) |
+| **haiku** | S5, W1 (2) | — |
+
+D1 is sonnet (ruling 13): its flow-doc and story edits need judgement about which rows of a copy table change.
 
 17 tasks. If K2's restore merge (`history_restore_page`, `merge_entry`) or S3's delete-token check fails its first
 opus review, the fix round goes to opus; every other first fix round goes to the task's own tier.
@@ -664,19 +673,23 @@ below.
 
 #### K3 — wasm facade and CorePort
 
-- **Lane** K. **Depends on** K2. **Model** sonnet. **Review** sonnet.
-- **Files:** `core/dilla-core-wasm/src/facade.rs`, `packages/client-core/src/core-port.ts`,
-  `packages/client-core/src/testing/fake-core.ts`, `packages/client-core/src/core-port.test.ts`,
-  `packages/client-core/src/testing/fake-core.test.ts`.
-- **Recipe:** §K.8 (signatures), §C.1 (TS types).
+- **Lane** K. **Depends on** K2, C1 (`testing/fake-history.ts`). **Model** sonnet. **Review** sonnet.
+- **Files:** `core/dilla-core-wasm/src/facade.rs`, `core/dilla-core-wasm/src/lib.rs` (`BROWSER_ABI_VERSION` 11 → 12),
+  `core/dilla-core-wasm/tests/node.rs` (its `assert_eq!(BROWSER_ABI_VERSION, 11)` at line 281 → 12),
+  `packages/core-wasm/types.test-d.ts` (`ExpectedCoreHandle`), `packages/client-core/src/core-port.ts`,
+  `packages/client-core/src/testing/fake-core.ts` (imports `testing/fake-history.ts`, which C1 adds),
+  `packages/client-core/src/core-port.test.ts`, `packages/client-core/src/testing/fake-core.test.ts`.
+- **Recipe:** §K.8 (signatures and the type test), §C.1 (TS types and the fake scheme).
 - **Tests:** `core-port.test.ts` "history: every method decodes its CBOR answer" (one case per method, with the shapes
-  of §C.1); `fake-core.test.ts` "fake history queue: take, done and a requeue" and "fake restore: down, up, done".
+  of §C.1); `fake-core.test.ts` "fake history queue: take, done and a requeue", "fake restore: down, up, done" and
+  "fake ids and tokens follow fake-history"; `npm run typecheck` over `types.test-d.ts`; `cargo test -p
+  dilla-core-wasm` (`node.rs`, the ABI pin). If another branch bumps the ABI first, take the next number at rebase.
 
 #### S1 — Migration, store, sqlc and dump
 
 - **Lane** S, ∥ S2, S5. **Depends on** —. **Model** sonnet. **Review** sonnet.
-- **Files:** `internal/store/{sqlite,postgres}/migrations/00026_history_archive.sql`,
-  `internal/store/{sqlite,postgres}/schema/024_history_archive.sql`, `internal/store/{sqlite,postgres}/queries/history.sql`,
+- **Files:** `internal/store/{sqlite,postgres}/migrations/00024_history_archive.sql`,
+  `internal/store/{sqlite,postgres}/schema/022_history_archive.sql`, `internal/store/{sqlite,postgres}/queries/history.sql`,
   generated `sqlitedb/` and `pgdb/`, `internal/store/rows.go`, `store.go`, `sqlite/repo.go`, `postgres/repo.go`,
   `dump.go`, `internal/ops/restore.go` (`dumpRowCounts`), `schema_test.go`, `contract_test.go`, new
   `internal/store/history_test.go`, `dump_test.go`.
@@ -691,22 +704,26 @@ below.
 - **Recipe:** §S.3.
 - **Tests:** `TestHistoryDefaults` (quota 1073741824, upload 268435456), `TestHistoryValidate` (negative quota refused;
   quota 0 accepted; upload below 1048576 refused while quota > 0; upload 0 accepted while quota 0),
-  `TestRegisterBuildsTheHistoryMeter` (a nil `HistoryMeter` is built from config).
+  `TestRegisterBuildsTheHistoryMeter` (a nil `HistoryMeter` is built from config; with a nil `Config` it stays nil
+  and `Register` does not panic).
 
-#### S3 — The five routes, the error code, account deletion, audit
+#### S3 — The five routes, account deletion, audit, tombstone pruning
 
-- **Lane** S. **Depends on** S1, S2. **Model** sonnet. **Review** **opus** (authz, delete tokens, generation, step-up).
+- **Lane** S. **Depends on** S1, S2, S5 (`CodeHistoryStale`). **Model** sonnet. **Review** **opus** (authz, delete
+  tokens, tombstones, generation, step-up).
 - **Files:** new `internal/api/history.go`, new `internal/api/history_test.go`, `internal/api/api.go` (five
-  `m.Handle` lines), `internal/server/errors.go` (`CodeHistoryStale`, status 409), `internal/server/errors_test.go`,
-  `internal/api/accounts.go` (`DeleteMe`), `internal/api/accounts_delete_test.go`, `internal/ops/revoke_devices_test.go`.
-- **Recipe:** §S.4, §S.5.
+  `m.Handle` lines), `internal/api/accounts.go` (`DeleteMe`), `internal/api/accounts_delete_test.go`,
+  `internal/ops/revoke_devices_test.go`, `internal/dillad/server.go` (`sweep`, `historyPrunedAt`), and a new
+  `internal/dillad/historysweep_test.go`.
+- **Recipe:** §S.4 (with §S.4.5a), §S.5.
 - **Tests:** §S.8.2. Every authz test negative-first and shown red.
 
 #### S4 — Doctor leg and diagnostics
 
 - **Lane** S. **Depends on** S1, S2. **Model** sonnet. **Review** sonnet.
-- **Files:** `internal/ops/doctor.go` (`HistoryLeg`), `internal/ops/doctor_test.go`, `cmd/dillad/doctor.go`,
-  `internal/dillad/diagnostics.go`.
+- **Files:** `internal/ops/doctor.go` (`HistoryLeg`), `internal/ops/doctor_test.go`, `cmd/dillad/doctor.go`
+  (`doctorHistoryLeg`), `cmd/dillad/doctor_test.go` (`TestDoctorHistoryLegSkipsWithoutADatabase`, and the existing
+  leg-order or leg-count assertions there updated for the new `history` line), `internal/dillad/diagnostics.go`.
 - **Recipe:** §S.7.
 - **Tests:** `TestHistoryLegGreenReportsTotals`, `TestHistoryLegYellowNearQuota`, `TestHistoryLegYellowWhenOffWithRows`,
   `TestHistoryLegSkippedWithoutADatabase`.
@@ -717,15 +734,19 @@ below.
   **Review** **opus** (06 and 08 are normative and the trade-off must be stated exactly).
 - **Files:** `protocol/02-delivery-service.md`, `03-identity.md`, `06-backup-archive.md`, `07-versioning.md`,
   `08-threat-model.md`, `09-http-api.md`, `protocol/vectors/README.md`, new `docs/deploy/releases/v0.1.0-web3.13.md`
-  (stub).
+  (stub); `scripts/check-protocol-docs.mjs` (§P.8) and `scripts/check-protocol-docs.test.mjs` (§P.8);
+  `internal/server/errors.go` and `internal/server/errors_test.go` (`CodeHistoryStale`, §P.9), so the 02 row has its
+  constant in wave 1.
 - **Recipe:** §P (paste verbatim, in the places named).
-- **Tests:** `npm run check:docs` (the error vocabulary sees `E_HISTORY_STALE` in 02's table and in `errors.go`).
+- **Tests:** `npm run check:docs` (the 06 headings, and the error vocabulary sees `E_HISTORY_STALE` in 02's table and
+  in `errors.go`); `node --test scripts/check-protocol-docs.test.mjs`; `go test ./internal/server/`.
 
 #### C1 — Routes, error code and fake-server routes
 
 - **Lane** C. **Depends on** — (names frozen in §8). **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/client-core/src/http/routes.ts`, `http/errors.ts`, `http/routes.test.ts`,
-  `testing/fake-server.ts`, `testing/fake-server.test.ts`.
+- **Files:** `packages/client-core/src/http/routes.ts`, `http/routes.test.ts`, new `testing/fake-history.ts` (§C.1.1),
+  new `testing/fake-history.test.ts`, `testing/fake-server.ts`, `testing/fake-server.test.ts`. (`http/errors.ts` is
+  not edited.)
 - **Recipe:** §C.2.
 - **Tests:** §C.9.1.
 
@@ -734,17 +755,20 @@ below.
 - **Lane** C. **Depends on** C1, K3. **Model** sonnet. **Review** sonnet.
 - **Files:** new `packages/client-core/src/history/state.ts`, `history/uploader.ts`, `history/slice.ts`,
   `history/state.test.ts`, `history/uploader.test.ts`; `worker/protocol.ts` (three commands), `state/types.ts`
-  (`history` slice name, `HistorySlice`, `TimelineSlice.restoring`), `worker/controller.ts` (construction, `onReady`,
-  the three commands, `historySetEnabled`, sign-out stop), `index.ts` (exports), `worker/controller.test.ts`.
+  (`history` in `SliceName` and `SliceTypes`, `HistorySlice`, `TimelineState.restoring`), `account/factors.ts`
+  (`export` on `stepupProblem`), `worker/controller.ts` (the five command tables of §C.7.1, construction, `onReady`,
+  `historySetEnabled`, `historyRefresh`, sign-out stop), `index.ts` (exports), `worker/controller.test.ts`.
 - **Recipe:** §C.3, §C.4, §C.6, §C.7.
 - **Tests:** §C.9.2, §C.9.3, and the controller cases of §C.9.5 that name C2.
 
 #### C3 — Restore runner and its wiring
 
 - **Lane** C. **Depends on** C2. **Model** sonnet. **Review** sonnet.
-- **Files:** new `packages/client-core/src/history/restore.ts`, `history/restore.test.ts`; `worker/controller.ts`
-  (start after `refreshAfterReady`, `historyUseKey`, timeline refresh of touched groups, `restoring` in
-  `refreshTimeline`, unpark at each ready, enrol path), `worker/controller.test.ts`.
+- **Files:** new `packages/client-core/src/history/restore.ts`, `history/restore.test.ts`; `sync/engine.ts` (the
+  `onActivated` dependency and its call in `activate`, §C.7.3), `sync/engine.test.ts`, the test helpers that build
+  engine deps (`sync/testing/*`, every place that constructs `SyncDeps`, to add `onActivated: () => {}`),
+  `worker/controller.ts` (start after `refreshAfterReady`, `historyUseKey`, timeline refresh of touched groups,
+  `restoring` in `refreshTimeline`, unpark on activation and at each ready, enrol path), `worker/controller.test.ts`.
 - **Recipe:** §C.5, §C.7.
 - **Tests:** §C.9.4 and the controller cases of §C.9.5 that name C3.
 
@@ -763,9 +787,10 @@ below.
 - **Lane** W. **Depends on** W1, C2, C3. **Model** sonnet. **Review** sonnet.
 - **Files:** new `packages/web/src/screens/settings/History.tsx`, new `History.test.tsx`, `settings/Privacy.tsx`
   (renders `History` first; new props), `screens/Settings.tsx` (passes the slice and handlers; step-up and confirm
-  dialogs for off; `KeyDialog` for the key), `settings/Privacy.test.tsx`, `app.css` only if a class is missing
-  (prefer existing `dw-settings-*` classes).
-- **Recipe:** §U.1, §U.2.
+  dialogs for off; `KeyDialog` for the key; `historyRefresh` on opening Privacy), `settings/Privacy.test.tsx`,
+  `settings/KeyDialog.tsx` (three optional props, §U.1.2), new `settings/KeyDialog.test.tsx`, `app.css` only if a
+  class is missing (prefer existing `dw-settings-*` classes).
+- **Recipe:** §U.1 (with §U.1.1 and §U.1.2), §U.2.
 - **Tests:** §U.7.2.
 
 #### W3 — Sign-in done step, sign-up key step, timeline line, empty channel, banner
@@ -787,17 +812,24 @@ below.
 
 #### D1 — User docs, deploy guide, README and release notes
 
-- **Lane** W, ∥ D2. **Depends on** E1. **Model** haiku. **Review** sonnet.
-- **Files:** `docs/user/getting-started.md`, `docs/deploy/README.md`, `README.md`, `docs/deploy/releases/v0.1.0-web3.13.md`.
+- **Lane** W, ∥ D2. **Depends on** E1. **Model** sonnet. **Review** sonnet.
+- **Files:** `docs/user/getting-started.md` (lines 108, 652, 701, 856, 1038, and the new section),
+  `docs/deploy/README.md`, `README.md` (the "what works" sentence and lines 54–55), `docs/design/flows/01-onboarding.md`
+  (lines 175 and 451: the `onboarding.browser.oneBrowser` copy and its table row), `docs/design/flows/03-sign-in.md`
+  (lines 871 and 890: the `signin.done.body` copy and its table row, plus a row for `signin.done.bodyNoHistory`),
+  `packages/ui/src/OnboardingFrame/OnboardingFrame.stories.tsx` (line 29: the story's browser paragraph takes the new
+  `onboarding.browser.oneBrowser` wording), `docs/deploy/releases/v0.1.0-web3.13.md`.
 - **Recipe:** §U.6, §10 (release-note paragraph verbatim), §11 (table row), §S.3 (settings).
-- **Tests:** `check:docs`.
+- **Tests:** `check:docs`; the flow tests that pin flows 01 and 03 (`strings.test.ts` and any `strings.flowNN.test.ts`
+  reading those files) stay green; `npm test -w @dilla/ui` for the story.
 
 #### D2 — Screenshots
 
 - **Lane** W, ∥ D1. **Depends on** E1. **Model** sonnet. **Review** sonnet (by eye).
-- **Files:** `e2e/scripts/shoot-docs.mjs` (a `HISTORY_SHOTS` block), `docs/user/screenshots/*`.
-- **Recipe:** §U.8.3.
-- **Tests:** the shoot run; the new images reviewed by eye at 1280 px and 390 px.
+- **Files:** `e2e/scripts/shoot-docs.mjs` (a `HISTORY_SHOTS` block), `docs/user/screenshots/*`, and
+  `protocol/07-versioning.md` (replace the row's `<release-date>` with the merge date, §P.6).
+- **Recipe:** §U.8.3, §P.6.
+- **Tests:** the shoot run; the new images reviewed by eye at 1280 px and 390 px; `check:docs`.
 
 ## 14. Open questions
 
@@ -1048,6 +1080,9 @@ END;
 
 In `migrate_conn`, inside `if found <= 5 { … }`, after `c.execute_batch(APP_AUTHORITY)?;`, add
 `c.execute_batch(APP_HISTORY)?;`. `APP_SCHEMA_SUPPORTED` stays 5 and `meta_put(c, SCHEMA, &[5])` is unchanged.
+`APP_SCHEMA_V4` becomes `pub(super) const` (today it is private, `schema.rs:198`), so the unit tests in
+`client/history.rs` can build an in-memory store from `APP_SCHEMA`, `APP_SCHEMA_V4`, `APP_AUTHORITY` and
+`APP_HISTORY`.
 
 Notes the implementer must not change:
 
@@ -1087,6 +1122,25 @@ must equal the identity record's `umk_pub` (`E_RECOVERY_KEY` otherwise; zeroize 
 history keys and `install_history_keys(c, &keys, Some(now))`. Answer `history_status(now)`.
 
 ### K.7 Queue, server state and restore (`client/history.rs`, task K2)
+
+Every `ClientCore::history_*` method is a thin wrapper: it opens its unit (`self.write(|ctx, u| …)` or
+`self.read_one(…)`), gathers what the store holds (keys, identity, `Own`), and calls one free function of
+`client/history.rs` that takes a `&rusqlite::Connection` and plain values. The free functions are what the unit tests
+call (§K.9.2):
+
+```rust
+pub(super) fn status(c: &Connection, now: u64) -> Result<Status, StorageError>;
+pub(super) fn apply_server(c: &Connection, enabled: bool, generation: u64) -> Result<(), StorageError>;
+pub(super) fn queue_backfill(c: &Connection) -> Result<(), StorageError>;
+pub(super) fn take(c: &Connection, crypto: &impl OpenMlsCrypto, rand: &impl OpenMlsRand, keys: &WriteKeys,
+    generation: u64, user_id: &[u8; 16], max_rows: u32, max_bytes: u32) -> Result<Take, ClientError>;
+pub(super) fn done(c: &Connection, taken: &[u64]) -> Result<(), StorageError>;
+pub(super) fn restore_page(c: &Connection, crypto: &impl OpenMlsCrypto, sk: &[u8; 32], keys: &WriteKeys,
+    user_id: &[u8; 16], own: &Own, rows: &[u8], now: u64) -> Result<PageResult, ClientError>;
+pub(super) fn merge_entry(c: &Connection, e: &Entry, env: &Envelope, own: &Own, now: u64)
+    -> Result<MergeOutcome, StorageError>;
+pub(super) fn unpark(c: &Connection, own: &Own, now: u64) -> Result<(u64, Vec<[u8; 16]>), StorageError>;
+```
 
 #### K.7.1 Status and server state
 
@@ -1128,8 +1182,8 @@ INSERT INTO app_history_out (group_id, seq, op)
 draws randomness):
 
 1. `SELECT n, group_id, seq, op FROM app_history_out ORDER BY n LIMIT max_rows`.
-2. For each op 1: `id = entry_id(k_id, g, seq)`; push `[id, delete_token(k_del, id)]` to `deletes`; push `n` to
-   `taken`.
+2. For each op 1: `id = entry_id(k_id, g, seq)`, `tok = delete_token(k_del, id)`; push `[id, tok,
+   delete_hash(tok)]` to `deletes` (the hash lets the server record an id it never held, §S.4.5); push `n` to `taken`.
 3. For each op 0: read `SELECT epoch, recv_ts, sender_user, sender_device, sender_sig_key, sender_kind, sender_tier,
    franking_tag, envelope FROM app_messages WHERE group_id = ?1 AND seq = ?2 AND status = 0 AND type BETWEEN 0 AND 6
    AND envelope IS NOT NULL`. None (the row changed since; its delete is queued after it) or a NULL `sender_user`,
@@ -1137,7 +1191,7 @@ draws randomness):
    whose length is not 32 is `None`), seal it in the call's `SealBatch` (created at the first put), and stop adding
    puts (leaving the op in the queue, not in `taken`) when `bytes_so_far + row.len() + 40 > max_bytes`. A row over
    `ROW_MAX` (impossible within `04`'s limits) is pushed to `taken` and logged nowhere.
-4. Answer CBOR `[generation(uint), puts([[entry_id, del_hash, row]]), deletes([[entry_id, del_token]]), taken([uint])]`
+4. Answer CBOR `[generation(uint), puts([[entry_id, del_hash, row]]), deletes([[entry_id, del_token, del_hash]]), taken([uint])]`
    with `del_hash = delete_hash(delete_token(k_del, entry_id))`.
 
 `history_done(&mut self, taken: &[u64]) -> Result<(), ClientError>`: one write unit, `DELETE FROM app_history_out
@@ -1181,16 +1235,45 @@ route served, `[[n(uint), entry_id(bstr 16), row(bstr)]]`, at most 512 (`E_CORE_
 3. `EXISTS (SELECT 1 FROM app_messages WHERE group_id = ?1 AND seq = ?2)` → `Skipped`.
 4. `EXISTS (SELECT 1 FROM app_quarantine WHERE group_id = ?1 AND user_id = ?2 AND device_id = ?3 AND (signature_key =
    ?4 OR signature_key = x''))` with `?4` the entry's key or `x''` → `Skipped`.
-5. Compute the mention exactly as `sync.rs:886-890` does: `roles = own_roles_of(c, g)`, `mentionable =
-   mentionable_of(c, g)`, `broadcast = broadcast_ok(c, g, &e.sender_user)`, `mention = env.kind == 0 &&
-   e.sender_user != own.user_id && mentions_me_gated(&env.body, &own.user_id, &roles, &mentionable, broadcast)`.
-6. `insert_message(c, &StoredMessage { group_id, seq, epoch, recv_ts, status: 0, reason: "", sender_user:
-   Some(&e.sender_user), sender_device: &e.sender_device, sender_leaf: None, sender_sig_key: e.sender_sig_key
-   .as_ref().map(|k| k.as_slice()), sender_kind: Some(e.sender_kind), sender_tier: Some(e.sender_tier), msg_id:
-   Some(env.msg_id), ty: Some(env.kind), reply_to: env.reply_to, thread_id: env.thread_id, body: &env.body, envelope:
-   Some(&e.envelope), franking_tag: &e.franking_tag, mention })`, then `refold_insert(c, g, seq, env,
-   &e.sender_user, &e.sender_device, Some(own))`.
-7. `DELETE FROM app_history_out WHERE group_id = ?1 AND seq = ?2` (the trigger queued it; it is saved already).
+5. and 6. Insert and fold exactly as `sync.rs:880-893` does for a decrypted row, with the real types
+   (`EnvelopeType::as_u8`, `MsgId::as_bytes`; `insert_message`, `refold_insert`, `own_roles_of`, `mentionable_of`,
+   `broadcast_ok` and `mentions_me_gated` are `pub(super)` in `messages.rs` and imported as `sync.rs:13` imports them):
+
+   ```rust
+   let g = &e.group_id;
+   let roles = own_roles_of(c, g)?;
+   let mentionable = mentionable_of(c, g)?;
+   let broadcast = broadcast_ok(c, g, &e.sender_user)?;
+   let msg = StoredMessage {
+       group_id: g,
+       seq: e.seq,
+       epoch: e.epoch,
+       recv_ts: e.recv_ts,
+       status: 0,
+       reason: "",
+       sender_user: Some(&e.sender_user),
+       sender_device: &e.sender_device,
+       sender_leaf: None,
+       sender_sig_key: e.sender_sig_key.as_ref().map(|k| k.as_slice()),
+       sender_kind: Some(e.sender_kind),
+       sender_tier: Some(e.sender_tier),
+       msg_id: Some(env.msg_id.as_bytes()),
+       ty: Some(env.kind.as_u8()),
+       reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+       thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
+       body: &env.body,
+       envelope: Some(&e.envelope),
+       franking_tag: &e.franking_tag,
+       mention: env.kind.as_u8() == 0
+           && e.sender_user != own.user_id
+           && mentions_me_gated(&env.body, &own.user_id, &roles, &mentionable, broadcast),
+   };
+   insert_message(c, &msg)?;
+   refold_insert(c, g, e.seq, env, &e.sender_user, &e.sender_device, Some(own))?;
+   ```
+7. `DELETE FROM app_history_out WHERE group_id = ?1 AND seq = ?2 AND op = 0` (the trigger queued a put; it is saved
+   already). Only the put goes: a delete queued for that seq by `app_history_drop` (the fold in step 6 can blank an
+   edit row it restores alongside, or a later row of the page can delete this one) stays and is uploaded.
 8. `INSERT INTO app_read_state (group_id, last_read_seq, last_read_at) VALUES (?1, ?2, 0) ON CONFLICT (group_id) DO
    UPDATE SET last_read_seq = max(last_read_seq, excluded.last_read_seq)`.
 9. → `Merged`.
@@ -1204,21 +1287,44 @@ of `merge_entry` (a `Skipped` is also deleted), and delete it. Answer `[merged(u
 ### K.8 The wasm facade (task K3)
 
 In `core/dilla-core-wasm/src/facade.rs`, one method per core method, in the existing style (`self.with_core(|c| …)`,
-byte arrays as `&[u8]`, CBOR answers as `Vec<u8>`):
+byte arrays in as `&[u8]`, CBOR answers out as `Box<[u8]>` through `.map(Vec::into_boxed_slice)`, as `purges` and
+`enrol_complete` do at `facade.rs:675` and `:895`):
 
 ```rust
-pub fn history_status(&self, now: u64) -> Result<Vec<u8>, JsError>
-pub fn history_set_server(&self, enabled: bool, generation: u64) -> Result<Vec<u8>, JsError>
-pub fn history_unlock(&self, recovery_key: &str, root_sealed: &[u8], now: u64) -> Result<Vec<u8>, JsError>
-pub fn history_take(&self, max_rows: u32, max_bytes: u32) -> Result<Vec<u8>, JsError>
+/// Calls ClientCore::history_status; CBOR §K.7.1.
+pub fn history_status(&self, now: u64) -> Result<Box<[u8]>, JsError>
+pub fn history_set_server(&self, enabled: bool, generation: u64) -> Result<Box<[u8]>, JsError>
+/// The key is a String and is wrapped in Zeroizing at once, as enrol_complete does.
+pub fn history_unlock(&self, recovery_key: String, root_sealed: &[u8], now: u64) -> Result<Box<[u8]>, JsError>
+pub fn history_take(&self, max_rows: u32, max_bytes: u32) -> Result<Box<[u8]>, JsError>
 pub fn history_done(&self, taken: &[u8]) -> Result<(), JsError>          // CBOR [uint]
-pub fn history_restore_page(&self, rows: &[u8], now: u64) -> Result<Vec<u8>, JsError>
-pub fn history_restore_state(&self) -> Result<Vec<u8>, JsError>
+pub fn history_restore_page(&self, rows: &[u8], now: u64) -> Result<Box<[u8]>, JsError>
+pub fn history_restore_state(&self) -> Result<Box<[u8]>, JsError>
 pub fn history_restore_cancel(&self) -> Result<(), JsError>
-pub fn history_unpark(&self, now: u64) -> Result<Vec<u8>, JsError>
+pub fn history_unpark(&self, now: u64) -> Result<Box<[u8]>, JsError>
 ```
 
-The recovery key crosses as a `&str` exactly as `enrol_complete` takes it; the page never sees the derived keys.
+`core/dilla-core-wasm/src/lib.rs`: `BROWSER_ABI_VERSION` 11 → 12; `tests/node.rs:281` asserts 12.
+
+`packages/core-wasm/types.test-d.ts`: `ExpectedCoreHandle` gains, after `purge_done`,
+
+```ts
+  history_status(now: bigint): Uint8Array;
+  history_set_server(enabled: boolean, generation: bigint): Uint8Array;
+  history_unlock(recovery_key: string, root_sealed: Uint8Array, now: bigint): Uint8Array;
+  history_take(max_rows: number, max_bytes: number): Uint8Array;
+  history_done(taken: Uint8Array): void;
+  history_restore_page(rows: Uint8Array, now: bigint): Uint8Array;
+  history_restore_state(): Uint8Array;
+  history_restore_cancel(): void;
+  history_unpark(now: bigint): Uint8Array;
+```
+
+and, after `expectTrue<Equals<H['purge_done'], E['purge_done']>>();`, one
+`expectTrue<Equals<H['history_…'], E['history_…']>>();` line per method under the comment `// message history (ABI
+12).` The member-set check (`keyof H` equals `keyof E`, line 106) then holds.
+
+The page never sees the derived keys.
 
 ### K.9 Tests
 
@@ -1242,8 +1348,10 @@ All from `rk = 0x0b × 32`, `user_id = 0x02 × 16`, `group_id = 0x01 × 16`, unl
 10. `a_row_under_another_id_or_user_does_not_open`: the same row opened with another `entry_id`, or another `user_id`,
     is `Open`.
 11. `a_batch_stops_at_512_rows`: the 513th `seal` is `Shape`.
-12. `the_open_cache_derives_once_per_enc`: opening 3 rows of one batch performs one receiver setup (count through a
-    wrapping test crypto provider) and the 65th distinct `enc` evicts the first.
+12. `the_open_cache_holds_one_key_per_enc`: `OpenCache` gains `#[cfg(test)] fn open_cache_len(&self) -> usize`.
+    Opening three rows of batch A and two of batch B with one cache leaves `open_cache_len() == 2`; opening rows of 65
+    distinct batches leaves 64, and a row of the first batch then derives again (the cache holds 64 again, with the
+    first batch's `enc` present).
 
 `tests/history_vectors.rs` `history_vectors_reproduce`: from `protocol/vectors/history.json` (frozen by K1 by running
 the generator test once, `#[ignore]`d, `write_history_vectors`), reproduces `seed`, `sk`, `pk`, `k_auth`, `k_id`,
@@ -1261,8 +1369,15 @@ the generator test once, `#[ignore]`d, `write_history_vectors`), reproduces `see
 
 #### K.9.2 Store tests (K2), `core/dilla-core/tests/client_history.rs` and unit tests in `client/history.rs`
 
-The trigger tests use an in-memory connection with `APP_SCHEMA`, `APP_SCHEMA_V4`, `APP_AUTHORITY` and `APP_HISTORY`
-and rows written directly; the flow tests use the existing two-client harness of `tests/client_identity.rs`.
+**Unit** tests (in `#[cfg(test)] mod tests` of `client/history.rs`) use an in-memory connection built by
+`schema::migrate_conn(&c)` (`pub(crate)`, which runs `APP_SCHEMA`, `APP_SCHEMA_V4`, `APP_AUTHORITY`, `APP_HISTORY` and
+the FTS5 index, so tests 23–24 can search); the trigger-only tests 1–3 may instead batch `APP_SCHEMA`, `APP_SCHEMA_V4`,
+`APP_AUTHORITY` and `APP_HISTORY` directly (hence `APP_SCHEMA_V4` is `pub(super)`). Rows are written directly, and
+tests call the free functions of
+§K.7 (with `RustCrypto::default()` for crypto and randomness and an `Own` built in the test): **1–10, 12–16 and 21–29**.
+**Integration** tests (`core/dilla-core/tests/client_history.rs`) go through the public `ClientCore` API and the
+existing harness of `tests/client_identity.rs` (signup, sign-in with the key, a shown row through a send): **11, 17–20
+and 30**.
 
 1. `history_put_queues_a_shown_row_of_a_text_group`: with `history_on`, inserting a status-0 type-0 row with an
    envelope in a kind-0 group queues `op 0`.
@@ -1272,7 +1387,9 @@ and rows written directly; the flow tests use the existing two-client harness of
    applied through `refold_insert` queue `op 1` for the target and both edits, and `op 0` for the type-2 row.
 5. `a_ds_deletion_queues_a_delete`: the `sync.rs:626` update (status 2, envelope NULL) queues `op 1`.
 6. `a_deletion_marker_for_an_unstored_seq_queues_a_delete`: inserting a status-2 row queues `op 1`.
-7. `a_retraction_queues_deletes`: `retract_matching` on a leaf with two shown rows queues `op 1` for both.
+7. `a_retraction_queues_deletes`: running the retraction's own statement (`trust.rs:410`, `UPDATE app_messages SET
+   status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2`; `retract_matching`
+   is private to `trust.rs`) on two shown rows queues `op 1` for both.
 8. `a_released_row_is_queued`: the release path (delete the status-1 row, insert status 0) queues `op 0`.
 9. `the_latest_op_wins`: put then delete of one seq leaves one row, `op 1`, with a larger `n`.
 10. `done_keeps_a_row_queued_after_the_take`: take, then the row is queued again, then `history_done(taken)` leaves the
@@ -1298,9 +1415,10 @@ and rows written directly; the flow tests use the existing two-client harness of
 23. `restore_folds_edits_reactions_pins_and_deletes`: a page of a post, its edit, a reaction, a pin, a second post and
     the second post's author delete gives the first post shown edited, reacted and pinned, and the second deleted, in
     either page order.
-24. `restore_indexes_search_marks_read_and_does_not_requeue`: after a page, the search finds the post's word, the
-    group's `last_read_seq` is at least the highest merged seq, its unread and mention counts are 0, and
-    `app_history_out` holds none of the merged seqs.
+24. `restore_indexes_search_marks_read_and_does_not_requeue`: after a page of a post and its author's delete, the
+    search finds a second post's word, the group's `last_read_seq` is at least the highest merged seq, its unread and
+    mention counts are 0, `app_history_out` holds **no op-0 row** for any merged seq, and it **does** hold the op-1
+    row the delete's fold queued for the deleted post (that delete must still reach the server).
 25. `restore_skips_quarantined_senders`: an entry whose sender key has an `app_quarantine` row in that group is
     `Skipped`.
 26. `restore_counts_gaps`: a junk row, a row of another account and a row whose decrypted `(group, seq)` does not give
@@ -1318,25 +1436,27 @@ and rows written directly; the flow tests use the existing two-client harness of
 ## Appendix S: server
 
 Grounded in main at `1ad0d408`. The patterns to copy: `backups.go` (body decoding, meters, the user lock),
-`auth.go` (`requireStepUp`), `messages.sql` (paired sqlite and Postgres queries with byte-identical headers).
+`auth.go` (`spendStepUp`), `messages.sql` (paired sqlite and Postgres queries with byte-identical headers).
 
 ### S.1 Migration and schema (task S1)
 
-**Numbers (D23).** `00026_history_archive.sql` and schema `024_history_archive.sql` in both engines. The migration's
+**Numbers (D23).** `00024_history_archive.sql` and schema `022_history_archive.sql` in both engines. The migration's
 Up body is the schema file verbatim, as every migration's is (`TestMigrationCarriesEverySchemaFileVerbatim`).
 
-SQLite (`internal/store/sqlite/schema/024_history_archive.sql`):
+SQLite (`internal/store/sqlite/schema/022_history_archive.sql`):
 
 ```sql
--- 024_history_archive.sql: message history (protocol/06 § History, protocol/09 § History),
--- migration 00026_history_archive.sql. The instance cannot open a row: entry ids are keyed hashes,
--- rows are sealed to a key derived from the person's recovery key. No time is stored per entry.
+-- 022_history_archive.sql: message history (protocol/06 § History, protocol/09 § History),
+-- migration 00024_history_archive.sql. The instance cannot open a row: entry ids are keyed hashes,
+-- rows are sealed to a key derived from the person's recovery key. No time is stored per entry; a
+-- deleted id keeps its delete hash and the day it was deleted, and is pruned after 400 days.
 CREATE TABLE history_state (
   user_id    BLOB    PRIMARY KEY CHECK (length(user_id) = 16) REFERENCES users(id) ON DELETE CASCADE,
   enabled    INTEGER NOT NULL CHECK (enabled IN (0, 1)),
   generation INTEGER NOT NULL CHECK (generation >= 1),
   entries    INTEGER NOT NULL CHECK (entries >= 0),
   bytes      INTEGER NOT NULL CHECK (bytes >= 0),
+  tombstones INTEGER NOT NULL CHECK (tombstones >= 0),
   updated    INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE history_entries (
@@ -1349,15 +1469,18 @@ CREATE TABLE history_entries (
 ) STRICT;
 CREATE INDEX history_entries_by_user ON history_entries (user_id, n);
 CREATE TABLE history_tombstones (
-  user_id  BLOB NOT NULL CHECK (length(user_id) = 16) REFERENCES users(id) ON DELETE CASCADE,
-  entry_id BLOB NOT NULL CHECK (length(entry_id) = 16),
+  user_id  BLOB    NOT NULL CHECK (length(user_id) = 16) REFERENCES users(id) ON DELETE CASCADE,
+  entry_id BLOB    NOT NULL CHECK (length(entry_id) = 16),
+  del_hash BLOB    NOT NULL CHECK (length(del_hash) = 16),
+  created  INTEGER NOT NULL,   -- unix seconds rounded down to the day
   PRIMARY KEY (user_id, entry_id)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX history_tombstones_by_age ON history_tombstones (created);
 ```
 
 Down (both engines): `DROP TABLE history_tombstones; DROP TABLE history_entries; DROP TABLE history_state;`.
 
-Postgres (`internal/store/postgres/schema/024_history_archive.sql`), the same comment, then:
+Postgres (`internal/store/postgres/schema/022_history_archive.sql`), the same comment, then:
 
 ```sql
 CREATE TABLE history_state (
@@ -1366,6 +1489,7 @@ CREATE TABLE history_state (
   generation BIGINT   NOT NULL CHECK (generation >= 1),
   entries    BIGINT   NOT NULL CHECK (entries >= 0),
   bytes      BIGINT   NOT NULL CHECK (bytes >= 0),
+  tombstones BIGINT   NOT NULL CHECK (tombstones >= 0),
   updated    BIGINT   NOT NULL
 );
 CREATE TABLE history_entries (
@@ -1378,13 +1502,18 @@ CREATE TABLE history_entries (
 );
 CREATE INDEX history_entries_by_user ON history_entries (user_id, n);
 CREATE TABLE history_tombstones (
-  user_id  BYTEA NOT NULL CHECK (octet_length(user_id) = 16) REFERENCES users(id) ON DELETE CASCADE,
-  entry_id BYTEA NOT NULL CHECK (octet_length(entry_id) = 16),
+  user_id  BYTEA  NOT NULL CHECK (octet_length(user_id) = 16) REFERENCES users(id) ON DELETE CASCADE,
+  entry_id BYTEA  NOT NULL CHECK (octet_length(entry_id) = 16),
+  del_hash BYTEA  NOT NULL CHECK (octet_length(del_hash) = 16),
+  created  BIGINT NOT NULL,
   PRIMARY KEY (user_id, entry_id)
 );
+CREATE INDEX history_tombstones_by_age ON history_tombstones (created);
 ```
 
-An absent `history_state` row means **on, generation 1, no entries**: the migration writes no rows.
+An absent `history_state` row means **on, generation 1, no entries, no tombstones**: the migration writes no rows.
+Each tombstone counts **64 bytes** toward the quota (`historyTombstoneBytes = 64`): the quota check of a put is
+`bytes + 64 × tombstones + new bytes ≤ quota` (§S.4.4). A delete is never refused for the quota.
 
 ### S.2 Queries and store (task S1)
 
@@ -1393,19 +1522,19 @@ An absent `history_state` row means **on, generation 1, no entries**: the migrat
 
 ```sql
 -- name: GetHistoryState :one
-SELECT enabled, generation, entries, bytes FROM history_state WHERE user_id = ?;
+SELECT enabled, generation, entries, bytes, tombstones FROM history_state WHERE user_id = ?;
 
 -- name: UpsertHistoryState :exec
-INSERT INTO history_state (user_id, enabled, generation, entries, bytes, updated) VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO history_state (user_id, enabled, generation, entries, bytes, tombstones, updated) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (user_id) DO UPDATE SET enabled = excluded.enabled, generation = excluded.generation,
-  entries = excluded.entries, bytes = excluded.bytes, updated = excluded.updated;
+  entries = excluded.entries, bytes = excluded.bytes, tombstones = excluded.tombstones, updated = excluded.updated;
 
 -- name: GetHistoryEntryHash :one
 SELECT del_hash, length(row) AS row_len FROM history_entries WHERE user_id = ? AND entry_id = ?;
 -- (Postgres: octet_length(row) AS row_len)
 
--- name: HistoryTombstoned :one
-SELECT CAST(EXISTS (SELECT 1 FROM history_tombstones WHERE user_id = ? AND entry_id = ?) AS INTEGER) AS tombstoned;
+-- name: GetHistoryTombstone :one
+SELECT del_hash FROM history_tombstones WHERE user_id = ? AND entry_id = ?;
 
 -- name: InsertHistoryEntry :exec
 INSERT INTO history_entries (user_id, entry_id, del_hash, row) VALUES (?, ?, ?, ?);
@@ -1413,8 +1542,18 @@ INSERT INTO history_entries (user_id, entry_id, del_hash, row) VALUES (?, ?, ?, 
 -- name: DeleteHistoryEntry :exec
 DELETE FROM history_entries WHERE user_id = ? AND entry_id = ?;
 
--- name: InsertHistoryTombstone :exec
-INSERT INTO history_tombstones (user_id, entry_id) VALUES (?, ?) ON CONFLICT DO NOTHING;
+-- name: InsertHistoryTombstone :execrows
+INSERT INTO history_tombstones (user_id, entry_id, del_hash, created) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
+
+-- name: CountOldHistoryTombstonesByUser :many
+SELECT user_id, CAST(COUNT(*) AS BIGINT) AS old FROM history_tombstones WHERE created < ? GROUP BY user_id;
+
+-- name: DecrementHistoryTombstones :exec
+UPDATE history_state SET tombstones = max(tombstones - ?, 0) WHERE user_id = ?;
+-- (Postgres: GREATEST(tombstones - $1, 0))
+
+-- name: DeleteOldHistoryTombstones :execrows
+DELETE FROM history_tombstones WHERE created < ?;
 
 -- name: ListHistoryEntriesBefore :many
 SELECT n, entry_id, row FROM history_entries WHERE user_id = ? AND n < ? ORDER BY n DESC LIMIT ?;
@@ -1436,7 +1575,7 @@ SELECT CAST(COUNT(*) AS BIGINT) AS people, CAST(COALESCE(SUM(entries), 0) AS BIG
        CAST(COALESCE(SUM(bytes), 0) AS BIGINT) AS bytes FROM history_state WHERE entries > 0;
 
 -- name: HistoryUsersAtOrOver :one
-SELECT CAST(COUNT(*) AS BIGINT) AS people FROM history_state WHERE bytes >= ?;
+SELECT CAST(COUNT(*) AS BIGINT) AS people FROM history_state WHERE bytes + 64 * tombstones >= ?;
 ```
 
 "Newest first" with no `before` is `ListHistoryEntriesBefore` with `before = math.MaxInt64`.
@@ -1445,21 +1584,27 @@ Store types (`internal/store/rows.go`) and the sub-interface (`internal/store/st
 listed where `TestSubInterfacesMatchTheContract` reads the sub-interfaces):
 
 ```go
-type HistoryState struct { Enabled bool; Generation uint64; Entries int64; Bytes int64 }
+type HistoryState struct { Enabled bool; Generation uint64; Entries int64; Bytes int64; Tombstones int64 }
 type HistoryPut struct { EntryID, DelHash, Row []byte }
 type HistoryRow struct { N int64; EntryID, Row []byte }
 type HistoryTotals struct { People, Entries, Bytes, NearFull int64 }
 
 type HistoryStore interface {
-	// GetHistoryState answers the stored state, or {true, 1, 0, 0} and found=false when none is stored.
+	// GetHistoryState answers the stored state, or {true, 1, 0, 0, 0} and found=false when none is stored.
 	GetHistoryState(ctx context.Context, uid id.ID) (st HistoryState, found bool, err error)
 	PutHistoryState(ctx context.Context, uid id.ID, st HistoryState, now int64) error
 	// GetHistoryEntryHash answers ErrNotFound when the account holds no entry with this id.
 	GetHistoryEntryHash(ctx context.Context, uid id.ID, entryID []byte) (delHash []byte, rowLen int64, err error)
-	HistoryTombstoned(ctx context.Context, uid id.ID, entryID []byte) (bool, error)
+	// GetHistoryTombstone answers the deleted id's stored delete hash, or ErrNotFound.
+	GetHistoryTombstone(ctx context.Context, uid id.ID, entryID []byte) (delHash []byte, err error)
 	InsertHistoryEntry(ctx context.Context, uid id.ID, p HistoryPut) error
 	DeleteHistoryEntry(ctx context.Context, uid id.ID, entryID []byte) error
-	InsertHistoryTombstone(ctx context.Context, uid id.ID, entryID []byte) error
+	// InsertHistoryTombstone answers whether a row was added (false: the id was already deleted). day is
+	// now rounded down to a multiple of 86400.
+	InsertHistoryTombstone(ctx context.Context, uid id.ID, entryID, delHash []byte, day int64) (bool, error)
+	// PruneHistoryTombstones deletes every tombstone created before `before` and lowers each owner's
+	// history_state.tombstones by its count, in one transaction of its own; answers the rows deleted.
+	PruneHistoryTombstones(ctx context.Context, before int64) (int64, error)
 	// ListHistoryEntries: before != nil pages down from it, after != nil pages up from it; exactly one is set.
 	ListHistoryEntries(ctx context.Context, uid id.ID, before, after *int64, limit int) ([]HistoryRow, error)
 	// DeleteHistoryOfUser deletes the account's entries, deleted ids and state.
@@ -1487,8 +1632,17 @@ is above 0 (message: "history.upload_bytes_per_day must be at least 1048576 whil
 
 `internal/api/api.go` `Deps`: `HistoryMeter *UploadMeter // per-DEVICE daily byte budget of POST
 /v1/history/entries (history.upload_bytes_per_day); Register builds it when it is nil.` In `Register`, beside the
-`StateMeter` construction: `if d.HistoryMeter == nil { d.HistoryMeter = NewStateMeter(d.Clock,
-d.Config.History.UploadBytesPerDay) }` (with the same nil-`Config` guard the `StateMeter` uses).
+`StateMeter` construction (`api.go:171`):
+
+```go
+if d.HistoryMeter == nil && d.Config != nil {
+	d.HistoryMeter = NewStateMeter(d.Clock, d.Config.History.UploadBytesPerDay)
+}
+```
+
+The guard is the one `UploadMeter` uses (`api.go:168`): `NewStateMeter` reads no config itself, so the nil check sits
+at the call. With no `Config`, `HistoryMeter` stays nil and `PostHistoryEntries` answers `500 E_INTERNAL "the history
+meter is not wired"` and logs it, as `PutBackup` does for a nil `Blobs`; the other four routes need no meter.
 
 ### S.4 Routes (task S3)
 
@@ -1511,7 +1665,7 @@ m.Handle("GET /v1/history/entries", d.enrolled(dsMeter(d.Limiter, dsClassRead, d
 - Every write handler runs in `d.Repo.Tx` and takes `tx.LockUserForDeviceRegistration(ctx, sess.UserID)` first, so one
   account's history writes are serialised (the counters stay exact).
 - Body caps: `PUT /v1/history` 64 KiB (the default); `POST /v1/history/entries` `historyPutBodyCap` = 1 052 672;
-  `POST /v1/history/entries/delete` 64 KiB (1024 items fit in about 37 KiB). Over the cap is `413 E_TOO_LARGE`.
+  `POST /v1/history/entries/delete` 64 KiB (1024 three-element items fit in about 55 KiB). Over the cap is `413 E_TOO_LARGE`.
 - `decodeHistoryRow(row []byte) error`: `len(row)` 1..81920, and a deterministic CBOR array of 4: `uint` 1, a 32-byte
   `bstr`, a 12-byte `bstr`, a `bstr` of at least 16 bytes; else `400 E_INVALID_REQUEST "row is not a history row"`.
 - A `generation` element is a CBOR `uint`; anything else is `400`.
@@ -1519,7 +1673,8 @@ m.Handle("GET /v1/history/entries", d.enrolled(dsMeter(d.Limiter, dsClassRead, d
 #### S.4.2 `GET /v1/history`
 
 `st, _ := GetHistoryState`; answer `[enabled, generation, entries, bytes, quota]` with `enabled =
-historyEffective(st, quota) ? 1 : 0`. No lock.
+historyEffective(st, quota) ? 1 : 0` and `bytes = st.Bytes + 64 × st.Tombstones` (what counts toward the quota). No
+lock.
 
 #### S.4.3 `PUT /v1/history`
 
@@ -1528,10 +1683,14 @@ Body `[enabled(uint 0|1), stepup(tstr|null)]`; any other shape `400`.
 - `enabled = 1`: `quota == 0` → `403 E_FORBIDDEN "message history is off on this instance"`. In the transaction: when
   the stored state is already enabled, answer it unchanged; else `generation + 1`, `enabled = true`, counters kept
   (they are 0 after an off), `PutHistoryState`, audit `history.on` (target the user id, detail `generation N`).
-- `enabled = 0`: `d.requireStepUp(ctx, sess, stepup)` **before** the transaction (`403 E_STEP_UP`; it spends the
-  token). In the transaction: when already off, answer unchanged; else `DeleteHistoryEntriesOfUser`,
-  `DeleteHistoryTombstonesOfUser`, then `PutHistoryState{Enabled: false, Generation: g + 1, Entries: 0, Bytes: 0}`,
-  audit `history.off` (detail `generation N, M entries`).
+- `enabled = 0`: **always** needs a valid step-up token, whether or not the account holds a factor. Do not call
+  `requireStepUp`, whose no-factor branch lets a request through without one. Before the transaction:
+  `if stepup == nil { 403 E_STEP_UP }`, then `if err := d.spendStepUp(sess, stepup); err != nil { return err }`
+  (`auth.go`; it answers `403 E_STEP_UP` for a spent, expired or foreign token, and spends a good one). Since web3.6
+  every account holds a factor; an account reset by the operator meets the forced factor set-up before it reaches
+  Settings, so it has one by then. In the transaction: when already off, answer unchanged (the token is spent all the
+  same); else `DeleteHistoryEntriesOfUser`, `DeleteHistoryTombstonesOfUser`, then `PutHistoryState{Enabled: false,
+  Generation: g + 1, Entries: 0, Bytes: 0, Tombstones: 0}`, audit `history.off` (detail `generation N, M entries`).
 - Answer `200 [enabled, generation]`.
 
 #### S.4.4 `POST /v1/history/entries`
@@ -1544,25 +1703,53 @@ body is `400`. Then, in the transaction:
 
 1. Lock; `st := GetHistoryState`. `!historyEffective(st, quota)` or `generation != st.Generation` →
    `409 E_HISTORY_STALE`.
-2. For each entry in body order: tombstoned (`HistoryTombstoned`) or present (`GetHistoryEntryHash` not
-   `ErrNotFound`) → `dropped++`; else add to `toStore` and `newBytes += len(row)`.
-3. `st.Bytes + newBytes > quota` → `507 E_STORAGE_FULL` and nothing stored (the transaction returns the error).
+2. For each entry in body order: deleted (`GetHistoryTombstone` not `ErrNotFound`) or present
+   (`GetHistoryEntryHash` not `ErrNotFound`) → `dropped++`; else add to `toStore` and `newBytes += len(row)`.
+3. `st.Bytes + 64 × st.Tombstones + newBytes > quota` → `507 E_STORAGE_FULL` and nothing stored (the transaction
+   returns the error).
 4. `InsertHistoryEntry` each; `st.Entries += len(toStore)`, `st.Bytes += newBytes`; `PutHistoryState`.
-5. Answer `200 [stored, dropped]`.
+5. Answer `200 [stored, dropped, entries, bytes]` with the account's totals after the request (`st.Entries`,
+   `st.Bytes + 64 × st.Tombstones`, the same "bytes" `GET /v1/history` answers).
 
 #### S.4.5 `POST /v1/history/entries/delete`
 
-Body `[generation(uint), items]`, 1..1024 items, each `[entry_id(bstr 16), del_token(bstr 16)]`. In the transaction:
+Body `[generation(uint), items]`, 1..1024 items, each `[entry_id(bstr 16), del_token(bstr 16), del_hash(bstr 16)]`
+(the browser sends the hash it would have stored with the entry, so an id the server does not hold can be recorded
+with it). Let `h(token) = sha256.Sum256("dilla history delete hash v1" ‖ token)[:16]`; every comparison below uses
+`subtle.ConstantTimeCompare`. In the transaction, with `day = now - now % 86400`:
 
 1. Lock; state; stale or off → `409 E_HISTORY_STALE`.
-2. For each item: `GetHistoryEntryHash`:
-   - `ErrNotFound` → `InsertHistoryTombstone` (an id never stored, or already deleted, is recorded as deleted so a late
-     upload is dropped); counts as `deleted`.
-   - found and `sha256.Sum256("dilla history delete hash v1" ‖ token)[:16]` equals `del_hash` (compared with
-     `subtle.ConstantTimeCompare`) → `DeleteHistoryEntry`, `InsertHistoryTombstone`, `st.Entries--`,
-     `st.Bytes -= rowLen`, `deleted++`.
-   - found and the hash differs → `refused++`, nothing changes.
-3. `PutHistoryState`; answer `200 [deleted, refused]`.
+2. For each item, `h(token) != del_hash` → `refused++`, next (an inconsistent item records nothing).
+3. Then `GetHistoryEntryHash`:
+   - found and `h(token)` equals the stored `del_hash` → `DeleteHistoryEntry`, `InsertHistoryTombstone(id, del_hash,
+     day)`, `st.Entries--`, `st.Bytes -= rowLen`, `st.Tombstones++`, `deleted++`;
+   - found and different → `refused++`, nothing changes;
+   - `ErrNotFound` → `GetHistoryTombstone`: found and equal → already deleted, `deleted++` (idempotent); found and
+     different → `refused++`; `ErrNotFound` → `InsertHistoryTombstone(id, del_hash, day)`, `st.Tombstones++`,
+     `deleted++` (an id never stored here is recorded as deleted, with its hash, so a late upload of it is dropped and
+     a later delete must present the matching token).
+4. `PutHistoryState`; answer `200 [deleted, refused, entries, bytes]` with the totals as in §S.4.4.
+
+A stolen session holds none of the browser's keys, so it can compute neither ids nor tokens: it cannot delete an
+entry, and a tombstone it records under a made-up id blocks nothing real.
+
+#### S.4.5a Pruning tombstones (task S3)
+
+`internal/dillad/server.go` `sweep` (`server.go:600`, the maintenance tick) gains, at most once an hour (a
+`historyPrunedAt time.Time` field on `Server`, compared with `s.o.Clock.Now()`):
+
+```go
+if now := s.o.Clock.Now(); now.Sub(s.historyPrunedAt) >= time.Hour {
+	s.historyPrunedAt = now
+	if _, err := s.o.Repo.PruneHistoryTombstones(ctx, now.Unix()-400*86400); err != nil {
+		s.o.Log.Warn("pruning history tombstones failed", "err", err)
+	}
+}
+```
+
+`PruneHistoryTombstones` (store, S1) runs `CountOldHistoryTombstonesByUser`, `DecrementHistoryTombstones` per user,
+then `DeleteOldHistoryTombstones`, in one transaction. A browser that comes back after more than 400 days could
+upload a message deleted that long ago once more; protocol/06 states the window.
 
 #### S.4.6 `GET /v1/history/entries`
 
@@ -1585,7 +1772,7 @@ default 512). Anything else, or both cursors, is `400`. No lock.
 - `internal/store/dump.go` `DumpTables`: append after `"slowmode_marks"`, with a comment in the file's style:
 
   ```go
-  // 024_history_archive.sql, appended by message history S1. All three tables' parent is users. A
+  // 022_history_archive.sql, appended by message history S1. All three tables' parent is users. A
   // restore that dropped history_tombstones would let a late browser upload a message its author
   // deleted; one that dropped history_state would reset every person's generation and switch.
   "history_state", "history_entries", "history_tombstones",
@@ -1625,15 +1812,33 @@ default 512). Anything else, or both cursors, is `400`. No lock.
 
 #### S.8.1 Store, migration and dump (S1), `internal/store/history_test.go`, `schema_test.go`, `dump_test.go`
 
-- `TestHistoryStateDefaultsToOnAtGenerationOne`: an account with no row answers `{true, 1, 0, 0}`, `found = false`.
+- `TestHistoryStateDefaultsToOnAtGenerationOne`: an account with no row answers `{true, 1, 0, 0, 0}`, `found = false`.
 - `TestHistoryEntriesRoundTripAndPage`: insert 5 entries; `before = MaxInt64, limit 2` answers the two newest in
   descending `n`; `after = n of the third, limit 10` answers the last two ascending.
 - `TestHistoryEntryIdIsUniquePerUser`: the same id twice for one user fails the unique constraint; for two users
   succeeds.
-- `TestHistoryTombstoneIsRecordedOnce`: two `InsertHistoryTombstone` calls leave one row and no error.
+- `TestHistoryTombstoneIsRecordedOnce`: two `InsertHistoryTombstone` calls leave one row and no error; the first
+  answers `true`, the second `false`; `GetHistoryTombstone` answers the first call's hash.
+- `TestPruneHistoryTombstonesKeepsTheCountsExact`: tombstones of two users at days 0, 0 and 500, pruned before day
+  100, leave one row and lower each user's `tombstones` by its count.
 - `TestDeleteHistoryOfUserLeavesOthers`: deletes one account's entries, tombstones and state; another's stay.
 - `TestHistoryGoesWithTheUserRow`: deleting a `users` row (test-only) cascades all three tables.
-- `TestHistoryArchiveMigrationIsSchemaVersion26` (renumber with D23), and green: `TestDumpTablesNamesEverySchemaTable`,
+- `TestHistoryArchiveMigrationIsItsSchemaVersion` (in `internal/store/history_test.go`, the pattern of
+  `TestAFKAwayMigrationIsSchemaVersion21` in `afk_away_test.go:229` but with no literal): find the one file matching
+  `*_history_archive.sql` in `sqlitemigrations.FS` and the same name in `pgmigrations.FS`, parse its leading number
+  `N`; assert `N <= wantSchemaVersion(t)` (the count of embedded migration files) and that every engine's
+  `SchemaVersion` is at least `N`.
+- `schema_test.go`: `wantTables` gains `"history_entries", "history_state", "history_tombstones"` (after
+  `"fork_reports"`, keeping the list sorted), and its comment gains "message history S1 added
+  022_history_archive.sql's history_state, history_entries and history_tombstones".
+- `contract_test.go`: `TestSubInterfacesMatchTheContract` gains the case `{"HistoryStore",
+  reflect.TypeOf((*store.HistoryStore)(nil)).Elem(), []string{"DeleteHistoryEntry", "DeleteHistoryOfUser",
+  "GetHistoryEntryHash", "GetHistoryState", "GetHistoryTombstone", "HistoryTotals", "InsertHistoryEntry",
+  "InsertHistoryTombstone", "ListHistoryEntries", "PruneHistoryTombstones", "PutHistoryState"}}`, and
+  `TestRepositoryEmbedsOnlyThe1aSubInterfaces` gains `reflect.TypeOf((*store.HistoryStore)(nil)).Elem()` at the end
+  of its embed list with the comment `// message history S1: HistoryStore joins with 00024_history_archive.sql.`
+  (`store.go`'s `Repository` embeds `HistoryStore` after `VoiceSessions`.)
+- And green: `TestDumpTablesNamesEverySchemaTable`,
   `TestEverySQLiteTableIsStrictAndTyped`, `TestGooseUpDownUpOnSQLite`/`Postgres`,
   `TestMigrationCarriesEverySchemaFileVerbatim`, `TestQuerierInterfacesAreIdentical`,
   `TestQueryHeadersAreByteIdenticalAcrossEngines`, `TestSubInterfacesMatchTheContract`,
@@ -1651,8 +1856,8 @@ Every authz case is written red first.
 - `TestHistoryGetAnswersDefaultsForANewAccount`: `[1, 1, 0, 0, 1073741824]`.
 - `TestHistoryGetSaysOffWhenTheQuotaIsZero`: with quota 0, `enabled` reads 0 and `quota` 0.
 - `TestHistoryRoutesRefuseAPendingSession`: each of the five routes answers `403 E_FORBIDDEN` to a pending session.
-- `TestHistoryPutStoresAndDropsDuplicates`: two entries → `[2, 0]`; the same two again → `[0, 2]`; counters `entries 2`,
-  `bytes` the two row lengths.
+- `TestHistoryPutStoresAndDropsDuplicates`: two entries → `[2, 0, 2, B]` with `B` the two row lengths; the same two
+  again → `[0, 2, 2, B]`.
 - `TestHistoryPutRefusesAStaleGeneration`: generation 2 while the account is at 1 → `409 E_HISTORY_STALE`, nothing
   stored.
 - `TestHistoryPutRefusesWhileOff`: after off, a put with the new generation → `409 E_HISTORY_STALE`.
@@ -1661,12 +1866,18 @@ Every authz case is written red first.
   are each `400 E_INVALID_REQUEST`; a body over 1 052 672 bytes is `413 E_TOO_LARGE`.
 - `TestHistoryPutOverQuotaStoresNothing`: with a 600-byte quota, a put whose rows total 601 bytes → `507
   E_STORAGE_FULL` and `entries` stays 0; a put of 600 bytes then succeeds.
+- `TestHistoryTombstonesCountTowardTheQuota`: with a 1000-byte quota and two tombstones (128 bytes), a put of 873
+  bytes → `507`, of 872 bytes succeeds; `GET` answers `bytes` = rows + 128; a delete when full still succeeds.
 - `TestHistoryUploadSpendsTheDeviceByteBudget`: with `upload_bytes_per_day = 1048576`, puts past it from one device →
   `429 E_RATE_LIMITED` with `retry_after_ms`; another device of the same user is not limited.
-- `TestHistoryDeleteNeedsTheToken`: a wrong token → `[0, 1]` and the row stays; the right token → `[1, 0]`, the row
-  is gone, the counters drop.
-- `TestHistoryDeletedIdIsNeverStoredAgain`: after a delete, a put of the same id → `[0, 1]`.
-- `TestHistoryDeleteOfAnAbsentIdRecordsIt`: deleting an id never stored → `[1, 0]`; a later put of it → `[0, 1]`.
+- `TestHistoryDeleteNeedsTheToken`: a wrong token (with its own matching hash) → `[0, 1, …]` and the row stays; the
+  right token → `[1, 0, …]`, the row is gone, `entries` drops, `tombstones` is 1.
+- `TestHistoryDeleteRefusesAnInconsistentItem`: an item whose `del_hash` is not `h(del_token)` → refused, nothing
+  recorded.
+- `TestHistoryDeletedIdIsNeverStoredAgain`: after a delete, a put of the same id → `[0, 1, …]`.
+- `TestHistoryDeleteOfAnAbsentIdRecordsIt`: deleting an id never stored → `[1, 0, …]` and a tombstone holding the sent
+  hash; a later put of it → `[0, 1, …]`; a later delete of it with another token (and that token's hash) → refused;
+  with the first token → `[1, 0, …]` and no second tombstone.
 - `TestHistoryListPagesNewestFirstThenAfter`: 600 entries: no cursor `limit 512` answers 512 newest descending;
   `before` the lowest answers the remaining 88; `after` the highest answers `[]`.
 - `TestHistoryListStopsAtOneMebibyte`: 20 rows of 80 KiB answer 12 rows (≤ 1 MiB); one row larger than the page is
@@ -1675,18 +1886,24 @@ Every authz case is written red first.
   a stale generation → `409 E_HISTORY_STALE`.
 - `TestHistoryIsOwnAccountOnly`: user B's list never answers user A's rows, and B's delete of A's id with A's token
   records a tombstone in B's account and leaves A's row.
-- `TestHistoryOffNeedsAStepUp`: `[0, null]` → `403 E_STEP_UP`, nothing deleted; with a valid token → `[0, 2]`.
+- `TestHistoryOffNeedsAStepUp`: with the `stepUp(t, h, token, 0, password)` helper of `auth_test.go:561` (which
+  reads its answer with `stepUpToken`, `auth_test.go:568`): `[0, null]` → `403 E_STEP_UP`, nothing deleted; a spent
+  token → `403 E_STEP_UP`; a fresh token → `[0, 2]`.
+- `TestHistoryOffNeedsAStepUpWithoutAFactor`: an account holding no factor (the test seeds one with none) still gets
+  `403 E_STEP_UP` for `[0, null]`: the handler never takes `requireStepUp`'s no-factor pass.
 - `TestHistoryOffDeletesEverythingAndBumpsTheGeneration`: after off, entries and tombstones are gone and `GET` answers
   `[0, 2, 0, 0, quota]`.
 - `TestHistoryOnAgainBumpsTheGeneration`: on after off → `[1, 3]`; on when on → unchanged.
 - `TestHistoryOnWithQuotaZeroIsForbidden`: `[1, null]` with quota 0 → `403 E_FORBIDDEN`.
 - `TestHistoryAuditsOffAndOn`: an audit row `history.off` then `history.on`, each naming the user.
-- `TestHistoryCountersStayExact`: after a mixed run of puts, duplicates, deletes and refusals, `entries` and `bytes`
-  equal `COUNT(*)` and `SUM(length(row))` of the account's rows.
+- `TestHistoryCountersStayExact`: after a mixed run of puts, duplicates, deletes and refusals, `entries`, `bytes` and
+  `tombstones` equal `COUNT(*)` and `SUM(length(row))` of the account's rows and `COUNT(*)` of its tombstones.
+- `TestSweepPrunesOldHistoryTombstonesHourly` (`internal/dillad`): with the test clock, a tombstone 401 days old goes
+  on the first sweep; a second sweep within the hour does not query again (a counting repo wrapper).
 - `TestDeleteMeDeletesHistory` (`accounts_delete_test.go`): after `DELETE /v1/accounts/me`, the account has no history
   rows of any of the three tables.
 - `TestRevokeAllDevicesKeepsHistory` (`internal/ops/revoke_devices_test.go`): entries survive `RevokeAllDevices`.
-- `internal/server/errors_test.go`: a row `{server.Errorf(server.CodeHistoryStale, ""), 409, 3}`.
+- (S5, not S3) `internal/server/errors_test.go`: a row `{server.Errorf(server.CodeHistoryStale, ""), 409, 3}`.
 
 ---
 
@@ -1704,7 +1921,7 @@ export interface HistoryCoreStatus {
   expired: boolean;
 }
 export interface HistoryPut { entryId: Uint8Array; delHash: Uint8Array; row: Uint8Array }
-export interface HistoryDeleteItem { entryId: Uint8Array; delToken: Uint8Array }
+export interface HistoryDeleteItem { entryId: Uint8Array; delToken: Uint8Array; delHash: Uint8Array }
 export interface HistoryTake { generation: bigint; puts: HistoryPut[]; deletes: HistoryDeleteItem[]; taken: bigint[] }
 export interface HistoryRestoreResult { done: boolean; merged: number; parked: number; skipped: number; gaps: number; groups: Id[] }
 export interface HistoryRestoreState { phase: 0 | 1; before: bigint | null; top: bigint | null; done: number; gaps: number; merged: number; started: bigint }
@@ -1723,9 +1940,43 @@ historyUnpark(now: bigint): { merged: number; groups: Id[] };
 
 Each decodes the facade's CBOR (§K.7) with the existing `decoded(name, bytes, reader)` helper; a shape error is
 `CoreError('E_CORE_STORAGE', …)` as for the other methods. `historyDone` encodes `taken` as a CBOR array of uints.
-`fake-core.ts` implements all nine over an in-memory queue and an in-memory restore record (no crypto: a put's `row` is
-the CBOR of `[group_id, seq]`, and `historyRestorePage` accepts rows of that fake shape), so worker tests run without
-wasm.
+`fake-core.ts` implements all nine over an in-memory queue and an in-memory restore record, with the fake scheme of
+§C.1.1 (no sealing: a put's `row` is the fake row below), so worker and web tests run without wasm.
+
+#### C.1.1 The fake scheme (`packages/client-core/src/testing/fake-history.ts`, task C1)
+
+A test-only module, imported by `fake-core.ts` (K3), `fake-server.ts` (C1) and their tests, never by shipping code.
+`@noble/hashes` is not a dependency of any package, so it uses Node's synchronous hash, as `fake-server.ts:1` already
+does (`import { createHash } from 'node:crypto'`):
+
+```ts
+import { createHash } from 'node:crypto';
+import { encode } from '../cbor';
+
+/** Synchronous SHA-256 for the fakes only. */
+export function sha256(...parts: Uint8Array[]): Uint8Array {
+  const h = createHash('sha256');
+  for (const p of parts) h.update(p);
+  return new Uint8Array(h.digest());
+}
+const E = new TextEncoder().encode('e');
+const T = new TextEncoder().encode('t');
+/** The fake entry id: sha256("e" ‖ cbor[group, seq]), first 16 bytes (the wire's id is 16 bytes). */
+export function fakeEntryId(group: Uint8Array, seq: bigint): Uint8Array { return sha256(E, encode([group, seq])).slice(0, 16); }
+/** The fake delete token: sha256("t" ‖ entryId), first 16 bytes. */
+export function fakeDelToken(entryId: Uint8Array): Uint8Array { return sha256(T, entryId).slice(0, 16); }
+/** The fake delete hash: sha256(delToken), first 16 bytes. The fake server checks sha256(token)[0..16] == delHash. */
+export function fakeDelHash(delToken: Uint8Array): Uint8Array { return sha256(delToken).slice(0, 16); }
+/** The fake row: cbor[1, group, seq, envelope] in place of a sealed row (fake-core's take writes it, its restore reads it). */
+export function fakeRow(group: Uint8Array, seq: bigint, envelope: Uint8Array): Uint8Array { return encode([1, group, seq, envelope]); }
+```
+
+(The truncation to 16 bytes is the only addition to the scheme of ruling 9: the wire's ids, tokens and hashes are
+16 bytes. The fake server's check is therefore `fakeDelHash(token)` equals the stored or sent `delHash`; the real
+server's domain-separated hash of §S.4.5 is not used by the fakes.)
+
+`testing/fake-history.test.ts` (C1): "ids are 16 bytes and differ by group and seq"; "a token's hash matches only
+that token"; "fakeRow round-trips through decode".
 
 ### C.2 Routes and errors (task C1)
 
@@ -1734,8 +1985,8 @@ wasm.
 ```ts
 export interface HistoryInfo { enabled: boolean; generation: bigint; entries: number; bytes: number; quota: number }
 export interface HistorySet { enabled: boolean; generation: bigint }
-export interface HistoryStored { stored: number; dropped: number }
-export interface HistoryDeleted { deleted: number; refused: number }
+export interface HistoryStored { stored: number; dropped: number; entries: number; bytes: number }
+export interface HistoryDeleted { deleted: number; refused: number; entries: number; bytes: number }
 export type HistoryCursor = { before: bigint } | { after: bigint } | Record<string, never>;
 
 async getHistory(): Promise<HistoryInfo>             // GET /v1/history, bucket 'read', idempotent
@@ -1750,14 +2001,17 @@ async getHistoryEntries(generation: bigint, cursor: HistoryCursor, limit: number
 ```
 
 Bodies: `encode([enabled ? 1 : 0, stepup])`, `encode([generation, puts.map(p => [p.entryId, p.delHash, p.row])])`,
-`encode([generation, items.map(i => [i.entryId, i.delToken])])`. Answers decode with `atLeast`, `u53`, `u64`, `bin` as
-the backups routes do; `enabled` is `oneOf(a[0], [0, 1]) === 1`.
+`encode([generation, items.map(i => [i.entryId, i.delToken, i.delHash])])`. Answers decode with `atLeast`, `u53`,
+`u64`, `bin` as the backups routes do; `enabled` is `oneOf(a[0], [0, 1]) === 1`; the two `POST` answers are four
+uints each.
 
-`http/errors.ts`: add `'E_HISTORY_STALE'` to the known codes. No page copy maps it: the worker handles it.
+`http/errors.ts` is not edited: `E_HISTORY_STALE` arrives as `DillaHttpError.code` like any code, and no page copy
+maps it (the worker handles it).
 
 `testing/fake-server.ts`: the five routes over an in-memory account state (enabled, generation, entries by id with
-`n`, tombstones), following §S.4 exactly (stale, quota, dedupe, tokens checked by recomputing the hash with
-WebCrypto SHA-256, newest-first paging), so C2, C3 and the web tests run against it.
+`n`, tombstones with their hash), following §S.4 exactly (stale, quota with 64 bytes per tombstone, dedupe, tokens
+checked with `fakeDelHash` of §C.1.1, absent ids recorded with the sent hash, newest-first paging, totals in the
+`POST` answers), so C2, C3 and the web tests run against it.
 
 ### C.3 History state (task C2), `history/state.ts`
 
@@ -1808,6 +2062,9 @@ Rules:
 2. **A flush** loops: `t = core.historyTake(512, 1_000_000)`; stop when `t.puts`, `t.deletes` and `t.taken` are all
    empty; `postHistoryEntries(t.generation, t.puts)` when there are puts; `postHistoryDeletes` per 1024 deletes; then
    `core.historyDone(t.taken)`; loop.
+2a. **Totals.** After each successful `POST`, the uploader writes the answer's totals into the state:
+   `state.info = { ...state.info, entries: answer.entries, bytes: answer.bytes }` (when `state.info` is not null), and
+   calls `state.deps.changed()` once per flush round, so the Privacy usage line follows uploads without a `GET`.
 3. **Errors** (the batch's queue rows stay; `historyDone` is not called):
    - network error, `500`, `503`: wait `min(BACKOFF_MAX_MS, BACKOFF_MIN_MS × 2^k) × (0.8 + 0.4 × random())`, `k` the
      consecutive failures, then flush again; a success resets `k`.
@@ -1872,24 +2129,60 @@ export interface HistorySlice {
 export function historySlice(state: HistoryState, status: HistoryCoreStatus, restore: RestoreProgress): HistorySlice;
 ```
 
-`SliceName` gains `'history'`. `TimelineSlice` (the `timeline:<channel>` slice) gains `restoring: boolean`, true while
-`restore.progress.state === 'running'`. The controller publishes `history` after every `changed()` (debounced to one
-publish per macrotask, as the other slices are).
+`state/types.ts`: `SliceName` (line 222) gains `| 'history'`; `SliceTypes` (line 228) gains `history: HistorySlice
+| null;`. `TimelineState` (line 100, the `timeline:<channel>` slice's type) gains `restoring: boolean`, true while
+`restore.progress.state === 'running'`; every place that builds a `TimelineState` (`buildTimeline` and the
+`'unsupported'` literal in `refreshTimeline`, `controller.ts:3589`) sets it. The controller publishes `history` after
+every `changed()` (debounced to one publish per macrotask, as the other slices are).
 
 ### C.7 Worker wiring (tasks C2 and C3), `worker/controller.ts` and `worker/protocol.ts`
 
-Commands (`worker/protocol.ts`, after `regenerateBackupCodes`):
+#### C.7.1 The three commands (task C2; `historyUseKey`'s body is C3's)
+
+`worker/protocol.ts`, in `Command` after the `regenerateBackupCodes` line (protocol.ts:58):
 
 ```ts
-| { m: 'historyRefresh' }                                             // ready → null; slice history
-| { m: 'historySetEnabled'; on: boolean; stepup: string | null }     // ready → null; slice history; off needs stepup
-| { m: 'historyUseKey'; recoveryKey: string }                         // ready → null; slice history
+  | { m: 'historyRefresh' }                                           // ready → null; slice history
+  | { m: 'historySetEnabled'; on: boolean; stepup: string | null }   // ready → null; slice history; off needs stepup
+  | { m: 'historyUseKey'; recoveryKey: string }                       // ready → null; slice history
 ```
 
-`historyUseKey` is added to the commands whose `recoveryKey` must not be blank (`controller.ts:669`) and to the ready
-phase's allowed list.
+`worker/controller.ts`, five places, each exactly once:
 
-Controller:
+1. **`COMMANDS`** (the `Set<Method>` at `controller.ts:185`): after `'regenerateBackupCodes',` (line 226) add
+   `'historyRefresh', 'historySetEnabled', 'historyUseKey',`.
+2. **The required-fields table, `VALIDATORS`** (`controller.ts:558`): add a spread `...HISTORY_VALIDATORS,` after
+   `...FACTOR_VALIDATORS,`, with, in the new `history/state.ts`:
+
+   ```ts
+   import { stepupProblem } from '../account/factors';   // factors.ts:49 gains `export`
+   export const HISTORY_VALIDATORS = {
+     historyRefresh: undefined,
+     historySetEnabled: (c: Record<string, unknown>): string | null => {
+       if (typeof c.on !== 'boolean') return 'on is not a boolean';
+       if (c.on) return c.stepup === null ? null : 'stepup must be null to turn history on';
+       return stepupProblem(c.stepup);
+     },
+     historyUseKey: undefined,   // the blank-key check below covers it
+   } as const;
+   ```
+3. **The blank-key check** (`controller.ts:669`): the condition becomes
+   `(m === 'signInKey' || m === 'signInBackupCode' || m === 'signOutRevoke' || m === 'historyUseKey') &&
+   blank(command.recoveryKey)`.
+4. **The dispatch switch** (beside `case 'regenerateBackupCodes':` at `controller.ts:1147`):
+
+   ```ts
+   case 'historyRefresh': return this.historyRefresh();
+   case 'historySetEnabled': return this.historySetEnabled(command.on, command.stepup);
+   case 'historyUseKey': return this.historyUseKey(command.recoveryKey);
+   ```
+5. **The `'ready'` phase list** (`controller.ts:426`): after `'regenerateBackupCodes',` (line 455) add
+   `'historyRefresh', 'historySetEnabled', 'historyUseKey',`.
+
+`historyRefresh()`: `await this.historyState.refresh()`, publish `history`, answer `null`. The page calls it once each
+time Settings → Privacy opens (§U.2).
+
+#### C.7.2 The controller
 
 - **Construction.** When the session parts are built (where `sync` is built, `controller.ts:1543`): `this.historyState`,
   `this.historyUploader`, `this.historyRestore` with the deps above; `touched(groups)` calls `this.touchGroup(g)` for
@@ -1898,8 +2191,9 @@ Controller:
 - **Sync hooks.** `onGroupChanged` and `onOutboxChanged` also call `this.historyUploader?.poke()`.
 - **onReady** (`controller.ts:1657`): `void this.barrier.track(this.historyState.refresh().then(() =>
   this.historyUploader.flush()).catch(() => undefined))`.
-- **End of `refreshAfterReady`** (C3): `core.historyUnpark(nowS)` (touch its groups), then
+- **End of `refreshAfterReady`** (C3): `core.historyUnpark(nowS)` (touch its groups; the backstop), then
   `void this.barrier.track(this.historyRestore.run())`.
+- **A group joined or registered** (C3, §C.7.3): `onGroupActivated(g)` unparks.
 - **`historySetEnabled`**: `await historyState.setEnabled(on, stepup)`; off also `historyRestore.stop()`; then publish.
 - **`historyUseKey`** (C3): `root = await routes.getBackup(0)` (null → `E_NO_BACKUP`); `core.historyUnlock({
   recoveryKey, rootSealed: root.object, now })` (`E_RECOVERY_KEY` propagates as the command's error);
@@ -1909,9 +2203,34 @@ Controller:
   `refreshAfterReady` start the run.
 - **`refreshTimeline`** (C3): set `restoring` on the timeline slice.
 
+#### C.7.3 Unparking when a group arrives (task C3)
+
+`SyncEngine.activate(g)` (`sync/engine.ts:404`) runs once for each group that becomes active on this device: after a
+Welcome is applied (`sync/channel.ts:23`), after an external join or resync (`channel.ts:71`), after this device
+registers a group (`channel.ts:177`), and after a call's join (`controller.ts:955`). That is the call site.
+
+- `sync/engine.ts`: the deps interface (line 23, beside `onGroupChanged`) gains `onActivated(groupId: Id): void;`, and
+  `activate` calls it first: `async activate(g: Id): Promise<void> { this.deps.onActivated(g); const snap = …`.
+- `worker/controller.ts`, in the `parts.sync({ … })` deps (`controller.ts:1549`): `onActivated: (g) => {
+  this.safely(() => { this.onGroupActivated(g); }); },` with
+
+  ```ts
+  private onGroupActivated(_g: Id): void {
+    const core = this.core;
+    if (core === null || this.historyState === null || !this.historyState.effective()) return;
+    const { groups } = core.historyUnpark(BigInt(Math.floor(this.deps.now() / 1000)));
+    for (const g of groups) this.touchGroup(g);
+  }
+  ```
+
+  `historyUnpark` merges the parked rows of every group now held, which includes `_g`; it is cheap when nothing is
+  parked (one indexed query).
+- Every test helper that builds `SyncDeps` adds `onActivated: () => {}`.
+- The ready backstop of §C.7.2 stays.
+
 ### C.8 What the page reads
 
-The page reads only the `history` slice, `TimelineSlice.restoring`, and the answers of the three commands. It never
+The page reads only the `history` slice, `TimelineState.restoring`, and the answers of the three commands. It never
 sees a key, a row or an entry id.
 
 ### C.9 Tests
@@ -1920,12 +2239,14 @@ sees a key, a row or an entry id.
 
 - "getHistory decodes the five elements" (`[1, 3, 10, 5120, 1073741824]`).
 - "setHistory sends [0, token] and [1, null]".
-- "postHistoryEntries sends [generation, [[id, hash, row]]] and decodes [stored, dropped]".
-- "postHistoryDeletes sends [generation, [[id, token]]] and decodes [deleted, refused]".
+- "postHistoryEntries sends [generation, [[id, hash, row]]] and decodes [stored, dropped, entries, bytes]".
+- "postHistoryDeletes sends [generation, [[id, token, hash]]] and decodes [deleted, refused, entries, bytes]".
 - "getHistoryEntries puts generation, one cursor and limit in the query" (no cursor, `before`, `after`).
 - "a 409 E_HISTORY_STALE surfaces as a DillaHttpError with that code".
-- `testing/fake-server.test.ts` "fake history follows §S.4": stale generation, dedupe, quota 507, token check,
-  newest-first paging, off deletes and bumps.
+- `testing/fake-server.test.ts` "fake history follows §S.4": stale generation, dedupe, quota 507 (tombstones
+  counted), token check with `fakeDelHash`, an absent id recorded with its hash and a later wrong token refused,
+  newest-first paging, totals in the answers, off deletes and bumps.
+- `testing/fake-history.test.ts`: the three cases of §C.1.1.
 
 #### C.9.2 `history/state.test.ts` (C2)
 
@@ -1948,6 +2269,7 @@ sees a key, a row or an entry id.
 - "507 marks full and waits an hour".
 - "400 drops the batch and goes on".
 - "nothing runs while history is off, unavailable or without keys".
+- "each upload answer's totals land in state.info and the slice".
 
 #### C.9.4 `history/restore.test.ts` (C3)
 
@@ -1966,11 +2288,19 @@ sees a key, a row or an entry id.
 - (C2) "a group change pokes the uploader".
 - (C2) "historySetEnabled off sends the step-up token and publishes off".
 - (C2) "sign-out stops the uploader".
+- (C2) "historyRefresh reads GET /v1/history and publishes the slice".
+- (C2) "historySetEnabled is refused before it runs: on with a token, off without one, on not a boolean".
+- (C2) "historyUseKey with a blank key is refused as the recovery key is empty".
 - (C3) "signInKey with history on restores after the first ready and the timeline says restoring".
 - (C3) "a restored page refreshes the open channel's timeline".
 - (C3) "historyUseKey with a wrong key answers E_RECOVERY_KEY and changes nothing".
 - (C3) "historyUseKey on a browser without keys backfills, uploads and restores".
 - (C3) "ready unparks parked rows".
+- (C3) "a group joined after the first ready merges its parked entries without a reload": the restore parks two
+  entries of a group the device does not hold; a Welcome for that group is applied (the fake core's `groupJoined`
+  and the engine's `activate`); without any new ready, `historyUnpark` runs once, the two rows are in the group's
+  timeline and the open channel's slice is refreshed.
+- `sync/engine.test.ts` (C3): "activate calls onActivated once, before the snapshot".
 
 ---
 
@@ -2009,17 +2339,55 @@ The status line, in this order of precedence (exactly one shows):
 | otherwise | `history.usage` with `{count}` = entries (grouped digits), `{size}` and `{quota}` formatted by the existing `formatSize` (`screens/shell-model.ts:315`) | plain |
 
 The button: `history.useKey` when `!keys` or `restore.state === 'stopped'`; else `history.restoreAgain`; hidden while
-unavailable, off or running. Pressing it opens `KeyDialog` with `title = history.key.title`, `body = history.key.body`,
-`confirmLabel = history.key.submit`, `onConfirm = key => client.call({ m: 'historyUseKey', recoveryKey: key })`. A
-refusal `E_RECOVERY_KEY` shows `history.key.wrong` in the dialog (the dialog's existing error path).
+unavailable, off or running. Pressing it opens `KeyDialog` (§U.1.2) with `id="history-key"`, `title =
+t('history.key.title')`, `body = t('history.key.body')`, `confirmLabel = t('history.key.submit')`, `keyLabel =
+'signin.key.label'`, `wrongKeyLabel = 'history.key.wrong'`, `confirmVariant = 'accent'`, and `onConfirm = key =>
+client.call({ m: 'historyUseKey', recoveryKey: key })`. A refusal `E_RECOVERY_KEY` shows `history.key.wrong` under the
+field.
 
 The toggle: `checked = enabled`; disabled while unavailable or while a command runs.
 - **On** → `client.call({ m: 'historySetEnabled', on: true, stepup: null })`; a failure shows `history.on.failed` in the
   status line until the next slice.
-- **Off** → `ConfirmDialog` (`tone="danger"`, title `history.off.title`, body `history.off.body`, confirm
-  `history.off.confirm`, busy `history.off.busy`, cancel `factorSettings.cancel`), then `StepUpDialog` (as Settings → Sign-in
-  uses it), then `historySetEnabled { on: false, stepup: token }`; a failure sets the dialog's `error` to
-  `history.off.failed`. Focus returns to the toggle.
+- **Off** → the steps of §U.1.1.
+
+#### U.1.1 The off flow (task W2)
+
+The same step-up pattern as `SignInFactors.tsx` (its `phase`, `notice`, `token` and `next` state, lines 56–70, and
+its `E_STEP_UP` handling in `refusedChange`, line 164), in `History.tsx`, with
+`type OffPhase = 'idle' | 'confirm' | 'stepup' | 'saving'` and `const [again, setAgain] = useState(false)`:
+
+1. The toggle switched off → `phase = 'confirm'`: `ConfirmDialog` with `tone="danger"`, `title =
+   t('history.off.title')`, `body = t('history.off.body')`, `confirmLabel = t('history.off.confirm')`, `busyLabel =
+   t('history.off.busy')`, `cancelLabel = t('factorSettings.cancel')`. Cancel → `phase = 'idle'`, focus the toggle.
+2. Confirm → close it and, once it has given focus back (the `next` pattern of `SignInFactors.tsx:63`), `phase =
+   'stepup'`: `StepUpDialog` with `hasPassword = factors?.hasPassword ?? true`, `code = !hasPassword &&
+   (factors?.passkeys ?? []).length === 0 && factors?.totp != null` (the `factors` slice, read with
+   `useSlice('factors')`, exactly as `SignInFactors.tsx:215-216` and `:273` compute them), `notice = again ? 'again' :
+   null`. Close → `phase = 'idle'`, `again = false`, focus the toggle.
+3. `onToken(token)` → `phase = 'saving'`; `client.call({ m: 'historySetEnabled', on: false, stepup: token })`.
+   - Success → `phase = 'idle'`, `again = false`; the slice now says off; focus the toggle.
+   - Refused `403 E_STEP_UP` (the token was spent or expired before the `PUT`) **and** `again` is false →
+     `again = true`, `phase = 'stepup'`: the step-up shows once more with the "again" notice; the confirmation is not
+     asked again.
+   - Refused `E_STEP_UP` with `again` already true, or any other refusal → `phase = 'idle'`, `again = false`, the status
+     line shows `history.off.failed`, focus the toggle. The flow stops.
+
+#### U.1.2 `KeyDialog`'s three optional props (task W2)
+
+`packages/web/src/screens/settings/KeyDialog.tsx` (its props at line 17) gains, all optional, defaulting to today's
+values so Settings → Devices and Sign out (its two callers, `Devices.tsx` and `SignOut.tsx`) are unchanged:
+
+```ts
+  /** The field error for a wrong key (E_RECOVERY_KEY). Default 'devices.error.wrongKey'. */
+  wrongKeyLabel?: StringKey;
+  /** The key field's label. Default 'devices.keyLabel'. */
+  keyLabel?: StringKey;
+  /** The confirm button's variant. Default 'danger'. */
+  confirmVariant?: 'danger' | 'accent';
+```
+
+They replace, in order, `setFieldError('devices.error.wrongKey')` (line 67), `label={t('devices.keyLabel')}` (line 94)
+and `variant="danger"` on the footer button (line 87).
 
 Layout uses the existing `dw-settings-section`, `SettingsRow` and `dw-trust-state` classes (`data-tone` for warn and
 danger). At 390 px the section is one column and every control is 44 px (the phone shell's rule).
@@ -2028,7 +2396,10 @@ danger). At 390 px the section is one column and every control is 44 px (the pho
 ### U.2 Settings wiring (task W2)
 
 `Settings.tsx` passes `history={useSlice('history')}` and the handlers to `Privacy`, which passes them to `History`.
-`Privacy`'s props become `{ records, onCompare, history }`. No new nav entry.
+`Privacy`'s props become `{ records, onCompare, history }`. No new nav entry. Each time the Privacy section opens
+(the `section === 'privacy'` change in `Settings.tsx`, where `privacy` is handled at lines 104–105), the page calls
+`client.call({ m: 'historyRefresh' })` once, ignoring its refusal, so the usage line shows the server's counts. Opening
+the section also writes the banner flag (§U.3).
 
 ### U.3 Sign-in, sign-up, timeline, empty channel and banner (task W3)
 
@@ -2043,11 +2414,27 @@ danger). At 390 px the section is one column and every control is 44 px (the pho
 - **Empty channel**: `restoring` → `shell.log.emptyRestoring`; else history `available && enabled && keys` →
   `shell.log.emptyHistory`; else `shell.log.empty` (unchanged).
 - **Banner** (`HistoryBanner.tsx`, mounted by `Shell` where the other persistent banners are, at the top of the
-  conversation pane on a computer and on Home on a phone): shown when `available && enabled && !keys` and the pref
-  `dilla.history.bannerDismissed` is not `"1"`. `Banner tone="info"` with `history.banner` and its one `action`,
-  `history.banner.open`, which opens Settings → Privacy and focuses the history heading. Showing the history section
-  (from the banner or from Settings) sets the pref to `"1"`, so the banner shows until the person has seen the
-  section once. It also goes when keys exist. (`Banner` takes one action; no second button is added.)
+  conversation pane on a computer and on Home on a phone): shown when `available && enabled && !keys` and the banner
+  flag reads false. `Banner tone="info"` with `history.banner` and its one `action`, `history.banner.open`, which opens
+  Settings → Privacy and focuses the history heading. Opening the Privacy section (from the banner or from Settings)
+  writes the flag `true`, so the banner shows until that section has been opened once. It also goes when keys exist.
+  (`Banner` takes one action; no second button is added.)
+- **The banner flag** is a second record in the existing prefs IndexedDB store (`packages/web/src/prefs.ts`: database
+  `dilla-ui`, store `prefs`, `PREFS_DB_VERSION` stays 1; no new object store). Its key is `history.bannerDismissed`
+  and its value `{ v: 1, dismissed: boolean }`. `readRecord(idb)` becomes `readRecord(idb, key: string)` (the theme
+  passes `THEME_KEY`), and the module gains:
+
+  ```ts
+  const HISTORY_BANNER_KEY = 'history.bannerDismissed';
+  /** Whether the history banner was dismissed; false on any failure, a malformed record or no answer within
+   *  PREFS_TIMEOUT_MS. */
+  export function readHistoryBannerDismissed(idb: IDBFactory | undefined = defaultIdb()): Promise<boolean>;
+  /** Stores { v: 1, dismissed: v } under HISTORY_BANNER_KEY; rejects with Error('E_PREFS') on any failure. */
+  export async function writeHistoryBannerDismissed(v: boolean, idb: IDBFactory | undefined = defaultIdb()): Promise<void>;
+  ```
+
+  `readHistoryBannerDismissed` follows `readTheme` (the timeout race); `writeHistoryBannerDismissed` follows
+  `writeTheme` (one `readwrite` transaction, `put(record, key)`). The theme record is untouched.
 
 ### U.4 Copy (task W1)
 
@@ -2078,7 +2465,7 @@ New file `packages/web/src/strings/history.ts`:
 | `history.loadFailed` | `Message history could not be read. dilla reads it again when it reconnects.` |
 | `history.on.failed` | `Message history could not be turned on. Check the connection and turn it on again.` |
 | `history.off.title` | `Turn off message history?` |
-| `history.off.body` | `This deletes the saved history of all your browsers from {instance}. Messages already in a browser stay there. A browser you sign in to later starts empty.` |
+| `history.off.body` | `This deletes the saved history of all your browsers from {instance}. Once deleted, it can’t be brought back, even with your recovery key. Messages already in a browser stay there, and a browser you sign in to later starts empty.` |
 | `history.off.confirm` | `turn off and delete` |
 | `history.off.busy` | `Deleting…` |
 | `history.off.failed` | `Message history could not be turned off. Nothing was deleted.` |
@@ -2140,9 +2527,13 @@ as one line `` `key='value'` `` (37 pairs: the 31 new `history.*` keys and the 6
   `history.toggle`, `history.useKey`, `history.restoreAgain`, `history.off.confirm`, `history.key.submit`,
   `history.banner.open`, `shell.log.emptyRestoring`, `shell.log.emptyHistory`; upper case
   first for every other pair; no pair matches `/!|\bsecure\b|\bsafe\b|\bprotected\b/i`.
-- "the trade-off is said the same way in three places": `history.risk`, `onboarding.keys.history` and
-  `history.off.body` each contain `recovery key` or `this key`, and `history.risk` contains `including old messages`.
-- "apostrophes are typographic": `history.key.wrong` contains U+2019 and no U+0027.
+- "the trade-off is said the same way in three places": `history.risk` and `onboarding.keys.history` each contain
+  `recovery key` or `this key`, and `history.risk` contains `including old messages`.
+- "turning off says the deletion is final": `history.off.body` equals, byte for byte, `This deletes the saved history
+  of all your browsers from {instance}. Once deleted, it can’t be brought back, even with your recovery key. Messages
+  already in a browser stay there, and a browser you sign in to later starts empty.` and contains `can’t be brought
+  back` and `recovery key`.
+- "apostrophes are typographic": `history.key.wrong` and `history.off.body` contain U+2019 and no U+0027.
 - `strings.test.ts`: the two pinned lines take the new values of `onboarding.browser.oneBrowser` and
   `signin.done.body`.
 
@@ -2154,7 +2545,14 @@ as one line `` `key='value'` `` (37 pairs: the 31 new `history.*` keys and the 6
 - "restoring: shows done of total with grouped digits and no button".
 - "full: shows the danger line with the quota".
 - "off: the toggle opens the confirmation, then the step-up, then calls historySetEnabled with the token".
+- "the step-up reads hasPassword and code from the factors slice" (no password and only an app: the code field).
+- "an E_STEP_UP answer shows the step-up once more with the again notice and no second confirmation".
+- "a second E_STEP_UP, or any other refusal, shows Message history could not be turned off. and stops".
 - "cancelling the confirmation or the step-up leaves history on and focuses the toggle".
+- "opening Privacy calls historyRefresh once".
+- `KeyDialog.test.tsx` (new): "without the new props it keeps the devices copy and the danger button";
+  "wrongKeyLabel replaces the wrong-key field error"; "keyLabel names the field"; "confirmVariant accent styles the
+  button".
 - "unavailable: no toggle and no button".
 - "the section passes axe in light, dark and high-contrast, and at 390 px".
 - `Privacy.test.tsx`: "the history section comes before the trust list".
@@ -2170,7 +2568,11 @@ as one line `` `key='value'` `` (37 pairs: the 31 new `history.*` keys and the 6
 - `HistoryBanner.test.tsx`: "shows for a browser without keys while history is on"; "open privacy opens Settings →
   Privacy with focus on the history heading, and the banner does not come back"; "it is gone once keys exist"; "it
   never shows while history is off or unavailable".
-- `prefs.test.ts`: "the history banner pref round-trips".
+- `prefs.test.ts`, describe "the history banner flag": "reads false when nothing is stored, and round-trips true
+  and false"; "writing it leaves the theme record as it was, and writing the theme leaves it"; "the store still holds
+  one object store and the database version is 1"; "reads false without IndexedDB, when the open fails, on a
+  malformed record and after the timeout"; "write rejects with E_PREFS without IndexedDB". The existing test "stores
+  exactly one record, the theme, and nothing else" stays as it is (it writes only the theme).
 
 ### U.8 e2e and screenshots
 
@@ -2181,7 +2583,9 @@ From an empty instance, through the shipping client only.
 1. "a second browser gets the history, without what was deleted": browser A signs up (keeping the recovery key text),
    creates a server, and in #general posts `one`, `two`, `three`, attaches a small PNG to `four`, edits `two` to `two
    edited`, deletes `three`, reacts 👍 on `one`, pins `one`, replies `re one` to `one`, and opens a DM with a second
-   person B0 and exchanges `dm hello`. Wait until A's Settings → Privacy usage line says at least 9 messages saved.
+   person B0 and exchanges `dm hello`. Then A opens Settings → Privacy (which calls `historyRefresh` once, §U.2) and
+   the spec reads the usage line after that refresh, polling by closing and reopening the section every 5 s for at most
+   60 s, until it says at least 9 messages saved.
    Browser B signs in to A's account with the recovery key; the done step says "Your earlier messages are being
    restored here"; open dilla; Settings → Privacy reaches "Message history restored". In #general: `one` with 👍 and
    the pin, `two edited` (shown edited), `re one` as a reply, `four` whose image opens full size; no `three`; the DM
@@ -2190,7 +2594,8 @@ From an empty instance, through the shipping client only.
    password), the status line says history is off; browser C signs in with the key; the done step says "Messages sent
    before now are not shown here."; #general says the empty-channel copy of `shell.log.empty`.
 3. "a message deleted after a restore is gone for the next browser too": history on again in A; A posts `five`, waits
-   for it to be saved, deletes it; browser D signs in with the key and, once restored, has no `five`.
+   for it to be saved (the usage count after a reopen of Privacy, as in case 1), deletes it; browser D signs in with
+   the key and, once restored, has no `five`.
 
 `enrol.spec.ts`: its done-step expectation takes the new `signin.done.body`.
 
@@ -2232,8 +2637,10 @@ under `K_backup` (`06-backup-archive.md`, "Restore")." with "then restore the sa
 browser-rooted signup (pending signup record only) and transiently at a one-shot recovery-key entry, zeroised
 afterwards", and add two rows:
 
-> | history write keys (`PK_hist`, `K_hauth`, `K_hid`, `K_hdel`) | after the recovery key is entered on it | from its own signup, and after the recovery key is entered on it (sign-in, removing a device, Settings → Privacy) |
-> | `SK_hist` (history read key) | only while a restore it started runs | only while a restore it started runs: from the recovery-key entry until the restore finishes, history is turned off, the browser signs out, or 7 days pass |
+> | history write keys (`PK_hist`, `K_hauth`, `K_hid`, `K_hdel`) | yes once it has had `RK`: from its own signup (the device performing signup derives them from the `RK` it generates), or from the first recovery-key entry on it; never from pairing, whose payload carries none | yes once it has had `RK`: from its own browser-rooted signup, or from the first recovery-key entry on it (sign-in, removing a device, Settings → Privacy) |
+> | `SK_hist` (history read key) | only while a restore it started at a recovery-key entry runs: until the restore finishes, history is turned off, the device signs out, or 7 days pass | the same as a native device: only while a restore it started at a recovery-key entry runs, until the restore finishes, history is turned off, the browser signs out, or 7 days pass |
+
+(Today's table columns are `secret | native device | browser device`; both new rows fill both columns.)
 
 **§ Pairing, step 4:** replace "and `k_backup` is null too unless the user opted in to "history in browser sessions"."
 with "and `k_backup` is null too. The pairing payload carries no history key: a device enrolled by pairing gets the
@@ -2305,9 +2712,12 @@ backup`) with:**
 >
 > **Append, dedupe and delete.** An entry is never rewritten. The instance keeps the first row stored for an id and
 > drops later ones. When a device drops a saved row's content (a delete for everyone, an edit blanked by its target's
-> delete, a delivery-service deletion, a trust retraction), it deletes the entry with its `del_token`; the instance
-> checks the token against the stored `del_hash`, deletes the row and keeps the id as deleted, so the entry is never
-> stored again. A type-2 envelope is saved like any fold, so a restore applies a delete also to an entry that an older
+> delete, a delivery-service deletion, a trust retraction), it deletes the entry with its `del_token` and `del_hash`;
+> the instance checks the token against the stored `del_hash`, deletes the row and keeps the id as deleted with that
+> hash. An id the instance does not hold is recorded as deleted with the hash the request carries, so a device that
+> uploads the entry later has it dropped, and any later delete of the id must present the matching token. A deleted
+> id is kept for 400 days (a device away longer than that could save a message deleted that long ago once more) and
+> counts 64 bytes toward the user's quota. A type-2 envelope is saved like any fold, so a restore applies a delete also to an entry that an older
 > copy of the history brings back. Leaving a group, or a device deleting its local copy of a group, deletes nothing.
 >
 > **On and off.** The instance keeps per user whether history is on and a generation. Turning it off deletes every entry
@@ -2388,13 +2798,14 @@ message history has its own routes (§ History)."
 > |---|---|---|
 > | `GET /v1/history` | — | `[enabled(uint 0\|1), generation(uint), entries(uint), bytes(uint), quota(uint)]` |
 > | `PUT /v1/history` | `[enabled(uint 0\|1), stepup(tstr\|null)]` | `[enabled, generation]` |
-> | `POST /v1/history/entries` | `[generation(uint), entries([[entry_id(bstr 16), del_hash(bstr 16), row(bstr)]])]` | `[stored(uint), dropped(uint)]` |
-> | `POST /v1/history/entries/delete` | `[generation(uint), items([[entry_id(bstr 16), del_token(bstr 16)]])]` | `[deleted(uint), refused(uint)]` |
+> | `POST /v1/history/entries` | `[generation(uint), entries([[entry_id(bstr 16), del_hash(bstr 16), row(bstr)]])]` | `[stored(uint), dropped(uint), entries(uint), bytes(uint)]` |
+> | `POST /v1/history/entries/delete` | `[generation(uint), items([[entry_id(bstr 16), del_token(bstr 16), del_hash(bstr 16)]])]` | `[deleted(uint), refused(uint), entries(uint), bytes(uint)]` |
 > | `GET /v1/history/entries?generation=&before=&after=&limit=` | — | `[[n(uint), entry_id(bstr 16), row(bstr)]]` |
 >
 > - **State.** A user with no stored state has history on at generation 1. `enabled` reads 0 while the instance's
->   `history.quota_bytes_per_user` is 0. Turning history off needs a step-up token (§ Second factors; `403 E_STEP_UP`
->   without one) and deletes every entry and deleted id of the user; turning it on while the quota is 0 is `403
+>   `history.quota_bytes_per_user` is 0. `bytes` is the stored rows' bytes plus 64 for each deleted id. Turning
+>   history off always needs a valid step-up token (§ Second factors), also for an account that holds no factor;
+>   without one it is `403 E_STEP_UP`. It deletes every entry and deleted id of the user; turning it on while the quota is 0 is `403
 >   E_FORBIDDEN`. Each change starts a new generation; setting the current value changes nothing. Both are audited
 >   (`history.off`, `history.on`).
 > - **Generation.** The two `POST`s and the entries `GET` name the generation they act in; another generation, or
@@ -2402,10 +2813,15 @@ message history has its own routes (§ History)."
 > - **Entries.** 1 to 512 per request, ids distinct within it; a `row` is deterministic CBOR `[1, enc(bstr 32),
 >   nonce(bstr 12), ciphertext(bstr ≥ 16)]` of at most 81 920 bytes; anything else is `400 E_INVALID_REQUEST`. An id
 >   the user already holds, or one deleted before, is dropped (`dropped`), never replaced. Entries that would take the
->   user past `history.quota_bytes_per_user` are `507 E_STORAGE_FULL` and none is stored.
-> - **Deletes.** 1 to 1024 per request. An item whose token hashes to the stored `del_hash` deletes the entry; one
->   that does not is `refused` and changes nothing; an id the user does not hold is recorded as deleted. A deleted id is
->   never stored again in that generation.
+>   user past `history.quota_bytes_per_user` (counting 64 bytes per deleted id) are `507 E_STORAGE_FULL` and none is
+>   stored. The answer carries the user's `entries` and `bytes` after the request.
+> - **Deletes.** 1 to 1024 per request. `h(t) = SHA-256("dilla history delete hash v1" || t)[0..16]`. An item whose
+>   `del_hash` is not `h(del_token)` is `refused`. Otherwise: a held entry whose stored `del_hash` matches is deleted and
+>   its id kept as deleted with that hash; a held entry whose hash differs is `refused`; an id already deleted is
+>   `deleted` again when its kept hash matches and `refused` when not; an id the user does not hold is recorded as
+>   deleted with the item's `del_hash`. A deleted id is never stored again in that generation, is kept 400 days, and
+>   counts 64 bytes toward the quota; a delete is never refused for the quota. The answer carries the user's
+>   `entries` and `bytes` after the request.
 > - **Listing.** `generation` is required; at most one of `before` and `after`; `limit` 1 to 512 (default 512). Without
 >   `after` the rows come newest first (below `before` when given); with `after`, oldest first above it. An answer
 >   holds at most 1 MiB of rows, and at least one row when any matches. `n` is the instance's upload order; no time is
@@ -2431,9 +2847,9 @@ every other CBOR route".
 
 ### P.6 `07-versioning.md`
 
-Add the row:
+Add the row (S5 writes the placeholder `<release-date>` literally; D2 replaces it with the merge date):
 
-> | 2026-10-xx | e2ee 1, media 1, wire 2 | **Additive.** Saved message history: `06` § History and § Restore replace the unserved chunk archive and manifest; `03` derives `SK_hist`/`PK_hist`, `K_hauth`, `K_hid` and `K_hdel` from the recovery key and gives browsers the history write keys; `09` § History adds `GET`/`PUT /v1/history`, `POST /v1/history/entries`, `POST /v1/history/entries/delete` and `GET /v1/history/entries`; `02` adds `409 E_HISTORY_STALE`; `vectors/history.json` (frozen from the Rust core). Schema 00026 adds `history_state`, `history_entries` and `history_tombstones`; `migrate down` drops them and every saved history. No version bump |
+> | <release-date> | e2ee 1, media 1, wire 2 | **Additive.** Saved message history: `06` § History and § Restore replace the unserved chunk archive and manifest; `03` derives `SK_hist`/`PK_hist`, `K_hauth`, `K_hid` and `K_hdel` from the recovery key and gives browsers the history write keys; `09` § History adds `GET`/`PUT /v1/history`, `POST /v1/history/entries`, `POST /v1/history/entries/delete` and `GET /v1/history/entries`; `02` adds `409 E_HISTORY_STALE`; `vectors/history.json` (frozen from the Rust core). Schema 00024 adds `history_state`, `history_entries` and `history_tombstones`; `migrate down` drops them and every saved history. No version bump |
 
 ### P.7 `protocol/vectors/README.md`
 
@@ -2444,3 +2860,21 @@ Add the row:
 and after the `permissions.json` sentence: "`history.json` is not generated either: it is frozen from the Rust core
 (`core/dilla-core/src/history.rs`), because the generator has no X25519 HPKE, and is checked by
 `core/dilla-core/tests/history_vectors.rs`."
+
+### P.8 `scripts/check-protocol-docs.mjs` and its test (task S5)
+
+The new 06 has `## Keys`, `## Header`, `## History`, `## Restore` (no `## Archive`), so:
+
+- `scripts/check-protocol-docs.mjs` line 13: `'06-backup-archive.md': ['## Keys', '## Header', '## History', '## Restore'],`
+- `scripts/check-protocol-docs.test.mjs` lines 24 and 57: both fixtures' 06 text becomes
+  `'# Backup\n\n## Keys\n\n## Header\n\n## History\n\n## Restore\n'`.
+- A new case in the test file, "requires 06's History heading": the passing fixture with `## History` replaced by
+  `## Archive` reports `06-backup-archive.md` missing `## History`.
+
+### P.9 `CodeHistoryStale` (task S5)
+
+- `internal/server/errors.go`: in the code constants, `CodeHistoryStale Code = "E_HISTORY_STALE"`; in the status
+  switch, add `CodeHistoryStale` to the `http.StatusConflict` case (beside `CodeCallNotAlone`).
+- `internal/server/errors_test.go`: the row `{server.Errorf(server.CodeHistoryStale, ""), 409, 3}` in its status table.
+
+With §P.5's row, `checkErrorVocabulary` sees the code in both 02's table and `errors.go` in the same wave.
