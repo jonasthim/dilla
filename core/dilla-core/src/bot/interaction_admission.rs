@@ -41,6 +41,8 @@ pub struct Expected {
     pub group: MsgId,
     pub minimum_eligibility_revision: u64,
     pub server_now: u64,
+    /// Policy snapshot independently authenticated from current server context.
+    pub policy_version: u64,
 }
 
 /// A leaf identity and DSK extracted from an already authenticated MLS group state.
@@ -132,7 +134,7 @@ pub fn prepare_creation(
         community_id: crate::ids::CommunityId::from_bytes(admission.community.0),
         participant_user_id: admission.participant_user.0,
         participant_device_id: DeviceId::from_bytes(admission.participant_device.0),
-        policy_version: binding.policy_version,
+        policy_version: expected.policy_version,
         e2ee_version: 1,
         media_version: 0,
     };
@@ -216,6 +218,7 @@ pub fn verify_with_pinned_instance_key(
         || admission.not_after > MAX_I64
         || expected.server_now > MAX_I64
         || expected.minimum_eligibility_revision > MAX_I64
+        || expected.policy_version > MAX_I64
     {
         return Err(CodecError::Value);
     }
@@ -267,6 +270,7 @@ mod tests {
             group: mid(9),
             minimum_eligibility_revision: 11,
             server_now: 100,
+            policy_version: 3,
         }
     }
 
@@ -328,6 +332,7 @@ mod tests {
             group: id("group"),
             minimum_eligibility_revision: vector["minimum_eligibility_revision"].as_u64().unwrap(),
             server_now: vector["server_now"].as_u64().unwrap(),
+            policy_version: 3,
         };
         // The payload itself is carried byte-for-byte inside the signed proof.
         let (encoded_payload, _): (Vec<u8>, Vec<u8>) = decode_strict(&proof, |d| {
@@ -488,6 +493,22 @@ mod tests {
                 &participant_ssk.public(),
             )
             .is_ok()
+        );
+        let mut stale_policy = binding.clone();
+        stale_policy.policy_version += 1;
+        assert_eq!(
+            prepare_creation(
+                &proof,
+                &key.verifying_key().to_bytes(),
+                &expected,
+                &stale_policy,
+                &leaves,
+                &bot_list,
+                &bot_ssk.public(),
+                &participant_list,
+                &participant_ssk.public(),
+            ),
+            Err(CodecError::Context)
         );
         let mut wrong_binding = binding.clone();
         wrong_binding.participant_device_id = DeviceId::from_bytes([91; 16]);
