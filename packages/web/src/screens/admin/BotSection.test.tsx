@@ -17,7 +17,7 @@ type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 
 const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, revision: '1', userId: null,
   deviceId: null, capabilities: 0, updatedAt: '100' };
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
-  banMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
+  banMembers: true, moderateMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 
 function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true) {
   const fake = new FakeClient();
@@ -169,7 +169,7 @@ describe('the server bot settings', () => {
   });
 
   it('sends the currently read revision and explains when another admin changed the installation', async () => {
-    const initial = { ...ROW, state: 4 as const, revision: '11', capabilities: 255 };
+    const initial = { ...ROW, state: 4 as const, revision: '11', capabilities: 0 };
     const { fake, user } = setup(initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
@@ -185,6 +185,68 @@ describe('the server bot settings', () => {
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.conflict']);
     expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '11', capabilities: 1 });
+  });
+
+  it('preserves approved capabilities when re-enabling a disabled installation', async () => {
+    const initial = { ...ROW, state: 4 as const, revision: '21', capabilities: 1 | 8 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, state: 0, revision: '22' });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.disabled']);
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: en['admin.bot.enable'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '21', capabilities: 1 | 8 });
+  });
+
+  it('allows editing capabilities on a ready installation using its current revision', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '30', capabilities: 1 | 8 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, revision: '31', capabilities: 9 | 16 });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.music'] })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: en['admin.bot.capability.announcements'] })).toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.warnings'] }));
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '30', capabilities: 1 | 8 | 16 });
+  });
+
+  it('does not save an edit against a stale ready installation revision', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '40', capabilities: 1 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.reject(refusal({ code: 'E_CONFLICT', status: 409 }));
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    await user.click(screen.getByRole('checkbox', { name: en['admin.bot.capability.welcome'] }));
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.conflict']);
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '40', capabilities: 3 });
   });
 
   it.each([

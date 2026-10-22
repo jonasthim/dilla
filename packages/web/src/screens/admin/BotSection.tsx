@@ -59,6 +59,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [stepUpPurpose, setStepUpPurpose] = useState<StepUpPurpose>('bot');
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const [selectedCapabilities, setSelectedCapabilities] = useState(0);
+  const [editingCapabilities, setEditingCapabilities] = useState(false);
   const readGeneration = useRef(0);
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
@@ -74,9 +75,12 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setError(null);
     setPhase('idle');
     setSelectedCapabilities(0);
+    setEditingCapabilities(false);
     void client.call({ m: 'getBotInstallation', communityId }).then(value => {
       if (generation !== readGeneration.current) return;
-      setInstallation(value as Installation | null);
+      const loadedInstallation = value as Installation | null;
+      setInstallation(loadedInstallation);
+      setSelectedCapabilities(loadedInstallation?.capabilities ?? 0);
       setLoadedFor(communityId);
     }).catch((e: unknown) => {
       if (generation !== readGeneration.current) return;
@@ -116,8 +120,12 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     void client.call({ m: 'configureBotInstallation', communityId, requestId: requestId(),
       expectedRevision: currentInstallation?.revision ?? null, capabilities: selectedCapabilities, stepUp }).then(value => {
       if (generation !== readGeneration.current) return;
-      setInstallation(value as Installation);
-      announce(t('admin.bot.enabledNotice'));
+      const updatedInstallation = value as Installation;
+      setInstallation(updatedInstallation);
+      setSelectedCapabilities(updatedInstallation.capabilities);
+      setEditingCapabilities(false);
+      announce(currentInstallation === null || currentInstallation.state === 4
+        ? t('admin.bot.enabledNotice') : t('admin.bot.capabilities.updated'));
     }).catch((e: unknown) => { if (generation === readGeneration.current) setError(errorMessage(errorOf(e))); })
       .finally(() => setBusyFor(value => value === requestCommunity ? null : value));
   };
@@ -207,7 +215,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const canSelectCapability = (option: typeof CAPABILITY_OPTIONS[number]): boolean => access?.loaded === true && access.manageCommunity
     && (option.permission === null || access[option.permission] === true);
   const showCapabilitySelection = current && currentError === null
-    && (currentInstallation === null || currentInstallation.state === 4);
+    && (currentInstallation === null || currentInstallation.state === 4 || editingCapabilities);
 
   return (
     <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
@@ -221,6 +229,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
         </SettingsRow>
       ) : null}
+      {currentInstallation?.state === 3 && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
+        onClick={() => setEditingCapabilities(true)}>{t('admin.bot.capabilities.edit')}</Button> : null}
       {showCapabilitySelection ? (
         <fieldset aria-describedby={`${base}-capability-help`}>
           <legend>{t('admin.bot.capabilities.select')}</legend>
@@ -245,6 +255,13 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
                 ? <span>{t('admin.bot.capabilities.permissionUnavailable')}</span> : null}
             </div>;
           })}
+          {currentInstallation?.state === 3 ? <div>
+            <Button aria-disabled={busy || enableUnavailable || undefined} onClick={enable}>{t('admin.bot.capabilities.save')}</Button>
+            <Button aria-disabled={busy || undefined} onClick={() => {
+              setSelectedCapabilities(currentInstallation.capabilities);
+              setEditingCapabilities(false);
+            }}>{t('admin.bot.capabilities.cancel')}</Button>
+          </div> : null}
         </fieldset>
       ) : null}
       <section aria-labelledby={`${base}-join-role-title`}>
