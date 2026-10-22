@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import type { ThreadState } from '@dilla/client-core';
+import { PERM, type ThreadState } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
@@ -165,6 +165,29 @@ describe('ThreadView (web3.7)', () => {
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(screen.getByRole('button', { name: en['shell.delete.confirm'] }));
     expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+  });
+  it('offers the separate moderator action on a peer reply and sends its timeline sequence', async () => {
+    const { fake, user } = setup();
+    const everyone = 'e0'.repeat(16);
+    const moderators = 'a0'.repeat(16);
+    const self = account().user?.id ?? 'bb'.repeat(16);
+    fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }] as never);
+    fake.set(`members:${A}`, [{ userId: self, username: 'ada', display: '', kind: 0, roleIds: [moderators] }] as never);
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: PERM.viewChannel, deny: 0, members: 1 },
+      { id: moderators, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: PERM.manageMessages, deny: 0, members: 1 },
+    ] as never);
+    fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true } as never);
+    fake.set(`overwrites:${A}`, {} as never);
+    const action = await waitFor(() => within(toolbar(P2)).getByRole('button', { name: en['shell.message.moderateRemove'] }));
+    await user.click(action);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+    const dialog = screen.getByRole('dialog', { name: en['shell.moderation.removeTitle'] });
+    await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] }));
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P2, seq: '2' }]);
+    expect(fake.callsOf('deleteMessage')).toEqual([]);
   });
   it('says there are no replies yet, but not while the thread is still being read', () => {
     setup({ thread: thread({ items: [] }) });

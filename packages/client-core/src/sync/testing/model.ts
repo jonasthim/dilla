@@ -1027,6 +1027,9 @@ export class ModelCore implements CorePort {
   sessionSign(): Uint8Array {
     throw coreError('E_CORE_STATE', 'not modelled');
   }
+  signRemoval(): Uint8Array {
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
   sessionStore(): void {
     throw coreError('E_CORE_STATE', 'not modelled');
   }

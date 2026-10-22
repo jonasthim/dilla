@@ -44,7 +44,7 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController, nextPosition } from '../admin/controller';
-import { PERM } from '../admin/perm';
+import { channelBitsOf, PERM } from '../admin/perm';
 import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
@@ -244,6 +244,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'openDm',
   'editMessage',
   'deleteMessage',
+  'moderateRemoveMessage',
   'react',
   'pin',
   'loadPins',
@@ -350,6 +351,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   openDm: ['userId'],
   editMessage: ['channelId', 'msgId'],
   deleteMessage: ['channelId', 'msgId'],
+  moderateRemoveMessage: ['channelId', 'msgId'],
   react: ['channelId', 'msgId'],
   pin: ['channelId', 'msgId'],
   loadPins: ['channelId'],
@@ -447,6 +449,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'openDm',
     'editMessage',
     'deleteMessage',
+    'moderateRemoveMessage',
     'react',
     'pin',
     'loadPins',
@@ -1140,6 +1143,7 @@ export class Controller {
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
+      case 'moderateRemoveMessage': return this.moderateRemoveMessage(command.channelId, command.msgId, command.seq);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
       case 'pin': return this.pin(command.channelId, command.msgId, command.on);
       case 'openThread': return this.openThread(command.channelId, command.rootMsgId);
@@ -4300,6 +4304,45 @@ export class Controller {
 
   /** The purge is not started here: the core records it when the type-2 row is confirmed (L-CORE-33, ruling 8). */
   private deleteMessage(channelId: string, msgId: string): Promise<null> { return this.fold(channelId, msgId, 2, ''); }
+
+  /** A distinct human moderation path: validate local target/group and loaded authority, then let the instance recheck. */
+  private async moderateRemoveMessage(channelId: string, msgId: string, rawSeq: string): Promise<null> {
+    const core = this.requireCore();
+    if (!SEQ.test(rawSeq)) throw new Refusal('E_BAD_INPUT', 'invalid target sequence');
+    const seq = BigInt(rawSeq);
+    const target = this.target(channelId);
+    if (target?.communityId === null || target === undefined) throw new Refusal('E_BAD_INPUT', 'moderation removal needs a community channel');
+    const communityId = target.communityId;
+    const groups = core.groups();
+    const groupId = this.timelineGroup(channelId, groups);
+    const group = groupId === null ? undefined : groups.find(g => toHex(g.groupId) === toHex(groupId));
+    if (group === undefined || group.kind !== 0 || group.state !== 2 || toHex(group.targetId) !== channelId ||
+        group.communityId === null || toHex(group.communityId) !== communityId) {
+      throw new Refusal('E_NOT_READY', 'the active community text group is unavailable');
+    }
+    const row = core.timeline(group.groupId, seq + 1n, 1).find(r => r.seq === seq);
+    if (row?.msgId === null || row === undefined || toHex(row.msgId) !== msgId || row.status !== 0) {
+      throw new Refusal('E_BAD_INPUT', 'target message is no longer available');
+    }
+    const access = this.slices.get(`permissions:${communityId}`);
+    const roles = this.slices.get(`roles:${communityId}`);
+    const members = this.slices.get(`members:${communityId}`);
+    const overwrites = this.slices.get(`overwrites:${communityId}`);
+    const owner = (this.slices.get('communities') ?? []).find(c => c.id === communityId)?.owner;
+    const me = this.me === null ? null : toHex(this.me.userId);
+    if (access?.loaded !== true || access.overwritesLoaded !== true || access.everyoneId === '' || roles === undefined ||
+        members === undefined || overwrites === undefined || owner === undefined || me === null) {
+      throw new Refusal('E_NOT_READY', 'current channel permissions are unavailable');
+    }
+    const bits = channelBitsOf({ owner, everyoneId: access.everyoneId, roles, members, overwrites: overwrites[channelId] ?? [] }, me);
+    if (bits === null || (bits & PERM.manageMessages) === 0) throw new Refusal('E_FORBIDDEN', 'manage messages permission required');
+    const requestId = crypto.getRandomValues(new Uint8Array(16));
+    const now = BigInt(Math.floor(this.deps.now() / 1000));
+    const signed = core.signRemoval(requestId, group.groupId, seq, now + 30n, now);
+    await this.routes.postModerationRemoval(group.groupId, signed);
+    this.refreshTimeline(channelId, group.groupId);
+    return null;
+  }
 
   /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */
   private react(channelId: string, msgId: string, emoji: string, on: boolean): Promise<null> {

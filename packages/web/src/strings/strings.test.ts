@@ -76,7 +76,7 @@ describe('the copy rules', () => {
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
     // Flow 07 (v0.1.0-web3.1) adds 4: shell.noServer.create, shell.dms.noServer, shell.dms.alone and shell.log.emptyMade.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(177);
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(182);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);

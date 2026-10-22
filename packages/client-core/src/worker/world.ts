@@ -249,6 +249,8 @@ export function world(opts: {
     groups: (): GroupInfo[] => state.groups,
     groupRow: (g: Uint8Array): GroupInfo | null => state.groups.find((x) => toHex(x.groupId) === toHex(g)) ?? null,
     timeline: (): TimelineRow[] => state.rows,
+    signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
+      encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
     threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
       const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
       return { root: t.root, rows: t.rows.filter((r) => beforeSeq === 0n || r.seq < beforeSeq).slice(0, limit) };
@@ -355,6 +357,7 @@ export function world(opts: {
     sendPresenceActivity: vi.fn(() => Promise.resolve()),
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
+    postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
     getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
     configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>
       Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 0 as const, revision: 1n,

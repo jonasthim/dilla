@@ -15,9 +15,71 @@ import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
-import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
+import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('signs a sequence confirmed in the active community timeline and preserves server moderation refusals', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    const msgId = toHex(w.state.rows[0]!.msgId!);
+    w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3' });
+    await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: null }));
+    expect(w.core.signRemoval).toHaveBeenCalledWith(expect.any(Uint8Array), GROUP, 3n, 1_700_000_030n, 1_700_000_000n);
+    expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
+
+    w.routes.postModerationRemoval.mockRejectedValue(refusal(403, 'E_FORBIDDEN'));
+    w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3' });
+    await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+  });
+
+  it.each([
+    ['DM channel', DM_CHANNEL, 'E_BAD_INPUT'],
+    ['mismatched sequence', CHANNEL, 'E_BAD_INPUT'],
+    ['mismatched message id', CHANNEL, 'E_BAD_INPUT'],
+  ] as const)('rejects moderator removal for a %s before signing or HTTP', async (label, channelId, code) => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    await toReady(w);
+    w.call(10_210, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10_210)).toMatchObject({ ok: true, value: null }));
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    const actualMsgId = toHex(w.state.rows[0]!.msgId!);
+    const request = label === 'mismatched sequence' ? { channelId: toHex(channelId), msgId: actualMsgId, seq: '4' }
+      : { channelId: toHex(channelId), msgId: label === 'mismatched message id' ? 'ff'.repeat(16) : actualMsgId, seq: '3' };
+    w.call(10_211, { m: 'moderateRemoveMessage', ...request });
+    await vi.waitFor(() => expect(w.ret(10_211)).toMatchObject({ ok: false, error: { code } }));
+    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it.each(['unloaded permissions', 'denied ManageMessages'] as const)('fails closed on %s before signing or HTTP', async (label) => {
+    const w = world();
+    w.routes.listCommunities.mockResolvedValue([{ id: COMMUNITY, name: 'friends', owner: STRANGER, policyVersion: 1n }]);
+    w.routes.listRoles.mockResolvedValue([{ id: ROLE_EVERYONE, name: '@everyone', color: 0, position: 0, allow: 1, deny: 0,
+      hoist: false, mentionable: false }]);
+    if (label === 'unloaded permissions') w.routes.listOverwrites.mockRejectedValue(new Error('not loaded'));
+    await toReady(w);
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    if (label === 'denied ManageMessages') {
+      w.call(10_220, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(10_220)).toMatchObject({ ok: true, value: null }));
+    }
+    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0]!.msgId!), seq: '3' });
+    await vi.waitFor(() => expect(w.ret(10_221)).toMatchObject({ ok: false,
+      error: { code: label === 'denied ManageMessages' ? 'E_FORBIDDEN' : 'E_NOT_READY' } }));
+    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
   it('bridges self-role policy reads, configuration, and member selections', async () => {
     const w = world();
     const listSelfRoles = vi.fn(() => Promise.resolve([{ id: STRANGER, name: 'Readers', position: 2, selfSelected: false }]));

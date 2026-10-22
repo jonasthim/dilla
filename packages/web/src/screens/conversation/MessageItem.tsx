@@ -25,6 +25,7 @@ export function handOnFromRow(action: number): void {
 
 export type RowEvent =
   | { kind: 'react'; anchor: HTMLElement } | { kind: 'reply' } | { kind: 'edit' } | { kind: 'pin'; on: boolean } | { kind: 'delete' }
+  | { kind: 'moderateRemove'; seq: string }
   | { kind: 'toggle'; emoji: string; on: boolean } | { kind: 'jump'; msgId: string }
   | { kind: 'retry'; msgId: string } | { kind: 'discard'; msgId: string };
 
@@ -92,6 +93,9 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
       ...(p.inThread !== true && (p.bits == null || (p.bits & PERM.pinMessages) !== 0) ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
       ...(ownAuthor ? [{ id: 'delete' as const, label: t('shell.message.delete'), danger: true, onAction: () => emit({ kind: 'delete' as const }) }] : []),
+      ...(!ownAuthor && item.seq !== null && p.bits !== null && p.bits !== undefined && (p.bits & PERM.manageMessages) !== 0
+        ? [{ id: 'delete' as const, label: t('shell.message.moderateRemove'), danger: true,
+          onAction: () => emit({ kind: 'moderateRemove' as const, seq: item.seq! }) }] : []),
     ]} /> : undefined;
   const reply = item.reply;
   const replyProps = reply === null ? undefined : {

@@ -7,7 +7,7 @@ import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import {
-  GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
+  A, GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
 } from '../../test/conversation.tsx';
 import { INITIAL_UI, conversationReducer } from './Conversation.tsx';
 
@@ -136,6 +136,33 @@ describe('the toolbar (L-UI-41)', () => {
     expect(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'edit' })).toBeInTheDocument();
     expect(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' })).toBeInTheDocument();
     expect(rowOf(O1)).not.toHaveAttribute('data-own');
+  });
+});
+
+describe('moderator message removal', () => {
+  it('shows a separate control only with loaded ManageMessages authority and confirms with the target sequence', async () => {
+    const { fake, user } = renderConversation({ items: [peerRow(P1, '7', 'theirs')] });
+    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    const everyone = '01'.repeat(16);
+    const access = { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      moderateMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true };
+    fake.set(`permissions:${A}`, access);
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: 1, deny: 0, members: 3 },
+      { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 1, deny: 0, members: 1 },
+    ]);
+    fake.set(`overwrites:${A}`, {});
+    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    fake.set(`roles:${A}`, [
+      { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: 1, deny: 0, members: 3 },
+      { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 5, deny: 0, members: 1 },
+    ]);
+    const action = await screen.findByRole('button', { name: 'remove for everyone' });
+    await user.click(action);
+    const dialog = screen.getByRole('dialog', { name: 'Remove this message for everyone?' });
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P1, seq: '7' }]);
   });
 });
 

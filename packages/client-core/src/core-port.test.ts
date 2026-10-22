@@ -68,6 +68,21 @@ it('adapts the ABI-8 trust and search exports', () => {
   expect(s.calls[5]?.args).toEqual([G]);
 });
 
+it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {
+  const signed = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
+  const requestId = new Uint8Array(16).fill(0x41);
+  const s = stub({ sign_removal: (...args) => { expect(args).toEqual([requestId, G, 9n, 140n, 110n]); return signed; } });
+  expect(s.port.signRemoval(requestId, G, 9n, 140n, 110n)).toBe(signed);
+  expect(s.calls).toEqual([{ method: 'sign_removal', args: [requestId, G, 9n, 140n, 110n] }]);
+});
+
+it('fails closed when the generated WASM handle predates moderator-removal signing', () => {
+  const staleHandle = { sign_removal: undefined } as unknown as CoreHandle;
+  const error = caught(() => wrapCore(staleHandle).signRemoval(new Uint8Array(16), G, 9n, 140n, 110n));
+  expect(error.code).toBe('E_CORE_STATE');
+  expect(error.message).toContain('not available in this WASM build');
+});
+
 it('reads an open send gate as null and fails closed on a code it does not know', () => {
   expect(stub({ send_block_code: () => undefined }).port.sendBlockCode(G)).toBeNull();
   for (const code of ['E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'] as const)

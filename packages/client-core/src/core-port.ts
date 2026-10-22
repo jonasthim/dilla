@@ -106,6 +106,7 @@ export interface CorePort {
   /** BACKUPS-RECOVERY-02: an unpublished candidate is dropped; the accepted list's own body becomes the candidate. */
   deviceListDrop(): void;
   sessionSign(nonce: Uint8Array, purpose: 0 | 1): Uint8Array;
+  signRemoval(requestId: Id, groupId: Id, targetSeq: bigint, expires: bigint, now: bigint): Uint8Array;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
@@ -237,6 +238,8 @@ export interface CoreHandle {
       signup_reset(): void;
       device_list_body(): Uint8Array; device_list_published(): void; device_list_drop(): void;
       session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
+      /** Present after rebuilding the WASM package from a facade that includes moderator removals. */
+      sign_removal?(request_id: Uint8Array, group_id: Uint8Array, target_sequence: bigint, expires: bigint, now: bigint): Uint8Array;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
       key_packages(count: number, last_resort: boolean): Uint8Array;
@@ -469,6 +472,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
     deviceListPublished: () => call(() => handle.device_list_published()),
     deviceListDrop: () => call(() => handle.device_list_drop()),
     sessionSign: (nonce, purpose) => call(() => handle.session_sign(nonce, purpose)),
+    signRemoval: (requestId, groupId, targetSeq, expires, now) => call(() => {
+      if (handle.sign_removal === undefined) throw new CoreError('E_CORE_STATE', 'moderation signing is not available in this WASM build');
+      return handle.sign_removal(requestId, groupId, targetSeq, expires, now);
+    }),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),
     sessionClear: () => call(() => handle.session_clear()),

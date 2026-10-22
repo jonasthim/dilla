@@ -79,6 +79,7 @@ export type Command =
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
   | { m: 'deleteMessage'; channelId: string; msgId: string }                              // ready → null (type 2)
+  | { m: 'moderateRemoveMessage'; channelId: string; msgId: string; seq: string }        // ready → null; signed server removal
   | { m: 'react'; channelId: string; msgId: string; emoji: string; on: boolean }          // ready → null (type 3, or 4 when off)
   | { m: 'pin'; channelId: string; msgId: string; on: boolean }                           // ready → null (type 5, or 6 when off)
   | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>

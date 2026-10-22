@@ -337,6 +337,14 @@ impl CoreHandle {
         self.with_core(|c| c.session_sign(&nonce, purpose))
             .map(Vec::into_boxed_slice)
     }
+    /// Signs a moderator removal proof using the identity held by ClientCore. Returns CBOR [proof, signature].
+    pub fn sign_removal(&self, request_id: &[u8], group_id: &[u8], target_sequence: u64,
+        expires: u64, now: u64) -> Result<Box<[u8]>, JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.sign_removal(&request_id, &group_id, target_sequence, expires, now))
+            .map(Vec::into_boxed_slice)
+    }
     /// Calls ClientCore::session_store.
     pub fn session_store(
         &self,

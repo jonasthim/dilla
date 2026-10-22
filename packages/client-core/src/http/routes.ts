@@ -487,6 +487,11 @@ export class Routes {
     if (top > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'rank above ' + String(OWNER_TOP));
     return { bits: u64(a[0]), top };
   }
+  /** POST a ClientCore-signed moderation proof; the instance rechecks permission and hierarchy atomically. */
+  async postModerationRemoval(groupId: Uint8Array, signedBody: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/groups/${id('groupId', groupId)}/moderation/removals`, 'write', true,
+      { body: signedBody, maxBodyBytes: 128 });
+  }
   /** A 404 means the community has no active installation; other refusals remain visible. */
   async getBotInstallation(communityId: Uint8Array): Promise<BotInstallationRow | null> {
     const path = `/v1/communities/${id('communityId', communityId)}/bot`;

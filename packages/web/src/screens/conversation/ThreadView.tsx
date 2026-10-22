@@ -49,6 +49,7 @@ export function ThreadView(p: {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [emojiFor, setEmojiFor] = useState<{ msgId: string } | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string } | null>(null);
+  const [moderateFor, setModerateFor] = useState<{ msgId: string; key: string; seq: string } | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const sending = useRef(false);
@@ -103,6 +104,7 @@ export function ThreadView(p: {
     else if (ev.kind === 'toggle') { if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); }
     else if (ev.kind === 'edit') { if (msgId !== null) dispatch({ type: 'edit', msgId, value: editableText(item.body, book) }); }
     else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key }); }
+    else if (ev.kind === 'moderateRemove') { if (msgId !== null) setModerateFor({ msgId, key: item.key, seq: ev.seq }); }
     else if (ev.kind === 'retry') command({ m: 'retrySend', msgId: ev.msgId });
     else if (ev.kind === 'discard') command({ m: 'discardSend', msgId: ev.msgId });
   };
@@ -192,6 +194,13 @@ export function ThreadView(p: {
           setDeleteFor(null);
           queueMicrotask(() => rowEls.current.get(key)?.focus());
         }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
+      <Dialog open={moderateFor !== null} title={t('shell.moderation.removeTitle')} closeLabel={t('shell.delete.cancel')}
+        onClose={() => setModerateFor(null)} footer={<Button variant="danger" onClick={() => {
+          if (moderateFor === null) return;
+          command({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: moderateFor.msgId, seq: moderateFor.seq });
+          rowEls.current.get(moderateFor.key)?.focus();
+          setModerateFor(null);
+        }}>{t('shell.moderation.removeConfirm')}</Button>}>{t('shell.moderation.removeBody')}</Dialog>
       {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
         onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={() => { lightbox.opener?.focus(); setLightbox(null); }} onError={report} /> : null}
     </div>

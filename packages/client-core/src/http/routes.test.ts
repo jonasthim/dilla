@@ -1263,6 +1263,18 @@ describe('Routes: server admin and moderation', () => {
     return { result, seen: t.seen[0], http };
   };
 
+  it('posts the opaque ClientCore-signed removal body to the group route and surfaces server refusal', async () => {
+    const body = encode([new Uint8Array([1, 2]), new Uint8Array(64).fill(0x7a)]);
+    const ok = setup();
+    ok.t.replies.push(cborReply(200, [INVITE, 1]));
+    await ok.routes.postModerationRemoval(GROUP, body);
+    expect(ok.http.requests[0]).toMatchObject({ method: 'POST', path: `/v1/groups/${hex(GROUP)}/moderation/removals`, body,
+      bucket: 'write', idempotent: true, maxBodyBytes: 128 });
+    const denied = setup();
+    denied.t.replies.push(refusal(403, 'E_FORBIDDEN'));
+    await expect(denied.routes.postModerationRemoval(GROUP, body)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+
   it('getPermissions reads [bits, top]', async () => {
     const { result, seen, http } = await one(cborReply(200, [16_777_215, TOP]), (r) => r.getPermissions(COMMUNITY));
     expect(result).toEqual({ bits: 16_777_215n, top: TOP });
