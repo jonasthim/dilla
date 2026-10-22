@@ -393,6 +393,35 @@ fn a_cache_row_whose_version_disagrees_with_its_blob_anchors_nothing() {
     assert_eq!(ingest(&mut w, BOB, &[&v2, &v3]), Err("E_DEVICE_LIST_STALE"));
 }
 
+/// A zeroed cache row (version 0) whose blob is a well-formed version-0 list, served back as the
+/// first row of a history: the version-column guard on its own (the anchor version, the anchor
+/// bytes and the head check all see a match).
+#[test]
+fn a_zeroed_cache_row_anchors_nothing() {
+    let mut w = world();
+    cache_v2(&mut w);
+    let v1 = w.v1.clone();
+    let mut v0 = v1.clone();
+    v0.unsigned.version = 0;
+    v0.sig_ssk = SskSigner::from_bytes(&[0xf2; 32]).sign_device_list(&v0.unsigned);
+    let next = sec_next(&v0, v1.unsigned.entries.clone(), 0xf2);
+    w.alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE app_device_lists SET version=0,list=?1 WHERE user_id=?2",
+            rusqlite::params![v0.encode(), w.bob.user.as_slice()],
+        )
+        .unwrap();
+    let before = cached(&w);
+    assert_eq!(
+        ingest(&mut w, BOB, &[&v0, &next]),
+        Err("E_DEVICE_LIST_STALE")
+    );
+    assert_eq!(cached(&w), before);
+}
+
 // 3. Rollback.
 
 #[test]

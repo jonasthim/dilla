@@ -81,13 +81,20 @@ fn bounded_list(bytes: &[u8]) -> Result<DeviceList, ClientError> {
     DeviceList::decode(bytes).map_err(|_| failure(E_DEVICE_LIST_STALE))
 }
 
-// The anchor checks of an ingest against the cached list (`ingest_leaf`). Each one alone refuses a
-// rollback, a history whose first row or head is below the cached version
-// (`each_anchor_check_alone_refuses_a_rollback`); none of them is only a backstop of another.
+// The four anchor checks of an ingest against the cached list (`ingest_leaf`). Each one alone
+// refuses what it guards, a history whose first row or head is below the cached version, or a
+// zeroed cache row (`the_cached_version_check_alone_refuses_a_zero_cache`,
+// `the_anchor_version_check_alone_refuses_a_rollback`, `the_anchor_byte_check_alone_refuses_a_rollback`,
+// `the_head_check_alone_refuses_a_rollback`); none of them is only a backstop of another.
 // Beyond rollback, the version check also refuses a cache row whose version column disagrees with
 // its own signed bytes, the byte check a correctly signed fork of the cached version, and the head
 // check refuses before any signature is verified (the final head equality of
 // `validate_history_from` would refuse a head below the cached version too, later).
+
+/// The cached row's version column is zero or negative: a zeroed or corrupt row anchors nothing.
+fn cached_version_invalid(cached_version: i64) -> bool {
+    cached_version < 1
+}
 
 /// The first served row is not at the cached version.
 fn anchor_version_differs(cached_version: i64, first: &DeviceList) -> bool {
@@ -1530,7 +1537,7 @@ impl ClientCore {
             let first_list = history
                 .first()
                 .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
-            if *version < 1
+            if cached_version_invalid(*version)
                 || anchor_version_differs(*version, first_list)
                 || anchor_bytes_differ(blob, first_list)
                 || head_below_cached(*version, &head)
@@ -2097,6 +2104,20 @@ mod tests {
         );
         // The rollback only this check of the three sees: the cached v2 as the first row, head v1.
         assert!(!anchor_version_differs(2, &v2) && !anchor_bytes_differ(&v2.encode(), &v2));
+    }
+
+    #[test]
+    fn the_cached_version_check_alone_refuses_a_zero_cache() {
+        assert!(cached_version_invalid(0) && cached_version_invalid(-1));
+        assert!(!cached_version_invalid(1) && !cached_version_invalid(2));
+        // A well-formed first row and head at version 0, byte-equal to the cached blob: the other
+        // three checks do not see a cached version of 0.
+        let (mut v0, _) = v1_v2();
+        v0.unsigned.version = 0;
+        v0.sig_ssk = SskSigner::from_bytes(&[0x42; 32]).sign_device_list(&v0.unsigned);
+        assert!(!anchor_version_differs(0, &v0));
+        assert!(!anchor_bytes_differ(&v0.encode(), &v0));
+        assert!(!head_below_cached(0, &v0));
     }
 
     #[test]
