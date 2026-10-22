@@ -84,13 +84,17 @@ func (r *BoundedPCMReader) Close() error {
 	return r.closeErr
 }
 
-// PCMStarter is disabled until it can run both network-capable tools inside a
-// production OS-level egress sandbox. The experiment broker is not a production
-// dependency and proxy environment variables do not provide confinement.
+// PCMStarter runs yt-dlp and FFmpeg in a bubblewrap network namespace. The only
+// external path is a bounded CONNECT broker restricted to public YouTube hosts.
+// Bubblewrap and Python 3 are explicit host prerequisites; absence fails closed.
 type PCMStarter struct {
+	Bubblewrap  string
+	Python      string
 	YTDLP       string
 	FFmpeg      string
+	Node        string
 	Timeout     time.Duration
+	MaxDuration time.Duration
 	MaxPCMBytes int64
 }
 
@@ -102,5 +106,5 @@ func (s PCMStarter) Start(ctx context.Context, source string) (io.ReadCloser, er
 	if err != nil || kind != "video" || canonical != source {
 		return nil, ErrInvalidInput
 	}
-	return nil, ErrSandboxUnavailable
+	return s.startIsolated(ctx, canonical)
 }

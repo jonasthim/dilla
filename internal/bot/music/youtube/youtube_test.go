@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +72,79 @@ func TestResolveRequiresSandboxedRunner(t *testing.T) {
 	}
 	if _, err := resolver.Resolve(nil, "study music"); !errors.Is(err, ErrExtractFailed) {
 		t.Fatalf("Resolve with nil context error = %v", err)
+	}
+}
+
+func TestIsolatedMetadataRunnerUsesArgvWithoutShellExpansion(t *testing.T) {
+	dir := t.TempDir()
+	marker := dir + "/injected"
+	program := "#!/bin/sh\nprintf '%s' \"$1\"\n"
+	extractor := filepath.Join(dir, "extractor")
+	if err := os.WriteFile(extractor, []byte(program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	injected := "; touch " + marker
+	runner := IsolatedMetadataRunner{Timeout: 5 * time.Second}
+	output, err := runner.Run(context.Background(), extractor, []string{injected}, 4096)
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if string(output) != injected {
+		t.Fatalf("runner output = %q, want exact argv value %q", output, injected)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("argv was shell-expanded: marker stat error = %v", err)
+	}
+}
+
+func TestIsolatedMetadataRunnerBoundsCapturedOutput(t *testing.T) {
+	dir := t.TempDir()
+	extractor := filepath.Join(dir, "large-output")
+	if err := os.WriteFile(extractor, []byte("#!/bin/sh\nhead -c 4096 /dev/zero\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runner := IsolatedMetadataRunner{Timeout: 5 * time.Second}
+	output, err := runner.Run(context.Background(), extractor, nil, 128)
+	if !errors.Is(err, ErrMetadataTooLarge) || len(output) != 0 {
+		t.Fatalf("bounded output = %d bytes, %v; want no output and ErrMetadataTooLarge", len(output), err)
+	}
+}
+
+func TestMetadataResolverUsesProductionNetworkSandbox(t *testing.T) {
+	dir := t.TempDir()
+	ytdlp := filepath.Join(dir, "fake yt-dlp")
+	metadata := `{"_type":"video","extractor_key":"Youtube","id":"aqz-KE-bpKQ","title":"sample","duration":1}`
+	if err := os.WriteFile(ytdlp, []byte("#!/bin/sh\nprintf '%s' '"+metadata+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	node := filepath.Join(dir, "fake node")
+	if err := os.WriteFile(node, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("bubblewrap unavailable")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python 3 unavailable")
+	}
+	resolver, err := NewMetadataResolver(ytdlp, node, bwrap, python)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := resolver.Resolve(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if len(tracks) != 1 || tracks[0].CanonicalID != "https://www.youtube.com/watch?v=aqz-KE-bpKQ" {
+		t.Fatalf("resolved tracks = %#v", tracks)
 	}
 }
 

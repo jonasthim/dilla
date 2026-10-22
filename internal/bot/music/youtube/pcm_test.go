@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,19 +12,162 @@ import (
 	"time"
 )
 
-func TestPCMStarterFailsClosedWithoutProductionNetworkSandbox(t *testing.T) {
+func TestPCMStarterFailsClosedWithoutBubblewrap(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "invoked")
 	ytdlp := writeScript(t, dir, "yt-dlp", `touch "$MARKER"; printf encoded`)
 	ffmpeg := writeScript(t, dir, "ffmpeg", `touch "$MARKER"; cat`)
 	t.Setenv("MARKER", marker)
 
-	pcm, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	pcm, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Bubblewrap: filepath.Join(dir, "missing-bwrap")}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
 	if pcm != nil || !errors.Is(err, ErrSandboxUnavailable) {
 		t.Fatalf("Start = (%v, %v), want nil and ErrSandboxUnavailable", pcm, err)
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("unsandboxed subprocess started: stat error = %v", statErr)
+	}
+}
+
+func TestPCMChildCannotReachPublicNetworkDirectly(t *testing.T) {
+	dir := t.TempDir()
+	ytdlp := filepath.Join(dir, "direct-network-probe")
+	program := "#!/usr/bin/python3\nimport socket,sys\ntry:\n socket.create_connection(('8.8.8.8',443),0.5)\n sys.exit(41)\nexcept OSError:\n sys.stdout.write('encoded')\n"
+	if err := os.WriteFile(ytdlp, []byte(program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
+	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Timeout: 5 * time.Second}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer source.Close()
+	pcm, err := io.ReadAll(source)
+	if err != nil || string(pcm) != "encoded" {
+		t.Fatalf("network-isolated output = %q, %v; fake extractor should see direct egress denied", pcm, err)
+	}
+}
+
+func TestPCMStarterRunsFakeExtractorAndFFmpegInsideIsolatedWorker(t *testing.T) {
+	dir := t.TempDir()
+	ytdlp := writeScript(t, dir, "fake yt-dlp", `test "$HTTPS_PROXY" = "http://127.0.0.1:3128" || exit 31; printf encoded`)
+	ffmpeg := writeScript(t, dir, "fake ffmpeg", `test "$HTTPS_PROXY" = "http://127.0.0.1:3128" || exit 32; cat`)
+	starter := PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Timeout: 5 * time.Second}
+	source, err := starter.Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer source.Close()
+	pcm, err := io.ReadAll(source)
+	if err != nil || string(pcm) != "encoded" {
+		t.Fatalf("PCM output = %q, %v, want encoded", pcm, err)
+	}
+}
+
+func TestPCMStarterStopsAtConfiguredOutputLimit(t *testing.T) {
+	dir := t.TempDir()
+	ytdlp := writeScript(t, dir, "fake yt-dlp", `printf encoded`)
+	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
+	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, MaxPCMBytes: 4, Timeout: 5 * time.Second}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer source.Close()
+	pcm, err := io.ReadAll(source)
+	if !errors.Is(err, ErrPCMLimit) || string(pcm) != "enco" {
+		t.Fatalf("bounded PCM = %q, %v; want 4 bytes and ErrPCMLimit", pcm, err)
+	}
+}
+
+func TestPCMStarterCancellationStopsTheSandboxedPipeline(t *testing.T) {
+	dir := t.TempDir()
+	ytdlp := writeScript(t, dir, "fake yt-dlp", `while :; do sleep 1; done`)
+	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
+	ctx, cancel := context.WithCancel(context.Background())
+	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, MaxDuration: time.Minute, Timeout: 5 * time.Second}).Start(ctx, "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	cancel()
+	readDone := make(chan error, 1)
+	go func() { _, readErr := source.Read(make([]byte, 8)); readDone <- readErr }()
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		_ = source.Close()
+		t.Fatal("sandboxed pipeline did not stop after context cancellation")
+	}
+	_ = source.Close()
+}
+
+func TestEgressBrokerRejectsNonYouTubeAndPrivateDestinations(t *testing.T) {
+	for _, host := range []string{"example.com", "youtube.com.evil.test", "127.0.0.1", "[::1]", "..youtube.com", "a..youtube.com"} {
+		if allowedYouTubeHost(host) {
+			t.Errorf("allowedYouTubeHost(%q) = true", host)
+		}
+	}
+	for _, address := range []string{"127.0.0.1", "10.0.0.1", "169.254.1.1", "100.64.0.1", "192.88.99.1", "::1", "fd00::1", "fe80::1", "2001:db8::1", "::ffff:127.0.0.1"} {
+		if publicEgressAddress(address) {
+			t.Errorf("publicEgressAddress(%q) = true", address)
+		}
+	}
+	if !publicEgressAddress("8.8.8.8") || !publicEgressAddress("2606:4700:4700::1111") {
+		t.Fatal("public addresses were rejected")
+	}
+	for _, header := range []string{
+		"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n",
+		"CONNECT video.googlevideo.com:80 HTTP/1.1\r\nHost: video.googlevideo.com\r\n\r\n",
+		"GET https://youtube.com/ HTTP/1.1\r\nHost: youtube.com\r\n\r\n",
+		"CONNECT youtube.com.evil.test:443 HTTP/1.1\r\nHost: youtube.com.evil.test\r\n\r\n",
+		"CONNECT youtube.com:443 HTTP/1.1\r\nHost: youtube.com\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n",
+	} {
+		if _, err := parseConnectHeader([]byte(header)); err == nil {
+			t.Errorf("parseConnectHeader accepted %q", header)
+		}
+	}
+	for _, host := range []string{"youtube.com", "www.youtube.com", "video.googlevideo.com", "i.ytimg.com", "youtu.be"} {
+		if !allowedYouTubeHost(host) {
+			t.Errorf("allowedYouTubeHost(%q) = false", host)
+		}
+	}
+}
+
+func TestEgressBrokerReturns403ForDisallowedCONNECTWithoutDialing(t *testing.T) {
+	client, brokerConn := net.Pipe()
+	defer client.Close()
+	defer brokerConn.Close()
+	broker := &egressBroker{}
+	done := make(chan struct{})
+	go func() {
+		broker.handle(brokerConn)
+		close(done)
+	}()
+	if _, err := io.WriteString(client, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 64)
+	n, err := client.Read(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(response[:n]), "HTTP/1.1 403 Forbidden\r\n") {
+		t.Fatalf("broker response = %q, want 403", response[:n])
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("broker did not finish rejected request")
 	}
 }
 

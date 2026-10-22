@@ -1,7 +1,6 @@
-// Package youtube contains a nonproduction YouTube metadata adapter. It has no
-// live playback path and no concrete network sandbox, so it is not a production
-// provider. A resolver can only use a package-approved sandbox runner; the raw
-// ExecRunner cannot be selected as its runner.
+// Package youtube contains bounded metadata and PCM adapters. Network-capable
+// subprocesses run only inside bubblewrap and use a host CONNECT broker that
+// permits public HTTPS destinations on the YouTube host allowlist.
 package youtube
 
 import (
@@ -210,18 +209,20 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 
 func (b *limitedBuffer) Bytes() []byte { return b.buf.Bytes() }
 
-// NonProductionMetadataResolver uses configured yt-dlp and JavaScript runtime
-// paths and validates metadata before returning queue descriptors. It is
-// intentionally unavailable to external packages until a concrete sandbox
-// runner is implemented here.
-type NonProductionMetadataResolver struct {
+// MetadataResolver uses configured yt-dlp and JavaScript runtime paths and
+// validates metadata before returning queue descriptors.
+type MetadataResolver struct {
 	YTDLP   string
 	Node    string
 	runner  sandboxedRunner
 	Timeout time.Duration
 }
 
-func (r NonProductionMetadataResolver) Resolve(ctx context.Context, input string) ([]music.Track, error) {
+// NonProductionMetadataResolver remains an alias for callers of the original
+// qualification-only adapter name.
+type NonProductionMetadataResolver = MetadataResolver
+
+func (r MetadataResolver) Resolve(ctx context.Context, input string) ([]music.Track, error) {
 	if ctx == nil {
 		return nil, ErrExtractFailed
 	}
