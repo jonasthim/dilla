@@ -63,7 +63,7 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - giving up on a recovery (late-rejoin `leftAway`, or the window ending);
   - the boot sweep of any group that the checkpoint does not name, or whose hold has expired.
   - `e2e/voice/reload.spec.ts` (a plain reload's sweep) must stay green unchanged.
-- **Verdict: acceptable.** The worst case is the same as a crashed tab today, and a returning device needs no extra epoch. Record the rule in `protocol/01-groups.md` (call groups) and `protocol/08-threat-model.md`.
+- **Verdict: acceptable.** The worst case is the same as a crashed tab today, and a returning device needs no extra epoch to be admitted. (UP6c correction: it does need one for its media. Its fresh media worker restarts the SFrame counters, so it commits an own-leaf Update before it publishes, per protocol/05 N1.) Record the rule in `protocol/01-groups.md` (call groups) and `protocol/08-threat-model.md`.
 - **Correction (UP6 review): the sweep's Remove makes a held leaf permanently doomed when everyone dropped.** Each member's OpenMLS queue holds the Removes, its own included, so nobody can commit and no external join is admitted. UP6b adds a protocol-level withdrawal (R-UP12) with this posture:
   - **Who can withdraw.** Only the instance, and only its own absence Removes, triggered by the departed device's own authenticated resume.
   - **What clients drop.** Only instance-originated Removes, nothing else.
@@ -499,6 +499,22 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
   - `cargo test -p dilla-core`; the wasm-pack build and the WASI build (`internal/mlswasi/testdata`);
   - `go test -race ./internal/ds/... ./internal/api/... ./internal/store/...` on both dialects; a clean sqlc diff;
   - client-core vitest and typecheck; the Go and TS vector tests; `check:docs`.
+
+### Task UP6c (opus): a resumed call re-keys before it publishes (security, protocol/05 N1)
+**Why.** Found after UP7b by reading the code. A UP6 resume kept the held epoch, and the reloaded page's fresh media worker took it as `min_epoch`. That worker sealed from `seq` 0 under the KID and key the previous worker had already used, so AES-GCM nonces repeated across the reload. This broke N1 ("a restarted worker … commits a new epoch first"). The `replay` drops the UP9 runs showed at listeners fit this.
+- **Fix (`join.ts` `resume`, `controller.ts` `commitFresh`):**
+  - catch up; pass the gate on the held epoch (its key is zero-filled at once, and only its roster is kept); start the call;
+  - then commit an own-leaf Update (`call_rotate`, `POST commit`, confirm) on the group's lane, and take the fresh epoch's key. The page gets no key and no join answer until that commit is confirmed, so it publishes nothing before it. A key of an epoch below the committed one is refused (`E_INTERNAL`).
+  - **The commit comes after the start.** The start withdraws the device's own absence Remove (UP6b). Before that, a commit could neither carry the Remove (OpenMLS refuses a self-removal) nor leave it out (invariant 4, clause 1).
+  - `409 E_COMMIT_CONFLICT` catches up and tries again, at most `RESUME_COMMIT_TRIES` (3) commits. A catch-up that finds the leaf gone, or a `403` on the commit, forgets the group and joins afresh. A transient refusal, or a conflict that outlasts the tries, keeps the hold, and the page tries again. Any other refusal leaves.
+  - **Rejected:** a sender-counter floor in browser storage. Storage can be cleared or lost, and then the reuse silently returns.
+- **Protocol:** `05` N1 names the resume path; `01` § Group kinds describes the resume's order.
+- **Tests:** the resume answers and keys only an epoch above the held one, and nothing is posted to the page while the commit is held (red before the fix: `expected 1 to be greater than 1`); a 409 from a peer's commit landing mid-resume catches up and re-keys (held + 2); 409 every time keeps the hold with no key; 403 forgets and joins externally. The UP6 tests now expect `POST commit` after `POST calls`. `update-resume.spec` expects an own commit on a resume and checks that bob, who does not reload, refuses no frame as a replay. `upgrade.spec` checks replay 0 at every listener over A2, and logs B2's commits and replay counts.
+- **Measured (upgrade.spec, chromium, 3/3 green):**
+  - A2 first back since the API answered: 975, 1204 and 922 ms (UP7b before this change: 621 to 1185 ms);
+  - the first resume, from joining to connected: 442, 454 and 450 ms (before: 326 to 406 ms);
+  - B2 microphone published again: 646 to 1135 ms after pagehide, each page committing once (200, no 409);
+  - `replay` 0 at every page in B2 and A2. Every media worker there is new (a reload, or a session that ended with its lost room), so the check that a listener whose worker lives through a peer's resume refuses no replay sits in `update-resume.spec` (bob).
 
 ### Task UP7 (opus): web call lifecycle (R-UP7 to R-UP9)
 - **Files:** `packages/web/src/call/session.ts` (`:1363-1367`, `:1426`), `screens/voice/useCall.tsx`, `screens/Shell.tsx` (`:1637-1657`), `packages/media/src/connect.ts` (`:41`, `:100`, `:226`).

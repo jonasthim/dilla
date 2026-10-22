@@ -182,6 +182,16 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
         throw e;
       }
     };
+    /** UP6c: the frames each page's current media worker refused as `replay` (a (KID, CTR) it had already accepted), and
+     *  whether that worker is the one it had before (`since`): a resumer that sealed from seq 0 again under the held
+     *  epoch's KID shows here at a listener whose worker lived through it. */
+    const replays = async () => Promise.all(pages.map(async (page) => {
+      const worker = mediaWorkers(page).at(-1);
+      if (worker === undefined) return { worker: null, replay: null };
+      const replay = await worker.evaluate(() => (globalThis as unknown as { __dillaMediaStats?: { dropped: Record<string, number> } })
+        .__dillaMediaStats?.dropped.replay ?? null).catch(() => null);
+      return { worker, replay };
+    }));
     const carol = peers[2].person.page;
     const carolRelayed = async (what: string) => {
       await expect.poll(async () => { const u = await relayUse(carol); return u.relayed > 0 && u.direct === 0; },
@@ -287,9 +297,13 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       for (const [i, p] of peers.entries()) {
         expect(p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && r.path === '/v1/groups'), `${p.name}: no new call group`).toEqual([]);
       }
+      // UP6c: each resume commits a fresh epoch (an own-leaf Update) before it publishes.
+      const commitsB2 = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /\/commit$/.test(r.path)).map((r) => r.status));
       timings.B2 = { publishedMs: own, heardBackMs: heardBack, resumed: Object.fromEntries(peers.map((p, i) => [p.name, joins[i]])),
-        externalJoins: Object.fromEntries(peers.map((p, i) => [p.name, external[i]])) };
+        externalJoins: Object.fromEntries(peers.map((p, i) => [p.name, external[i]])),
+        commits: Object.fromEntries(peers.map((p, i) => [p.name, commitsB2[i]])) };
       await allHear();
+      timings['B2.replay'] = Object.fromEntries((await replays()).map((r, i) => [peers[i].name, r.replay]));
       await carolRelayed('B2');
       tolerate(lines, 'B2');
     });
@@ -300,6 +314,7 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const callsFrom = await Promise.all(pages.map(async (page) => (await history(page)).calls.length));
       const joinsFrom = await Promise.all(pages.map(async (page) => (await history(page)).joins.length));
       const reqFrom = peers.map((p) => p.requests.length);
+      const replayFrom = await replays();
       const stopAt = Date.now();
       await host.stop();
       // The clients cannot reach the instance: their LiveKit sessions give up (the reconnect policy's 90 s), the pages hold
@@ -395,6 +410,18 @@ test('calls survive an upgrade: API-only restarts, an update reload, everyone dr
       const epochNow = groupRows(DB, voice).epoch;
       for (const page of pages) await expect.poll(async () => Number((await callSlice(page))?.epoch ?? -1), { timeout: WAIT }).toBeGreaterThanOrEqual(epochNow);
       await allHear();
+      // UP6c (protocol/05 N1): no listener refused a frame as a replay since the drop. The resumer sealed in a fresh epoch
+      // of its own commit, never from seq 0 again under the held epoch's KID. A worker that lived through the drop is
+      // read as a difference from its count before it.
+      const replayAfter = await replays();
+      const replayA2 = Object.fromEntries(replayAfter.map((r, i) => {
+        const same = r.worker !== null && r.worker === replayFrom[i].worker;
+        return [peers[i].name, { replay: r.replay === null ? null : r.replay - (same ? replayFrom[i].replay ?? 0 : 0), sameWorker: same }];
+      }));
+      timings['A2.replay'] = replayA2;
+      for (const p of peers) expect(replayA2[p.name].replay, `${p.name}: no frame refused as a replay since the drop`).toBe(0);
+      const resumeCommits = peers.map((p, i) => p.requests.slice(reqFrom[i]).filter((r) => r.method === 'POST' && /\/commit$/.test(r.path) && r.at < allBackAt).map((r) => r.status));
+      timings['A2.resumeCommits'] = Object.fromEntries(peers.map((p, i) => [p.name, resumeCommits[i]]));
       await carolRelayed('A2');
       timings.A2 = {
         apiDownToClientsMs: answerAt - stopAt, droppedAfterMs: droppedAt - stopAt, openMs: answerAt - openAt,
