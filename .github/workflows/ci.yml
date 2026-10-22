@@ -105,7 +105,25 @@ jobs:
       - run: npm test -w packages/ui
       - run: npm run typecheck -w packages/design-tokens
       - run: npm run typecheck -w packages/ui
-      - run: npx playwright install --with-deps chromium
+      - id: apt-ui-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-ui
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-ui-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-ui-key.outputs.suffix }}-chromium-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (chromium)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-ui.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-ui.outputs.cache-primary-key }}
       - run: npm run build-storybook -w packages/ui
       - name: axe on every story
         run: |
@@ -328,7 +346,25 @@ jobs:
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
       # ephemeral behaviour, so those engines must be installed too.
-      - run: npx playwright install --with-deps chromium firefox webkit
+      - id: apt-browser-spike-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-browser-spike
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (chromium+firefox+webkit)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium firefox webkit
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-browser-spike.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-browser-spike.outputs.cache-primary-key }}
       # Only the matrix script: it already runs the chromium project, so adding `test:e2e` here would
       # execute the 10-hand-over test twice per run and rewrite opfs-leader-metrics.json for nothing.
       - run: npm run test:e2e:matrix -w @dilla/e2e
@@ -396,7 +432,25 @@ jobs:
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: npm ci
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
-      - run: npx playwright install --with-deps chromium firefox
+      - id: apt-browser-media-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-browser-media
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (chromium+firefox)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium firefox
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-browser-media.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-browser-media.outputs.cache-primary-key }}
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
@@ -530,7 +584,25 @@ jobs:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - id: apt-chromium-web-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-chromium-web
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-key.outputs.suffix }}-chromium-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (chromium)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-chromium-web.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-chromium-web.outputs.cache-primary-key }}
       - run: npm run test:e2e:core:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
@@ -592,7 +664,25 @@ jobs:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
       - run: npm ci
-      - run: npx playwright install --with-deps firefox
+      - id: apt-firefox-web-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-firefox-web
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-key.outputs.suffix }}-firefox-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (firefox)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps firefox
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-firefox-web.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-firefox-web.outputs.cache-primary-key }}
       - run: npm run test:e2e:core:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
@@ -655,7 +745,25 @@ jobs:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
       - run: npm ci
-      - run: npx playwright install --with-deps webkit
+      - id: apt-webkit-web-key
+        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
+      - id: apt-webkit-web
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-
+      - run: bash scripts/ci-apt-cache.sh prepare
+      - name: playwright install (webkit)
+        timeout-minutes: 8
+        run: npx playwright install --with-deps webkit
+      - run: bash scripts/ci-apt-cache.sh stash
+      - if: steps.apt-webkit-web.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/apt-debs
+          key: ${{ steps.apt-webkit-web.outputs.cache-primary-key }}
       - run: npm run test:e2e:web:webkit -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
