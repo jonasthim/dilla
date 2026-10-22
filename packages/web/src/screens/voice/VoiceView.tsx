@@ -14,6 +14,7 @@ import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } f
 import { outgoingText, type CallView } from './useCall.tsx';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
+import { MusicPanel } from './MusicPanel.tsx';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -398,7 +399,10 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
-  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />;
+  return <div className="dw-voice-channel">
+    <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />
+    <MusicPanel channelId={channelId} />
+  </div>;
 }
 
 /**
