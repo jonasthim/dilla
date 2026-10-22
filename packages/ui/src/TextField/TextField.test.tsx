@@ -41,6 +41,16 @@ describe('TextField', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(TAKEN);
   });
 
+  it('shows the note as a second hint line and describes the field with hint, note and error in that order', () => {
+    const NOTE = 'The server can read this.';
+    render(<TextField id="bio" label="Bio" value="" onChange={() => {}} hint={HINT} note={NOTE} error={TAKEN} multiline />);
+    const input = screen.getByRole('textbox', { name: 'Bio' });
+    expect(input).toHaveAccessibleDescription(`${HINT} ${NOTE} ${TAKEN}`);
+    const note = screen.getByText(NOTE);
+    expect(note).toHaveClass('d-text-field__hint');
+    expect(note).toHaveAttribute('id', 'bio-note');
+  });
+
   it('describes the field with the hint alone when there is no error', () => {
     render(<TextField id="username" label="Username" value="" onChange={() => {}} hint={HINT} />);
     const input = screen.getByRole('textbox', { name: 'Username' });

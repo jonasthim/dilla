@@ -738,7 +738,7 @@ device it opens the remove dialog with the recovery key; on a device that is not
 it opens the remove-unlisted dialog without a key (ruling 30: no signed list names such a device, so
 removing it changes no list). `devices.rename` is offered on every device that is not removed, this browser
 included, and opens a `Dialog` titled `devices.renameTitle` with `devices.renameBody`, one text field
-`devices.renameLabel` (focused, at most 64 characters, started on the current name; on this browser with no name,
+`devices.renameLabel` (hint `devices.renameBody`, then `devices.renameServerReads`; focused, at most 64 characters, started on the current name; on this browser with no name,
 on `devices.renameSuggestion` from the browser and system) and a `devices.renameSave` submit. The page trims the
 text and sends `renameDevice` with it; an empty field sends null, which clears the name. While it runs the submit
 reads `devices.working`, is blocked, and nothing closes the dialog; a refusal is a `role="alert"` banner by its
@@ -927,6 +927,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `devices.renameTitle` | `Name this device` | dialog title, the name dialog |
 | `devices.renameBody` | `A name you will recognise. The server can read and change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
 | `devices.renameLabel` | `Device name` | field label, the name dialog (at most 64 characters) |
+| `devices.renameServerReads` | `The server can read this, like your display name.` | a second quiet hint line under the name field, in its description after `devices.renameBody` (web3.12.1) |
 | `devices.renameSave` | `Save` | submit, the name dialog |
 | `devices.renameSuggestion` | `{browser} on {os}` | the name dialog's start text on this browser when it has no name yet, e.g. `Firefox on Linux`; nothing when the browser or system is not recognised |
 | `devices.signOut` | `sign out and remove this browser` | button under the hairline |

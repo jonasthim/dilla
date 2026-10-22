@@ -1055,7 +1055,7 @@ nothing was used up, not even a backup code.
 ## 7. Devices
 
 Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
-Removing a device needs your recovery key." Each row is a device, named by the first eight characters of its
+Removing a device needs your recovery key." Each row is a device, named by its name if it has one, else by the first eight characters of its
 id, with the tag "browser" or "app" and when it was last seen. The row marked "this browser" is the one you
 are using. "not yet in the device list" marks a device that signed in with your password but was never
 added; "removed" marks one that was removed. **refresh** reads the list again.
@@ -1063,6 +1063,11 @@ added; "removed" marks one that was removed. **refresh** reads the list again.
 ![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
 remove this browser" and "forget this browser"](screenshots/settings-devices.png)
 
+- **rename** on any device that is not removed, this browser included: "Name this device" opens on the current name
+  (on this browser with no name yet, a suggestion such as "Firefox on Linux"). "A name you will recognise. The server
+  can read and change it, so check a device by its id before you remove it." Under the field a quiet line says "The
+  server can read this, like your display name." **Save** keeps the name (up to 64 characters); an empty field clears
+  it, and the row goes back to the first eight characters of the id.
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
   recovery key of this account." A device that is "not yet in the device list" is removed without the key:
@@ -1305,7 +1310,8 @@ profile card. If the save fails, "Could not save your profile. Try again." shows
 
 The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
 breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
-and are not end-to-end encrypted: do not put anything in them that the host should not read. There is no picture yet.
+and are not end-to-end encrypted: do not put anything in them that the host should not read. A quiet line under each
+of the two fields says so: "The server can read this, like your display name." There is no picture yet.
 Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers
