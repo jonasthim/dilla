@@ -1,18 +1,21 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
 import { parseInvite } from './driver.ts';
+import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 
 /** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
  *  starts a host that offers 3 so the wire-2 client is refused. `keepData` leaves /tmp/dw/host-<port> in place at start and at stop,
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
+export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
+export const BOT_HELPER_BIN = join(REPO_ROOT, 'target', 'release', 'dilla-bot-core');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 
@@ -21,6 +24,7 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
     '-core', WASI_CORE, '-log-level', 'warn', '-data-dir', dataDir, '-production-acl',
     ...(c.webRoot === null ? [] : ['-web-root', join(REPO_ROOT, c.webRoot)]),
     ...(c.webauthnOrigin === undefined ? [] : ['-webauthn-origin', c.webauthnOrigin]),
+    ...(c.botRuntime === true ? ['-bot-runtime-secret', join(dataDir, 'bot-runtime.token')] : []),
     ...(c.wire === undefined ? [] : [`-wire=${String(c.wire)}`]),
     ...(c.sfu === undefined ? [] : ['-sfu', '-sfu-port', String(c.sfu.port), '-sfu-udp-port', String(c.sfu.udpPort),
       ...(c.sfu.departureTimeout === undefined ? [] : ['-sfu-departure-timeout', String(c.sfu.departureTimeout)])]),
@@ -62,7 +66,7 @@ function stop(child: ChildProcess): Promise<void> {
 }
 
 /** A started test host: its public origin, its control origin, the bootstrap invite it printed, and its stop. */
-export interface StartedHost { url: string; control: string; invite: string; stop(): Promise<void> }
+export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string; stop(): Promise<void> }
 
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under /tmp/dw, logging to
@@ -76,7 +80,13 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
   const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
-  const teardown = async () => { await stop(host); log.end(); if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true }); };
+  let bot: ChildProcess | null = null;
+  const teardown = async () => {
+    if (bot !== null) await stop(bot);
+    await stop(host);
+    log.end();
+    if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
+  };
   host.stdout?.on('data', (b: Buffer) => log.write(b.toString().replace(/DILLA_TESTKIT_INVITE=\S+/g, 'DILLA_TESTKIT_INVITE=[redacted]')));
   host.stderr?.on('data', (b: Buffer) => log.write(b));
   try {
@@ -85,8 +95,77 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
     if (!invite) throw new Error(`dilla-testhost printed no DILLA_TESTKIT_INVITE= line:\n${banner}`);
     const url = `http://127.0.0.1:${c.port}`;
     await waitForHttp(url + '/', WAIT_MS);
-    return { url, control: `http://127.0.0.1:${c.control}`, invite, stop: teardown };
+    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port);
+    return { url, control: `http://127.0.0.1:${c.control}`, invite,
+      ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}), stop: teardown };
   } catch (e) { await teardown(); throw e; }
+}
+
+async function startBotRuntime(baseURL: string, dataDir: string, port: number): Promise<ChildProcess> {
+  const runtimeToken = join(dataDir, 'bot-runtime.token');
+  const stateDir = join(dataDir, 'bot-state');
+  const configPath = join(dataDir, 'bot.toml');
+  const runtimeLogPath = join(REPO_ROOT, 'e2e', 'test-results', `dillabot-${port}.log`);
+  const discoveryResponse = await fetch(`${baseURL}/v1/instance`, { headers: { accept: 'application/cbor' } });
+  if (!discoveryResponse.ok) throw new Error(`bot test discovery failed: HTTP ${discoveryResponse.status}`);
+  const instanceIdBytes = arr(decode(new Uint8Array(await discoveryResponse.arrayBuffer())))[3];
+  if (!(instanceIdBytes instanceof Uint8Array) || instanceIdBytes.length !== 16) throw new Error('bot test discovery returned an invalid instance ID');
+  const instanceId = Buffer.from(instanceIdBytes).toString('hex');
+
+  execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot'], { stdio: 'inherit' });
+  execFileSync(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  if (!existsSync(BOT_HELPER_BIN)) throw new Error(`${BOT_HELPER_BIN} is missing after cargo build -p dilla-bot-core --release --locked`);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700);
+  const quote = (value: string): string => JSON.stringify(value);
+  const config = [
+    `base_url = ${quote(baseURL)}`,
+    `instance_id = ${quote(instanceId)}`,
+    `runtime_credential_file = ${quote(runtimeToken)}`,
+    `helper_executable = ${quote(BOT_HELPER_BIN)}`,
+    `wasi_module = ${quote(WASI_CORE)}`,
+    `state_dir = ${quote(stateDir)}`,
+    'reconcile_interval = "1s"',
+    'allow_loopback_http = true',
+    '',
+  ].join('\n');
+  writeFileSync(configPath, config, { mode: 0o600, flag: 'wx' });
+  chmodSync(runtimeToken, 0o600);
+  const log = createWriteStream(runtimeLogPath);
+  const child = spawn(DILLABOT_BIN, ['-config', configPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout?.pipe(log);
+  child.stderr?.pipe(log);
+  try {
+    await waitForBotHealthy(child, log, port);
+    return child;
+  } catch (error) {
+    await stop(child);
+    log.end();
+    throw error;
+  }
+}
+
+function waitForBotHealthy(child: ChildProcess, log: ReturnType<typeof createWriteStream>, port: number): Promise<void> {
+  return new Promise((resolveHealthy, reject) => {
+    let seen = '';
+    const timer = setTimeout(() => reject(new Error(`dillabot for test host ${port} did not become healthy:\n${seen}`)), WAIT_MS);
+    const onData = (chunk: Buffer): void => {
+      seen += chunk.toString();
+      if (seen.includes('bot service healthy')) {
+        clearTimeout(timer);
+        child.stdout?.off('data', onData);
+        child.stderr?.off('data', onData);
+        resolveHealthy();
+      }
+    };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      log.end();
+      reject(new Error(`dillabot for test host ${port} exited with ${code}:\n${seen}`));
+    });
+  });
 }
 
 export default async function globalSetup(config: FullConfig): Promise<() => Promise<void>> {
