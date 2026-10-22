@@ -36,6 +36,7 @@ type botSpotifyAttempt struct {
 	state, verifier                        string
 	expires                                int64
 	code                                   string
+	codeHash                               [32]byte
 	claimed                                bool
 }
 type botSpotifyBroker struct {
@@ -56,7 +57,7 @@ func randomOAuthValue(n int) (string, error) {
 }
 func (b *botSpotifyBroker) prune(now int64) {
 	for k, a := range b.attempts {
-		if a.expires <= now || a.claimed {
+		if a.expires <= now {
 			delete(b.attempts, k)
 		}
 	}
@@ -205,7 +206,16 @@ func (d Deps) BotSpotifyAttemptCallback(w http.ResponseWriter, r *http.Request) 
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "OAuth attempt expired or invalid"))
 		return
 	}
-	if a.state != req.State || a.code != "" {
+	if a.code != "" || a.claimed {
+		if a.state == req.State && a.codeHash == sha256.Sum256([]byte(req.Code)) {
+			d.write(w, r, http.StatusAccepted, []any{uint64(1)})
+			return
+		}
+		delete(d.botSpotify.attempts, aid)
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "OAuth attempt expired or invalid"))
+		return
+	}
+	if a.state != req.State {
 		delete(d.botSpotify.attempts, aid)
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "OAuth attempt expired or invalid"))
 		return
@@ -217,7 +227,7 @@ func (d Deps) BotSpotifyAttemptCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.code = req.Code
-	a.state = ""
+	a.codeHash = sha256.Sum256([]byte(req.Code))
 	d.write(w, r, http.StatusAccepted, []any{uint64(1)})
 }
 func (d Deps) BotSpotifyAttemptCancel(w http.ResponseWriter, r *http.Request) {

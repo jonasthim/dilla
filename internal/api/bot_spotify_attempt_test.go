@@ -121,6 +121,10 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsSingleUse(t *testi
 	if callback.Code != http.StatusAccepted {
 		t.Fatalf("callback=%d (%x)", callback.Code, callback.Body.Bytes())
 	}
+	retryCallback := doBotCBOR(h, http.MethodPost, base+"/"+attempt.String()+"/callback", mustCBOR(t, []any{q.Get("state"), "authorization-code"}), "Bearer "+ownerToken)
+	if retryCallback.Code != http.StatusAccepted {
+		t.Fatalf("identical callback retry=%d (%x), want 202", retryCallback.Code, retryCallback.Body.Bytes())
+	}
 	var accepted []any
 	if err := cborx.Unmarshal(callback.Body.Bytes(), &accepted); err != nil || len(accepted) != 1 || accepted[0] != uint64(1) {
 		t.Fatalf("callback claimed connection: %v %x", err, callback.Body.Bytes())
@@ -156,5 +160,9 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsSingleUse(t *testi
 	replay := doBotCBOR(h, http.MethodPost, claimPath, nil, "Bearer "+runtimeToken)
 	if replay.Code != http.StatusNotFound {
 		t.Fatalf("replayed runtime claim=%d, want 404", replay.Code)
+	}
+	afterClaim := doBotCBOR(h, http.MethodPost, base+"/"+attempt.String()+"/callback", mustCBOR(t, []any{q.Get("state"), "authorization-code"}), "Bearer "+ownerToken)
+	if afterClaim.Code != http.StatusAccepted {
+		t.Fatalf("identical callback after runtime claim=%d (%x), want 202", afterClaim.Code, afterClaim.Body.Bytes())
 	}
 }
