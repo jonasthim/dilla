@@ -62,6 +62,7 @@ type Repository interface {
 	BotOperations
 	BotSessionBindings
 	BotKeyPackagePublications
+	BotGroupRegistrationReceipts
 	BotSendOperations
 }
 
@@ -107,6 +108,15 @@ type BotKeyPackagePublications interface {
 	CreateBotKeyPackagePublicationReceipt(context.Context, KeyPackagePublicationReceipt) error
 	DeleteBotKeyPackagePublicationReceipts(context.Context, id.ID) error
 	GetKeyPackage(context.Context, id.ID, []byte) (KeyPackageRow, error)
+}
+
+// BotGroupRegistrationReceipts stores immutable, installation-scoped acceptance
+// proofs. Creation requires the caller's transaction so DS can commit the proof
+// atomically with the group and initial MLS state.
+type BotGroupRegistrationReceipts interface {
+	GetBotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
+	CreateBotGroupRegistrationReceipt(context.Context, BotGroupRegistrationReceipt) error
+	DeleteBotGroupRegistrationReceiptsByInstallation(context.Context, id.ID) error
 }
 
 // BotSendOperationRow is the stable, installation-scoped side effect. Attempt

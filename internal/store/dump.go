@@ -108,6 +108,8 @@ var DumpTables = []string{
 	"bot_keypackage_publication_receipts",
 	// 024_bot_sends.sql: logical operations before their immutable attempt children.
 	"bot_send_operations", "bot_send_attempts",
+	// 025_bot_group_registration_receipts.sql: immutable receipts scoped to an installation.
+	"bot_group_registration_receipts",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

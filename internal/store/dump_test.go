@@ -264,6 +264,10 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	if err := src.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotKeyPackagePublicationReceipt(ctx, publication) }); err != nil {
 		t.Fatalf("CreateBotKeyPackagePublicationReceipt: %v", err)
 	}
+	registration := store.BotGroupRegistrationReceipt{InstallationID: installation.ID, OperationID: id.New(), UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), BodySHA256: bytes.Repeat([]byte{0x63}, 32), Generation: 3, Epoch: 0, NextSeq: 1, AcceptedAt: 4}
+	if err := src.Tx(ctx, func(tx store.Repository) error { return tx.CreateBotGroupRegistrationReceipt(ctx, registration) }); err != nil {
+		t.Fatalf("CreateBotGroupRegistrationReceipt: %v", err)
+	}
 	sendOpID, sendAttemptID := id.New(), id.New()
 	sendOp := store.BotSendOperationRow{InstallationID: installation.ID, OperationID: sendOpID, UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), CurrentAttempt: sendAttemptID, State: uint8(store.BotSendOperationActive)}
 	sendAttempt := store.BotSendAttemptRow{InstallationID: installation.ID, OperationID: sendOpID, AttemptID: sendAttemptID, Generation: 4, Epoch: 7, Class: 1, CiphertextSHA256: bytes.Repeat([]byte{0x41}, 32), FingerprintSHA256: bytes.Repeat([]byte{0x52}, 32), Outcome: uint8(store.BotSendAttemptClosed), Receipt: []byte{0x81, 0x00}}
@@ -311,6 +315,9 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	if got, err := dst.GetBotKeyPackagePublicationReceipt(ctx, installation.ID, publication.OperationID); err != nil || got.Count != publication.Count || !bytes.Equal(got.UploadSHA256, publication.UploadSHA256) {
 		t.Fatalf("restored KeyPackage receipt: %+v %v", got, err)
+	}
+	if got, err := dst.GetBotGroupRegistrationReceipt(ctx, installation.ID, registration.OperationID); err != nil || got.GroupID != registration.GroupID || got.Generation != registration.Generation || got.NextSeq != registration.NextSeq || !bytes.Equal(got.BodySHA256, registration.BodySHA256) {
+		t.Fatalf("restored group-registration receipt: %+v %v", got, err)
 	}
 	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || got.Generation != sendAttempt.Generation || got.Epoch != sendAttempt.Epoch || !bytes.Equal(got.Receipt, sendAttempt.Receipt) || !bytes.Equal(got.FingerprintSHA256, sendAttempt.FingerprintSHA256) {
 		t.Fatalf("restored Bot send attempt: %+v %v", got, err)

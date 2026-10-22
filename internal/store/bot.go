@@ -45,6 +45,23 @@ type BotInstallationRow struct {
 	RemovedAt            *int64
 }
 
+// BotGroupRegistrationReceipt is the immutable acceptance record for a managed-bot
+// group registration. BodySHA256 hashes the exact canonical request body with the
+// protocol's versioned registration domain separator.
+type BotGroupRegistrationReceipt struct {
+	InstallationID id.ID
+	OperationID    id.ID
+	UserID         id.ID
+	DeviceID       id.ID
+	CommunityID    id.ID
+	GroupID        id.ID
+	BodySHA256     []byte
+	Generation     uint64
+	Epoch          uint64
+	NextSeq        uint64
+	AcceptedAt     int64
+}
+
 // BotClaimRow is the one outstanding provisioning claim for an installation.
 type BotClaimRow struct {
 	InstallationID id.ID
