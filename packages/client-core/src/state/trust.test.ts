@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { encode, type CborInput } from '../cbor';
 import { readDeviceListHistory } from './trust';
 import { CoreError } from '../core-port';
-import { decodePendingLeaves, decodeTrustState } from './trust';
+import { decodePendingLeaves, decodeTrustState, historyFrom } from './trust';
 
 const id16 = (n: number): Uint8Array => new Uint8Array(16).fill(n);
 const key32 = (n: number): Uint8Array => new Uint8Array(32).fill(n);
@@ -44,6 +44,12 @@ it('accepts a complete signed history ending at the unchanged head', async () =>
   const result = await readDeviceListHistory(routes([3, 3], { 0: [1, 2, 3] }), id16(2), 0n);
   expect(result.head).toEqual(list(3));
   expect(result.history).toEqual(history([1, 2, 3]));
+});
+it('slices a history from the version the core cached, and answers null when nothing is left or it does not decode', () => {
+  expect(historyFrom(history([1, 2, 3]), 2n)).toEqual(history([2, 3]));
+  expect(historyFrom(history([1, 2, 3]), 0n)).toEqual(history([1, 2, 3]));
+  expect(historyFrom(history([1, 2, 3]), 4n)).toBeNull();
+  expect(historyFrom(new Uint8Array([0xff]), 1n)).toBeNull();
 });
 it('rejects gap, empty page, short page and a 65-row page', async () => {
   for (const pages of [{ 0: [1, 3] }, { 0: [] }, { 0: [1, 2] }, { 0: Array.from({ length: 65 }, (_, i) => i + 1) }]) {

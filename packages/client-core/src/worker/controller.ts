@@ -30,7 +30,7 @@ import {
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -3927,6 +3927,11 @@ export class Controller {
           if (e instanceof CoreError && e.code === 'E_UMK_CHANGED' && own) this.ownRefusedLeaves.add(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
           throw e;
         }
+        // The core caches verdict.version now and anchors every later ingest of this user on it: the user's other leaves
+        // in this pass are ingested from that version (a full history from below it is refused E_DEVICE_LIST_STALE, which
+        // left their held rows unreadable until some later pass). The head is the history's last row, so the slice holds it.
+        const rest = historyFrom(history, verdict.version);
+        if (rest !== null) historyByUser.set(user, { head, history: rest });
         // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
         if (verdict.changed) keyChanged = true;
         if (own && ownVersion !== null && verdict.version > ownVersion) ownChanged = true;
