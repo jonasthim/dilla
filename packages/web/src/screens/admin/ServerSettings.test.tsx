@@ -52,11 +52,11 @@ const navNames = () => within(screen.getByRole('navigation', { name: en['admin.n
 describe('ServerSettings tabs', () => {
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'bot', 'self-service roles', 'channels', 'roles', 'invites', 'bans', 'delete server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'channels', 'roles', 'invites', 'bans', 'self-service roles', 'delete server']);
   });
   it('shows the roles tab only with manageRoles, after channels', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
-    expect(navNames()).toEqual(['self-service roles', 'channels', 'roles', 'leave server']);
+    expect(navNames()).toEqual(['channels', 'roles', 'self-service roles', 'leave server']);
   });
   it('shows no roles tab without manageRoles', () => {
     setup({ ...NONE, manageChannels: true });
@@ -69,11 +69,11 @@ describe('ServerSettings tabs', () => {
   });
   it('shows only the tabs a person has the permission for; the danger tab is always there', () => {
     setup({ ...NONE, manageChannels: true, banMembers: true });
-    expect(navNames()).toEqual(['self-service roles', 'channels', 'bans', 'leave server']);
+    expect(navNames()).toEqual(['channels', 'bans', 'self-service roles', 'leave server']);
   });
   it('shows overview for manageCommunity and invites for createInvite', () => {
     setup({ ...NONE, manageCommunity: true, createInvite: true });
-    expect(navNames()).toEqual(['overview', 'bot', 'self-service roles', 'invites', 'leave server']);
+    expect(navNames()).toEqual(['overview', 'bot', 'invites', 'self-service roles', 'leave server']);
   });
   it('shows the bot tab only to manageCommunity members while self-service roles are member-accessible', () => {
     setup({ ...NONE, manageChannels: true });
