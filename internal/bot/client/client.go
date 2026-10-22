@@ -500,6 +500,9 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "groups" && method == http.MethodPost {
 			return 201, true
 		}
+		if len(parts) == 4 && parts[3] == "interaction-admissions" && method == http.MethodPost {
+			return 200, true
+		}
 		if len(parts) == 5 && parts[3] == "interaction-admissions" && parts[4] == "context" && method == http.MethodPost {
 			return 200, true
 		}
