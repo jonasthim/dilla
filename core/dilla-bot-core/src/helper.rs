@@ -7,6 +7,7 @@ use dilla_core::{
     bot::{HELPER_MAX, HELPER_PAYLOAD_MAX, HelperRequest, HelperResponse},
     cbor::{Encoder, decode_strict},
     client::ClientCore,
+    client::RemovalFeedEntry,
     ids::MsgId,
 };
 use std::{
@@ -118,6 +119,12 @@ impl Helper {
         if self.core.is_none() {
             return Err(DispatchError::Invalid);
         }
+        if op == 17 {
+            return self.ingest_removals(payload);
+        }
+        if op == 18 {
+            return self.refresh_removal_actor_history(payload);
+        }
         match op {
             2 => self.bootstrap(payload),
             3 => self.complete(payload),
@@ -149,6 +156,82 @@ impl Helper {
             16 => self.group_transfer(payload, request_id),
             _ => Err(DispatchError::Invalid),
         }
+    }
+
+    fn ingest_removals(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let (group, entries) = decode_strict(payload, |d| {
+            d.array(2)?;
+            let group = d.bytes_exact::<16>()?;
+            let n = d.array_len()?;
+            if n > 256 {
+                return Err(dilla_core::cbor::CborError::WrongArrayLen {
+                    expected: 256,
+                    actual: n,
+                });
+            }
+            let mut entries = Vec::with_capacity(n);
+            for _ in 0..n {
+                d.array(4)?;
+                entries.push(RemovalFeedEntry {
+                    revision: d.uint()?,
+                    proof: d.bytes()?.to_vec(),
+                    signature: d.bytes_exact::<64>()?,
+                    accepted_at: d.uint()?,
+                });
+            }
+            Ok((group, entries))
+        })
+        .map_err(|_| DispatchError::Invalid)?;
+        let cursor = self
+            .core
+            .as_mut()
+            .expect("opened")
+            .ingest_removals(&group, &entries)
+            .map_err(map_client)?;
+        let mut e = Encoder::new();
+        e.array(1).uint(cursor);
+        Ok((Zeroizing::new(e.into_vec()), false))
+    }
+
+    fn refresh_removal_actor_history(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let (group, entry, history, head) = decode_strict(payload, |d| {
+            d.array(4)?;
+            let group = d.bytes_exact::<16>()?;
+            d.array(3)?;
+            let entry = RemovalFeedEntry {
+                revision: 1,
+                proof: d.bytes()?.to_vec(),
+                signature: d.bytes_exact::<64>()?,
+                accepted_at: d.uint()?,
+            };
+            let history = d.opt_bytes()?.map(ToOwned::to_owned);
+            let head = d.opt_bytes()?.map(ToOwned::to_owned);
+            Ok((group, entry, history, head))
+        })
+        .map_err(|_| DispatchError::Invalid)?;
+        let version = match (history, head) {
+            (None, None) => self
+                .core
+                .as_ref()
+                .expect("opened")
+                .removal_actor_history_version(&group, &entry),
+            (Some(history), Some(head)) => self
+                .core
+                .as_mut()
+                .expect("opened")
+                .refresh_removal_actor_history(&group, &entry, &history, &head),
+            _ => return Err(DispatchError::Invalid),
+        }
+        .map_err(map_client)?;
+        let mut e = Encoder::new();
+        e.array(1).uint(version);
+        Ok((Zeroizing::new(e.into_vec()), false))
     }
 
     fn group_transfer(
@@ -483,9 +566,9 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
     }
 }
 
-fn decode_prepare_send(
-    payload: &[u8],
-) -> Result<([u8; 16], [u8; 16], [u8; 16], Zeroizing<Vec<u8>>, u64, u64), DispatchError> {
+type PreparedSend = ([u8; 16], [u8; 16], [u8; 16], Zeroizing<Vec<u8>>, u64, u64);
+
+fn decode_prepare_send(payload: &[u8]) -> Result<PreparedSend, DispatchError> {
     let decoded = decode_strict(payload, |d| {
         d.array(6)?;
         Ok((

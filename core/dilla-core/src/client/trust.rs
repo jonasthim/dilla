@@ -44,6 +44,7 @@ pub(crate) struct ValidatedLeaf {
     device_id: [u8; 16],
     umk_pub: [u8; 32],
     ssk_pub: [u8; 32],
+    credential: Vec<u8>,
     version: u64,
 }
 
@@ -153,6 +154,7 @@ fn validate_history_from(
         device_id: *cred.device_id.as_bytes(),
         umk_pub: cred.umk_pub,
         ssk_pub: cred.ssk_pub,
+        credential: cred.encode(),
         version: current.unsigned.version,
     })
 }
@@ -1396,6 +1398,138 @@ impl ClientCore {
         self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
     }
 
+    /// Return the trusted version from which a caller may fetch actor history. This is only a
+    /// bounded fetch hint: the proof signature is verified after the returned history is checked.
+    pub fn removal_actor_history_version(
+        &self,
+        group_id: &[u8; 16],
+        entry: &super::removals::RemovalFeedEntry,
+    ) -> Result<u64, ClientError> {
+        self.own()?;
+        if group_id == &[0; 16] {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let community = super::removals::group_community(self, group_id)?;
+        let proof = crate::bot::RemovalProof::decode(&entry.proof)
+            .map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        if proof.group_id.as_bytes() != group_id
+            || proof.community_id.as_bytes() != &community
+            || entry.accepted_at == 0
+            || entry.accepted_at > i64::MAX as u64
+            || entry.accepted_at >= proof.expires
+            || proof.expires - entry.accepted_at > 30
+        {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let trusted = super::removals::trusted_actor(self, &proof.actor_user)?;
+        Ok(trusted.list.unsigned.version)
+    }
+
+    /// Refresh a previously trusted removal actor's signed list without requiring the actor to
+    /// remain in the MLS tree. The history must include the exact cached anchor and every next
+    /// list, all signed by the already UMK-anchored SSK. Never-seen actors cannot use this path.
+    pub fn refresh_removal_actor_history(
+        &mut self,
+        group_id: &[u8; 16],
+        entry: &super::removals::RemovalFeedEntry,
+        history_body: &[u8],
+        head_list: &[u8],
+    ) -> Result<u64, ClientError> {
+        self.own()?;
+        if group_id == &[0; 16] || history_body.len() > 4 * 1024 * 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let community = super::removals::group_community(self, group_id)?;
+        let proof = crate::bot::RemovalProof::decode(&entry.proof)
+            .map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        if proof.group_id.as_bytes() != group_id
+            || proof.community_id.as_bytes() != &community
+            || entry.accepted_at == 0
+            || entry.accepted_at > i64::MAX as u64
+            || entry.accepted_at >= proof.expires
+            || proof.expires - entry.accepted_at > 30
+        {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let trusted = super::removals::trusted_actor(self, &proof.actor_user)?;
+        let count = Decoder::new(history_body)
+            .array_len()
+            .map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        if count == 0 {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        if count > 1024 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let rows =
+            wire::decode_history_body(history_body).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        let first = rows.first().ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+        if first.version != trusted.list.unsigned.version
+            || first.blob != trusted.list.encode()
+            || first.ssk_signature != trusted.list.sig_ssk
+            || first.prev_hash != trusted.list.unsigned.prev_hash
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let mut previous = trusted.list.clone();
+        for row in rows.iter().skip(1) {
+            let list = bounded_list(&row.blob)?;
+            if row.version
+                != previous
+                    .unsigned
+                    .version
+                    .checked_add(1)
+                    .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?
+                || list.unsigned.user_id != proof.actor_user
+                || list.unsigned.version != row.version
+                || list.sig_ssk != row.ssk_signature
+                || list.unsigned.prev_hash != row.prev_hash
+            {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
+            list.accept(Some(&previous), &trusted.credential.ssk_pub)
+                .map_err(ClientError::from)?;
+            previous = list.clone();
+        }
+        let head = bounded_list(head_list)?;
+        if head.unsigned.user_id != proof.actor_user
+            || head.encode() != previous.encode()
+            || head.verify(&trusted.credential.ssk_pub).is_err()
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        super::removals::verify_entry_with_list(group_id, &community, entry, &head)?;
+        let credential = trusted.credential.encode();
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                let prior: Option<(i64, Vec<u8>)> = c
+                    .query_row(
+                        "SELECT version,list FROM app_removal_actor_lists WHERE user_id=?1",
+                        [proof.actor_user.as_bytes().as_slice()],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((version, list)) = prior
+                    && (version > head.unsigned.version as i64
+                        || (version == head.unsigned.version as i64 && list != head.encode()))
+                {
+                    return Err(StorageError::Codec(
+                        "removal actor history rollback or conflict".into(),
+                    ));
+                }
+                c.execute(
+                    "INSERT INTO app_removal_actor_lists(user_id,version,list,credential) VALUES(?1,?2,?3,?4) \
+                     ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,credential=excluded.credential \
+                     WHERE excluded.version>=app_removal_actor_lists.version",
+                    params![proof.actor_user.as_bytes().as_slice(), head.unsigned.version as i64, head.encode(), credential],
+                )?;
+                Ok(())
+            })
+            .map_err(ClientError::from)
+        })?;
+        Ok(head.unsigned.version)
+    }
+
     fn ingest_leaf(
         &mut self,
         first: LeafEvidence,
@@ -1529,7 +1663,7 @@ impl ClientCore {
                     return Ok((false, 0));
                 };
                 write_pin(c, requested_user, &pin)?;
-                c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
+                c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub,credential=excluded.credential",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice(),validated.credential])?;
                 // First sight pins without changing anything displayed; a key change or its end does.
                 let mut touched = prior.is_some() && prior != Some(pin);
                 let mut quarantined = 0u64;

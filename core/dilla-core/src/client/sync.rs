@@ -259,6 +259,13 @@ fn apply_message(
         insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
         return Ok((true, false));
     }
+    // MLS application still happened before this storage step. A moderation tombstone only
+    // suppresses presentation and retained plaintext; it is never treated as an MLS envelope.
+    if super::removals::is_tombstoned(c, id, row.seq)? {
+        insert_message(c, &empty_message(id, row, STATUS_DELETED, ""))?;
+        super::search::index_fold(c, id, row.seq)?;
+        return Ok((true, false));
+    }
     if row.blob.is_none() {
         insert_message(
             c,
@@ -926,6 +933,31 @@ impl ClientCore {
                                     .map(|r| r.envelope.encode())
                                     .transpose()?;
                                 u.with_conn(|c| {
+                                    if super::removals::is_tombstoned(c, id, m.seq)? {
+                                        if let Some(r) = application.as_ref() {
+                                            let sender_sig_key = group.member_at(r.sender_leaf).map(|member| member.signature_key);
+                                            let marker = StoredMessage {
+                                                group_id: id, seq: m.seq, epoch: r.epoch, recv_ts: m.recv_ts,
+                                                status: STATUS_DELETED, reason: "", sender_user: Some(r.sender.user_id.as_bytes()),
+                                                sender_device: r.sender.device_id.as_bytes(), sender_leaf: Some(r.sender_leaf),
+                                                sender_sig_key: sender_sig_key.as_deref(),
+                                                sender_kind: Some(r.sender.kind.as_u8()), sender_tier: Some(r.sender.tier.as_u8()),
+                                                msg_id: Some(r.envelope.msg_id.as_bytes()), ty: Some(r.envelope.kind.as_u8()),
+                                                reply_to: r.envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                                thread_id: r.envelope.thread_id.as_ref().map(MsgId::as_bytes),
+                                                body: "", envelope: None, franking_tag: &m.franking_tag, mention: false,
+                                            };
+                                            insert_message(c, &marker)?;
+                                            if r.envelope.kind.as_u8() == 0 {
+                                                c.execute("UPDATE app_messages SET body='',envelope=NULL,status=2,reason='' WHERE group_id=?1 AND reply_to=?2 AND type=1",
+                                                    params![id.as_slice(), r.envelope.msg_id.as_bytes().as_slice()])?;
+                                            }
+                                        } else {
+                                            insert_message(c, &empty_message(id, m, STATUS_DELETED, ""))?;
+                                        }
+                                        super::search::index_fold(c, id, m.seq)?;
+                                        return Ok(());
+                                    }
                                     if let Some(r) = application.as_ref() {
                                         let roles = own_roles_of(c, id)?;
                                         let mentionable = mentionable_of(c, id)?;

@@ -2131,6 +2131,9 @@ impl ClientCore {
                 let mut views = Vec::new();
                 for (msg_id, seq, by_user) in pins {
                     if let Some(t) = fold::resolve(c, id, &msg_id)? {
+                        if super::removals::is_tombstoned(c, id, t.seq)? {
+                            continue;
+                        }
                         let ts: i64 = c.query_row(
                             "SELECT recv_ts FROM app_messages WHERE group_id = ?1 AND seq = ?2",
                             params![id.as_slice(), t.seq as i64],

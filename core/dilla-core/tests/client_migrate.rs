@@ -71,7 +71,7 @@ fn a_v3_store_gains_the_authority_tables_with_its_pins_unchanged() {
     let schema: Vec<u8> = db
         .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
         .expect("schema");
-    assert_eq!(schema, vec![0x08]);
+    assert_eq!(schema, vec![0x0b]);
     assert_eq!(authority_tables(&db), 3);
     type PinRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>);
     let pins: Vec<PinRow> = db
@@ -123,13 +123,13 @@ fn a_v3_store_gains_the_thread_column_without_a_backfill() {
         )
         .expect("index");
     assert_eq!(index, 1);
-    assert_eq!(meta_of(&db, "schema"), Some(vec![0x08]));
+    assert_eq!(meta_of(&db, "schema"), Some(vec![0x0b]));
     drop(db);
     std::fs::remove_file(path).expect("remove copy");
 }
 
 /// A store a web3.4 build left at schema 4 (before the tables) gains them on its next open, and
-/// ends at schema 8.
+/// ends at schema 11.
 #[test]
 fn a_schema_4_store_without_the_authority_tables_gains_them() {
     let conn = memory();
@@ -141,7 +141,7 @@ fn a_schema_4_store_without_the_authority_tables_gains_them() {
     drop(ClientCore::open(Arc::clone(&conn)).expect("reopen"));
     let db = conn.lock().expect("lock");
     assert_eq!(authority_tables(&db), 3);
-    assert_eq!(meta_of(&db, "schema"), Some(vec![0x08]));
+    assert_eq!(meta_of(&db, "schema"), Some(vec![0x0b]));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn a_schema_7_store_gains_the_native_keypackage_journal() {
         .expect("simulate the schema 7 shape");
     drop(ClientCore::open(Arc::clone(&conn)).expect("migrate v7"));
     let c = conn.lock().expect("lock");
-    assert_eq!(meta_of(&c, "schema"), Some(vec![0x08]));
+    assert_eq!(meta_of(&c, "schema"), Some(vec![0x0b]));
     assert!(
         c.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_bot_keypackage_intents')",
@@ -207,7 +207,7 @@ fn v3_fixture_migrates_and_keeps_settings_with_or_without_fts() {
     let schema: Vec<u8> = db
         .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
         .expect("schema");
-    assert_eq!(schema, vec![0x08]);
+    assert_eq!(schema, vec![0x0b]);
     let groups: Vec<(Vec<u8>, i64, i64)> = db
         .prepare("SELECT group_id, state, epoch FROM app_groups ORDER BY group_id")
         .expect("groups query")
@@ -662,7 +662,7 @@ fn a_v1_store_opens_as_v4_with_every_column_backfilled() {
     let core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x08]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x0b]));
         // A migrated store and a fresh one have the same columns, in the same order.
         let fresh = memory();
         drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
@@ -960,7 +960,7 @@ fn migrate_app_reports_the_schema_it_found() {
     );
     assert_eq!(
         meta_of(&conn.lock().expect("lock"), "schema"),
-        Some(vec![0x08])
+        Some(vec![0x0b])
     );
     assert_eq!(
         conn.lock()
@@ -987,8 +987,8 @@ fn migrate_app_reports_the_schema_it_found() {
         2
     );
     assert_eq!(
-        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v8"),
-        8
+        migrate_app(&DillaStorage::new(Arc::clone(&conn))).expect("v11"),
+        11
     );
     assert_eq!(migrate_app(&DillaStorage::new(memory())).expect("fresh"), 3);
     drop(conn);
@@ -1183,7 +1183,7 @@ fn a_v1_pending_signup_migrates_and_completes_to_a_v2_identity() {
     let mut core = ClientCore::open(Arc::clone(&conn)).expect("open the v1 pending fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x08]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x0b]));
         assert_eq!(
             meta_of(&c, "signup"),
             Some(signup),
@@ -1533,7 +1533,7 @@ fn a_v2_store_opens_as_v4_with_its_folds_applied() {
     let core = ClientCore::open(Arc::clone(&conn)).expect("open the v2 fixture");
     {
         let c = conn.lock().expect("lock");
-        assert_eq!(meta_of(&c, "schema"), Some(vec![0x08]));
+        assert_eq!(meta_of(&c, "schema"), Some(vec![0x0b]));
         let fresh = memory();
         drop(ClientCore::open(Arc::clone(&fresh)).expect("a fresh store"));
         let fresh = fresh.lock().expect("lock");
@@ -1819,45 +1819,45 @@ fn file_bytes(conn: &ConnHandle, path: &Path) -> Vec<u8> {
     std::fs::read(path).expect("read the store")
 }
 
-/// A store a newer client moved to app schema 9 (a rollback from a later build) is
+/// A store a newer client moved to app schema 12 (a rollback from a later build) is
 /// refused by `open` and by `migrate_app` with E_STORE_NEWER naming both numbers, and its bytes
-/// are exactly as the newer client left them. Task 5B2 moved the supported schema to 8.
+/// are exactly as the newer client left them. Moderation proof anchors moved the supported schema to 11.
 #[test]
-fn a_v9_store_is_refused_untouched() {
-    let (path, conn) = copy_of(V3_FIXTURE, "v9-refused");
-    drop(ClientCore::open(Arc::clone(&conn)).expect("v8 open"));
+fn a_v12_store_is_refused_untouched() {
+    let (path, conn) = copy_of(V3_FIXTURE, "v12-refused");
+    drop(ClientCore::open(Arc::clone(&conn)).expect("v11 open"));
     conn.lock()
         .expect("lock")
-        .execute_batch("UPDATE app_meta SET v = x'09' WHERE k = 'schema'; DROP TABLE app_roles;")
-        .expect("simulate a v9 store");
+        .execute_batch("UPDATE app_meta SET v = x'0c' WHERE k = 'schema'; DROP TABLE app_roles;")
+        .expect("simulate a v12 store");
     let before = file_bytes(&conn, &path);
 
     let error = match ClientCore::open(Arc::clone(&conn)) {
-        Ok(_) => panic!("a v9 store must not open"),
+        Ok(_) => panic!("a v12 store must not open"),
         Err(e) => e,
     };
     assert_eq!(
         error,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 9, supported 8".into(),
+            detail: "found 12, supported 11".into(),
         }
     );
-    assert_eq!(error.to_string(), "E_STORE_NEWER: found 9, supported 8");
+    assert_eq!(error.to_string(), "E_STORE_NEWER: found 12, supported 11");
     match migrate_app(&DillaStorage::new(Arc::clone(&conn))) {
         Err(dilla_core::mls::StorageError::StoreNewer { found, supported }) => {
-            assert_eq!((found, supported), (9, 8));
+            assert_eq!((found, supported), (12, 11));
         }
         other => panic!("migrate_app must refuse a v9 store, got {other:?}"),
     }
-    assert_eq!(dilla_core::client::APP_SCHEMA_SUPPORTED, 8);
+    assert_eq!(dilla_core::client::APP_SCHEMA_SUPPORTED, 11);
     assert!(
         file_bytes(&conn, &path) == before,
         "the refused store's bytes are unchanged"
     );
     assert_eq!(
         meta_of(&conn.lock().expect("lock"), "schema"),
-        Some(vec![0x09])
+        Some(vec![0x0c])
     );
     drop(conn);
     std::fs::remove_file(&path).expect("cleanup");
@@ -1883,8 +1883,8 @@ fn seeded(sql: &str) -> ConnHandle {
     conn
 }
 
-const APP_V9: &str = "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-    INSERT INTO app_meta (k, v) VALUES ('schema', x'09');";
+const APP_V12: &str = "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
+    INSERT INTO app_meta (k, v) VALUES ('schema', x'0c');";
 const PROVIDER_V2: &str = "CREATE TABLE storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO storage_meta (key, value) VALUES ('storage_provider_version', '2'), ('codec', 'cbor');";
 
@@ -1898,14 +1898,14 @@ fn refusal(conn: &ConnHandle) -> ClientError {
 /// The newer app schema is refused before the OpenMLS storage migration runs: no
 /// `storage_meta` or `openmls_*` table is created in the newer client's store.
 #[test]
-fn a_v9_store_is_refused_before_the_openmls_migration() {
-    let conn = seeded(APP_V9);
+fn a_v12_store_is_refused_before_the_openmls_migration() {
+    let conn = seeded(APP_V12);
     let before = objects(&conn);
     assert_eq!(
         refusal(&conn),
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 9, supported 8".into(),
+            detail: "found 12, supported 11".into(),
         }
     );
     assert_eq!(objects(&conn), before, "nothing was created");
@@ -1914,14 +1914,14 @@ fn a_v9_store_is_refused_before_the_openmls_migration() {
 /// C4x fix: a newer store whose OpenMLS provider version is newer too is still E_STORE_NEWER with
 /// the app schema numbers, never E_CORE_STORAGE "UnsupportedStorage".
 #[test]
-fn a_v9_store_with_a_newer_provider_is_e_store_newer() {
-    let conn = seeded(&format!("{APP_V9}{PROVIDER_V2}"));
+fn a_v12_store_with_a_newer_provider_is_e_store_newer() {
+    let conn = seeded(&format!("{APP_V12}{PROVIDER_V2}"));
     let before = objects(&conn);
     assert_eq!(
         refusal(&conn),
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 9, supported 8".into(),
+            detail: "found 12, supported 11".into(),
         }
     );
     assert_eq!(objects(&conn), before, "nothing was created");

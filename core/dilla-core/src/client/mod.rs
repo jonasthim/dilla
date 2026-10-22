@@ -13,6 +13,7 @@ mod groups;
 mod identity;
 mod messages;
 mod moderation;
+mod removals;
 mod schema;
 mod search;
 mod settings;
@@ -23,6 +24,7 @@ mod wire;
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};
 pub use messages::{mentions_me, mentions_me_with_roles};
+pub use removals::RemovalFeedEntry;
 #[cfg(feature = "test-hooks")]
 pub use schema::test_force_missing_fts5;
 pub use schema::{APP_SCHEMA_SUPPORTED, HANDSHAKE_TAIL, migrate_app};
@@ -59,6 +61,19 @@ struct Own {
 }
 
 impl ClientCore {
+    /// Ingest a proof-bearing server removal feed page. Each revision must be the next
+    /// per-group revision, or an exact replay of an already stored entry. This verifies the
+    /// removal proof against locally trusted device credentials. The caller must authenticate
+    /// the server feed and bind it to this group before calling; the core cannot authenticate
+    /// HTTP/feed transport metadata.
+    pub fn ingest_removals(
+        &mut self,
+        group_id: &[u8; 16],
+        entries: &[RemovalFeedEntry],
+    ) -> Result<u64, ClientError> {
+        removals::ingest(self, group_id, entries)
+    }
+
     fn own(&self) -> Result<Own, ClientError> {
         let raw: Option<Vec<u8>> = self.read(|c| {
             c.query_row("SELECT v FROM app_meta WHERE k = 'identity'", [], |r| {
