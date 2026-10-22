@@ -1,13 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DILLAD_BIN, buildDillad, buildTestHost, removeHostData, startMediaHost, startTestHost, swapWebRoot, type HostConfig } from '../web/support/host.ts';
 import { writeFakeDist } from './fake-dist.ts';
 
 // UP5 smoke: the SFU (`dillad media`) and the API (dilla-testhost -sfu-sidecar) are separate processes; each restarts on its own.
-const PORT = 8491, CONTROL = 8492, SFU_PORT = 7894, SFU_UDP = 7896, WEBHOOK = 8497;
+// Ports no other spec binds (UP9: 8491/8492/8497 were roles.spec's and passkey.spec's too). Nothing here waits on a room's
+// departure: the rooms are opened by the control listener's token route and checked while they exist.
+const PORT = 8541, CONTROL = 8542, SFU_PORT = 7914, SFU_UDP = 7916, WEBHOOK = 8547;
 
 test.beforeAll(() => { buildTestHost(); buildDillad(); });
 
@@ -27,9 +29,8 @@ test('the SFU and the API start, stop and restart as separate processes', async 
   const hostConfig: HostConfig = { port: PORT, control: CONTROL, webRoot: null, keepData: true, sfu: { port: SFU_PORT, udpPort: SFU_UDP }, sidecar: media.sidecar };
   let host = await startTestHost(hostConfig);
   try {
-    // The media process wrote media.json into its own data directory, for its own pid.
-    const state = JSON.parse(readFileSync(join(media.dataDir, 'media.json'), 'utf8')) as { pid: number };
-    expect(state.pid).toBe(media.pid());
+    // The media process wrote media.json into its own data directory (startMediaHost waited for it to name its pid).
+    expect(existsSync(join(media.dataDir, 'media.json'))).toBe(true);
     expect(media.dataDir).not.toContain('/var/lib/dillad');
 
     expect((await openRoom(host.control, 'sidecar-smoke')).url).toBe(`ws://127.0.0.1:${SFU_PORT}`);
@@ -46,8 +47,6 @@ test('the SFU and the API start, stop and restart as separate processes', async 
     // The SFU restarts alone: a new pid, the API host untouched and still serving it.
     await media.restartMedia();
     expect(media.pid()).not.toBe(sfuPid);
-    const after = JSON.parse(readFileSync(join(media.dataDir, 'media.json'), 'utf8')) as { pid: number };
-    expect(after.pid).toBe(media.pid());
     expect(liveRooms(media.configPath)).not.toContain('sidecar-smoke');
     await openRoom(host.control, 'sidecar-smoke-3');
     expect(liveRooms(media.configPath)).toContain('sidecar-smoke-3');

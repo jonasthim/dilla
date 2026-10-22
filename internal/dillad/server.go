@@ -635,6 +635,11 @@ func (s *Server) DS() *ds.DS { return s.ds }
 // Handle on livekit.webhook_listen.
 func (s *Server) CallEvents() *api.CallEvents { return s.events }
 
+// Calls is the call routes New built (nil when it mounted none). The test host runs their room sweep
+// on demand through it (UP9: POST /debug/sfu/sweep), the sweep the retry loop runs every
+// api.RoomSweepInterval.
+func (s *Server) Calls() *api.Calls { return s.calls }
+
 func (s *Server) Gateway() *gateway.Gateway { return s.gw }
 func (s *Server) Now() time.Time            { return s.o.Clock.Now() }
 

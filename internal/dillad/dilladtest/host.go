@@ -41,6 +41,7 @@ import (
 	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
@@ -95,8 +96,16 @@ type HostOptions struct {
 	SFUSidecar       bool
 	SFUSecretFile    string
 	SFUWebhookListen string
+	// TURNListen and TURNSecretFile (UP9, with SFUSidecar) are the sidecar's turn.listen and
+	// turn.shared_secret_file: the instance hands out "turn:<TURNListen>?transport=tcp" with REST
+	// credentials minted under that secret, and wires the relay as `dillad serve` does (relay.go):
+	// cuts forwarded over media.sock and api.sock served in StateDir when the media process lists
+	// "turn", else a relay of its own on TURNListen. Both empty: no relay, as before.
+	TURNListen     string
+	TURNSecretFile string
 	// StateDir is the directory the host's process state lives in (the config's instance.data_dir:
-	// snapshots now, UP9's sockets later). "" means DataDir. It is never a fixed path.
+	// snapshots, and with TURNListen api.sock, and where media.json and media.sock are looked for).
+	// "" means DataDir. It is never a fixed path.
 	StateDir string
 	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
@@ -235,6 +244,15 @@ type Host struct {
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
 
+	// The relay (relay.go, HostOptions.TURNListen): relay is dillad.Options.Relay (nil without
+	// one); relayRev the local revocation state; relayFwd the forwarder to the media relay, or
+	// relayTURN the host's own relay; relayStops stop api.sock and the rest, last first.
+	relay      api.RelayRevoker
+	relayRev   *server.RelayRevocations
+	relayFwd   *server.RelayRevoker
+	relayTURN  *server.TURN
+	relayStops []func()
+
 	// kicked remembers, per target device, the leaves the last kick of it named.
 	kickMu sync.Mutex
 	kicked map[id.ID][]kicked
@@ -278,6 +296,10 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 		h.closeWasm(ctx)
 		return nil, errors.New("dilladtest: HostOptions.SFU and SFUSidecar are exclusive")
 	}
+	if (o.TURNListen != "" || o.TURNSecretFile != "") && (!o.SFUSidecar || o.TURNListen == "" || o.TURNSecretFile == "") {
+		h.closeWasm(ctx)
+		return nil, errors.New("dilladtest: HostOptions.TURNListen and TURNSecretFile go together, and only with SFUSidecar")
+	}
 	if o.SFU || o.SFUSidecar {
 		start := h.startSFU
 		if o.SFUSidecar {
@@ -288,8 +310,16 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 			return nil, err
 		}
 	}
+	if o.TURNListen != "" {
+		if err := h.startRelay(ctx); err != nil {
+			h.stopSFU(ctx)
+			h.closeWasm(ctx)
+			return nil, err
+		}
+	}
 	server, err := h.newServer(ctx)
 	if err != nil {
+		h.stopRelay()
 		h.stopSFU(ctx)
 		h.closeWasm(ctx)
 		return nil, err
@@ -315,8 +345,17 @@ func hostConfig(o HostOptions) *config.Config {
 	}
 	c.Limits.Rate.Enabled = false
 	// The harness runs no TURN relay, and writes no turn.shared_secret_file for one: the call
-	// routes New mounts would otherwise read that file to mint relay credentials.
+	// routes New mounts would otherwise read that file to mint relay credentials. A sidecar host
+	// with TURNListen hands out the relay its media process serves (UP9), on loopback: public_url
+	// names it, since the instance domain resolves to nothing here.
 	c.TURN.Enabled = false
+	if o.SFUSidecar && o.TURNListen != "" {
+		c.TURN.Enabled = true
+		c.TURN.Listen = o.TURNListen
+		c.TURN.SharedSecretFile = o.TURNSecretFile
+		c.TURN.RelayIP = "127.0.0.1"
+		c.TURN.PublicURL = "turn:" + o.TURNListen + "?transport=tcp"
+	}
 	if u, err := url.Parse(o.WebAuthnOrigin); o.WebAuthnOrigin != "" && err == nil && u.Hostname() != "" {
 		c.Auth.WebAuthn.RPID = u.Hostname()
 		c.Auth.WebAuthn.RPOrigins = []string{o.WebAuthnOrigin}
@@ -433,6 +472,9 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 	// The instance sees it without the debug rooms, which its room sweep would otherwise delete.
 	if h.control != nil {
 		o.SFU = harnessSFU{SFU: h.control, debug: &h.debugRooms}
+	}
+	if h.relay != nil {
+		o.Relay = h.relay
 	}
 	return dillad.New(ctx, o)
 }
@@ -839,6 +881,7 @@ func (h *Host) Close(ctx context.Context) error {
 	h.stopSFU(ctx)
 	h.current.Store(nil)
 	err := h.server.Shutdown(ctx)
+	h.stopRelay()
 	h.closeWasm(ctx)
 	return err
 }

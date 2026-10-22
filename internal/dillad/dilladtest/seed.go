@@ -249,6 +249,39 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// The community's AFK timeout (UP9: 60 s, the shortest the settings offer), keeping its AFK
+	// channel, as an owner's PUT …/afk/settings stores it; the browsers in the voice suite are not the
+	// owner, the native peer is.
+	mux.HandleFunc("POST /debug/afk/timeout", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Community string `json:"community"`
+			Seconds   uint64 `json:"seconds"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		community, err := id.Parse(body.Community)
+		if err != nil {
+			http.Error(w, "community: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Seconds < 60 || body.Seconds > 3600 {
+			http.Error(w, "seconds: 60..3600", http.StatusBadRequest)
+			return
+		}
+		repo := h.Server().Repo()
+		cfg, err := repo.GetCommunityAFK(r.Context(), community)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		cfg.TimeoutSeconds = body.Seconds
+		if err := repo.SetCommunityAFK(r.Context(), community, cfg); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/mark-revoked", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Device string `json:"device"`

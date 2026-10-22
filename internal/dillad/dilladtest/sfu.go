@@ -190,6 +190,19 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 		h.setWithheld(body.Event, body.On)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// POST /debug/sfu/sweep runs the call routes' room sweep (api.Calls.SweepRooms) once, now, and
+	// answers when it is done: the sweep the retry loop runs every api.RoomSweepInterval, with its
+	// absence clock on the instance clock (POST /debug/clock moves it). UP9's all-dropped case drives
+	// the sweep's absence Removes with it instead of waiting out two wall-clock ticks.
+	mux.HandleFunc("POST /debug/sfu/sweep", func(w http.ResponseWriter, r *http.Request) {
+		calls := h.Server().Calls()
+		if h.control == nil || calls == nil {
+			http.Error(w, "this host runs no SFU (start it with -sfu or -sfu-sidecar)", http.StatusNotFound)
+			return
+		}
+		calls.SweepRooms(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/sfu/token", func(w http.ResponseWriter, r *http.Request) {
 		if h.control == nil {
 			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
