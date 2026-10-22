@@ -288,6 +288,9 @@ func TestMusicQueueRegistryRetainsSupervisorsUntilCapabilityIsDisabled(t *testin
 	if got := registry.runtimes[installation].queues.supervisors[voice]; got != first {
 		t.Fatal("supervisor was reconstructed between polling iterations")
 	}
+	if got := registry.Native(installation, community); got != nativeClient {
+		t.Fatal("reconcile did not expose the retained native client for reuse")
+	}
 	currentNative := &runtimeStateNative{binding: nativeClient.binding, rows: map[string]native.StateValue{}}
 	owned, err = registry.Reconcile(context.Background(), installation, community, 0, channels, currentNative, unavailableMusicQueueStarter())
 	if err != nil || owned {

@@ -191,6 +191,21 @@ func newMusicQueueRegistry() *musicQueueRegistry {
 	return &musicQueueRegistry{runtimes: make(map[id.ID]*retainedMusicRuntime)}
 }
 
+func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeNative {
+	if r == nil {
+		return nil
+	}
+	retained := r.runtimes[installation]
+	if retained == nil {
+		return nil
+	}
+	if retained.community != community {
+		_ = r.Disable(installation)
+		return nil
+	}
+	return retained.native
+}
+
 // Reconcile returns true only when ownership of nativeClient transfers to the
 // registry. A capability loss closes both the retained supervisors and helper.
 func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, community id.ID, capabilities uint64, channels []client.Channel, nativeClient musicRuntimeNative, starter session.QueueStarter) (bool, error) {

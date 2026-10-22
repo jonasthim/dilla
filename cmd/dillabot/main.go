@@ -371,18 +371,21 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
-		key, _, err := loadDatabaseKey(cfg.StateDir, installation.ID.String())
-		if err != nil {
-			_ = musicRegistry.Disable(installation.ID)
-			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
-			continue
-		}
-		nativeClient, err := native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
-		clear(key)
-		if err != nil {
-			_ = musicRegistry.Disable(installation.ID)
-			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start")
-			continue
+		nativeClient, retainedNative := musicRegistry.Native(installation.ID, installation.CommunityID).(*native.Client)
+		if !retainedNative {
+			key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
+			if keyErr != nil {
+				_ = musicRegistry.Disable(installation.ID)
+				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
+				continue
+			}
+			nativeClient, err = native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
+			clear(key)
+			if err != nil {
+				_ = musicRegistry.Disable(installation.ID)
+				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start")
+				continue
+			}
 		}
 		lifecycle, err := service.NewIdentityLifecycle(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, runtime, api, service.LifecycleOptions{})
 		if err != nil {
@@ -485,7 +488,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		var closeErr error
-		if !musicOwnedNative {
+		if !retainedNative && !musicOwnedNative {
 			closeErr = nativeClient.Close()
 		}
 		if ensureErr != nil || closeErr != nil {
