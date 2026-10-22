@@ -206,6 +206,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const bot = currentInstallation?.userId === null || currentInstallation?.userId === undefined
     ? undefined : members?.find(m => m.userId === currentInstallation.userId && m.kind === 1);
   const enabled = currentInstallation !== null && currentInstallation.state !== 4;
+  const canEditInstallationCapabilities = currentInstallation !== null && currentInstallation.state <= 3;
   const enableUnavailable = !current || currentError !== null || factors === undefined
     || access?.loaded !== true || !access.manageCommunity;
   const status = currentInstallation === null ? null : t(stateKey(currentInstallation.state));
@@ -229,7 +230,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
         </SettingsRow>
       ) : null}
-      {currentInstallation?.state === 3 && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
+      {canEditInstallationCapabilities && !editingCapabilities ? <Button aria-disabled={busy || enableUnavailable || undefined}
         onClick={() => setEditingCapabilities(true)}>{t('admin.bot.capabilities.edit')}</Button> : null}
       {showCapabilitySelection ? (
         <fieldset aria-describedby={`${base}-capability-help`}>
@@ -239,7 +240,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
             const key = `admin.bot.capability.${option.name}` as StringKey;
             const requirement = option.requirement === null ? undefined : t(`admin.bot.capability.requires.${option.requirement}` as StringKey);
             const checked = (selectedCapabilities & option.bit) !== 0;
-            const disabled = busy || !canSelectCapability(option);
+            // A lost permission must block adding a capability, but it must not
+            // trap an already-approved capability in the selected mask.
+            const disabled = busy || (!checked && !canSelectCapability(option));
             return <div key={option.name}>
               <label htmlFor={`${base}-capability-${option.name}`}>
                 <input id={`${base}-capability-${option.name}`} type="checkbox" checked={checked} disabled={disabled}
@@ -255,10 +258,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
                 ? <span>{t('admin.bot.capabilities.permissionUnavailable')}</span> : null}
             </div>;
           })}
-          {currentInstallation?.state === 3 ? <div>
+          {canEditInstallationCapabilities ? <div>
             <Button aria-disabled={busy || enableUnavailable || undefined} onClick={enable}>{t('admin.bot.capabilities.save')}</Button>
             <Button aria-disabled={busy || undefined} onClick={() => {
-              setSelectedCapabilities(currentInstallation.capabilities);
+              setSelectedCapabilities(currentInstallation?.capabilities ?? 0);
               setEditingCapabilities(false);
             }}>{t('admin.bot.capabilities.cancel')}</Button>
           </div> : null}

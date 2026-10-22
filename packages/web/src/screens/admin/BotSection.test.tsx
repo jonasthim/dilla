@@ -208,13 +208,13 @@ describe('the server bot settings', () => {
   });
 
   it('allows editing capabilities on a ready installation using its current revision', async () => {
-    const initial = { ...ROW, state: 3 as const, revision: '30', capabilities: 1 | 8 };
+    const initial = { ...ROW, state: 3 as const, revision: '30', capabilities: 1 | 8, userId: '77'.repeat(16) };
     const { fake, user } = setup(initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
       if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
-      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, revision: '31', capabilities: 9 | 16 });
+      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, state: 2, revision: '31', capabilities: 1 | 8 | 16 });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     await screen.findByText(en['admin.bot.status.ready']);
@@ -227,10 +227,11 @@ describe('the server bot settings', () => {
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
     expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '30', capabilities: 1 | 8 | 16 });
+    expect(await screen.findByRole('status')).toHaveTextContent(en['admin.bot.status.joining']);
   });
 
   it('does not save an edit against a stale ready installation revision', async () => {
-    const initial = { ...ROW, state: 3 as const, revision: '40', capabilities: 1 };
+    const initial = { ...ROW, state: 3 as const, revision: '40', capabilities: 1, userId: '77'.repeat(16) };
     const { fake, user } = setup(initial);
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
@@ -247,6 +248,54 @@ describe('the server bot settings', () => {
     await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.conflict']);
     expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '40', capabilities: 3 });
+  });
+
+  it('lets an owner remove an approved capability after losing its permission, but cannot add it again', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '50', capabilities: 4, userId: '77'.repeat(16) };
+    const { fake, user } = setup(initial, false, false, false);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, revision: '51', capabilities: 0, state: 2 });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    const roles = screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] });
+    expect(roles).toBeChecked();
+    expect(roles).toBeEnabled();
+    await user.click(roles);
+    expect(roles).not.toBeChecked();
+    expect(roles).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '50', capabilities: 0 });
+  });
+
+  it('allows editing a pending installation with its current revision', async () => {
+    const initial = { ...ROW, state: 0 as const, revision: '60', capabilities: 4 };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
+      if (command.m === 'configureBotInstallation') return Promise.resolve({ ...initial, revision: '61', capabilities: 0 });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.pending']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.edit'] }));
+    const roles = screen.getByRole('checkbox', { name: en['admin.bot.capability.roles'] });
+    expect(roles).toBeChecked();
+    await user.click(roles);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.capabilities.save'] }));
+    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
+    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotInstallation')).toHaveLength(1));
+    expect(fake.callsOf('configureBotInstallation')[0]).toMatchObject({ expectedRevision: '60', capabilities: 0 });
+    expect(await screen.findByRole('status')).toHaveTextContent(en['admin.bot.status.pending']);
   });
 
   it.each([
