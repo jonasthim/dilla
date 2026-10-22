@@ -51,6 +51,10 @@ func (d *cancellingDS) ProposeRemoveOfMember(ctx context.Context, g id.ID, leaf 
 	return d.recordingDS.ProposeRemoveOfMember(ctx, g, leaf, dev, added, a)
 }
 
+func (d *cancellingDS) ProposeAbsenceRemove(ctx context.Context, g id.ID, leaf uint32, dev id.ID, added uint64, a id.ID) error {
+	return d.ProposeRemoveOfMember(ctx, g, leaf, dev, added, a)
+}
+
 func (d *cancellingDS) ProposeRemoveDevice(ctx context.Context, g, dev, a id.ID) error {
 	d.once.Do(d.cancel)
 	if err := ctx.Err(); err != nil {

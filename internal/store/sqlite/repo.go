@@ -1563,7 +1563,7 @@ func (r *Repo) IsWithdrawn(ctx context.Context, groupID id.ID, epoch uint64, ref
 func (r *Repo) WithdrawProposal(ctx context.Context, groupID id.ID, ref []byte, at int64, seq uint64) (bool, error) {
 	n, err := r.w.WithdrawProposal(ctx, sqlitedb.WithdrawProposalParams{
 		WithdrawnAt:  sql.NullInt64{Int64: at, Valid: true},
-		WithdrawnSeq: sql.NullInt64{Int64: int64(seq), Valid: true}, //nolint:gosec // G115: a seq is far below 2^63
+		WithdrawnSeq: sql.NullInt64{Int64: int64(seq), Valid: true},
 		GroupID:      groupID,
 		Ref:          ref,
 	})

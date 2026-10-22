@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -332,6 +333,9 @@ func dsError(err error) error {
 	}
 	switch server.Code(e.Code) {
 	case server.CodeCommitConflict:
+		if e.Detail == "withdrawn" {
+			return server.CommitWithdrawn(e.Proposals)
+		}
 		return server.CommitConflict(e.WinningCommit, e.Proposals)
 	case server.CodeCommitRequired:
 		var ms uint64
@@ -421,7 +425,9 @@ func (h *Groups) handshakes(w http.ResponseWriter, r *http.Request) {
 	// The whole handshake log of a group is member-only: it names every leaf that ever committed
 	// and every epoch transition. Handshakes takes the session and answers E_NOT_FOUND to a
 	// non-member, exactly as Info and Tree do.
-	rows, err := h.DS.Handshakes(r.Context(), groupID, session, from, limit)
+	// UP6b: kind-3 (withdrawn) rows only for a client that asks for them with kinds=3 (protocol/02
+	// § Handshake records); every other client gets the stream with those seqs left out.
+	rows, err := h.DS.HandshakesFor(r.Context(), groupID, session, from, limit, wantsKind3(r))
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
@@ -435,6 +441,19 @@ func (h *Groups) handshakes(w http.ResponseWriter, r *http.Request) {
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		server.WriteError(w, err)
 	}
+}
+
+// wantsKind3 reads `kinds` from the query: a comma-separated list of the extra handshake kinds the
+// client applies. Only 3 means anything today; any other value is ignored.
+func wantsKind3(r *http.Request) bool {
+	for _, v := range r.URL.Query()["kinds"] {
+		for _, k := range strings.Split(v, ",") {
+			if strings.TrimSpace(k) == "3" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type commitRequestBody struct {

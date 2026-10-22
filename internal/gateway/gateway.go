@@ -195,6 +195,10 @@ type OnlineDevice struct {
 	LeafIndex uint32
 	IsBot     bool
 	ReadyAt   time.Time
+	// Caps is the capability bits every online connection of the device set at identify: a device
+	// with one connection lacking a bit lacks it (UP6b: invariant 7 elects no device without
+	// CapWithdrawnRows in an epoch that holds a withdrawal).
+	Caps uint64
 }
 
 type Gateway struct {
@@ -283,6 +287,11 @@ func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*
 // connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
 // that learned its versions after sendReady would echo three zeros.
 func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
+	return g.registerCaps(ctx, session, s, chosen, 0)
+}
+
+// registerCaps is registerVersions with identify's caps, set before the connection is published.
+func (g *Gateway) registerCaps(ctx context.Context, session auth.Session, s sink, chosen [3]uint64, caps uint64) (*conn, error) {
 	token, err := newResumeToken()
 	if err != nil {
 		return nil, err
@@ -307,6 +316,7 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		}, g.opts.Clock),
 	}
 	c.wire, c.e2ee, c.media = chosen[0], chosen[1], chosen[2]
+	c.caps = caps
 	// Paused until the connection is live: see newPausedWriter.
 	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,
@@ -481,21 +491,27 @@ func (g *Gateway) rotateResume(c *conn) error {
 // including the uploader's own (R30). The payload is encoded once by the caller.
 func (g *Gateway) DeliverGroup(groupID id.ID, f Frame) {
 	for _, c := range g.reg.connsOfGroup(groupID) {
-		c.send(f)
+		if c.admits(f) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
 	for _, c := range g.reg.connsOfDevice(deviceID) {
-		c.send(f)
+		if c.admits(f) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }
 
 func (g *Gateway) DeliverUser(userID id.ID, f Frame) {
 	for _, c := range g.reg.connsOfUser(userID) {
-		c.send(f)
+		if c.admits(f) {
+			c.send(f)
+		}
 	}
 	g.countFrame(f)
 }

@@ -295,8 +295,8 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 	}
 }
 
-// flushLeafRemovals proposes the Removes trackAbsentLocked queued, each bound to its membership
-// (ds.ProposeRemoveOfMember). It runs on the retry loop with no call's lock held: nothing under a
+// flushLeafRemovals proposes the Removes trackAbsentLocked queued, each bound to its membership and
+// withdrawable by that device's own resume (ds.ProposeAbsenceRemove, UP6b). It runs on the retry loop with no call's lock held: nothing under a
 // call's lock calls the delivery service. A membership that is gone by now (ds.ErrRemoveTargetGone)
 // is dropped; any other failure is logged and the next sweep decides again.
 func (h *Calls) flushLeafRemovals(ctx context.Context) {
@@ -309,7 +309,7 @@ func (h *Calls) flushLeafRemovals(ctx context.Context) {
 			return
 		}
 		dctx, cancel := context.WithTimeout(ctx, leafRemovalTimeout)
-		err := h.dsvc.ProposeRemoveOfMember(dctx, r.group, r.key.leaf, r.key.dev, r.key.added, id.New())
+		err := h.dsvc.ProposeAbsenceRemove(dctx, r.group, r.key.leaf, r.key.dev, r.key.added, id.New())
 		cancel()
 		switch {
 		case errors.Is(err, ds.ErrRemoveTargetGone):

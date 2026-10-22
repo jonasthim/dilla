@@ -170,6 +170,13 @@ func CommitConflict(winning []byte, proposals [][]byte) *Error {
 		Extra: []any{winning, proposals}}
 }
 
+// CommitWithdrawn is invariant 6's refusal of a commit that applies a proposal the instance
+// withdrew (UP6b): E_COMMIT_CONFLICT with detail `withdrawn`, an empty winning_commit and the
+// current listing.
+func CommitWithdrawn(proposals [][]byte) *Error {
+	return &Error{Code: CodeCommitConflict, Detail: "withdrawn", Extra: []any{[]byte{}, proposals}}
+}
+
 func CommitRequired(proposals [][]byte, retryAfterMS uint64) *Error {
 	ms := retryAfterMS
 	return &Error{Code: CodeCommitRequired, Detail: "outstanding proposals must be committed first",

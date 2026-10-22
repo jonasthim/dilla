@@ -619,6 +619,13 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
+	// UP6b (R-UP12, correction I2): the device's own absence Remove is withdrawn here, immediately
+	// before the mint and noteAdmission, after every check that may still refuse the start (the
+	// leaf gate, retryOwn, isPending, callFull, CreateRoom). A refused start withdraws nothing.
+	if err := h.withdrawOwnAbsence(r.Context(), groupID, s.DeviceID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	// R-UP4: a token on its way to the SFU keeps `dillad media --idle` busy for 60 s.
 	h.mints.note(h.clk.Now())
 	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
@@ -1320,6 +1327,48 @@ const transientRetryAfterMS = 2_000
 // repair lands, every other check runs again, so a barred device then gets its 403.
 func errRepairPending() error {
 	return server.Unavailable(transientRetryAfterMS, "your device's access to this call is being settled")
+}
+
+// withdrawOwnAbsence withdraws the absence Removes of dev's own current membership of the call group
+// (ds.WithdrawAbsenceRemoves): only its own, never another member's ("Only its own"), so a device
+// that really left is still removed within the sweep window. The membership read here is checked
+// again under the group lock: a commit that removed the device first answers E_LEAF_NOT_CURRENT,
+// and the device forgets the group and joins afresh, which cannot deadlock because the Remove is
+// committed. Any other failure is 503 E_UNAVAILABLE, and no token is minted.
+func (h *Calls) withdrawOwnAbsence(ctx context.Context, groupID, dev id.ID) error {
+	if h.dsvc == nil {
+		return nil
+	}
+	members, err := h.repo.ListMembers(ctx, groupID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "reading the call group's members for the withdrawal failed", "group_id", groupID.String(), "err", err)
+		return errWithdrawFailed()
+	}
+	for _, m := range members {
+		if m.DeviceID != dev || m.RemovedEpoch != nil {
+			continue
+		}
+		n, err := h.dsvc.WithdrawAbsenceRemoves(ctx, groupID, dev, m.LeafIndex, m.AddedEpoch)
+		switch {
+		case errors.Is(err, ds.ErrMembershipGone):
+			return server.Errorf(server.CodeLeafNotCurrent, "your device's leaf was removed from this call group")
+		case err != nil:
+			h.log.ErrorContext(ctx, "withdrawing a resuming device's absence Remove failed", "group_id", groupID.String(),
+				"device_id", dev.String(), "err", err)
+			return errWithdrawFailed()
+		case n > 0:
+			h.log.InfoContext(ctx, "a resuming device's own absence Remove was withdrawn", "group_id", groupID.String(),
+				"device_id", dev.String(), "removes", n)
+		}
+		return nil
+	}
+	return server.Errorf(server.CodeLeafNotCurrent, "your device is not a leaf of this call group's current epoch")
+}
+
+// errWithdrawFailed is the start's answer when the withdrawal could not be decided (UP6b): 503
+// E_UNAVAILABLE with retry_after_ms, and no token.
+func errWithdrawFailed() error {
+	return server.Unavailable(transientRetryAfterMS, "your device's place in this call is being settled")
 }
 
 // errMediaDown is R-UP7's answer to a start whose CreateRoom or token mint the SFU failed: 503

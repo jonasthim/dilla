@@ -274,6 +274,13 @@ var ErrRemoveTargetGone = errors.New("ds: the Remove target is no longer at its 
 // at leaf must be *expect or the Remove is refused (ErrRemoveTargetGone), never aimed at whoever
 // holds the leaf instead.
 func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint32, expect *id.ID, actionID id.ID) error {
+	return d.proposeRemoveOfLockedAs(ctx, groupID, leaf, expect, actionID, false)
+}
+
+// proposeRemoveOfLockedAs is proposeRemoveOfLocked with the withdrawable flag (UP6b): true only from
+// ProposeAbsenceRemove, the two absence paths. A re-issue passes false and the store carries the
+// flag of the row it replaces (correction C1).
+func (d *DS) proposeRemoveOfLockedAs(ctx context.Context, groupID id.ID, leaf uint32, expect *id.ID, actionID id.ID, withdrawable bool) error {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if errors.Is(err, store.ErrNotFound) {
 		return errNotFound("group")
@@ -310,6 +317,7 @@ func (d *DS) proposeRemoveOfLocked(ctx context.Context, groupID id.ID, leaf uint
 		TargetDevice: &device,
 		Origin:       0,
 		ActionID:     actionID,
+		Withdrawable: withdrawable,
 	})
 }
 
@@ -664,15 +672,15 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 				d.unqueueProposal(ctx, g, groupID, ref)
 			}
 		}()
-		existing, err := d.proposalRowAt(ctx, groupID, row.Epoch, ref)
+		existing, err := d.proposalRowOrWithdrawnAt(ctx, groupID, row.Epoch, ref)
 		if err != nil {
 			return err
 		}
-		// Only the voided instance proposal itself is re-armed: same kind, same target. A live row
-		// is never touched here (every issuer dedupes against live rows first), and a row for
-		// another target with this ref cannot be the same action; both fall through to an INSERT,
-		// which refuses them, and the guest keeps what it held.
-		rearm := existing != nil && existing.VoidAt != nil && existing.Origin == 0 &&
+		// Only the voided (or withdrawn, UP6b) instance proposal itself is re-armed: same kind, same
+		// target. A live row is never touched here (every issuer dedupes against live rows first),
+		// and a row for another target with this ref cannot be the same action; both fall through
+		// to an INSERT, which refuses them, and the guest keeps what it held.
+		rearm := existing != nil && (existing.VoidAt != nil || existing.WithdrawnAt != nil) && existing.Origin == 0 &&
 			existing.Kind == p.Kind && sameTarget(*existing, p)
 		if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 			seq, err = nextSeq(ctx, tx, groupID)
@@ -709,7 +717,21 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 					return err
 				}
 			case rearm:
-				if err := tx.ReissueProposal(ctx, ref, p); err != nil {
+				// The same proposal again: its row is re-armed (no longer void or withdrawn, issued
+				// now, its action kept). The withdrawable flag is this caller's own (UP6b): an absence
+				// Remove proposed again keeps it, while a kick or a revocation that re-arms the same
+				// Remove makes it a Remove no resume can withdraw.
+				if existing.Withdrawable && !p.Withdrawable {
+					// ReissueProposal would carry the old flag over (C1, for a re-issue of the same
+					// action); a different action re-arming the same Remove must not inherit it.
+					p.ActionID = existing.ActionID
+					if err := tx.DeleteProposals(ctx, groupID, [][]byte{ref}); err != nil {
+						return err
+					}
+					if err := tx.PutProposal(ctx, p); err != nil {
+						return err
+					}
+				} else if err := tx.ReissueProposal(ctx, ref, p); err != nil {
 					return err
 				}
 			default:

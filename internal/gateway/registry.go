@@ -185,9 +185,17 @@ func (r *registry) onlineIn(g id.ID, now time.Time, idle time.Duration) []Online
 				LeafIndex: r.leaves[g][device],
 				IsBot:     isBot,
 				ReadyAt:   c.readyAt(),
+				Caps:      c.caps,
 			}
-			if prev, ok := seen[device]; !ok || candidate.ReadyAt.Before(prev.ReadyAt) {
+			prev, ok := seen[device]
+			if ok {
+				candidate.Caps &= prev.Caps
+			}
+			if !ok || candidate.ReadyAt.Before(prev.ReadyAt) {
 				seen[device] = candidate
+			} else {
+				prev.Caps = candidate.Caps
+				seen[device] = prev
 			}
 		}
 	}

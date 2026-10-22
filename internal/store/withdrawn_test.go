@@ -215,21 +215,7 @@ func downAndUp00024(ctx context.Context, t *testing.T, p *goose.Provider, repo s
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mls_handshakes").Scan(&n); err != nil || n != 2 {
 		t.Fatalf("after down: %d handshakes, %v; want the other 2", n, err)
 	}
-	var refs []string
-	rows, err := db.QueryContext(ctx, "SELECT ref FROM mls_pending_proposals")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var ref []byte
-		if err := rows.Scan(&ref); err != nil {
-			t.Fatal(err)
-		}
-		refs = append(refs, string(ref))
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatal(err)
-	}
+	refs := proposalRefs(ctx, t, db)
 	if len(refs) != 1 || refs[0] != "standing" {
 		t.Fatalf("after down: proposals %v; want the standing one alone (a withdrawn one is deleted, not revived)", refs)
 	}
@@ -262,4 +248,27 @@ func insertKind3(pg bool) string {
 		return "INSERT INTO mls_handshakes (group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created) VALUES ($1, 99, 0, 3, NULL, NULL, $2, 1)"
 	}
 	return "INSERT INTO mls_handshakes (group_id, seq, epoch, kind, sender_leaf, sender_device, blob, created) VALUES (?, 99, 0, 3, NULL, NULL, ?, 1)"
+}
+
+// proposalRefs is every ref in mls_pending_proposals, read raw (the down step has dropped columns the
+// repository's model names).
+func proposalRefs(ctx context.Context, t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, "SELECT ref FROM mls_pending_proposals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var refs []string
+	for rows.Next() {
+		var ref []byte
+		if err := rows.Scan(&ref); err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, string(ref))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return refs
 }

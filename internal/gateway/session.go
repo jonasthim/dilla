@@ -53,6 +53,9 @@ type conn struct {
 	pingAt      time.Time
 	// The versions this connection negotiated at identify, echoed in ready.
 	wire, e2ee, media uint64
+	// caps is identify's capability bit set (CapWithdrawnRows), fixed for the connection's life: it
+	// is set before the connection is published and a resume keeps the connection.
+	caps uint64
 
 	ring   *ring
 	writer *writer
@@ -99,6 +102,12 @@ func (c *conn) send(f Frame) {
 		return
 	}
 	c.writer.enqueue(f, n)
+}
+
+// admits reports whether the connection set every capability bit f needs (Frame.Caps). caps is
+// written once, before the connection is published, so it is read without the lock.
+func (c *conn) admits(f Frame) bool {
+	return f.Caps == 0 || c.caps&f.Caps == f.Caps
 }
 
 // mark records a liveness signal: ready, resumed or a heartbeat frame. Online is defined over
@@ -384,6 +393,14 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		}
 		chosen[i] = v
 	}
+	// caps (element 4) is a bit set: bit 0 asks for kind-3 handshake rows (UP6b). An instance
+	// before it read the element as nothing, so anything but a uint is read as no capability.
+	var caps uint64
+	if len(in.Payload) > 4 {
+		if v, err := rawUint(in.Payload[4]); err == nil {
+			caps = v
+		}
+	}
 	if bearer == "" {
 		bearer = tokenFromHandshake(in)
 	}
@@ -392,7 +409,7 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
-	c, err := g.registerVersions(ctx, session, s, chosen)
+	c, err := g.registerCaps(ctx, session, s, chosen, caps)
 	if err != nil {
 		s.close(CloseUnknown, "register")
 		return nil, false
