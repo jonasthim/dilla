@@ -466,10 +466,16 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodPost {
 			return 201, true
 		}
+		if len(parts) == 4 && parts[3] == "groups" && method == http.MethodPost {
+			return 201, true
+		}
 		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodGet {
 			return 200, true
 		}
 		if len(parts) == 5 && parts[3] == "keypackages" && method == http.MethodGet {
+			return 200, true
+		}
+		if len(parts) == 5 && parts[3] == "groups" && method == http.MethodGet {
 			return 200, true
 		}
 	}
@@ -544,12 +550,12 @@ func statusAllowed(method, path string, got, want int) bool {
 		return true
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	// Enrollment returns 201 for first acceptance and 200 when the same
-	// durable request is replayed after a lost reply. KeyPackage publication
-	// keeps 201 for both first acceptance and exact operation replay.
+	// Enrollment and scoped group registration return 201 for first acceptance
+	// and 200 when the same durable request is replayed after a lost reply.
+	// KeyPackage publication keeps 201 for both first acceptance and replay.
 	if got == http.StatusOK && want == http.StatusCreated && method == http.MethodPost && len(parts) == 4 &&
 		parts[0] == "bot-runtime" && parts[1] == "installations" &&
-		parts[3] == "enroll" {
+		(parts[3] == "enroll" || parts[3] == "groups") {
 		return true
 	}
 	return false

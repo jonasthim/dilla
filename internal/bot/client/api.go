@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -9,10 +11,26 @@ import (
 	"strings"
 
 	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
 const maxStoredSequence uint64 = 1<<63 - 1
+
+const maxBotGroupRegistrationBody = 65505
+
+var ErrRegistrationReceiptNotFound = errors.New("bot client: group registration receipt not found")
+
+// BotGroupRegistrationReceipt is the immutable acceptance result for one
+// installation-scoped native group-registration operation.
+type BotGroupRegistrationReceipt struct {
+	OperationID        id.ID
+	GroupID            id.ID
+	RegistrationSHA256 [32]byte
+	AcceptedGeneration uint64
+	InitialEpoch       uint64
+	NextSequence       uint64
+}
 
 func (c *Client) Discover(ctx context.Context) (Discovery, error) {
 	d, _, err := c.DiscoverObserved(ctx)
@@ -837,6 +855,116 @@ func (s *Session) RegisterGroup(ctx context.Context, group id.ID, binding, info,
 	}
 	return n, nil
 }
+
+// RegisterBotGroup submits the caller's exact pending native registration body
+// through the installation-scoped durable operation endpoint. It never
+// reconstructs, retries or replaces that body; an uncertain mutation remains
+// unknown until the caller checks its receipt.
+func (s *Session) RegisterBotGroup(ctx context.Context, installation, operation id.ID, expectedGeneration uint64, registrationBody []byte) (BotGroupRegistrationReceipt, error) {
+	if operation.IsZero() || expectedGeneration > maxStoredSequence || len(registrationBody) == 0 || len(registrationBody) > maxBotGroupRegistrationBody {
+		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
+	}
+	inst, err := pathID(installation)
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, err
+	}
+	group, err := registrationBodyGroup(registrationBody)
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
+	}
+	request, err := encode([]any{operation, expectedGeneration, registrationBody})
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "bot-runtime/installations/"+inst+"/groups", nil, request, MaxSmallBody, true)
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, err
+	}
+	return decodeBotGroupRegistrationReceipt(raw, operation, &group, registrationBody, &expectedGeneration)
+}
+
+// BotGroupRegistrationReceipt reads the durable receipt scoped to this
+// installation and operation. ErrRegistrationReceiptNotFound is an absence
+// result only; callers must preserve the native intent when its outcome is
+// otherwise ambiguous.
+func (s *Session) BotGroupRegistrationReceipt(ctx context.Context, installation, operation id.ID) (BotGroupRegistrationReceipt, error) {
+	inst, err := pathID(installation)
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, err
+	}
+	op, err := pathID(operation)
+	if err != nil {
+		return BotGroupRegistrationReceipt{}, err
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/groups/"+op, nil, nil, MaxSmallBody, false)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && apiErr.Code == "E_NOT_FOUND" {
+			return BotGroupRegistrationReceipt{}, ErrRegistrationReceiptNotFound
+		}
+		return BotGroupRegistrationReceipt{}, err
+	}
+	return decodeBotGroupRegistrationReceipt(raw, operation, nil, nil, nil)
+}
+
+func registrationBodyGroup(body []byte) (id.ID, error) {
+	var fields []any
+	if len(body) > maxBotGroupRegistrationBody || cborx.Unmarshal(body, &fields) != nil || len(fields) != 4 {
+		return id.ID{}, ErrProtocol
+	}
+	group, ok := asID(fields[0])
+	if !ok {
+		return id.ID{}, ErrProtocol
+	}
+	for _, field := range fields[1:] {
+		if _, ok := asBytes(field, -1); !ok {
+			return id.ID{}, ErrProtocol
+		}
+	}
+	return group, nil
+}
+
+func decodeBotGroupRegistrationReceipt(raw []byte, operation id.ID, group *id.ID, body []byte, expectedGeneration *uint64) (BotGroupRegistrationReceipt, error) {
+	var out BotGroupRegistrationReceipt
+	a, err := decode(raw, 6)
+	if err != nil {
+		return out, unknown()
+	}
+	if out.OperationID, _ = asID(a[0]); out.OperationID.IsZero() || !equalID(out.OperationID, operation) {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	if out.GroupID, _ = asID(a[1]); out.GroupID.IsZero() || group != nil && !equalID(out.GroupID, *group) {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	hash, ok := asBytes(a[2], sha256.Size)
+	if !ok {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	copy(out.RegistrationSHA256[:], hash)
+	if body != nil && out.RegistrationSHA256 != botGroupRegistrationHash(body) {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	if out.AcceptedGeneration, ok = asUint(a[3]); !ok || out.AcceptedGeneration > maxStoredSequence || expectedGeneration != nil && out.AcceptedGeneration != *expectedGeneration {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	if out.InitialEpoch, ok = asUint(a[4]); !ok || out.InitialEpoch > maxStoredSequence {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	if out.NextSequence, ok = asUint(a[5]); !ok || out.NextSequence != 1 {
+		return BotGroupRegistrationReceipt{}, unknown()
+	}
+	return out, nil
+}
+
+func botGroupRegistrationHash(body []byte) [32]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte("dilla bot group registration v1\x00"))
+	_, _ = h.Write(body)
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
 func (s *Session) GroupPage(ctx context.Context, group id.ID, kind string, from, limit uint64) (Page, error) {
 	var out Page
 	if kind != "messages" && kind != "handshakes" {
