@@ -135,6 +135,15 @@ func (c *Client) Session(token string) (*Session, error) {
 	return &Session{c: c, token: token}, nil
 }
 
+// InstanceID exposes only the instance pinned by this session's HTTP client.
+// It contains no session secret and lets callers reject cross-instance wiring.
+func (s *Session) InstanceID() id.ID {
+	if s == nil || s.c == nil {
+		return id.ID{}
+	}
+	return s.c.InstanceID()
+}
+
 // Origin returns the pinned origin for a sibling gateway client. It contains
 // no path, query, fragment, or credential.
 func (c *Client) Origin() string    { return c.base.Scheme + "://" + c.base.Host }

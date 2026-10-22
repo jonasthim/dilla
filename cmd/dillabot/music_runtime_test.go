@@ -399,6 +399,17 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if _, err := newInstallationYouTubeQueueStarter(instance, installation, community, channel, callSession, badInstanceEpochs); err == nil {
 		t.Fatal("cross-instance native epoch source was accepted")
 	}
+	otherAPI, err := client.New(client.Config{BaseURL: server.URL, InstanceID: id.New(), AllowLoopbackHTTP: true, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSession, err := otherAPI.Session("other-instance-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newInstallationYouTubeQueueStarter(instance, installation, community, channel, otherSession, epochs); err == nil {
+		t.Fatal("cross-instance call session was accepted")
+	}
 	if calls != 1 {
 		t.Fatalf("binding rejection made an HTTP call, count=%d", calls)
 	}

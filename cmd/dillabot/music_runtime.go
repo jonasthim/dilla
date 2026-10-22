@@ -187,12 +187,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 // call credentials only when a track is explicitly started. Queue restoration
 // continues to use unavailableMusicQueueStarter until an authorized interaction
 // dispatcher is connected; constructing this value does not start audio. The
-// client Session is opaque here; its own Client pins the target instance and
-// StartCall uses that session's pinned target and credential. This factory
-// verifies the native epoch source's instance, but cannot independently inspect
-// the Session's target instance.
+// client Session exposes its pinned instance without exposing its credential;
+// both the session and native epoch source must match this installation.
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
-	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil {
+	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil || calls.InstanceID() != instance {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
 	binding := source.Binding()
