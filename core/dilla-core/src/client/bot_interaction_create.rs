@@ -1,0 +1,159 @@
+//! Transaction-local creation of managed Bot interaction groups.
+
+use super::error::{E_CORE_INPUT, E_CORE_STATE};
+use super::{ClientCore, ClientError, bot_identity, bot_intents, wire};
+use crate::bot::interaction_admission::Expected;
+use crate::cbor::Encoder;
+use crate::identity::CredentialIdentity;
+use crate::mls::{DillaGroup, DillaInteractionBinding, GroupKind, StorageError};
+use openmls::prelude::{BasicCredential, CredentialWithKey, MlsMessageBodyIn, MlsMessageIn};
+use openmls_traits::OpenMlsProvider;
+use rusqlite::params;
+use tls_codec::Deserialize as _;
+
+fn rejected() -> ClientError {
+    ClientError::new(E_CORE_INPUT, "interaction group creation evidence rejected")
+}
+
+impl ClientCore {
+    /// Create a managed kind-3 group from a signed, locally trusted interaction snapshot and a
+    /// real participant KeyPackage. The candidate is created as Bot-only epoch zero, then the
+    /// participant is Added and merged. Its authenticated v2 context and exact roster are checked
+    /// before app group or upload-intent rows are written. The outer storage unit also contains
+    /// every nested OpenMLS provider transaction, so a rejected candidate leaves no MLS state.
+    pub fn bot_interaction_group_create(
+        &mut self,
+        operation_id: &[u8; 16],
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &Expected,
+        participant_key_package: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        let scope = bot_intents::binding(self)?;
+        if own.kind != 1
+            || own.tier != 0
+            || expected.group.as_bytes() != group_id
+            || expected.bot_user.as_bytes() != &own.user_id
+            || expected.bot_device.as_bytes() != &own.device_id
+            || expected.instance.as_bytes() != &own.instance_id
+            || expected.community.as_bytes() != &scope.community_id
+            || expected.installation.as_bytes() != &scope.installation_id
+        {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "native Bot binding mismatch",
+            ));
+        }
+
+        // This is a read-only verification against the persisted instance key and both signed
+        // device-list pins. It runs before the write unit; no caller-supplied roster is accepted.
+        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        let intent = bot_intents::write(operation_id, scope.installation_id, 2, |e| {
+            e.array(4)
+                .bytes(group_id)
+                .bytes(snapshot_wire)
+                .bytes(expected.group.as_bytes())
+                .bytes(participant_key_package);
+        })?;
+        if let Some(result) = bot_intents::retry(self, intent, group_id)? {
+            return Ok(result);
+        }
+        bot_intents::ensure_no_pending_for_group(self, group_id)?;
+        if self
+            .read(|c| super::groups::group_row(c, group_id))?
+            .is_some()
+        {
+            return Err(ClientError::new(E_CORE_STATE, "group already exists"));
+        }
+
+        let (group, result) = self.write(|ctx, unit| {
+            let signer = ctx
+                .signer
+                .ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?;
+            let bot_credential = CredentialIdentity::decode(&own.credential)
+                .map_err(|_| ClientError::new(E_CORE_STATE, "Bot credential is malformed"))?;
+            if bot_credential.user_id.as_bytes() != &own.user_id
+                || bot_credential.device_id.as_bytes() != &own.device_id
+            {
+                return Err(ClientError::new(E_CORE_STATE, "Bot credential binding mismatch"));
+            }
+            let credential = CredentialWithKey {
+                credential: BasicCredential::new(own.credential.clone()).into(),
+                signature_key: signer.public().into(),
+            };
+            let binding = DillaInteractionBinding {
+                instance_id: crate::ids::InstanceId::from_bytes(*expected.instance.as_bytes()),
+                bot_user_id: *expected.bot_user.as_bytes(),
+                installation_id: *expected.installation.as_bytes(),
+                community_id: crate::ids::CommunityId::from_bytes(*expected.community.as_bytes()),
+                participant_user_id: *expected.participant_user.as_bytes(),
+                participant_device_id: crate::ids::DeviceId::from_bytes(*expected.participant_device.as_bytes()),
+                policy_version: expected.policy_version,
+                e2ee_version: 1,
+                media_version: 0,
+            };
+
+            let input = MlsMessageIn::tls_deserialize_exact(participant_key_package)
+                .map_err(|_| rejected())?;
+            let MlsMessageBodyIn::KeyPackage(input) = input.extract() else {
+                return Err(rejected());
+            };
+            let key_package = crate::public_group::validate_key_package(ctx.provider.crypto(), input)
+                .map_err(|_| rejected())?;
+
+            let mut candidate = DillaGroup::create_interaction(
+                ctx.provider,
+                signer,
+                credential,
+                openmls::prelude::GroupId::from_slice(group_id),
+                binding.clone(),
+            )?;
+            let added = candidate.add_members(ctx.provider, signer, &[key_package])?;
+            let welcome = added
+                .welcomes
+                .iter()
+                .find(|(device, _)| device.as_bytes() == expected.participant_device.as_bytes())
+                .map(|(_, message)| wire::tls(message))
+                .transpose()?
+                .ok_or_else(rejected)?;
+            candidate.merge_pending_commit(ctx.provider)?;
+
+            bot_identity::verify_interaction_group_snapshot(
+                &candidate,
+                &snapshot,
+                expected,
+                &own.user_id,
+                &own.device_id,
+            )?;
+            if candidate.kind() != GroupKind::Interaction || candidate.epoch() != 1 {
+                return Err(rejected());
+            }
+
+            let group_info = wire::tls(&candidate.export_group_info(ctx.provider, signer)?)?;
+            let ratchet_tree = wire::tls(&candidate.export_ratchet_tree())?;
+            let mut encoded = Encoder::new();
+            encoded
+                .array(5)
+                .bytes(group_id)
+                .bytes(&binding.encode())
+                .bytes(&group_info)
+                .bytes(&ratchet_tree)
+                .bytes(&welcome);
+            let result = encoded.into_vec();
+            bot_intents::check_result_size(&result)?;
+
+            unit.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch) VALUES(?1,3,?2,?3,0,1)",
+                    params![group_id.as_slice(), expected.community.as_bytes().as_slice(), expected.participant_user.as_bytes().as_slice()],
+                )?;
+                bot_intents::persist(c, intent, group_id, &result)?;
+                Ok::<_, StorageError>(())
+            })?;
+            Ok((candidate, result))
+        })?;
+        self.keep_group(*group_id, group);
+        Ok(result)
+    }
+}

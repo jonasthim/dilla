@@ -5,6 +5,7 @@
 mod bot_events;
 mod bot_identity;
 mod bot_intents;
+mod bot_interaction_create;
 mod bot_keypackages;
 mod calls;
 mod error;

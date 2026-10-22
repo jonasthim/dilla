@@ -22,6 +22,8 @@ mod policy;
 mod config;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod group;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod interaction_create_tests;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod provider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]

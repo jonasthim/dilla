@@ -1,7 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use dilla_core::bot::interaction_admission::Expected;
 use dilla_core::cbor::decode_strict;
 use dilla_core::client::ClientCore;
+use dilla_core::ids::MsgId;
 use dilla_core::mls::ConnHandle;
 use std::path::PathBuf;
 use std::sync::{
@@ -664,6 +666,54 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
             .code,
         "E_CORE_STATE"
     );
+}
+
+#[test]
+fn rejected_interaction_snapshot_leaves_no_group_or_create_intent() {
+    let connection = conn();
+    let mut bot = ready_bot(connection.clone());
+    let bot_device = decode_strict(&bot.identity().expect("Bot identity"), |d| {
+        d.array(6)?;
+        d.uint()?;
+        d.opt_bytes_exact::<16>()?;
+        d.opt_bytes_exact::<16>()?;
+        d.opt_bytes_exact::<16>()
+    })
+    .expect("Bot identity shape")
+    .expect("Bot device");
+    let expected = Expected {
+        instance: MsgId::from_bytes(INSTANCE),
+        installation: MsgId::from_bytes(INSTALLATION),
+        community: MsgId::from_bytes(COMMUNITY),
+        bot_user: MsgId::from_bytes(USER),
+        bot_device: MsgId::from_bytes(bot_device),
+        participant_user: MsgId::from_bytes([0x90; 16]),
+        participant_device: MsgId::from_bytes([0x91; 16]),
+        group: MsgId::from_bytes([0x92; 16]),
+        minimum_eligibility_revision: 1,
+        server_now: 1_800_000_000,
+        policy_version: 1,
+    };
+    assert!(
+        bot.bot_interaction_group_create(
+            &OPERATION,
+            &[0x92; 16],
+            b"invalid snapshot",
+            &expected,
+            b""
+        )
+        .is_err()
+    );
+    let counts: (i64, i64, i64) = connection
+        .lock()
+        .expect("connection lock")
+        .query_row(
+            "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents),(SELECT count(*) FROM openmls_groups)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("stored state counts");
+    assert_eq!(counts, (0, 0, 0));
 }
 
 #[test]

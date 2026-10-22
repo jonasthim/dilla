@@ -1,0 +1,118 @@
+use super::*;
+use openmls::prelude::*;
+use openmls_basic_credential::SignatureKeyPair;
+use std::sync::{Arc, Mutex};
+
+fn provider() -> DillaProvider {
+    let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+    let provider = DillaProvider::new(Arc::new(Mutex::new(connection)));
+    provider.storage().migrate().expect("storage schema");
+    provider
+}
+
+fn credential(user: u8, device: u8, signer: &SignatureKeyPair) -> CredentialWithKey {
+    use crate::identity::{CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner};
+    use crate::ids::{DeviceId, UserId};
+
+    let umk = UmkSigner::from_bytes(&[user; 32]);
+    let ssk = SskSigner::from_bytes(&[user.wrapping_add(0x40); 32]);
+    let device_id = DeviceId::from_bytes([device; 16]);
+    let dsk_pub: [u8; 32] = signer.public().try_into().expect("signature key");
+    let identity = CredentialIdentity {
+        v: 1,
+        umk_pub: umk.public(),
+        user_id: UserId::from_bytes([user; 16]),
+        device_id,
+        kind: Kind::User,
+        tier: Tier::Native,
+        signer_tier: SignerTier::Native,
+        ssk_pub: ssk.public(),
+        sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+        sig_ssk_dev: ssk.sign_device(
+            &device_id,
+            &dsk_pub,
+            Kind::User,
+            Tier::Native,
+            SignerTier::Native,
+        ),
+    };
+    CredentialWithKey {
+        credential: BasicCredential::new(identity.encode()).into(),
+        signature_key: signer.public().into(),
+    }
+}
+
+#[test]
+fn rejected_transient_interaction_candidate_rolls_back_openmls_group_state() {
+    let provider = provider();
+    let bot_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("Bot DSK");
+    let participant_signer =
+        SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("participant DSK");
+    let bot_credential = credential(0x21, 0x22, &bot_signer);
+    let participant_credential = credential(0x31, 0x32, &participant_signer);
+    let package = build_key_package(
+        &provider,
+        &participant_signer,
+        participant_credential,
+        false,
+    )
+    .expect("participant KeyPackage");
+    let binding = DillaInteractionBinding {
+        instance_id: crate::ids::InstanceId::from_bytes([0x11; 16]),
+        bot_user_id: [0x21; 16],
+        installation_id: [0x33; 16],
+        community_id: crate::ids::CommunityId::from_bytes([0x44; 16]),
+        participant_user_id: [0x55; 16],
+        participant_device_id: crate::ids::DeviceId::from_bytes([0x56; 16]),
+        policy_version: 1,
+        e2ee_version: 1,
+        media_version: 0,
+    };
+
+    let rejected = provider.storage().unit(|_| {
+        let mut group = DillaGroup::create_interaction(
+            &provider,
+            &bot_signer,
+            bot_credential,
+            GroupId::from_slice(&[0x61; 16]),
+            binding,
+        )?;
+        group.add_members(&provider, &bot_signer, &[package.key_package().clone()])?;
+        group.merge_pending_commit(&provider)?;
+        assert_eq!(group.epoch(), 1);
+        assert_eq!(group.members().len(), 2);
+
+        // Model the signed-snapshot roster check rejecting this candidate after OpenMLS has
+        // created, staged, and merged it. The enclosing unit must undo every provider write.
+        Err(MlsError::OpenMls(
+            "candidate roster did not match signed snapshot".into(),
+        ))
+    });
+    assert!(matches!(rejected, Err(TxError::RolledBack(_))));
+    let persisted: i64 = provider
+        .storage()
+        .unit(|unit| {
+            unit.with_conn(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'openmls_%'",
+                )?;
+                let tables = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                tables.into_iter().try_fold(0_i64, |total, table| {
+                    let quoted = table.replace('"', "\"\"");
+                    let count = connection.query_row(
+                        &format!("SELECT count(*) FROM \"{quoted}\""),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    Ok::<_, StorageError>(total + count)
+                })
+            })
+        })
+        .expect("read after rollback");
+    assert_eq!(
+        persisted, 0,
+        "rejected candidate leaves no OpenMLS provider state"
+    );
+}
