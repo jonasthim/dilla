@@ -295,11 +295,9 @@ func (d Deps) ClaimBotSpotifyCode(w http.ResponseWriter, r *http.Request) {
 	defer d.botSpotify.mu.Unlock()
 	d.botSpotify.prune(d.Clock.Now().Unix())
 	for k, a := range d.botSpotify.attempts {
-		if a.installation == iid && a.code != "" && !a.claimed {
+		if a.installation == iid && a.code != "" {
 			a.claimed = true
 			out := spotifyCodeClaim{Attempt: k, Code: a.code, Verifier: a.verifier}
-			a.code = ""
-			a.verifier = ""
 			d.write(w, r, http.StatusOK, []any{out.Attempt, out.Code, out.Verifier})
 			return
 		}

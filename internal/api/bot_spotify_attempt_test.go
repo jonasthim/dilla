@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -52,7 +53,7 @@ func TestBotSpotifyAuthorizationFailsClosedWithoutRegisteredOAuthConfig(t *testi
 	}
 }
 
-func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsSingleUse(t *testing.T) {
+func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsRetryable(t *testing.T) {
 	var manager *botruntime.Manager
 	h, deps := newTestAPIFull(t, nil, func(d *api.Deps) {
 		manager = botruntime.New(d.Repo, d.Clock.Now)
@@ -158,8 +159,8 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsSingleUse(t *testi
 		t.Fatal("runtime verifier does not match advertised PKCE challenge")
 	}
 	replay := doBotCBOR(h, http.MethodPost, claimPath, nil, "Bearer "+runtimeToken)
-	if replay.Code != http.StatusNotFound {
-		t.Fatalf("replayed runtime claim=%d, want 404", replay.Code)
+	if replay.Code != http.StatusOK || !bytes.Equal(replay.Body.Bytes(), claim.Body.Bytes()) {
+		t.Fatalf("runtime claim after lost response=%d, want same 200 receipt", replay.Code)
 	}
 	afterClaim := doBotCBOR(h, http.MethodPost, base+"/"+attempt.String()+"/callback", mustCBOR(t, []any{q.Get("state"), "authorization-code"}), "Bearer "+ownerToken)
 	if afterClaim.Code != http.StatusAccepted {
