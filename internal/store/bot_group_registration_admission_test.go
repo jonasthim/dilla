@@ -38,6 +38,16 @@ func TestBotGroupRegistrationAdmissionIsAtomicAndIdempotent(t *testing.T) {
 			}); err != nil || !replay || !reflect.DeepEqual(got, receipt) {
 				t.Fatalf("exact retry: got=%+v replay=%v err=%v", got, replay, err)
 			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				var err error
+				got, err = tx.GetBotGroupRegistrationAdmission(ctx, f.installation.ID, requestID)
+				return err
+			}); err != nil || !reflect.DeepEqual(got, receipt) {
+				t.Fatalf("read consumed admission: got=%+v err=%v", got, err)
+			}
+			if _, err := repo.GetBotGroupRegistrationAdmission(ctx, f.installation.ID, id.New()); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown consumed admission: %v", err)
+			}
 
 			conflicts := []store.BotGroupRegistrationReceipt{receipt, receipt, receipt}
 			conflicts[0].GroupID = id.New()
@@ -58,6 +68,13 @@ func TestBotGroupRegistrationAdmissionIsAtomicAndIdempotent(t *testing.T) {
 				return tx.CompactExpiredBotInteractionAdmissionReceipts(ctx, f.installation.ID, 10+30*24*60*60+1)
 			}); err != nil {
 				t.Fatalf("compact consumed admission payload: %v", err)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				var err error
+				got, err = tx.GetBotGroupRegistrationAdmission(ctx, f.installation.ID, requestID)
+				return err
+			}); err != nil || !reflect.DeepEqual(got, receipt) {
+				t.Fatalf("consumption survives admission payload compaction: got=%+v err=%v", got, err)
 			}
 			if err := repo.Tx(ctx, func(tx store.Repository) error {
 				var err error

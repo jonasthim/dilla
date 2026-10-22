@@ -108,6 +108,7 @@ type BotInteractionAdmissionReceipts interface {
 // an exact retry; reusing a request ID for different registration data conflicts.
 type BotGroupRegistrationAdmissionReceipts interface {
 	AcceptBotGroupRegistrationAdmission(context.Context, id.ID, BotGroupRegistrationReceipt) (BotGroupRegistrationReceipt, bool, error)
+	GetBotGroupRegistrationAdmission(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may
