@@ -42,6 +42,7 @@ fn version_constants_are_the_wire_values() {
     // 6 since 2026-10-06 (DS-MEMBERSHIP-01): `public_group_state` carries `external_senders`.
     // 7 since 2026-10-21 (DILLA-BOT-04): WASI adds strict `verify_credential`.
     // 8 since 2026-10-21 (DILLA-BOT-04 Task5): validated KeyPackages return the leaf credential.
-    assert_eq!(dilla_core::ABI_VERSION, 8);
+    // 9 since 2026-10-22 (DILLA-BOT): authenticated public-group roster extraction.
+    assert_eq!(dilla_core::ABI_VERSION, 9);
     assert_eq!(dilla_core::CORE_VERSION, "0.1.0");
 }
