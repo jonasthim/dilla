@@ -140,3 +140,71 @@ func TestSelfRolePolicyRejectsEveryPermissionOutsideSafeCeiling(t *testing.T) {
 		t.Fatalf("policy with privileged deny = %d (%x), want 403", status, body)
 	}
 }
+
+func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	roles := api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler))
+	roles.Register(e.Mux)
+	role := createRole(t, e, cid, ownerTok, "panel-role", 2, api.PermViewChannel)
+	if status, body := e.Do(http.MethodPut, "/v1/communities/"+cid.String()+"/self-roles/policy", ownerTok, []any{id.New(), []any{role}}); status != http.StatusOK {
+		t.Fatalf("configure self-role policy = %d (%x)", status, body)
+	}
+	channel, _, status := newChannel(t, e, cid, ownerTok, 0, 1, 0, "role-panel")
+	if status != http.StatusCreated {
+		t.Fatalf("create channel = %d", status)
+	}
+	now := e.Clk.Now().Unix()
+	owner := e.sess[ownerTok].UserID
+	botID, deviceID, installationID := id.New(), id.New(), id.New()
+	if err := e.Repo.CreateUser(t.Context(), store.UserRow{ID: botID, Username: "role-panel-bot", Display: "Role Panel Bot", Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: botID, Joined: now}); err != nil {
+		t.Fatal(err)
+	}
+	verified := now
+	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: append([]byte{1}, make([]byte, 31)...), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.CreateBotInstallation(t.Context(), store.BotInstallationRow{ID: installationID, CommunityID: cid, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+		t.Fatal(err)
+	}
+	author := e.sess[ownerTok].UserID
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: 7, Sender: author, Envelope: []byte{1}, Body: "Role menu", FrankingTag: make([]byte, 32), Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/communities/" + cid.String() + "/role-panels"
+	status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.ID{}, channel, uint64(7), []any{[]any{"✅", role}}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("register with zero operation id = %d (%x), want 400", status, body)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(7), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register human-authored lookalike = %d (%x), want 403", status, body)
+	}
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: 8, Sender: botID, UploaderDevice: id.New(), Envelope: []byte{1}, Body: "Lookalike", FrankingTag: make([]byte, 32), Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(8), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register message attributed to a lookalike uploader = %d (%x), want 403", status, body)
+	}
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: 9, Sender: botID, UploaderDevice: deviceID, Envelope: []byte{1}, Body: "Real bot panel", FrankingTag: make([]byte, 32), Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusOK {
+		t.Fatalf("register installation-authored panel = %d (%x), want 200", status, body)
+	}
+	registered, err := e.Repo.GetRolePanel(t.Context(), channel, 9)
+	if err != nil || registered.AuthorID != botID || registered.InstallationID != installationID {
+		t.Fatalf("registered panel identity = %+v, %v", registered, err)
+	}
+	if err := e.Repo.DeleteChannel(t.Context(), channel, now+1); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusNotFound {
+		t.Fatalf("register panel in deleted channel = %d (%x), want 404", status, body)
+	}
+}

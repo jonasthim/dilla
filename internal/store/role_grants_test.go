@@ -198,3 +198,62 @@ func TestSelfRolePolicyIsAtomicPersistentAndCommunityScoped(t *testing.T) {
 		})
 	}
 }
+
+func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			cid := seedCommunity(ctx, t, repo)
+			bot := seedUser(ctx, t, repo).ID
+			roleA := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "alpha", Created: 1}
+			roleB := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "beta", Created: 1}
+			if err := repo.PutRole(ctx, roleA); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutRole(ctx, roleB); err != nil {
+				t.Fatal(err)
+			}
+			installation := id.New()
+			if err := repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: cid, State: store.BotInstallationPending, Revision: 1, ApprovedBy: bot, ApprovedAt: 1, Created: 1, Updated: 1}); err != nil {
+				t.Fatal(err)
+			}
+			channel := channelIn(cid, 0, 1, 2, "roles", 1)
+			if err := repo.CreateChannel(ctx, channel); err != nil {
+				t.Fatal(err)
+			}
+			panel := store.RolePanelRow{CommunityID: cid, ChannelID: channel.ID, MessageSeq: 17, AuthorID: bot, InstallationID: installation}
+			options := []store.RolePanelOptionRow{{Emoji: "✅", RoleID: roleA.ID}, {Emoji: "🟦", RoleID: roleB.ID}}
+			if err := repo.SetRolePanel(ctx, panel, options); err == nil {
+				t.Fatal("panel write outside transaction succeeded")
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, options) }); err != nil {
+				t.Fatalf("set panel: %v", err)
+			}
+			got, err := repo.GetRolePanel(ctx, panel.ChannelID, panel.MessageSeq)
+			if err != nil || got != panel {
+				t.Fatalf("panel = %+v, %v; want %+v", got, err, panel)
+			}
+			gotOptions, err := repo.ListRolePanelOptions(ctx, panel.ChannelID, panel.MessageSeq)
+			if err != nil || len(gotOptions) != 2 || gotOptions[0].Emoji != "✅" || gotOptions[0].RoleID != roleA.ID || gotOptions[1].Emoji != "🟦" || gotOptions[1].RoleID != roleB.ID {
+				t.Fatalf("options = %+v, %v", gotOptions, err)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, options[:1]) }); err != nil {
+				t.Fatalf("replace panel: %v", err)
+			}
+			gotOptions, err = repo.ListRolePanelOptions(ctx, panel.ChannelID, panel.MessageSeq)
+			if err != nil || len(gotOptions) != 1 || gotOptions[0].RoleID != roleA.ID {
+				t.Fatalf("replaced options = %+v, %v", gotOptions, err)
+			}
+			lookalike := panel
+			lookalike.AuthorID = seedUser(ctx, t, repo).ID
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, lookalike, options) }); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("re-register message under another author = %v, want ErrConflict", err)
+			}
+			tooLong := options[:1]
+			tooLong[0].Emoji = "🟦🟦🟦🟦🟦🟦🟦🟦🟦"
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, tooLong) }); err == nil {
+				t.Fatal("emoji mapping longer than 32 UTF-8 bytes was accepted")
+			}
+		})
+	}
+}

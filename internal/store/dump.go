@@ -106,6 +106,9 @@ var DumpTables = []string{
 	"slowmode_marks",
 	// 020_bot_installations.sql: runtime before installation, then claim/operation/session children.
 	"bot_runtimes", "bot_installations", "bot_claims", "bot_operations", "bot_session_bindings",
+	// 032_role_panels.sql: panels reference both channels and installations;
+	// options reference panels and roles. Restore them only after all parents.
+	"role_panels", "role_panel_options",
 	// 023_bot_keypackage_publications.sql: receipts are children of installations, users and devices.
 	"bot_keypackage_publication_receipts",
 	// 024_bot_sends.sql: logical operations before their immutable attempt children.

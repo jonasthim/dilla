@@ -191,6 +191,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"MemberTimeouts", reflect.TypeOf((*store.MemberTimeouts)(nil)).Elem(), []string{
 			"DeleteMemberTimeout", "GetMemberTimeout", "PutMemberTimeout",
 		}},
+		{"RolePanels", reflect.TypeOf((*store.RolePanels)(nil)).Elem(), []string{
+			"GetRolePanel", "ListRolePanelOptions", "SetRolePanel",
+		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
 			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
@@ -327,6 +330,7 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.OpsBackups)(nil)).Elem(),
 		// Plan 2 task 16: VoiceSessions joins with 00011_voice.sql (P2-D22).
 		reflect.TypeOf((*store.VoiceSessions)(nil)).Elem(),
+		reflect.TypeOf((*store.RolePanels)(nil)).Elem(),
 		// Task 4B: bot runtime registrations and durable installation storage.
 		reflect.TypeOf((*store.BotRuntimes)(nil)).Elem(),
 		reflect.TypeOf((*store.BotInstallations)(nil)).Elem(),

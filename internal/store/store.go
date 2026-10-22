@@ -58,6 +58,7 @@ type Repository interface {
 	OpsBackups
 	// Plan 2 task 16 (P2-D22) — 00011_voice.sql
 	VoiceSessions
+	RolePanels
 	BotRuntimes
 	BotInstallations
 	BotClaims
@@ -516,6 +517,26 @@ type Structure interface {
 	Bans
 	ChannelMembers
 	VoiceSessions
+}
+
+// RolePanels stores server-validated bot-authored role panels and their emoji mappings.
+type RolePanels interface {
+	SetRolePanel(ctx context.Context, panel RolePanelRow, options []RolePanelOptionRow) error
+	GetRolePanel(ctx context.Context, channelID id.ID, messageSeq uint64) (RolePanelRow, error)
+	ListRolePanelOptions(ctx context.Context, channelID id.ID, messageSeq uint64) ([]RolePanelOptionRow, error)
+}
+
+type RolePanelRow struct {
+	CommunityID    id.ID
+	ChannelID      id.ID
+	MessageSeq     uint64
+	AuthorID       id.ID
+	InstallationID id.ID
+}
+
+type RolePanelOptionRow struct {
+	Emoji  string
+	RoleID id.ID
 }
 
 // VoiceSessions is the part of Structure whose table is 00011_voice.sql (Plan 2 task 16,

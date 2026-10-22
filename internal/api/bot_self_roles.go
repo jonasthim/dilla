@@ -1,7 +1,9 @@
 package api
 
 import (
+	"math"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/id"
@@ -24,10 +26,125 @@ type selfRoleSelectionRequest struct {
 	Enabled   uint8
 }
 
+type rolePanelOptionRequest struct {
+	_     struct{} `cbor:",toarray"`
+	Emoji string
+	Role  id.ID
+}
+
+type rolePanelRegistrationRequest struct {
+	_          struct{} `cbor:",toarray"`
+	RequestID  id.ID
+	ChannelID  id.ID
+	MessageSeq uint64
+	Options    []rolePanelOptionRequest
+}
+
 func (h *Roles) RegisterSelfRoles(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/self-roles", h.listSelfRoles)
 	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/policy", h.configureSelfRoles)
 	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/{role_id}", h.selectSelfRole)
+	mux.HandleFunc("PUT /v1/communities/{id}/role-panels", h.registerRolePanel)
+}
+
+func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
+	var req rolePanelRegistrationRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		refuseCBOR(w, r, err)
+		return
+	}
+	cid, actor, err := h.selfRoleCommunity(r, h.repo)
+	if err != nil {
+		h.fail(w, r, "register role panel", err)
+		return
+	}
+	if req.RequestID.IsZero() || req.ChannelID.IsZero() || req.MessageSeq == 0 || req.MessageSeq > math.MaxInt64 || len(req.Options) == 0 || len(req.Options) > 100 {
+		h.fail(w, r, "register role panel", server.Errorf(server.CodeInvalidRequest, "invalid role panel"))
+		return
+	}
+	seen := map[string]bool{}
+	for _, option := range req.Options {
+		if option.Emoji == "" || len(option.Emoji) > 32 || !utf8.ValidString(option.Emoji) || option.Role.IsZero() || seen[option.Emoji] {
+			h.fail(w, r, "register role panel", server.Errorf(server.CodeInvalidRequest, "invalid or duplicate emoji mapping"))
+			return
+		}
+		seen[option.Emoji] = true
+	}
+	var panel store.RolePanelRow
+	options := make([]store.RolePanelOptionRow, len(req.Options))
+	for i, option := range req.Options {
+		options[i] = store.RolePanelOptionRow{Emoji: option.Emoji, RoleID: option.Role}
+	}
+	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), cid); err != nil {
+			return notFound(err)
+		}
+		if _, _, err := h.selfRoleCommunity(r, tx); err != nil {
+			return err
+		}
+		snap, err := LoadSnapshot(r.Context(), tx, cid, actor.UserID, nil)
+		if err != nil {
+			return notFound(err)
+		}
+		actorBits := snap.Resolve(actor.UserID)
+		if !actorBits.Has(PermManageRoles) {
+			return server.Errorf(server.CodeForbidden, "manage_roles required")
+		}
+		channel, err := tx.GetChannel(r.Context(), req.ChannelID)
+		if err != nil || channel.CommunityID == nil || *channel.CommunityID != cid || channel.Kind != ChannelText || channel.Mode != ModeReadable || channel.DeletedAt != nil {
+			return server.Errorf(server.CodeNotFound, "channel not found")
+		}
+		installation, err := tx.GetActiveBotInstallationByCommunity(r.Context(), cid)
+		if err != nil || installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil {
+			return server.Errorf(server.CodeForbidden, "ready community bot required")
+		}
+		botUser, err := tx.GetUser(r.Context(), *installation.UserID)
+		if err != nil || botUser.Kind != 1 {
+			return server.Errorf(server.CodeForbidden, "ready community bot required")
+		}
+		if _, err := tx.GetMember(r.Context(), cid, botUser.ID); err != nil {
+			return server.Errorf(server.CodeForbidden, "bot must be a community member")
+		}
+		messages, err := tx.ListReadableMessages(r.Context(), req.ChannelID, req.MessageSeq, 1)
+		if err != nil {
+			return err
+		}
+		if len(messages) != 1 || messages[0].Seq != req.MessageSeq || messages[0].Sender != botUser.ID || messages[0].UploaderDevice != *installation.DeviceID || messages[0].Deleted != nil {
+			return server.Errorf(server.CodeForbidden, "panel must reference a live message authored by the installed bot")
+		}
+		policy, err := tx.ListSelfRolePolicy(r.Context(), cid)
+		if err != nil {
+			return err
+		}
+		approved := make(map[id.ID]store.SelfRolePolicyRow, len(policy))
+		for _, row := range policy {
+			approved[row.RoleID] = row
+		}
+		for _, option := range req.Options {
+			if err := h.selfRoleCandidate(r, tx, cid, actor.UserID, option.Role, actorBits, snap); err != nil {
+				return err
+			}
+			row, ok := approved[option.Role]
+			if !ok {
+				return server.Errorf(server.CodeForbidden, "panel role is not approved for self-service")
+			}
+			approverSnap, err := LoadSnapshot(r.Context(), tx, cid, row.ApprovedBy, nil)
+			if err != nil {
+				return server.Errorf(server.CodeForbidden, "self-service approval is no longer valid")
+			}
+			approverBits := approverSnap.Resolve(row.ApprovedBy)
+			if !approverBits.Has(PermManageRoles) || h.selfRoleCandidate(r, tx, cid, row.ApprovedBy, option.Role, approverBits, approverSnap) != nil {
+				return server.Errorf(server.CodeForbidden, "panel role is no longer within the approved policy")
+			}
+		}
+		panel = store.RolePanelRow{CommunityID: cid, ChannelID: req.ChannelID, MessageSeq: req.MessageSeq, AuthorID: botUser.ID, InstallationID: installation.ID}
+		return tx.SetRolePanel(r.Context(), panel, options)
+	})
+	if err != nil {
+		h.fail(w, r, "register role panel", err)
+		return
+	}
+	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, uint64(len(options))})
 }
 
 func (h *Roles) selfRoleCommunity(r *http.Request, repo store.Repository) (id.ID, auth.Session, error) {
