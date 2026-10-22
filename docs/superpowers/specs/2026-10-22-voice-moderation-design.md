@@ -98,7 +98,7 @@ These are not in this version:
   - LiveKit's server-side `MoveParticipant` is never used: it would put a device into a room whose call group it is not in.
   - Media is never unencrypted, and keys are never handed out by the server.
 - **No claim stronger than the truth.**
-  - Server deafen asks the SFU to stop forwarding audio to the person. They stay in the call's MLS group and hold its key, and a modified client can resubscribe until the instance's next pass, at most about 30 s at a time. protocol/08 states this, and no copy claims they can't hear (Jonas: "Audio only, like Discord").
+  - Server deafen asks the SFU to stop forwarding audio to the person. They stay in the call's MLS group and hold its key, and a modified client can resubscribe until the instance's next pass: at most about 30 s × ceil(live rooms / 64) at a time, because the room sweep runs every 30 s and covers 64 rooms a pass. protocol/08 states this, and no copy claims they can't hear (Jonas: "Audio only, like Discord").
   - Server mute is enforced by the SFU: the publish grant loses the microphone and screen-share audio. The person's own client can't undo it.
   - A move the instance had to enforce (the device did not leave in time) is shown as what it was, never as "moved".
 - **No drag-only paths.** Everything a drag does is reachable by keyboard and screen reader through the menu (**move to ›**). The menu opens with Shift+F10 and the ContextMenu key on any focused element that has one. The WCAG bar of the existing UI holds: axe clean in all three themes, 44 px targets on phones, focus always returned.
@@ -127,7 +127,7 @@ These are not in this version:
 | D2 | **Where a right is checked.** dilla is multi-device: one user can have devices in several live calls of one server. Each such call is a **spot** (§S.1.0). Every voice moderation route acts on every spot, and the caller must hold the right (plus view) in every spot. Moving also needs view and connect on the target for the mover, and view and connect on the target for the moved person. When no spot is in a channel the caller can view, the answer is `409 E_NOT_IN_VOICE`, so a call the caller cannot see is never confirmed. |
 | D3 | **Server mute and deafen are community-member state**, stored server-side (`member_voice_moderation`), applied on every call join, and applied live to every room the person is in. Undo also needs them in voice, as in Discord: an unmute of someone in no call is `409 E_NOT_IN_VOICE`, and the state stays. |
 | D4 | **Server mute strips the microphone and screen-share audio** (`sfu.WithoutAudio`), applied at every grant point: the token mint, the `/rtc` gate, every grant reconcile and the share route. Otherwise a muted person could talk through system audio. Video and screen video are unaffected (ruling 7). |
-| D5 | **Server deafen is done by unsubscribing**, because LiveKit's subscribe grant is all-or-nothing. The instance applies `UpdateSubscriptions(…, false)` on every join, on every new audio track, on every grant reconcile of the room, and in the 30 s room sweep. Our own client also unsubscribes its remote audio while server-deafened, and `speakers.ts` never resubscribes it (ruling 6). |
+| D5 | **Server deafen is done by unsubscribing**, because LiveKit's subscribe grant is all-or-nothing. The instance applies `UpdateSubscriptions(…, false)` on every join, on every new audio track, on every grant reconcile of the room, and in the room sweep (every 30 s, 64 rooms a pass, so a room is revisited within about 30 s × ceil(live rooms / 64)). Our own client also unsubscribes its remote audio while server-deafened, and `speakers.ts` never resubscribes it (ruling 6). |
 | D6 | **A move is a new server-to-client signal, op 57 `voice_move`**, sent to each of the person's devices in a source call that advertises identify caps bit 1. Each device leaves and joins the target through its normal join. A device still in its source room 10 s later is cut by the instance with pending reason 3 (the cut lands 10–15 s after the move, on the 5 s retry tick). A device without the bit is disconnected at once, and the mover is told how many (`[moved, disconnected]`). |
 | D7 | **Disconnect** removes all of the person's devices from every spot, under each call's lock, with pending reason 4 for capable devices. A disconnected device may join again at once, as in Discord. |
 | D8 | **Copy user ID is always shown.** |
@@ -135,11 +135,11 @@ These are not in this version:
 | D10 | **Wire names follow the server design** (ruling 1): op 56 `voice_moderation`, op 57 `voice_move`, pending reasons 3 and 4, `409 E_NOT_IN_VOICE`, the three routes under `/v1/communities/{id}/members/{user_id}/voice`, and the snapshot rows' fourth element `mod`. client-core keeps its own names for the commands `voiceMove`, `voiceDisconnect`, `serverMute`, `serverDeafen`, the event `call.move {to, seq}`, `voiceModAccess`, and the setting `voice.localMute.<hex>`. |
 | D11 | **The move capability is identify caps bit 1** (ruling 2). The calls-survive-upgrade branch owns bit 0 (`withdrawn_rows`). Its identify-capability reading is ported under the same names (`Frame.Caps`, `conn.caps`, `admits`, `registerCaps`, lenient parsing). |
 | D12 | **Migration `00024_voice_moderation.sql` with schema file `022_voice_moderation.sql` for now** (ruling 3). If calls-survive-upgrade (also 00024) merges first, renumber on rebase to the next free ones; the schema tests expect the next number. |
-| D13 | **Copy follows dilla's rules** (ruling 8): menu labels lower case; notices and refusals sentence case with a full stop, except the two stage notices `Moved to {channel}` and `Disconnected by a moderator`, which follow `afk.moved` (no full stop); no `#` before voice channel names; no "encrypted", "encryption", "E2EE", "end-to-end" or "MLS" in UI strings (`check:copy`); typographic apostrophes. The two "Has no effect in this version." permission hints are rewritten (§U.9.6). New strings use the prefixes `person.menu.`, `voice.mod.` and `menu.`; permission copy keeps `perm.`. |
+| D13 | **Copy follows dilla's rules** (ruling 8): menu labels lower case; notices and refusals sentence case with a full stop, except the three stage notices `Moved to {channel}` (`voice.mod.moved`), `A moderator moved you, but your app didn’t follow in time` (`voice.mod.moveMissed`) and `Disconnected by a moderator` (`voice.mod.disconnected`), which follow `afk.moved` (no full stop); no `#` before voice channel names; no "encrypted", "encryption", "E2EE", "end-to-end" or "MLS" in UI strings (`check:copy`); typographic apostrophes. The two "Has no effect in this version." permission hints are rewritten (§U.9.6). New strings use the prefixes `person.menu.`, `voice.mod.` and `menu.`; permission copy keeps `perm.`. |
 | D14 | **The browser's menu stays** in text inputs, over a selection, in empty areas, and on Shift+right-click (ruling 9). dilla's menus offer no "copy" over a selection; the message menu has its own **copy text**, which copies the whole message. |
 | D15 | **Left out:** message links and mark unread (ruling 10), with the rest of §U.5.10. |
 | D16 | **No drag on phones or from touch** (ruling 11). A long-press is the menu; move to lives in the sheet. |
-| D17 | **A move's automatic join reuses the old call's audio context** (ruling 12), so the target call's audio is not blocked for want of a user gesture. If the session cannot keep it, the existing `voice.audioBlocked` path shows. |
+| D17 | **A move's automatic join reuses the old call's audio context** (ruling 12), so the target call's audio is not blocked for want of a user gesture. The old session hands it over with `releaseContext(): AudioContext \| null` during the switch, and the new join takes it as `made` (§U.8.6). A context that is not running is closed instead and the join goes ahead without one; the existing `voice.audioStart` ("turn on audio") press then appears. |
 | D18 | **e2e browsers** (ruling 13): the menu, sheet and drag-UI specs run on chromium, firefox and webkit, and their names join the webkit `testMatch` whitelist. SFU enforcement and a move landing in the target call run on chromium and firefox (the voice suite). |
 | D19 | **Model tiers per task** (ruling 14): server has no opus implementation, and opus reviews S5, S6a and S6b; client-core T6 is on opus; UI W6 is on opus, with opus reviews of W2, W4 and E2. Everything else is sonnet; strings and docs are haiku. |
 | D20 | **Mention** inserts `@{username} ` into the current conversation's draft and focuses the composer; with no conversation open the item is hidden (Discord opens nothing). |
@@ -160,7 +160,7 @@ Names quoted in the "Conflict" column are the rejected spellings. They appear no
 | M7 | client-core's routes were call-scoped (`/v1/calls/{call}/members/{user}…`, `PUT`/`DELETE …/voice/{mute|deaf}`); ruling 1 took the server's community-scoped routes but kept the command names. | **Command fields follow the routes:** `voiceMove {communityId, userId, toChannelId}`, `voiceDisconnect {communityId, userId}`, `serverMute`/`serverDeafen {communityId, userId, on}`. The worker routes are `moveVoiceMember(communityId, userId, channelId)`, `disconnectVoiceMember(communityId, userId)` and `setServerVoice(communityId, userId, mute, deaf)`. "Gone" is `409 E_NOT_IN_VOICE`, not 404; for disconnect it is success. |
 | M8 | client-core registered op 56 in the worker but not in `gateway.ts`, whose ready-phase dispatch only emits listed ops. | `gateway.ts` emits ops 56 and 57 as frames (§C.3); both are droppable. |
 | M9 | A move into a full call: the server answers `409 E_CALL_FULL`; no layer had copy for the mover. | New key `voice.mod.error.full` = `{channel} is full. Nobody was moved.` |
-| M10 | The UI's drop verdict switched on "self", and `canDrag` re-derived the owner rule. | The verdict switches on `local` (this device is the one in the source call), and Shell's `canDrag` is `!away && (mod.local || mod.move)`, both from `voiceModAccess` (§U.6.2). Dragging your own other device is a move like anyone's. |
+| M10 | The UI's drop verdict switched on "self", and `canDrag` re-derived the owner rule. | The verdict switches on `local` (this device is the one in the source call), and Shell's `canDrag` is `!away && (mod.local || mod.move)`, both from `voiceModAccess` (§U.6.2). Dragging your own other device is a move like anyone's. The builder check (round 2, ruling 7) then made `dropVerdict` the only source of drop decisions and took the drop-target list out of `VoiceModAccess`. |
 | M11 | Ruling 6 needs `speakers.ts` to hold off; no layer owned it as a task. | New task **M1** (packages/media): `SpeakerPolicy.setServerDeafened(on)`; W6 wires it through the session (§C.11). |
 | M12 | Ruling 14 names T6 and W6 "on opus" but says nothing of their reviews; the original design's review rule says opus reviews "the move signal and enforcement". | T6 and W6 are reviewed by opus too. All other reviews follow ruling 14. |
 
@@ -209,7 +209,7 @@ On join of a muted person: the token is minted without the microphone, the `/rtc
 
 ### 7.2 Server deafen
 
-The same PATCH with `[null,1]` and `deafen_members`. Deafen implies mute (`audioOff = Mute || Deaf`), so the grant drops audio publishing too. Then `deafenRoom` unsubscribes the deafened person's devices from every audio track of everyone else in the room. The instance re-applies it on every join, every audio `track_published`, every room reconcile and every 30 s sweep. The deafened client sets `SpeakerPolicy.setServerDeafened(true)`, which unsubscribes all remote audio and stops the policy resubscribing. Undeafen resubscribes (`undeafenUser`) and the policy re-applies its top-6 cap.
+The same PATCH with `[null,1]` and `deafen_members`. Deafen implies mute (`audioOff = Mute || Deaf`), so the grant drops audio publishing too. Then `deafenRoom` unsubscribes the deafened person's devices from every audio track of everyone else in the room. The instance re-applies it on every join, every audio `track_published`, every room reconcile and every room sweep (about 30 s × ceil(live rooms / 64) at the most). The deafened client sets `SpeakerPolicy.setServerDeafened(true)`, which unsubscribes all remote audio and stops the policy resubscribing. Undeafen resubscribes (`undeafenUser`) and the policy re-applies its top-6 cap.
 
 ### 7.3 Move
 
@@ -219,7 +219,7 @@ move to › ch2 ─▶ POST …/members/{u}/voice/move [ch2]
                  checks (§S.1.3), tx + audit voice.move per source spot
                  capable device: noteMove(dev, deadline +10 s); op 57 [cid, call, ch2] ─▶ worker: VoiceBook untouched;
                  incapable device: modCut(reason 0) now                                  movable? moveTarget? → call.move {to, seq}
-           ◀─ 200 [moved, disconnected]                                                  page: join(ch2, keptContext)
+           ◀─ 200 [moved, disconnected]                                                  page: join(ch2, releaseContext())
 "Moved björn to general." (or the warn banner when disconnected > 0)                      = callLeave 'switch' + callJoin ch2
                                                                                            "Moved to general"
                  Admitted(target room, dev) → the move entry is forgotten
@@ -232,7 +232,7 @@ move to › ch2 ─▶ POST …/members/{u}/voice/move [ch2]
 
 ### 7.5 Drag and keyboard move
 
-The drag is a pointer machine on the channel list (§U.6.3): a 4 px threshold, pointer capture, valid targets highlighted from `voiceModAccess(...).dragTargets`, Escape cancels, an invalid drop announces why. A drop on a valid target calls `voiceMove` (or, for this device's own row, the existing switch). The keyboard path is the same menu: focus the person in the channel list (one tab stop, arrows walk into the people), Shift+F10, **move to**, ArrowRight, Enter.
+The drag is a pointer machine on the channel list (§U.6.3): a 4 px threshold, pointer capture, valid targets highlighted from `dropVerdict(...).ok` (§U.6.2), Escape cancels, an invalid drop announces why. A drop on a valid target calls `voiceMove` (or, for this device's own row, the existing switch). The keyboard path is the same menu: focus the person in the channel list (one tab stop, arrows walk into the people), Shift+F10, **move to**, ArrowRight, Enter.
 
 ### 7.6 Opening a menu
 
@@ -302,22 +302,23 @@ Every layer uses exactly these spellings. Nothing else names these things.
 | State | `VOICE_FLAG` (`inCall 1, selfMute 2, selfDeaf 4, video 8, screen 16, serverMute 32, serverDeaf 64`); `CallState.move: {to, seq} \| null` (the event `call.move`), `CallState.serverMuted`, `CallState.serverDeafened`; `CallJoinResult.serverMuted?`, `serverDeafened?`; `AFKState.pendingReason: 0..4` |
 | Commands | (`AdminController.voiceMove`, `voiceDisconnect`, `serverVoice`; `AdminDeps.loadVoice`, `AdminDeps.afkChannel`) `voiceMove {communityId, userId, toChannelId}` → `VoiceMoveResult`; `voiceDisconnect {communityId, userId}` → `null`; `serverMute {communityId, userId, on}` → `null`; `serverDeafen {communityId, userId, on}` → `null` |
 | Calls | `MOVE_RELOAD_MS = 3000`; `CallDeps.reloadCommunity`, `CallDeps.afkChannel`; `Live.mod`; `VoiceDeps.communityOf`; `VoiceBook.moderation` |
-| Advisory | `admin/voicemod.ts`: `voiceModAccess`, `voiceChannelOf`, `NO_VOICE_MOD`, `VoiceModAccess {local, serverMute, serverDeafen, move, disconnect, moveTargets, dragTargets}`, `VoiceModSnapshot` |
+| Advisory | `admin/voicemod.ts`: `voiceModAccess`, `voiceChannelOf`, `NO_VOICE_MOD`, `VoiceModAccess {local, serverMute, serverDeafen, move, disconnect, moveTargets}`, `VoiceModSnapshot`, `canJoin` |
 | Settings | `SETTINGS.voiceLocalMute(hex)` = `voice.localMute.<hex>` (`'1'` or absent); `isLocallyMuted(settings, hex)` |
 | Media | `SpeakerPolicy.setServerDeafened(on: boolean)` |
-| Web call | `volume.ts` `localMutesFromSettings`, `gainOf(…, localMuted)`; `PageCallOptions.localMutes`; session `setLocalMute(userId, on)`, `applyServerVoice(mod: { muted: boolean; deafened: boolean })`; `PageCallOptions.serverVoice` |
+| Web call | `volume.ts` `localMutesFromSettings`, `gainOf(…, localMuted)`; `PageCallOptions.localMutes`; session `releaseContext(): AudioContext | null`, `setLocalMute(userId, on)`, `applyServerVoice(mod: { muted: boolean; deafened: boolean })`; `PageCallOptions.serverVoice` |
 
 ### 8.6 UI and web
 
 | Thing | Name |
 |---|---|
 | ui components | `ActionMenu` (extended; `MenuEntry`, `withSeparators`, `ActionMenuProps.onValue`), internal `MenuList`, `MenuSlider`, `place.ts` (`placeInBox`, `boxOf`); new `ContextMenu` (`ContextMenuProps`), `MenuSheet` (`MenuSheetProps`) |
-| ui props | `VoiceChannelRow`: `channelId`, `onPerson`, `drag`, `drop`; `ChannelList` `voice.onPerson`, `voice.drag`; `ChannelRow` `menu`; `useRovingFocus(activeIndex, selector?)`; `VoiceParticipantView.serverMuted`, `serverDeafened`, `mutedForMe`; `VoiceStateLabels.serverMuted`, `serverDeafened`, `mutedForMe`; `UserPanel`/`CallControls`/`CallBar` `held: { mute?, deafen? }`; `AttachmentCard` `index`; `Lightbox` `index`, `seq` |
-| DOM contract | `data-menu` = `person` \| `message` \| `link` \| `attachment` \| `channel` \| `voice-channel` \| `category` \| `server` \| `dm`, with `data-user-id`, `data-msg-id`, `data-seq`, `data-index`, `data-channel-id`, `data-category-id`, `data-community-id`; `data-native-menu` opts out; drag uses `data-draggable`, `data-dragging`, `data-drop` (`valid` \| `over`) |
+| ui props | `VoiceChannelRow`: `channelId`, `onPerson`, `drag`, `drop`; `ChannelList` `voice.onPerson`, `voice.drag`; `ChannelRow` `menu`; `useRovingFocus(active: number | RovingSelectors)` with `RovingSelectors { rows, activeSelector }`; `VoiceParticipantView.serverMuted`, `serverDeafened`, `mutedForMe`; `VoiceStateLabels.serverMuted`, `serverDeafened`, `mutedForMe`; `UserPanel`/`CallControls`/`CallBar` `held: { mute?, deafen? }`; `AttachmentCard` `index`, `menuKey`; `MessageRow` `menuKey`; `Lightbox` `index`, `seq` |
+| DOM contract | `data-menu` = `person` \| `message` \| `link` \| `attachment` \| `channel` \| `voice-channel` \| `category` \| `server` \| `dm`, with `data-user-id`, `data-msg-id`, `data-seq`, `data-index`, `data-channel-id`, `data-category-id`, `data-community-id`; `data-menu-key` names the row whose registered actions run (§U.3.8); `data-native-menu` opts out; drag uses `data-draggable`, `data-dragging`, `data-drop` (`valid` \| `over`) |
 | CSS classes | `d-action-menu__item`, `__label`, `__box`, `__chevron`, `__sep`, `__slider`, `__slider-label`, `__slider-track`, `__slider-fill`, `__slider-mark`, `__slider-thumb`, `__slider-value`, `__popup`; `d-context-menu`, `d-context-menu__popup`; `d-menu-sheet`, `__scrim`, `__head`, `__back`, `__title`, `__close`, `__list`, `__item`, `__switch`, `__range`, `__sep`; `d-voice-row__person-open`; `d-voice-drag`, `d-voice-drag__name`; web `dw-menu-root` |
-| web menus (`packages/web/src/screens/menus/`) | `MenuHost.tsx` (`MenuHostProvider`, `useContextMenu`, `useOpenMenu`, `MenuSurface`, `BuiltMenu`, `SurfaceHandler`), `native.ts` (`keepsNativeMenu`), `long-press.ts` (`LONG_PRESS_MS`, `LONG_PRESS_SLOP_PX`, `CLICK_SUPPRESS_MS`, `createLongPress`), `clipboard.ts` (`copyText`, `copyImage`), models `person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, `drop-verdict.ts` (`dropVerdict`, `canDrag`), hooks `usePersonMenu.tsx`, `useVoiceMod.ts`, `use<Surface>Menu.tsx` |
-| web other | `screens/admin/ModFlows.tsx`; `LeaveFlow` (from `DangerSection.tsx`); `toggleRole` (from `MemberRolesFlow.tsx`); `OpenCard.source` gains `'menu'` |
+| web menus (`packages/web/src/screens/menus/`) | `MenuHost.tsx` (`MenuHostProvider`, `useContextMenu`, `useOpenMenu`, `MenuSurface`, `BuiltMenu`, `SurfaceHandler`), `native.ts` (`keepsNativeMenu`), `long-press.ts` (`LONG_PRESS_MS`, `LONG_PRESS_SLOP_PX`, `CLICK_SUPPRESS_MS`, `createLongPress`), `clipboard.ts` (`copyText`, `copyImage`), models `person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, shared types `groups.ts` (`Group`, `MenuItemModel`, `NotifyMode`), `drop-verdict.ts` (`dropVerdict`, `canDrag`, `DropInput`, `DropVerdict`, `DropRefusal`), `MenuActionRegistry.tsx` (`MenuActionRegistry`, `RowActions`, `MenuActionProvider`, `useRowActions`, `rowActionsOf`), hooks `usePersonMenu.tsx`, `useVoiceMod.ts`, `use<Surface>Menu.tsx` |
+| web other | `ModFlows` (new export of `screens/admin/Moderation.tsx`, beside `KickFlow` and `BanFlow`); `LeaveFlow` (from `DangerSection.tsx`); `toggleRole` (from `MemberRolesFlow.tsx`); `OpenCard.source` gains `'menu'` |
 | Strings | modules `strings/personMenu.ts` (`person.menu.*`), `strings/voiceMod.ts` (`voice.mod.*`), `strings/menus.ts` (`menu.*`); `perm.*` in `strings/perm.ts`; flow doc `docs/design/flows/18-context-menus-and-voice-moderation.md` with `strings.flow18.test.ts` |
+| Test-only | the build define `__DILLA_E2E_HOOKS__` (true only when built with `DILLA_E2E_HOOKS=1`) and the page global `__dillaE2E.serverDeafClientOff`, read by `SpeakerPolicy` (§C.11); absent from release builds (`packages/web/scripts/check-no-e2e-hooks.mjs`) |
 
 ## 9. Compatibility with older clients
 
@@ -329,14 +330,14 @@ Every layer uses exactly these spellings. Nothing else names these things.
 | Start answer with 8 elements | Read with `atLeast(a, 6)`; `rung` `[]` is only read for a DM start the client opened. | Nothing else reads elements 6 and 7. |
 | Pending reason | Never 3 or 4 (those go only to devices with caps bit 1); it gets no reason and says `You were removed from voice.`, which is true. `E_REMOVED` already stops its auto-recovery (`useCall.tsx:729`). | An old client maps ≥ 3 to "You went AFK on another device.", which would be false. |
 | A server mute | Its microphone publish is refused by LiveKit; it shows a call error at worst. | Enforcement is the SFU's, not the client's. |
-| A server deafen | The instance unsubscribes it; its `SpeakerPolicy` may resubscribe within the 30 s re-application window. | protocol/08 states this bound. |
+| A server deafen | The instance unsubscribes it; its `SpeakerPolicy` may resubscribe within the re-application window, about 30 s × ceil(live rooms / 64). | protocol/08 states this bound. |
 | A token minted before a mute | Refused at a full `/rtc` join (`TokenWithin` compares the token's sources with `admitGrant`); the client starts again. A LiveKit resume is unaffected. | The same as a speak revocation by a role change today. |
 
 A device with an older tab open is as capable as that tab: `DeviceCaps` is the AND over every online connection of the device.
 
 ## 10. Release, docs and gates
 
-- **Schema and rollback.** The release notes state the schema bump (migration 00024 adds `member_voice_moderation`) and the rollback: `migrate down` drops the table, and with it every stored server mute and deafen, so everyone who was server-muted or server-deafened can speak and hear again. They list every operator-visible change and quote every new copy string (Jonas reviews the copy there).
+- **Schema and rollback.** The release notes (`docs/deploy/releases/<next-release>.md`, task D2, version filled at release time) state the schema bump (migration 00024 adds `member_voice_moderation`) and the rollback: `migrate down` drops the table, and with it every stored server mute and deafen, so everyone who was server-muted or server-deafened can speak and hear again. They list every operator-visible change and quote every new copy string (Jonas reviews the copy there).
 - **Protocol docs** (task S7):
   - protocol/02: ops 56 and 57 rows and their paragraph; `409 E_NOT_IN_VOICE` row and prose (`scripts/check-protocol-docs.mjs` `checkErrorVocabulary`); identify caps bit 1 `voice_move`.
   - protocol/09: the three routes; the snapshot rows' fourth element; the start answer's elements 6 and 7; AFK `pending` 3 and 4; the audit bullet; permission bit 24.
@@ -404,12 +405,12 @@ If S5's `reconcileOutcome` change or S6b's `modCut` fails its first opus review,
 
 Each gate is narrow: the task's own tests plus typecheck and lint of its package. The full suites run at the end of each lane.
 
-#### S1 — Permission bit 24 in Go, vectors and the protocol table
+#### S1 — Permission bit 24 in Go, vectors and the protocol table; `E_NOT_IN_VOICE`
 
 - **Lane** S, ∥ S2, S3, S4. **Depends on** —. **Model** sonnet. **Review** sonnet.
-- **Files:** `internal/api/perm.go`, `internal/api/perm_test.go`, `internal/api/perm_vectors_test.go`, `protocol/vectors/permissions.json`, `protocol/09-http-api.md` (§ Permissions table row only).
-- **Recipe:** §S.2 (Go, Vectors, Docs).
-- **Tests:** `TestPermissionVectors` (21 cases; `deafen_via_overwrite` resolves community 4083, channel 16781299; owner and administrator 33554431); `TestDeafenMembersIsChannelScoped` (allow on one channel only, deny removes it, a user overwrite denying bit 24 wins over the role). Negative-first: break the overwrite scoping and see it red.
+- **Files:** `internal/api/perm.go`, `internal/api/perm_test.go`, `internal/api/perm_vectors_test.go`, `protocol/vectors/permissions.json`, `protocol/09-http-api.md` (§ Permissions table row only), `internal/server/errors.go` (`CodeNotInVoice` and its 409 case in `(*Error).Status()`, ruling 1), `internal/server/errors_test.go`.
+- **Recipe:** §S.2 (Go, Vectors, Docs), §S.1.0 (`CodeNotInVoice`). S1 owns the constant so S7's protocol/02 row finds it whichever lands first.
+- **Tests:** `TestNotInVoiceIs409` (`(&server.Error{Code: server.CodeNotInVoice}).Status() == 409`); `TestPermissionVectors` (21 cases; `deafen_via_overwrite` resolves community 4083, channel 16781299; owner and administrator 33554431); `TestDeafenMembersIsChannelScoped` (allow on one channel only, deny removes it, a user overwrite denying bit 24 wins over the role). Negative-first: break the overwrite scoping and see it red.
 
 #### S2 — Migration, store and sqlc
 
@@ -432,41 +433,41 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 - **Recipe:** §S.4.2 (`WithoutAudio`), §S.4.3 (`UpdateSubscriptions` and its wiring).
 - **Tests:** `TestWithoutAudioDropsMicAndScreenAudio`, `TestUpdateSubscriptionsUnsubscribesAndResubscribes` (real LiveKit), `TestUpdateSubscriptionsOfAnAbsentIdentityIsErrNoParticipant`; the dillad fakes compile.
 
-#### S5 — Mute and deafen in the grants, snapshot `mod`, op 56 on join, the start answer's `mod`
+#### S5 — `voicemod.go` and its plumbing; mute and deafen in the grants, snapshot `mod`, op 56, the start answer's `mod`
 
 - **Lane** S. **Depends on** S2, S3, S4. **Model** sonnet. **Review** **opus** (grant changes).
-- **Files:** new `internal/api/voicemod.go` (§S.4.1, §S.4.3 functions, §S.4.4, §S.7 helpers), `internal/api/calls.go` (`grantFor`, `admitGrant`, `start`, `AdmitRoom`, `callStartResponse`), `callgrants.go` (`reconcileOutcome`, `reconcileRoom`), `callshare.go` (`share`), `callevents.go` (`joined`, `trackPublished`), `voicestate.go` (`deliver`), `callread.go` (`participantRow`, `participantRows`, `channelCall`, `communityCalls`), `internal/api/voicemod_test.go`, `calls_test.go` (start answers of eight elements).
-- **Recipe:** §S.4, §S.4.5, §S.7.
-- **Tests:** `TestServerMuteWithdrawsMicAndScreenAudio`, `TestServerMuteHoldsOnJoin`, `TestServerMutePersistsAcrossCalls`, `TestServerMuteDoesNotReachDMCalls`, `TestServerUnmuteRestoresTheMic`, `TestDeafenImpliesMuteAndUndeafenKeepsTheStoredMute`, `TestRoleSyncKeepsAServerMute`, `TestServerDeafenUnsubscribesAudioOnly`, `TestServerDeafenIsReappliedOnJoinTrackAndSweep`, `TestServerDeafenFailureLeavesARoomResync`, `TestUndeafenResubscribesAudio`, `TestNobodyDeafenedMakesNoSFUCall`, `TestJoinOfAModeratedUserAnnouncesOp56`, `TestCallSnapshotsCarryTheModerationElement`, `TestCallStartAnswersTheOwnModeration`. (The mute and deafen state is seeded through the store in S5; the PATCH route arrives in S6a, whose tests drive the same assertions through the route.)
+- **Files:** new `internal/api/voicemod.go`, which S5 creates whole except the routes (ruling 2): the §S.4.1 helpers, the §S.4.3 functions, `applyVoiceMod` (§S.4.4), `announceVoiceMod`, `voiceModsOf` and `voiceMods` (§S.7), `voiceSpot` and `voiceSpotsOf` (§S.1.0), `VoiceModGateway`, `WithVoiceMod` and `moveCapable` (§S.5.3), and the test hook (`voiceModHook`, `voiceModStage`); `internal/api/calls.go` (`grantFor`, `admitGrant`, `start`, `AdmitRoom`, `callStartResponse`, the `modGW` and `voiceModHook` fields), `internal/api/export_test.go` (`SetVoiceModHookForTest`), `internal/dillad/routes.go` (`.WithVoiceMod(p.gw)`), `callgrants.go` (`reconcileOutcome`, `reconcileRoom`), `callshare.go` (`share`), `callevents.go` (`joined`, `trackPublished`), `voicestate.go` (`deliver`), `callread.go` (`participantRow`, `participantRows`, `channelCall`, `communityCalls`), `internal/api/voicemod_test.go` with the shared fixture `newVoiceModEnv(t)` and its `modGW` fake (§S.8), `calls_test.go` (start answers of eight elements).
+- **Recipe:** §S.4, §S.4.5, §S.5.3 (`VoiceModGateway`, `WithVoiceMod`, `moveCapable`, the dillad wiring), §S.7, and the §S.1.0 spots and test hook.
+- **Tests:** `TestServerMuteWithdrawsMicAndScreenAudio`, `TestServerMuteHoldsOnJoin`, `TestServerMutePersistsAcrossCalls`, `TestServerMuteDoesNotReachDMCalls`, `TestServerUnmuteRestoresTheMic`, `TestDeafenImpliesMuteAndUndeafenKeepsTheStoredMute`, `TestRoleSyncKeepsAServerMute`, `TestServerDeafenUnsubscribesAudioOnly`, `TestServerDeafenIsReappliedOnJoinTrackAndSweep`, `TestServerDeafenFailureLeavesARoomResync`, `TestUndeafenResubscribesAudio`, `TestNobodyDeafenedMakesNoSFUCall`, `TestJoinOfAModeratedUserAnnouncesOp56`, `TestCallSnapshotsCarryTheModerationElement`, `TestCallStartAnswersTheOwnModeration`, `TestVoiceModerationOp56ReachesTheChannelAudience` (through `applyVoiceMod`). (The mute and deafen state is seeded through the store in S5; the PATCH route arrives in S6a, whose tests drive the same assertions through the route.)
 
 #### S6a — The PATCH route, rights on spots, audit, live application
 
 - **Lane** S. **Depends on** S1, S5. **Model** sonnet. **Review** **opus** (authz).
-- **Files:** `internal/api/voicemod.go` (prelude, spots, `requireOnSpots`, PATCH handler, `auditVoiceMod`, `applyVoiceMod`, `announceVoiceMod`, `VoiceModGateway`, `WithVoiceMod`, test hook), `internal/api/calls.go` (`Register`, fields), `internal/api/export_test.go` (`SetVoiceModHookForTest`), `internal/server/errors.go` (`CodeNotInVoice`), `internal/dillad/routes.go` (`WithVoiceMod(p.gw)`), `internal/api/voicemod_test.go`.
-- **Recipe:** §S.1.0, §S.1.1, §S.4.4, §S.5.3 (`VoiceModGateway`, `WithVoiceMod`, `moveCapable`), §S.6, §S.7.
-- **Tests:** `TestVoiceMuteNeedsMuteMembersInTheTargetsChannel`, `TestVoiceDeafenNeedsDeafenMembers`, `TestVoiceModerationNeverTargetsTheOwner` (PATCH part), `TestVoiceModerationHasNoRankCheck` (PATCH part), `TestVoiceModerationNeedsTheTargetInVoice` (PATCH part), `TestVoiceModerationHidesACallTheCallerCannotSee`, `TestVoiceModerationAnswers404ForStrangers`, `TestVoiceModerationBodies` (PATCH cases), `TestVoiceModerationRechecksRightsInTheTransaction` (PATCH), `TestVoiceModerationOp56ReachesTheChannelAudience`, `TestVoiceModerationAuditsEachChange`; the S5 grant and deafen tests re-run through the route. Every authz test negative-first and shown red.
+- **Files:** `internal/api/voicemod.go` (adds only `voiceModReq`, `voiceModTarget`, `requireOnSpots`, the PATCH handler and `auditVoiceMod`; it uses S5's plumbing), `internal/api/calls.go` (`Register`), `internal/api/voicemod_test.go` (on S5's `newVoiceModEnv`).
+- **Recipe:** §S.1.0 (prelude, `requireOnSpots`), §S.1.1, §S.6.
+- **Tests:** `TestVoiceMuteNeedsMuteMembersInTheTargetsChannel`, `TestVoiceDeafenNeedsDeafenMembers`, `TestVoiceModerationNeverTargetsTheOwner` (PATCH part), `TestVoiceModerationHasNoRankCheck` (PATCH part), `TestVoiceModerationNeedsTheTargetInVoice` (PATCH part), `TestVoiceModerationHidesACallTheCallerCannotSee`, `TestVoiceModerationAnswers404ForStrangers`, `TestVoiceModerationBodies` (PATCH cases), `TestVoiceModerationRechecksRightsInTheTransaction` (PATCH), `TestVoiceModerationAuditsEachChange`; the S5 grant and deafen tests re-run through the route. Every authz test negative-first and shown red.
 
 #### S6b — Move and disconnect
 
 - **Lane** S. **Depends on** S6a. **Model** sonnet. **Review** **opus** (move signal, enforcement, authz).
-- **Files:** `internal/api/voicemod.go` (DELETE and move handlers, `modCut`, `noteMove`, `clearMove`, `clearMoveIf`, `listsDevice`, `SweepVoiceMoves`), `internal/api/afk.go` (the two consts), `internal/api/calls.go` (`Admitted`, fields), `internal/api/callgrants.go` (`StartRetries`), `internal/api/voicemod_test.go`, `internal/dillad` (`TestVoiceModWiring`).
+- **Files:** `internal/api/voicemod.go` (adds only the DELETE and move handlers and their helpers `modCut`, `noteMove`, `clearMove`, `clearMoveIf`, `listsDevice`, `SweepVoiceMoves`), `internal/api/afk.go` (the two consts), `internal/api/calls.go` (`Admitted`, fields), `internal/api/callgrants.go` (`StartRetries`), `internal/api/voicemod_test.go` (on S5's `newVoiceModEnv`), `internal/dillad` (`TestVoiceModWiring`).
 - **Recipe:** §S.1.2, §S.1.3, §S.5.1, §S.5.4, §S.5.5.
 - **Tests:** the DELETE and move parts of `TestVoiceModerationNeverTargetsTheOwner`, `TestVoiceModerationHasNoRankCheck`, `TestVoiceModerationNeedsTheTargetInVoice`, `TestVoiceModerationBodies`, `TestVoiceModerationRechecksRightsInTheTransaction`; `TestMoveNeedsMoveMembersOnTheSource`, `TestMoveNeedsViewAndConnectOnTheTargetForTheMover`, `TestMoveRefusesATargetTheMovedPersonCannotJoin`, `TestMoveRefusesAFKTextAndForeignTargets`, `TestMoveToTheChannelTheyAreInIs400`, `TestMoveIntoAFullCallIs409`, `TestDisconnectCutsEveryDeviceWithAReasonForCapableOnes`, `TestDisconnectedDeviceMayRejoin`, `TestDisconnectBusyLockIs503AndKeepsNoReason`, `TestMoveSendsOp57ToCapableDevices`, `TestMoveDisconnectsDevicesThatCannotFollow`, `TestMoveWithMixedDevices`, `TestMoveIsEnforcedAfterTenSeconds`, `TestMoveFollowedIsForgotten`, `TestMoveDeadlineSurvivesAnSFUListingFailure`, `TestVoiceModWiring`.
 
-#### S7 — Protocol docs and the release-notes stub
+#### S7 — Protocol docs
 
 - **Lane** S, alongside S5 and S6 (the names are frozen in §8). **Depends on** —. **Model** haiku. **Review** sonnet.
-- **Files:** `protocol/02-delivery-service.md`, `protocol/09-http-api.md` (except the permissions row, which is S1's), `protocol/08-*.md`, `protocol/07-versioning.md`, the release-notes stub.
+- **Files:** `protocol/02-delivery-service.md`, `protocol/09-http-api.md` (except the permissions row, which is S1's), `protocol/08-*.md`, `protocol/07-versioning.md`. The release notes are D2's.
 - **Recipe:** §S.5.5 (pending row), §S.6 (audit bullet), §S.7 (ops 56/57 rows and paragraph, snapshot rows), §S.4.5 (start answer), §S.1.0 (`E_NOT_IN_VOICE` row and prose), and:
-  - protocol/08: "Server deafen: the SFU stops forwarding audio; the person stays in the call's MLS group and holds its key; a modified client can resubscribe until the instance's next pass, at most about 30 s, and on every join and audio publish." and "A move only within the moved person's own rights: the instance tells the device to move, and it joins through its normal join; it never moves media or hands out keys."
-  - protocol/07 row: `| 2026-10-xx | e2ee 1, media 1, wire 1 | **Additive.** Voice moderation: \`09\` § Voice gains \`PATCH\`/\`DELETE /v1/communities/{id}/members/{user_id}/voice\` and \`POST …/voice/move\`; permission bit 24 \`deafen_members\` (channel); \`02\` ops 56 \`voice_moderation\` and 57 \`voice_move\` (ephemeral, S→C); identify caps bit 1 \`voice_move\`; \`409 E_NOT_IN_VOICE\` (new, \`02\` § Errors); the voice snapshots' participant rows gain a fourth element \`mod\`, and the call start's answer always carries \`rung\` and an eighth element \`mod\`, which older clients ignore; the AFK snapshot's \`pending\` gains 3 and 4, sent only to devices with caps bit 1. Schema 00024 adds \`member_voice_moderation\`; \`migrate down\` drops it and every stored server mute and deafen with it. No version bump |`
+  - protocol/08: "Server deafen: the SFU stops forwarding audio; the person stays in the call's MLS group and holds its key; a modified client can resubscribe until the instance's next pass, at most about 30 s × ceil(live rooms / 64) (the room sweep runs every 30 s and covers 64 rooms a pass), and it is re-applied on every join and every audio publish." and "A move only within the moved person's own rights: the instance tells the device to move, and it joins through its normal join; it never moves media or hands out keys."
+  - protocol/07 row: `| 2026-10-xx | e2ee 1, media 1, wire 2 | **Additive.** Voice moderation: \`09\` § Voice gains \`PATCH\`/\`DELETE /v1/communities/{id}/members/{user_id}/voice\` and \`POST …/voice/move\`; permission bit 24 \`deafen_members\` (channel); \`02\` ops 56 \`voice_moderation\` and 57 \`voice_move\` (ephemeral, S→C); identify caps bit 1 \`voice_move\`; \`409 E_NOT_IN_VOICE\` (new, \`02\` § Errors); the voice snapshots' participant rows gain a fourth element \`mod\`, and the call start's answer always carries \`rung\` and an eighth element \`mod\`, which older clients ignore; the AFK snapshot's \`pending\` gains 3 and 4, sent only to devices with caps bit 1. Schema 00024 adds \`member_voice_moderation\`; \`migrate down\` drops it and every stored server mute and deafen with it. No version bump |`
 - **Tests:** `check:docs`; `scripts/check-protocol-docs.mjs` (`checkErrorVocabulary` sees the `E_NOT_IN_VOICE` row).
 
 #### T1 — client-core wire: frames, caps, routes, `mod`, pending reasons, state types
 
 - **Lane** C. **Depends on** — (the names are frozen in §8; tests use fakes). **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/client-core/src/gateway/frames.ts`, `gateway/gateway.ts`, `http/routes.ts`, `state/types.ts`, `index.ts`, `worker/controller.ts` (the frame-dispatch condition only), `gateway/frames.test.ts`, `gateway/gateway.test.ts`, `http/routes.test.ts`, the idle-state literals in `worker/bridge.test.ts:111`, `calls/controller.test.ts:1810` and `packages/web/src/App.test.tsx:275,283`.
-- **Recipe:** §C.2, §C.3, §C.4.
+- **Files:** `packages/client-core/src/gateway/frames.ts`, `gateway/gateway.ts`, `http/routes.ts`, `state/types.ts`, `index.ts`, `worker/controller.ts` (the frame-dispatch condition only), `gateway/frames.test.ts`, `gateway/gateway.test.ts`, `http/routes.test.ts`, the idle-state literals in `packages/client-core/src/bridge.test.ts:111`, `calls/controller.test.ts:1810` and `packages/web/src/App.test.tsx:275,283`; and, minimally so typecheck passes (ruling 3), `calls/controller.ts` (`setIn` and `Live`) and `sync/testing/model.ts` (`startCall`).
+- **Recipe:** §C.2, §C.3, §C.4, §C.6.3 (the T1 half).
 - **Tests:** §C.12.1, §C.12.2, §C.12.3.
 
 #### T2 — client-core bit 24, the 25-bit mask, permission copy
@@ -488,7 +489,7 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 - **Lane** C. **Depends on** T2 (`PERM.deafenMembers`). **Model** sonnet. **Review** sonnet (W2's opus review reads it again as consumed).
 - **Files:** new `packages/client-core/src/admin/voicemod.ts`, new `admin/voicemod.test.ts`, `index.ts`.
 - **Recipe:** §C.9.2.
-- **Tests:** §C.12.5 (16 cases).
+- **Tests:** §C.12.5 (16 cases, including `canJoin`).
 
 #### T5 — The four moderation commands
 
@@ -514,14 +515,14 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 #### M1 — Media: the speaker policy holds off while server-deafened
 
 - **Lane** C, ∥ from the start (disjoint package). **Depends on** —. **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/media/src/audio/speakers.ts`, `packages/media/test/audio-speakers.test.ts`.
+- **Files:** `packages/media/src/audio/speakers.ts` (including the test-only hook read), `packages/media/test/audio-speakers.test.ts`.
 - **Recipe:** §C.11.
 - **Tests:** §C.12.10.
 
 #### U1 — ActionMenu: entries, submenus, check items, slider
 
 - **Lane** U, ∥ U3. **Depends on** —. **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/ui/src/ActionMenu/ActionMenu.tsx`, new `MenuList.tsx`, new `place.ts`, new `MenuSlider.tsx`, `ActionMenu.css`, `ActionMenu.test.tsx`, `ActionMenu.stories.tsx`.
+- **Files:** `packages/ui/src/ActionMenu/ActionMenu.tsx`, new `MenuList.tsx`, new `place.ts`, new `MenuSlider.tsx`, `ActionMenu.css`, `ActionMenu.test.tsx`, `ActionMenu.stories.tsx`, `packages/ui/src/index.ts` (export `withSeparators` and the type `MenuEntry`).
 - **Recipe:** §U.2.1–§U.2.3, §U.2.6.
 - **Tests:** the `ActionMenu.test.tsx` list of §U.10.1, including axe with a submenu open and a slider, in all three themes.
 
@@ -535,9 +536,9 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 #### U3 — Surfaces in ui: `data-menu`, voice person buttons, roving selector
 
 - **Lane** U, ∥ U1. **Depends on** —. **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/ui/src/VoiceChannelRow/VoiceChannelRow.tsx`, `internal/roving.ts`, `ChannelList/ChannelList.tsx`, `ChannelRow/ChannelRow.tsx`, `CommunityRail/CommunityRail.tsx`, `MemberList/MemberList.tsx`, `MessageRow/MessageRow.tsx`, `AttachmentCard/AttachmentCard.tsx`, `Lightbox/Lightbox.tsx`, `CallTile/CallTile.tsx` (the `li` attribute), `styles/base.css`, and their tests.
-- **Recipe:** §U.3.6, §U.4.
-- **Tests:** from §U.10.1: `VoiceChannelRow.test.tsx` (person button, `onPerson`), `ChannelList.test.tsx` (roving, `data-menu`), `MemberList.test.tsx` (replaced right-click tests), `MessageRow.test.tsx`, `CommunityRail.test.tsx`, `roving.test.tsx`, `base.test.ts`, `CallTile.test.tsx` (`data-menu`); `check:css`.
+- **Files:** `packages/ui/src/VoiceChannelRow/VoiceChannelRow.tsx`, `internal/roving.ts`, `ChannelList/ChannelList.tsx`, `ChannelRow/ChannelRow.tsx`, `CommunityRail/CommunityRail.tsx`, `MemberList/MemberList.tsx`, `MessageRow/MessageRow.tsx`, `AttachmentCard/AttachmentCard.tsx`, `Lightbox/Lightbox.tsx`, `CallTile/CallTile.tsx` (the `li` attribute), `styles/base.css`, and their tests. `MessageRow` and `AttachmentCard` also gain `menuKey` (§U.3.8).
+- **Recipe:** §U.3.6, §U.4 (with §U.4.3, the roving selector form).
+- **Tests:** from §U.10.1: `VoiceChannelRow.test.tsx` (person button, `onPerson`), `ChannelList.test.tsx` (roving, `data-menu`), `MemberList.test.tsx` (replaced right-click tests), `MessageRow.test.tsx`, `CommunityRail.test.tsx`, `roving.test.tsx` (the §U.4.3 cases), `base.test.ts`, `CallTile.test.tsx` (`data-menu`), `MessageRow.test.tsx` and `AttachmentCard.test.tsx` (`data-menu-key`); `check:css`.
 
 #### U4 — Indicators and held controls
 
@@ -557,36 +558,36 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 
 - **Lane** W, ∥ from the start. **Depends on** —. **Model** haiku. **Review** sonnet.
 - **Files:** new `packages/web/src/strings/personMenu.ts`, `voiceMod.ts`, `menus.ts`, `strings/en.ts`, new `docs/design/flows/18-context-menus-and-voice-moderation.md` (Copy, plus States, Keyboard map, Focus rules and Announcements, as the flow tests require), new `strings/strings.flow18.test.ts`.
-- **Recipe:** §U.9.1–§U.9.5.
-- **Tests:** `strings.flow18.test.ts` (every key byte for byte, prefix regex `/^(person\.menu\.|voice\.mod\.|menu\.)/`, the counted total pinned, lower-case chrome keys checked); `check:copy`.
+- **Recipe:** §U.9.1–§U.9.5, and §U.9.8 (flow 18's States, Keyboard map, Focus rules and Announcements, written out; the chrome key list).
+- **Tests:** `strings.flow18.test.ts` (81 pairs byte for byte; prefix regex `/^(person\.menu\.|voice\.mod\.|menu\.)/` finds no unlisted key; the 46 chrome keys of §U.9.8 start lower case; the other 35 start with a capital or `{`, and end with a full stop except the three stage notices; the four sections have content); `check:copy`.
 
 #### W2 — Pure menu models and the drop verdict
 
 - **Lane** W. **Depends on** T4 (and T2 through it). **Model** sonnet. **Review** **opus** (advisory authz mirrors the server's rules; reads `admin/voicemod.ts` too).
-- **Files:** new `packages/web/src/screens/menus/person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, `drop-verdict.ts`, their tests; `screens/admin/MemberRolesFlow.tsx` (`roleChoices`, `toggleRole` extracted).
-- **Recipe:** §U.5, §U.6.2 (`dropVerdict`, `canDrag`).
+- **Files:** new `packages/web/src/screens/menus/groups.ts`, `person-menu.ts` (`personMenu`, `roleChoices`, `personInputs`), `message-menu.ts`, `link-menu.ts`, `attachment-menu.ts`, `channel-menu.ts`, `voice-channel-menu.ts`, `category-menu.ts`, `server-menu.ts`, `dm-menu.ts`, `drop-verdict.ts`, their tests; `screens/admin/MemberRolesFlow.tsx` (`roleChoices`, `toggleRole` extracted).
+- **Recipe:** §U.5 (with §U.5.0, the shared types), §U.6.2 (`dropVerdict`, `canDrag`: the one definition).
 - **Tests:** one `it` per truth-table row (`person-menu.test.ts` 18 rows plus `roleChoices`, `personInputs`, move-to exclusions; `message-menu`, `channel-menu`, `voice-channel-menu`, `category-menu`, `server-menu`, `dm-menu`, `link-menu`, `attachment-menu`), `drop-verdict.test.ts`; `MemberRolesFlow.test.tsx` stays green.
 
 #### W3 — The menu host
 
 - **Lane** W. **Depends on** U2. **Model** sonnet. **Review** sonnet.
-- **Files:** new `packages/web/src/screens/menus/MenuHost.tsx`, `native.ts`, `long-press.ts`, `clipboard.ts`, their tests; `packages/web/src/screens/Shell.tsx` (the provider wrap and the `dw-menu-root` element only).
-- **Recipe:** §U.3.
-- **Tests:** `native.test.ts`, `long-press.test.ts`, `MenuHost.test.tsx` of §U.10.2.
+- **Files:** new `packages/web/src/screens/menus/MenuHost.tsx`, `native.ts`, `long-press.ts`, `clipboard.ts`, `MenuActionRegistry.tsx`, their tests; `packages/web/src/screens/Shell.tsx` (the two provider wraps and the `dw-menu-root` element only).
+- **Recipe:** §U.3 (with §U.3.8, the action registry).
+- **Tests:** `native.test.ts`, `long-press.test.ts`, `MenuHost.test.tsx`, `MenuActionRegistry.test.tsx` of §U.10.2.
 
 #### W4 — The person surface
 
 - **Lane** W. **Depends on** W1, W2, W3, U3, U4, T5. **Model** sonnet. **Review** **opus**.
-- **Files:** new `packages/web/src/screens/menus/usePersonMenu.tsx`, new `useVoiceMod.ts`, new `screens/admin/ModFlows.tsx`, `MemberCardHost.tsx` (`'menu'` source), `MemberPane.tsx`, `Shell.tsx`, `VoiceView.tsx` (export `volumeOf`, labels), new `Shell.personMenu.test.tsx`.
+- **Files:** new `packages/web/src/screens/menus/usePersonMenu.tsx`, new `useVoiceMod.ts`, `screens/admin/Moderation.tsx` (new export `ModFlows`), `screens/admin/MemberCardHost.tsx` (`'menu'` source), `screens/admin/MemberPane.tsx`, `Shell.tsx`, `VoiceView.tsx` (export `volumeOf`, labels), new `Shell.personMenu.test.tsx`.
 - **Recipe:** §U.5.1.4, §U.5.1.5, §U.8.3.
 - **Tests:** `Shell.personMenu.test.tsx` of §U.10.2.
 
 #### W5 — The other surfaces
 
 - **Lane** W. **Depends on** W4 (Shell order), W1, W2, W3, U3. **Model** sonnet. **Review** sonnet.
-- **Files:** `packages/web/src/screens/Conversation.tsx`, `ThreadView.tsx`, `Attachments.tsx`, `Shell.tsx`, `screens/admin/ChannelsSection.tsx` (export `DeleteChannel`), `screens/admin/DangerSection.tsx` (extract `LeaveFlow`), `screens/menus/use{Message,Link,Attachment,Channel,VoiceChannel,Category,Server,Dm}Menu.tsx`, new tests.
-- **Recipe:** §U.5.2–§U.5.9; `InviteFlow` mounted in Shell.
-- **Tests:** `Shell.contextMenus.test.tsx`, `Conversation.menu.test.tsx`, `ThreadView.menu.test.tsx`.
+- **Files:** `packages/web/src/screens/conversation/Conversation.tsx`, `screens/conversation/ThreadView.tsx`, `screens/conversation/MessageItem.tsx` (`useRowActions` per row), `screens/conversation/Attachments.tsx` (`useRowActions` per card), `screens/Shell.tsx`, `screens/admin/ChannelsSection.tsx` (export `DeleteChannel`), `screens/admin/DangerSection.tsx` (extract `LeaveFlow`), `screens/menus/use{Message,Link,Attachment,Channel,VoiceChannel,Category,Server,Dm}Menu.tsx`, new tests.
+- **Recipe:** §U.5.2–§U.5.9, §U.3.8 (row actions); `InviteFlow` (`screens/Create.tsx`) mounted in Shell.
+- **Tests:** `screens/Shell.contextMenus.test.tsx`, `screens/conversation/Conversation.menu.test.tsx`, `screens/conversation/ThreadView.menu.test.tsx`.
 
 #### W7 — Drag wiring in Shell
 
@@ -599,8 +600,8 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 
 - **Lane** W. **Depends on** W7 (Shell order), T1, T3, T6, M1, U4. **Model** **opus**. **Review** **opus** (M12).
 - **Files:** `packages/web/src/screens/voice/useCall.tsx`, `screens/voice/VoiceView.tsx`, `packages/web/src/call/session.ts`, `call/volume.ts`, `Shell.tsx` (held props), new `useCall.mod.test.tsx`, new `VoiceView.mod.test.tsx`, `call/session.test.ts`, `call/volume.test.ts`.
-- **Recipe:** §C.8, §C.10 (web half), §U.7.5, §U.8.1, §U.8.2, §U.8.4. The follow reuses the old session's `AudioContext` (D17).
-- **Tests:** `useCall.mod.test.tsx` and `VoiceView.mod.test.tsx` of §U.10.2; `session.test.ts`: "a server mute unpublishes the microphone and screen audio and keeps the own mute", "a permission-refused mic publish while serverMuted is not a call error", "applyServerVoice with deafened calls the speaker policy"; `volume.test.ts`: "a locally muted user's voice gain is 0 and the stream gain is unchanged".
+- **Recipe:** §C.8, §C.10 (web half), §U.7.5, §U.8.1, §U.8.2, §U.8.4, §U.8.6 (the `AudioContext` hand-off, D17).
+- **Tests:** `useCall.mod.test.tsx` and `VoiceView.mod.test.tsx` of §U.10.2 (including the two hand-off cases of §U.8.6); `session.test.ts`: the three `releaseContext` cases of §U.8.6, "a server mute unpublishes the microphone and screen audio and keeps the own mute", "a permission-refused mic publish while serverMuted is not a call error", "applyServerVoice with deafened calls the speaker policy"; `volume.test.ts`: "a locally muted user's voice gain is 0 and the stream gain is unchanged".
 
 #### E1 — Web e2e
 
@@ -611,10 +612,10 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 
 #### E2 — Voice e2e
 
-- **Lane** W, ∥ E1. **Depends on** W6, W7, S6b. **Model** sonnet. **Review** **opus** (enforcement claims).
-- **Files:** new `e2e/voice/voice-moderation.spec.ts`.
-- **Recipe:** §U.10.3 (voice suite).
-- **Tests:** the spec on chromium-voice and firefox-voice.
+- **Lane** W, ∥ E1. **Depends on** W6, W7, S6b, M1. **Model** sonnet. **Review** **opus** (enforcement claims).
+- **Files:** new `e2e/voice/voice-moderation.spec.ts`; the test-only build switch: `packages/web/vite.config.ts` (define `__DILLA_E2E_HOOKS__`), `.github/workflows/ci.yml` (the web build that makes the `dilla-web-dist` artifact sets `DILLA_E2E_HOOKS=1`), `.github/workflows/release.yml` (builds without it, then runs the check), new `packages/web/scripts/check-no-e2e-hooks.mjs`.
+- **Recipe:** §U.10.3 (voice suite, written out with its per-case mute steps), §C.11 (the hook).
+- **Tests:** the spec on chromium-voice and firefox-voice; `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist` passes on a build without `DILLA_E2E_HOOKS` and fails on one with it.
 
 #### D1 — User docs and README
 
@@ -623,12 +624,12 @@ Each gate is narrow: the task's own tests plus typecheck and lint of its package
 - **Recipe:** §U.9.7 and §10.
 - **Tests:** `check:docs`.
 
-#### D2 — Screenshots
+#### D2 — Screenshots and release notes
 
 - **Lane** W, ∥ D1. **Depends on** E1, E2. **Model** sonnet. **Review** sonnet (the shots by eye).
-- **Files:** `e2e/scripts/shoot-docs.mjs` (a `VOICEMOD_SHOTS` block after 4d), `docs/user/screenshots/*`.
-- **Recipe:** §U.10.4.
-- **Tests:** the shoot run; the new and re-shot images reviewed by eye.
+- **Files:** `e2e/scripts/shoot-docs.mjs` (a `VOICEMOD_SHOTS` block after 4d), `docs/user/screenshots/*`, new `docs/deploy/releases/<next-release>.md` (the version is filled in at release time, following `v0.1.0-web3.9.2.md`).
+- **Recipe:** §U.10.4; §10 (release notes): every operator-visible change, the schema bump (migration 00024 adds `member_voice_moderation`) and its rollback (`migrate down` drops it and every stored server mute and deafen), and every new copy string of §U.9.3–§U.9.6 quoted verbatim with its key.
+- **Tests:** the shoot run; the new and re-shot images reviewed by eye; the release notes checked against §U.9.3–§U.9.6 key by key (81 new keys and the four `perm.*` lines), and against §10 for the schema bump and rollback; `check:docs`.
 
 ## 12. Open questions
 
@@ -652,7 +653,7 @@ The server recipe, grounded in main at `29e2219f`. Line numbers are as of that c
   - test null with `isNull` (`envelope.go:304`).
 - **Responses** use `server.EncodeBody(w, status, v)`, and errors use `server.WriteError`.
 - **New error code: `E_NOT_IN_VOICE`, HTTP 409.** It is the target's state, as `E_CALL_NOT_ALONE` is.
-  - In `internal/server/errors.go`:
+  - In `internal/server/errors.go` (task S1, ruling 1, so S7's protocol/02 row finds the constant whichever lands first):
 
     ```go
     // CodeNotInVoice is the voice moderation routes' refusal when the target has no device in a live
@@ -694,9 +695,11 @@ Exact sequence:
 
 ##### Test hook
 
-Add `voiceModHook func(stage string)` to `Calls`, next to `afkHook`, and `func (h *Calls) voiceModStage(stage string) { if f := h.voiceModHook; f != nil { f(stage) } }`. Add `func (h *Calls) SetVoiceModHookForTest(f func(stage string)) { h.voiceModHook = f }` in `internal/api/export_test.go`, next to `SetAFKHookForTest`. Every route calls `h.voiceModStage("checked")` once every check before its transaction has passed, immediately before `h.repo.Tx`.
+Task S5 adds it (ruling 2). Add `voiceModHook func(stage string)` to `Calls`, next to `afkHook`, and `func (h *Calls) voiceModStage(stage string) { if f := h.voiceModHook; f != nil { f(stage) } }`. Add `func (h *Calls) SetVoiceModHookForTest(f func(stage string)) { h.voiceModHook = f }` in `internal/api/export_test.go`, next to `SetAFKHookForTest`. Every route calls `h.voiceModStage("checked")` once every check before its transaction has passed, immediately before `h.repo.Tx`.
 
 ##### Spots: where the target is in voice
+
+`voiceSpot` and `voiceSpotsOf` are task S5's (ruling 2): `applyVoiceMod` takes spots, and S5's tests build them.
 
 ```go
 // voiceSpot is one live call of a community voice channel in which the SFU lists devices of a user.
@@ -1106,7 +1109,7 @@ Implement these in both `internal/store/sqlite/repo.go` and `internal/store/post
 
 **`SetVoiceModeration`:**
 - when `!m.Mute && !m.Deaf`, call `DeleteVoiceModeration` and return `wrap(err)`. Deleting a row that is not there is not an error;
-- otherwise call `UpsertVoiceModeration` with `b2i(m.Mute)`, `b2i(m.Deaf)` and `m.Updated`;
+- otherwise call `UpsertVoiceModeration` with `boolInt(m.Mute)`, `boolInt(m.Deaf)` and `m.Updated`;
 - map a foreign-key failure to `fmt.Errorf("%w: %w", store.ErrNotFound, err)`:
   - sqlite: `strings.Contains(err.Error(), "FOREIGN KEY constraint failed")`;
   - Postgres: `pgErr.Code == "23503"`.
@@ -1115,13 +1118,7 @@ Implement these in both `internal/store/sqlite/repo.go` and `internal/store/post
 
 **`ListVoiceModeration`:** map each row to `VoiceModeration`.
 
-`b2i` is a two-line local helper in each repo file:
-
-```go
-func b2i(b bool) int64 { if b { return 1 }; return 0 }
-```
-
-Name it `boolInt` if `b2i` already exists in the file.
+`boolInt` already exists in both repo files (`sqlite/repo.go:325`, `postgres/repo.go:354`, "a 0/1 flag column's value"); reuse it and add no helper.
 
 #### Tables lists, contract test and dump
 
@@ -1354,10 +1351,10 @@ func (h *Calls) undeafenUser(ctx context.Context, ch store.ChannelRow, row store
 1. **The deafen itself** (§S.4.4): `h.deafenRoom(ctx, sp.row)` per spot.
 2. **On join:** in `CallEvents.joined` (`callevents.go:412`), after `c.calls.ringer.Answered(...)` at the very end, call `if err := c.calls.deafenRoom(ctx, row); err != nil { c.log.WarnContext(ctx, "re-applying a server deafen on a join did not finish; the retry loop repeats it", "room", row.LivekitRoom, "err", err) }`. This covers a deafened joiner, and also an undeafened joiner who must not be unsubscribed from a deafened person's audio. The latter is a no-op, because only deafened listeners are unsubscribed.
 3. **On a new audio track:** in `CallEvents.trackPublished` (`callevents.go:672`), after the `updateTracks` call at the end, call `if t.GetType() == livekit.TrackType_AUDIO { if err := c.calls.deafenRoom(ctx, row); err != nil { warn as above } }`.
-4. **On every reconcile of a room:** in `reconcileRoom` (`callgrants.go:151`), just before `return errors.Join(errs...)`, call `if err := h.applyDeafen(ctx, d, ch, row, parts); err != nil { h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom}); errs = append(errs, err) }`. `reconcileRoom` is reached by every grant sync, every retry of a `roomResync`, every cut and the **room sweep every 30 s**. The sweep is the periodic re-application that bounds a modified client's resubscribe.
+4. **On every reconcile of a room:** in `reconcileRoom` (`callgrants.go:151`), just before `return errors.Join(errs...)`, call `if err := h.applyDeafen(ctx, d, ch, row, parts); err != nil { h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom}); errs = append(errs, err) }`. `reconcileRoom` is reached by every grant sync, every retry of a `roomResync`, every cut and the **room sweep**, which runs every `RoomSweepInterval` (30 s) and covers `maxRoomsPerSweep` (64) rooms a pass (`calls.go:101-103`). The sweep is the periodic re-application that bounds a modified client's resubscribe: about 30 s × ceil(live rooms / 64).
 5. **Undo:** the PATCH route calls `h.undeafenUser(ctx, sp.ch, sp.row, target)` per spot. Re-application stops by itself, because `deafenedIn` no longer lists the user.
 
-The deafened person still receives camera and screen video, which matches Jonas's "Audio only, like Discord". They also keep `CanSubscribe` and stay in the MLS group. protocol/08 states that a modified client can resubscribe until the server's next pass, within 30 s.
+The deafened person still receives camera and screen video, which matches Jonas's "Audio only, like Discord". They also keep `CanSubscribe` and stay in the MLS group. protocol/08 states that a modified client can resubscribe until the server's next pass, within about 30 s × ceil(live rooms / 64).
 
 #### S.4.4 `applyVoiceMod`: live application after the PATCH
 
@@ -1494,7 +1491,7 @@ func (g *Gateway) DeviceCaps(deviceID id.ID) (uint64, bool) {
 }
 ```
 
-`internal/api/voicemod.go`:
+`internal/api/voicemod.go` (task S5, ruling 2; S6a and S6b only use these):
 
 ```go
 // VoiceModGateway is what voice moderation drives: op 56 to users, op 57 to one device, and the
@@ -1520,7 +1517,7 @@ func (h *Calls) moveCapable(dev id.ID) bool {
 }
 ```
 
-Wire it in `internal/dillad/routes.go:122`: `calls.WithAFKAway(p.gw, p.gw.UserConnected).WithAFKDraining(p.gw.Draining).WithVoiceMod(p.gw)`.
+S5 wires it in `internal/dillad/routes.go:122`: `calls.WithAFKAway(p.gw, p.gw.UserConnected).WithAFKDraining(p.gw.Draining).WithVoiceMod(p.gw)`.
 
 **Client:** `gateway.ts:211` sends `CAPS` (`CAP_VOICE_MOVE`, 2) instead of `0` (task T1, §C.3). It ships in the same release as its op 57 and reason 3 and 4 handling (T1, T6, W6).
 
@@ -1633,6 +1630,8 @@ func (h *Calls) SweepVoiceMoves(ctx context.Context) {
 `listsDevice(parts, dev)` is true for an identity equal to `dev.String()` or starting with `dev.String()+"#"`, and skips `ParticipantInfo_DISCONNECTED`.
 
 **Where it runs:** in `StartRetries` (`callgrants.go:799`), inside `case <-tick.C:`, right after `h.SweepAFK(ctx)`, add `h.SweepVoiceMoves(ctx)`. Tests call it directly under the fake clock.
+
+**The move bound does not depend on the room sweep.** `SweepVoiceMoves` walks the `moves` map on every retry tick (`CallRetryInterval`, 5 s), listing only the source rooms of due moves, so the 10–15 s bound holds at any number of live rooms. The server deafen bound, by contrast, rides on the room sweep's 64-room passes: about 30 s × ceil(live rooms / 64) (§S.4.3).
 
 **If the device never joins the target:** nothing more happens to it.
 
@@ -1836,7 +1835,7 @@ All Go tests run under `-race` on both engines. The api tests run on sqlite, as 
 
 #### `internal/api/voicemod_test.go` (S5, S6a, S6b)
 
-**Fixture.** Write `newVoiceModEnv(t)` on top of `newMembershipCallEnvWithoutLoop`. It adds:
+**Fixture.** Task S5 writes `newVoiceModEnv(t)` on top of `newMembershipCallEnvWithoutLoop` (`internal/api/afk_pending_test.go:30` shows its use); S6a and S6b reuse it (ruling 2). It adds:
 
 - a second voice channel `ch2`, which the member may view and connect to;
 - a `modGW` fake implementing `VoiceModGateway`, recording `DeliverUser` and `DeliverDevice` frames with a per-device `caps` map;
@@ -1928,7 +1927,7 @@ Helpers:
 
 **Fan-out and snapshot (S5).**
 
-- `TestVoiceModerationOp56ReachesTheChannelAudience`: PATCH `[1,null]` → op 56 `[cid, member, 1]` to every user who can view `ch`, the member included, and not to a member who cannot view `ch`.
+- `TestVoiceModerationOp56ReachesTheChannelAudience` (S5): a stored mute put live with `applyVoiceMod` (S6a re-runs it through PATCH `[1,null]`) → op 56 `[cid, member, 1]` to every user who can view `ch`, the member included, and not to a member who cannot view `ch`.
 - `TestJoinOfAModeratedUserAnnouncesOp56`: a muted member's `participant_joined` → after the announcer drains, op 56 `[cid, member, 1]` to the audience. An unmoderated join sends no op 56.
 - `TestCallSnapshotsCarryTheModerationElement`: `GET /v1/channels/{ch}/call` and `GET /v1/communities/{cid}/calls` rows have 4 elements. The muted member's fourth is 1, a deafened one's is 2, both is 3, and an unmoderated one's is 0. A DM call's is 0.
 
@@ -2117,7 +2116,7 @@ export const VOICE_FLAG = { inCall: 1, selfMute: 2, selfDeaf: 4, video: 8, scree
 - `AFKState.pendingReason` widens to `0 | 1 | 2 | 3 | 4`, with the comment "3 a moderator moved it and it did not follow in time; 4 a moderator disconnected it".
 - `index.ts` exports `VOICE_FLAG` beside `CALL_IDLE`, the types `VoiceMoveResult` and `ServerVoice`, and (T3, T4) the functions of §C.9.2 and §C.10.
 
-Literals that spell out a whole idle `CallState` and gain the three fields: `worker/bridge.test.ts:111`, `calls/controller.test.ts:1810`, `packages/web/src/App.test.tsx:275,283`.
+Literals that spell out a whole idle `CallState` and gain the three fields: `packages/client-core/src/bridge.test.ts:111`, `calls/controller.test.ts:1810`, `packages/web/src/App.test.tsx:275,283`.
 
 ### C.5 Worker commands
 
@@ -2276,6 +2275,8 @@ So a leave (phase `leaving`), a removal, a block, a failure or a reset clears th
 `setIn` builds a literal, so it adds three fields: `move: this.state.move, serverMuted: (live.mod & 1) !== 0, serverDeafened: (live.mod & 2) !== 0`. The rekey path calls `setIn` mid-call, so a pending offer survives a rekey. On a join, the state before was `joining`, so `move` is already null.
 
 `joinOnce` sets `mod: joined.started.mod` in the `Live` literal and adds `serverMuted: (started.mod & 1) !== 0, serverDeafened: (started.mod & 2) !== 0` to the returned `CallJoinResult`.
+
+**The T1 half (ruling 3).** T1 changes the types, so it also makes `calls/controller.ts` and `sync/testing/model.ts` compile, and nothing more: `setIn`'s literal gains `move: null, serverMuted: false, serverDeafened: false`; `Live` gains `mod`, set in `joinOnce` from `joined.started.mod` (the answer's element 7, §C.2); `CallJoinResult` is returned without the two new optional fields; and the model's `startCall` returns `mod: 0`. T6 then replaces these defaults with the behaviour above (`setIn` reading `this.state.move` and `live.mod`, the `setState` rule, the join result's fields, and the model's `serverVoice`).
 
 #### C.6.4 `onFrame`
 
@@ -2521,21 +2522,25 @@ export interface VoiceModAccess {
    *  owner's own row. */
   move: boolean;
   disconnect: boolean;
-  /** The move to item's channels, in voiceChannels order: both may view and connect, never the source, never AFK. */
+  /** The move to item's channels, in voiceChannels order: both may view and connect, never the source, never AFK. Drag
+   *  targets are not listed here: dropVerdict (§U.6.2) is their one definition. */
   moveTargets: string[];
-  /** Valid drop targets for a drag of this person. For `local`, every channel this account may view and connect to
-   *  (D9: the normal connect right only); otherwise moveTargets. */
-  dragTargets: string[];
 }
 
 export const NO_VOICE_MOD: VoiceModAccess = Object.freeze({ local: false, serverMute: false, serverDeafen: false, move: false,
-  disconnect: false, moveTargets: [], dragTargets: [] }) as VoiceModAccess;
+  disconnect: false, moveTargets: [] }) as VoiceModAccess;
 
 const JOIN = PERM.viewChannel | PERM.connect;
 const has = (bits: number | null, bit: number): boolean => bits !== null && (bits & bit) === bit;
 function bitsIn(s: VoiceModSnapshot, channel: string, user: string): number | null {
   return channelBitsOf({ owner: s.owner, everyoneId: s.everyoneId, roles: s.roles, members: s.members,
     overwrites: s.overwrites[channel] ?? [] }, user);
+}
+
+/** Whether `user` may view and connect to `channel`: the one definition of "can join" for move to and the drag
+ *  (dropVerdict's targetCanJoin and iCanJoin, §U.6.2). False while the snapshot is not loaded or the member is unknown. */
+export function canJoin(s: VoiceModSnapshot, channel: string, user: string): boolean {
+  return s.everyoneId !== '' && has(bitsIn(s, channel, user), JOIN);
 }
 
 /** What `me` may do to `target`, who is in voice in `source` (null: not in voice in this server). `ownCall` is the
@@ -2548,15 +2553,13 @@ export function voiceModAccess(s: VoiceModSnapshot, me: string, target: string, 
   const mine = bitsIn(s, source, me);
   if (mine === null) return NO_VOICE_MOD;
   const joinable = s.voiceChannels.filter((c) => c !== source && c !== s.afkChannelId
-    && has(bitsIn(s, c, me), JOIN) && has(bitsIn(s, c, target), JOIN));
+    && canJoin(s, c, me) && canJoin(s, c, target));
   if (target === s.owner) {
-    return { local: true, serverMute: false, serverDeafen: false, move: true, disconnect: true,
-      moveTargets: joinable, dragTargets: joinable };
+    return { local: true, serverMute: false, serverDeafen: false, move: true, disconnect: true, moveTargets: joinable };
   }
   const move = has(mine, PERM.moveMembers);
-  const moveTargets = move ? joinable : [];
   return { local, serverMute: has(mine, PERM.muteMembers), serverDeafen: has(mine, PERM.deafenMembers), move,
-    disconnect: move, moveTargets, dragTargets: local ? joinable : moveTargets };
+    disconnect: move, moveTargets: move ? joinable : [] };
 }
 
 /** The first channel (in `channels` order) whose call lists a device of `userId`; null when none does. */
@@ -2567,7 +2570,7 @@ export function voiceChannelOf(voice: VoiceState, channels: readonly string[], u
 ```
 
 Export from `index.ts`:
-`export { voiceModAccess, voiceChannelOf, NO_VOICE_MOD } from './admin/voicemod'; export type { VoiceModAccess, VoiceModSnapshot } from './admin/voicemod';`.
+`export { voiceModAccess, voiceChannelOf, canJoin, NO_VOICE_MOD } from './admin/voicemod'; export type { VoiceModAccess, VoiceModSnapshot } from './admin/voicemod';`.
 
 How the page uses them (contract; §U.5.1.4):
 
@@ -2588,7 +2591,7 @@ How the page uses them (contract; §U.5.1.4):
 
 ```ts
   /** Voice moderation (ruling 6): while a moderator deafens this person, no remote audio is subscribed (microphones and
-   *  screen-share sound alike) and apply() never resubscribes; the instance unsubscribes it too and re-applies every 30 s.
+   *  screen-share sound alike) and apply() never resubscribes; the instance unsubscribes it too and re-applies it on every room sweep.
    *  Off resubscribes what this switch turned off and runs the top-`max` policy again. Idempotent. */
   setServerDeafened(on: boolean): void;
 ```
@@ -2600,6 +2603,22 @@ How the page uses them (contract; §U.5.1.4):
 - `apply()`: when `serverDeaf`, run the deafen pass above (which also catches a newly published track and a newly connected participant, because `onPublished` and `onConnected` call `apply()`) and return before the top-`max` logic, so nothing is resubscribed.
 - `update()` keeps tracking speakers while deafened (its selection state stays current) and ends in `apply()`, which returns early.
 - `dispose()` also resubscribes what `deafExcluded` holds, as it does for `excluded`.
+- **Test-only hook (task E2 uses it; ruling 5).** So the voice e2e can show that the instance alone enforces a deafen, the policy reads a build-time switch that release builds do not have:
+
+  ```ts
+  declare const __DILLA_E2E_HOOKS__: boolean | undefined;
+  /** Test-only: true only in a build made with DILLA_E2E_HOOKS=1 whose page set __dillaE2E.serverDeafClientOff. A release
+   *  build defines __DILLA_E2E_HOOKS__ false, so the bundler drops this branch and the `__dillaE2E` name with it. */
+  function serverDeafClientOff(): boolean {
+    return typeof __DILLA_E2E_HOOKS__ !== 'undefined' && __DILLA_E2E_HOOKS__
+      && (globalThis as { __dillaE2E?: { serverDeafClientOff?: boolean } }).__dillaE2E?.serverDeafClientOff === true;
+  }
+  ```
+
+  `setServerDeafened(true)` returns at once, changing nothing, while `serverDeafClientOff()` is true.
+  - **Where it is defined:** `packages/web/vite.config.ts` adds `define: { __DILLA_E2E_HOOKS__: JSON.stringify(process.env.DILLA_E2E_HOOKS === '1') }` (the media package is bundled by the web build, as `__DILLA_NOISE_MODE__` is through `scripts/noise-build.mjs`).
+  - **Where it is set:** the CI web build that produces the `dilla-web-dist` artifact for the e2e jobs (`.github/workflows/ci.yml`, the `npm run build -w @dilla/web` step at :527) runs with `DILLA_E2E_HOOKS=1`; the page flag is set only by `e2e/voice/voice-moderation.spec.ts` (§U.10.3), on mira's context.
+  - **Why it is absent from production:** `.github/workflows/release.yml:112` builds without the variable, and then runs the new `node packages/web/scripts/check-no-e2e-hooks.mjs packages/web/dist`, which fails if any file under `dist` contains `__dillaE2E`.
 
 ### C.12 Tests
 
@@ -2645,7 +2664,7 @@ All vitest. `w` is the existing harness of each file. Each line is the assertion
 A fixture: owner O, me M, target T, roles `@everyone` (view, connect, speak) and `mods` (position 1), voice channels V1, V2, V3 and AFK.
 
 1. **the owner's row offers nothing to others**: `voiceModAccess(s, M, O, V1, null)` equals `NO_VOICE_MOD`, even when M holds administrator.
-2. **the owner's own row on the device in that call offers only the switch and the leave**: me O, target O, source V1, ownCall V1 → `local` true, `move` true, `disconnect` true, `serverMute` false, `serverDeafen` false, `moveTargets` and `dragTargets` `[V2, V3]`.
+2. **the owner's own row on the device in that call offers only the switch and the leave**: me O, target O, source V1, ownCall V1 → `local` true, `move` true, `disconnect` true, `serverMute` false, `serverDeafen` false, `moveTargets` `[V2, V3]`.
 3. **the owner's own row for another of their devices offers nothing**: me O, target O, source V1, ownCall null → `NO_VOICE_MOD`.
 4. **nobody in voice, nothing offered**: `source` null → `NO_VOICE_MOD`.
 5. **access not loaded, nothing offered**: `everyoneId ''` → `NO_VOICE_MOD`.
@@ -2656,8 +2675,8 @@ A fixture: owner O, me M, target T, roles `@everyone` (view, connect, speak) and
 10. **a target whose member row is unknown is moved nowhere**: T missing from `members` → `moveTargets` `[]`, while `serverMute` still follows M's bits.
 11. **no rank check**: T holds a role above M's → `move` is still true (J5).
 12. **an administrator holds everything except over the owner**.
-13. **dragging yourself needs only connect**: target M, ownCall V1, no `moveMembers` → `local` true, `move` false, `moveTargets` `[]`, `dragTargets` `[V2, V3]`.
-14. **your other device is moved like anyone**: target M, ownCall null → `local` false, and `dragTargets` equals `moveTargets`.
+13. **canJoin is view and connect on that channel**: `canJoin(s, V2, T)` true; with T denied connect on V2, false; with T denied view, false; with `everyoneId ''`, false.
+14. **your own row is local only on the device in that call**: target M, ownCall V1, no `moveMembers` → `local` true, `move` false, `moveTargets` `[]`; ownCall null → `local` false (your other device is moved like anyone).
 15. **voiceChannelOf finds the first channel listing the user, in channel order**: the user is in V2 and V3 → V2; in none → null.
 16. **an AFK channel id of null excludes nothing extra**: `afkChannelId` null with V1..V3 → `moveTargets` `[V2, V3]`.
 
@@ -2740,6 +2759,7 @@ Tests:
 - **while server-deafened, a newly published audio track and a newly connected participant are unsubscribed, and ActiveSpeakersChanged resubscribes nothing**.
 - **setServerDeafened(false) resubscribes what it turned off, then applies the top-6 cap again**: with 8 remotes, 6 end subscribed.
 - **setServerDeafened(true) twice changes nothing the second time**.
+- **the e2e hook holds the policy off only when the build switch and the page flag are both set**: with `vi.stubGlobal('__DILLA_E2E_HOOKS__', true)` and `globalThis.__dillaE2E = { serverDeafClientOff: true }`, `setServerDeafened(true)` unsubscribes nothing; with the switch false and the flag set, it unsubscribes as usual.
 
 ---
 
@@ -2760,7 +2780,7 @@ The UI and web recipe. Every name, class, key, string and order below is a decis
 | `packages/ui/src/ActionMenu/ActionMenu.css` | New classes (§U.2.6). |
 | `packages/ui/src/ContextMenu/ContextMenu.tsx` + `.css` + `.test.tsx` + `.stories.tsx` (new, exported) | The trigger-less popup at a point. On a phone it renders `MenuSheet`. |
 | `packages/ui/src/MenuSheet/MenuSheet.tsx` + `.css` + `.test.tsx` + `.stories.tsx` (new, exported) | The phone bottom sheet. |
-| `packages/ui/src/index.ts` | Export `ContextMenu`, `MenuSheet` and the types `MenuEntry`, `ContextMenuProps`, `MenuSheetProps`. |
+| `packages/ui/src/index.ts` | U1 exports `withSeparators` and the type `MenuEntry`; U2 exports `ContextMenu`, `MenuSheet` and the types `ContextMenuProps`, `MenuSheetProps`. |
 
 #### U.2.2 The entry type (exported from `ActionMenu.tsx`)
 
@@ -3008,8 +3028,8 @@ export function MenuHostProvider(props: { children: ReactNode; phone: boolean })
 
 #### U.3.3 When the browser's menu stays (D14, ruling 9, my call)
 
-`keepsNativeMenu(e: MouseEvent | KeyboardEvent, target: Element): boolean` returns true, and the host does nothing (no `preventDefault`), when **any** of these hold:
-1. `e.shiftKey` on a `contextmenu` event (Shift+right-click is the escape hatch). Shift+F10 itself is our key, so this rule applies to mouse events only: `e.type === 'contextmenu' && e.shiftKey && !fromKey`, where `fromKey` is true when a key opened a menu within the last 500 ms (§U.3.5).
+`keepsNativeMenu(e: MouseEvent | KeyboardEvent, target: Element, fromKey: boolean): boolean` returns true, and the host does nothing (no `preventDefault`), when **any** of these hold. `fromKey` is true when a key opened dilla's menu within the last 500 ms (`Date.now() − keyOpenedAt < 500`, §U.3.4); the listener checks it before it calls this function, so a key-opened menu always wins.
+1. `e.shiftKey` on a `contextmenu` event (Shift+right-click is the escape hatch). Shift+F10 itself is our key, so this rule applies to mouse events only: `e.type === 'contextmenu' && e.shiftKey && !fromKey` (§U.3.4 keeps `keyOpenedAt`).
 2. `target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [data-native-menu]')`: text inputs and the composer keep spellcheck, paste and input methods. `MessageEditor` and `Composer` are textareas. The emoji grid's search and the GIF search are inputs.
 3. **A non-empty text selection under the pointer.** `const s = getSelection(); s !== null && !s.isCollapsed && s.toString().trim() !== '' && s.containsNode(target, true)`.
    - **Decision (D14): keep the browser's menu over a selection; don't offer Copy in dilla's menu.**
@@ -3024,14 +3044,14 @@ On a phone the same rules apply. Rule 3 rarely triggers there, because `[data-me
 
 All are installed in one `useEffect` with `[]` deps, reading refs.
 
-- **`contextmenu`** (bubble, on `document`):
-  - if `e.defaultPrevented`, return;
-  - if `keepsNativeMenu`, return;
-  - if the menu came from touch (`e.pointerType === 'touch'` when the event is a `PointerEvent`, or the last `pointerdown` was touch within 1000 ms): `e.preventDefault()` and return. Our long-press timer owns touch, and this suppresses Android's own long-press menu;
-  - if `Date.now() − keyOpenedAt < 500`: `e.preventDefault()` and return. The menu-key event was already handled;
-  - otherwise resolve. If there is a menu: `e.preventDefault()` and open it at `{ x: e.clientX, y: e.clientY }` with `returnFocus = document.activeElement`.
+- **`contextmenu`** (bubble, on `document`), in this order:
+  1. if `e.defaultPrevented`, return;
+  2. `const fromKey = Date.now() − keyOpenedAt < 500`. If `fromKey`: `e.preventDefault()` and return. The menu key or Shift+F10 already opened dilla's menu (the browser follows such a key with a `contextmenu` event), so dilla's menu always stands, Shift or not;
+  3. if `keepsNativeMenu(e, e.target as Element, fromKey)`, return;
+  4. if the menu came from touch (`e.pointerType === 'touch'` when the event is a `PointerEvent`, or the last `pointerdown` was touch within 1000 ms): `e.preventDefault()` and return. Our long-press timer owns touch, and this suppresses Android's own long-press menu;
+  5. otherwise resolve. If there is a menu: `e.preventDefault()` and open it at `{ x: e.clientX, y: e.clientY }` with `returnFocus = document.activeElement`.
 - **`keydown`** (bubble, on `document`):
-  - if `e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)`, and `document.activeElement` is an element, and **not** `keepsNativeMenu` rule 2: resolve from `document.activeElement`;
+  - if `e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)`, and `document.activeElement` is an element, and **not** `keepsNativeMenu(e, document.activeElement, true)` (with `fromKey` true only rule 2 can hold: a key in a text field keeps its own menu): resolve from `document.activeElement`;
   - if there is a menu: `e.preventDefault()`, `keyOpenedAt = Date.now()`, and open at the element's corner: `r = el.getBoundingClientRect(); at = { x: r.left + 16, y: r.top + Math.min(r.height, 32) }`, with `returnFocus = el`.
 - **`pointerdown`** (capture), for touch only (`e.pointerType === 'touch'`): start `createLongPress` on the resolved element if one resolves and rule 2 doesn't hold.
 - **`pointermove`, `pointerup`, `pointercancel`, `scroll`** (capture): feed the long-press machine.
@@ -3074,6 +3094,35 @@ On a phone a message's text can't be selected. Its sheet has "copy text", as Dis
 - An item that opens a dialog or card: the item's `run` passes `el` as the dialog's opener. Existing dialogs use their opener or `focusReturnTarget`.
 - An item that navigates (message, open link): focus goes where the navigation sends it. Nothing extra is done.
 
+#### U.3.8 Row actions: `MenuActionRegistry` (`packages/web/src/screens/menus/MenuActionRegistry.tsx`)
+
+A pane registers one handler per surface (§U.3.2), but the actions belong to rows: a message's reply, pin and delete live in its `MessageItem`, an attachment's open and save in its card. Each row registers its actions under a key, and the pane's `run(el, id)` finds the row's key on the element.
+
+```ts
+/** One row's actions: `run` takes a menu item id; `value` a slider's value. */
+export interface RowActions { run(id: string): void; value?(id: string, v: number): void }
+/** Rows' actions keyed by their `data-menu-key`. */
+export interface MenuActionRegistry {
+  set(key: string, actions: RowActions): void;
+  delete(key: string, actions: RowActions): void;   // removes only if the stored entry is this one
+  get(key: string): RowActions | undefined;
+}
+export const MenuActionContext: React.Context<MenuActionRegistry | null>;
+/** Holds one Map in a ref for its life; renders `MenuActionContext.Provider`. */
+export function MenuActionProvider(props: { children: ReactNode }): React.JSX.Element;
+/** Registers `actions` under `key` in a layout effect and removes them on unmount or key change. The actions go in a ref
+ *  updated every render, so the registration never re-runs for new closures. Outside a provider it does nothing. */
+export function useRowActions(key: string, actions: RowActions): void;
+/** The pane side: the actions of the row `el` belongs to, or undefined. */
+export function rowActionsOf(registry: MenuActionRegistry, el: Element): RowActions | undefined;
+// = registry.get(el.closest('[data-menu-key]')?.getAttribute('data-menu-key') ?? '')
+```
+
+- **Placement.** `MenuActionProvider` sits directly inside `MenuHostProvider` in Shell, around the same `dw-menu-root` element (W3), so Conversation, ThreadView and every row share one registry.
+- **Keys.** `data-menu-key` is rendered by ui from a new optional prop `menuKey?: string` on `MessageRow` (on the row element, beside `data-menu="message"`) and on `AttachmentCard` (on the card root). Message rows use `message:<seq>`; a thread pane's rows `thread:<seq>`; attachment cards `attachment:<seq>:<index>`. The lightbox image uses its card's key.
+- **Use.** `MessageItem` calls `useRowActions('message:' + seq, { run: (id) => … })`, mapping `react`, `edit`, `reply`, `thread`, `copyText`, `pin`, `delete`, `copyId` to its existing `RowEvent` handlers (§U.5.2). The card in `screens/conversation/Attachments.tsx` registers `open`, `save`, `copyImage` (§U.5.4). The link menu needs no row: its actions read the `href` of `el`.
+- **The pane handler.** `useMessageMenu`'s `run(el, id)` is `rowActionsOf(registry, el)?.run(id)`. A row that unmounted while its menu was open has no entry, and the item does nothing.
+
 ---
 
 ### U.4 Surfaces
@@ -3099,27 +3148,68 @@ A ui component marks an element by rendering these attributes unconditionally. T
 | Surface | File : component | Change |
 |---|---|---|
 | Voice people | `packages/ui/src/VoiceChannelRow/VoiceChannelRow.tsx` : `VoiceChannelRow` | The person `<li>` loses `data-row` and keeps its class. Its content moves into `<button type="button" class="d-voice-row__person-open" data-row data-menu="person" data-user-id={p.userId} data-channel-id={channelId} aria-haspopup="menu" onClick={() => onPerson?.(p.userId, el)}>` (avatar, name, states, slot). New props: `channelId: string`, `onPerson?(userId: string, anchor: HTMLElement): void` (a click opens the profile card, as Discord does) and `drag?` (§U.6). CSS: the button is `display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; height: 100%; padding: 0; background: transparent; border: 0; font: inherit; color: inherit; text-align: start; cursor: pointer; border-radius: var(--r-md)`; hover and focus `background: var(--surface-2)`; `:focus-visible { outline-offset: -2px }`. The `.d-voice-row` button gets `data-menu="voice-channel" data-channel-id={channelId}`. Away people (`p.away`) keep a button for the menu and profile, never drag. |
-| Roving over people | `packages/ui/src/internal/roving.ts` : `useRovingFocus(activeIndex, selector?)` | New optional `selector: string`. When given, `items()` is `Array.from(ref.current?.querySelectorAll<HTMLButtonElement>(selector) ?? [])`; without it, today's code is unchanged (CommunityRail). |
-| Channel list | `packages/ui/src/ChannelList/ChannelList.tsx` : `ChannelList` | `useRovingFocus(index, ROWS)` with `const ROWS = ':scope > li > button[data-row], :scope > li > .d-voice-row__people > li > button[data-row]'`. The `activeIndex` lookup becomes the index among those buttons. Compute it in a layout effect from the active row's `data-channel-id`, or keep `entries.findIndex` and map it: implement as `rows.findIndex(b => b.dataset.channelId === activeId)` after render. `syncExtras` is unchanged. Passes `channelId={c.id}` and `onPerson` from a new `voice.onPerson?` prop. ChannelRow gets `menu={{ surface: c.kind === 'dm' ? 'dm' : 'channel', id: c.id }}`. The category head gets `data-menu="category" data-category-id={e.id}`. ArrowDown from a voice row now walks into its people, then to the next channel. |
+| Roving over people | `packages/ui/src/internal/roving.ts` : `useRovingFocus(active)` | Gains the selector form of §U.4.3. The index form is unchanged (CommunityRail, SettingsNav). |
+| Channel list | `packages/ui/src/ChannelList/ChannelList.tsx` : `ChannelList` | `useRovingFocus({ rows: ROWS, activeSelector: activeId === null ? null : `[data-channel-id="${CSS.escape(activeId)}"]` })` with `const ROWS = ':scope > li > button[data-row], :scope > li > .d-voice-row__people > li > button[data-row]'` (§U.4.3); the `entries.findIndex` active index goes. `syncExtras` is unchanged. Passes `channelId={c.id}` and `onPerson` from a new `voice.onPerson?` prop. ChannelRow gets `menu={{ surface: c.kind === 'dm' ? 'dm' : 'channel', id: c.id }}`. The category head gets `data-menu="category" data-category-id={e.id}`. ArrowDown from a voice row now walks into its people, then to the next channel. |
 | Text channel, DM row | `packages/ui/src/ChannelRow/ChannelRow.tsx` : `ChannelRow` | New prop `menu?: { surface: 'channel' \| 'dm'; id: string }` renders `data-menu` and `data-channel-id` on the button. |
 | Server icon | `packages/ui/src/CommunityRail/CommunityRail.tsx` | Each server button: `data-menu="server" data-community-id={item.id}`. Home `@`, `+` and settings get none. |
 | Member list | `packages/ui/src/MemberList/MemberList.tsx` | **Remove** `onContextMenu`, `onKeyDown`, `keyOpenedAt` and `openFrom` (lines 70-87, and the two handlers on `<li>`). The row button gets `data-menu="person" data-user-id={m.id}`. `onOpen`'s `via` stays in the type. Clicks pass `e.detail > 0 ? 'click' : 'menu'` as today (Enter = `'menu'`, which only opens). Update the doc comments: right-click, Shift+F10 and the ContextMenu key now open the person menu through the host. |
-| Message row, author, avatar, mention, link | `packages/ui/src/MessageRow/MessageRow.tsx` | Row element: `data-menu="message"`. Author name button and avatar span (when `opens`): `data-menu="person" data-user-id={authorId}`. User mention pill button: `data-menu="person" data-user-id={userId}`. The plain mention `<span>` (no `onOpenProfile`) gets none. Link `<a class="d-link">`: `data-menu="link"`. |
-| Attachments | `packages/ui/src/AttachmentCard/AttachmentCard.tsx` and `packages/ui/src/Lightbox/Lightbox.tsx` | Card root: `data-menu="attachment" data-index={index}` (new prop `index: number`; `Attachments.tsx:161` passes `a.index`). Lightbox `<img>`: `data-menu="attachment" data-index data-seq` (new props). `MediaPlayer` (audio and video) sits inside the card, so it inherits the card's menu, except over its controls, which are `<input>`s (native menu kept by rule 2). |
+| Message row, author, avatar, mention, link | `packages/ui/src/MessageRow/MessageRow.tsx` | Row element: `data-menu="message"`, and `data-menu-key={menuKey}` from the new optional prop `menuKey` (§U.3.8). Author name button and avatar span (when `opens`): `data-menu="person" data-user-id={authorId}`. User mention pill button: `data-menu="person" data-user-id={userId}`. The plain mention `<span>` (no `onOpenProfile`) gets none. Link `<a class="d-link">`: `data-menu="link"`. |
+| Attachments | `packages/ui/src/AttachmentCard/AttachmentCard.tsx` and `packages/ui/src/Lightbox/Lightbox.tsx` | Card root: `data-menu="attachment" data-index={index}` (new prop `index: number`; `screens/conversation/Attachments.tsx:161` passes `a.index`) and `data-menu-key={menuKey}` (new optional prop, §U.3.8). Lightbox `<img>`: `data-menu="attachment" data-index data-seq` (new props). `MediaPlayer` (audio and video) sits inside the card, so it inherits the card's menu, except over its controls, which are `<input>`s (native menu kept by rule 2). |
 | Call tiles | `packages/ui/src/CallTile/CallTile.tsx` | `<li class="d-call-stage__tile">` gets `data-menu="person" data-user-id={view.userId}`. The focus button inside is the focusable element, and `closest` finds the li. Screen tiles too (Discord gives the sharer's menu). |
 
 **Web callers** need no attribute work. They register handlers (§U.3.2):
 - `Shell.tsx` registers `person`, `channel`, `voice-channel`, `category`, `server` and `dm` with root = a new `shellRoot` ref on a wrapper `<div className="dw-menu-root" style={{ display: 'contents' }}>` around AppShell;
-- `Conversation.tsx` registers `message`, `link` and `attachment` with root = `paneRef`;
-- `ThreadView.tsx` registers the same three with root = its own pane ref.
+- `screens/conversation/Conversation.tsx` registers `message`, `link` and `attachment` with root = `paneRef`;
+- `screens/conversation/ThreadView.tsx` registers the same three with root = its own pane ref;
+- each message row and attachment card registers its own actions (§U.3.8).
 
 The thread pane sits inside the shell root, so it is the deeper root and wins for its rows.
+
+#### U.4.3 The roving selector form (`packages/ui/src/internal/roving.ts`, ruling 6)
+
+```ts
+export interface RovingSelectors {
+  /** The focusable rows, as `querySelectorAll` on the list (`:scope >` selectors). */
+  rows: string;
+  /** The active row, matched against `rows` after every render, e.g. `[data-channel-id="<activeId>"]`; null for none. */
+  activeSelector: string | null;
+}
+export function useRovingFocus(active: number | RovingSelectors): RovingFocus;
+```
+
+- With a number, today's code runs unchanged: `items()` are the first buttons of the list's `<li>` children.
+- With `RovingSelectors`: `items()` is `Array.from(ref.current?.querySelectorAll<HTMLButtonElement>(rows) ?? [])`. The stop resets when `activeSelector` changes (the effect that today depends on `activeIndex` depends on it). The placement effect, after every render, resolves the active index as the first item that `matches(activeSelector)`; with no match, or `activeSelector` null, it falls back to the first row (index 0). Keys, `onFocus` and the one-tab-stop rule are the same in both forms.
+- Tests (`internal/roving.test.tsx`):
+  - `the index form is unchanged` (the existing cases, untouched);
+  - `the selector form makes nested buttons rows: ArrowDown walks a voice row's people, then the next channel`;
+  - `the selector form puts the tab stop on the row matching activeSelector after render`;
+  - `with no match, or activeSelector null, the tab stop falls back to the first row`;
+  - `a new activeSelector resets the stop; a row added later that matches it takes the stop on the next render`.
 
 ---
 
 ### U.5 Menu models and truth tables
 
 All models are pure functions in `packages/web/src/screens/menus/`. Each returns **ordered groups of `{ id, kind, … }` items** with no labels. Its hook (`use<Surface>Menu.tsx`) maps groups to `MenuEntry[]` with `withSeparators` and the `t()` keys of §U.9, and runs the ids. Advisory only: the instance decides every request again.
+
+#### U.5.0 Shared model types (`packages/web/src/screens/menus/groups.ts`)
+
+```ts
+export type NotifyMode = 'default' | 'all' | 'mentions' | 'nothing';
+/** One item of a model, without its label (the hook maps ids to `t()` keys and to MenuEntry). */
+export interface MenuItemModel<Id extends string = string> {
+  id: Id;
+  kind?: 'item' | 'check' | 'submenu';   // 'item' when absent; a radio is an item with `checked`
+  danger?: true;
+  disabled?: boolean;
+  checked?: boolean;
+  children?: readonly MenuItemModel[];   // a submenu's items
+}
+/** An ordered group; empty groups are dropped and withSeparators puts a separator between the rest. */
+export interface Group<G extends string = string, Id extends string = string> { id: G; items: MenuItemModel<Id>[] }
+```
+
+`PersonGroup` (§U.5.1.1) is the person menu's own richer form; every other model returns `Group[]`.
 
 #### U.5.1 Person
 
@@ -3278,7 +3368,7 @@ Put this in a pure helper `personInputs(...)` in `person-menu.ts`, so it is test
 | `move:<channelId>` | `mod.local`: the existing switch, `voiceCtx.onJoinVoice?.(channelId)`, plus `openVoice(channelId)` only if the old channel's stage was on screen. Otherwise `client.call({ m: 'voiceMove', communityId, userId, toChannelId })` via `useVoiceMod` (§U.8.3). |
 | `disconnect` | `mod.local`: `call.leave()`. Otherwise `client.call({ m: 'voiceDisconnect', communityId, userId })` via `useVoiceMod`. |
 | `role:<roleId>` | `keepOpen` check. `grantRole`/`revokeRole` with the same calls and error copy as `MemberRolesFlow`. Extract its toggle into `toggleRole(client, cid, userId, roleId, on): Promise<void>` in `MemberRolesFlow.tsx` and export it. The entry is `disabled` while its call is in flight (hook state `busyRole`). |
-| `kick`, `ban` | a new Shell-level `<ModFlows>` (`packages/web/src/screens/admin/ModFlows.tsx`), which holds `{ kind: 'kick' \| 'ban'; communityId; target: ModTarget; opener: HTMLElement } \| null` and renders `KickFlow`/`BanFlow` exactly as `MemberCardHost` does (lines 168-171). Focus returns to `opener` through `focusReturnTarget`. |
+| `kick`, `ban` | a new Shell-level `<ModFlows>` (a new export of `packages/web/src/screens/admin/Moderation.tsx`, beside `KickFlow` and `BanFlow`), which holds `{ kind: 'kick' \| 'ban'; communityId; target: ModTarget; opener: HTMLElement } \| null` and renders `KickFlow`/`BanFlow` exactly as `MemberCardHost` does (lines 168-171). Focus returns to `opener` through `focusReturnTarget`. |
 | `copyId` | `copyText(userId)`, then announce `menu.copied.userId` or `menu.copy.blocked`. |
 
 The menu label is `person.menu.label` (`menu for {name}`). The sheet title is the name.
@@ -3352,7 +3442,8 @@ In the lightbox the menu is the same, with `open` hidden (already open). If ther
 
 ```ts
 export function channelMenu(i: { kind: 'text' | 'announcement'; unread: number; mentions: number; muted: boolean;
-  notify: 'default' | 'all' | 'mentions' | 'nothing'; canInvite: boolean; canManage: boolean }): Group[];
+  notify: NotifyMode; canInvite: boolean; canManage: boolean }): Group<'read' | 'share' | 'notify' | 'manage' | 'ids',
+  'markRead' | 'invite' | 'copyLink' | 'mute' | 'notify' | `notify:${NotifyMode}` | 'edit' | 'delete' | 'copyId'>[];
 ```
 
 | Order | Group | Id | Kind | Label | Shown when | Runs |
@@ -3370,6 +3461,11 @@ export function channelMenu(i: { kind: 'text' | 'announcement'; unread: number; 
 
 #### U.5.6 Voice channel (`voice-channel-menu.ts`)
 
+```ts
+export function voiceChannelMenu(i: { joined: boolean; held: boolean; afk: boolean; canConnect: boolean; canInvite: boolean;
+  canManage: boolean }): Group<'call' | 'share' | 'manage' | 'ids', 'join' | 'leave' | 'invite' | 'copyLink' | 'edit' | 'delete' | 'copyId'>[];
+```
+
 | Order | Group | Id | Label | Shown when | Runs |
 |---|---|---|---|---|---|
 | 1 | call | `join` | `voice.join` | `!joined && !held && !afk && canConnect` | `openVoice(id)` and `voiceCtx.onJoinVoice?.(id)`, as the row's join icon does |
@@ -3384,6 +3480,12 @@ export function channelMenu(i: { kind: 'text' | 'announcement'; unread: number; 
 
 #### U.5.7 Category (`category-menu.ts`)
 
+```ts
+/** `unread` is the sum of unread and mentions over the category's child channels; `categoryCount` the server's categories. */
+export function categoryMenu(i: { unread: number; collapsed: boolean; categoryCount: number; canManage: boolean }):
+  Group<'read' | 'fold' | 'manage' | 'ids', 'markRead' | 'collapse' | 'collapseAll' | 'create' | 'delete' | 'copyId'>[];
+```
+
 | Order | Group | Id | Kind | Label | Shown when | Runs |
 |---|---|---|---|---|---|---|
 | 1 | read | `markRead` | item, disabled when no child has unread or mentions | `menu.channel.markRead` | always | `markRead` for each child channel with `unread + mentions > 0` |
@@ -3394,6 +3496,13 @@ export function channelMenu(i: { kind: 'text' | 'announcement'; unread: number; 
 | 6 | ids | `copyId` | item | `menu.category.copyId` | always | copy |
 
 #### U.5.8 Server icon (`server-menu.ts`)
+
+```ts
+/** `accessLoaded` false hides invite and leave; `unread` sums unread and mentions over the server's channels. */
+export function serverMenu(i: { unread: number; accessLoaded: boolean; canInvite: boolean; owner: boolean; muted: boolean;
+  notify: NotifyMode }): Group<'read' | 'share' | 'notify' | 'manage' | 'ids',
+  'markRead' | 'invite' | 'mute' | 'notify' | `notify:${NotifyMode}` | 'settings' | 'leave' | 'copyId'>[];
+```
 
 | Order | Group | Id | Kind | Label | Shown when | Runs |
 |---|---|---|---|---|---|---|
@@ -3408,6 +3517,14 @@ export function channelMenu(i: { kind: 'text' | 'announcement'; unread: number; 
 `access` here is `permissions:${id}` of **that** server, which may differ from the open one. When it is not loaded, `invite` and `leave` are hidden.
 
 #### U.5.9 DM row (`dm-menu.ts`)
+
+```ts
+export function dmMenu(i: { kind: 3 | 4; unread: number; canCall: boolean; muted: boolean; notify: NotifyMode }):
+  Group<'read' | 'person' | 'notify' | 'ids',
+  'markRead' | 'profile' | 'call' | 'compare' | 'mute' | 'notify' | `notify:${NotifyMode}` | 'copyUserId' | 'copyId'>[];
+```
+
+`canCall` is `dmCallStart(voiceCtx, id) !== null`.
 
 Kind 3 is a 1:1 DM; kind 4 is a group.
 
@@ -3481,27 +3598,53 @@ drag?: {
 ```
 
 ```ts
-// drop-verdict.ts
+// packages/web/src/screens/menus/drop-verdict.ts: the one definition of what a drag may do (ruling 7).
+import type { VoiceModAccess } from '@dilla/client-core';
+
 export type DropRefusal = 'same' | 'afk' | 'owner' | 'noMove' | 'youCannotJoin' | 'theyCannotJoin';
-export type DropVerdict = { ok: true; kind: 'move' | 'switch' } | { ok: false; reason: DropRefusal };
-export function dropVerdict(i: { local: boolean; ownerId: string; userId: string; from: string;
-  to: { id: string; afk: boolean; targetCanJoin: boolean; iCanJoin: boolean }; myBitsOnFrom: number | null }): DropVerdict;
-export function canDrag(i: { local: boolean; ownerId: string; userId: string; away: boolean; myBitsOnFrom: number | null }): boolean;
+export interface DropVerdict { ok: boolean; reason: DropRefusal | null }
+
+/** Every field comes from the same slices as the person menu (§U.5.1.4): `snap` is the VoiceModSnapshot built there. */
+export interface DropInput {
+  /** voiceModAccess(snap, selfId, userId, from, ownCall) for the dragged person. */
+  mod: VoiceModAccess;
+  /** snap.owner. */
+  ownerId: string;
+  /** The dragged person. */
+  userId: string;
+  /** Their channel now: voiceChannelOf(voiceSlice, snap.voiceChannels, userId). */
+  from: string;
+  to: {
+    /** The voice row under the pointer (its data-channel-id). */
+    id: string;
+    /** to.id === snap.afkChannelId (afk:<cid>.channelId). */
+    afk: boolean;
+    /** canJoin(snap, to.id, userId) (§C.9.2): view and connect for the dragged person. */
+    targetCanJoin: boolean;
+    /** canJoin(snap, to.id, selfId): view and connect for this account. */
+    iCanJoin: boolean;
+  };
+}
+
+export function dropVerdict(i: DropInput): DropVerdict;
+/** The single definition of a draggable person: not on the away roster, and either this device's own row or Move Members
+ *  on the source (the owner's row gives nobody else either, through voiceModAccess). */
+export function canDrag(mod: VoiceModAccess, away: boolean): boolean { return !away && (mod.local || mod.move); }
 ```
 
-**One advisory answer.** `canDrop(userId, from, to)` in Shell is `mod.dragTargets.includes(to)`, with `mod = voiceModAccess(...)` for that person (§U.5.1.4). That is the one advisory answer, and it decides the highlight and whether `onDrop` or `onRefuse` runs. `dropVerdict` exists only to name the **reason** of a refusal for the announcement. Its inputs come from the same slices (`targetCanJoin`, `iCanJoin` = `channelBitsOf` view+connect for the target and for me; `myBitsOnFrom` = `channelBitsOf(me)` on `from`). A disagreement between the two can only change which refusal sentence is said. Shell's `canDrag` = `!away && (mod.local || mod.move)` (M10): `voiceModAccess` already gives the owner's row nothing for anyone else, so no owner test is repeated. The `canDrag` below is its pure twin for tests, with `local = mod.local`.
+**One definition.** `dropVerdict` is the only source of drop decisions: Shell's `canDrop(userId, from, to)` is `dropVerdict(input).ok`, which sets the highlight, and `onRefuse` announces `dropVerdict(input).reason` for the same input, so the highlight and the refusal sentence can never disagree. `canDrag(mod, away)` above is the only definition of a draggable person (M10). An `ok` verdict is a switch when `mod.local` and a move otherwise.
 
 `dropVerdict` checks in this order, and the first rule that matches decides:
 1. `to.id === from` → `same`
 2. `to.afk` → `afk`
-3. `local` (this device is the one in `from`) → `iCanJoin ? { ok, 'switch' } : 'youCannotJoin'`
+3. `mod.local` (this device is the one in `from`) → `iCanJoin ? { ok: true, reason: null } : 'youCannotJoin'`
 4. `userId === ownerId` → `owner`
-5. `myBitsOnFrom === null || !(bits & moveMembers)` → `noMove`
+5. `!mod.move` → `noMove`
 6. `!iCanJoin` → `youCannotJoin`
 7. `!targetCanJoin` → `theyCannotJoin`
-8. otherwise `{ ok, 'move' }`
+8. otherwise `{ ok: true, reason: null }`
 
-`canDrag` = `!away && (local || (userId !== ownerId && myBitsOnFrom !== null && (myBitsOnFrom & PERM.moveMembers) !== 0))`.
+A refusal is `{ ok: false, reason }`. For a non-local person with Move Members, the ok targets are exactly `mod.moveTargets` plus nothing else, because both come from `canJoin` and exclude `from` and the AFK channel.
 
 #### U.6.3 The pointer machine (`useVoiceDrag`), modelled on `Splitter.tsx`
 
@@ -3549,16 +3692,16 @@ Invalid rows get no change. The source channel's row gets no highlight either.
 
 #### U.6.4 What Shell does
 
-- `canDrag`, `canDrop` → `canDrag(...)` and `dropVerdict(...).ok`, with the inputs of §U.5.1.4.
-- `onDrop`:
-  - verdict `switch` → `voiceCtx.onJoinVoice?.(to)` (the normal join; its own announcements);
-  - verdict `move` → `voiceMove` (§U.8.3).
-- `onRefuse` → `announce(...)` for the refusal, by reason:
+- `canDrag(userId, from)` → `canDrag(mod, away)`; `canDrop(userId, from, to)` → `dropVerdict(input).ok`, with `mod` and `input` built as in §U.6.2 from the slices of §U.5.1.4.
+- `onDrop` (the verdict was ok):
+  - `mod.local` → `voiceCtx.onJoinVoice?.(to)` (the normal join; its own announcements);
+  - otherwise → `voiceMove` (§U.8.3).
+- `onRefuse` → `announce(...)` for `dropVerdict(input).reason`, from the same input:
   - `afk` → `voice.mod.drag.afk`;
   - `owner` → `voice.mod.error.owner`;
   - `youCannotJoin` → `voice.mod.drag.youCannotJoin`;
   - `theyCannotJoin` → `voice.mod.error.targetNoAccess`;
-  - `noMove` → `voice.mod.error.forbidden` (it can't normally happen, because `canDrag` stops it);
+  - `noMove` → `voice.mod.error.forbidden` (it can't normally happen, because `canDrag` stops the drag);
   - `same` → nothing.
 - `onCancel` → `announce(t('voice.mod.drag.cancelled'))`.
 
@@ -3632,7 +3775,7 @@ The mechanisms already exist:
 
 A `useEffect` on `call.state.move` (§C.6.6) runs once per new `move.seq`, and only when `call.channelId` is the channel of the live session:
 1. Remember `following = { to: move.to, from: call.channelId }` in a ref.
-2. Run the existing switch: `join(move.to, keptContext)`, where `keptContext` is the old session's running `AudioContext` (D17). This is the normal leave (`'switch'`) and the normal join with its own checks.
+2. Run the existing switch with the old call's context: `join(move.to, sessionRef.current?.releaseContext() ?? null)` (§U.8.6, D17). This is the normal leave (`'switch'`) and the normal join with its own checks.
 3. When the phase is `in` on `to`: `setNotice({ channelId: to, key: 'voice.mod.moved', text: t('voice.mod.moved', { channel: nameOf(to) }) })`; if the stage of `to` is not shown, also `setLasting(text)`; then `announce(text)`.
 4. If the page was showing the **old** channel's stage, navigate to `to`'s stage (Discord's view follows the call). Otherwise stay put.
 5. If the target join ends `failed` or `blocked` on `to` (§C.6.7): `setNotice({ channelId: to, key: 'voice.mod.moveFailed', text: t('voice.mod.moveFailed', { channel: nameOf(to) }) })` and the usual reason notice after it. Stay out of voice.
@@ -3670,6 +3813,25 @@ A `useEffect` on `call.state.serverMuted` and `serverDeafened` transitions (not 
 
 The polite announcer says `menu.copied.*` or `menu.copy.blocked`. Mark as read announces `menu.done.markedRead`. Mute and notification changes announce nothing: the check state and the row's muted badge say it.
 
+#### U.8.6 The `AudioContext` hand-off (D17, ruling 4)
+
+`packages/web/src/call/session.ts`, `PageCall` gains:
+
+```ts
+  /** voice moderation (D17): gives this call's AudioContext to the next call during a move's switch. A context whose
+   *  state is 'running' is detached (every level meter closed, the remote-audio mix disconnected from its destination, and
+   *  closeCtx made a no-op for this session) and returned, so the leave('switch') that follows does not close it. Any
+   *  other state ('suspended', 'closed', or no context) is closed here and null is returned. A second call returns null. */
+  releaseContext(): AudioContext | null;
+```
+
+- `useCall.join(id: string, made?: AudioContext | null)` is unchanged in shape (`useCall.tsx:624`): the follow of §U.8.1 passes the released context as `made`, so `const ctx = made !== undefined ? made : (deps.createCallContext?.() ?? null)` takes it and `deps.createCallContext` is not called. The old session's `leave('switch')` then runs as today.
+- With `made === null` the join goes ahead without a context: `PageCallOptions.audioContext` is `null`, the session reports `audioBlocked: true` once connected, and the existing `voice.audioBlocked` announcement and the `voice.audioStart` press ("turn on audio", `startAudio`, `useCall.tsx:1034`) appear; the press makes and starts a context inside the person's gesture.
+- A person's own switch (a press) is unchanged: it makes a fresh context in the press and never calls `releaseContext`.
+- Tests:
+  - `session.test.ts`: `releaseContext returns a running context, and the following leave('switch') does not close it`; `releaseContext closes a suspended context and returns null`; `a second releaseContext returns null`.
+  - `useCall.mod.test.tsx`: `a move with a running AudioContext passes it on: releaseContext is called once on the old session, the new session's audioContext is that same object, and createCallContext is not called`; `a move with a suspended context passes null: the old session closed it, the new session starts with audioContext null, and the "turn on audio" press (voice.audioStart) appears and calls startAudio`.
+
 ---
 
 ### U.9 Copy
@@ -3691,7 +3853,7 @@ Each is spread into `en` in `strings/en.ts` after `...afk`:
 
 Changed in place, by task T2 (not W1): `packages/web/src/strings/perm.ts` (§U.9.6).
 
-`docs/design/flows/18-context-menus-and-voice-moderation.md` gets a `## Copy` section listing every line below as `` `key='value'` ``. `strings.flow18.test.ts` checks them byte for byte, modelled on `strings.flow17.test.ts`, with the prefix regex `/^(person\.menu\.|voice\.mod\.|menu\.)/` (permission copy is flow 09's, M6) and the expected count. That count is the number of lines below; the implementer counts them once and pins it.
+`docs/design/flows/18-context-menus-and-voice-moderation.md` gets a `## Copy` section listing every line below as `` `key='value'` ``. `strings.flow18.test.ts` checks them byte for byte, modelled on `strings.flow17.test.ts`, with the prefix regex `/^(person\.menu\.|voice\.mod\.|menu\.)/` (permission copy is flow 09's, M6) and the expected count. That count is **81**: 14 `person.menu.` keys (§U.9.3), 26 `voice.mod.` keys (§U.9.4) and 41 `menu.` keys (§U.9.5).
 
 #### U.9.3 `personMenu.ts`
 
@@ -3809,9 +3971,78 @@ The permission grid (`PermissionGrid`, `PERM_GROUPS`) picks up `deafen` from cli
 #### U.9.7 User doc lines
 
 In `docs/user/voice.md` (task D1). They are not UI strings, so they are not under check:copy, but keep the same plainness:
-- *Server deafen asks the server to stop sending someone the call's sound. They stay in the call, and a modified app could still get the sound.*
+- *Server deafen asks the server to stop sending someone the call's sound. They stay in the call, and a modified app could get the sound back for up to about 30 seconds at a time (longer on an instance with more than 64 live calls) before the server stops it again.*
 - *Attachments have no "copy link": nobody outside the conversation could open one.*
 - *Nobody can be moved into the AFK channel, because it holds no call.*
+
+#### U.9.8 Flow 18: the sections and the chrome keys (W1)
+
+`docs/design/flows/18-context-menus-and-voice-moderation.md` opens with one paragraph naming the surfaces (§U.4.1) and the decisions it follows (J3, J4, J5, J7, D13, D14, D16), then has these four sections, then `## Copy` with the 81 lines of §U.9.3–§U.9.5 as `` `key='value'` ``.
+
+**`## States`**
+
+| State | UI |
+|---|---|
+| right-click on a person, message, link, attachment, channel, voice channel, category, server icon or DM row (desktop) | dilla's menu at the pointer, named `person.menu.label` or the surface's `menu.*.label`; focus on its first item |
+| Shift+F10 or the ContextMenu key on a focused element that has a menu | the same menu at the element's corner |
+| right-click in a text field or the composer, over a non-empty selection, on empty space, or with Shift held | the browser's menu; dilla's does not open |
+| a message that is pending, failed, deleted or can't be read | the browser's menu (no message menu, as there is no toolbar) |
+| long-press 500 ms on a phone | the bottom sheet titled by the person, channel or message author; the row's own tap action does not run |
+| a submenu (move to ›, roles ›, notifications ›) | desktop: a child menu beside its item; phone: a pushed page with `nav.back` |
+| the person menu, viewer without rights | profile, mention (while a composer is open), message, compare safety numbers, copy user ID; mute for me and volume while in the same call |
+| the person menu, viewer with voice rights, the person in voice | also server mute and server deafen (checked from their state), move to › and disconnect |
+| the owner's row, seen by anyone else | no voice moderation and no roles |
+| the owner's own row, on the device in that call | move to (their own switch) and disconnect (their own leave) only |
+| no channel both people can join | move to is hidden; disconnect stays |
+| the AFK channel | never in move to; a drop on it says `voice.mod.drag.afk` |
+| a drag (desktop, mouse or pen) | a ghost with the person's avatar and name; valid channels dashed, the one under the pointer filled; the source row dimmed |
+| a drop on a valid channel | the move is sent; `voice.mod.done.moved` |
+| a drop on a channel that is not valid | nothing moves; the reason is announced (`voice.mod.drag.afk`, `voice.mod.drag.youCannotJoin`, `voice.mod.error.owner`, `voice.mod.error.targetNoAccess`, `voice.mod.error.forbidden`) |
+| Escape during a drag | the drag ends; `voice.mod.drag.cancelled` |
+| a move answered "disconnected instead" | `voice.mod.movedDisconnected`, announced and shown as a warning banner with dismiss |
+| a refused moderation request | a warning banner: `voice.mod.error.forbidden`, `voice.mod.error.gone`, `voice.mod.error.full` or `voice.mod.error.generic` |
+| moved by a moderator | the call switches by itself; stage notice `voice.mod.moved` |
+| moved, but the new channel refused the join | `voice.mod.moveFailed`, then the usual reason; out of voice |
+| moved, and the app didn't follow in time | stage notice `voice.mod.moveMissed` |
+| disconnected by a moderator | stage notice `voice.mod.disconnected` |
+| server muted | a boxed mic-off glyph named `voice.mod.mutedByModerator` on the row and tile; the own mute control held (`aria-disabled`, pressed, described by the reason) |
+| server deafened | a boxed headphone-off glyph named `voice.mod.deafenedByModerator`; the mute and deafen controls held |
+| muted for me | a `volume-x` glyph named `person.menu.state.mutedForMe`; the person's voice plays at 0 on this device only |
+| the browser refused a copy | `menu.copy.blocked` |
+
+**`## Keyboard map`**
+
+| Keys | Action |
+|---|---|
+| Shift+F10, ContextMenu | open the menu of the focused element |
+| ArrowDown / ArrowUp | next / previous item, wrapping |
+| Home / End | first / last item (on the volume slider too) |
+| Enter, Space | activate an item; toggle a check item |
+| Enter, Space, ArrowRight on a submenu item | open the child menu and focus its first item |
+| ArrowLeft or Escape in a child menu | close it and focus its parent item |
+| Escape at the root | close the menu; focus returns to where it opened |
+| Tab, Shift+Tab | desktop: close every menu; phone sheet: cycle inside the sheet |
+| a letter | focus the next item starting with it (typeahead, 500 ms) |
+| ArrowLeft / ArrowRight on the volume slider | −/+ 10 % |
+| PageDown / PageUp on the volume slider | −/+ 50 % |
+| ArrowDown / ArrowUp in the channel list | walk the channels and the people under each voice channel (one tab stop) |
+| Escape during a drag | cancel the drag |
+
+**`## Focus rules`**
+
+Opening a menu focuses its first item; a sheet is a modal dialog that traps Tab. Escape, Tab or a press outside closes the menu and returns focus to the element it opened from (`returnFocus`). A child menu's ArrowLeft or Escape returns focus to its parent item; a sheet's back returns it to the submenu item that opened the page. An item that opens a dialog or card closes the menu first and passes the element as the dialog's opener, so the dialog returns focus there. An item that navigates (message, open link, join) leaves focus where the navigation puts it. A cancelled drag keeps focus on the person's button.
+
+**`## Announcements`**
+
+Polite: `voice.mod.done.*` and `voice.mod.movedDisconnected` for the mover; `voice.mod.youMuted`, `voice.mod.youUnmuted`, `voice.mod.youDeafened`, `voice.mod.youUndeafened` for the person moderated (once per change); `voice.mod.moved`, `voice.mod.moveFailed`, `voice.mod.moveMissed` and `voice.mod.disconnected` with their stage notices; `voice.mod.drag.*`, `voice.mod.error.owner` and `voice.mod.error.targetNoAccess` for a drop; `person.menu.done.*`, `menu.copied.*`, `menu.copy.blocked` and `menu.done.markedRead`. A refused request's `voice.mod.error.*` is announced and shown in the warning banner. Mute and notification changes announce nothing: the check state and the muted badge say it.
+
+**Chrome keys (lower case, 46).** `strings.flow18.test.ts` checks that each of these starts with a lower-case letter:
+
+- `person.menu.`: `label`, `profile`, `mention`, `muteForMe`, `volume`, `serverMute`, `serverDeafen`, `moveTo`, `disconnect`, `roles`, `copyId`, `state.mutedForMe` (12);
+- `voice.mod.`: `mutedByModerator`, `deafenedByModerator` (2);
+- `menu.`: `message.label`, `message.react`, `message.copyText`, `message.copyId`, `link.label`, `link.open`, `link.copy`, `attachment.label`, `attachment.open`, `attachment.copyImage`, `channel.label`, `channel.markRead`, `channel.invite`, `channel.copyLink`, `channel.mute`, `channel.notify`, `channel.delete`, `channel.copyId`, `channel.leaveVoice`, `category.label`, `category.collapse`, `category.collapseAll`, `category.delete`, `category.copyId`, `server.label`, `server.invite`, `server.mute`, `server.settings`, `server.leave`, `server.copyId`, `dm.label`, `dm.mute` (32).
+
+The other 35 keys are sentences: each starts with a capital letter or with a `{placeholder}`, and each ends with a full stop except the three stage notices `voice.mod.moved`, `voice.mod.moveMissed` and `voice.mod.disconnected` (D13, §U.9.1). Chrome checks the first letter only, because `copy user ID`, `copy message ID` and the like keep "ID" in capitals.
 
 ---
 
@@ -3889,7 +4120,7 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
 - `MessageRow.test.tsx`: `data-menu` on the row, author, avatar, user pill and link.
 - `CommunityRail.test.tsx`: `data-menu="server"` on server buttons only.
 - `UserPanel`, `CallControls`, `CallBar` tests: `held.mute makes mute aria-disabled, pressed, described by the reason`.
-- `roving.test.tsx`: `with a selector, nested buttons take part; without one, behaviour is unchanged`.
+- `roving.test.tsx`: the five cases of §U.4.3.
 - `base.test.ts`: `[data-menu]` has `-webkit-touch-callout: none`; phone `user-select: none`.
 
 #### U.10.2 vitest (web)
@@ -3897,7 +4128,7 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
 **Models**: one file per model, one `it` per truth-table row, asserting the exact id list:
 - `person-menu.test.ts`: the 18 rows of §U.5.1.3, plus `roleChoices` cases (locked, lacking, everyone excluded, checked from held), `personInputs` with fixtures, and move to exclusions (current, AFK, target can't join, I can't join);
 - `message-menu.test.ts`, `channel-menu.test.ts`, `voice-channel-menu.test.ts`, `category-menu.test.ts`, `server-menu.test.ts`, `dm-menu.test.ts`, `link-menu.test.ts`, `attachment-menu.test.ts` (`canCopyImage` false hides copyImage);
-- `drop-verdict.test.ts`: each rule in priority order, with `canDrag` for local, owner, away, no bits and move bit.
+- `drop-verdict.test.ts`: each of the eight rules in priority order; `canDrop` and the refusal come from one call (a refused input's `ok` is false and its `reason` is the announced one); for a non-local mover with Move Members, the ok targets equal `mod.moveTargets`; `canDrag(mod, away)` for local, owner (NO_VOICE_MOD), away, no move and move.
 
 **`native.test.ts`**:
 - `Shift+right-click keeps native`
@@ -3905,6 +4136,7 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
 - `a non-empty selection containing the target keeps native; a collapsed or whitespace-only one does not`
 - `no [data-menu] keeps native`
 - `Shift+F10 is not the Shift escape hatch`
+- `with fromKey true, Shift+right-click does not keep the native menu`
 
 **`long-press.test.ts`**:
 - `fires at 500 ms`
@@ -3924,6 +4156,14 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
 - `build returning null leaves the event alone`
 - `choosing an item calls run(el, id) after the menu closed`
 
+**`MenuActionRegistry.test.tsx`**:
+- `useRowActions registers a row under its key and removes it on unmount`
+- `rowActionsOf finds the actions of the closest [data-menu-key] element`
+- `two rows with different keys run their own actions`
+- `a row that unmounted while its menu was open runs nothing`
+- `a stale delete does not remove a newer registration under the same key`
+- `outside a provider, useRowActions does nothing`
+
 **Surfaces** (render Shell with `FakeClient`, the existing harnesses):
 - `Shell.personMenu.test.tsx`:
   - `right-click a member row opens the person menu (not the card); a click still opens the card`
@@ -3936,10 +4176,11 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
   - `copy user ID writes the clipboard and announces`
   - `kick opens KickFlow and returns focus to the row`
 - `Shell.contextMenus.test.tsx`: the channel menu (mark as read → markRead; mute → setSetting; edit → ChannelEditFlow; delete → DeleteChannel), the server icon menu (leave hidden for the owner; leave → LeaveFlow; invite → InviteFlow), category, DM row (1:1 vs group), voice channel (join vs leave voice).
-- `Conversation.menu.test.tsx`: the message menu runs the same RowEvents as the toolbar (reply, pin, delete confirm, edit); copy text copies `plainBody`; the link menu opens with noopener; the attachment menu's save calls `openAttachment` and `saveBlob`; copy image hidden without ClipboardItem.
-- `ThreadView.menu.test.tsx`: no reply, no pin, no thread in the thread pane's message menu.
+- `screens/conversation/Conversation.menu.test.tsx`: the message menu runs (through each row's registered actions) the same RowEvents as the toolbar (reply, pin, delete confirm, edit); copy text copies `plainBody`; the link menu opens with noopener; the attachment menu's save calls `openAttachment` and `saveBlob`; copy image hidden without ClipboardItem.
+- `screens/conversation/ThreadView.menu.test.tsx`: no reply, no pin, no thread in the thread pane's message menu.
 - `VoiceView.mod.test.tsx` and `useCall.mod.test.tsx`:
-  - `a new call.move.seq switches to move.to with the kept context and shows "Moved to {channel}"; the same seq twice switches once`;
+  - `a new call.move.seq switches to move.to and shows "Moved to {channel}"; the same seq twice switches once`;
+  - the two `AudioContext` hand-off cases of §U.8.6;
   - `a refused target join after a move shows voice.mod.moveFailed`;
   - `reason 4 says "Disconnected by a moderator", reason 3 says "A moderator moved you, but your app didn’t follow in time", and reason 2 still says afk.elsewhere`;
   - `serverMuted and serverDeafened call session.applyServerVoice({ muted, deafened }) on each change`;
@@ -3986,23 +4227,41 @@ In `docs/user/voice.md` (task D1). They are not UI strings, so they are not unde
 6. `runAxe` with the sheet open, and on the pushed page.
 7. No drag: a touch move over a voice person scrolls and starts no ghost.
 
-**Voice suite** (`e2e/playwright.voice.config.ts`, chromium-voice and firefox-voice). `e2e/voice/voice-moderation.spec.ts`, with three `VoicePeer`s (ada as owner, björn, mira) and voice channels `harbour` and `general` (`support/voice.ts`):
-1. **Drag move.** All three join `harbour`. Ada drags björn's row onto `general` with `page.mouse` down, then 10 moves, then up:
+**Voice suite** (`e2e/playwright.voice.config.ts`, chromium-voice and firefox-voice). `e2e/voice/voice-moderation.spec.ts` (task E2), on the `test` fixture of `e2e/voice/support/peer-browser.ts`:
+
+- **People.** One `VoicePeer` hosts the instance (`VoicePeer.start()`, handed to `peerBrowser.track`). The three participants are `Person` pages: `const ada = await peerBrowser.open('ada')`, then `'björn'` and `'mira'`; each is onboarded with `onboard(person, peer, display)` and they meet with `introduce(peer, [ada, björn, mira])` (`support/voice.ts`). Ada creates the server, so she is its owner; she creates voice channels `harbour`, `general` and `vault`.
+- **Mira's hook** (for case 6). Right after `peerBrowser.open('mira')` and before `onboard`: `await mira.context.addInitScript(() => { (window as unknown as { __dillaE2E?: { serverDeafClientOff: boolean } }).__dillaE2E = { serverDeafClientOff: true }; })` then `await mira.page.reload()`. It acts only in a build with `DILLA_E2E_HOOKS=1` (the CI `dilla-web-dist` build, §C.11) and only on a server deafen: mira's own `SpeakerPolicy` then does not unsubscribe, so only the instance can stop her hearing.
+- **Noise.** `noiseOff(page)` for all three: RNNoise removes the fake 1 kHz tone.
+- **Measuring one sender.** `audibleLevel(page)` and `audible(page)` read the loudest of **every** remote track on the page. Each audio check therefore first mutes every sender but the one measured, with the panel control `selfMute(p) = p.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true }).click()`, and confirms it with `sendsNoAudio(p)`. `AUDIBLE_RMS` (0.005) is the line between sound and silence.
+
+Cases:
+
+1. **Drag move.** All three join `harbour` (`joinVoice`, `connected`). Ada drags björn's row onto `general` with `page.mouse` down, then 10 moves, then up:
    - during the drag `general` has `data-drop="valid"` and the AFK row has no `data-drop`;
    - after the drop, björn's stage notice reads `Moved to general`, björn's `phaseOf` is connected, and he is listed under `general` on all three pages;
    - ada's announcer says `Moved björn to general.`
-2. **Escape cancels.** Start a drag, press Escape: no move, and the announcer says `Move cancelled.`
-3. **Invalid drop.** Make channel `vault` private to ada's role. Dragging björn onto `vault` gives no highlight, the drop announces `björn can’t join vault.`, and björn stays.
-4. **Keyboard move to.** Focus björn's row in the channel list (Tab to the list, arrows), Shift+F10, `move to`, ArrowRight, Enter on `harbour`: björn lands in `harbour`.
-5. **Server mute enforced by the SFU.** Ada server-mutes björn:
-   - björn's mute control is `aria-disabled` and his announcer says `A moderator muted you. Only a moderator can unmute you.`;
-   - mira's audio analysis of björn reads silence while björn's fake mic plays the tone (the same probe `speaking.spec.ts` and `audio.spec.ts` use);
-   - björn's row shows the boxed glyph named `muted by a moderator` on all pages;
-   - unmute brings the tone back.
-6. **Server deafen.** Ada deafens mira: mira's tile shows `deafened by a moderator`, and mira's received-audio probe reads silence from björn. Undeafen.
-7. **Disconnect.** Ada disconnects björn: björn's notice reads `Disconnected by a moderator`, and ada's announcer says `Disconnected björn.`
+   Björn returns to `harbour` through his own join.
+2. **Escape cancels.** Ada starts a drag of björn and presses Escape: no move, and her announcer says `Move cancelled.`
+3. **Invalid drop.** Ada makes `vault` private (the private-channel flow, `chperm.private`) and grants view only to her own role, so björn cannot view it and ada can. Ada drags björn onto `vault`: `vault` gets no `data-drop`, the drop announces `björn can’t join vault.`, and björn stays in `harbour`.
+4. **Keyboard move to.** Ada focuses björn's row in the channel list (Tab to the list, arrows), presses Shift+F10, ArrowDown to `move to`, ArrowRight, Enter on `general`: björn lands in `general`. He returns to `harbour` through his own join.
+5. **Server mute enforced by the SFU.** The measured sender is björn; the listener is mira.
+   - `selfMute(ada)`, `selfMute(mira)`; `sendsNoAudio(ada)`, `sendsNoAudio(mira)`. Björn is the only sender.
+   - Baseline: `audible(mira.page)` is above `AUDIBLE_RMS` (björn's tone reaches her).
+   - Ada server-mutes björn from his row's menu.
+   - Björn's mute control is `aria-disabled`, and his announcer says `A moderator muted you. Only a moderator can unmute you.`
+   - `expect.poll(() => audibleLevel(mira.page), POLL).toBeLessThan(AUDIBLE_RMS)`, and `sendsNoAudio(björn)`: the grant no longer lets him publish.
+   - Björn's row shows the boxed glyph named `muted by a moderator` on all three pages.
+   - Ada server-unmutes him: `audible(mira.page)` is above `AUDIBLE_RMS` again.
+6. **Server deafen enforced by the SFU alone.** The measured sender is björn; the listener is mira, whose client-side unsubscribe is off (mira's hook).
+   - Ada and mira stay self-muted from case 5 (`sendsNoAudio` for both again). Björn is the only sender.
+   - Baseline: `audible(mira.page)` is above `AUDIBLE_RMS`.
+   - Ada server-deafens mira.
+   - Mira's tile shows `deafened by a moderator`, and her mute and deafen controls are `aria-disabled`.
+   - `expect.poll(() => audibleLevel(mira.page), POLL).toBeLessThan(AUDIBLE_RMS)`: with mira's own policy held off, only the instance's unsubscribe can make this silent.
+   - Ada server-undeafens mira: `audible(mira.page)` is above `AUDIBLE_RMS` again.
+7. **Disconnect.** Ada disconnects björn: björn's stage notice reads `Disconnected by a moderator`, and ada's announcer says `Disconnected björn.`
 8. **Self drag.** Ada drags herself to `general`: ada is in `general` through the normal join.
-9. `axeEverywhere(page, 'voice-mod-menu')` with ada's person menu open on a voice row.
+9. `axeEverywhere(ada.page, 'voice-mod-menu')` with ada's person menu open on a voice row.
 
 **Old-client fallback** isn't e2e-able with one build. It is covered by the web vitest (banner) and the server and client-core tests.
 
