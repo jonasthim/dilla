@@ -404,6 +404,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
 	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
+	mux.HandleFunc("POST /v1/calls/{call_id}/relay", h.refreshRelay)
 	h.registerReads(mux)
 }
 

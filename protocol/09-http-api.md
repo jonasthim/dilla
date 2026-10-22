@@ -327,7 +327,7 @@ full contract.
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wires 1 and 2); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
-| voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}`, `GET /v1/channels/{id}/call` → `[group_id, call_id, participants]`, `GET /v1/communities/{id}/calls` → `[[channel_id, call_id, participants]]`, `POST /v1/calls/{call_id}/decline` `[expires_ts]` → `204` |
+| voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `POST /v1/calls/{call_id}/relay` → `[ice_servers]`, `DELETE /v1/calls/{call_id}`, `GET /v1/channels/{id}/call` → `[group_id, call_id, participants]`, `GET /v1/communities/{id}/calls` → `[[channel_id, call_id, participants]]`, `POST /v1/calls/{call_id}/decline` `[expires_ts]` → `204` |
 | admin | `GET /v1/admin/diagnostics`, `GET /v1/admin/audit`, `POST /v1/admin/users/{id}/disable` |
 
 The blob delete rule: a `DELETE` on `/v1/channels/{cid}/blobs/{blob_id}` removes the **reference**,
@@ -901,6 +901,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 |---|---|---|---|
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**); `503 E_UNAVAILABLE` with `retry_after_ms` 2000 when a removal or demotion of the device in the call, or its relay cut, is pending (see **Losing access**) or the SFU does not answer (it cannot open the room or mint the token) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `503 E_UNAVAILABLE` with `retry_after_ms` 2000 while the device's removal or demotion in the call, or its relay cut, is pending (see **Losing access**); `403 E_FORBIDDEN` when the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
+| `POST /v1/calls/{call_id}/relay` | `[]` | `200 [ice_servers([[urls([tstr]), username(tstr), credential(tstr)]])]`: fresh relay credentials for the calling device, as the start mints them (see **Relays**; the empty list when the instance runs no relay); nothing else happens: no room is opened, no token minted, the SFU is not asked. `404 E_NOT_FOUND` for an unknown or ended call; `403 E_FORBIDDEN` without `connect` or for a barred device; `403 E_LEAF_NOT_CURRENT` for a device that is not a current leaf of the group the call was opened on; `429 E_RATE_LIMITED` with `retry_after_ms` when the device was cut from the relay in the same millisecond or while the request was served; after the credential is minted, the refusal its gate would have given when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` 2000 while the device's removal or demotion in the call, or its relay cut, is pending (see **Losing access**) | `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
@@ -1248,12 +1249,15 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   relay's own lookup, and the room sweep removes such a device from every call room within its
   period. A client keeps fresh servers by repeating `POST /v1/channels/{id}/calls` before
   `turn.credential_ttl` runs out and handing the new list to its peer connection for that restart.
-  It also re-POSTs the route at once whenever its media connection starts reconnecting, and hands
-  the new list to that reconnect: a relay in the API process (on 443, or on `turn.listen` while the
-  SFU serves no relay) restarts with the API and refuses the credential the client holds, while the
-  call itself, in the SFU, goes on. A refused or unanswered re-POST is retried after 1, 2 and 4
-  seconds and then every 5 seconds while the reconnect lasts, never before its `retry_after_ms`;
-  one answer is enough for each reconnect. A client removed from the call group while it is
+  Whenever its media connection starts reconnecting it fetches fresh servers at once with
+  `POST /v1/calls/{call_id}/relay` and hands them to that reconnect: a relay in the API process (on
+  443, or on `turn.listen` while the SFU serves no relay) restarts with the API and refuses the
+  credential the client holds, while the call itself, in the SFU, goes on. That route mints only the
+  relay credential, under the start's gates and in the same order against the relay's cuts, and asks
+  the SFU nothing: a start would re-open a room the SFU lost (its restart), and the reconnect would
+  then meet a room that does not know its participant. A refused or unanswered request is retried
+  after 1, 2 and 4 seconds and then every 5 seconds while the reconnect lasts, never before its
+  `retry_after_ms`; one answer is enough for each reconnect. A client removed from the call group while it is
   reconnecting that way (the room sweep's absence Remove) treats the removal as a lost connection
   and rejoins, unless the removal says why: the AFK sweep's reason, or the channel no longer
   readable for this device (`404`: a kick, a ban or a deleted server).
