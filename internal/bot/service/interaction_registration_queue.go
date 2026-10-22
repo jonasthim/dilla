@@ -142,6 +142,12 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			if errors.Is(err, ErrInteractionNotEligible) {
 				err = nil
 			}
+			if errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+				failures = append(failures, fmt.Errorf("manual recovery required for device registration: %w", err))
+				processed[device] = struct{}{}
+				job.Processed = append(job.Processed, device)
+				continue
+			}
 			if err != nil {
 				failures = append(failures, fmt.Errorf("register eligible device: %w", err))
 				continue

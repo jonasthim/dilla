@@ -18,7 +18,7 @@ import (
 const (
 	interactionRegistrationStateArea       = 6
 	interactionRegistrationStatePrefix     = "dilla.bot.interaction-registration.v1/"
-	interactionRegistrationStateVersion    = 1
+	interactionRegistrationStateVersion    = 2
 	interactionRegistrationInitialEpoch    = 1
 	interactionRegistrationInitialSequence = 1
 )
@@ -26,7 +26,7 @@ const (
 var (
 	ErrInteractionRegistrationRecovery       = errors.New("bot interaction registration requires recovery")
 	ErrInteractionRegistrationOutcomeUnknown = errors.New("bot interaction registration outcome is unknown")
-	ErrInteractionRegistrationRenewed        = errors.New("bot interaction registration safely renewed; retry pending intent")
+	ErrInteractionRegistrationManualRecovery = errors.New("bot interaction registration outcome is unknown; manual recovery required")
 	ErrInteractionNotEligible                = errors.New("member is not eligible for bot interaction registration")
 )
 
@@ -35,7 +35,6 @@ type interactionRegistrationNativeAPI interface {
 	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	Identity(context.Context) (native.Identity, error)
 	CreateInteractionGroup(context.Context, id.ID, native.InteractionGroupExpected, []byte, []byte) (native.InteractionGroupCreateResult, error)
-	DiscardGroup(context.Context, id.ID, id.ID) error
 	GroupRegistered(context.Context, id.ID, id.ID, uint64) error
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
@@ -90,6 +89,7 @@ type interactionRegistrationIntent struct {
 	MinimumRevision, Policy, Generation                                    uint64
 	KeyPackage, Admission, Snapshot, Body, Welcome                         []byte
 	Submitted                                                              bool
+	ManualRecovery                                                         bool
 	Phase                                                                  uint64
 	Receipt                                                                client.BotGroupRegistrationReceipt
 }
@@ -144,7 +144,20 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 	} else {
 		in, err = decodeInteractionRegistrationIntent(v.Value)
-		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || in.Policy != d.PolicyVersion || in.Generation != d.Generation || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
+		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
+			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+		}
+		if in.ManualRecovery {
+			return InteractionRegistrationResult{}, ErrInteractionRegistrationManualRecovery
+		}
+		if in.Submitted && (in.Policy != d.PolicyVersion || in.Generation != d.Generation) {
+			in.ManualRecovery = true
+			if _, err := c.saveInteractionRegistration(ctx, key, revision, in); err != nil {
+				return InteractionRegistrationResult{}, err
+			}
+			return InteractionRegistrationResult{}, ErrInteractionRegistrationManualRecovery
+		}
+		if in.Policy != d.PolicyVersion || in.Generation != d.Generation {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
 		if in.Phase == 2 {
@@ -222,33 +235,17 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 	if !errors.Is(err, client.ErrRegistrationReceiptNotFound) {
 		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %v", ErrInteractionRegistrationOutcomeUnknown, err)
 	}
-	if err := c.proveInteractionRetrySafe(ctx, in); err != nil {
-		return InteractionRegistrationResult{}, err
-	}
 	if in.Submitted {
-		// The native create already owns staged MLS group state. Server absence
-		// alone is insufficient to rebuild under a new operation until this exact
-		// native intent has been discarded.
-		if err := c.native.DiscardGroup(ctx, in.Operation, in.Group); err != nil {
-			return InteractionRegistrationResult{}, fmt.Errorf("%w: native pending create could not be discarded: %v", ErrInteractionRegistrationRecovery, err)
-		}
-		in.Operation = id.New()
-		in.AdmissionRequest = id.New()
-		in.Admission = nil
-		in.Snapshot = nil
-		in.Body = nil
-		in.Welcome = nil
-		in.KeyPackage = append([]byte(nil), req.ParticipantKeyPackage...)
-		in.MinimumRevision = req.MinimumEligibilityRevision
-		in.Policy = d.PolicyVersion
-		in.Generation = d.Generation
-		in.Submitted = false
-		in.Phase = 0
-		in.Receipt = client.BotGroupRegistrationReceipt{}
+		// A 404 receipt is not a cancellation fence: the original POST may still
+		// commit after this read. Preserve its exact native intent and stop here.
+		in.ManualRecovery = true
 		if _, err := c.saveInteractionRegistration(ctx, key, revision, in); err != nil {
 			return InteractionRegistrationResult{}, err
 		}
-		return InteractionRegistrationResult{}, ErrInteractionRegistrationRenewed
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationManualRecovery
+	}
+	if err := c.proveInteractionRetrySafe(ctx, in); err != nil {
+		return InteractionRegistrationResult{}, err
 	}
 	in.Submitted = true
 	revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
@@ -460,7 +457,7 @@ func encodeInteractionRegistrationIntent(i interactionRegistrationIntent) ([]byt
 	if i.Phase >= 1 {
 		receipt = []any{i.Receipt.OperationID, i.Receipt.GroupID, i.Receipt.RegistrationSHA256[:], i.Receipt.AcceptedGeneration, i.Receipt.InitialEpoch, i.Receipt.NextSequence}
 	}
-	return cborx.Marshal([]any{uint64(interactionRegistrationStateVersion), i.Operation, i.AdmissionRequest, i.Group, i.ParticipantUser, i.ParticipantDevice, i.BotUser, i.BotDevice, i.MinimumRevision, i.Policy, i.Generation, nullableBytes(i.KeyPackage), nullableBytes(i.Admission), nullableBytes(i.Snapshot), nullableBytes(i.Body), nullableBytes(i.Welcome), boolUint(i.Submitted), i.Phase, receipt})
+	return cborx.Marshal([]any{uint64(interactionRegistrationStateVersion), i.Operation, i.AdmissionRequest, i.Group, i.ParticipantUser, i.ParticipantDevice, i.BotUser, i.BotDevice, i.MinimumRevision, i.Policy, i.Generation, nullableBytes(i.KeyPackage), nullableBytes(i.Admission), nullableBytes(i.Snapshot), nullableBytes(i.Body), nullableBytes(i.Welcome), boolUint(i.Submitted), i.Phase, receipt, boolUint(i.ManualRecovery)})
 }
 
 func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationIntent, error) {
@@ -469,11 +466,11 @@ func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationInt
 		return o, ErrInteractionRegistrationRecovery
 	}
 	var a []any
-	if cborx.Unmarshal(raw, &a) != nil || len(a) != 19 {
+	if cborx.Unmarshal(raw, &a) != nil || len(a) != 19 && len(a) != 20 {
 		return o, ErrInteractionRegistrationRecovery
 	}
 	u, ok := a[0].(uint64)
-	if !ok || u != interactionRegistrationStateVersion {
+	if !ok || (u != 1 && u != interactionRegistrationStateVersion) || (u == 1 && len(a) != 19) || (u == 2 && len(a) != 20) {
 		return o, ErrInteractionRegistrationRecovery
 	}
 	ids := []*id.ID{&o.Operation, &o.AdmissionRequest, &o.Group, &o.ParticipantUser, &o.ParticipantDevice, &o.BotUser, &o.BotDevice}
@@ -541,6 +538,11 @@ func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationInt
 		}
 	} else if a[18] != nil {
 		return o, ErrInteractionRegistrationRecovery
+	}
+	if len(a) == 20 {
+		if o.ManualRecovery, ok = uintBool(a[19]); !ok {
+			return o, ErrInteractionRegistrationRecovery
+		}
 	}
 	return o, nil
 }

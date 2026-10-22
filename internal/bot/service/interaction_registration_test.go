@@ -46,42 +46,37 @@ func TestInteractionRegistrationRecoversLostResponseAfterRestartWithoutRecreate(
 	}
 }
 
-func TestInteractionRegistrationRenewsExpiredAdmissionAfterProvenLostResponse(t *testing.T) {
+func TestInteractionRegistrationStopsForManualRecoveryAfterLateCommitRace(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	f.s.dropRegistrationResponse = true
+	f.s.lateCommitAfterAbsence = true
 	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
 		t.Fatalf("first Register error = %v, want unknown outcome", err)
 	}
 	oldOperation, oldAdmission := f.s.lastOperation, f.s.requestIDs[0]
-	f.s.currentTime = 131 // old admission expired at 130
-	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRenewed) {
-		t.Fatalf("safe renewal result = %v, want renewal staged", err)
+	f.s.currentTime = 131 // original admission expired at server time 130
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("expired lost-response retry = %v, want explicit manual recovery", err)
+	}
+	if f.s.receipt == nil || f.s.receipt.OperationID != oldOperation {
+		t.Fatal("adversarial fake did not commit original POST after absence observations")
+	}
+	if f.s.registerCalls != 1 || f.n.createCalls != 1 || len(f.n.discarded) != 0 {
+		t.Fatalf("late commit race caused duplicate POST or native discard: posts=%d creates=%d discarded=%v", f.s.registerCalls, f.n.createCalls, f.n.discarded)
 	}
 	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
 	if err != nil {
 		t.Fatal(err)
 	}
-	renewed, err := decodeInteractionRegistrationIntent(value.Value)
-	if err != nil || renewed.Operation == oldOperation || renewed.AdmissionRequest == oldAdmission || renewed.Submitted {
-		t.Fatalf("renewal did not stage fresh operation/admission: intent=%+v err=%v", renewed, err)
-	}
-	if len(f.n.discarded) != 1 || f.n.discarded[0] != oldOperation {
-		t.Fatalf("renewal did not discard exact prior native intent: %v", f.n.discarded)
-	}
-	f.s.dropRegistrationResponse = false
-	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
-		t.Fatalf("Register renewed intent: %v", err)
-	}
-	if f.s.registerCalls != 2 || f.n.createCalls != 2 {
-		t.Fatalf("renewal must create and submit one fresh body: posts=%d native creates=%d", f.s.registerCalls, f.n.createCalls)
-	}
-	value, err = f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
-	if err != nil {
-		t.Fatal(err)
-	}
 	intent, err := decodeInteractionRegistrationIntent(value.Value)
-	if err != nil || intent.Operation == oldOperation || intent.AdmissionRequest == oldAdmission || intent.Phase != 2 {
-		t.Fatalf("renewed intent did not complete with fresh IDs: %+v err=%v", intent, err)
+	if err != nil || !intent.ManualRecovery || !intent.Submitted || intent.Operation != oldOperation || intent.AdmissionRequest != oldAdmission || len(intent.Body) == 0 {
+		t.Fatalf("manual recovery did not preserve exact staged operation/body: intent=%+v err=%v", intent, err)
+	}
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("subsequent retry = %v, want stable manual-recovery state", err)
+	}
+	if f.s.registerCalls != 1 || len(f.n.discarded) != 0 {
+		t.Fatalf("terminal retry repeated mutation: posts=%d discarded=%v", f.s.registerCalls, f.n.discarded)
 	}
 }
 
@@ -287,6 +282,42 @@ func TestInteractionRegistrationQueueKeepsEpisodeUntilDevicesAppear(t *testing.T
 	}
 }
 
+func TestInteractionRegistrationQueueStopsRetryingManualRecovery(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	f.s.candidates = []id.ID{id.New()}
+	f.s.keyPackage = []byte{7, 8, 9}
+	f.s.dropRegistrationResponse = true
+	f.s.lateCommitAfterAbsence = true
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 1, f.s, f.s); err == nil {
+		t.Fatal("first lost response was not retained for retry")
+	}
+	f.s.currentTime = 131
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 1, f.s, f.s); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("late commit retry error = %v, want manual recovery", err)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, []byte(interactionRegistrationQueueKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := decodeInteractionRegistrationJobs(value.Value)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("manual recovery job remained automatic: jobs=%+v err=%v", jobs, err)
+	}
+	if f.s.receipt == nil || f.s.registerCalls != 1 || len(f.n.discarded) != 0 {
+		t.Fatal("late server commit caused replay or local native discard")
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 1, f.s, f.s); err != nil {
+		t.Fatalf("empty terminal queue pass: %v", err)
+	}
+	if f.s.registerCalls != 1 {
+		t.Fatalf("terminal job retried registration %d times", f.s.registerCalls)
+	}
+}
+
 func TestInteractionRegistrationQueueDropsAStaleEpisode(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	f.s.currentEpisode = id.New()
@@ -477,7 +508,9 @@ type interactionRegistrationSessionFake struct {
 	registerCalls, receiptCalls uint64
 	storeThenLoseResponse       bool
 	dropRegistrationResponse    bool
+	lateCommitAfterAbsence      bool
 	lastOperation               id.ID
+	lateReceipt                 *client.BotGroupRegistrationReceipt
 	hideReceiptCalls            uint64
 	receipt                     *client.BotGroupRegistrationReceipt
 	requestIDs                  []id.ID
@@ -549,10 +582,13 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 	}
 	s.registeredGroups = append(s.registeredGroups, group)
 	s.lastOperation = op
+	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
 	if s.dropRegistrationResponse {
+		if s.lateCommitAfterAbsence {
+			s.lateReceipt = &r
+		}
 		return client.BotGroupRegistrationReceipt{}, errors.New("response lost before commit")
 	}
-	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
 	s.receipt = &r
 	if s.storeThenLoseResponse {
 		s.hideReceiptCalls = 1
@@ -567,6 +603,13 @@ func (s *interactionRegistrationSessionFake) BotGroupRegistrationReceipt(_ conte
 		return client.BotGroupRegistrationReceipt{}, client.ErrRegistrationReceiptNotFound
 	}
 	if s.receipt == nil || s.receipt.OperationID != operation {
+		if s.lateReceipt != nil && s.receiptCalls >= 3 {
+			// The in-flight POST commits immediately after the next retry's
+			// endpoint decided
+			// to return E_NOT_FOUND.
+			s.receipt = s.lateReceipt
+			s.lateReceipt = nil
+		}
 		return client.BotGroupRegistrationReceipt{}, client.ErrRegistrationReceiptNotFound
 	}
 	return *s.receipt, nil
