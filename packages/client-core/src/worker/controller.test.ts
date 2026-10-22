@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode } from '../cbor';
 import { Enrol } from '../account/enrol';
 import { FakeCore } from '../testing/fake-core';
 import { FakeServer, NOW_S as FAKE_NOW_S, sessionFor } from '../testing/fake-server';
@@ -839,6 +839,37 @@ it('reads one signed history per user and ingests it for each pending leaf', asy
   expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
   expect(w.routes.getDeviceList).toHaveBeenCalledTimes(2);
   expect(w.core.deviceListIngest.mock.calls[0][3]).toEqual(w.core.deviceListIngest.mock.calls[1][3]);
+});
+
+// CI trace of PR #59 (webkit-web): a second device of the account reloads mid-sync, before its own signed list arrived.
+// The pass after the reload holds every own leaf at cached version 0 and reads one history, [v1, v2]. The core caches v2
+// on the first leaf's ingest and anchors every later ingest on the cached row (trust.rs ingest_leaf: the history's first
+// row is the cached version), so the full history is refused E_DEVICE_LIST_STALE for every other leaf of the account. A
+// message of the other device, held for its sender's list, was never released and stayed "could not be read".
+it('ingests the rest of a user\'s leaves from the version the first ingest cached, so every held row is released', async () => {
+  const w = world();
+  await toReady(w);
+  const row = (v: number) => [v, new Uint8Array([v]), new Uint8Array(64), new Uint8Array(32)];
+  const headRaw = encode(row(2));
+  w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 2n, blob: new Uint8Array([2]), raw: headRaw }));
+  w.routes.getDeviceListHistory.mockImplementation(() => Promise.resolve({ raw: encode([row(1), row(2)]), count: 2, lastVersion: 2n }));
+  // The core's anchor rule: once a version is cached, a history must start at it.
+  let cached = 0n;
+  w.core.deviceListIngest.mockImplementation((_g: Uint8Array, _l: number, _u: Uint8Array, history: Uint8Array) => {
+    const first = BigInt((decode(history) as [[number | bigint]])[0][0]);
+    if (cached !== 0n && first !== cached) throw new CoreError('E_DEVICE_LIST_STALE', '');
+    cached = 2n;
+    return { version: 2n, changed: false, quarantined: 0 };
+  });
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+    { groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+  ]);
+  w.call(993, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: true }));
+  expect((w.core.revalidatePending.mock.calls as unknown as [Uint8Array, number][]).map(([g, leaf]) => [toHex(g), leaf])).toEqual([[toHex(GROUP), 0], [toHex(DM_GROUP), 1]]);
+  // Still one read of the history for the user in the pass.
+  expect(w.routes.getDeviceListHistory).toHaveBeenCalledTimes(1);
 });
 
 // The core decodes head_list as the signed DeviceList itself (core/dilla-core/src/client/trust.rs bounded_list, a
