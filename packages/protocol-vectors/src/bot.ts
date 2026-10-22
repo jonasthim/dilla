@@ -20,7 +20,7 @@ export function botVectors() {
   [17,[18446744073709551615n],true,true,'music.seek uint64'],[18,[80n],true,true,'music.volume'],[19,[],true,true,'music.shuffle'],
   [20,[2n],true,true,'music.repeat'],[21,[id(0x55)],true,true,'music.remove'],[22,[id(0x55),null],true,true,'music.move'],[23,[],true,true,'music.clear'],
   [30,['hello'],false,false,'welcome.preview'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
-  [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66)],false,true,'announcements.delete'],
+  [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66),1n],false,true,'announcements.delete'],
   [60,[0n],false,false,'moderation.cases'],[61,[id(0x77),'reason','excerpt'],false,true,'moderation.evidence'],
  ];
  const cases:any[]=inputs.map(([op,a,ch,mu,n])=>app(op,a,ch,mu,n));

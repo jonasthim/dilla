@@ -71,7 +71,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
   21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},
   30:{channel:false,mutation:false,count:1},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
-  51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:1},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
+  51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
 };
 function validateArgs(op: number, a: unknown[]): void {
   const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
@@ -82,9 +82,10 @@ function validateArgs(op: number, a: unknown[]): void {
     case 1: case 2: u(0,0n,5n); if(op===2) a[1]=cborBytes(a[1],1,2400); break;
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
-    case 21: case 52: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
+    case 21: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
     case 30: t(0,1,2000); break; case 40: case 50: case 60: u(0); break;
     case 51: a[0]=nullable(a[0],id); a[1]=cborBytes(a[1],1,2200); break;
+    case 52: ident(0); u(1,1n,(1n<<63n)-1n); break;
     case 61: ident(0); t(1,0,1024); t(2,0,512); break;
   }
 }

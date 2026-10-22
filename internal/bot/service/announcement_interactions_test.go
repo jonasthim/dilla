@@ -152,19 +152,28 @@ func TestAnnouncementInteractionsListIncludesTextAndPaginatesToFit(t *testing.T)
 	}
 }
 
-func TestAnnouncementInteractionsRejectsMalformedTypedPayloadAndDisablesDelete(t *testing.T) {
+func TestAnnouncementInteractionsRejectsMalformedPayloadAndDeletesAtScheduleRevision(t *testing.T) {
 	h, auth := announcementInteractionsFixture(t)
 	malformed, _ := cborx.Marshal([]any{uint64(1), interactionID(20), interactionID(21), uint64(99), "daily", "UTC", "", uint64(10), uint64(0), uint64(0), uint64(1), uint64(1)})
 	result, err := h.Handlers()[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{nil, malformed}})
 	if err != nil || result.Status != interactionStatusUnavailable {
 		t.Fatalf("malformed payload result=%+v err=%v", result, err)
 	}
-	result, err = h.Handlers()[protocol.OpAnnouncementsDelete].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20)}})
-	if err != nil || result.Status != interactionStatusUnavailable {
+	put := h.Handlers()[protocol.OpAnnouncementsPut].Handle
+	if result, err := put(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{nil, announcementPayload(t, interactionID(20), "scheduled", 1)}}); err != nil || result.Status != 0 {
+		t.Fatalf("seed schedule result=%+v err=%v", result, err)
+	}
+	remove := h.Handlers()[protocol.OpAnnouncementsDelete].Handle
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(2)}})
+	if err != nil || result.Status != interactionStatusConflict {
+		t.Fatalf("stale delete result=%+v err=%v", result, err)
+	}
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(1)}})
+	if err != nil || result.Status != 0 {
 		t.Fatalf("delete result=%+v err=%v", result, err)
 	}
 	auth.allowed = false
-	result, err = h.Handlers()[protocol.OpAnnouncementsDelete].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20)}})
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(1)}})
 	if err != nil || result.Status != interactionStatusForbidden {
 		t.Fatalf("unauthorized delete result=%+v err=%v", result, err)
 	}

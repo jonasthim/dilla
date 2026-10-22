@@ -49,7 +49,7 @@ Operation, arguments, channel requirement, mutation:
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
 - 50 announcements.list: [cursor uint], no channel, read
 - 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation
-- 52 announcements.delete: [schedule_id], no channel, mutation
+- 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; the revision must be positive and match the stored schedule when the encrypted state transaction commits
 - 60 moderation.cases: [cursor uint], no channel, read
 - 61 moderation.evidence: [action_request_id, reason tstr(0..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)], no channel, mutation
 

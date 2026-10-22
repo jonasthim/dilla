@@ -178,9 +178,11 @@ func (s *Scheduler) Put(ctx context.Context, value Announcement) error {
 	return s.save(ctx, revision, states)
 }
 
-func (s *Scheduler) Delete(ctx context.Context, announcementID id.ID) error {
-	if s == nil || announcementID.IsZero() {
-		return errors.New("invalid announcement ID")
+// Delete removes a schedule only at its expected schedule revision. The check
+// and encrypted state transaction run under the same scheduler lock as Put.
+func (s *Scheduler) Delete(ctx context.Context, announcementID id.ID, expectedRevision uint64) error {
+	if s == nil || announcementID.IsZero() || expectedRevision == 0 {
+		return errors.New("invalid announcement ID or revision")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -191,6 +193,9 @@ func (s *Scheduler) Delete(ctx context.Context, announcementID id.ID) error {
 	i := findAnnouncement(states, announcementID)
 	if i < 0 {
 		return ErrAnnouncementNotFound
+	}
+	if states[i].Announcement.Schedule.Revision != expectedRevision {
+		return ErrSchedulerConflict
 	}
 	states = append(states[:i], states[i+1:]...)
 	return s.save(ctx, revision, states)

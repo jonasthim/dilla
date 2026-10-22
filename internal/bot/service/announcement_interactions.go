@@ -35,9 +35,8 @@ type AnnouncementInteractions struct {
 	CommunityID id.ID
 }
 
-// Handlers returns protocol handlers for announcement operations. Put uses the
-// schedule's own revision CAS in Scheduler.Put. Delete is unavailable because
-// the wire schema supplies no schedule revision for an atomic delete check.
+// Handlers returns protocol handlers for announcement operations. Put and
+// Delete use the schedule's own revision CAS in the encrypted scheduler.
 func (h AnnouncementInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpAnnouncementsList: {
@@ -158,7 +157,7 @@ func (h AnnouncementInteractions) put(ctx context.Context, actor InteractionActo
 	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 }
 
-func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionActor, _ protocol.Request) (InteractionResult, error) {
+func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	allowed, err := h.authorize(ctx, actor)
 	if err != nil {
 		return InteractionResult{}, err
@@ -166,7 +165,24 @@ func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionA
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	return InteractionResult{Status: interactionStatusUnavailable}, nil
+	if len(request.Args) != 2 {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	announcementID, idOK := request.Args[0].(id.ID)
+	expectedRevision, revisionOK := request.Args[1].(uint64)
+	if !idOK || announcementID.IsZero() || !revisionOK || expectedRevision == 0 || expectedRevision > math.MaxInt64 {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if err := h.Scheduler.Delete(ctx, announcementID, expectedRevision); err != nil {
+		if errors.Is(err, announcements.ErrSchedulerConflict) {
+			return InteractionResult{Status: interactionStatusConflict}, nil
+		}
+		if errors.Is(err, announcements.ErrAnnouncementNotFound) {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		return InteractionResult{}, err
+	}
+	return InteractionResult{Status: 0, Data: []byte{0x80}}, nil
 }
 
 // The versioned payload is [1, id, destination, text, kind, timezone, date,

@@ -137,6 +137,10 @@ pub enum RequestArgs {
         schedule: Option<MsgId>,
         document: Vec<u8>,
     },
+    AnnouncementDelete {
+        schedule: MsgId,
+        expected_revision: u64,
+    },
     Evidence {
         action: MsgId,
         reason: String,
@@ -281,6 +285,15 @@ impl Request {
                 }
             }
             RequestArgs::Id(id) => check_id16(id.as_bytes())?,
+            RequestArgs::AnnouncementDelete {
+                schedule,
+                expected_revision,
+            } => {
+                check_id16(schedule.as_bytes())?;
+                if *expected_revision == 0 || *expected_revision > i64::MAX as u64 {
+                    return Err(CodecError::Value);
+                }
+            }
             RequestArgs::Move { item, before } => {
                 check_id16(item.as_bytes())?;
                 if let Some(id) = before {
@@ -312,7 +325,7 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
         40 | 50 | 60 => matches!(a, RequestArgs::Number(_)),
         51 => matches!(a, RequestArgs::AnnouncementPut { .. }),
-        52 => matches!(a, RequestArgs::Id(_)),
+        52 => matches!(a, RequestArgs::AnnouncementDelete { .. }),
         61 => {
             matches!(a,RequestArgs::Evidence{reason,excerpt,..} if reason.len()<=1024 && excerpt.len()<=512)
         }
@@ -353,6 +366,14 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
             e.array(2)
                 .opt_bytes(schedule.as_ref().map(MsgId::as_bytes).map(|x| x.as_slice()))
                 .bytes(document);
+        }
+        RequestArgs::AnnouncementDelete {
+            schedule,
+            expected_revision,
+        } => {
+            e.array(2)
+                .bytes(schedule.as_bytes())
+                .uint(*expected_revision);
         }
         RequestArgs::Evidence {
             action,
@@ -402,9 +423,16 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
             d.array(1)?;
             RequestArgs::Number(d.uint()?)
         }
-        21 | 52 => {
+        21 => {
             d.array(1)?;
             RequestArgs::Id(read_msg(d)?)
+        }
+        52 => {
+            d.array(2)?;
+            RequestArgs::AnnouncementDelete {
+                schedule: read_msg(d)?,
+                expected_revision: d.uint()?,
+            }
         }
         22 => {
             d.array(2)?;

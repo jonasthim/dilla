@@ -110,6 +110,30 @@ func TestSharedBotVectors(t *testing.T) {
 	}
 }
 
+func TestAnnouncementDeleteRequiresScheduleRevision(t *testing.T) {
+	revision, expiry := uint64(120), uint64(120)
+	req := Request{RequestID: fixtureID(53), CommunityID: fixtureID(34), Operation: OpAnnouncementsDelete,
+		Revision: &revision, Expires: &expiry, Args: []any{fixtureID(102), uint64(1)}}
+	raw, err := EncodeRequestCBOR(req)
+	if err != nil {
+		t.Fatalf("encode delete: %v", err)
+	}
+	if _, err := DecodeRequestCBOR(raw); err != nil {
+		t.Fatalf("decode valid delete %x: %v", raw, err)
+	}
+	vector, err := hex.DecodeString("880150353535353535353535353535353535355022222222222222222222222222222222f618341878187882506666666666666666666666666666666601")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeRequestCBOR(vector); err != nil {
+		t.Fatalf("decode shared delete vector: %v", err)
+	}
+	req.Args = []any{fixtureID(102)}
+	if _, err := EncodeRequestCBOR(req); err == nil {
+		t.Fatal("delete without schedule revision accepted")
+	}
+}
+
 func TestKeyPackageResultWorstCaseFitsHelperPayload(t *testing.T) {
 	resultBytes := 1 + 5 + MaxKeyPackageUploadBody + 2 + 33*34 + 9
 	if resultBytes != 1_048_435 || MaxHelperPayload-resultBytes != 45 {
@@ -703,7 +727,7 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"roles_list", OpRolesList, []any{uint64(0)}, false, false},
 		{"announcements_list", OpAnnouncementsList, []any{uint64(0)}, false, false},
 		{"announcements_put", OpAnnouncementsPut, []any{nil, []byte{0x80}}, true, false},
-		{"announcements_delete", OpAnnouncementsDelete, []any{fixtureID(8)}, true, false},
+		{"announcements_delete", OpAnnouncementsDelete, []any{fixtureID(8), uint64(2)}, true, false},
 		{"moderation_cases", OpModerationCases, []any{uint64(0)}, false, false},
 		{"moderation_evidence", OpModerationEvidence, []any{fixtureID(9), "", "excerpt"}, true, false},
 	}

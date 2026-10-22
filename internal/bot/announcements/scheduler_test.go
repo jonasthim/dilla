@@ -174,6 +174,31 @@ func dailyAnnouncement(destination id.ID, text string, revision uint64) Announce
 		Schedule: Schedule{Kind: Daily, Timezone: "UTC", Hour: 10, Revision: revision}, Enabled: true}
 }
 
+func TestSchedulerDeleteRequiresCurrentScheduleRevision(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	s, _, _, _, destination := schedulerFixture(t, &now)
+	value := dailyAnnouncement(destination, "private announcement", 1)
+	if err := s.Put(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	value.Schedule.Revision = 2
+	if err := s.Put(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(context.Background(), value.ID, 1); !errors.Is(err, ErrSchedulerConflict) {
+		t.Fatalf("stale delete = %v, want conflict", err)
+	}
+	if rows, err := s.List(context.Background()); err != nil || len(rows) != 1 {
+		t.Fatalf("stale delete changed schedules: %#v, %v", rows, err)
+	}
+	if err := s.Delete(context.Background(), value.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.List(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("deleted schedules = %#v, %v", rows, err)
+	}
+}
+
 func TestSchedulerLateOccurrenceSendsOnceWithStableOperationAcrossRestart(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
 	s, n, sender, _, destination := schedulerFixture(t, &now)

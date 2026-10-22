@@ -231,8 +231,10 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return true, true, 1
 	case OpMusicSeek, OpMusicVolume, OpMusicRepeat:
 		return true, true, 1
-	case OpMusicRemove, OpAnnouncementsDelete:
-		return true, op == OpMusicRemove, 1
+	case OpMusicRemove:
+		return true, true, 1
+	case OpAnnouncementsDelete:
+		return true, false, 2
 	case OpMusicMove, OpAnnouncementsPut:
 		return true, op == OpMusicMove, 2
 	case OpRolesList, OpAnnouncementsList, OpModerationCases:
@@ -284,8 +286,10 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(u(0, 100))
 	case OpMusicRepeat:
 		return boolErr(u(0, 2))
-	case OpMusicRemove, OpAnnouncementsDelete:
+	case OpMusicRemove:
 		return boolErr(idarg(0))
+	case OpAnnouncementsDelete:
+		return boolErr(idarg(0) && u(1, math.MaxInt64) && a[1].(uint64) > 0)
 	case OpMusicMove:
 		return boolErr(idarg(0) && nullableID(a[1]))
 	case OpWelcomePreview:
