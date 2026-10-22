@@ -514,7 +514,7 @@ fn public_group_state(req: &[u8], t: &mut Table) -> Result<Vec<u8>, AbiError> {
     d.finish()?;
 
     let group = t.group(handle)?;
-    let binding = group.binding().encode();
+    let binding = group.binding_bytes();
     let members = group.members();
     let senders = group.external_senders()?;
 
@@ -1110,6 +1110,10 @@ mod tests {
         include_bytes!("../../../testkit/fixtures/ds-1500/ratchet_tree.mls");
     const FIXTURE_GROUP_INFO: &[u8] =
         include_bytes!("../../../testkit/fixtures/ds-1500/group_info.mls");
+    const INTERACTION_FIXTURE_TREE: &[u8] =
+        include_bytes!("../../../internal/ds/dstest/testdata/kind3-interaction/ratchet_tree.mls");
+    const INTERACTION_FIXTURE_GROUP_INFO: &[u8] =
+        include_bytes!("../../../internal/ds/dstest/testdata/kind3-interaction/group_info.mls");
 
     /// Makes a one-leaf MLS group whose tree and GroupInfo are both valid for their own pairing.
     /// A caller supplies the credential bytes so tests can exercise a Dilla-signature failure
@@ -1225,6 +1229,36 @@ mod tests {
             }),
         ));
         assert_ne!(code, "");
+    }
+
+    #[test]
+    fn roster_extraction_accepts_authenticated_kind3_v2_interaction_binding() {
+        let out = dispatch(
+            "public_group_roster_extract",
+            &req(|e| {
+                e.array(3)
+                    .uint(dilla_core::ABI_VERSION)
+                    .bytes(INTERACTION_FIXTURE_TREE)
+                    .bytes(INTERACTION_FIXTURE_GROUP_INFO);
+            }),
+        );
+        let count = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            assert_eq!(d.uint()?, 0);
+            let n = d.array_len()?;
+            assert_eq!(n, 2);
+            for _ in 0..n {
+                d.array(5)?;
+                assert_eq!(d.bytes()?.len(), 16);
+                assert_eq!(d.bytes()?.len(), 16);
+                assert_eq!(d.bytes()?.len(), 32);
+                assert!(d.uint()? <= 1);
+                assert!(d.uint()? <= 1);
+            }
+            Ok(n)
+        })
+        .expect("authenticated kind-3 v2 interaction roster");
+        assert_eq!(count, 2);
     }
 
     #[test]

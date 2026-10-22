@@ -5,8 +5,9 @@ use super::{PublicStore, PublicStoreError};
 use crate::error::ProtocolError;
 use crate::identity::CredentialIdentity;
 use crate::mls::{
-    DILLA_BINDING, DillaBinding, commit_extensions_unchanged, instance_sender_index,
-    leaf_credentials_unchanged, proposal_credential_verdict, proposal_extensions_unchanged,
+    DILLA_BINDING, DillaBinding, DillaInteractionBinding, GroupKind, commit_extensions_unchanged,
+    instance_sender_index, leaf_credentials_unchanged, proposal_credential_verdict,
+    proposal_extensions_unchanged,
 };
 // None of these four is re-exported by `openmls::prelude` in 0.9.0 (the same finding as
 // `mls::group`: the prelude re-exports `hash_ref::KeyPackageRef` but not `ProposalRef`,
@@ -77,7 +78,66 @@ pub enum PublicProcessed {
 pub struct DillaPublicGroup {
     group: PublicGroup,
     store: PublicStore,
-    binding: DillaBinding,
+    binding: PublicGroupBinding,
+    legacy_binding: DillaBinding,
+}
+
+/// The public tree can carry either the established eight-field v1 binding or the typed v2
+/// interaction binding. Keep the original shape so state export and recovery never downgrade a
+/// v2 group to its legacy projection.
+#[derive(Clone, Debug)]
+enum PublicGroupBinding {
+    Legacy(DillaBinding),
+    InteractionV2(DillaInteractionBinding),
+}
+
+impl PublicGroupBinding {
+    fn from_group_context(ctx: &GroupContext) -> Result<Self, ProtocolError> {
+        let raw = ctx
+            .extensions()
+            .unknown(crate::mls::DILLA_BINDING_ID)
+            .ok_or(ProtocolError::Binding)?;
+        let mut decoder = crate::cbor::Decoder::new(&raw.0);
+        decoder.array_len().map_err(|_| ProtocolError::Binding)?;
+        let version = decoder.uint().map_err(|_| ProtocolError::Binding)?;
+        match version {
+            1 => Ok(Self::Legacy(DillaBinding::from_group_context(ctx)?)),
+            2 => Ok(Self::InteractionV2(DillaInteractionBinding::decode(
+                &raw.0,
+            )?)),
+            _ => Err(ProtocolError::Binding),
+        }
+    }
+
+    fn legacy_projection(&self) -> DillaBinding {
+        match self {
+            Self::Legacy(binding) => binding.clone(),
+            Self::InteractionV2(binding) => DillaBinding {
+                v: 2,
+                instance_id: binding.instance_id,
+                community_id: None,
+                target_id: binding.bot_user_id,
+                kind: GroupKind::Interaction,
+                policy_version: binding.policy_version,
+                e2ee_version: binding.e2ee_version,
+                media_version: binding.media_version,
+            },
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Legacy(binding) => binding.encode(),
+            Self::InteractionV2(binding) => binding.encode(),
+        }
+    }
+
+    fn interaction(&self) -> Option<&DillaInteractionBinding> {
+        match self {
+            Self::InteractionV2(binding) => Some(binding),
+            Self::Legacy(_) => None,
+        }
+    }
 }
 
 /// Hand-written because neither `PublicGroup` nor `PublicStore` is `Debug`, and because a debug
@@ -152,12 +212,14 @@ impl DillaPublicGroup {
             ProposalStore::new(),
         )
         .map_err(openmls)?;
-        let binding = DillaBinding::from_group_context(group.group_context())?;
+        let binding = PublicGroupBinding::from_group_context(group.group_context())?;
+        let legacy_binding = binding.legacy_projection();
         Ok((
             Self {
                 group,
                 store,
                 binding,
+                legacy_binding,
             },
             info,
         ))
@@ -176,11 +238,13 @@ impl DillaPublicGroup {
         let group = PublicGroup::load(&store, group_id)
             .map_err(|_| PublicGroupError::StateMissing)?
             .ok_or(PublicGroupError::StateMissing)?;
-        let binding = DillaBinding::from_group_context(group.group_context())?;
+        let binding = PublicGroupBinding::from_group_context(group.group_context())?;
+        let legacy_binding = binding.legacy_projection();
         Ok(Self {
             group,
             store,
             binding,
+            legacy_binding,
         })
     }
 
@@ -271,11 +335,13 @@ impl DillaPublicGroup {
     /// carries no valid `dilla_binding` is then refused with nothing written, rather than leaving a
     /// merged group behind an error.
     pub fn merge_commit(&mut self, staged: StagedCommit) -> Result<(), PublicGroupError> {
-        let binding = DillaBinding::from_group_context(staged.group_context())?;
+        let binding = PublicGroupBinding::from_group_context(staged.group_context())?;
+        let legacy_binding = binding.legacy_projection();
         self.group
             .merge_commit(&self.store, staged)
             .map_err(openmls)?;
         self.binding = binding;
+        self.legacy_binding = legacy_binding;
         Ok(())
     }
 
@@ -379,7 +445,17 @@ impl DillaPublicGroup {
     }
 
     pub fn binding(&self) -> &DillaBinding {
-        &self.binding
+        &self.legacy_binding
+    }
+
+    /// The binding exactly as carried in the authenticated GroupContext, preserving v2 for
+    /// consumers that persist or compare the protocol bytes.
+    pub fn binding_bytes(&self) -> Vec<u8> {
+        self.binding.encode()
+    }
+
+    pub fn interaction_binding(&self) -> Option<&DillaInteractionBinding> {
+        self.binding.interaction()
     }
 
     /// The number of occupied leaves in the tree, every one of them: `members()` leaves out a leaf
@@ -701,6 +777,45 @@ mod tests {
         DillaPublicGroup::from_external(&RustCrypto::default(), tree, group_info)
             .expect("the committed fixture seeds the DS view")
             .0
+    }
+
+    const INTERACTION_FIXTURE_TREE: &[u8] = include_bytes!(
+        "../../../../internal/ds/dstest/testdata/kind3-interaction/ratchet_tree.mls"
+    );
+    const INTERACTION_FIXTURE_GROUP_INFO: &[u8] =
+        include_bytes!("../../../../internal/ds/dstest/testdata/kind3-interaction/group_info.mls");
+
+    #[test]
+    fn external_kind3_v2_interaction_binding_imports_and_recovers() {
+        let tree = RatchetTreeIn::tls_deserialize_exact(INTERACTION_FIXTURE_TREE)
+            .expect("interaction ratchet tree decodes");
+        let info = match MlsMessageIn::tls_deserialize_exact(INTERACTION_FIXTURE_GROUP_INFO)
+            .expect("interaction GroupInfo decodes")
+            .extract()
+        {
+            MlsMessageBodyIn::GroupInfo(info) => info,
+            other => panic!("expected GroupInfo, got {other:?}"),
+        };
+        let group = DillaPublicGroup::from_external(&RustCrypto::default(), tree, info)
+            .expect("kind-3 v2 interaction binding imports")
+            .0;
+        assert_eq!(group.members().len(), 2);
+        let binding = group
+            .interaction_binding()
+            .expect("v2 interaction binding remains typed");
+        assert_eq!(binding.instance_id.as_bytes(), &[0x11; 16]);
+        assert_eq!(binding.bot_user_id, [0x22; 16]);
+        assert_eq!(binding.installation_id, [0x33; 16]);
+        assert_eq!(binding.community_id.as_bytes(), &[0x44; 16]);
+        assert_eq!(binding.participant_user_id, [0x55; 16]);
+        assert_eq!(binding.participant_device_id.as_bytes(), &[0x77; 16]);
+        assert_eq!(binding.policy_version, 3);
+        let state = group.export_state();
+        let restored = DillaPublicGroup::import_state(&state, group.group_id())
+            .expect("kind-3 v2 interaction binding recovers from public state");
+        assert_eq!(restored.binding_bytes(), group.binding_bytes());
+        assert_eq!(restored.interaction_binding(), Some(binding));
+        assert_eq!(restored.members().len(), group.members().len());
     }
 
     /// DS-MEMBERSHIP-01: the view reports the group context's external senders as the fixture's
