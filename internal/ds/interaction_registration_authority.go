@@ -109,7 +109,10 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if err != nil || requestHash != evidence.requestHash || !sameRegistration(registration, evidence.registration) || state.GroupID != expected.GroupID || !bytes.Equal(state.Binding, registration.Binding) {
 		return out, errors.New("ds: final kind-3 registration differs from authenticated preflight")
 	}
-	if registration.GroupID != expected.GroupID || state.Generation == 0 || state.Epoch != 0 || state.NextSeq != 1 || len(registrationBody) == 0 || state.LeafCount != 2 || state.GroupID != evidence.authenticatedGroupID || evidence.authenticatedLeaves != 2 || !bytes.Equal(state.Binding, evidence.authenticatedBinding) {
+	// The admitted Bot+participant initial group is built by the MLS Add operation, which
+	// advances the authenticated group to epoch 1. Requiring this exact epoch rejects both
+	// a pre-Add tree and a group with additional commits before registration.
+	if registration.GroupID != expected.GroupID || state.Generation == 0 || state.Epoch != 1 || state.NextSeq != 1 || len(registrationBody) == 0 || state.LeafCount != 2 || state.GroupID != evidence.authenticatedGroupID || evidence.authenticatedLeaves != 2 || !bytes.Equal(state.Binding, evidence.authenticatedBinding) {
 		return out, errors.New("ds: invalid final kind-3 registered state")
 	}
 	if session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady {

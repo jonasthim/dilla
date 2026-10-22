@@ -43,6 +43,20 @@ type BotRegisterRequest struct {
 	Registration       RegisterRequest
 }
 
+// BotInteractionRegisterRequest is the admission-scoped kind-3 registration intent. The
+// trusted preflight inputs must come from the server's admission loader, never from request data.
+type BotInteractionRegisterRequest struct {
+	Session            Session
+	InstallationID     id.ID
+	OperationID        id.ID
+	ExpectedGeneration uint64
+	AdmissionRequestID id.ID
+	AdmissionID        id.ID
+	RegistrationBody   []byte
+	Registration       RegisterRequest
+	TrustedPreflight   InteractionRegistrationPreflight
+}
+
 // BotRegisterReceipt is the durable first-acceptance result returned for new and replayed
 // managed-bot registrations.
 type BotRegisterReceipt struct {
@@ -160,6 +174,244 @@ func (d *DS) RegisterWithBotReceipt(ctx context.Context, r BotRegisterRequest) (
 		return botRegisterReceipt(*persisted), false, nil
 	}
 	return botRegisterReceipt(intent.receipt), true, nil
+}
+
+// RegisterBotInteractionGroup is the separate kind-3 atomic acceptance path. It remains
+// unmounted until the API admission loader supplies TrustedPreflight and the end-to-end tests
+// cover acceptance and recovery. RegisterWithBotReceipt retains its explicit kind-3 refusal.
+func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRegisterRequest) (BotRegisterReceipt, bool, error) {
+	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || d.opts.BotCapability == nil || d.opts.Clock == nil || d.opts.DeviceLists == nil ||
+		r.OperationID.IsZero() || r.InstallationID.IsZero() || r.AdmissionRequestID.IsZero() || r.AdmissionID.IsZero() || r.Registration.GroupID.IsZero() ||
+		r.ExpectedGeneration == 0 || r.ExpectedGeneration > math.MaxInt64 || len(r.RegistrationBody) == 0 ||
+		r.Session.Scope != auth.ScopeEnrolled || r.Session.Bot == nil || r.Session.Bot.InstallationID != r.InstallationID || len(r.Session.TokenHash) == 0 {
+		return BotRegisterReceipt{}, false, errInvalid("invalid kind-3 managed registration intent")
+	}
+	r.Registration.Session = r.Session
+	r.TrustedPreflight.Registration = r.Registration
+	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree})
+	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
+		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
+	}
+	tuple := r.TrustedPreflight.Expected
+	if tuple.InstallationID != r.InstallationID || tuple.BotUserID != r.Session.UserID || tuple.BotDeviceID != r.Session.DeviceID || tuple.GroupID != r.Registration.GroupID || tuple.CommunityID != r.Session.Bot.CommunityID {
+		return BotRegisterReceipt{}, false, errInvalid("trusted interaction tuple does not match authenticated registration")
+	}
+	bodyHash := sha256.Sum256(append([]byte("dilla bot group registration v1\x00"), r.RegistrationBody...))
+	unlock := d.lock(r.Registration.GroupID)
+	defer unlock()
+	defer d.flushEvictions(ctx, r.Registration.GroupID)
+
+	prior, err := d.lookupBotInteractionRegistration(ctx, r, bodyHash)
+	if err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	if prior != nil {
+		if err := d.reconcileBotInteractionRegistration(ctx, r.Registration.GroupID); err != nil {
+			return BotRegisterReceipt{}, false, err
+		}
+		return botRegisterReceipt(*prior), false, nil
+	}
+
+	inst, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	release := true
+	defer func() {
+		if release {
+			inst.Release()
+		}
+	}()
+	evidence, err := PrepareKind3PreflightEvidence(ctx, WASIInteractionRegistrationExtractor{Instance: inst}, r.TrustedPreflight)
+	if err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	group, err := inst.PublicGroupFromExternal(ctx, r.Registration.RatchetTree, r.Registration.GroupInfo)
+	if err != nil {
+		return BotRegisterReceipt{}, false, errInvalid("group_info or ratchet_tree: " + err.Error())
+	}
+	closeGroup := true
+	defer func() {
+		if closeGroup {
+			_ = group.Close(ctx)
+		}
+	}()
+	state, err := group.State(ctx)
+	if err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	var binding interactionBindingV2
+	bindingErr := cborx.Unmarshal(r.Registration.Binding, &binding)
+	if bindingErr != nil || binding.Version != 2 || binding.Kind != 3 || binding.LegacyCommunityID != nil ||
+		binding.InstanceID != tuple.InstanceID || !bytes.Equal(state.Binding, r.Registration.Binding) || !bytes.Equal(state.GroupID, r.Registration.GroupID[:]) ||
+		state.LeafCount != 2 || len(state.Members) != 2 {
+		return BotRegisterReceipt{}, false, errBinding("authenticated MLS group is not the exact admitted kind-3 initial group")
+	}
+	if problem := d.externalSendersProblem(3, state.ExternalSenders); problem != "" {
+		return BotRegisterReceipt{}, false, errBinding(problem)
+	}
+	if err := d.opts.BotCapability.RequireGroup(ctx, r.Session.WireVersion, 3, nil); err != nil {
+		return BotRegisterReceipt{}, false, err
+	}
+	registered := RegisteredKind3State{GroupID: r.Registration.GroupID, Binding: append([]byte(nil), state.Binding...), LeafCount: state.LeafCount, Generation: r.ExpectedGeneration, Epoch: state.Epoch, NextSeq: 1}
+	communityID := binding.CommunityID
+	row := store.GroupRow{GroupID: r.Registration.GroupID, Binding: r.Registration.Binding, Kind: 3, CommunityID: &communityID, TargetID: binding.ParticipantUserID,
+		Ciphersuite: 1, Epoch: state.Epoch, Seq: 0, GroupInfoBlob: r.Registration.GroupInfo, TreeHash: state.TreeHash,
+		ExternalSenderKeyID: d.opts.Keys.ExternalSenderKeyID, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion,
+		PolicyVersion: binding.PolicyVersion, Created: d.now()}
+	var members memberView
+	var receipt store.BotGroupRegistrationReceipt
+	var replay bool
+	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		verified, err := d.ValidateKind3RegistrationAuthority(ctx, tx, r.Session, r.InstallationID, r.AdmissionRequestID, r.AdmissionID,
+			r.OperationID, tuple, r.Registration, r.RegistrationBody, registered, evidence)
+		if err != nil {
+			return err
+		}
+		prior, getErr := tx.GetBotGroupRegistrationReceipt(ctx, r.InstallationID, r.OperationID)
+		if getErr == nil {
+			consumed, consumedErr := tx.GetBotGroupRegistrationAdmission(ctx, r.InstallationID, r.AdmissionRequestID)
+			if consumedErr != nil || prior.Epoch != 1 || prior.NextSeq != 1 || verifyKind3RegistrationReplay(prior, consumed, kind3RegistrationReceiptIntent(r, bodyHash, 1)) != nil {
+				return &Error{Code: "E_INVALID_REQUEST", Detail: "operation or admission request was already accepted with different registration data", Status: http.StatusConflict}
+			}
+			groupRow, groupErr := tx.GetGroup(ctx, prior.GroupID)
+			if groupErr != nil || groupRow.Kind != 3 || !bytes.Equal(groupRow.Binding, r.Registration.Binding) {
+				return &Error{Code: "E_INTERNAL", Detail: "accepted kind-3 registration has inconsistent group state", Status: http.StatusInternalServerError}
+			}
+			receipt, replay = prior, true
+			return nil
+		}
+		if !errors.Is(getErr, store.ErrNotFound) {
+			return getErr
+		}
+		if err := tx.CreateGroup(ctx, row); err != nil {
+			return err
+		}
+		if err := persistState(ctx, tx, r.Registration.GroupID, group, r.Registration.GroupInfo); err != nil {
+			return err
+		}
+		members, err = d.replaceMembersTx(ctx, tx, r.Registration.GroupID, 3, state)
+		if err != nil {
+			return err
+		}
+		acceptances, ok := tx.(store.BotGroupRegistrationAdmissionReceipts)
+		if !ok {
+			return errors.New("ds: admission-consumption store contract unavailable")
+		}
+		receipt, _, err = acceptances.AcceptBotGroupRegistrationAdmission(ctx, r.AdmissionRequestID, verified.Receipt)
+		return err
+	})
+	if err != nil {
+		// A competing process may have committed while WASI was validating. Recover only from
+		// the exact durable operation/admission mapping; otherwise preserve the original failure.
+		prior, replayErr := d.lookupBotInteractionRegistration(ctx, r, bodyHash)
+		if replayErr != nil {
+			return BotRegisterReceipt{}, false, replayErr
+		}
+		if prior == nil {
+			return BotRegisterReceipt{}, false, err
+		}
+		if err := d.reconcileBotInteractionRegistration(ctx, r.Registration.GroupID); err != nil {
+			return BotRegisterReceipt{}, false, err
+		}
+		return botRegisterReceipt(*prior), false, nil
+	}
+	if replay {
+		if err := d.reconcileBotInteractionRegistration(ctx, r.Registration.GroupID); err != nil {
+			return BotRegisterReceipt{}, false, err
+		}
+		return botRegisterReceipt(receipt), false, nil
+	}
+	d.queueEviction(r.Registration.GroupID, members.removed)
+	if d.opts.Gateway != nil {
+		d.opts.Gateway.SetGroupMembers(r.Registration.GroupID, members.devices)
+		d.opts.Gateway.SetGroupLeaves(r.Registration.GroupID, members.leaves)
+	}
+	if err := d.states.put(ctx, r.Registration.GroupID, inst, group); err != nil {
+		// The acceptance is durable. Returning an error makes the caller retry; that exact retry
+		// rehydrates the cache and member view from the committed rows before returning the receipt.
+		return BotRegisterReceipt{}, false, err
+	}
+	release, closeGroup = false, false
+	return botRegisterReceipt(receipt), true, nil
+}
+
+func kind3RegistrationReceiptIntent(r BotInteractionRegisterRequest, bodyHash [32]byte, epoch uint64) store.BotGroupRegistrationReceipt {
+	return store.BotGroupRegistrationReceipt{InstallationID: r.InstallationID, OperationID: r.OperationID, UserID: r.Session.UserID, DeviceID: r.Session.DeviceID,
+		CommunityID: r.Session.Bot.CommunityID, GroupID: r.Registration.GroupID, BodySHA256: bodyHash[:], Generation: r.ExpectedGeneration, Epoch: epoch, NextSeq: 1}
+}
+
+func (d *DS) lookupBotInteractionRegistration(ctx context.Context, r BotInteractionRegisterRequest, bodyHash [32]byte) (*store.BotGroupRegistrationReceipt, error) {
+	var prior *store.BotGroupRegistrationReceipt
+	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		installation, device, err := d.lockManagedKeyPackageAuthority(ctx, tx, r.Session, r.InstallationID)
+		if err != nil {
+			return err
+		}
+		bound, err := tx.GetBotSessionBinding(ctx, r.Session.TokenHash)
+		if err != nil || bound.InstallationID != r.InstallationID || bound.UserID != r.Session.UserID || bound.DeviceID != r.Session.DeviceID || installation.State != r.Session.Bot.State || device.UserID != r.Session.UserID || device.VerifiedAt == nil || device.RevokedAt != nil || device.QuarantinedAt != nil {
+			return errForbidden("the authenticated Bot session is no longer current")
+		}
+		user, err := tx.GetUser(ctx, r.Session.UserID)
+		if err != nil || user.Kind != 1 || user.DisabledAt != nil || user.DeletedAt != nil {
+			return errForbidden("the managed Bot account is no longer active")
+		}
+		consumed, consumedErr := tx.GetBotGroupRegistrationAdmission(ctx, r.InstallationID, r.AdmissionRequestID)
+		if consumedErr != nil && !errors.Is(consumedErr, store.ErrNotFound) {
+			return consumedErr
+		}
+		operation, opErr := tx.GetBotGroupRegistrationReceipt(ctx, r.InstallationID, r.OperationID)
+		if errors.Is(opErr, store.ErrNotFound) {
+			if consumedErr == nil {
+				return &Error{Code: "E_INVALID_REQUEST", Detail: "admission request was consumed by another operation", Status: http.StatusConflict}
+			}
+			return nil
+		}
+		if opErr != nil {
+			return opErr
+		}
+		if consumedErr != nil || operation.Epoch != 1 || operation.NextSeq != 1 || verifyKind3RegistrationReplay(operation, consumed, kind3RegistrationReceiptIntent(r, bodyHash, 1)) != nil {
+			return &Error{Code: "E_INVALID_REQUEST", Detail: "operation or admission request was already accepted with different registration data", Status: http.StatusConflict}
+		}
+		group, err := tx.GetGroup(ctx, operation.GroupID)
+		if err != nil {
+			return &Error{Code: "E_INTERNAL", Detail: "registration receipt has no group row", Status: http.StatusInternalServerError}
+		}
+		if group.Kind != 3 || !bytes.Equal(group.Binding, r.Registration.Binding) {
+			return &Error{Code: "E_INTERNAL", Detail: "registration receipt group does not match the accepted kind-3 request", Status: http.StatusInternalServerError}
+		}
+		prior = &operation
+		return nil
+	})
+	return prior, err
+}
+
+func (d *DS) reconcileBotInteractionRegistration(ctx context.Context, groupID id.ID) error {
+	group, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	if group.Kind != 3 {
+		return errBinding("accepted interaction group has unexpected kind")
+	}
+	if _, err := d.states.acquire(ctx, groupID, func() ([]byte, error) { return group.PublicGroupState, nil }); err != nil {
+		return err
+	}
+	members, err := d.opts.Store.ListMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	devices := make([]id.ID, 0, len(members))
+	leaves := make(map[id.ID]uint32, len(members))
+	for _, member := range members {
+		devices = append(devices, member.DeviceID)
+		leaves[member.DeviceID] = member.LeafIndex
+	}
+	if d.opts.Gateway != nil {
+		d.opts.Gateway.SetGroupMembers(groupID, devices)
+		d.opts.Gateway.SetGroupLeaves(groupID, leaves)
+	}
+	return nil
 }
 
 // BotGroupRegistrationReceipt returns an installation-scoped historical receipt. Current bot

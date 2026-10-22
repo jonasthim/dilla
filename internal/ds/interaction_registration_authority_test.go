@@ -65,7 +65,7 @@ func TestPrepareKind3PreflightEvidenceBindsAdmissionAndRegistration(t *testing.T
 	request := evidence.registration
 	request.Session = session
 	d := &DS{opts: Options{Clock: clock.NewFake(time.Unix(100, 0)), DeviceLists: authorityDeviceLists{}}}
-	state := RegisteredKind3State{GroupID: tuple.GroupID, Binding: binding, LeafCount: 2, Generation: 1, Epoch: 0, NextSeq: 1}
+	state := RegisteredKind3State{GroupID: tuple.GroupID, Binding: binding, LeafCount: 2, Generation: 1, Epoch: 1, NextSeq: 1}
 	badTuple := tuple
 	badTuple.ParticipantDeviceID = interactionID(101)
 	if _, err := d.ValidateKind3RegistrationAuthority(context.Background(), authorityTxStub{}, session, tuple.InstallationID, interactionID(102), admission.AdmissionID, interactionID(103), badTuple, request, []byte{1}, state, evidence); err == nil {
@@ -187,7 +187,7 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered := RegisteredKind3State{GroupID: tuple.GroupID, Binding: binding, LeafCount: 2, Generation: 1, Epoch: 0, NextSeq: 1}
+	registered := RegisteredKind3State{GroupID: tuple.GroupID, Binding: binding, LeafCount: 2, Generation: 1, Epoch: 1, NextSeq: 1}
 	d := &DS{opts: Options{Store: repo, Clock: clock.NewFake(time.Unix(now, 0)), Keys: keys, DeviceLists: authorityDeviceLists{tuple.BotUserID: botList, tuple.ParticipantUserID: participantList}}}
 	validate := func() (VerifiedKind3Registration, error) {
 		var verifiedResult VerifiedKind3Registration
@@ -207,6 +207,13 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 	if string(verifiedReceipt.Receipt.BodySHA256) != string(wantBodyHash[:]) {
 		t.Fatal("registration receipt hash omitted the versioned domain")
 	}
+	for _, epoch := range []uint64{0, 2} {
+		registered.Epoch = epoch
+		if _, err := validate(); err == nil {
+			t.Fatalf("epoch %d passed initial kind-3 authority validation", epoch)
+		}
+	}
+	registered.Epoch = 1
 	if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetGeneration(ctx, 2) }); err != nil {
 		t.Fatal(err)
 	}
