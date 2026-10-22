@@ -1635,6 +1635,67 @@ it('drops a typing row whose expiry timer fired a millisecond early', async () =
   } finally { vi.useRealTimers(); }
 });
 
+// One sweep timer per channel: a member who floods typing frames must not pile timers up in every reader's worker.
+describe('incoming typing keeps one sweep timer per channel', () => {
+  const user = (n: number): Uint8Array => new Uint8Array(16).fill(n);
+  const typingFrame = (who: Uint8Array, expires: bigint): GatewayEvent => ({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, who, OTHER_DEVICE, 1n, expires],
+  } });
+  const ready = async (nowMs: () => number) => {
+    const w = world({ now: nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    return w;
+  };
+  const names = (w: ReturnType<typeof world>): string[] =>
+    (w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`) ?? []).map(row => row.userId);
+
+  it('1000 frames in one channel leave exactly one pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      for (let i = 0; i < 1000; i += 1) w.gateway.emit(typingFrame(user(1 + (i % 200)), NOW_S + 5n));
+      expect(names(w).length).toBeGreaterThan(100);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a later frame with an earlier deadline moves the timer forward', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 3n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(1))]);
+      expect(vi.getTimerCount() - before).toBe(1);          // re-armed for the remaining row
+      nowMs += 5_000; vi.advanceTimersByTime(5_000);
+      expect(names(w)).toEqual([]);
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('closing the channel clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.call(960, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+      await vi.waitFor(() => expect(w.ret(960)).toMatchObject({ ok: true }));
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 it('clears incoming typing on membership loss without local typing', async () => {
   const w = world();
   await toReady(w);
