@@ -471,7 +471,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID); registrationHandlerErr != nil {
 										ensureErr = registrationHandlerErr
 									} else {
-										handler = composeStructuralEventHandlers(registrationHandler, handler)
+										handler = composeStructuralEventHandlers(handler, registrationHandler)
 										pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
 											return poller.PollOnce(pollCtx, result.Session, handler)
 										})
@@ -480,6 +480,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											ensureErr = pollErr
 										} else if pollResult.More {
 											logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
+										}
+										members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
+										if membersErr != nil {
+											logger.Info("bot interaction registration worker unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
+										} else if workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session); workErr != nil {
+											logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
 										}
 									}
 								}

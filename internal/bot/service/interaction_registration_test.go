@@ -135,23 +135,149 @@ func TestInteractionRegistrationSnapshotProviderUsesPersistedBinding(t *testing.
 	}
 }
 
+func TestInteractionRegistrationSnapshotProviderRenewsExpiredAdmission(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	originalRequest := f.s.requestIDs[0]
+	f.s.currentTime = 131 // the registration admission expired at server time 130
+	event := native.GroupEvent{Group: f.request.Group, Community: f.community, SenderUser: f.request.ParticipantUser, SenderDevice: f.request.ParticipantDevice}
+	_, wire, err := f.coordinator.InteractionSnapshot(context.Background(), event)
+	if err != nil {
+		t.Fatalf("InteractionSnapshot after admission expiry: %v", err)
+	}
+	snapshot, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil {
+		t.Fatalf("parse fresh context: %v", err)
+	}
+	requestID := snapshot.Request
+	if requestID.IsZero() || requestID == originalRequest || len(f.s.requestIDs) != 5 || f.s.requestIDs[3] != requestID || f.s.requestIDs[4] != requestID {
+		t.Fatalf("provider reused expired admission request: original=%s context=%s requests=%v", originalRequest, requestID, f.s.requestIDs)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatalf("load durable registration intent: %v", err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || intent.AdmissionRequest != originalRequest {
+		t.Fatalf("fresh snapshot mutated durable registration admission request: intent=%+v err=%v", intent, err)
+	}
+}
+
+func TestInteractionRegistrationQueueProcessesDevicesOnlyForCurrentEpisode(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	f.s.candidates = []id.ID{id.New(), id.New()}
+	f.s.keyPackage = []byte{7, 8, 9}
+
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatalf("QueueMemberJoin: %v", err)
+	}
+	if f.s.registerCalls != 0 {
+		t.Fatal("member join performed registration before the durable worker pass")
+	}
+	f.coordinator, _ = NewInteractionRegistrationCoordinator(f.instance, f.community, f.install, f.n, f.d, f.s)
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("ProcessPending: %v (keypackages=%d creates=%d registrations=%d) ", err, f.s.keyPackageCalls, f.n.createCalls, f.s.registerCalls)
+	}
+	if f.s.registerCalls != 2 || f.n.createCalls != 2 {
+		t.Fatalf("worker registered %d devices / created %d groups, want 2", f.s.registerCalls, f.n.createCalls)
+	}
+	if f.s.registeredGroups[0] == f.s.registeredGroups[1] {
+		t.Fatal("device candidates reused one group identifier")
+	}
+}
+
+func TestInteractionRegistrationQueueDropsAStaleEpisode(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = id.New()
+	f.s.candidates = []id.ID{id.New()}
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatalf("QueueMemberJoin: %v", err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("ProcessPending: %v", err)
+	}
+	if f.s.registerCalls != 0 {
+		t.Fatalf("stale episode attempted %d registrations", f.s.registerCalls)
+	}
+	f.s.currentEpisode = f.episode
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("ProcessPending after stale job: %v", err)
+	}
+	if f.s.registerCalls != 0 {
+		t.Fatal("stale episode job remained queued after it was discarded")
+	}
+}
+
+func TestInteractionRegistrationQueueRetainsTransientPackageFailure(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	f.s.candidates = []id.ID{id.New()}
+	f.s.keyPackageErr = errors.New("package temporarily unavailable")
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatalf("QueueMemberJoin: %v", err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err == nil {
+		t.Fatal("transient package failure was not reported to the worker")
+	} else {
+		t.Logf("first worker failure: %v (keypackages=%d)", err, f.s.keyPackageCalls)
+	}
+	if f.s.registerCalls != 0 {
+		t.Fatal("registration ran without a package")
+	}
+	f.s.keyPackageErr = nil
+	f.s.keyPackage = []byte{7, 8, 9}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("retry ProcessPending: %v (keypackages=%d creates=%d registrations=%d)", err, f.s.keyPackageCalls, f.n.createCalls, f.s.registerCalls)
+	}
+	if f.s.registerCalls != 1 {
+		t.Fatalf("retry registered %d times, want 1", f.s.registerCalls)
+	}
+}
+
+func TestInteractionRegistrationQueueRetriesOnlyFailedDevice(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	f.s.candidates = []id.ID{id.New(), id.New()}
+	f.s.keyPackage = []byte{7, 8, 9}
+	f.s.keyPackageFailures = 1
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatalf("QueueMemberJoin: %v", err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err == nil {
+		t.Fatal("partial device failure was not reported")
+	}
+	if f.s.registerCalls != 1 || f.n.createCalls != 1 {
+		t.Fatalf("first pass registered/created %d/%d, want only one completed device", f.s.registerCalls, f.n.createCalls)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 8, f.s, f.s); err != nil {
+		t.Fatalf("retry ProcessPending: %v", err)
+	}
+	if f.s.registerCalls != 2 || f.n.createCalls != 2 {
+		t.Fatalf("retry duplicated completed device or missed failed device: registered=%d created=%d", f.s.registerCalls, f.n.createCalls)
+	}
+}
+
 type interactionRegistrationFixture struct {
 	coordinator                                      *InteractionRegistrationCoordinator
 	n                                                *interactionRegistrationNativeFake
 	s                                                *interactionRegistrationSessionFake
 	d                                                *interactionRegistrationDiscoveryFake
 	instance, community, install, botUser, botDevice id.ID
+	episode                                          id.ID
 	request                                          InteractionRegistrationRequest
 }
 
 func newInteractionRegistrationFixture(t *testing.T) *interactionRegistrationFixture {
 	t.Helper()
-	f := &interactionRegistrationFixture{instance: id.New(), community: id.New(), install: id.New(), botUser: id.New(), botDevice: id.New()}
+	f := &interactionRegistrationFixture{instance: id.New(), community: id.New(), install: id.New(), botUser: id.New(), botDevice: id.New(), episode: id.New()}
 	f.n = &interactionRegistrationNativeFake{binding: native.Binding{Instance: f.instance, Community: f.community, Installation: f.install}, identity: native.Identity{Phase: 2, Instance: &f.instance, User: &f.botUser, Device: &f.botDevice}}
 	f.d = &interactionRegistrationDiscoveryFake{value: client.Discovery{InstanceID: f.instance, Generation: 8, PolicyVersion: 3, ExternalSenderPub: append([]byte{1}, make([]byte, 31)...), E2EEVersions: []uint64{1}, MediaVersions: []uint64{0}}}
 	f.s = &interactionRegistrationSessionFake{admission: []byte{0x41}}
 	f.request = InteractionRegistrationRequest{Group: id.New(), ParticipantUser: id.New(), ParticipantDevice: id.New(), MinimumEligibilityRevision: 4, ParticipantKeyPackage: []byte{1, 2, 3}}
-	f.s.expected = []any{f.instance, f.install, f.community, f.botUser, f.botDevice, f.request.ParticipantUser, f.request.ParticipantDevice, f.request.Group}
+	f.s.expected = []any{f.instance, f.install, f.community, f.botUser, f.botDevice}
 	var err error
 	f.coordinator, err = NewInteractionRegistrationCoordinator(f.instance, f.community, f.install, f.n, f.d, f.s)
 	if err != nil {
@@ -170,11 +296,11 @@ func signedSnapshotFixture(t *testing.T, request id.ID) []byte {
 }
 
 func makeSignedSnapshotFixture(request id.ID) ([]byte, error) {
-	return makeSignedSnapshotFixtureFor(request, []any{id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New()})
+	return makeSignedSnapshotFixtureFor(request, []any{id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New(), id.New()}, 100)
 }
 
-func makeSignedSnapshotFixtureFor(request id.ID, expected []any) ([]byte, error) {
-	payload, err := cborx.Marshal([]any{uint64(1), request, id.New(), []byte{1}, make([]byte, 64), uint64(100), uint64(4), uint64(3), uint64(1), uint64(0), id.New(), id.New(), make([]byte, 32), expected, []any{}, []any{}})
+func makeSignedSnapshotFixtureFor(request id.ID, expected []any, now uint64) ([]byte, error) {
+	payload, err := cborx.Marshal([]any{uint64(1), request, id.New(), []byte{1}, make([]byte, 64), now, uint64(4), uint64(3), uint64(1), uint64(0), id.New(), id.New(), make([]byte, 32), expected, []any{}, []any{}})
 	if err != nil {
 		return nil, err
 	}
@@ -250,23 +376,59 @@ type interactionRegistrationSessionFake struct {
 	receipt                     *client.BotGroupRegistrationReceipt
 	requestIDs                  []id.ID
 	expected                    []any
+	currentEpisode              id.ID
+	candidates                  []id.ID
+	registeredGroups            []id.ID
+	admissionErr                error
+	currentTime                 uint64
+	admissions                  map[id.ID]uint64
 	keyPackage                  []byte
 	keyPackageErr               error
 	keyPackageCalls             uint64
+	keyPackageFailures          uint64
 }
 
 func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
 	s.keyPackageCalls++
+	if s.keyPackageFailures > 0 {
+		s.keyPackageFailures--
+		return nil, errors.New("package temporarily unavailable")
+	}
 	return append([]byte(nil), s.keyPackage...), s.keyPackageErr
 }
 
 func (s *interactionRegistrationSessionFake) IssueBotInteractionAdmission(_ context.Context, _ id.ID, request id.ID, _ id.ID, _ id.ID, _ id.ID) ([]byte, error) {
 	s.requestIDs = append(s.requestIDs, request)
+	if s.admissionErr != nil {
+		return nil, s.admissionErr
+	}
+	if s.currentTime == 0 {
+		s.currentTime = 100
+	}
+	if s.admissions == nil {
+		s.admissions = map[id.ID]uint64{}
+	}
+	s.admissions[request] = s.currentTime + 30
 	return append([]byte(nil), s.admission...), nil
 }
-func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request id.ID, _, _, _ id.ID) ([]byte, error) {
+
+func (s *interactionRegistrationSessionFake) ResolveCurrentEpisode(context.Context, id.ID) (id.ID, bool, error) {
+	return s.currentEpisode, !s.currentEpisode.IsZero(), nil
+}
+
+func (s *interactionRegistrationSessionFake) DeviceCandidates(context.Context, id.ID) ([]id.ID, error) {
+	return append([]id.ID(nil), s.candidates...), nil
+}
+func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request, group, user, device id.ID) ([]byte, error) {
 	s.requestIDs = append(s.requestIDs, request)
-	return makeSignedSnapshotFixtureFor(request, s.expected)
+	if s.currentTime == 0 {
+		s.currentTime = 100
+	}
+	if s.admissions[request] <= s.currentTime {
+		return nil, errors.New("admission expired or missing")
+	}
+	expected := append(append([]any(nil), s.expected...), user, device, group)
+	return makeSignedSnapshotFixtureFor(request, expected, s.currentTime)
 }
 func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionRequest(_ context.Context, _ id.ID, op id.ID, generation uint64, body []byte, admissionRequest id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.requestIDs = append(s.requestIDs, admissionRequest)
@@ -279,6 +441,7 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 	if !ok {
 		return client.BotGroupRegistrationReceipt{}, errors.New("bad group")
 	}
+	s.registeredGroups = append(s.registeredGroups, group)
 	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
 	s.receipt = &r
 	if s.storeThenLoseResponse {
@@ -287,13 +450,13 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 	}
 	return r, nil
 }
-func (s *interactionRegistrationSessionFake) BotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (client.BotGroupRegistrationReceipt, error) {
+func (s *interactionRegistrationSessionFake) BotGroupRegistrationReceipt(_ context.Context, _ id.ID, operation id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.receiptCalls++
 	if s.hideReceiptCalls > 0 {
 		s.hideReceiptCalls--
 		return client.BotGroupRegistrationReceipt{}, client.ErrRegistrationReceiptNotFound
 	}
-	if s.receipt == nil {
+	if s.receipt == nil || s.receipt.OperationID != operation {
 		return client.BotGroupRegistrationReceipt{}, client.ErrRegistrationReceiptNotFound
 	}
 	return *s.receipt, nil
