@@ -5,7 +5,7 @@ use super::{PublicStore, PublicStoreError};
 use crate::error::ProtocolError;
 use crate::identity::CredentialIdentity;
 use crate::mls::{
-    DILLA_BINDING, DillaBinding, DillaInteractionBinding, GroupKind, commit_extensions_unchanged,
+    DILLA_BINDING, DillaBinding, DillaInteractionBinding, commit_extensions_unchanged,
     instance_sender_index, leaf_credentials_unchanged, proposal_credential_verdict,
     proposal_extensions_unchanged,
 };
@@ -79,7 +79,6 @@ pub struct DillaPublicGroup {
     group: PublicGroup,
     store: PublicStore,
     binding: PublicGroupBinding,
-    legacy_binding: DillaBinding,
 }
 
 /// The public tree can carry either the established eight-field v1 binding or the typed v2
@@ -106,22 +105,6 @@ impl PublicGroupBinding {
                 &raw.0,
             )?)),
             _ => Err(ProtocolError::Binding),
-        }
-    }
-
-    fn legacy_projection(&self) -> DillaBinding {
-        match self {
-            Self::Legacy(binding) => binding.clone(),
-            Self::InteractionV2(binding) => DillaBinding {
-                v: 2,
-                instance_id: binding.instance_id,
-                community_id: None,
-                target_id: binding.bot_user_id,
-                kind: GroupKind::Interaction,
-                policy_version: binding.policy_version,
-                e2ee_version: binding.e2ee_version,
-                media_version: binding.media_version,
-            },
         }
     }
 
@@ -213,13 +196,11 @@ impl DillaPublicGroup {
         )
         .map_err(openmls)?;
         let binding = PublicGroupBinding::from_group_context(group.group_context())?;
-        let legacy_binding = binding.legacy_projection();
         Ok((
             Self {
                 group,
                 store,
                 binding,
-                legacy_binding,
             },
             info,
         ))
@@ -239,12 +220,10 @@ impl DillaPublicGroup {
             .map_err(|_| PublicGroupError::StateMissing)?
             .ok_or(PublicGroupError::StateMissing)?;
         let binding = PublicGroupBinding::from_group_context(group.group_context())?;
-        let legacy_binding = binding.legacy_projection();
         Ok(Self {
             group,
             store,
             binding,
-            legacy_binding,
         })
     }
 
@@ -326,7 +305,7 @@ impl DillaPublicGroup {
     /// structurally valid GroupContextExtensions commit moves the real `dilla_binding` underneath
     /// a cache that was only ever filled in `from_external`/`import_state`. `process_with_policy`
     /// now refuses every such commit (fix wave C), so none should reach a merge; the re-derivation
-    /// stays as defence in depth, because `binding()` is exactly what
+    /// stays as defence in depth, because `binding_bytes()` is exactly what
     /// interfaces section 2.10 export 12 (`public_group_state`) hands to clients. A stale cache
     /// would serve a binding that contradicts the DS's own stored state.
     ///
@@ -336,12 +315,10 @@ impl DillaPublicGroup {
     /// merged group behind an error.
     pub fn merge_commit(&mut self, staged: StagedCommit) -> Result<(), PublicGroupError> {
         let binding = PublicGroupBinding::from_group_context(staged.group_context())?;
-        let legacy_binding = binding.legacy_projection();
         self.group
             .merge_commit(&self.store, staged)
             .map_err(openmls)?;
         self.binding = binding;
-        self.legacy_binding = legacy_binding;
         Ok(())
     }
 
@@ -444,8 +421,13 @@ impl DillaPublicGroup {
         self.group.group_context().epoch().as_u64()
     }
 
-    pub fn binding(&self) -> &DillaBinding {
-        &self.legacy_binding
+    /// Returns the established v1 binding when this group uses the legacy format. V2 interaction
+    /// groups have a distinct typed API and never appear as an invalid `DillaBinding` projection.
+    pub fn binding(&self) -> Option<&DillaBinding> {
+        match &self.binding {
+            PublicGroupBinding::Legacy(binding) => Some(binding),
+            PublicGroupBinding::InteractionV2(_) => None,
+        }
     }
 
     /// The binding exactly as carried in the authenticated GroupContext, preserving v2 for
@@ -803,6 +785,10 @@ mod tests {
         let binding = group
             .interaction_binding()
             .expect("v2 interaction binding remains typed");
+        assert!(
+            group.binding().is_none(),
+            "legacy accessor must fail closed for v2 rather than expose a malformed projection"
+        );
         assert_eq!(binding.instance_id.as_bytes(), &[0x11; 16]);
         assert_eq!(binding.bot_user_id, [0x22; 16]);
         assert_eq!(binding.installation_id, [0x33; 16]);
@@ -843,6 +829,18 @@ mod tests {
         public
             .queue_proposal(&RustCrypto::default(), message)
             .expect("the external Remove verifies under the group's one external sender");
+    }
+
+    #[test]
+    fn legacy_binding_accessor_preserves_v1_binding_behavior() {
+        let public = fixture_public_group();
+        let binding = public
+            .binding()
+            .expect("v1 group exposes the established binding API");
+        assert_eq!(binding.v, 1);
+        assert_eq!(DillaBinding::decode(&binding.encode()).unwrap(), *binding);
+        assert_eq!(public.binding_bytes(), binding.encode());
+        assert!(public.interaction_binding().is_none());
     }
 
     /// ABI v2 §3.2's key source: a leaf inside the tree yields a verification key tagged with the

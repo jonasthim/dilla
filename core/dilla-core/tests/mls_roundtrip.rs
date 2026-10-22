@@ -1040,7 +1040,7 @@ fn the_ds_view_tracks_the_group_from_a_group_info_and_a_tree() {
 
     assert_eq!(ds.epoch(), alice.epoch());
     assert_eq!(ds.group_id(), alice.group_id());
-    assert_eq!(ds.binding(), &b);
+    assert_eq!(ds.binding(), Some(&b));
     assert_eq!(ds.members().len(), 1);
     assert!(ds.required_capabilities().is_some());
 
@@ -1299,7 +1299,7 @@ fn the_ds_view_refuses_a_commit_rewriting_the_group_context_and_keeps_its_bindin
     let (ds, _) =
         DillaPublicGroup::from_external(&crypto, alice.export_ratchet_tree().into(), verifiable)
             .expect("from_external");
-    assert_eq!(ds.binding(), &b);
+    assert_eq!(ds.binding(), Some(&b));
 
     // A member rewrites `dilla_binding`. `DillaGroup` exposes no such commit, so it is driven
     // through the raw `MlsGroup` in Alice's storage - exactly what a patched client would do.
@@ -1330,10 +1330,10 @@ fn the_ds_view_refuses_a_commit_rewriting_the_group_context_and_keeps_its_bindin
 
     assert_eq!(
         ds.binding(),
-        &b,
+        Some(&b),
         "the refused commit must not have changed the binding the DS serves"
     );
-    assert_ne!(ds.binding(), &rewritten);
+    assert_ne!(ds.binding(), Some(&rewritten));
     // The same view rebuilt from the exported state derives the binding from scratch, so it is the
     // arbiter of what the DS's own state actually says.
     let reloaded = DillaPublicGroup::import_state(&ds.export_state(), &group_id).expect("import");

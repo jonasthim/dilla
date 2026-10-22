@@ -1578,7 +1578,7 @@ impl Relay {
             .map_err(|_| "E_INVALID_REQUEST")?;
         let (public, _) = DillaPublicGroup::from_external(&self.crypto, tree_in, verifiable)
             .map_err(|_| "E_BINDING_INVALID")?;
-        if public.binding().encode() != binding {
+        if public.binding().expect("v1 group binding").encode() != binding {
             return Err("E_BINDING_INVALID");
         }
         self.public = Some(public);
