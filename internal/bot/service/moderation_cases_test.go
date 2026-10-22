@@ -1,0 +1,201 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/id"
+)
+
+type moderationCaseNativeFake struct {
+	binding        native.Binding
+	rows           map[string]native.StateValue
+	failAfterWrite bool
+}
+
+func newModerationCaseNative() *moderationCaseNativeFake {
+	return &moderationCaseNativeFake{binding: native.Binding{Instance: id.New(), Community: id.New(), Installation: id.New()}, rows: map[string]native.StateValue{}}
+}
+func (n *moderationCaseNativeFake) Binding() native.Binding { return n.binding }
+func (n *moderationCaseNativeFake) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if area != moderationCaseStateArea {
+		return native.StateValue{}, errors.New("wrong area")
+	}
+	v, ok := n.rows[string(key)]
+	if !ok {
+		return native.StateValue{}, nil
+	}
+	v.Value = append([]byte(nil), v.Value...)
+	return v, nil
+}
+func (n *moderationCaseNativeFake) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	if len(changes) != 1 || changes[0].Area != moderationCaseStateArea {
+		return nil, errors.New("bad transaction")
+	}
+	c := changes[0]
+	old := n.rows[string(c.Key)]
+	if old.Revision != c.ExpectedRevision {
+		return nil, errors.New("revision conflict")
+	}
+	v := native.StateValue{Revision: old.Revision + 1}
+	if c.Value == nil {
+		v.Tombstone = true
+	} else {
+		v.Value = append([]byte(nil), c.Value...)
+	}
+	n.rows[string(c.Key)] = v
+	if n.failAfterWrite {
+		n.failAfterWrite = false
+		return nil, errors.New("response lost")
+	}
+	return []uint64{v.Revision}, nil
+}
+func (n *moderationCaseNativeFake) StateScan(_ context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
+	if area != moderationCaseStateArea || limit == 0 || limit > 100 {
+		return native.StatePage{}, errors.New("bad scan")
+	}
+	keys := make([]string, 0, len(n.rows))
+	for key := range n.rows {
+		if key > string(after) {
+			keys = append(keys, key)
+		}
+	}
+	// Keys are fixed-width hexadecimal and therefore already range-sortable.
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	if len(keys) > int(limit) {
+		keys = keys[:limit]
+	}
+	page := native.StatePage{}
+	for _, key := range keys {
+		v := n.rows[key]
+		page.Entries = append(page.Entries, native.StateEntry{Key: []byte(key), Revision: v.Revision, Value: append([]byte(nil), v.Value...), Tombstone: v.Tombstone})
+	}
+	if len(keys) > 0 {
+		page.Next = []byte(keys[len(keys)-1])
+	}
+	return page, nil
+}
+
+type moderationCaseEnforcerFunc func(context.Context, ModerationAction) error
+
+func (f moderationCaseEnforcerFunc) EnforceModerationAction(ctx context.Context, action ModerationAction) error {
+	return f(ctx, action)
+}
+
+func sampleModerationAction(n *moderationCaseNativeFake, revision uint64) ModerationAction {
+	return ModerationAction{Community: n.binding.Community.String(), Channel: id.New().String(), Actor: id.New().String(), Message: id.New().String(),
+		SourceRevision: revision, Decision: moderation.Decision{Action: moderation.ActionLog, Rules: []moderation.Rule{moderation.RuleMentions}}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0)}
+}
+
+func TestModerationCaseSinkDeduplicatesAndRejectsConflictingSourceRevision(t *testing.T) {
+	n := newModerationCaseNative()
+	sink, err := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := sampleModerationAction(n, 7)
+	n.failAfterWrite = true
+	if err = sink.ApplyModerationAction(context.Background(), action); err != nil {
+		t.Fatalf("first write should recover after uncertain response: %v", err)
+	}
+	if err = sink.ApplyModerationAction(context.Background(), action); err != nil {
+		t.Fatalf("exact replay should recover after uncertain response: %v", err)
+	}
+	if len(n.rows) != 1 {
+		t.Fatalf("stored rows = %d, want 1", len(n.rows))
+	}
+	conflict := action
+	conflict.Excerpt = "different content"
+	if err = sink.ApplyModerationAction(context.Background(), conflict); !errors.Is(err, ErrModerationCaseConflict) {
+		t.Fatalf("conflicting replay error = %v", err)
+	}
+}
+
+func TestModerationCaseSinkRejectsPunitiveActionWithoutEnforcement(t *testing.T) {
+	n := newModerationCaseNative()
+	sink, err := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, actionType := range []moderation.Action{moderation.ActionRemove, moderation.ActionWarn, moderation.ActionTimeout} {
+		action := sampleModerationAction(n, uint64(len(actionType)))
+		action.Decision.Action = actionType
+		if actionType == moderation.ActionTimeout {
+			action.Decision.Timeout = time.Minute
+		}
+		if err := sink.ApplyModerationAction(context.Background(), action); !errors.Is(err, ErrModerationEnforcementUnavailable) {
+			t.Fatalf("action %q error = %v", actionType, err)
+		}
+	}
+	if len(n.rows) != 0 {
+		t.Fatalf("punitive action persisted %d misleading cases", len(n.rows))
+	}
+}
+
+func TestModerationCaseSinkBoundsExcerptAndRejectsMalformedOrWrongBindingState(t *testing.T) {
+	n := newModerationCaseNative()
+	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
+	action := sampleModerationAction(n, 3)
+	action.Excerpt = strings.Repeat("x", 700)
+	if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
+		t.Fatal(err)
+	}
+	cases, _, err := sink.List(context.Background(), nil, 10)
+	if err != nil || len(cases) != 1 {
+		t.Fatalf("list = %d cases, %v", len(cases), err)
+	}
+	if len(cases[0].Excerpt) > 512 {
+		t.Fatalf("excerpt size = %d", len(cases[0].Excerpt))
+	}
+	other := *n
+	other.binding = native.Binding{Instance: id.New(), Community: id.New(), Installation: id.New()}
+	wrongSink, _ := NewModerationCaseSink(&other, nil, time.Now)
+	if _, _, err := wrongSink.List(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseBinding) {
+		t.Fatalf("wrong binding list error = %v", err)
+	}
+	bad := newModerationCaseNative()
+	bad.rows["mc1-malformed"] = native.StateValue{Revision: 1, Value: []byte{0x80}}
+	badSink, _ := NewModerationCaseSink(bad, nil, time.Now)
+	if _, _, err := badSink.List(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseState) {
+		t.Fatalf("malformed state error = %v", err)
+	}
+}
+
+func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {
+	n := newModerationCaseNative()
+	now := time.Unix(1_800_000_000, 0)
+	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	old := sampleModerationAction(n, 1)
+	old.ReceivedAt = now.Add(-91 * 24 * time.Hour)
+	fresh := sampleModerationAction(n, 2)
+	fresh.ReceivedAt = now.Add(-89 * 24 * time.Hour)
+	if err := sink.ApplyModerationAction(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.ApplyModerationAction(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	removed, next, err := sink.PurgeExpired(context.Background(), nil)
+	if err != nil || removed != 1 || next == nil {
+		t.Fatalf("purge = %d, cursor %q, err %v", removed, next, err)
+	}
+	removed, next, err = sink.PurgeExpired(context.Background(), next)
+	if err != nil || removed != 0 || next != nil {
+		t.Fatalf("final purge page = %d, cursor %q, err %v", removed, next, err)
+	}
+	cases, _, err := sink.List(context.Background(), nil, 10)
+	if err != nil || len(cases) != 1 || cases[0].Message != fresh.Message {
+		t.Fatalf("remaining cases = %#v, %v", cases, err)
+	}
+}

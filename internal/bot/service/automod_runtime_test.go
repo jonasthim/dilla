@@ -66,8 +66,11 @@ func TestAutoModerationRuntimeUsesNativeActorAndDeduplicates(t *testing.T) {
 	}
 	lastCount := len(got)
 	for _, action := range got {
+		if action.SourceRevision == 0 {
+			t.Fatal("sink action omitted the source revision")
+		}
 		if action.Decision.Action == moderation.ActionWarn {
-			if action.Actor != event.SenderUser.String() || action.Excerpt != moderation.Excerpt(body) {
+			if action.Actor != event.SenderUser.String() || action.Excerpt != moderation.Excerpt(body) || action.SourceRevision != event.SourceSequence {
 				t.Fatalf("sink action actor/excerpt = %v/%q", action.Actor, action.Excerpt)
 			}
 			break

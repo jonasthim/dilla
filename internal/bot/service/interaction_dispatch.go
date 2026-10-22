@@ -52,7 +52,10 @@ type InteractionHandlerSpec struct {
 	// atomically compare Request.Revision with the current revision in the same
 	// transaction as its write and return status 4 on a race.
 	CurrentRevision func(context.Context, protocol.Request) (uint64, error)
-	Handle          func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error)
+	// RevisionInHandler means Handle authenticates the actor before reading
+	// revision state and performs the atomic comparison itself.
+	RevisionInHandler bool
+	Handle            func(context.Context, InteractionActor, protocol.Request) (InteractionResult, error)
 }
 
 type interactionReplayKey struct {
@@ -130,7 +133,10 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	if err != nil {
 		return "", err
 	}
-	if group.ID != event.Group || group.State != 2 || group.Community == nil || *group.Community != d.binding.Community || group.Target != event.Channel || group.Kind != 0 && group.Kind != 3 {
+	// Native kind-3 groups lack a typed installation and participant binding.
+	// Do not infer that authority from fields supplied by a Go event. Admit
+	// them only after the core can authenticate that binding end to end.
+	if group.ID != event.Group || group.State != 2 || group.Community == nil || *group.Community != d.binding.Community || group.Target != event.Channel || group.Kind != 0 {
 		return "", protocol.ErrContext
 	}
 	request, err := protocol.DecodeRequest(*event.Body)
@@ -201,19 +207,21 @@ func (d *InteractionDispatcher) Dispatch(ctx context.Context, event native.Group
 	}
 	actor := InteractionActor{User: event.SenderUser, Device: event.SenderDevice, Kind: event.SenderKind, Tier: event.SenderTier, Group: event.Group, Channel: event.Channel}
 	if request.Revision != nil {
-		if handler.CurrentRevision == nil {
+		if handler.CurrentRevision == nil && !handler.RevisionInHandler {
 			response.Status = interactionStatusUnavailable
 			return finish()
 		}
-		current, revisionErr := handler.CurrentRevision(ctx, request)
-		if revisionErr != nil || current > math.MaxInt64 {
-			response.Status = interactionStatusInternal
-			return finish()
-		}
-		if *request.Revision != current {
-			response.Status = interactionStatusConflict
-			response.Revision = &current
-			return finish()
+		if handler.CurrentRevision != nil {
+			current, revisionErr := handler.CurrentRevision(ctx, request)
+			if revisionErr != nil || current > math.MaxInt64 {
+				response.Status = interactionStatusInternal
+				return finish()
+			}
+			if *request.Revision != current {
+				response.Status = interactionStatusConflict
+				response.Revision = &current
+				return finish()
+			}
 		}
 	}
 	result, handlerErr := handler.Handle(ctx, actor, request)

@@ -14,6 +14,7 @@ import (
 // sink. The decrypted message body is never retained here.
 type ModerationAction struct {
 	Community, Channel, Actor, Message string
+	SourceRevision                     uint64
 	Decision                           moderation.Decision
 	Excerpt                            string
 	ReceivedAt                         time.Time
@@ -92,7 +93,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 		return decision, nil
 	}
 	action := ModerationAction{Community: event.Community.String(), Channel: event.Channel.String(),
-		Actor: event.SenderUser.String(), Message: event.Message.String(), Decision: decision,
+		Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
 		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt}
 	if err := r.sink.ApplyModerationAction(ctx, action); err != nil {
 		return decision, err

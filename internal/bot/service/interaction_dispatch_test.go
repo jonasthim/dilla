@@ -105,6 +105,20 @@ func TestInteractionDispatcherChecksNativeGroupAndChannelContext(t *testing.T) {
 	}
 }
 
+func TestInteractionDispatcherRefusesUnboundInteractionGroup(t *testing.T) {
+	d, event, binding := interactionFixture(t, nil)
+	body := interactionBody(t, nil, interactionID(8), protocol.OpOverviewGet, nil, nil, nil)
+	event.Body = &body
+	// The native client has no typed installation/participant binding for kind 3
+	// yet. A matching channel and community in a Go event cannot supply it.
+	d.native = &interactionNativeFake{binding: binding, group: native.GroupInfo{
+		ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2,
+	}}
+	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) {
+		t.Fatalf("unbound interaction group error = %v, want context refusal", err)
+	}
+}
+
 func TestInteractionDispatcherMarksExpiredMutation(t *testing.T) {
 	d, event, _ := interactionFixture(t, map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpMusicClear: {
