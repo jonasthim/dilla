@@ -46,6 +46,13 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot-join-role"
+	memberID, memberTok := e.NewUser("join-policy-reader")
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: memberID, Joined: e.Clk.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := e.Do(http.MethodGet, path, memberTok, nil); status != http.StatusForbidden {
+		t.Fatalf("member read approved role = %d (%x), want 403", status, body)
+	}
 	assertRead := func(want id.ID) {
 		t.Helper()
 		status, body := e.Do(http.MethodGet, path, ownerTok, nil)
