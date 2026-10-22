@@ -195,7 +195,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"GetRolePanel", "ListRolePanelOptions", "SetRolePanel",
 		}},
 		{"ReactionRoleGrantSources", reflect.TypeOf((*store.ReactionRoleGrantSources)(nil)).Elem(), []string{
-			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",
+			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleChannelGrants", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",
 		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
