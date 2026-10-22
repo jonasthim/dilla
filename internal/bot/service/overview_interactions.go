@@ -17,8 +17,9 @@ type overviewActorAuthority interface {
 }
 
 // OverviewInteractions returns only the requesting actor's current community
-// authority. The authenticated bot session resolves membership and role state
-// afresh for every request; only owners and administrators may inspect it.
+// authority. The authenticated bot session resolves membership and permissions
+// afresh for every request; owners, administrators, and delegated community
+// managers may inspect it.
 type OverviewInteractions struct {
 	Authority   overviewActorAuthority
 	CommunityID id.ID
@@ -38,7 +39,7 @@ func (h OverviewInteractions) get(ctx context.Context, actor InteractionActor, r
 	if err != nil {
 		return InteractionResult{}, err
 	}
-	if !present || (!authority.Owner && !authority.Administrator) {
+	if !present || (!authority.Owner && !authority.Administrator && authority.EffectiveBits&manageCommunityBit == 0) {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	owner, admin := uint64(0), uint64(0)

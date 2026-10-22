@@ -26,7 +26,7 @@ func (f *overviewAuthorityFake) BotActorAuthority(_ context.Context, community, 
 
 func TestOverviewInteractionReturnsOnlyCurrentAuthorizedActorAuthority(t *testing.T) {
 	community, actorID := interactionID(2), interactionID(6)
-	authority := &overviewAuthorityFake{result: client.ActorAuthority{EffectiveBits: 1 << 16, Administrator: true}, present: true}
+	authority := &overviewAuthorityFake{result: client.ActorAuthority{EffectiveBits: manageCommunityBit}, present: true}
 	handler := OverviewInteractions{Authority: authority, CommunityID: community}.Handlers()[protocol.OpOverviewGet].Handle
 	result, err := handler(context.Background(), InteractionActor{User: actorID, Kind: 0}, protocol.Request{CommunityID: community})
 	if err != nil || result.Status != 0 {
@@ -40,8 +40,29 @@ func TestOverviewInteractionReturnsOnlyCurrentAuthorizedActorAuthority(t *testin
 		t.Fatalf("overview payload = %x, decoded=%v, err=%v", result.Data, data, err)
 	}
 	actorBytes, ok := data[1].([]byte)
-	if data[0] != uint64(1) || !ok || !bytes.Equal(actorBytes, actorID[:]) || data[2] != uint64(1<<16) || data[3] != uint64(0) || data[4] != uint64(1) {
+	if data[0] != uint64(1) || !ok || !bytes.Equal(actorBytes, actorID[:]) || data[2] != manageCommunityBit || data[3] != uint64(0) || data[4] != uint64(0) {
 		t.Fatalf("overview payload fields = %#v", data)
+	}
+}
+
+func TestOverviewInteractionHonorsDelegatedManagerRevocation(t *testing.T) {
+	community, actorID := interactionID(2), interactionID(6)
+	authority := &overviewAuthorityFake{result: client.ActorAuthority{EffectiveBits: manageCommunityBit}, present: true}
+	handler := OverviewInteractions{Authority: authority, CommunityID: community}.Handlers()[protocol.OpOverviewGet].Handle
+	actor := InteractionActor{User: actorID, Kind: 0}
+	request := protocol.Request{CommunityID: community}
+	granted, err := handler(context.Background(), actor, request)
+	if err != nil || granted.Status != 0 {
+		t.Fatalf("delegated manager result = %+v, %v; want success", granted, err)
+	}
+	// A fresh server lookup after the delegated role is removed must stop access.
+	authority.result = client.ActorAuthority{EffectiveBits: 0}
+	revoked, err := handler(context.Background(), actor, request)
+	if err != nil || revoked.Status != interactionStatusForbidden || len(revoked.Data) != 0 {
+		t.Fatalf("revoked manager result = %+v, %v; want empty forbidden response", revoked, err)
+	}
+	if authority.calls != 2 {
+		t.Fatalf("authority lookups = %d, want fresh lookup for both requests", authority.calls)
 	}
 }
 
