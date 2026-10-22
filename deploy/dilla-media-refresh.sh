@@ -97,9 +97,11 @@ media_state() {
 	MS_LEVEL=0
 	MS_CAPS=""
 	[ "$1" -gt 0 ] || return 1
-	ms="$(runuser -u dillad -- "$BIN" media --self --config="$CONF" 2>/dev/null | head -n 1)" || ms=""
+	ms="$(timeout 10 runuser -u dillad -- "$BIN" media --self --config="$CONF" 2>/dev/null | head -n 1)" || ms=""
 	if ! parse_report "$ms" || [ "$P_PID" != "$1" ]; then
-		ms="$(head -c 4096 "$DATA/media.json" 2>/dev/null)" || return 1
+		# Only a regular file (dillad could leave a FIFO or a link there), bounded in size and time.
+		[ -f "$DATA/media.json" ] && [ ! -L "$DATA/media.json" ] || return 1
+		ms="$(timeout 5 head -c 4096 "$DATA/media.json" 2>/dev/null)" || return 1
 		parse_report "$ms" || return 1
 		[ "$P_PID" = "$1" ] || return 1
 	fi
@@ -128,7 +130,24 @@ restart_api_for_handoff() {
 	exit 1
 }
 
-idle() { runuser -u dillad -- "$BIN" media --idle --config="$CONF" >/dev/null 2>&1; }
+# Every client call is bounded, so a stalled SFU cannot hold the lock install.sh waits for.
+idle() { timeout 60 runuser -u dillad -- "$BIN" media --idle --config="$CONF" >/dev/null 2>&1; }
+
+# The deferred-restart record (root's, 0644 in a 0755 directory): since when the running SFU, by
+# its MainPID, has run another executable than the installed one without being idle. `dillad
+# doctor` reads it (its media_refresh leg: yellow, red after 24 h); nothing here forces a restart.
+PENDING_DIR="$ROOT/var/lib/dilla-media-refresh"
+PENDING="$PENDING_DIR/pending"
+record_pending() {
+	if [ -f "$PENDING" ] && [ ! -L "$PENDING" ] && [ "$(sed -n 's/^pid=\([0-9]*\) since=[0-9]*$/\1/p' "$PENDING")" = "$1" ]; then
+		return 0
+	fi
+	mkdir -p "$PENDING_DIR"
+	chmod 0755 "$PENDING_DIR"
+	printf 'pid=%s since=%s\n' "$1" "$(date +%s)" >"$PENDING.new" && chmod 0644 "$PENDING.new" && mv -f "$PENDING.new" "$PENDING"
+	log "dilla-media (pid $1) runs another executable than the installed $BIN and is not idle: its restart waits until it is (dillad doctor's media_refresh leg says for how long)"
+}
+clear_pending() { rm -f "$PENDING"; }
 
 # One at a time with install.sh --upgrade, which holds this lock while it decides and restarts.
 if command -v flock >/dev/null 2>&1; then
@@ -147,7 +166,7 @@ turn_configured=0
 if [ "$(conf_value turn enabled)" = true ] && [ -n "$(conf_value turn listen)" ]; then
 	turn_configured=1
 fi
-new_json="$(runuser -u dillad -- "$BIN" version --json 2>/dev/null)" || new_json=""
+new_json="$(timeout 10 runuser -u dillad -- "$BIN" version --json 2>/dev/null)" || new_json=""
 installed_version="$(unquote "$(json_get "$new_json" version)")"
 before_valid=0
 before_turn=0
@@ -175,6 +194,7 @@ if [ "$running" = "$installed" ]; then
 fi
 
 if [ "$same" -eq 1 ]; then
+	clear_pending
 	# The SFU runs the installed binary, so its report can be used for its level and capabilities.
 	# Only a handoff that never happened is left: the SFU came up on this binary on its own
 	# (systemd restarted it after a crash) while the API still held turn.listen. Once per media
@@ -190,12 +210,16 @@ if [ "$same" -eq 1 ]; then
 fi
 
 # Another executable: an older SFU, whatever it says about itself. Restart it once it is idle.
-idle || exit 0
+if ! idle; then
+	record_pending "$pid"
+	exit 0
+fi
 log "dilla-media (pid $pid) runs another executable than the installed $BIN${MS_VERSION:+ (it reports $MS_VERSION)}; its rooms are idle: restarting it"
 if ! systemctl restart dilla-media; then
 	log "error: dilla-media did not restart; read journalctl -o cat -u dilla-media"
 	exit 1
 fi
+clear_pending
 new_pid="$(main_pid)"
 if media_state "$new_pid"; then
 	log "dilla-media now runs $MS_VERSION (pid $new_pid)"
@@ -203,5 +227,7 @@ else
 	log "dilla-media restarted (pid $new_pid)"
 fi
 [ "$handoff" -eq 1 ] || exit 0
+# This media process gets its handoff now; the same-binary path above never repeats it.
+echo "$new_pid" >"$MARK"
 log "TURN handoff: dilla-media takes turn.listen from now on; restarting dilla so it lets go"
 restart_api_for_handoff

@@ -65,7 +65,7 @@ func (p *peerList) Set(v string) error { *p = append(*p, v); return nil }
 // runDoctor is the full check inventory, in this order: config (parse plus
 // Validate), database (db.PingContext plus the goose schema version), pragmas,
 // data_dir (mode and ownership), wasi (artifact load plus dilla_abi), clock
-// (skew against doctor.clock_peers), certificate, turn, media_binary, udp and blobs. It
+// (skew against doctor.clock_peers), certificate, turn, media_binary, media_refresh, udp and blobs. It
 // prints ops.Report's stable text, one line per leg, and exits exit.Unavailable
 // if any leg is red; a yellow leg alone exits 0.
 //
@@ -193,6 +193,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 	add(doctorCertificateLeg(ctx, cfg))
 	add(doctorTURNLeg(ctx, cfg))
 	add(doctorMediaBinaryLeg(ctx, cfg))
+	add(doctorMediaRefreshLeg(ctx, cfg, time.Now()))
 	add(ops.UDPLeg(*cfg))
 	add(ops.WebAuthnLeg(*cfg))
 	add(doctorBlobsLeg(ctx, cfg, repo))

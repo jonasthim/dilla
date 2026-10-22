@@ -468,6 +468,9 @@ Release: **v0.1.0-web3.12**. It comes after fix/late-rejoin, which lands separat
   - a new Versions row, **"Media server (SFU) | when-idle (level 2, keeps web3.11's level 1) | …"**;
   - the operator notes below;
   - correct web3.11's PartOf-based rollback wording.
+  - (UP3 review) a media server that runs a dillad the installer cannot identify gets a restart, which ends its calls. That covers an SFU two or more releases back (its executable matches neither the installed `dillad`, `dillad.prev` nor the pinned web3.11 binaries) and a self-built binary;
+  - (UP3 review) `dilla-media.service` has `NoExecPaths=/` and `ExecPaths=/usr/local/bin`, so `dillad` must be the statically linked release build (`CGO_ENABLED=0`). A dynamically linked build cannot start under the unit;
+  - (UP3 review) the doctor's new `media_refresh` leg: yellow while `dilla-media` waits to become idle on an older binary, red after 24 h. The restart is the operator's call: `dillad media --rooms`, then `systemctl restart dilla-media`.
 - **README:**
   - in the operator part: "Upgrades keep calls (web3.12); TURN runs in the media service";
   - in the client part: "an update during a call reloads and reconnects in a few seconds".

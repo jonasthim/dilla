@@ -391,6 +391,10 @@ REFRESH_TIMER_PATH="$ROOT/etc/systemd/system/dilla-media-refresh.timer"
 REFRESH_DIR="$ROOT/usr/local/libexec"
 REFRESH_SCRIPT="$REFRESH_DIR/dilla-media-refresh"
 PROC="$ROOT/proc"
+# The owner of the binaries install.sh puts in place: root. Under DILLA_INSTALL_ROOT (the tests,
+# which are not root) the owner of that root directory stands in for it.
+TRUSTED_UID=0
+[ -z "$ROOT" ] || TRUSTED_UID="$(stat -c %u "$ROOT" 2>/dev/null || echo 0)"
 CONF_DIR="$ROOT/etc/dilla"
 CONF="$CONF_DIR/dilla.toml"
 DATA_DIR="$ROOT/var/lib/dillad"
@@ -852,9 +856,11 @@ media_state() {
 	MS_LEVEL=0
 	MS_CAPS=""
 	[ "$1" -gt 0 ] || return 1
-	ms="$(runuser -u dillad -- "$BIN" media --self --config="$CONF" 2>/dev/null | head -n 1)" || ms=""
+	ms="$(timeout 10 runuser -u dillad -- "$BIN" media --self --config="$CONF" 2>/dev/null | head -n 1)" || ms=""
 	if ! parse_report "$ms" || [ "$P_PID" != "$1" ]; then
-		ms="$(head -c 4096 "$DATA/media.json" 2>/dev/null)" || return 1
+		# Only a regular file (dillad could leave a FIFO or a link there), bounded in size and time.
+		[ -f "$DATA/media.json" ] && [ ! -L "$DATA/media.json" ] || return 1
+		ms="$(timeout 5 head -c 4096 "$DATA/media.json" 2>/dev/null)" || return 1
 		parse_report "$ms" || return 1
 		[ "$P_PID" = "$1" ] || return 1
 	fi
@@ -883,7 +889,24 @@ restart_api_for_handoff() {
 	exit 1
 }
 
-idle() { runuser -u dillad -- "$BIN" media --idle --config="$CONF" >/dev/null 2>&1; }
+# Every client call is bounded, so a stalled SFU cannot hold the lock install.sh waits for.
+idle() { timeout 60 runuser -u dillad -- "$BIN" media --idle --config="$CONF" >/dev/null 2>&1; }
+
+# The deferred-restart record (root's, 0644 in a 0755 directory): since when the running SFU, by
+# its MainPID, has run another executable than the installed one without being idle. `dillad
+# doctor` reads it (its media_refresh leg: yellow, red after 24 h); nothing here forces a restart.
+PENDING_DIR="$ROOT/var/lib/dilla-media-refresh"
+PENDING="$PENDING_DIR/pending"
+record_pending() {
+	if [ -f "$PENDING" ] && [ ! -L "$PENDING" ] && [ "$(sed -n 's/^pid=\([0-9]*\) since=[0-9]*$/\1/p' "$PENDING")" = "$1" ]; then
+		return 0
+	fi
+	mkdir -p "$PENDING_DIR"
+	chmod 0755 "$PENDING_DIR"
+	printf 'pid=%s since=%s\n' "$1" "$(date +%s)" >"$PENDING.new" && chmod 0644 "$PENDING.new" && mv -f "$PENDING.new" "$PENDING"
+	log "dilla-media (pid $1) runs another executable than the installed $BIN and is not idle: its restart waits until it is (dillad doctor's media_refresh leg says for how long)"
+}
+clear_pending() { rm -f "$PENDING"; }
 
 # One at a time with install.sh --upgrade, which holds this lock while it decides and restarts.
 if command -v flock >/dev/null 2>&1; then
@@ -902,7 +925,7 @@ turn_configured=0
 if [ "$(conf_value turn enabled)" = true ] && [ -n "$(conf_value turn listen)" ]; then
 	turn_configured=1
 fi
-new_json="$(runuser -u dillad -- "$BIN" version --json 2>/dev/null)" || new_json=""
+new_json="$(timeout 10 runuser -u dillad -- "$BIN" version --json 2>/dev/null)" || new_json=""
 installed_version="$(unquote "$(json_get "$new_json" version)")"
 before_valid=0
 before_turn=0
@@ -930,6 +953,7 @@ if [ "$running" = "$installed" ]; then
 fi
 
 if [ "$same" -eq 1 ]; then
+	clear_pending
 	# The SFU runs the installed binary, so its report can be used for its level and capabilities.
 	# Only a handoff that never happened is left: the SFU came up on this binary on its own
 	# (systemd restarted it after a crash) while the API still held turn.listen. Once per media
@@ -945,12 +969,16 @@ if [ "$same" -eq 1 ]; then
 fi
 
 # Another executable: an older SFU, whatever it says about itself. Restart it once it is idle.
-idle || exit 0
+if ! idle; then
+	record_pending "$pid"
+	exit 0
+fi
 log "dilla-media (pid $pid) runs another executable than the installed $BIN${MS_VERSION:+ (it reports $MS_VERSION)}; its rooms are idle: restarting it"
 if ! systemctl restart dilla-media; then
 	log "error: dilla-media did not restart; read journalctl -o cat -u dilla-media"
 	exit 1
 fi
+clear_pending
 new_pid="$(main_pid)"
 if media_state "$new_pid"; then
 	log "dilla-media now runs $MS_VERSION (pid $new_pid)"
@@ -958,6 +986,8 @@ else
 	log "dilla-media restarted (pid $new_pid)"
 fi
 [ "$handoff" -eq 1 ] || exit 0
+# This media process gets its handoff now; the same-binary path above never repeats it.
+echo "$new_pid" >"$MARK"
 log "TURN handoff: dilla-media takes turn.listen from now on; restarting dilla so it lets go"
 restart_api_for_handoff
 SCRIPT
@@ -1018,7 +1048,13 @@ doctor_and_report() {
 	# those exist, which is expected on a fresh install. The udp leg is never red:
 	# it reads WARN "not probed" by default and cannot prove the forward.
 	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
-	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
+	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "media_refresh") { printf "%s ", $2 }')"
+	# A dilla-media restart deferred for over 24 h is the operator's to decide, not the install's.
+	MR_RED=0
+	if printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && $2 == "media_refresh" { found = 1 } END { exit !found }'; then
+		MR_RED=1
+		log "warning: dilla-media has not been idle for over 24 h, so it still runs an older binary (doctor's media_refresh leg above)"
+	fi
 	if [ -n "$PENDING" ]; then
 		log "doctor: these checks need DNS, the network or the proxy set up first, and fail until DNS and the proxy are in place: $PENDING"
 		log "        run the doctor again once they are: runuser -u dillad -- /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml"
@@ -1027,7 +1063,7 @@ doctor_and_report() {
 		log "error: doctor found a problem with the install itself: $BROKEN"
 		return 1
 	fi
-	if [ "$DOCTOR_RC" -ne 0 ] && [ -z "$PENDING" ]; then
+	if [ "$DOCTOR_RC" -ne 0 ] && [ -z "$PENDING" ] && [ "$MR_RED" -eq 0 ]; then
 		log "error: dillad doctor exited $DOCTOR_RC"
 		return 1
 	fi
@@ -1117,55 +1153,57 @@ parse_report() {
 }
 
 # media_self: what the RUNNING dilla-media says about itself on media.sock (GET /media/self), asked
-# as dillad (media.sock serves only that uid) through the installed dillad as a client. Sets
-# SELF_VERSION and SELF_LEVEL; 1 when nothing answers, the answer is malformed, or it
-# names another pid than the unit's MainPID. web3.11 and older have no media.sock.
+# as dillad (media.sock serves only that uid) through the installed dillad as a client, bounded by
+# timeout so a stalled SFU cannot hang the installer while it holds the lock. Sets SELF_VERSION
+# (used only for readiness, after the executable's identity); 1 when nothing answers, the answer is
+# malformed, or it names another pid than the unit's MainPID. web3.11 and older have no media.sock.
 media_self() {
 	SELF_VERSION=""
-	SELF_LEVEL=""
-	msf="$(runuser -u dillad -- "$BIN_DIR/dillad" media --self --config="$CONF" 2>/dev/null | head -n 1)" || return 1
+	msf="$(timeout 10 runuser -u dillad -- "$BIN_DIR/dillad" media --self --config="$CONF" 2>/dev/null | head -n 1)" || return 1
 	parse_report "$msf" || return 1
 	msf_main="$(media_main_pid)"
 	[ "$msf_main" -gt 0 ] && [ "$P_PID" = "$msf_main" ] || return 1
 	SELF_VERSION="$P_VERSION"
-	SELF_LEVEL="$P_LEVEL"
 }
 
-# media_state: sets MS_VERSION, MS_LEVEL and MS_CAPS from media.json when its pid is dilla-media's
-# MainPID (R-UP3). A file with any other pid was left by an earlier process (a crash, a reboot) and
-# counts as absent; MS_STALE then says why. A malformed file counts as absent too.
+# media_state: sets MS_VERSION and MS_CAPS from media.json when its pid is dilla-media's MainPID
+# (R-UP3); a file with any other pid was left by an earlier process (a crash, a reboot) and counts
+# as absent. Only a regular file is read (dillad could leave a FIFO or a link there), bounded in
+# size and time; anything malformed counts as absent too. Used for readiness and the TURN wait
+# only, after the executable's identity; never for the level.
 media_state() {
 	MS_VERSION=""
-	MS_LEVEL=""
 	MS_CAPS=""
-	MS_STALE=""
-	ms="$(head -c 4096 "$MEDIA_DATA/media.json" 2>/dev/null)" || return 1
+	[ -f "$MEDIA_DATA/media.json" ] && [ ! -L "$MEDIA_DATA/media.json" ] || return 1
+	ms="$(timeout 5 head -c 4096 "$MEDIA_DATA/media.json" 2>/dev/null)" || return 1
 	parse_report "$ms" || return 1
 	ms_main="$(media_main_pid)"
-	if [ "$ms_main" -eq 0 ] || [ "$P_PID" != "$ms_main" ]; then
-		MS_STALE="its pid $P_PID is not dilla-media's MainPID $ms_main"
-		return 1
-	fi
+	[ "$ms_main" -gt 0 ] && [ "$P_PID" = "$ms_main" ] || return 1
 	MS_VERSION="$P_VERSION"
-	MS_LEVEL="$P_LEVEL"
 	MS_CAPS="$P_CAPS"
 }
 
 # sha256_of FILE: FILE's SHA-256, read as data.
 sha256_of() { sha256sum <"$1" 2>/dev/null | awk '{ print $1 }'; }
 
+# trusted_binary FILE: FILE is a regular file of root's (TRUSTED_UID) that nobody else can write,
+# so asking it its version is asking root's own release.
+trusted_binary() {
+	[ -f "$1" ] && [ ! -L "$1" ] || return 1
+	[ "$(stat -c %u "$1" 2>/dev/null)" = "$TRUSTED_UID" ] || return 1
+	[ -z "$(find "$1" -perm /022 2>/dev/null)" ]
+}
+
 # sfu_level: what the running SFU is (R-UP3). Sets SFU_PID, SFU_VERSION, SFU_LEVEL (empty when it
 # cannot be told) and SFU_FROM, where the answer came from.
 #
-# Identity comes first, from the executable alone: the SHA-256 of /proc/<pid>/exe, read as data,
-# against the installed dillad, dillad.prev (root's own files) and the pinned web3.11 releases.
-# Nothing reached through /proc is ever executed: a dillad process can execve a binary of its own
-# and keep its pid, and this runs as root. An executable that matches none of them is unknown, and
-# unknown means a restart, whatever the process says about itself.
-#
-# Only once the executable is known is the process's own report used for its level: on media.sock,
-# then its media.json (pid = MainPID), and only when it names the version that executable is. A
-# web3.11 executable has no report and is level 1, the baseline CI proves (R-UP1).
+# Only the executable decides, never what the process says about itself: the SHA-256 of
+# /proc/<pid>/exe, read as data, against the pinned web3.11 releases, the installed dillad and
+# dillad.prev. Nothing reached through /proc is ever executed: a dillad process can execve a binary
+# of its own and keep its pid, and this runs as root. A match with root's own file gives the
+# version and the media level from that file's `version --json` (a compile-time constant), and a
+# file without it (web3.11) is level 1, the baseline CI proves (R-UP1). An executable that matches
+# nothing is unknown, and unknown means a restart.
 sfu_level() {
 	SFU_PID="$(media_main_pid)"
 	SFU_VERSION=""
@@ -1180,40 +1218,34 @@ sfu_level() {
 	case "$sl_sum" in '' | *[!0-9a-f]*) return 0 ;; esac
 	[ "${#sl_sum}" -eq 64 ] || return 0
 	sl_is="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $2; exit }')"
-	if [ -z "$sl_is" ]; then
+	sl_level=""
+	if [ -n "$sl_is" ]; then
+		sl_level="$(printf '%s\n' "$KNOWN_SFU_BINARIES" | awk -v s="$sl_sum" '$1 == s { print $3; exit }')"
+		SFU_FROM="$SFU_FROM, which is the released v$sl_is"
+	else
 		for sl_cand in "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"; do
-			[ -f "$sl_cand" ] && [ ! -L "$sl_cand" ] || continue
-			# Only a file no one but its owner can write is asked its version.
-			[ -z "$(find "$sl_cand" -perm /022 2>/dev/null)" ] || continue
+			trusted_binary "$sl_cand" || continue
 			[ "$(sha256_of "$sl_cand")" = "$sl_sum" ] || continue
-			sl_is="$(runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
+			sl_json="$(timeout 10 runuser -u dillad -- "$sl_cand" version --json 2>/dev/null | head -n 1)" || sl_json=""
+			if [ -n "$sl_json" ]; then
+				sl_is="$(unquote "$(json_get "$sl_json" version)")"
+				sl_level="$(json_get "$sl_json" media_level)"
+			else
+				sl_is="$(timeout 10 runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
+				[ "$sl_is" != 0.1.0-web3.11 ] || sl_level=1
+			fi
 			SFU_FROM="$SFU_FROM, which is $sl_cand"
 			break
 		done
 	fi
 	case "$sl_is" in *[!A-Za-z0-9.+_-]*) sl_is="" ;; esac
+	case "$sl_level" in *[!0-9]*) sl_level="" ;; esac
 	if [ -z "$sl_is" ]; then
 		SFU_FROM="$SFU_FROM, which is no dillad this installer knows"
 		return 0
 	fi
 	SFU_VERSION="$sl_is"
-	if [ "$sl_is" = 0.1.0-web3.11 ]; then
-		SFU_LEVEL=1
-		return 0
-	fi
-	# A known executable of web3.12 or later: its own report gives the level, if it is that version.
-	if media_self && [ "$SELF_VERSION" = "$sl_is" ]; then
-		SFU_LEVEL="$SELF_LEVEL"
-		SFU_FROM="$SFU_FROM, and its media.sock"
-		return 0
-	fi
-	if media_state && [ "$MS_VERSION" = "$sl_is" ]; then
-		SFU_LEVEL="$MS_LEVEL"
-		SFU_FROM="$SFU_FROM, and its media.json"
-		return 0
-	fi
-	[ -z "$MS_STALE" ] || log "ignoring $MEDIA_DATA/media.json: $MS_STALE, so an earlier process left it"
-	SFU_FROM="$SFU_FROM, without a report that names it"
+	SFU_LEVEL="$sl_level"
 	return 0
 }
 
@@ -1256,7 +1288,7 @@ live_calls_preflight() {
 		# A stopped SFU holds no rooms (stopped by hand, or a rollback that stopped it first).
 		log "dilla-media is not running, so there are no live calls"
 		return 0
-	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
+	elif _rooms="$(timeout 30 runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
 		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
 		if [ -z "$_busy" ]; then
 			case "$_rooms" in
@@ -1314,7 +1346,7 @@ wait_media_ready() {
 			if [ -n "$wmr_sum" ] && [ "$wmr_sum" = "$(sha256_of "$BIN_DIR/dillad")" ]; then
 				if [ "$2" -eq 1 ]; then
 					if media_state && [ "$MS_VERSION" = "$1" ] && media_self && [ "$SELF_VERSION" = "$1" ]; then return 0; fi
-				elif runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+				elif timeout 30 runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 					return 0
 				fi
 			fi
