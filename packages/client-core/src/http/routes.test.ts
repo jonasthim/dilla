@@ -1661,6 +1661,18 @@ describe('managed community bot installation routes', () => {
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
   });
 
+  it('refuses malformed or foreign installation rows before exposing them to settings', async () => {
+    const rows = [installation.slice(0, 7), [BOT, USER, 1, 3, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 1, 0, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 6, 3, USER, DEVICE, 1, 1_800_000_000],
+      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 256, 1_800_000_000]];
+    for (const row of rows) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, row));
+      await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ code: /E_CBOR_/ });
+    }
+  });
+
   it('sends revision-bound disable with its stable request ID', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(200, installation));
