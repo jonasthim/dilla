@@ -69,12 +69,14 @@ fn interaction_binding_matches_event(
     instance: &[u8],
     installation: &[u8],
     community: &[u8],
+    bot_user: &[u8],
     sender_user: &[u8],
     sender_device: &[u8],
 ) -> bool {
     binding.instance_id.as_bytes() == instance
         && binding.installation_id.as_slice() == installation
         && binding.community_id.as_bytes() == community
+        && binding.bot_user_id.as_slice() == bot_user
         && binding.participant_user_id.as_slice() == sender_user
         && binding.participant_device_id.as_bytes() == sender_device
 }
@@ -103,22 +105,25 @@ mod interaction_event_binding_tests {
     fn interaction_event_binding_requires_exact_native_scope_and_participant() {
         let b = binding();
         assert!(interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[5; 16], &[6; 16]
+            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
         ));
         assert!(!interaction_binding_matches_event(
-            &b, &[9; 16], &[3; 16], &[4; 16], &[5; 16], &[6; 16]
+            &b, &[9; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
         ));
         assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[9; 16], &[4; 16], &[5; 16], &[6; 16]
+            &b, &[1; 16], &[9; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
         ));
         assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[9; 16], &[5; 16], &[6; 16]
+            &b, &[1; 16], &[3; 16], &[9; 16], &[2; 16], &[5; 16], &[6; 16]
         ));
         assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[9; 16], &[6; 16]
+            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[9; 16], &[6; 16]
         ));
         assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[5; 16], &[9; 16]
+            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[9; 16]
+        ));
+        assert!(!interaction_binding_matches_event(
+            &b, &[1; 16], &[3; 16], &[4; 16], &[9; 16], &[5; 16], &[6; 16]
         ));
     }
 }
@@ -188,10 +193,10 @@ pub(super) fn record_accepted(
                     &bot_binding.instance_id,
                     &bot_binding.installation_id,
                     &bot_binding.community_id,
+                    &own.user_id,
                     sender.user_id.as_bytes(),
                     sender.device_id.as_bytes(),
-                ) && b.bot_user_id.as_slice() != sender.user_id.as_bytes()
-                    && channel.as_slice() == b.participant_user_id
+                ) && channel.as_slice() == b.participant_user_id
             })
     } else {
         false
@@ -336,6 +341,7 @@ impl ClientCore {
     ) -> Result<Vec<u8>, ClientError> {
         let scope = bot_binding(self)?;
         let community = scope.community_id;
+        let bot_user = self.own()?.user_id;
         if !(1..=PAGE_LIMIT).contains(&limit) || after_delivery_id > i64::MAX as u64 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
@@ -395,11 +401,10 @@ impl ClientCore {
                                     &scope.instance_id,
                                     &scope.installation_id,
                                     &scope.community_id,
+                                    &bot_user,
                                     &row.sender_user,
                                     &row.sender_device,
-                                ) && binding.bot_user_id.as_slice() != row.sender_user.as_slice()
-                                    && binding.community_id.as_bytes()
-                                        == row.community_id.as_slice()
+                                ) && binding.community_id.as_bytes() == row.community_id.as_slice()
                                     && binding.participant_user_id.as_slice()
                                         == row.channel_id.as_slice()
                             }));
