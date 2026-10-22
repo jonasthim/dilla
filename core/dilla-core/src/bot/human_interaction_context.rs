@@ -660,4 +660,75 @@ mod tests {
             Err(CodecError::Context)
         );
     }
+
+    #[test]
+    fn verifies_shared_go_wire_vector_and_rejects_mutations() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../protocol/vectors/bot.json"))
+                .expect("bot vectors parse");
+        let vector = &corpus["current_human_interaction_context"];
+        let bytes = |field: &str| hex::decode(vector[field].as_str().unwrap()).unwrap();
+        let seed: [u8; 32] = bytes("seed").try_into().unwrap();
+        let public_key: [u8; 32] = bytes("public_key").try_into().unwrap();
+        let payload = bytes("payload_hex");
+        let signature: [u8; 64] = bytes("signature_hex").try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(&seed);
+        assert_eq!(signing_key.verifying_key().to_bytes(), public_key);
+        assert_eq!(
+            signing_key
+                .sign(&[DOMAIN, payload.as_slice()].concat())
+                .to_bytes(),
+            signature
+        );
+        let wire = bytes("wire_hex");
+        let (wire_payload, wire_signature) = decode_strict(&wire, |d| {
+            d.array(2)?;
+            Ok((d.bytes()?.to_vec(), d.bytes_exact::<64>()?))
+        })
+        .unwrap();
+        assert_eq!(wire_payload, payload);
+        assert_eq!(wire_signature, signature);
+
+        let expected = expected();
+        let expected_vector = &vector["expected"];
+        assert_eq!(
+            hex::encode(expected.instance.as_bytes()),
+            expected_vector["instance"]
+        );
+        assert_eq!(
+            hex::encode(expected.group.as_bytes()),
+            expected_vector["group"]
+        );
+        assert_eq!(
+            hex::encode(expected.participant_user.as_bytes()),
+            expected_vector["participant_user"]
+        );
+        assert_eq!(
+            hex::encode(expected.participant_device.as_bytes()),
+            expected_vector["participant_device"]
+        );
+        assert_eq!(expected.now, expected_vector["now"].as_u64().unwrap());
+        let context =
+            verify(&wire, &public_key, &expected).expect("shared current context verifies");
+        assert_eq!(context.registration.group, expected.group);
+        assert_eq!(context.registration.accepted_at, 90);
+        assert_eq!(context.eligibility_revision, 12);
+        assert_ne!(
+            context.roster[0].signature_key,
+            context.roster[1].signature_key
+        );
+
+        let rejects = vector["rejects"].as_array().unwrap();
+        assert_eq!(rejects.len(), 2);
+        let flipped_signature = hex::decode(rejects[0]["wire_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            verify(&flipped_signature, &public_key, &expected),
+            Err(CodecError::Context)
+        );
+        let malformed_payload = hex::decode(rejects[1]["wire_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            verify(&malformed_payload, &public_key, &expected),
+            Err(CodecError::Format)
+        );
+    }
 }

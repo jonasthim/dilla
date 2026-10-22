@@ -221,6 +221,43 @@ export async function botVectors() {
   list(7,0x20,0x21,0x22,0x20,0x23,0x24)]);
  const snapshotSignature=await sign(snapshotKey.privateKey,
   concat(new TextEncoder().encode('dilla bot interaction context snapshot v1\0'),snapshotPayload));
+ // Human current-group context proof: this matches currentInteractionContextWire and its
+ // nested Go `,toarray` structs exactly. The embedded device lists are real signed lists so
+ // the Rust verifier can validate the complete proof rather than only its outer signature.
+ const currentSeed=new Uint8Array(32).fill(0x61);
+ const currentKey=await keyFromSeed(currentSeed);
+ const signedDeviceList=async (user:number,device:number,base:number) => {
+  const umk=await keyFromSeed(new Uint8Array(32).fill(base));
+  const ssk=await keyFromSeed(new Uint8Array(32).fill(base+1));
+  const dsk=await keyFromSeed(new Uint8Array(32).fill(base+2));
+  const userId=id(user),deviceId=id(device),zero32=new Uint8Array(32);
+  const bindingSignature=await sign(umk.privateKey,
+   concat(new TextEncoder().encode('dilla ssk v1'),ssk.publicKey));
+  const unsigned=encode([1n,userId,1n,zero32,[[deviceId,dsk.publicKey,0n,1n,null]]]);
+  const listSignature=await sign(ssk.privateKey,
+   concat(new TextEncoder().encode('dilla devices v1'),unsigned));
+  const blob=encode([1n,userId,1n,zero32,[[deviceId,dsk.publicKey,0n,1n,null]],listSignature]);
+  return {tuple:[userId,umk.publicKey,ssk.publicKey,bindingSignature,1n,blob,listSignature,zero32,
+   createHash('sha256').update(Buffer.from(blob)).digest()] as const,dskPub:dsk.publicKey};
+ };
+ const currentBotList=await signedDeviceList(5,6,0x71);
+ const currentParticipantList=await signedDeviceList(7,8,0x74);
+ const currentRegistration=[id(3),id(10),id(5),id(6),id(4),id(9),
+  new Uint8Array(32).fill(0x81),2n,4n,1n,90n];
+ const currentBinding=[id(2),id(3),id(4),id(5),id(7),id(8),9n,1n,0n];
+ const currentPayload=encode([1n,id(2),id(11),currentKey.publicKey,100n,130n,
+  currentRegistration,currentBinding,7n,2n,new Uint8Array(32).fill(0x82),
+  [[0n,id(5),id(6),currentBotList.dskPub],[1n,id(7),id(8),currentParticipantList.dskPub]],
+  12n,9n,1n,0n,currentBotList.tuple,currentParticipantList.tuple]);
+ const currentSignature=await sign(currentKey.privateKey,
+  concat(new TextEncoder().encode('dilla bot current interaction context v1\0'),currentPayload));
+ const currentWire=encode([currentPayload,currentSignature]);
+ const invalidSignature=currentSignature.slice();invalidSignature[0]^=1;
+ const invalidSignatureWire=encode([currentPayload,invalidSignature]);
+ const malformedPayload=new Uint8Array([...currentPayload,0x00]);
+ const malformedSignature=await sign(currentKey.privateKey,
+  concat(new TextEncoder().encode('dilla bot current interaction context v1\0'),malformedPayload));
+ const malformedWire=encode([malformedPayload,malformedSignature]);
  return {version:1,cases,rejects,admission_proof:{
   seed:hex(admissionSeed),public_key:hex(admissionKey.publicKey),
   payload_hex:hex(admissionPayload),proof_hex:hex(admissionProof),
@@ -229,6 +266,12 @@ export async function botVectors() {
    bot_user:hex(id(5)),bot_device:hex(id(6)),participant_user:hex(id(7)),
    participant_device:hex(id(8)),group:hex(id(9))},
  },interaction_context_snapshot:{seed:hex(snapshotSeed),public_key:hex(snapshotKey.publicKey),
-  payload_hex:hex(snapshotPayload),signature_hex:hex(snapshotSignature)}};
+  payload_hex:hex(snapshotPayload),signature_hex:hex(snapshotSignature)},
+ current_human_interaction_context:{seed:hex(currentSeed),public_key:hex(currentKey.publicKey),
+  payload_hex:hex(currentPayload),signature_hex:hex(currentSignature),wire_hex:hex(currentWire),
+  expected:{instance:hex(id(2)),group:hex(id(9)),participant_user:hex(id(7)),
+   participant_device:hex(id(8)),now:100},
+  rejects:[{name:'current interaction context signature bit flipped',wire_hex:hex(invalidSignatureWire),error:'E_BOT_CONTEXT'},
+   {name:'current interaction context signed payload has trailing CBOR',wire_hex:hex(malformedWire),error:'E_BOT_FORMAT'}]}};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}
