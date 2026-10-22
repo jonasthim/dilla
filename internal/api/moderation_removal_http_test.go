@@ -110,8 +110,8 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	expiredUnsigned, _ := protocol.RemovalPreimage(expiredProof)
 	expiredBody, _ := cborx.Marshal([]any{expiredUnsigned[len("dilla moderation removal v1"):], ed25519.Sign(actorKey, expiredUnsigned)})
 	expired := doCBORAuth(h, http.MethodPost, path, expiredBody, token.Token)
-	if expired.Code != http.StatusBadRequest {
-		t.Fatalf("expired removal proof = %d %x, want 400", expired.Code, expired.Body.Bytes())
+	if expired.Code != http.StatusBadRequest || errorCode(t, expired) != "E_REMOVAL_PROOF_EXPIRED" {
+		t.Fatalf("expired removal proof = %d %x, want 400 E_REMOVAL_PROOF_EXPIRED", expired.Code, expired.Body.Bytes())
 	}
 	page := doCBORAuth(h, http.MethodGet, path+"?after=0&limit=10", nil, token.Token)
 	if page.Code != http.StatusOK {

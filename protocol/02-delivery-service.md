@@ -859,6 +859,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | HTTP | code | meaning | client action |
 |---|---|---|---|
 | 400 | `E_INVALID_REQUEST` | malformed body, malformed identifier, wrong array length | do not retry unchanged |
+| 400 | `E_REMOVAL_PROOF_EXPIRED` | a moderation-removal proof is outside its acceptance window and no receipt exists for its request ID | sign a fresh proof with the same request ID and retry; an exact prior receipt is returned before this check |
 | 400 | `E_BINDING_INVALID` | `dilla_binding` absent, wrong version, or not matching the object; or a registered group's `external_senders` not the one its kind carries (invariant 1) | do not retry |
 | 400 | `E_VERSION` | no version in common; the extra elements list what the instance supports | reconnect with a supported version, or tell the user to update |
 | 400 | `E_ENVELOPE_SHAPE` | the envelope is not a 9-element deterministic CBOR array, or a field has the wrong type or length | do not retry unchanged |

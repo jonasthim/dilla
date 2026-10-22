@@ -17,6 +17,7 @@ type removalSignerFake struct {
 	groups  []id.ID
 	targets []uint64
 	ids     []id.ID
+	expires []uint64
 }
 
 func (f *removalSignerFake) Binding() native.Binding { return f.binding }
@@ -24,16 +25,23 @@ func (f *removalSignerFake) SignRemoval(_ context.Context, request, group id.ID,
 	f.ids = append(f.ids, request)
 	f.groups = append(f.groups, group)
 	f.targets = append(f.targets, target)
-	return []byte{byte(request[0]), byte(group[0]), byte(target), byte(expires - now)}, nil
+	f.expires = append(f.expires, expires)
+	return []byte{byte(request[0]), byte(group[0]), byte(target), byte(expires >> 24), byte(expires >> 16), byte(expires >> 8), byte(expires)}, nil
 }
 
 type removalSessionFake struct {
 	bodies [][]byte
 	err    error
+	errs   []error
 }
 
 func (f *removalSessionFake) AcceptModerationRemoval(_ context.Context, _ id.ID, body []byte) (client.ModerationRemovalReceipt, error) {
 	f.bodies = append(f.bodies, append([]byte(nil), body...))
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return client.ModerationRemovalReceipt{}, err
+	}
 	return client.ModerationRemovalReceipt{}, f.err
 }
 
@@ -81,6 +89,45 @@ func TestModerationRemovalBackendUsesStableBoundOperationOnRetry(t *testing.T) {
 	}
 	if n.groups[0] != testID(2) || n.targets[0] != 17 {
 		t.Fatalf("signed wrong source: group=%s target=%d", n.groups[0], n.targets[0])
+	}
+}
+
+func TestModerationRemovalBackendResignsOnlyAfterDefinitiveExpiry(t *testing.T) {
+	n := &removalSignerFake{binding: native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}}
+	s := &removalSessionFake{errs: []error{&client.APIError{Code: "E_REMOVAL_PROOF_EXPIRED", Outcome: client.OutcomeDefinitive}, nil}}
+	b, err := newModerationRemovalBackend(n, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := removalAction(moderation.ActionRemove)
+	a.ReceivedAt = time.Now().Add(-time.Minute)
+	if err := b.EnforceModerationAction(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.ids) != 2 || n.ids[0] != n.ids[1] || len(s.bodies) != 2 || string(s.bodies[0]) == string(s.bodies[1]) {
+		t.Fatalf("expired proof retry = signs %d ids %v bodies %d, want same request with fresh proof", len(n.ids), n.ids, len(s.bodies))
+	}
+	if n.expires[0] > uint64(time.Now().Unix()) {
+		t.Fatalf("test did not start with an expired event-time proof: expiry=%d", n.expires[0])
+	}
+	if n.expires[1] <= uint64(time.Now().Unix()) {
+		t.Fatalf("fresh proof expiry %d is not in the future", n.expires[1])
+	}
+}
+
+func TestModerationRemovalBackendDoesNotResignAfterUncertainOutcome(t *testing.T) {
+	n := &removalSignerFake{binding: native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}}
+	s := &removalSessionFake{err: errors.New("network outcome unknown")}
+	b, err := newModerationRemovalBackend(n, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := removalAction(moderation.ActionRemove)
+	if err := b.EnforceModerationAction(context.Background(), a); err == nil {
+		t.Fatal("uncertain result returned nil")
+	}
+	if len(n.ids) != 1 || len(s.bodies) != 1 {
+		t.Fatalf("uncertain attempt signed %d times and posted %d times", len(n.ids), len(s.bodies))
 	}
 }
 

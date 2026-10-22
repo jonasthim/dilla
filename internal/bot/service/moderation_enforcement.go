@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"math"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
@@ -86,6 +87,23 @@ func (b *ModerationRemovalBackend) EnforceModerationAction(ctx context.Context, 
 		return err
 	}
 	_, err = b.session.AcceptModerationRemoval(ctx, group, signed)
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "E_REMOVAL_PROOF_EXPIRED" {
+		// The server checked for an existing receipt before this typed refusal,
+		// so this exact request was not accepted. Re-sign once with a fresh
+		// window while retaining the stable request ID. Any other error,
+		// especially an unknown network outcome, must replay the original proof.
+		currentUnix := time.Now().Unix()
+		if currentUnix <= 0 || currentUnix > math.MaxInt64-30 {
+			return err
+		}
+		current := uint64(currentUnix)
+		signed, signErr := b.native.SignRemoval(ctx, request, group, action.SourceRevision, current+30, current)
+		if signErr != nil {
+			return signErr
+		}
+		_, err = b.session.AcceptModerationRemoval(ctx, group, signed)
+	}
 	return err
 }
 

@@ -124,7 +124,7 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.deps.Clock.Now().Unix()
 	if now < 0 || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, uint64(now)) != nil {
-		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "removal proof has expired or exceeds the acceptance window"))
+		server.WriteError(w, server.Errorf(server.CodeRemovalProofExpired, "removal proof has expired or exceeds the acceptance window"))
 		return
 	}
 	if user, err := h.deps.Repo.GetUser(r.Context(), s.UserID); err != nil {
@@ -181,7 +181,7 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		}
 		now := h.deps.Clock.Now().Unix()
 		if now < 0 || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, uint64(now)) != nil {
-			return server.Errorf(server.CodeInvalidRequest, "removal proof has expired or exceeds the acceptance window")
+			return server.Errorf(server.CodeRemovalProofExpired, "removal proof has expired or exceeds the acceptance window")
 		}
 		accepted, err = tx.AcceptModerationRemoval(r.Context(), store.ModerationRemovalRow{
 			RequestID: proof.RequestID, ActionID: actionID, CommunityID: communityID, GroupID: groupID,

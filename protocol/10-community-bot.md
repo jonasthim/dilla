@@ -905,6 +905,13 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `GET /v1/communities/{community}/moderation/actions?after=N&limit=L` | E, view_audit_log or B | — | `[structural_actions, next_seq]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B, group access | — | `[removal_rows, next_revision]` |
 
+Removal request IDs are idempotency keys. An exact accepted proof/signature replay
+returns its original receipt before checking proof expiry or mutable moderator
+authority. If no receipt exists and the proof is outside its acceptance window,
+the server returns `400 E_REMOVAL_PROOF_EXPIRED`; the signer may create a fresh
+proof with the same request ID. Clients must preserve the exact proof after any
+unknown network outcome and must not infer expiry from transport errors.
+
 Role lists have at most 100 unique ids and entries are `[role_id, emoji|null]`,
 emoji at most32 UTF8 bytes. Configuring human must satisfy normal rank and
 permission ceilings; privileged roles and roles above the ceiling are refused.
