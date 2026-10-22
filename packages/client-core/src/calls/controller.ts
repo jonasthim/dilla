@@ -57,7 +57,7 @@ export interface CallDeps {
   /** The worker's trust refresh of a group's leaves (the existing one, L-TS-56: no second implementation). */
   refreshLeaves(groupId: Id): Promise<void>;
   /** Runs a job on the sync engine's lane of the group, so a rotation never interleaves with an apply. */
-  serial(groupId: Id, job: () => Promise<void>): Promise<void>;
+  serial<T>(groupId: Id, job: () => Promise<T>): Promise<T>;
   /** An own commit of a call group (the rotation) was confirmed: reported like any other group change. */
   onCommitted(groupId: Id, result: ApplyResult): void;
   /** After a join's answer: the engine takes the group up (held frames, catch-up). */
@@ -346,6 +346,7 @@ export class CallController {
           await this.deps.catchUp(g);
           return this.held !== null && toHex(this.held.groupId) === toHex(g) && this.deps.core()?.groupRow(g)?.state === 2;
         },
+        commitFresh: (g) => this.commitFresh(core, g),
       }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec, held: held?.groupId ?? null });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
@@ -819,6 +820,24 @@ export class CallController {
     // C4 fix round 2: the channel's server was dropped while joining; the page says the call was removed.
     if (token.cancelled === 'dropped') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.goneError() });
     return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
+  }
+
+  /** UP6c (protocol/05 N1): a resumed call's own-leaf Update commit, on the group's lane as the rotation's is: built,
+   *  posted, then confirmed and reported like any own commit; a refused post is aborted and thrown as it came. Answers
+   *  the epoch the commit moved the group to. A confirm that throws is thrown too, so no key of the old epoch follows. */
+  private async commitFresh(core: CorePort, groupId: Id): Promise<bigint> {
+    return this.deps.serial(groupId, async () => {
+      const body = core.callRotate(groupId);
+      try {
+        await this.deps.routes.postCommit(groupId, body);
+      } catch (e) {
+        try { core.commitAbort(groupId); } catch { /* nothing pending */ }
+        throw e;
+      }
+      const result = core.commitConfirm(groupId);
+      this.deps.onCommitted(groupId, result);
+      return result.epoch;
+    });
   }
 
   // ---- step 5: the rotation ----

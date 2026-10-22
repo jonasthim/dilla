@@ -21,7 +21,7 @@ import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIR
 import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
 import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES, HOLD_MS } from './controller';
 import { CALL_KEEP_KEY } from '../state/settings';
-import { JOIN_READS_MAX } from './join';
+import { JOIN_READS_MAX, RESUME_COMMIT_TRIES } from './join';
 import type { FromWorker } from '../worker/protocol';
 
 export const VOICE = idOf(0xc5, 1);
@@ -2147,22 +2147,107 @@ describe('a held call (UP6, R-UP6)', () => {
   const coreCalls = (w: World, m: string, g: Id): number => w.model.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
   const marker = (w: World): unknown => { const v = w.model.settings()[CALL_KEEP_KEY]; return v === undefined ? undefined : JSON.parse(v) as unknown; };
 
-  it('a rejoin within the hold resumes: no external commit, the same epoch key, and the start re-mints the token', async () => {
+  it('a rejoin within the hold resumes: no external commit, one own-leaf Update, and the start re-mints the token', async () => {
     const w = await joined();
-    const key = w.model.lastBaseKeyHex(w.callGroup);
     await w.call(LOST);
     w.server.reset();
     w.clearPosted();
     const r = await w.call(JOIN(w)) as CallJoinResult;
-    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    // UP6c: the resume's own-leaf Update commit, then the start.
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit']);
     expect(coreCalls(w, 'callGroupJoinExternal', w.callGroup)).toBe(1);   // the first join's only
-    expect(r).toMatchObject({ groupId: toHex(w.callGroup), epoch: w.result.epoch, resumed: true, expired: false });
-    expect(keysPosted(w).map((k) => k.epoch)).toEqual([w.result.epoch]);
-    expect(w.model.lastBaseKeyHex(w.callGroup)).toBe(key);
-    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: w.result.epoch });
+    const fresh = (BigInt(w.result.epoch) + 1n).toString();
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), epoch: fresh, resumed: true, expired: false });
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([fresh]);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: fresh });
     // Resumed, the call is an ordinary live call again: a person's leave posts its self-Remove.
     await w.call({ m: 'callLeave', reason: 'user' });
     expect(count(w, 'POST proposal')).toBe(1);
+  });
+
+  // UP6c (protocol/05 N1): the page that resumes runs a fresh media worker whose SFrame counters start at 0. Under the
+  // held epoch's key and this leaf's KID they would repeat nonces the previous worker already sealed with, so the resume
+  // commits a fresh epoch before any key reaches the page: the first frame it seals is in an epoch nobody sealed in.
+  it('a resume never hands the page the held epoch: it commits a fresh one first (UP6c, N1)', async () => {
+    const w = await joined();
+    const heldEpoch = BigInt(w.result.epoch);
+    const heldKey = w.model.lastBaseKeyHex(w.callGroup);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    // While the commit is in flight the page has no key and no answer, so it cannot publish yet.
+    const post = w.server.hold('POST commit');
+    const id = w.send(JOIN(w));
+    await post.reached;
+    await settled(w);
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(w.ret(id)).toBeUndefined();
+    post.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settled(w);
+    const r = (w.ret(id) as { ok: true; value: CallJoinResult }).value;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(BigInt(r.epoch)).toBeGreaterThan(heldEpoch);
+    // Every key the page is given is of an epoch past the held one: a fresh pipeline's sender never starts in the held epoch.
+    expect(keysPosted(w).length).toBeGreaterThan(0);
+    for (const k of keysPosted(w)) expect(BigInt(k.epoch)).toBeGreaterThan(heldEpoch);
+    expect(w.model.lastBaseKeyHex(w.callGroup)).not.toBe(heldKey);
+    // The start first (it withdraws an own absence Remove, UP6b), then the commit.
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit']);
+    expect(coreCalls(w, 'callGroupJoinExternal', w.callGroup)).toBe(1);   // still no external commit
+  });
+
+  it('a resume whose commit is refused 409 catches up and still re-keys before the page is given any key (UP6c)', async () => {
+    const w = await joined();
+    const heldEpoch = BigInt(w.result.epoch);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    // bob commits while the resume's own commit is on its way: the instance refuses that one 409 E_COMMIT_CONFLICT.
+    const post = w.server.hold('POST commit');
+    const id = w.send(JOIN(w));
+    await post.reached;
+    w.ds.peerCommit(w.callGroup, PEER);
+    expect(keysPosted(w)).toHaveLength(0);
+    post.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settled(w);
+    const r = (w.ret(id) as { ok: true; value: CallJoinResult }).value;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit', 'POST commit']);
+    expect(coreCalls(w, 'commitAbort', w.callGroup)).toBe(1);
+    // bob's epoch is heldEpoch + 1 (the previous page may have sealed in it); the resume's own commit moves past it.
+    expect(BigInt(r.epoch)).toBe(heldEpoch + 2n);
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([r.epoch]);
+  });
+
+  it('a resume commit refused 409 every time keeps the hold and gives the page no key (UP6c)', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    for (let i = 0; i < RESUME_COMMIT_TRIES; i++) w.server.answer('POST commit', 409, 'E_COMMIT_CONFLICT');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_COMMIT_CONFLICT');
+    expect(count(w, 'POST commit')).toBe(RESUME_COMMIT_TRIES);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+    // The hold is kept: the page's next try resumes, on a fresh epoch.
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(r).toMatchObject({ resumed: true });
+    expect(BigInt(r.epoch)).toBeGreaterThan(BigInt(w.result.epoch));
+  });
+
+  it('a resume commit refused 403 (no current leaf): forgotten without a Remove, then an external join (UP6c)', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    w.server.answer('POST commit', 403, 'E_FORBIDDEN');
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', w.callGroup)).toBe(1);
+    expect(r.resumed).toBeUndefined();
+    expect(keysPosted(w)).toHaveLength(1);
   });
 
   it('the server removed the leaf while held: the call group is forgotten without a Remove, then an external join', async () => {
@@ -2334,7 +2419,7 @@ describe('a held call (UP6, R-UP6)', () => {
     expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(0);
     w.server.reset();
     const r = await w.call(JOIN(w)) as CallJoinResult;
-    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit']);
     expect(r).toMatchObject({ groupId: toHex(seed.group()), resumed: true, expired: false });
     expect(marker(w)).toBeUndefined();
   });
@@ -2437,7 +2522,7 @@ describe('a held call (UP6, R-UP6)', () => {
     w.server.allow('GET channel call');
     w.server.reset();
     const r = await w.call(JOIN(w)) as CallJoinResult;
-    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls']);
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit']);
     expect(r).toMatchObject({ groupId: toHex(seed.group()), resumed: true, expired: true });
     expect(count(w, 'POST proposal')).toBe(0);
     expect(marker(w)).toBeUndefined();

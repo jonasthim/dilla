@@ -29,6 +29,9 @@ export interface JoinDeps {
   /** UP6 (R-UP6): catches the held call group up on its lane (its commits applied); true while this device still holds
    *  it active as the held group (no applied commit removed its leaf, and no read found it gone). */
   catchUp(groupId: Id): Promise<boolean>;
+  /** UP6c (protocol/05 N1): commits an own-leaf Update of the held call group on its lane (call_rotate, POST commit,
+   *  confirm) and answers the epoch it moved to; a refused post is aborted and thrown as it came. */
+  commitFresh(groupId: Id): Promise<bigint>;
 }
 
 /**
@@ -46,10 +49,14 @@ export const REJOIN_WAIT_MS = 30_000;
 /** The most reads of a call group's GroupInfo and tree (a pair each) one external join makes when the core finds the
  *  pair disagreeing (a commit landed between the two reads). */
 export const JOIN_READS_MAX = 3;
+/** UP6c: the most own-leaf Update commits one resume tries; each 409 E_COMMIT_CONFLICT before the last catches the group
+ *  up first (the existing rotation's path, UP6b). */
+export const RESUME_COMMIT_TRIES = 3;
 
 /** `held` (UP6): the call group this device holds for the channel (a lost room, an update reload), or null. */
 export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string; held?: Id | null }
-/** `resumed` (UP6): the held group was taken up again, with no external commit. */
+/** `resumed` (UP6): the held group was taken up again, with no external commit (UP6c: with an own-leaf Update commit,
+ *  so `media` is of a fresh epoch). */
 export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStarted; resumed?: boolean }
 
 /** A join that ended without a call. `leave` names an active call group this device must leave (a self-Remove and a
@@ -167,9 +174,9 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
 const transient = (e: unknown): boolean => e instanceof DillaHttpError && (e.status === 0 || e.status === 503 || e.status === 429);
 
 /**
- * UP6 (R-UP6): the resume of the held call group, with no external commit. It catches the group up on its lane, gets
- * the current epoch's key through the gate, and starts the call; the instance's leaf check (requireCurrentLeaf) decides
- * whether the leaf is still current. Null when the leaf is gone (an applied Remove, a group read the instance refused,
+ * UP6 (R-UP6): the resume of the held call group, with no external commit. It catches the group up on its lane, passes
+ * the gate, starts the call, then commits a fresh epoch with an own-leaf Update (UP6c, N1) and takes that epoch's key.
+ * The instance's leaf check at the start (requireCurrentLeaf) decides whether the leaf is still current. Null when the leaf is gone (an applied Remove, a group read the instance refused,
  * or a start answered 403 E_LEAF_NOT_CURRENT for a removed or epoch-unknown leaf): the group is then forgotten here
  * without a Remove (the leaf is already gone, or the room sweep removes it, the only authority), and the caller joins
  * afresh. A transient failure keeps the hold (no leave). Any key derived is zero-filled on every failure.
@@ -178,16 +185,63 @@ async function resume(d: JoinDeps, t: JoinTarget, groupId: Id): Promise<Joined |
   const still = await d.catchUp(groupId);
   if (d.cancelled()) throw stopped(groupId);
   if (!still) { forgetHeld(d.core, groupId); return null; }
-  const media = await mediaEpoch(d, groupId);
-  if (d.cancelled()) { new Uint8Array(media.baseKey).fill(0); throw stopped(groupId); }
+  // The gate decides before anything is posted. The held epoch's key is never handed on (UP6c below): it is zero-filled
+  // at once, and only its roster is kept (whether this device is alone, for a refused start).
+  const held = await mediaEpoch(d, groupId);
+  new Uint8Array(held.baseKey).fill(0);
+  if (d.cancelled()) throw stopped(groupId);
+  const alone = held.roster.length === 1 && held.roster[0]?.leaf === held.ownLeaf;
+  let started: CallStarted;
   try {
-    return { groupId, media, started: await d.routes.startCall(t.channelId, t.vdec), resumed: true };
+    started = await d.routes.startCall(t.channelId, t.vdec);
   } catch (e) {
-    new Uint8Array(media.baseKey).fill(0);
     if (isHttp(e, 403, 'E_LEAF_NOT_CURRENT')) { forgetHeld(d.core, groupId); return null; }
     if (transient(e)) throw new JoinRefused(codeOf(e), 'failed', e, null);
-    const alone = media.roster.length === 1 && media.roster[0]?.leaf === media.ownLeaf;
     throw new JoinRefused(codeOf(e), 'failed', e, groupId, alone);
+  }
+  if (d.cancelled()) throw stopped(groupId);
+  // UP6c (protocol/05 N1): the page that resumes runs a fresh media worker whose SFrame counters start at 0; under the
+  // held epoch's key and this leaf's KID its frames would repeat nonces the previous worker sealed with. So the device
+  // commits a fresh epoch, and the page is given no key (and publishes nothing) until that commit has landed. It comes
+  // after the start: the start withdraws this device's own absence Remove (UP6b), which a commit could not leave out.
+  const fresh = await freshEpoch(d, groupId);
+  if (fresh === null) { forgetHeld(d.core, groupId); return null; }
+  const media = await mediaEpoch(d, groupId);
+  if (d.cancelled()) { new Uint8Array(media.baseKey).fill(0); throw stopped(groupId); }
+  // The key handed on is never of an epoch before the one this device just committed (N1's guard itself).
+  if (media.epoch < fresh) {
+    new Uint8Array(media.baseKey).fill(0);
+    throw new JoinRefused('E_INTERNAL', 'failed', new CoreError('E_INTERNAL', 'the resume key is not of the fresh epoch'), groupId);
+  }
+  return { groupId, media, started, resumed: true };
+}
+
+/**
+ * UP6c: the resume's own-leaf Update commit. A 409 E_COMMIT_CONFLICT catches the group up and tries again (at most
+ * RESUME_COMMIT_TRIES commits); null when the leaf is gone (the catch-up applied its Remove, or the instance refuses the
+ * commit 403: this device holds no current leaf), so the caller forgets the group and joins afresh. A transient refusal,
+ * or a conflict that outlasts the tries, keeps the hold (no leave; the page tries again); any other refusal leaves.
+ */
+async function freshEpoch(d: JoinDeps, groupId: Id): Promise<bigint | null> {
+  for (let tries = 1; ; tries++) {
+    try {
+      const epoch = await d.commitFresh(groupId);
+      if (d.cancelled()) throw stopped(groupId);
+      return epoch;
+    } catch (e) {
+      if (e instanceof JoinRefused) throw e;
+      if (d.cancelled()) throw stopped(groupId);
+      const conflict = isHttp(e, 409, 'E_COMMIT_CONFLICT');
+      if (conflict && tries < RESUME_COMMIT_TRIES) {
+        const still = await d.catchUp(groupId);
+        if (d.cancelled()) throw stopped(groupId);
+        if (!still) return null;
+        continue;
+      }
+      if (e instanceof DillaHttpError && e.status === 403) return null;
+      if (conflict || transient(e)) throw new JoinRefused(codeOf(e), 'failed', e, null);
+      throw new JoinRefused(codeOf(e), 'failed', e, groupId);
+    }
   }
 }
 

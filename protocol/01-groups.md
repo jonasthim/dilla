@@ -34,8 +34,12 @@ alone: the client's hold never extends the instance's tolerance, so the leaf is 
 is down the sweep cannot run, so the bound is that downtime plus the same 60 seconds). The client's
 own hold time is wall-clock and is never trusted alone: an expired hold is acted on (a self-`Remove`
 and the forget) only once the instance answers, and a resume after it is still tried. A resume
-catches the group up, takes the current epoch's key through the join gate and starts the call; the
-start's current-leaf check decides. `403 E_LEAF_NOT_CURRENT` there covers both a leaf that is no
+catches the group up, passes the join gate and starts the call. It then commits a fresh epoch with an
+own-leaf `Update` and takes that epoch's key (`05` § Sender uniqueness, N1): no media key reaches the
+page before that commit is confirmed. The commit follows the start because the start withdraws the
+device's own absence `Remove` (`02` invariant 6), which a commit could not leave out. A
+`409 E_COMMIT_CONFLICT` catches the group up and tries again; a `403` refusal of the commit is read as
+a leaf that is no longer current. The start's current-leaf check decides first: `403 E_LEAF_NOT_CURRENT` there covers both a leaf that is no
 longer in the current tree (removed) and a group whose epoch the instance does not know
 (`EpochUnknown`, after a restore). On it, on an applied `Remove` of the own leaf, or when the instance
 names another group (or none) for the channel, the client forgets the group without a `Remove` and
