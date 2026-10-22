@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/announcements"
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -36,12 +37,14 @@ type announcementInteractionAuth struct {
 	revision uint64
 	allowed  bool
 	user     id.ID
+	calls    int
 }
 
 func (a *announcementInteractionAuth) CurrentRevision(context.Context, id.ID) (uint64, error) {
 	return a.revision, nil
 }
 func (a *announcementInteractionAuth) CanManageCommunity(_ context.Context, user, community id.ID) (bool, error) {
+	a.calls++
 	a.user = user
 	return a.allowed && !user.IsZero() && !community.IsZero(), nil
 }
@@ -122,7 +125,7 @@ func TestAnnouncementInteractionsListIncludesTextAndPaginatesToFit(t *testing.T)
 		}
 	}
 	list := h.Handlers()[protocol.OpAnnouncementsList].Handle
-	first, err := list(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{uint64(0)}})
+	first, err := list(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: interactionID(2), Args: []any{uint64(0)}})
 	if err != nil || first.Status != 0 || len(first.Data) > announcementDataLimit {
 		t.Fatalf("first list result=%+v err=%v", first, err)
 	}
@@ -138,7 +141,7 @@ func TestAnnouncementInteractionsListIncludesTextAndPaginatesToFit(t *testing.T)
 	if !ok || len(row) != 11 || row[2] != maxText {
 		t.Fatalf("first row text roundtrip failed: %v", page[0])
 	}
-	second, err := list(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{uint64(1)}})
+	second, err := list(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: interactionID(2), Args: []any{uint64(1)}})
 	if err != nil || second.Status != 0 || len(second.Data) > announcementDataLimit {
 		t.Fatalf("second list result=%+v err=%v", second, err)
 	}
@@ -149,6 +152,54 @@ func TestAnnouncementInteractionsListIncludesTextAndPaginatesToFit(t *testing.T)
 	secondPage, ok := secondData[3].([]any)
 	if !ok || len(secondPage) != 1 || secondPage[0].([]any)[2] != maxText {
 		t.Fatalf("second page did not return remaining max-size text: %v", secondData[3])
+	}
+}
+
+func TestAnnouncementInteractionsReadOnlyHandlersAuthorizeCurrentManagerAndScopeCommunity(t *testing.T) {
+	h, auth := announcementInteractionsFixture(t)
+	handlers := h.ReadOnlyHandlers()
+	if len(handlers) != 1 || handlers[protocol.OpAnnouncementsList].Handle == nil {
+		t.Fatalf("read-only handlers = %v, want only announcements.list", handlers)
+	}
+	list := handlers[protocol.OpAnnouncementsList].Handle
+	actor := InteractionActor{User: interactionID(6)}
+	request := protocol.Request{CommunityID: interactionID(2), Args: []any{uint64(0)}}
+	result, err := list(context.Background(), actor, request)
+	if err != nil || result.Status != 0 || auth.user != actor.User || auth.calls != 1 {
+		t.Fatalf("authorized list result=%+v auth user=%v calls=%d err=%v", result, auth.user, auth.calls, err)
+	}
+	auth.allowed = false
+	result, err = list(context.Background(), actor, request)
+	if err != nil || result.Status != interactionStatusForbidden || auth.calls != 2 {
+		t.Fatalf("revoked manager list result=%+v calls=%d err=%v, want fresh forbidden lookup", result, auth.calls, err)
+	}
+	auth.allowed = true
+	request.CommunityID = interactionID(3)
+	result, err = list(context.Background(), actor, request)
+	if err != nil || result.Status != interactionStatusForbidden {
+		t.Fatalf("wrong community list result=%+v err=%v, want forbidden", result, err)
+	}
+}
+
+func TestAnnouncementListUsesFreshCommunityActorAuthority(t *testing.T) {
+	h, _ := announcementInteractionsFixture(t)
+	community, actor := interactionID(2), interactionID(6)
+	session := &actorAuthoritySessionFake{authority: client.ActorAuthority{EffectiveBits: manageCommunityBit}, present: true}
+	authority, err := NewCommunityActorAuthority(session, community, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Authority = authority
+	list := h.ReadOnlyHandlers()[protocol.OpAnnouncementsList].Handle
+	request := protocol.Request{CommunityID: community, Args: []any{uint64(0)}}
+	result, err := list(context.Background(), InteractionActor{User: actor}, request)
+	if err != nil || result.Status != 0 || session.calls != 1 || session.actor != actor || session.community != community {
+		t.Fatalf("current manager list result=%+v lookup=(%s,%s) calls=%d err=%v", result, session.actor, session.community, session.calls, err)
+	}
+	session.authority.EffectiveBits = 0
+	result, err = list(context.Background(), InteractionActor{User: actor}, request)
+	if err != nil || result.Status != interactionStatusForbidden || session.calls != 2 {
+		t.Fatalf("revoked manager list result=%+v calls=%d err=%v", result, session.calls, err)
 	}
 }
 

@@ -504,6 +504,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 							}
 							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
+							var scheduler *announcements.Scheduler
+							var scheduleErr error
+							scheduler, scheduleErr = service.NewAnnouncementScheduler(nativeClient, result.Session, api)
+							if scheduleErr != nil {
+								interactionErr = errors.Join(interactionErr, scheduleErr)
+							}
 							if interactionErr == nil {
 								var coordinator *service.SendCoordinator
 								coordinator, interactionErr = service.NewSendCoordinator(nativeClient, api)
@@ -515,9 +521,16 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
-											handlers := service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID}.Handlers()
-											dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-												handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+											var announcementAuthority *service.CommunityActorAuthority
+											announcementAuthority, interactionErr = service.NewCommunityActorAuthority(result.Session, installation.CommunityID, nil)
+											if interactionErr == nil {
+												handlers := runtimeInteractionHandlers(
+													service.OverviewInteractions{Authority: result.Session, CommunityID: installation.CommunityID},
+													service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
+												)
+												dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
+													handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+											}
 										}
 										if interactionErr == nil {
 											runtime := newInteractionEventRuntime(interactionPoller, newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
@@ -549,8 +562,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								}
 								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "providers", "unavailable_pcm")
 							}
-							var scheduler *announcements.Scheduler
-							scheduler, scheduleErr := service.NewAnnouncementScheduler(nativeClient, result.Session, api)
 							if scheduleErr == nil {
 								scheduleErr = scheduler.RunDue(ctx)
 							}

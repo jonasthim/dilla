@@ -38,18 +38,24 @@ type AnnouncementInteractions struct {
 // Handlers returns protocol handlers for announcement operations. Put and
 // Delete use the schedule's own revision CAS in the encrypted scheduler.
 func (h AnnouncementInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
+	handlers := h.ReadOnlyHandlers()
+	handlers[protocol.OpAnnouncementsPut] = InteractionHandlerSpec{
+		CurrentRevision: h.currentRevision,
+		Handle:          h.put,
+	}
+	handlers[protocol.OpAnnouncementsDelete] = InteractionHandlerSpec{
+		CurrentRevision: h.currentRevision,
+		Handle:          h.delete,
+	}
+	return handlers
+}
+
+// ReadOnlyHandlers exposes only encrypted schedule listing for production
+// interaction dispatch. Schedule mutations remain unavailable until their
+// registration policy is explicitly enabled.
+func (h AnnouncementInteractions) ReadOnlyHandlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpAnnouncementsList: {
-			Handle: h.list,
-		},
-		protocol.OpAnnouncementsPut: {
-			CurrentRevision: h.currentRevision,
-			Handle:          h.put,
-		},
-		protocol.OpAnnouncementsDelete: {
-			CurrentRevision: h.currentRevision,
-			Handle:          h.delete,
-		},
+		protocol.OpAnnouncementsList: {Handle: h.list},
 	}
 }
 
@@ -68,6 +74,9 @@ func (h AnnouncementInteractions) authorize(ctx context.Context, actor Interacti
 }
 
 func (h AnnouncementInteractions) list(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
+	if request.CommunityID != h.CommunityID {
+		return InteractionResult{Status: interactionStatusForbidden}, nil
+	}
 	allowed, err := h.authorize(ctx, actor)
 	if err != nil {
 		return InteractionResult{}, err
