@@ -1,8 +1,7 @@
 //go:build linux
 
-// Command dillabot runs the first Linux service bootstrap for managed bot
-// installations. It reconciles identity and currently authorized MLS groups;
-// event dispatch and music are separate work and are not reported as ready here.
+// Command dillabot reconciles managed bot identity, authorized MLS groups and
+// paused music queue metadata. Music controls and PCM provider playback remain unavailable.
 package main
 
 import (
@@ -26,6 +25,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/announcements"
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
@@ -294,7 +294,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome", "music", "not_implemented")
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome", "music", "paused_metadata_only")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -377,6 +377,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
+		var musicQueues *musicQueueRuntime
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
 		membershipReady := false
@@ -422,6 +423,20 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
+							channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
+							if channelsErr == nil {
+								var musicStore *persistence.Store
+								musicStore, channelsErr = persistence.New(nativeClient, installation.CommunityID)
+								if channelsErr == nil {
+									musicQueues, channelsErr = restoreMusicSupervisors(ctx, installation.CommunityID, channels, musicStore, unavailableMusicQueueStarter())
+								}
+							}
+							if channelsErr != nil {
+								logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+								ensureErr = errors.Join(ensureErr, channelsErr)
+							} else {
+								logger.Info("bot music queue metadata restored paused", "installation_id", installation.ID.String(), "voice_channels", musicQueues.Len(), "providers", "unavailable_pcm")
+							}
 							var scheduler *announcements.Scheduler
 							scheduler, scheduleErr := service.NewAnnouncementScheduler(nativeClient, result.Session, api)
 							if scheduleErr == nil {
@@ -450,7 +465,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				ensureErr = errors.Join(ensureErr, linkErr)
 			}
 		}
-		closeErr := nativeClient.Close()
+		var musicCloseErr error
+		if musicQueues != nil {
+			musicCloseErr = musicQueues.Close()
+		}
+		closeErr := errors.Join(nativeClient.Close(), musicCloseErr)
 		if ensureErr != nil || closeErr != nil {
 			logger.Error("bot installation reconciliation failed", "installation_id", installation.ID.String(), "stage", "identity_membership_or_service")
 			continue

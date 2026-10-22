@@ -14,6 +14,29 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
+const (
+	musicVoiceChannelKind = 1
+	maxMusicSupervisors   = 512
+)
+
+var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
+
+type musicQueueRuntime struct{ supervisors map[id.ID]*music.Supervisor }
+
+func (r *musicQueueRuntime) Close() error {
+	if r != nil {
+		closeMusicSupervisors(r.supervisors)
+	}
+	return nil
+}
+
+func (r *musicQueueRuntime) Len() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.supervisors)
+}
+
 type musicCallStarter interface {
 	StartCall(context.Context, id.ID) (client.Call, error)
 }
@@ -105,6 +128,53 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
 	return music.NewSupervisor(ctx, channel, persistedMusicQueue{store: store}, starter)
+}
+
+// restoreMusicSupervisors binds one paused queue supervisor to each voice
+// channel in an installation. Its caller owns and closes the returned set.
+func restoreMusicSupervisors(ctx context.Context, community id.ID, channels []client.Channel, store *persistence.Store, starter session.QueueStarter) (*musicQueueRuntime, error) {
+	if ctx == nil || community.IsZero() || store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
+		return nil, errors.New("music runtime dependencies unavailable")
+	}
+	runtime := &musicQueueRuntime{supervisors: make(map[id.ID]*music.Supervisor)}
+	seen := make(map[id.ID]struct{}, len(channels))
+	for _, channel := range channels {
+		if channel.ID.IsZero() || channel.CommunityID != community {
+			_ = runtime.Close()
+			return nil, errors.New("music channel inventory is invalid")
+		}
+		if _, ok := seen[channel.ID]; ok {
+			_ = runtime.Close()
+			return nil, errors.New("music channel inventory is invalid")
+		}
+		seen[channel.ID] = struct{}{}
+		if channel.Kind != musicVoiceChannelKind {
+			continue
+		}
+		if len(runtime.supervisors) == maxMusicSupervisors {
+			_ = runtime.Close()
+			return nil, errors.New("music voice channel limit exceeded")
+		}
+		supervisor, err := newMusicSupervisor(ctx, channel.ID, store, starter)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, err
+		}
+		runtime.supervisors[channel.ID] = supervisor
+	}
+	return runtime, nil
+}
+
+func closeMusicSupervisors(queues map[id.ID]*music.Supervisor) {
+	for _, supervisor := range queues {
+		_ = supervisor.Close()
+	}
+}
+
+func unavailableMusicQueueStarter() session.QueueStarter {
+	return session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+		return session.Options{}, errMusicPCMUnavailable
+	}}
 }
 
 var _ livekit.EpochSource = (*native.Client)(nil)

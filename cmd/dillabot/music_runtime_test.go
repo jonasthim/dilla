@@ -219,3 +219,40 @@ func TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio(t *testing
 		t.Fatalf("restored state=%+v, want current track retained but paused", state)
 	}
 }
+
+func TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly(t *testing.T) {
+	community := id.New()
+	voice, textChannel := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	queues, err := restoreMusicSupervisors(context.Background(), community, []client.Channel{
+		{ID: voice, CommunityID: community, Kind: 1},
+		{ID: textChannel, CommunityID: community, Kind: 0},
+	}, store, session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+		starts++
+		return session.Options{}, errors.New("provider must stay unavailable during restore")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queues.Close()
+	if queues.Len() != 1 || queues.supervisors[voice] == nil {
+		t.Fatalf("restored supervisors = %d, want only voice channel %s", queues.Len(), voice)
+	}
+	if !queues.supervisors[voice].State().Paused || starts != 0 {
+		t.Fatalf("restored queue paused=%v provider starts=%d, want paused and zero starts", queues.supervisors[voice].State().Paused, starts)
+	}
+}
+
+func TestUnavailableMusicQueueStarterFailsClosed(t *testing.T) {
+	_, err := unavailableMusicQueueStarter().OptionsFor(context.Background(), music.Track{
+		Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk",
+	})
+	if !errors.Is(err, errMusicPCMUnavailable) {
+		t.Fatalf("unavailable provider error = %v, want %v", err, errMusicPCMUnavailable)
+	}
+}
