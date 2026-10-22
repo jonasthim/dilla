@@ -536,10 +536,10 @@ unquote() {
 }
 has_turn() { case "$1" in *'"turn"'*) return 0 ;; esac; return 1; }
 
-# web312_or_later VERSION: true when VERSION (with or without its leading v) is v0.1.0-web3.12 or a
-# later release, the first that must ship release.json. 0.1.0 itself and anything above it count as
-# later; another 0.1.0 prerelease (noise-beta, a dev build) as earlier.
-web312_or_later() {
+# web3_at_least VERSION N: true when VERSION (with or without its leading v) is v0.1.0-web3.N or a
+# later release; a patch tag (web3.12.3) counts as its web3.N. 0.1.0 itself and anything above it
+# count as later; another 0.1.0 prerelease (noise-beta, a dev build) as earlier.
+web3_at_least() {
 	wv="${1#v}"
 	wbase="${wv%%-*}"
 	wpre=""
@@ -563,8 +563,18 @@ web312_or_later() {
 	wn="${wpre#web3.}"
 	wn="${wn%%.*}"
 	case "$wn" in '' | *[!0-9]*) return 1 ;; esac
-	[ "$wn" -ge 12 ]
+	[ "$wn" -ge "$2" ]
 }
+
+# NEW_SCHEME_FIRST: the web3 number of the first release that carries calls-survive-upgrade: it ships
+# release.json, a dillad with `version --json`, and the notify/turn.listen rules below. The branch
+# names no tag of its own; web3.13 is the next minor after the last web3.12.x (the tests and the
+# release-notes checks already call it that). web3.12 to web3.12.4 shipped without any of it.
+NEW_SCHEME_FIRST=13
+# BASELINE_SFU_FIRST: web3.11 is the oldest SFU with a known media level (1), the same baseline
+# scripts/release-meta.mjs uses: web3.11 and later without `version --json` are level 1.
+BASELINE_SFU_FIRST=11
+new_scheme_release() { web3_at_least "$1" "$NEW_SCHEME_FIRST"; }
 
 # What the new binary says it is. It was verified above, so running it is running the release.
 chmod 0755 "$WORK/$BIN_NAME"
@@ -600,8 +610,8 @@ if [ "$HAVE_RELEASE_JSON" -eq 1 ]; then
 	NEW_MIN="$(json_get "$RJ" min_sfu_media_level)"
 	case "$NEW_MIN" in '' | *[!0-9]*) die "release.json's min_sfu_media_level is not a number; nothing was installed" ;; esac
 	log "release.json: v$NEW_VERSION, media level $NEW_LEVEL, works with a media server of level $NEW_MIN or later"
-elif web312_or_later "$NEW_VERSION" || { [ -n "$URL_TAG" ] && web312_or_later "$URL_TAG"; }; then
-	# Every release from v0.1.0-web3.12 on ships one. Without it the installer cannot tell whether
+elif new_scheme_release "$NEW_VERSION" || { [ -n "$URL_TAG" ] && new_scheme_release "$URL_TAG"; }; then
+	# Every release from v0.1.0-web3.$NEW_SCHEME_FIRST on ships one. Without it the installer cannot tell whether
 	# the running media server can stay, so it never guesses.
 	case "$UNCHECKED" in
 	*"$BIN_NAME"*) log "warning: --insecure-skip-verify without --release-json: v$NEW_VERSION is treated as needing a media server restart" ;;
@@ -609,7 +619,7 @@ elif web312_or_later "$NEW_VERSION" || { [ -n "$URL_TAG" ] && web312_or_later "$
 		if [ -n "$BINARY" ]; then
 			die "v$NEW_VERSION ships release.json, listed in its SHA256SUMS: pass it with --release-json FILE (and a --sums that lists it). Nothing was installed"
 		fi
-		die "the release at $RELEASE_URL has no release.json in its SHA256SUMS, which every release from v0.1.0-web3.12 on ships; refusing an incomplete release. Nothing was installed"
+		die "the release at $RELEASE_URL has no release.json in its SHA256SUMS, which every release from v0.1.0-web3.$NEW_SCHEME_FIRST on ships; refusing an incomplete release. Nothing was installed"
 		;;
 	esac
 fi
@@ -1240,7 +1250,8 @@ sfu_level() {
 				sl_level="$(json_get "$sl_json" media_level)"
 			else
 				sl_is="$(timeout 10 runuser -u dillad -- "$sl_cand" version 2>/dev/null | awk '$1 == "dillad" { print $2; exit }')" || sl_is=""
-				[ "$sl_is" != 0.1.0-web3.11 ] || sl_level=1
+				# web3.11 to web3.12.4 know no --json and are level 1, as release-meta.mjs counts them.
+				if [ -n "$sl_is" ] && web3_at_least "$sl_is" "$BASELINE_SFU_FIRST"; then sl_level=1; fi
 			fi
 			SFU_FROM="$SFU_FROM, which is $sl_cand"
 			break
@@ -1460,7 +1471,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 	[ -n "$MEDIA_DATA" ] || MEDIA_DATA="$DATA_DIR"
 	# A release below web3.12 refuses turn.listen in public mode (its config validation), so a
 	# rollback there with the web3.12 opt-in set would leave the instance down (R-UP11).
-	if ! web312_or_later "$NEW_VERSION" && [ "$(conf_value tls mode)" = acme_tls_alpn ] && [ -n "$(conf_value turn listen)" ]; then
+	if ! new_scheme_release "$NEW_VERSION" && [ "$(conf_value tls mode)" = acme_tls_alpn ] && [ -n "$(conf_value turn listen)" ]; then
 		die "v$NEW_VERSION refuses turn.listen in public mode (tls.mode = acme_tls_alpn), and dilla.toml sets it: remove turn.listen from dilla.toml first; public-mode TURN goes back to 443. Nothing was changed"
 	fi
 	# The binary being replaced: what a rollback starts again, and how its media server reports ready.
@@ -1532,8 +1543,8 @@ if [ "$UPGRADE" -eq 1 ]; then
 		# Each restarts once, dilla-media first: the API then sees the new SFU's capabilities at
 		# its start (R-UP11), and a media server that does not come up never takes the API down.
 		MEDIA_RESTARTED=1
-		if ! web312_or_later "$NEW_VERSION" && [ "${SFU_LEVEL:-0}" -ge 2 ]; then
-			log "rolling back below v0.1.0-web3.12 while dilla-media runs v$SFU_VERSION, which holds turn.listen: stopping dilla-media first, which ends every live call, then starting it on v$NEW_VERSION before dilla"
+		if ! new_scheme_release "$NEW_VERSION" && [ "${SFU_LEVEL:-0}" -ge 2 ]; then
+			log "rolling back below v0.1.0-web3.$NEW_SCHEME_FIRST while dilla-media runs v$SFU_VERSION, which holds turn.listen: stopping dilla-media first, which ends every live call, then starting it on v$NEW_VERSION before dilla"
 			systemctl stop dilla-media >&2 || die "could not stop dilla-media; nothing else was restarted"
 			systemctl start dilla-media >&2 || log "dilla-media did not report ready at once; waiting up to $MEDIA_WAIT s for systemd's retry"
 		else

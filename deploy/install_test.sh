@@ -238,6 +238,7 @@ cat >"$FAKE" <<'FAKE'
 # fake-level 0
 # fake-min 0
 # fake-caps none
+# fake-nojson
 echo "dillad $*" >>"${FAKE_LOG:?}"
 hdr() { sed -n "s/^# fake-$1 //p" "$0" | head -n 1; }
 verb="$1"
@@ -364,7 +365,7 @@ media)
 	;;
 version)
 	if [ "${1:-}" = --json ]; then
-		[ "$(hdr level)" -ge 2 ] || { echo "flag provided but not defined: -json" >&2; exit 64; }
+		[ "$(hdr level)" -ge 2 ] && [ -z "$(hdr nojson)" ] || { echo "flag provided but not defined: -json" >&2; exit 64; }
 		caps="$(hdr caps)"
 		[ "$caps" != none ] || caps=""
 		printf '{"version":"%s","revision":"fake","wire":[2],"schema":21,"media_level":%s,"min_sfu_media_level":%s,"media_capabilities":[%s]}\n' \
@@ -419,6 +420,13 @@ make_fake() {
 	chmod 0755 "$1"
 }
 
+# make_fake_nojson OUT VERSION: a web3.12.0 to 12.4 dillad as shipped: the media server of level 2
+# behaviour (media.json, READY=1, --idle, --self) but no `version --json`, and no release.json.
+make_fake_nojson() {
+	make_fake "$1" "$2" 2 1 '"turn"' v2
+	sed -i 's/^# fake-nojson.*/# fake-nojson 1/' "$1"
+}
+
 # release_json BINARY: what release.yml makes of the binary's `version --json` (R-UP2), or nothing
 # for a binary that has none (web3.11 and older).
 release_json() {
@@ -460,6 +468,15 @@ make_release "$I13" "$TMP/fake-i13"
 make_fake "$TMP/fake-w10" 0.1.0-web3.10 0 0 none
 W10="$TMP/w10-release"
 make_release "$W10" "$TMP/fake-w10"
+# The next release as the plan means it (web3.13): level 2, works with level 1, so a web3.12.x SFU
+# (level 1) can stay.
+make_fake "$TMP/fake-n13" 0.1.0-web3.13 2 1 '"turn"' v2
+N13="$TMP/n13-release"
+make_release "$N13" "$TMP/fake-n13"
+# The web3.12.3 that shipped (UP12): no `version --json`, hence no release.json.
+make_fake_nojson "$TMP/fake-w123" 0.1.0-web3.12.3
+W123="$TMP/w123-release"
+make_release "$W123" "$TMP/fake-w123"
 # The media unit install.sh writes for a dillad older than web3.12, which sends no READY=1.
 sed -e '/^# READY: /d' -e '/^NotifyAccess=main$/d' -e 's/^Type=notify$/Type=simple/' \
 	-e 's/^TimeoutStartSec=60s$/TimeoutStartSec=30s/' "$MEDIA_UNIT" >"$TMP/dilla-media.simple.service"
@@ -1615,6 +1632,59 @@ has "$ERR" "media level is unknown (0.1.0-web3.10" || problems="$problems|the un
 before 'systemctl restart dilla-media' 'systemctl restart dilla' || problems="$problems|dilla restarted before dilla-media"
 verdict "an SFU older than web3.11 needs a restart"
 
+# UP12: the web3.12.0 to 12.4 SFUs shipped no `version --json` and no release.json. They are media
+# level 1 by the same rule as release-meta.mjs (web3.11 and later), so the next release, which
+# works with level 1, keeps them running while calls are live.
+fresh "$W123"
+pid_before="$(media_pid_now)"
+FAKE_ROOMS="$TMP/rooms.live" KEEP_ROOT=1 run --upgrade --release-url "file://$N13"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
+has "$ERR" "decision: keep dilla-media running" || problems="$problems|the decision is not keep: $ERR"
+has "$ERR" "dilla-media runs v0.1.0-web3.12.3 (media level 1, from the SHA-256 of" || problems="$problems|the level 1 did not come from the executable"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] && [ "$(count 'systemctl stop dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted or stopped"
+[ "$(media_pid_now)" = "$pid_before" ] || problems="$problems|dilla-media's MainPID changed"
+has "$(cat "$LOG")" "media --rooms" && problems="$problems|the live-call check ran"
+has "$(cat "$LOG")" "version --json" || problems="$problems|the matched binary was not tried with version --json"
+verdict "an upgrade from a running web3.12.3 SFU (no version --json) keeps it, as when-idle says"
+
+# Executable identity still decides: a web3.12.3 SFU whose executable is neither the installed
+# binary nor dillad.prev is unknown, so a restart.
+fresh "$W123"
+printf '# some other dillad\n' >"$TMP/other-dillad"
+chmod 0755 "$TMP/other-dillad"
+STUB_MEDIA_RUNS="$TMP/other-dillad" stub_sys restart dilla-media >/dev/null
+KEEP_ROOT=1 run --upgrade --yes --release-url "file://$N13"
+problems=""
+has "$ERR" "media level is unknown" || problems="$problems|an executable no rule knows was not unknown: $ERR"
+verdict "a running executable that is neither the installed binary nor dillad.prev is still unknown"
+
+# A rollback to web3.12.3 is a rollback below the new scheme: dilla-media stops first (its SFU
+# holds turn.listen), as for web3.11.
+fresh "$C13"
+set_turn true ':3478'
+stub_sys restart dilla-media >/dev/null
+stub_sys restart dilla >/dev/null
+KEEP_ROOT=1 run --upgrade --release-url "file://$W123"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|exit status $RC: $ERR"
+has "$ERR" "stopping dilla-media first, which ends every live call" || problems="$problems|it does not say it ends calls"
+before 'systemctl stop dilla-media' 'systemctl start dilla-media' || problems="$problems|dilla-media was not stopped, then started"
+before 'systemctl start dilla-media' 'systemctl restart dilla' || problems="$problems|dilla started before dilla-media was stopped and started"
+[ "$(count 'systemctl restart dilla-media')" -eq 0 ] || problems="$problems|dilla-media was restarted as well"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-w123" || problems="$problems|the binary was not rolled back to web3.12.3"
+verdict "a rollback to web3.12.3 is accepted, and its turn.listen limit (dilla-media first) applies"
+
+fresh "$C13" public
+set_turn true ':5349'
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"
+cp "$ROOT/etc/dilla/dilla.toml" "$TMP/toml.pre-preflight"
+KEEP_ROOT=1 run --upgrade --yes --release-url "file://$W123"
+problems="$(untouched)"
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
+has "$ERR" "remove turn.listen from dilla.toml first; public-mode TURN goes back to 443" || problems="$problems|the key is not named"
+verdict "a rollback to web3.12.3 with the public-mode turn.listen set is refused and changes nothing"
+
 # --restart-sfu on a compatible release.
 fresh "$NEW"
 KEEP_ROOT=1 run --upgrade --restart-sfu --release-url "file://$C13"
@@ -1649,19 +1719,19 @@ has "$ERR" "release.json says min_sfu_media_level is 0, but the new dillad says 
 verdict "a release.json that disagrees with the binary's version --json is refused"
 
 RJNONE="$TMP/rj-none"
-make_release "$RJNONE" "$TMP/fake-v2"
+make_release "$RJNONE" "$TMP/fake-c13"
 grep -v ' release.json$' "$RJNONE/SHA256SUMS" >"$RJNONE/SHA256SUMS.new"
 mv "$RJNONE/SHA256SUMS.new" "$RJNONE/SHA256SUMS"
 KEEP_ROOT=1 run --upgrade --release-url "file://$RJNONE"
 problems="$(untouched)"
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a refusal"
 has "$ERR" "has no release.json in its SHA256SUMS" || problems="$problems|the missing release.json is not named"
-verdict "a web3.12 release whose SHA256SUMS does not list release.json is refused"
+verdict "a web3.13 release whose SHA256SUMS does not list release.json is refused"
 
 KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$NEW/dilla_core_wasi.wasm" --sums "$NEW/SHA256SUMS"
 expect_refusal "--binary with a SHA256SUMS that lists release.json needs --release-json" "--release-json"
-KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$RJNONE/dilla_core_wasi.wasm" --sums "$RJNONE/SHA256SUMS"
-expect_refusal "--binary of web3.12 without release.json is refused" "--release-json"
+KEEP_ROOT=1 run --upgrade --binary "$C13/dillad-linux-amd64" --core "$RJNONE/dilla_core_wasi.wasm" --sums "$RJNONE/SHA256SUMS"
+expect_refusal "--binary of web3.13 without release.json is refused" "--release-json"
 KEEP_ROOT=1 run --upgrade --binary "$NEW/dillad-linux-amd64" --core "$NEW/dilla_core_wasi.wasm" --sums "$NEW/SHA256SUMS" --release-json "$NEW/release.json"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|exit status $RC"
