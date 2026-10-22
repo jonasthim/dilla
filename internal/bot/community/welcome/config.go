@@ -81,6 +81,12 @@ type JoinRoleGranter interface {
 }
 
 func ConfiguredEventHandlerWithJoinRole(n Native, granter JoinRoleGranter, processor func(context.Context, Config) (*Processor, error)) func(context.Context, protocol.Event) error {
+	return ConfiguredEventHandlerWithCapabilities(n, granter, true, processor)
+}
+
+// ConfiguredEventHandlerWithCapabilities keeps event validation and optional
+// join-role processing active while honoring a revoked Welcome capability.
+func ConfiguredEventHandlerWithCapabilities(n Native, granter JoinRoleGranter, welcomeEnabled bool, processor func(context.Context, Config) (*Processor, error)) func(context.Context, protocol.Event) error {
 	return func(ctx context.Context, event protocol.Event) error {
 		switch event.Kind {
 		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel:
@@ -108,6 +114,9 @@ func ConfiguredEventHandlerWithJoinRole(n Native, granter JoinRoleGranter, proce
 			if err := granter.GrantJoinRole(ctx, member, episode); err != nil {
 				return err
 			}
+		}
+		if !welcomeEnabled {
+			return nil
 		}
 		cfg, err := LoadConfig(ctx, n)
 		if errors.Is(err, ErrUnconfigured) {

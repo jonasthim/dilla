@@ -405,7 +405,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							if pollerErr != nil {
 								ensureErr = pollerErr
 							} else {
-								handler, handlerErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID)
+								handler, handlerErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID, installation.Capabilities)
 								if handlerErr != nil {
 									ensureErr = handlerErr
 								} else {

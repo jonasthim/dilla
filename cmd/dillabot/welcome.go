@@ -32,12 +32,17 @@ type welcomeRoleGranter struct {
 	installation id.ID
 }
 
+const (
+	botWelcomeCapability uint64 = 1 << 1
+	botRolesCapability   uint64 = 1 << 2
+)
+
 func (g welcomeRoleGranter) GrantJoinRole(ctx context.Context, member, episode id.ID) error {
 	_, _, err := g.members.GrantJoinRole(ctx, g.installation, member, episode)
 	return err
 }
 
-func newWelcomeHandler(n *native.Client, session *client.Session, authority *client.Client, community, installation id.ID) (func(context.Context, protocol.Event) error, error) {
+func newWelcomeHandler(n *native.Client, session *client.Session, authority *client.Client, community, installation id.ID, capabilities uint64) (func(context.Context, protocol.Event) error, error) {
 	if n == nil || session == nil || authority == nil || community.IsZero() || installation.IsZero() {
 		return nil, errors.New("missing welcome runtime dependency")
 	}
@@ -50,7 +55,11 @@ func newWelcomeHandler(n *native.Client, session *client.Session, authority *cli
 		return nil, err
 	}
 	destination := service.WelcomeDestinationResolver{Session: session, Native: n}
-	return welcome.ConfiguredEventHandlerWithJoinRole(n, welcomeRoleGranter{members: members, installation: installation}, func(ctx context.Context, cfg welcome.Config) (*welcome.Processor, error) {
+	var granter welcome.JoinRoleGranter
+	if capabilities&botRolesCapability != 0 {
+		granter = welcomeRoleGranter{members: members, installation: installation}
+	}
+	return welcome.ConfiguredEventHandlerWithCapabilities(n, granter, capabilities&botWelcomeCapability != 0, func(ctx context.Context, cfg welcome.Config) (*welcome.Processor, error) {
 		channels, err := session.Channels(ctx, community)
 		if err != nil {
 			return nil, err

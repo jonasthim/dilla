@@ -123,9 +123,9 @@ type testMembers struct {
 }
 
 type testRoleGranter struct {
-	calls int
-	err   error
-	user  id.ID
+	calls   int
+	err     error
+	user    id.ID
 	episode id.ID
 }
 
@@ -219,6 +219,26 @@ func TestJoinRoleRunsWithoutWelcomeConfigurationAndFailsClosed(t *testing.T) {
 	granter.err = errors.New("role grant refused")
 	if err := handler(context.Background(), event); err == nil || err.Error() != "role grant refused" {
 		t.Fatalf("refusal was not propagated: %v", err)
+	}
+}
+
+func TestDisabledWelcomeCapabilitySkipsConfiguredTextAfterValidatingEvent(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	change, err := ConfigStateChange(Config{ChannelID: testID(6), Template: "hello {member}", ServerName: "Dilla"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = n.StateTransaction(context.Background(), testID(22), []native.StateChange{change}); err != nil {
+		t.Fatal(err)
+	}
+	event := joinEvent(community, user, episode, 1_999_999)
+	handler := ConfiguredEventHandlerWithCapabilities(n, nil, false, nil)
+	if err := handler(context.Background(), event); err != nil {
+		t.Fatalf("disabled welcome should not invoke configured processor: %v", err)
+	}
+	event.CommunityID = testID(23)
+	if err := handler(context.Background(), event); !errors.Is(err, protocol.ErrContext) {
+		t.Fatalf("disabled welcome accepted foreign event: %v", err)
 	}
 }
 
