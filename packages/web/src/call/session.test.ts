@@ -767,6 +767,59 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
   });
 
+  // Review M6: a refusal that cannot succeed later in the same reconnect (403 or 404: no longer a leaf, barred, without
+  // connect, the call gone; or the worker's own E_NO_CALL) ends that episode's retries. The room's own end then runs the
+  // lost-connection path as before. A transient refusal (503, 429, no answer) keeps the backoff (the tests above).
+  it.each([
+    ['403 E_LEAF_NOT_CURRENT', { code: 'E_LEAF_NOT_CURRENT', status: 403 }],
+    ['403 E_FORBIDDEN', { code: 'E_FORBIDDEN', status: 403 }],
+    ['404 E_NOT_FOUND', { code: 'E_NOT_FOUND', status: 404 }],
+    ['the worker’s E_NO_CALL', { code: 'E_NO_CALL', status: 0 }],
+  ] as const)('UP11: a final refusal (%s) is not retried in its episode, and the room’s end still holds the call', async (_name, e) => {
+    const f = fakes();
+    const call = await start(f);
+    f.refreshFails.push(Object.assign(new Error(e.code), { ...e, retryAfterMs: null }), refusal('E_UNAVAILABLE'));
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(1);
+    await f.advance(60_000);
+    expect(refreshes(f)).toBe(1);
+    // The reconnect never comes through: the room ends, and the call is held for the recovery as any lost room is.
+    f.room.emit('disconnected');
+    await flush();
+    expect(call.state.phase).toBe('ended');
+    expect(call.state.error).toBe('E_DISCONNECTED');
+    expect(f.calls).toContainEqual({ m: 'callHold', channelId: CH });
+  });
+
+  it('UP11: a final refusal ends only its own episode; the next reconnect asks again', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(Object.assign(new Error('E_LEAF_NOT_CURRENT'), { code: 'E_LEAF_NOT_CURRENT', status: 403, retryAfterMs: null }));
+    f.room.emit('reconnecting');
+    await f.advance(30_000);
+    expect(refreshes(f)).toBe(1);
+    f.room.emit('reconnected');
+    f.room.emit('reconnecting');
+    await flush();
+    expect(refreshes(f)).toBe(2);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
+  it('UP11: a transient refusal with a status (503, 429) keeps the backoff', async () => {
+    const f = fakes();
+    await start(f);
+    f.refreshFails.push(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE', status: 503, retryAfterMs: null }),
+      Object.assign(new Error('E_RATE_LIMITED'), { code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 3 }));
+    f.room.emit('reconnecting');
+    await flush();
+    await f.advance(1_000);
+    expect(refreshes(f)).toBe(2);
+    await f.advance(2_000);
+    expect(refreshes(f)).toBe(3);
+    expect(f.room.engine.rtcConfig.iceServers).toEqual(FRESH);
+  });
+
   it('UP11: a reconnect that comes through, or a leave, cancels the pending retry; no timer outlives its episode', async () => {
     const f = fakes();
     const call = await start(f);

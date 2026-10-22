@@ -673,7 +673,7 @@ Found by UP4's compat job (investigation `compat-inv`, ruling UP11). When the re
   - If the worker's re-read now says `E_NOT_FOUND` (a kick, a ban or a deleted server: the channel is gone for this device), the call still ends as a removal.
   - Otherwise it runs the lost-connection recovery (`E_DISCONNECTED` semantics: late rejoin and the AFK checks apply) and rejoins. `lostRemoved` lets that recovery's attempts accept the plain removed phase for that channel.
   - A removal while `connected`, or one that carries a code, is unchanged.
-- **Unchanged.** The relay floor, dillad, the test host and client-core.
+- **Unchanged.** The relay floor, dillad and the test host. (Round 1 left client-core unchanged; round 2 adds `Routes.relayCall`, the `callRelay` command and `CallController.relay`.)
 - **Tests (each red first).**
   - Six session tests: refresh at once, one per episode, no second refresh while one is in flight, the backoff, `retry_after_ms`, cleanup on reconnected and on leave, and the TTL restart.
   - Six useCall tests: the absence Remove while reconnecting recovers and rejoins; a recovery started that way stops and says `voice.removedNotMember` once the re-read says `E_NOT_FOUND`. Controls: the same Remove while connected; `E_NOT_FOUND` while reconnecting; a plain Remove whose re-read says `E_NOT_FOUND` within the hold; the AFK cut while reconnecting.
@@ -703,6 +703,13 @@ Found by UP4's compat job (investigation `compat-inv`, ruling UP11). When the re
     - The normal chromium `upgrade.spec` passed 4 of 5 runs, with **no leave reason 6 in step A in any run** and the reason-4 pin unchanged. Old-page starts in step A are at most one each (recovery starts only).
     - The failing run (run 3) is the older step-A resume race: carol's reloaded page's resume commit got 409 against bob's commit, and it rejoined through a resync and a second start ("exactly one start"). It is seen before UP11 in up6c-tail-e2e-upgrade-cr2.log and up7b2-e2e-upgrade-cr.log. It is not UP11.
     - B2's 5 s check held in every run (max 3.6 s). Its 5.6 s miss in round 1 predates UP11, so it is recorded, not fixed.
+- **Round 3 (opus review fixes).**
+  - I1: three route tests pin the post-mint re-check (a mint hook that bars the device: 403 and a relay cut), the 429 for a cut in the request's millisecond, and the `isPending` 503. Each goes red when its line is deleted.
+  - M4: the no-SFU test counts SFU reads too (`RoomSID`, `Rooms`, `Participants`), with a participant limit, so a `callFull` in the route goes red.
+  - M5: the pending-relay-cut test runs with TURN on, so its "nothing minted" check can fail.
+  - M6: the client stops asking within a reconnect after a 403, a 404 or `E_NO_CALL` (`finalRefusal`); 503, 429 and no answer keep the backoff.
+  - M1, M2: protocol/09 says which start gates the route shares, lists its 400, and says a rejoin under lost `connect` or a bar is refused 403.
+  - M3: the stale "client-core unchanged" line is corrected.
 - **Docs.** protocol/09 § Voice has the route's row. § Relays says the client fetches through it on every reconnect, gives the retry schedule, and says how the reconnecting removal is read.
 
 **Order and dependencies:**

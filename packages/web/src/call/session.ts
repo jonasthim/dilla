@@ -254,6 +254,14 @@ export function pageCallError(err: unknown): PageCallError {
   return new PageCallError(fromMessage ?? 'E_INTERNAL');
 }
 
+/** UP11 review M6: a refusal of the relay refresh that no retry within the same reconnect can turn: the instance's 403
+ *  (no longer a leaf, barred, without connect) or 404 (the call or its channel gone), or the worker's own E_NO_CALL. A
+ *  503, a 429 or no answer at all is transient and is retried. */
+export function finalRefusal(err: unknown): boolean {
+  const { status } = (err ?? {}) as { status?: unknown };
+  return status === 403 || status === 404 || pageCallError(err).code === 'E_NO_CALL';
+}
+
 /** The browser’s own dependencies, for the shell (task 9). */
 export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
   const md = navigator.mediaDevices;
@@ -1436,6 +1444,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }, (err: unknown) => {
         ep.busy = false;
         if (ended || episode !== ep) return;
+        // Review M6: a refusal no retry in this reconnect can turn (403, 404, or no live call in the worker) ends the
+        // episode's asking; the room's own end then runs the lost-connection path, as for any reconnect that fails.
+        if (finalRefusal(err)) { ep.done = true; return; }
         const step = RECONNECT_ICE_BACKOFF_MS[Math.min(ep.tries, RECONNECT_ICE_BACKOFF_MS.length - 1)];
         ep.tries += 1;
         ep.timer = later(() => { refreshReconnecting(ep); }, Math.max(step, pageCallError(err).retryAfterMs ?? 0));
