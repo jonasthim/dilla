@@ -442,65 +442,6 @@ impl ClientCore {
         .map_err(|_| ClientError::new(E_CORE_INPUT, "candidate interaction admission rejected"))
     }
 
-    /// Verify proof, v2 binding and exact signed-device-list roster evidence using the instance
-    /// key already pinned in this encrypted Bot store. This only prepares admission evidence; it
-    /// does not mutate an MLS group or persist an admission outcome. The caller must obtain
-    /// `expected.server_now` and `expected.minimum_eligibility_revision` from current trusted
-    /// server state, and authenticate the supplied MLS leaves and device-list signing keys before
-    /// using the result. Caller-supplied values alone cannot authorize group creation.
-    #[allow(clippy::too_many_arguments)]
-    pub fn bot_prepare_interaction_creation(
-        &self,
-        proof: &[u8],
-        expected: &crate::bot::interaction_admission::Expected,
-        binding: &crate::mls::DillaInteractionBinding,
-        leaves: &[crate::bot::interaction_admission::AuthenticatedRosterLeaf],
-        bot_list: &DeviceList,
-        bot_ssk_pub: &[u8; 32],
-        participant_list: &DeviceList,
-        participant_ssk_pub: &[u8; 32],
-    ) -> Result<crate::bot::interaction_admission::Admission, ClientError> {
-        let own = self.own()?;
-        if own.kind != Kind::Bot.as_u8()
-            || own.tier != Tier::Native.as_u8()
-            || expected.instance.0 != own.instance_id
-            || expected.bot_user.0 != own.user_id
-            || expected.bot_device.0 != own.device_id
-            || binding.policy_version > i64::MAX as u64
-        {
-            return Err(binding_mismatch());
-        }
-        let raw = self.read(|c| schema::meta_get(c, schema::BOT_BINDING))?;
-        let Some(raw) = raw else {
-            return Err(binding_mismatch());
-        };
-        let stored = decode_binding(&raw)?;
-        if expected.community.0 != stored.community_id
-            || expected.installation.0 != stored.installation_id
-            || binding.community_id.0 != stored.community_id
-            || binding.installation_id != stored.installation_id
-        {
-            return Err(binding_mismatch());
-        }
-        let pinned = self.read(|c| schema::meta_get(c, schema::BOT_INSTANCE_KEY))?;
-        let pinned: [u8; 32] = pinned
-            .ok_or_else(|| ClientError::new(E_CORE_STATE, "Bot instance key is not pinned"))?
-            .try_into()
-            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
-        crate::bot::interaction_admission::prepare_creation(
-            proof,
-            &pinned,
-            expected,
-            binding,
-            leaves,
-            bot_list,
-            bot_ssk_pub,
-            participant_list,
-            participant_ssk_pub,
-        )
-        .map_err(|_| ClientError::new(E_CORE_INPUT, "interaction admission evidence rejected"))
-    }
-
     /// Validate that this open client is the fully enrolled native Bot bound to the helper's
     /// installation tuple. The tuple is public scope metadata; no signing or recovery material is
     /// exposed by this check.
@@ -965,10 +906,19 @@ mod interaction_snapshot_tests {
                 tests::{make_snapshot, signed_list},
             },
         },
-        ids::MsgId,
-        mls::ConnHandle,
+        ids::{CommunityId, DeviceId, MsgId},
+        mls::{
+            CIPHERSUITE, ConnHandle, DILLA_BINDING, DillaInteractionBinding, build_key_package,
+            leaf_capabilities,
+        },
     };
     use ed25519_dalek::SigningKey;
+    use openmls::extensions::{Extension, RequiredCapabilitiesExtension};
+    use openmls::prelude::{
+        BasicCredential, CredentialType, Extensions, GroupContext, GroupId, MlsGroup,
+        MlsGroupCreateConfig,
+    };
+    use openmls_basic_credential::SignatureKeyPair;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
 
@@ -1071,6 +1021,272 @@ mod interaction_snapshot_tests {
             core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
                 .is_err(),
             "inspection requires a pre-existing candidate group"
+        );
+        assert_eq!(counts(&connection.lock().unwrap()), before);
+    }
+
+    #[test]
+    fn stored_interaction_inspector_accepts_authenticated_two_leaf_group_read_only() {
+        let connection = conn();
+        let instance_key = SigningKey::from_bytes(&[42; 32]);
+        let mut core = ClientCore::open(connection.clone()).unwrap();
+        core.bot_bootstrap_begin(
+            &INSTANCE,
+            &COMMUNITY,
+            &INSTALLATION,
+            &instance_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        let completion = core.bot_bootstrap_complete(&BOT_USER, "bot", 100).unwrap();
+        let (credential_bytes, list_body) = crate::cbor::decode_strict(&completion, |d| {
+            d.array(2)?;
+            Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec()))
+        })
+        .unwrap();
+        let bot_credential = CredentialIdentity::decode(&credential_bytes).unwrap();
+        let (version, bot_blob, _, _) = crate::cbor::decode_strict(&list_body, |d| {
+            d.array(4)?;
+            Ok((
+                d.uint()?,
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+            ))
+        })
+        .unwrap();
+        let bot_list = DeviceList::decode(&bot_blob).unwrap();
+        let bot_snapshot_list = SnapshotList {
+            user: mid(BOT_USER),
+            umk: bot_credential.umk_pub,
+            ssk: bot_credential.ssk_pub,
+            binding_signature: bot_credential.sig_umk_ssk,
+            version,
+            blob: bot_blob,
+            signature: bot_list.sig_ssk,
+            prev_hash: bot_list.unsigned.prev_hash,
+            hash: bot_list.hash(),
+        };
+
+        let participant_umk = UmkSigner::from_bytes(&[0x51; 32]);
+        let participant_ssk = SskSigner::from_bytes(&[0x52; 32]);
+        let participant_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).unwrap();
+        participant_signer.store(core.provider.storage()).unwrap();
+        let participant_dsk: [u8; 32] = participant_signer.public().try_into().unwrap();
+        let participant_identity = CredentialIdentity {
+            v: 1,
+            umk_pub: participant_umk.public(),
+            user_id: UserId::from_bytes(HUMAN_USER),
+            device_id: DeviceId::from_bytes(HUMAN_DEVICE),
+            kind: Kind::User,
+            tier: Tier::Native,
+            signer_tier: SignerTier::Native,
+            ssk_pub: participant_ssk.public(),
+            sig_umk_ssk: participant_umk.sign_ssk(&participant_ssk.public()),
+            sig_ssk_dev: participant_ssk.sign_device(
+                &DeviceId::from_bytes(HUMAN_DEVICE),
+                &participant_dsk,
+                Kind::User,
+                Tier::Native,
+                SignerTier::Native,
+            ),
+        };
+        let participant_unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(HUMAN_USER),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![DeviceEntry {
+                device_id: DeviceId::from_bytes(HUMAN_DEVICE),
+                dsk_pub: participant_dsk,
+                tier: Tier::Native,
+                added_at: 100,
+                revoked_at: None,
+            }],
+        };
+        let participant_list = DeviceList {
+            sig_ssk: participant_ssk.sign_device_list(&participant_unsigned),
+            unsigned: participant_unsigned,
+        };
+        let participant_blob = participant_list.encode();
+        let participant_snapshot_list = SnapshotList {
+            user: mid(HUMAN_USER),
+            umk: participant_umk.public(),
+            ssk: participant_ssk.public(),
+            binding_signature: participant_umk.sign_ssk(&participant_ssk.public()),
+            version: 1,
+            blob: participant_blob.clone(),
+            signature: participant_list.sig_ssk,
+            prev_hash: participant_list.unsigned.prev_hash,
+            hash: participant_list.hash(),
+        };
+        {
+            let c = connection.lock().unwrap();
+            c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,1,NULL)", rusqlite::params![HUMAN_USER.as_slice(), participant_umk.public().as_slice()]).unwrap();
+            c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,1,?2,?3,?4,NULL)", rusqlite::params![HUMAN_USER.as_slice(), participant_blob, participant_umk.public().as_slice(), participant_ssk.public().as_slice()]).unwrap();
+        }
+
+        let expected = Expected {
+            instance: mid(INSTANCE),
+            installation: mid(INSTALLATION),
+            community: mid(COMMUNITY),
+            bot_user: mid(BOT_USER),
+            bot_device: mid(bot_credential.device_id.0),
+            participant_user: mid(HUMAN_USER),
+            participant_device: mid(HUMAN_DEVICE),
+            group: mid([0x99; 16]),
+            minimum_eligibility_revision: 11,
+            server_now: 100,
+            policy_version: 3,
+        };
+        let wire = make_snapshot(
+            &expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            101,
+        );
+        let binding = DillaInteractionBinding {
+            instance_id: crate::ids::InstanceId::from_bytes(INSTANCE),
+            bot_user_id: BOT_USER,
+            installation_id: INSTALLATION,
+            community_id: CommunityId::from_bytes(COMMUNITY),
+            participant_user_id: HUMAN_USER,
+            participant_device_id: DeviceId::from_bytes(HUMAN_DEVICE),
+            policy_version: 3,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        let extensions = Extensions::<GroupContext>::try_from(vec![
+            Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                &[DILLA_BINDING],
+                &[],
+                &[CredentialType::Basic],
+            )),
+            binding.to_extension(),
+        ])
+        .unwrap();
+        let config = MlsGroupCreateConfig::builder()
+            .ciphersuite(CIPHERSUITE)
+            .use_ratchet_tree_extension(false)
+            .with_group_context_extensions(extensions)
+            .capabilities(leaf_capabilities())
+            .build();
+        let group_id = GroupId::from_slice(expected.group.as_bytes());
+        let mut group = MlsGroup::new_with_group_id(
+            &core.provider,
+            core.signer.as_ref().unwrap(),
+            &config,
+            group_id.clone(),
+            openmls::prelude::CredentialWithKey {
+                credential: BasicCredential::new(credential_bytes.clone()).into(),
+                signature_key: core.signer.as_ref().unwrap().public().into(),
+            },
+        )
+        .unwrap();
+        let kp = build_key_package(
+            &core.provider,
+            &participant_signer,
+            openmls::prelude::CredentialWithKey {
+                credential: BasicCredential::new(participant_identity.encode()).into(),
+                signature_key: participant_signer.public().into(),
+            },
+            false,
+        )
+        .unwrap();
+        group
+            .add_members(
+                &core.provider,
+                core.signer.as_ref().unwrap(),
+                &[kp.key_package().clone()],
+            )
+            .unwrap();
+        group.merge_pending_commit(&core.provider).unwrap();
+        drop(group);
+        connection.lock().unwrap().execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,3,?2,?3,2)",
+            rusqlite::params![expected.group.as_bytes().as_slice(), COMMUNITY.as_slice(), HUMAN_USER.as_slice()],
+        ).unwrap();
+
+        let before = counts(&connection.lock().unwrap());
+        let admission = core
+            .bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
+            .unwrap();
+        assert_eq!(admission.participant_user, mid(HUMAN_USER));
+        assert_eq!(counts(&connection.lock().unwrap()), before);
+
+        let mut wrong_participant = expected.clone();
+        wrong_participant.participant_user = mid([0x79; 16]);
+        assert!(
+            core.bot_inspect_stored_interaction_group(
+                wrong_participant.group.as_bytes(),
+                &wire,
+                &wrong_participant,
+            )
+            .is_err()
+        );
+        assert_eq!(counts(&connection.lock().unwrap()), before);
+
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_groups SET target_id=?2 WHERE group_id=?1",
+                rusqlite::params![expected.group.as_bytes().as_slice(), BOT_USER.as_slice()],
+            )
+            .unwrap();
+        assert!(
+            core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
+                .is_err(),
+            "the app row must target the authenticated participant"
+        );
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_groups SET target_id=?2 WHERE group_id=?1",
+                rusqlite::params![expected.group.as_bytes().as_slice(), HUMAN_USER.as_slice()],
+            )
+            .unwrap();
+
+        let mut group = MlsGroup::load(core.provider.storage(), &group_id)
+            .unwrap()
+            .unwrap();
+        let third_signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).unwrap();
+        third_signer.store(core.provider.storage()).unwrap();
+        let third_device = DeviceId::from_bytes([0x7a; 16]);
+        let third_dsk: [u8; 32] = third_signer.public().try_into().unwrap();
+        let mut third_identity = participant_identity.clone();
+        third_identity.device_id = third_device;
+        third_identity.sig_ssk_dev = participant_ssk.sign_device(
+            &third_device,
+            &third_dsk,
+            Kind::User,
+            Tier::Native,
+            SignerTier::Native,
+        );
+        let third_kp = build_key_package(
+            &core.provider,
+            &third_signer,
+            openmls::prelude::CredentialWithKey {
+                credential: BasicCredential::new(third_identity.encode()).into(),
+                signature_key: third_signer.public().into(),
+            },
+            false,
+        )
+        .unwrap();
+        group
+            .add_members(
+                &core.provider,
+                core.signer.as_ref().unwrap(),
+                &[third_kp.key_package().clone()],
+            )
+            .unwrap();
+        group.merge_pending_commit(&core.provider).unwrap();
+        assert_eq!(group.members().count(), 3);
+        assert!(
+            core.bot_inspect_stored_interaction_group(expected.group.as_bytes(), &wire, &expected)
+                .is_err(),
+            "a third OpenMLS leaf must be refused"
         );
         assert_eq!(counts(&connection.lock().unwrap()), before);
     }

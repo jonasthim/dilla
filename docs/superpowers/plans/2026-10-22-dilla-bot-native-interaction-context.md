@@ -26,18 +26,19 @@ server time, eligibility revision, policy version, current verified Bot and part
 entries, signed receipt and pinned instance key under its lock fence. It has no HTTP route or Bot
 client wire representation. Its result is therefore unavailable to the native helper.
 
-Rust already has `ClientCore::bot_prepare_interaction_creation`, which checks the persisted
-instance key, the v2 `DillaInteractionBinding`, exact two-leaf roster and signed device lists. Its
-contract explicitly says the caller must provide trusted current time and minimum eligibility
-revision, authenticated MLS leaves, and current device-list trust. The native helper exposes no
-operation that derives these values. It can check a caller-observed instance key against its pin,
-but intentionally has no operation that returns the pin. Its group adapter excludes kind 3 and
-returns `Unavailable` for the Welcome operation.
+Rust now verifies a server-signed interaction snapshot against the instance key and signed
+device-list pins in encrypted state. A read-only inspector derives the binding and exact two-leaf
+roster from a previously persisted OpenMLS group. The older public preparation method that
+accepted caller-constructed roster leaves was removed; it could be mistaken for an admission
+boundary. The native helper still lacks a transaction-local create/Add/verify path and does not
+dispatch encrypted interaction commands. Its group adapter excludes kind 3 and returns
+`Unavailable` for the Welcome operation.
 
 There is a sequencing gap too: the participant's authenticated MLS leaf is only available after
-OpenMLS processes the participant's KeyPackage/Add into candidate group state. The helper has no
-read-only candidate-group roster inspection path. Creating or persisting the group before
-validating the admission would leave partial interaction state on rejected input.
+OpenMLS processes the participant's KeyPackage/Add into candidate group state. The helper can
+inspect a stored group, but cannot yet inspect the transient group before commit. Creating or
+persisting the group before validating admission would leave partial interaction state on rejected
+input.
 
 ## Required transport and helper boundary
 
