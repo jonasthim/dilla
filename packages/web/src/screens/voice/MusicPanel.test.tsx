@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { VoiceMusicAdapter, VoiceMusicState } from '@dilla/client-core';
 import { MusicPanel } from './MusicPanel.tsx';
 
-type MusicCalls = { [K in Exclude<keyof VoiceMusicAdapter, 'state'>]: ReturnType<typeof vi.fn<VoiceMusicAdapter[K]>> };
+type MusicCalls = { [K in Exclude<keyof VoiceMusicAdapter, 'state' | 'subscribe'>]: ReturnType<typeof vi.fn<VoiceMusicAdapter[K]>> };
 type TestAdapter = VoiceMusicAdapter & { calls: MusicCalls };
 
 function adapter(permissions = { control: true, manageQueue: true }): TestAdapter {
-  const state: VoiceMusicState = {
+  const state: Extract<VoiceMusicState, { status: 'available' }> = {
     status: 'available', track: { id: 't1', title: 'North', artist: 'Harbor', durationMs: 180_000 },
     queue: [
       { id: 'q0', track: { id: 't0', title: 'East', artist: 'Harbor', durationMs: 170_000 } },
@@ -15,6 +15,8 @@ function adapter(permissions = { control: true, manageQueue: true }): TestAdapte
     ],
     positionMs: 30_000, volume: 75, paused: false, shuffle: false, repeat: 'off', permissions,
   };
+  let current = state;
+  const listeners = new Set<() => void>();
   const calls: MusicCalls = {
     pause: vi.fn<VoiceMusicAdapter['pause']>(), skip: vi.fn<VoiceMusicAdapter['skip']>(),
     stop: vi.fn<VoiceMusicAdapter['stop']>(), seek: vi.fn<VoiceMusicAdapter['seek']>(),
@@ -22,7 +24,15 @@ function adapter(permissions = { control: true, manageQueue: true }): TestAdapte
     setRepeat: vi.fn<VoiceMusicAdapter['setRepeat']>(), remove: vi.fn<VoiceMusicAdapter['remove']>(),
     move: vi.fn<VoiceMusicAdapter['move']>(),
   };
-  return { state: vi.fn(() => state), ...calls, calls };
+  calls.pause.mockImplementation((_channelId, paused) => {
+    current = { ...current, paused };
+    listeners.forEach(listener => listener());
+  });
+  return {
+    state: vi.fn(() => current),
+    subscribe: (_channelId, onChange) => { listeners.add(onChange); return () => { listeners.delete(onChange); }; },
+    ...calls, calls,
+  };
 }
 
 describe('MusicPanel', () => {
@@ -35,19 +45,28 @@ describe('MusicPanel', () => {
     expect(screen.queryByRole('slider')).toBeNull();
   });
 
-  it('sends playback and queue commands through the injected adapter', () => {
+  it('sends playback and queue commands through the injected adapter', async () => {
     const music = adapter();
     const { pause, skip, seek, setVolume, setShuffle, setRepeat, move, remove } = music.calls;
     render(<MusicPanel channelId="channel-1" adapter={music} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled());
     fireEvent.change(screen.getByRole('slider', { name: 'Seek' }), { target: { value: '45000' } });
+    await waitFor(() => expect(screen.getByRole('slider', { name: 'Seek' })).toBeEnabled());
     fireEvent.change(screen.getByRole('slider', { name: 'Music volume' }), { target: { value: '60' } });
+    await waitFor(() => expect(screen.getByRole('slider', { name: 'Music volume' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Shuffle' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Shuffle' })).toBeEnabled());
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } });
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Show queue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Move South up' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove South from queue' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Remove South from queue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove South from queue' })).toBeEnabled());
 
     expect(pause).toHaveBeenCalledWith('channel-1', true);
     expect(skip).toHaveBeenCalledWith('channel-1');
@@ -59,10 +78,54 @@ describe('MusicPanel', () => {
     expect(remove).toHaveBeenCalledWith('channel-1', 'q1');
   });
 
+  it('refreshes from the adapter subscription after an action succeeds', async () => {
+    const music = adapter();
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(await screen.findByRole('button', { name: 'Play' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  });
+
+  it('reports rejected actions and clears pending state without claiming success', async () => {
+    const music = adapter();
+    let rejectAction: ((reason: Error) => void) | undefined;
+    music.calls.pause.mockImplementation(() => new Promise((_resolve, reject) => { rejectAction = reject; }));
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Updating music…');
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    await act(() => { rejectAction?.(new Error('write failed')); return Promise.resolve(); });
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('The music update failed. Try again.'));
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+  });
+
+  it('exposes queue management from the desktop player and can collapse it again', async () => {
+    const music = adapter();
+    const { move, remove } = music.calls;
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+
+    expect(screen.queryByRole('region', { name: 'Queue' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show queue' }));
+    expect(screen.getByRole('region', { name: 'Queue' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Move South up' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Move South up' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove South from queue' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Remove South from queue' }));
+    expect(move).toHaveBeenCalledWith('channel-1', 'q1', 0);
+    expect(remove).toHaveBeenCalledWith('channel-1', 'q1');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Hide queue' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Hide queue' }));
+    expect(screen.queryByRole('region', { name: 'Queue' })).toBeNull();
+  });
+
   it('disables playback and queue mutations without the matching authorization', () => {
     const music = adapter({ control: false, manageQueue: false });
     const { pause, remove } = music.calls;
     render(<MusicPanel channelId="channel-1" adapter={music} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Show queue' }));
 
     expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Move South up' })).toBeDisabled();
@@ -72,13 +135,37 @@ describe('MusicPanel', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('opens a phone music view and gives the user a direct return to the call', () => {
+  it('opens a modal phone music view, focuses Return, and restores the opener on Escape', async () => {
     const music = adapter();
-    render(<div data-layout="phone"><MusicPanel channelId="channel-1" adapter={music} /></div>);
-    fireEvent.click(screen.getByRole('button', { name: 'Open music player' }));
+    const show = vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function (this: HTMLDialogElement) {
+      this.setAttribute('open', '');
+    });
+    const close = vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function (this: HTMLDialogElement) {
+      this.removeAttribute('open');
+    });
+    try {
+      render(<div data-layout="phone"><MusicPanel channelId="channel-1" adapter={music} /></div>);
+      const opener = screen.getByRole('button', { name: 'Open music player' });
+      opener.focus();
+      fireEvent.click(opener);
 
-    expect(screen.getByRole('dialog', { name: 'Music' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Return to call' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+      const dialog = screen.getByRole('dialog', { name: 'Music' });
+      await waitFor(() => expect(dialog).toHaveAttribute('open'));
+      expect(dialog).toHaveAttribute('aria-modal', 'true');
+      expect(screen.getByRole('button', { name: 'Return to call' })).toHaveFocus();
+      fireEvent(dialog, new Event('cancel', { cancelable: true }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(opener).toHaveFocus();
+
+      fireEvent.click(opener);
+      const reopened = await screen.findByRole('dialog', { name: 'Music' });
+      await waitFor(() => expect(reopened).toHaveAttribute('open'));
+      fireEvent.click(screen.getByRole('button', { name: 'Return to call' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(opener).toHaveFocus();
+    } finally {
+      show.mockRestore();
+      close.mockRestore();
+    }
   });
 });

@@ -33,7 +33,10 @@ export type VoiceMusicState =
     };
 
 export interface VoiceMusicAdapter {
+  /** Return the same immutable snapshot until a change is published to subscribers. */
   state(channelId: string): VoiceMusicState;
+  /** Notify after each optimistic update, confirmed update or server rollback. */
+  subscribe(channelId: string, onChange: () => void): () => void;
   pause(channelId: string, paused: boolean): void | Promise<void>;
   skip(channelId: string): void | Promise<void>;
   stop(channelId: string): void | Promise<void>;
@@ -45,13 +48,15 @@ export interface VoiceMusicAdapter {
   move(channelId: string, queueItemId: string, destinationIndex: number): void | Promise<void>;
 }
 
+const UNAVAILABLE: VoiceMusicState = { status: 'unavailable', reason: 'authenticated-transport-missing' };
 export const voiceMusicAdapter: VoiceMusicAdapter = {
-  state: () => ({ status: 'unavailable', reason: 'authenticated-transport-missing' }),
+  state: () => UNAVAILABLE,
+  subscribe: () => () => undefined,
   pause: unavailable, skip: unavailable, stop: unavailable, seek: unavailable,
   setVolume: unavailable, setShuffle: unavailable, setRepeat: unavailable,
   remove: unavailable, move: unavailable,
 };
 
-function unavailable(): never {
-  throw new Error('Authenticated voice music transport is unavailable.');
+function unavailable(): Promise<never> {
+  return Promise.reject(new Error('Authenticated voice music transport is unavailable.'));
 }
