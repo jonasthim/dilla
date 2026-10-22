@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/community/welcome"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
@@ -283,7 +284,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_fail_closed", "music", "not_implemented")
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_unconfigured_noop_configured_pending", "music", "not_implemented")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -374,7 +375,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
 							if pollerErr != nil {
 								ensureErr = pollerErr
-							} else if _, pollErr := poller.PollOnce(ctx, result.Session, service.FailClosedStructuralEvent); pollErr != nil {
+							} else if _, pollErr := poller.PollOnce(ctx, result.Session, welcome.ConfiguredEventHandler(nativeClient, nil)); pollErr != nil {
 								logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
 							}
 						}

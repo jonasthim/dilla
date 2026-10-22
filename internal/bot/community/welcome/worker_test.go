@@ -130,6 +130,48 @@ func TestDuplicateJoinSendsOneEpisode(t *testing.T) {
 	_ = n
 }
 
+func TestConfiguredEventHandlerDistinguishesProvenDisabledFromPending(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	event := joinEvent(community, user, episode, 1_999_999)
+	handler := ConfiguredEventHandler(n, nil)
+	if err := handler(context.Background(), event); err != nil {
+		t.Fatalf("missing config should be a proven no-op: %v", err)
+	}
+	change, err := ConfigStateChange(Config{ChannelID: testID(6), Template: "hello {member}", ServerName: "Dilla"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.ExpectedRevision = 0
+	if _, err = n.StateTransaction(context.Background(), testID(20), []native.StateChange{change}); err != nil {
+		t.Fatal(err)
+	}
+	if err = handler(context.Background(), event); err == nil || err.Error() != "configured welcome is pending: authenticated current-membership and member-profile APIs are unavailable" {
+		t.Fatalf("configured join should remain pending, got %v", err)
+	}
+}
+
+func TestConfiguredEventHandlerAllowsReconciledStructuralEventsBeforeJoin(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	handler := ConfiguredEventHandler(n, nil)
+	for _, kind := range []protocol.EventKind{protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel} {
+		if err := handler(context.Background(), protocol.Event{CommunityID: community, Kind: kind}); err != nil {
+			t.Fatalf("reconciled event kind %d blocks later joins: %v", kind, err)
+		}
+	}
+	if err := handler(context.Background(), joinEvent(community, user, episode, 1_999_999)); err != nil {
+		t.Fatalf("unconfigured join after structural events: %v", err)
+	}
+}
+
+func TestMalformedWelcomeConfigFailsClosed(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	n.values[stateMapKey(stateArea, []byte(configKey))] = native.StateValue{Revision: 1, Value: []byte{0xff}}
+	err := ConfiguredEventHandler(n, nil)(context.Background(), joinEvent(community, user, episode, 1_999_999))
+	if err == nil || err.Error() != "malformed welcome configuration" {
+		t.Fatalf("malformed state error=%v", err)
+	}
+}
+
 func TestChangedOrMissingDestinationFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
