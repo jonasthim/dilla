@@ -48,6 +48,7 @@ type Repository interface {
 	Channels    // Plan 2 task 2 (P2-D23) — 00005_channels.sql
 	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
 	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
+	MemberTimeouts
 	// Plan 2 task 6 (P2-D23) — 00008_channel_members.sql
 	ChannelMembers
 	// Plan 2 task 8 (P2-D23) — 00009_readable.sql
@@ -636,6 +637,12 @@ type Overwrites interface {
 
 // Bans is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
 // §4.1's three ban methods plus P2-D10's listing.
+type MemberTimeouts interface {
+	PutMemberTimeout(context.Context, MemberTimeoutRow) error
+	GetMemberTimeout(context.Context, id.ID, id.ID, int64) (MemberTimeoutRow, error)
+	DeleteMemberTimeout(context.Context, id.ID, id.ID) error
+}
+
 type Bans interface {
 	// PutBan is an upsert on (community, user): a second ban of the same user
 	// replaces the reason, the moderator, the time and the expiry.

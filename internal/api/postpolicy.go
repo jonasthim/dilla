@@ -11,12 +11,10 @@ import (
 )
 
 // PostPolicy is the delivery service's ds.PostPolicy (web3.7 SB1, protocol/02 § Upload class): the
-// host's two rules for an end-to-end encrypted upload into a community text group. A class-0
-// upload (a post) needs send_messages in the channel, else 403 E_FORBIDDEN, and waits out the
-// channel's slow mode since the user's last class-0 upload into any of its text groups, from any
-// device, unless they hold bypass_slowmode, else 429 E_RATE_LIMITED. A class-1 upload (an edit,
-// delete, reaction, pin or other fold) is never checked. Direct messages and call groups are
-// unchecked.
+// host's two rules for an end-to-end encrypted upload into a community text group. Active member timeouts block every community text upload,
+// including class-1 folds, before the class-1 shortcut. A class-0 upload (a post) also needs
+// send_messages in the channel and waits out slow mode unless the user holds bypass_slowmode.
+// Direct messages and call groups are unchecked.
 type PostPolicy struct {
 	Repo     store.Repository
 	Resolver *Resolver
@@ -27,9 +25,9 @@ type PostPolicy struct {
 // community and group row fences.
 //
 // Every upload names its class: the route refuses the two-element legacy body web3.7 accepted
-// (web3.8 S1). A class other than 1 is decided as a post. A group whose channel is gone is refused
-// for every class (fail closed). The wait is read from the user's durable mark, which Upload
-// raises on every accepted class-0 post, so a pruned post still holds it.
+// (web3.8 S1). A group whose channel is gone is refused for every class (fail closed). The wait is
+// read from the user's durable mark, which Upload raises on every accepted class-0 post, so a
+// pruned post still holds it.
 func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error {
 	return p.check(ctx, p.Repo, p.Resolver, g, userID, class, now)
 }
@@ -76,6 +74,11 @@ func (p PostPolicy) check(ctx context.Context, repo store.Repository, resolver *
 	}
 	if resolver == nil {
 		resolver = NewResolver(repo)
+	}
+	if _, err := repo.GetMemberTimeout(ctx, *g.CommunityID, userID, now); err == nil {
+		return server.Errorf(server.CodeForbidden, "member is timed out")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
 	}
 	bits, err := resolver.Resolve(ctx, userID, ch)
 	if err != nil {

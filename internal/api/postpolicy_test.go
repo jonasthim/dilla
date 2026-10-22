@@ -479,3 +479,19 @@ func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
 		})
 	}
 }
+
+func TestMemberTimeoutBlocksClassOneTextUploadsUntilExpiry(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			f := newPolicyFixture(t, repo, viewSend, 0)
+			until := policyT0 + 60
+			if err := repo.PutMemberTimeout(context.Background(), store.MemberTimeoutRow{CommunityID: f.cid, UserID: f.user, ByUser: f.user, Created: policyT0, Expires: until}); err != nil {
+				t.Fatal(err)
+			}
+			for _, class := range []uint8{0, 1} {
+				wantPolicyRefusal(t, "timed out class upload", f.check(f.group, class, policyT0+1), http.StatusForbidden, server.CodeForbidden)
+			}
+			wantPolicyNil(t, "timeout expiry is automatic", f.check(f.group, 0, until))
+		})
+	}
+}

@@ -188,6 +188,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Bans", reflect.TypeOf((*store.Bans)(nil)).Elem(), []string{
 			"DeleteBan", "GetBan", "ListBans", "PutBan",
 		}},
+		{"MemberTimeouts", reflect.TypeOf((*store.MemberTimeouts)(nil)).Elem(), []string{
+			"DeleteMemberTimeout", "GetMemberTimeout", "PutMemberTimeout",
+		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
 			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
@@ -313,6 +316,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.Overwrites)(nil)).Elem(),
 		// Plan 2 task 4: Bans joins with 00007_bans.sql.
 		reflect.TypeOf((*store.Bans)(nil)).Elem(),
+		// Task 13: member timeouts join with the server-side timeout table.
+		reflect.TypeOf((*store.MemberTimeouts)(nil)).Elem(),
 		// Plan 2 task 6: ChannelMembers joins with 00008_channel_members.sql.
 		reflect.TypeOf((*store.ChannelMembers)(nil)).Elem(),
 		// Plan 2 task 8: Readable joins with 00009_readable.sql.
@@ -371,6 +376,7 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"RoleRow":              store.RoleRow{},
 		"OverwriteRow":         store.OverwriteRow{},
 		"BanRow":               store.BanRow{},
+		"MemberTimeoutRow":     store.MemberTimeoutRow{},
 		"VoiceSessionRow":      store.VoiceSessionRow{},
 		"ReadableMessageRow":   store.ReadableMessageRow{},
 		"BlobRow":              store.BlobRow{},

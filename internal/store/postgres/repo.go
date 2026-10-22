@@ -3375,3 +3375,37 @@ func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]st
 }
 
 var _ store.Repository = (*Repo)(nil)
+
+// ---------------------------------------------------------------- Member timeouts
+func (r *Repo) PutMemberTimeout(ctx context.Context, v store.MemberTimeoutRow) error {
+	_, err := r.writeQuery().ExecContext(ctx, `INSERT INTO community_member_timeouts(community_id,user_id,by_user,created,expires) VALUES($1,$2,$3,$4,$5) ON CONFLICT(community_id,user_id) DO UPDATE SET by_user=excluded.by_user,created=excluded.created,expires=excluded.expires`, v.CommunityID, v.UserID, v.ByUser, v.Created, v.Expires)
+	return wrap(err)
+}
+func (r *Repo) GetMemberTimeout(ctx context.Context, cid, uid id.ID, now int64) (store.MemberTimeoutRow, error) {
+	var q interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	} = r.db
+	if r.tx != nil {
+		q = r.tx
+	}
+	var v store.MemberTimeoutRow
+	err := q.QueryRowContext(ctx, `SELECT community_id,user_id,by_user,created,expires FROM community_member_timeouts WHERE community_id=$1 AND user_id=$2 AND expires>$3`, cid, uid, now).Scan(&v.CommunityID, &v.UserID, &v.ByUser, &v.Created, &v.Expires)
+	if err != nil {
+		return v, wrap(err)
+	}
+	return v, nil
+}
+func (r *Repo) DeleteMemberTimeout(ctx context.Context, cid, uid id.ID) error {
+	res, err := r.writeQuery().ExecContext(ctx, `DELETE FROM community_member_timeouts WHERE community_id=$1 AND user_id=$2`, cid, uid)
+	if err != nil {
+		return wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}

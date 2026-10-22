@@ -755,3 +755,51 @@ func TestReadStateIsMonotoneAndBounded(t *testing.T) {
 		t.Fatalf("read state = %d past the channel's newest seq %d", got, seq)
 	}
 }
+
+func TestReadableTimeoutBlocksEditsReactionsAndPinsButAllowsOwnDeletionAndReads(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	member, memberTok := e.NewUser("timed-out")
+	joinCommunity(t, e, f.cid, memberTok)
+	role := createRole(t, e, f.cid, f.ownerTok, "readable-moderations", 5, api.PermViewChannel|api.PermSendMessages|api.PermPinMessages|api.PermAddReactions)
+	grant(t, e, f.cid, f.ownerTok, member, role, http.StatusNoContent)
+	first := postReadable(t, e, ch, memberTok, envelope0(t, "first"))
+	second := postReadable(t, e, ch, memberTok, envelope0(t, "second"))
+	expires := e.Clk.Now().Unix() + 600
+	if err := e.Repo.PutMemberTimeout(t.Context(), store.MemberTimeoutRow{CommunityID: f.cid, UserID: member, ByUser: mustSessionUser(t, e, f.ownerTok), Created: e.Clk.Now().Unix(), Expires: expires}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/v1/channels/%s/messages/%d", ch, first)
+	if status, _ := e.Do(http.MethodPatch, path, memberTok, []any{envelopeOf(t, 1, "edit")}); status != http.StatusForbidden {
+		t.Fatalf("timed-out readable edit = %d, want 403", status)
+	}
+	for _, tc := range []struct {
+		typ  uint64
+		body string
+	}{{0, "new message"}, {1, "edit"}, {3, "reaction"}, {4, "reaction"}, {5, ""}, {6, ""}} {
+		status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok, []any{envelopeOf(t, tc.typ, tc.body)})
+		if status != http.StatusForbidden {
+			t.Fatalf("timed-out readable type %d = %d (%x), want 403", tc.typ, status, body)
+		}
+	}
+	if status, _ := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", memberTok, []any{envelopeOf(t, 2, "")}); status != http.StatusNoContent {
+		t.Fatalf("timed-out author delete alias = %d, want 204", status)
+	}
+	if status, _ := e.Do(http.MethodDelete, fmt.Sprintf("/v1/channels/%s/messages/%d", ch, second), memberTok, nil); status != http.StatusNoContent {
+		t.Fatalf("timed-out author DELETE = %d, want 204", status)
+	}
+	if status, _ := e.Do(http.MethodGet, "/v1/channels/"+ch.String()+"/messages?from=0", memberTok, nil); status != http.StatusOK {
+		t.Fatalf("timed-out read = %d, want 200", status)
+	}
+}
+
+func mustSessionUser(t *testing.T, e *env, token string) id.ID {
+	t.Helper()
+	s, ok := e.sess[token]
+	if !ok {
+		t.Fatal("session not found")
+	}
+	return s.UserID
+}

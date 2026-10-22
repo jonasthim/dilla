@@ -535,3 +535,12 @@ type BackupRow struct {
 	ManifestSig []byte
 	Created     int64
 }
+
+// MemberTimeoutRow mirrors community_member_timeouts.
+type MemberTimeoutRow struct {
+	CommunityID id.ID
+	UserID      id.ID
+	ByUser      id.ID
+	Created     int64
+	Expires     int64
+}

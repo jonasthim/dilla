@@ -216,6 +216,13 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 	var seq uint64
 	var tag []byte
 	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// The community lock serialises this write with moderator timeout changes.
+		if err := tx.LockCommunity(r.Context(), *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := requireNotTimedOut(r.Context(), tx, *ch.CommunityID, s.UserID, now); err != nil {
+			return err
+		}
 		// NextChannelSeq comes first: it is `UPDATE channels … RETURNING seq`,
 		// which serialises every post to this channel on its row (Postgres's
 		// row lock; SQLite's single writer). The slowmode read after it
@@ -421,8 +428,8 @@ func (h *Readable) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // target reads the live message at seq, or answers 404.
-func (h *Readable) target(ctx context.Context, ch store.ChannelRow, seq uint64) (store.ReadableMessageRow, error) {
-	rows, err := h.repo.ListReadableMessages(ctx, ch.ID, seq, 1)
+func (h *Readable) target(ctx context.Context, repo store.Repository, ch store.ChannelRow, seq uint64) (store.ReadableMessageRow, error) {
+	rows, err := repo.ListReadableMessages(ctx, ch.ID, seq, 1)
 	if err != nil {
 		return store.ReadableMessageRow{}, err
 	}
@@ -447,29 +454,58 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 	if env.Type != EnvMessage && env.Type != EnvEdit {
 		return server.Errorf(server.CodeEnvelopeType, "an edit carries a type-0 or type-1 envelope")
 	}
-	row, err := h.target(ctx, ch, seq)
+	if ch.CommunityID == nil {
+		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	var original store.ReadableMessageRow
+	var tag []byte
+	err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockCommunity(ctx, *ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		if err := requireNotTimedOut(ctx, tx, *ch.CommunityID, s.UserID, h.clk.Now().Unix()); err != nil {
+			return err
+		}
+		row, err := h.target(ctx, tx, ch, seq)
+		if err != nil {
+			return err
+		}
+		original = row
+		if row.Sender != s.UserID {
+			return server.Errorf(server.CodeForbidden, "only the author may edit a message")
+		}
+		if err := requireCommunityWire(ctx, tx, s.WireVersion, ch.CommunityID); err != nil {
+			return err
+		}
+		c, err := Commitment(envelope, env.KF)
+		if err != nil {
+			return err
+		}
+		now := h.clk.Now().Unix()
+		keyID, key := h.keys.Current()
+		tag = Tag(key, ch.ID, 0, seq, s.DeviceID, c, now)
+		f := store.ReadableFranking{Tag: tag, KeyID: keyID, UploaderDevice: s.DeviceID, CommitmentC: c}
+		if err := tx.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), f, now); err != nil {
+			return notFound(err)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if row.Sender != s.UserID {
-		return server.Errorf(server.CodeForbidden, "only the author may edit a message")
-	}
-	if err := requireCommunityWire(ctx, h.repo, s.WireVersion, ch.CommunityID); err != nil {
-		return err
-	}
-	c, err := Commitment(envelope, env.KF)
-	if err != nil {
-		return err
-	}
-	now := h.clk.Now().Unix()
-	keyID, key := h.keys.Current()
-	tag := Tag(key, ch.ID, 0 /* no epoch on a readable channel */, seq, s.DeviceID, c, now)
-	f := store.ReadableFranking{Tag: tag, KeyID: keyID, UploaderDevice: s.DeviceID, CommitmentC: c}
-	if err := h.repo.EditReadableMessage(ctx, ch.ID, seq, envelope, indexedBody(env.Type, env.Body), f, now); err != nil {
-		return notFound(err)
-	}
-	h.deliver(ctx, ch.ID, seq, row.Sender, envelope, tag, 1, 0)
+	h.deliver(ctx, ch.ID, seq, original.Sender, envelope, tag, 1, 0)
 	return nil
+}
+
+func requireNotTimedOut(ctx context.Context, repo store.Repository, communityID, userID id.ID, now int64) error {
+	_, err := repo.GetMemberTimeout(ctx, communityID, userID, now)
+	if err == nil {
+		return server.Errorf(server.CodeForbidden, "member is timed out")
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // applyDelete tombstones the row: the envelope and the body are emptied, so the
@@ -478,7 +514,7 @@ func (h *Readable) applyEdit(ctx context.Context, ch store.ChannelRow, s auth.Se
 // anyone else, manage_messages or not, is 403 E_NOT_UPLOADER. Moderator
 // deletion needs a signed moderation event, which is follow-up card 2.
 func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.Session, seq uint64) error {
-	row, err := h.target(ctx, ch, seq)
+	row, err := h.target(ctx, h.repo, ch, seq)
 	if err != nil {
 		return err
 	}
