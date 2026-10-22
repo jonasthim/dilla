@@ -120,8 +120,8 @@ func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	if retry.Code != http.StatusOK || !bytes.Equal(retry.Body.Bytes(), first.Body.Bytes()) {
 		t.Fatalf("retry = %d (%x), want stable receipt %x", retry.Code, retry.Body.Bytes(), first.Body.Bytes())
 	}
-	if grantNotifications != 1 {
-		t.Fatalf("receipt retry produced %d grant notifications, want one", grantNotifications)
+	if grantNotifications != 2 {
+		t.Fatalf("receipt retry produced %d grant notifications, want two for repair", grantNotifications)
 	}
 	oldEpisode := mustMemberEpisode(t, deps.Repo, cid, staleTarget)
 	if err := deps.Repo.DeleteMember(ctx, cid, staleTarget); err != nil {
@@ -141,8 +141,8 @@ func TestBotJoinRoleGrantBindsEpisodeAndRechecksApprover(t *testing.T) {
 	if lost.Code != http.StatusForbidden {
 		t.Fatalf("grant after approver authority loss = %d (%x), want 403", lost.Code, lost.Body.Bytes())
 	}
-	if grantNotifications != 1 {
-		t.Fatalf("refused grants produced %d notifications, want one", grantNotifications)
+	if grantNotifications != 2 {
+		t.Fatalf("refused grants produced %d notifications, want two", grantNotifications)
 	}
 	held, err := deps.Repo.ListMemberRoles(ctx, cid, staleTarget)
 	if err != nil {

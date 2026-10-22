@@ -156,8 +156,8 @@ type Deps struct {
 	// the composition root can bring its channel groups in line with the new member.
 	BotEnrolled func(context.Context, store.BotInstallationRow)
 	// BotJoinRoleGranted refreshes derived channel eligibility and live clients
-	// after a new episode-bound automatic role grant commits. It is not called
-	// for an idempotent receipt replay.
+	// after an episode-bound automatic role grant commits or its accepted receipt
+	// is replayed. Replay repairs a crash after commit but before refresh.
 	BotJoinRoleGranted func(context.Context, id.ID, id.ID)
 }
 
