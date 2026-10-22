@@ -436,7 +436,7 @@ curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.1/install.
 sh install.sh --upgrade
 ```
 
-Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 without output when they are valid.
+Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 when they are valid, printing `arguments are valid; the release was not checked` on stderr: it does not look up the release, so a mistyped `--version` still passes here and is refused later, at the download, before anything on disk changes.
 
 It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
 stays up, runs doctor, then restarts the media service. The previous pair stays as `dillad.prev`
