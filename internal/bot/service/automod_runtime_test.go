@@ -37,7 +37,7 @@ func TestAutoModerationRuntimeUsesNativeActorAndDeduplicates(t *testing.T) {
 		return nil
 	}), func() time.Time { return now })
 	body := "private text"
-	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Channel: id.New(),
+	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(),
 		SourceSequence: 9, ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(),
 		SenderKind: 0, SenderTier: 0, EnvelopeType: 0, Body: &body, Message: id.New()}
 
@@ -70,7 +70,7 @@ func TestAutoModerationRuntimeUsesNativeActorAndDeduplicates(t *testing.T) {
 			t.Fatal("sink action omitted the source revision")
 		}
 		if action.Decision.Action == moderation.ActionWarn {
-			if action.Actor != event.SenderUser.String() || action.Excerpt != moderation.Excerpt(body) || action.SourceRevision != event.SourceSequence {
+			if action.Actor != event.SenderUser.String() || action.Group != event.Group.String() || action.Excerpt != moderation.Excerpt(body) || action.SourceRevision != event.SourceSequence {
 				t.Fatalf("sink action actor/excerpt = %v/%q", action.Actor, action.Excerpt)
 			}
 			break
@@ -101,7 +101,7 @@ func TestAutoModerationRuntimeReplayRebuildsWithoutSinkAndBoundsExcerpt(t *testi
 			return nil
 		}), func() time.Time { return now })
 	body := "secret"
-	base := native.GroupEvent{DeliveryID: 1, Community: id.New(), Channel: id.New(), SenderUser: id.New(), SenderDevice: id.New(),
+	base := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SenderUser: id.New(), SenderDevice: id.New(),
 		SenderKind: 0, EnvelopeType: 0, Body: &body}
 	for i := 0; i < 6; i++ {
 		event := base
@@ -134,7 +134,7 @@ func TestAutoModerationRuntimeDefaultsToDisabledAndLogOnly(t *testing.T) {
 		return nil
 	}), time.Now)
 	body := "x"
-	event := native.GroupEvent{Community: id.New(), Channel: id.New(), SourceSequence: 1, ReceivedAt: uint64(time.Now().UnixMilli()),
+	event := native.GroupEvent{Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1, ReceivedAt: uint64(time.Now().UnixMilli()),
 		SenderUser: id.New(), SenderDevice: id.New(), EnvelopeType: 0, Body: &body, Message: id.New()}
 	for i := 0; i < 7; i++ {
 		event.SourceSequence++
@@ -151,7 +151,7 @@ func TestAutoModerationRuntimeDefaultsToDisabledAndLogOnly(t *testing.T) {
 func TestAutoModerationRuntimeRequiresAuthorityAndSinkWhenEnabled(t *testing.T) {
 	now := time.Now()
 	body := "hello"
-	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Channel: id.New(), SourceSequence: 1,
+	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1,
 		ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(), Message: id.New(),
 		EnvelopeType: 0, Body: &body}
 	var calls int
@@ -185,7 +185,7 @@ func TestAutoModerationRuntimeRequiresAuthorityAndSinkWhenEnabled(t *testing.T) 
 func TestAutoModerationRuntimeExemptsTrustedOwnersAndAdmins(t *testing.T) {
 	now := time.Now()
 	body := "hello"
-	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Channel: id.New(), SourceSequence: 1,
+	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1,
 		ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(), Message: id.New(),
 		EnvelopeType: 0, Body: &body}
 	for _, role := range []string{"owner", "admin"} {

@@ -13,11 +13,11 @@ import (
 // ModerationAction is the bounded information handed to an action or audit
 // sink. The decrypted message body is never retained here.
 type ModerationAction struct {
-	Community, Channel, Actor, Message string
-	SourceRevision                     uint64
-	Decision                           moderation.Decision
-	Excerpt                            string
-	ReceivedAt                         time.Time
+	Community, Group, Channel, Actor, Message string
+	SourceRevision                            uint64
+	Decision                                  moderation.Decision
+	Excerpt                                   string
+	ReceivedAt                                time.Time
 }
 
 // ModerationActionSink is the application boundary for logging, warnings, or
@@ -56,7 +56,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	if r == nil || r.engine == nil {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation runtime")
 	}
-	if event.DeliveryID == 0 || event.Community.IsZero() || event.Channel.IsZero() || event.Message.IsZero() ||
+	if event.DeliveryID == 0 || event.Community.IsZero() || event.Group.IsZero() || event.Channel.IsZero() || event.Message.IsZero() ||
 		event.SourceSequence == 0 || event.SenderUser.IsZero() || event.SenderDevice.IsZero() ||
 		event.SenderKind > 1 || event.SenderTier > 1 || event.EnvelopeType != 0 || event.Body == nil || event.ReceivedAt == 0 || event.ReceivedAt > math.MaxInt64 {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, nil
@@ -93,7 +93,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 		return decision, nil
 	}
 	action := ModerationAction{Community: event.Community.String(), Channel: event.Channel.String(),
-		Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
+		Group: event.Group.String(), Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
 		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt}
 	if err := r.sink.ApplyModerationAction(ctx, action); err != nil {
 		return decision, err
