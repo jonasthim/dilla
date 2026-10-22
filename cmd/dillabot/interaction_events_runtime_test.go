@@ -33,8 +33,26 @@ func (f interactionDispatcherFunc) Dispatch(ctx context.Context, event native.Gr
 
 type interactionResponseSenderFunc func(context.Context, native.GroupEvent, string) (bool, error)
 
+func (f interactionResponseSenderFunc) ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error) {
+	return false, nil
+}
+
 func (f interactionResponseSenderFunc) SendInteractionResponse(ctx context.Context, event native.GroupEvent, response string) (bool, error) {
 	return f(ctx, event, response)
+}
+
+type interactionResumingSender struct {
+	resumed bool
+	sends   int
+}
+
+func (s *interactionResumingSender) ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error) {
+	return s.resumed, nil
+}
+
+func (s *interactionResumingSender) SendInteractionResponse(context.Context, native.GroupEvent, string) (bool, error) {
+	s.sends++
+	return true, nil
 }
 
 func TestInteractionEventHandlerDispatchesOnlyNativeInteractionGroups(t *testing.T) {
@@ -138,6 +156,28 @@ func TestInteractionEventHandlerFailsClosedUntilResponseSendConfirmed(t *testing
 	_, err := runtime.Drain(context.Background())
 	if !errors.Is(err, sendErr) || acked {
 		t.Fatalf("Drain error=%v acked=%v", err, acked)
+	}
+}
+
+func TestInteractionEventHandlerResumesCommittedResponseBeforeDispatch(t *testing.T) {
+	event := native.GroupEvent{DeliveryID: 5, Group: id.New()}
+	sender := &interactionResumingSender{resumed: true}
+	dispatches := 0
+	handler := newInteractionEventHandler(
+		interactionGroupInspectorFunc(func(_ context.Context, group id.ID) (native.GroupInfo, error) {
+			return native.GroupInfo{ID: group, Kind: 3}, nil
+		}),
+		interactionDispatcherFunc(func(context.Context, native.GroupEvent) (string, error) {
+			dispatches++
+			return "response", nil
+		}),
+		sender,
+	)
+	if err := handler.HandleGroupEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if dispatches != 0 || sender.sends != 0 {
+		t.Fatalf("dispatches=%d fresh sends=%d; committed response must resume before dispatch", dispatches, sender.sends)
 	}
 }
 

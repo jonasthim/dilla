@@ -29,6 +29,7 @@ type interactionEventDispatcher interface {
 }
 
 type interactionEventResponseSender interface {
+	ResumeInteractionResponse(context.Context, native.GroupEvent) (bool, error)
 	SendInteractionResponse(context.Context, native.GroupEvent, string) (bool, error)
 }
 
@@ -55,6 +56,15 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	}
 	if group.Kind != 3 {
 		return errors.New("unsupported native bot event group kind")
+	}
+	// A response record may have been committed before a crash interrupted its
+	// send. Resume it before dispatch so a retry cannot repeat handler effects.
+	resumed, err := h.sender.ResumeInteractionResponse(ctx, event)
+	if err != nil {
+		return err
+	}
+	if resumed {
+		return nil
 	}
 	response, err := h.dispatcher.Dispatch(ctx, event)
 	if err != nil {

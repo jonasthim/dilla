@@ -1,7 +1,7 @@
 //go:build linux
 
 // Command dillabot reconciles managed bot identity, authorized MLS groups and
-// paused music queue metadata. Music controls and PCM provider playback remain unavailable.
+// paused music queue metadata. Native kind-3 interaction operations remain unavailable.
 package main
 
 import (
@@ -26,6 +26,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -328,7 +329,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome", "music", "paused_metadata_only")
+	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_and_fail_closed_interaction_dispatch", "music", "paused_metadata_only")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
 		return errors.New("WASI identity module failed startup validation")
@@ -489,6 +490,33 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										}
 									}
 								}
+							}
+							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
+							if interactionErr == nil {
+								var coordinator *service.SendCoordinator
+								coordinator, interactionErr = service.NewSendCoordinator(nativeClient, api)
+								if interactionErr == nil {
+									var outbox *service.InteractionResponseOutbox
+									outbox, interactionErr = service.NewInteractionResponseOutbox(nativeClient, coordinator, result.Session)
+									if interactionErr == nil {
+										var dispatcher *service.InteractionDispatcher
+										dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
+											map[protocol.Operation]service.InteractionHandlerSpec{}, func() uint64 { return uint64(time.Now().Unix()) },
+											nativeInteractionSnapshots{native: nativeClient, session: result.Session, installation: installation.ID})
+										if interactionErr == nil {
+											runtime := newInteractionEventRuntime(interactionPoller, newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
+											var result service.GroupEventPollResult
+											result, interactionErr = runtime.Drain(ctx)
+											if interactionErr == nil && result.More {
+												logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", result.AcknowledgedThrough)
+											}
+										}
+									}
+								}
+							}
+							if interactionErr != nil {
+								logger.Error("bot interaction event dispatch paused", "installation_id", installation.ID.String(), "error", interactionErr.Error())
+								ensureErr = errors.Join(ensureErr, interactionErr)
 							}
 							channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 							if channelsErr == nil {
