@@ -78,7 +78,10 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 		}
 	}
 	assertRead(id.ID{})
-	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), role}); status != http.StatusOK {
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), role, id.New()}); status != http.StatusConflict {
+		t.Fatalf("stale installation approval = %d (%x), want 409", status, body)
+	}
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), role, installation.ID}); status != http.StatusOK {
 		t.Fatalf("configure approved role = %d (%x), want 200", status, body)
 	}
 	assertRead(role)
@@ -89,7 +92,7 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, bot.ID); err != nil || len(held) != 0 {
 		t.Fatalf("configuration assigned a role immediately: %v, %v", held, err)
 	}
-	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), id.ID{}}); status != http.StatusOK {
+	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), id.ID{}, installation.ID}); status != http.StatusOK {
 		t.Fatalf("clear approved role = %d (%x), want 200", status, body)
 	}
 	if _, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID); err != store.ErrNotFound {

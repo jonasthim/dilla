@@ -20,6 +20,8 @@ export type Command =
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
+  | { m: 'getBotJoinRole'; communityId: string }
+  | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }

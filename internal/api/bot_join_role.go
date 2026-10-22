@@ -55,9 +55,10 @@ func (h *Roles) getBotJoinRole(w http.ResponseWriter, r *http.Request) {
 }
 
 type botJoinRoleRequest struct {
-	_         struct{} `cbor:",toarray"`
-	RequestID id.ID
-	RoleID    id.ID // zero clears the approved role
+	_              struct{} `cbor:",toarray"`
+	RequestID      id.ID
+	RoleID         id.ID // zero clears the approved role
+	InstallationID id.ID // fences a replacement installation
 }
 
 // configureBotJoinRole stores an approval only. Runtime assignment remains
@@ -74,7 +75,7 @@ func (h *Roles) configureBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "configure bot join role", err)
 		return
 	}
-	if req.RequestID.IsZero() {
+	if req.RequestID.IsZero() || req.InstallationID.IsZero() {
 		h.fail(w, r, "configure bot join role", server.Errorf(server.CodeInvalidRequest, "request id required"))
 		return
 	}
@@ -97,6 +98,9 @@ func (h *Roles) configureBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		installation, err := tx.GetActiveBotInstallationByCommunity(r.Context(), cid)
 		if err != nil || installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil {
 			return server.Errorf(server.CodeForbidden, "ready community bot required")
+		}
+		if installation.ID != req.InstallationID {
+			return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "bot installation changed"))
 		}
 		bot, err := tx.GetUser(r.Context(), *installation.UserID)
 		if err != nil || bot.Kind != 1 {

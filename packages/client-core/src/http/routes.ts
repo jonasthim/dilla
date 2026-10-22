@@ -90,6 +90,7 @@ export const BAN_REASON_MAX_BYTES = 512;
 export interface PermissionsRow { bits: bigint; top: number }
 export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
   revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
+export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uint8Array }
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
@@ -500,6 +501,24 @@ export class Routes {
     const path = `/v1/communities/${id('communityId', communityId)}/bot`;
     const row = decode(await this.body('GET', path, 'read', true));
     return row === null ? null : botInstallationRow(row, communityId);
+  }
+  /** GET /bot-join-role returns [role id or null, active installation id]. 404 means no active bot. */
+  async getBotJoinRole(communityId: Uint8Array): Promise<BotJoinRoleRow | null> {
+    try {
+      const value = decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot-join-role`, 'read', true));
+      const a = arr(value);
+      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected bot join-role and installation ids');
+      return { roleId: a[0] === null ? null : bin(a[0], 16), installationId: bin(a[1], 16) };
+    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  }
+  /** Request ID is retained across HTTP retries; a zero role ID clears the setting. */
+  async configureBotJoinRole(communityId: Uint8Array, requestId: Uint8Array, roleId: Uint8Array, installationId: Uint8Array): Promise<Uint8Array> {
+    const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot-join-role`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('roleId', roleId), inputId('installationId', installationId)]), retry429: false })));
+    if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i])) {
+      throw new CborError('E_CBOR_SHAPE', 'invalid bot join-role acknowledgement');
+    }
+    return bin(ack[1], 16);
   }
   /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
   async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {

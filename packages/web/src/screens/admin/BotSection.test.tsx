@@ -19,14 +19,18 @@ const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, 
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
   banMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 
-function setup(initial: Installation | null = null, failGet = false, phone = false) {
+function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
   fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: ME.id }]);
-  fake.set(`permissions:${SERVER}`, ACCESS);
+  fake.set(`permissions:${SERVER}`, { ...ACCESS, manageRoles });
+  fake.set(`roles:${SERVER}`, [
+    { id: '22'.repeat(16), name: 'Members', position: 1, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
+  ]);
   fake.handler = async command => {
     if (command.m === 'getBotInstallation') return failGet ? Promise.reject(refusal({ code: 'E_NETWORK' })) : initial;
+    if (command.m === 'getBotJoinRole') return initial === null ? null : { roleId: null, installationId: initial.id };
     if (command.m === 'stepUp') return { token: 'short-lived-step-up' };
     if (command.m === 'configureBotInstallation') return { ...ROW, state: 0, revision: '1' };
     if (command.m === 'disableBotInstallation') return { ...ROW, state: 4, revision: '2' };
@@ -68,7 +72,59 @@ describe('the server bot settings', () => {
     expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
     expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+  });
+
+  it('saves one approved join-role setting with a request ID and explains assignment is not active', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '3' };
+    const { fake, user, announce } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'configureBotJoinRole') return Promise.resolve({ installationId: initial.id });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    expect(await screen.findByText(en['admin.bot.joinRole.honest'])).toBeInTheDocument();
+    const select = await screen.findByRole('combobox', { name: en['admin.bot.joinRole.label'] });
+    await user.selectOptions(select, '22'.repeat(16));
+    await user.click(screen.getByRole('button', { name: en['admin.bot.joinRole.save'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotJoinRole')).toHaveLength(1));
+    expect(fake.callsOf('configureBotJoinRole')[0]).toMatchObject({ communityId: SERVER, roleId: '22'.repeat(16), installationId: initial.id });
+    expect(fake.callsOf('configureBotJoinRole')[0].requestId).toMatch(/^[0-9a-f]{32}$/);
+    expect(announce).toHaveBeenCalledWith(en['admin.bot.joinRole.saved']);
+  });
+
+  it('keeps installation controls available when join-role read is forbidden', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '3' };
+    const { fake, user } = setup(initial, false, false, false);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
+      if (command.m === 'disableBotInstallation') return Promise.resolve({ ...initial, state: 4, revision: '4' });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
+    await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
+    expect(await screen.findByText(en['admin.bot.status.disabled'])).toBeInTheDocument();
+  });
+
+  it('keeps installation controls available after a rejected join-role save', async () => {
+    const initial = { ...ROW, state: 3 as const, revision: '3' };
+    const { fake, user } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'configureBotJoinRole') return Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
+      if (command.m === 'disableBotInstallation') return Promise.resolve({ ...initial, state: 4, revision: '4' });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    const select = await screen.findByRole('combobox', { name: en['admin.bot.joinRole.label'] });
+    await user.selectOptions(select, '22'.repeat(16));
+    await user.click(screen.getByRole('button', { name: en['admin.bot.joinRole.save'] }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.error.forbidden']);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.disable'] }));
+    await waitFor(() => expect(fake.callsOf('disableBotInstallation')).toHaveLength(1));
   });
 
   it('shows staged status and asks for step-up before enabling through the worker', async () => {

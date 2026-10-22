@@ -81,6 +81,17 @@ it('reads and writes the manager-approved self-role policy and member selection'
   expect(http.requests[2]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/${hex(ROLE)}`, body: encode([USER, 1]) });
 });
 
+it('reads the active bot join-role setting and writes it with a request ID', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [ROLE, BOT]));
+  await expect(routes.getBotJoinRole(COMMUNITY)).resolves.toEqual({ roleId: ROLE, installationId: BOT });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/bot-join-role` });
+  t.replies.push(cborReply(200, [USER, BOT]));
+  await expect(routes.configureBotJoinRole(COMMUNITY, USER, ROLE, BOT)).resolves.toEqual(BOT);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/bot-join-role`,
+    body: encode([USER, ROLE, BOT]), idempotent: true });
+});
+
 function member(i: number): Uint8Array {
   const id = new Uint8Array(16);
   id[15] = i;

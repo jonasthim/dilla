@@ -280,7 +280,7 @@ CBOR API request, not a public redirect endpoint.
 | `PUT /v1/communities/{id}/self-roles/policy` | E (manage_roles) | `[request_id, role_ids]` | `[request_id, accepted_count]` |
 | `PUT /v1/communities/{id}/self-roles/{role_id}` | E (community member) | `[request_id, enabled(uint 0 or 1)]` | `204` |
 | `PUT /v1/communities/{id}/role-panels` | E (manage_roles) | `[request_id, channel_id, message_seq, options]`; each option is `[emoji, role_id]` | `[request_id, option_count]` |
-| `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant |
+| `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id, expected_installation_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant; 409 if the active installation changed |
 | `GET /v1/communities/{id}/bot-join-role` | E (manage_roles) | Empty | `[role_id/null, installation_id]` for a ready installation; 404 when none is ready |
 | `PUT /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id, expires_unix]` | `[request_id, expires_unix]` |
 | `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |

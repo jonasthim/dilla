@@ -194,6 +194,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'getBotJoinRole',
+  'configureBotJoinRole',
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
@@ -316,9 +318,11 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  getBotJoinRole: ['communityId'],
+  configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
@@ -411,6 +415,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'getBotJoinRole',
+    'configureBotJoinRole',
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
@@ -577,6 +583,7 @@ function invalid(command: Record<string, unknown>): string | null {
       || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
+  if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -1090,6 +1097,8 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
+      case 'configureBotJoinRole': return this.configureBotJoinRole(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
@@ -1201,6 +1210,18 @@ export class Controller {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.getBotInstallation(fromHex(communityId));
     return row === null ? null : botInstallationView(row);
+  }
+
+  private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotJoinRole(fromHex(communityId));
+    return row === null ? null : { roleId: row.roleId === null ? null : toHex(row.roleId), installationId: toHex(row.installationId) };
+  }
+
+  private async configureBotJoinRole(command: Extract<Command, { m: 'configureBotJoinRole' }>): Promise<{ installationId: string }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const installationId = await this.routes.configureBotJoinRole(fromHex(command.communityId), fromHex(command.requestId), fromHex(command.roleId), fromHex(command.installationId));
+    return { installationId: toHex(installationId) };
   }
 
   private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {

@@ -13,6 +13,7 @@ type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 
   userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string };
 type Phase = 'idle' | 'stepup';
 type StepUpPurpose = 'bot' | 'spotify';
+type JoinRoleSetting = { roleId: string | null; installationId: string };
 const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
 
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -34,7 +35,13 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const base = useId();
   const factors = useSlice('factors');
   const members = useSlice(`members:${communityId}`);
+  const roles = useSlice(`roles:${communityId}`);
+  const access = useSlice(`permissions:${communityId}`);
   const [installation, setInstallation] = useState<Installation | null>(null);
+  const [joinRole, setJoinRole] = useState<JoinRoleSetting | null>(null);
+  const [joinRoleValue, setJoinRoleValue] = useState('');
+  const [joinRoleLoadedFor, setJoinRoleLoadedFor] = useState<string | null>(null);
+  const [joinRoleError, setJoinRoleError] = useState<string | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -47,6 +54,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   useEffect(() => {
     const generation = ++readGeneration.current;
     setInstallation(null);
+    setJoinRole(null);
+    setJoinRoleValue('');
+    setJoinRoleLoadedFor(null);
+    setJoinRoleError(null);
     setLoadedFor(null);
     setError(null);
     setPhase('idle');
@@ -58,6 +69,17 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       if (generation !== readGeneration.current) return;
       setError(errorMessage(errorOf(e)));
       setLoadedFor(communityId);
+    });
+    void client.call({ m: 'getBotJoinRole', communityId }).then(value => {
+      if (generation !== readGeneration.current) return;
+      const setting = value as JoinRoleSetting | null;
+      setJoinRole(setting);
+      setJoinRoleValue(setting?.roleId ?? '');
+      setJoinRoleLoadedFor(communityId);
+    }).catch((e: unknown) => {
+      if (generation !== readGeneration.current) return;
+      setJoinRoleError(errorMessage(errorOf(e)));
+      setJoinRoleLoadedFor(communityId);
     });
     void client.call({ m: 'refreshFactors' }).catch(() => undefined);
   }, [client, communityId]);
@@ -96,6 +118,26 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       setInstallation(value as Installation);
       announce(t('admin.bot.disabledNotice'));
     }).catch((e: unknown) => { if (generation === readGeneration.current) setError(errorMessage(errorOf(e))); })
+      .finally(() => setBusyFor(value => value === requestCommunity ? null : value));
+  };
+  const saveJoinRole = () => {
+    if (busy || selectedCommunity.current !== communityId || !current || currentError !== null || !access?.manageRoles
+      || joinRoleValue === (joinRole?.roleId ?? '')
+      || joinRole === null || currentInstallation?.id !== joinRole.installationId) return;
+    const requestCommunity = communityId;
+    const generation = readGeneration.current;
+    const zeroId = '0'.repeat(32);
+    const roleId = joinRoleValue || zeroId;
+    setBusyFor(requestCommunity);
+    setJoinRoleError(null);
+    void client.call({ m: 'configureBotJoinRole', communityId: requestCommunity, requestId: requestId(), roleId,
+      installationId: joinRole.installationId }).then(value => {
+      if (generation !== readGeneration.current) return;
+      const ack = value as { installationId?: unknown };
+      if (ack?.installationId !== joinRole.installationId) throw new Error('bot installation changed');
+      setJoinRole(value => value === null ? value : { ...value, roleId: roleId === zeroId ? null : roleId });
+      announce(t('admin.bot.joinRole.saved'));
+    }).catch((e: unknown) => { if (generation === readGeneration.current) setJoinRoleError(errorMessage(errorOf(e))); })
       .finally(() => setBusyFor(value => value === requestCommunity ? null : value));
   };
   const linkSpotify = () => {
@@ -144,6 +186,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const enabled = currentInstallation !== null && currentInstallation.state !== 4;
   const enableUnavailable = !current || currentError !== null || factors === undefined;
   const status = currentInstallation === null ? null : t(stateKey(currentInstallation.state));
+  const joinRoleCandidates = (roles ?? []).filter(role => role.position > 0
+    && (access?.owner === true || role.position < (access?.top ?? 0)));
+  const joinRoleReady = current && joinRole !== null && currentInstallation?.id === joinRole.installationId;
 
   return (
     <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
@@ -157,6 +202,23 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{currentInstallation.capabilities === 0 ? t('admin.bot.staged') : t('admin.bot.capabilities', { names: capabilityNames(currentInstallation.capabilities) })}</p>
         </SettingsRow>
       ) : null}
+      <section aria-labelledby={`${base}-join-role-title`}>
+        <h3 id={`${base}-join-role-title`}>{t('admin.bot.joinRole.title')}</h3>
+        <p>{t('admin.bot.joinRole.honest')}</p>
+        {joinRoleLoadedFor === communityId && joinRole === null && joinRoleError === null && currentError === null ? <p>{t('admin.bot.joinRole.requiresBot')}</p> : null}
+        {joinRoleLoadedFor === communityId && joinRoleError !== null && access?.manageRoles ? <p role="alert">{joinRoleError}</p> : null}
+        {joinRoleLoadedFor !== communityId ? <p aria-busy="true">{t('admin.bot.loading')}</p> : null}
+        {joinRoleReady && access?.manageRoles ? <SettingsRow id={`${base}-join-role-row`} label={t('admin.bot.joinRole.label')}>
+          <select aria-label={t('admin.bot.joinRole.label')} value={joinRoleValue} disabled={busy}
+            onChange={event => setJoinRoleValue(event.currentTarget.value)}>
+            <option value="">{t('admin.bot.joinRole.none')}</option>
+            {joinRoleCandidates.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}
+          </select>
+          <Button aria-disabled={busy || joinRoleValue === (joinRole?.roleId ?? '') || undefined} onClick={saveJoinRole}>
+            {busy ? t('admin.bot.joinRole.saving') : t('admin.bot.joinRole.save')}
+          </Button>
+        </SettingsRow> : null}
+      </section>
       <section aria-labelledby={`${base}-music-title`}>
         <h3 id={`${base}-music-title`}>{t('admin.bot.music.title')}</h3>
         <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
