@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -258,6 +259,8 @@ func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
 	} {
 		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
 			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
+		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
+			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
 		}
 	}
 	installation.State = store.BotInstallationReady
@@ -279,6 +282,8 @@ func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
 	} {
 		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
 			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
+		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
+			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
 		}
 	}
 }

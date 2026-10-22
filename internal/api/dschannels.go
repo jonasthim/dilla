@@ -67,20 +67,31 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 //     channel included) and the user one of its participants, its
 //     channel_members (ds.ErrNotEligible otherwise).
 //   - pairing and interaction: not channel groups. Pairing is gated by the
-//     session scope rules of auth, and interaction groups have no structure row
-//     to check; both are admitted here.
+//     session scope rules of auth. Human interaction registration has no
+//     structure row to check; managed Bot interaction registration is refused
+//     until the server can authenticate a human device against the exact MLS
+//     roster.
 //
 // A refusal wraps ds.ErrNotEligible (403 E_FORBIDDEN) or ds.ErrBindingTarget (400
 // E_BINDING_INVALID); any other error is the store's.
 func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.Binding) error {
 	switch b.Kind {
-	case groupPairing, groupInteraction:
+	case groupPairing:
 		bot, err := botaccess.IsBotUser(ctx, c.Repo, userID)
 		if err != nil {
 			return err
 		}
 		if bot {
-			return fmt.Errorf("%w: managed bots cannot bind pairing or interaction groups", ds.ErrNotEligible)
+			return fmt.Errorf("%w: managed bots cannot bind pairing groups", ds.ErrNotEligible)
+		}
+		return nil
+	case groupInteraction:
+		bot, err := botaccess.IsBotUser(ctx, c.Repo, userID)
+		if err != nil {
+			return err
+		}
+		if bot {
+			return fmt.Errorf("%w: managed bot interaction admission is unavailable until a human device is authenticated against the exact MLS roster", ds.ErrNotEligible)
 		}
 		return nil
 	case groupText, groupCall:
