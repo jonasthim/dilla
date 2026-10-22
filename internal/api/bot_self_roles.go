@@ -129,6 +129,7 @@ func (h *Roles) configureSelfRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.clk.Now().Unix()
+	revoked := map[id.ID]bool{}
 	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), cid); err != nil {
 			return notFound(err)
@@ -154,11 +155,39 @@ func (h *Roles) configureSelfRoles(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		previous, err := tx.ListSelfRolePolicy(r.Context(), cid)
+		if err != nil {
+			return err
+		}
+		for _, row := range previous {
+			if seen[row.RoleID] {
+				continue
+			}
+			users, err := tx.ListSelfRoleGrantUsers(r.Context(), cid, row.RoleID)
+			if err != nil {
+				return err
+			}
+			for _, user := range users {
+				if err := tx.RemoveMemberRoleGrant(r.Context(), cid, user, row.RoleID, store.RoleGrantSelf); err != nil {
+					return err
+				}
+				revoked[user] = true
+			}
+		}
 		return tx.SetSelfRolePolicy(r.Context(), cid, s.UserID, req.Roles, now)
 	})
 	if err != nil {
 		h.fail(w, r, "configure self roles", err)
 		return
+	}
+	for user := range revoked {
+		if err := syncChannelEligibility(afterCommit(r), h.repo, h.dsvc, cid, user, now); err != nil {
+			h.log.ErrorContext(r.Context(), "sync channel eligibility after self role policy", "community", cid, "user", user, "err", err)
+		}
+		h.syncCallGrants(afterCommit(r), cid, &user, nil)
+	}
+	if len(revoked) > 0 {
+		h.notify.Changed(afterCommit(r), cid)
 	}
 	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, uint64(len(req.Roles))})
 }

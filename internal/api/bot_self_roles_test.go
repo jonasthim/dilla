@@ -67,6 +67,51 @@ func TestSelfRolePolicyAndSelectionUseCurrentAllowlistAndOnlySelfSource(t *testi
 	}
 }
 
+func TestRemovingSelfRolePolicyRevokesOnlySelfGrants(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	role := createRole(t, e, cid, ownerTok, "temporary", 2, api.PermViewChannel)
+	member, memberTok := e.NewUser("temporary-picker")
+	joinCommunity(t, e, cid, memberTok)
+	manualMember, manualTok := e.NewUser("manual-and-self-picker")
+	joinCommunity(t, e, cid, manualTok)
+	reactionMember, reactionTok := e.NewUser("reaction-and-self-picker")
+	joinCommunity(t, e, cid, reactionTok)
+	policyPath := "/v1/communities/" + cid.String() + "/self-roles/policy"
+	selectionPath := "/v1/communities/" + cid.String() + "/self-roles/" + role.String()
+	if status, body := e.Do(http.MethodPut, policyPath, ownerTok, []any{id.New(), []any{role}}); status != http.StatusOK {
+		t.Fatalf("configure policy = %d (%x)", status, body)
+	}
+	for _, token := range []string{memberTok, manualTok, reactionTok} {
+		if status, body := e.Do(http.MethodPut, selectionPath, token, []any{id.New(), uint64(1)}); status != http.StatusNoContent {
+			t.Fatalf("select = %d (%x)", status, body)
+		}
+	}
+	if err := e.Repo.PutMemberRole(t.Context(), cid, manualMember, role); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.AddMemberRoleGrant(t.Context(), cid, reactionMember, role, "reaction"); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := e.Do(http.MethodPut, policyPath, ownerTok, []any{id.New(), []any{}}); status != http.StatusOK {
+		t.Fatalf("remove policy = %d (%x)", status, body)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, member); err != nil || len(held) != 0 {
+		t.Fatalf("self-only grant after policy removal = %v, %v", held, err)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, manualMember); err != nil || len(held) != 1 || held[0] != role {
+		t.Fatalf("manual grant after policy removal = %v, %v", held, err)
+	}
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, reactionMember); err != nil || len(held) != 1 || held[0] != role {
+		t.Fatalf("reaction grant after policy removal = %v, %v", held, err)
+	}
+	for _, user := range []id.ID{member, manualMember, reactionMember} {
+		if selected, err := e.Repo.HasMemberRoleGrant(t.Context(), cid, user, role, "self"); err != nil || selected {
+			t.Fatalf("self source after policy removal = %v, %v", selected, err)
+		}
+	}
+}
+
 func TestSelfRolePolicyRejectsEveryPermissionOutsideSafeCeiling(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
 	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)

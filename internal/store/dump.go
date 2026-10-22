@@ -63,6 +63,8 @@ var DumpTables = []string{
 	// community before its members and roles, and both of those before the
 	// member_roles rows that reference a (member, role) pair.
 	"communities", "members", "community_member_episodes", "community_member_timeouts", "roles", "member_roles", "member_role_grant_sources", "self_role_policy",
+	// 031_moderation_removals.sql: permanent per-group markers reference both communities and groups.
+	"moderation_removal_heads", "moderation_removals",
 	// 006a_channels.sql, appended by Plan 2 task 2. Its parent is communities; its
 	// self-reference (parent_id) is checked at the end of the one COPY statement
 	// that replays the table, so the rows' order within it does not matter.

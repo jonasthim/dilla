@@ -68,6 +68,9 @@ func TestRoleGrantSourcesPreserveEffectiveRoleUntilLastSourceIsRemoved(t *testin
 			if err := repo.AddMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil {
 				t.Fatalf("add self grant: %v", err)
 			}
+			if users, err := repo.ListSelfRoleGrantUsers(ctx, cid, role.ID); err != nil || len(users) != 1 || users[0] != user {
+				t.Fatalf("self grant users = %v, %v; want only member", users, err)
+			}
 			if has, err := repo.HasMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil || !has {
 				t.Fatalf("self source exists = %v, %v; want true", has, err)
 			}
@@ -79,6 +82,9 @@ func TestRoleGrantSourcesPreserveEffectiveRoleUntilLastSourceIsRemoved(t *testin
 			}
 			if err := repo.RemoveMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil {
 				t.Fatalf("remove self grant: %v", err)
+			}
+			if users, err := repo.ListSelfRoleGrantUsers(ctx, cid, role.ID); err != nil || len(users) != 0 {
+				t.Fatalf("self grant users after removal = %v, %v; want none", users, err)
 			}
 			if has, err := repo.HasMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil || has {
 				t.Fatalf("self source after removal = %v, %v; want false", has, err)

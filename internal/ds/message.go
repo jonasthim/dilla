@@ -274,13 +274,23 @@ func (d *DS) DeleteMessage(ctx context.Context, s Session, groupID id.ID, seq ui
 	if err := d.opts.Store.TombstoneAppMessage(ctx, groupID, seq, at); err != nil {
 		return err
 	}
-	payload, err := gateway.MessageDeletedPayload(seq, uint64(at)) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
-	if err == nil {
-		d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
-			Op: gateway.OpMessageDeleted, GroupID: &groupID, Payload: payload, Replay: true,
-		})
-	}
+	d.NotifyMessageDeleted(groupID, seq, at)
 	return nil
+}
+
+// NotifyMessageDeleted emits the existing replayable wakeup after a caller has
+// committed a durable tombstone. It does not mutate storage or authorize a deletion.
+func (d *DS) NotifyMessageDeleted(groupID id.ID, seq uint64, at int64) {
+	if d.opts.Gateway == nil || at < 0 {
+		return
+	}
+	payload, err := gateway.MessageDeletedPayload(seq, uint64(at)) //nolint:gosec // G115: checked nonnegative Unix timestamp
+	if err != nil {
+		return
+	}
+	d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
+		Op: gateway.OpMessageDeleted, GroupID: &groupID, Payload: payload, Replay: true,
+	})
 }
 
 // AdvanceCursor is the only thing that moves a device's cursor. A frame put on a writer queue is

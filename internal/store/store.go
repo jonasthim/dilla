@@ -67,6 +67,36 @@ type Repository interface {
 	BotGroupRegistrationReceipts
 	BotSendOperations
 	BotStructuralEvents
+	ModerationRemovals
+}
+
+// ModerationRemovalRow is a permanent signed deletion marker. The feed retains
+// the canonical unsigned proof and detached signature independently of message
+// and structural-event retention.
+type ModerationRemovalRow struct {
+	RequestID      id.ID
+	ActionID       id.ID
+	CommunityID    id.ID
+	GroupID        id.ID
+	TargetSequence uint64
+	Revision       uint64
+	Proof          []byte
+	Signature      []byte
+	AcceptedAt     int64
+}
+
+type ModerationRemovalPage struct {
+	Rows         []ModerationRemovalRow
+	NextRevision uint64
+}
+
+// ModerationRemovals requires Accept to run inside the same transaction as
+// the action event. It allocates a durable per-group revision and tombstones
+// the target application message before returning.
+type ModerationRemovals interface {
+	AcceptModerationRemoval(context.Context, ModerationRemovalRow) (ModerationRemovalRow, error)
+	GetModerationRemoval(context.Context, id.ID, id.ID) (ModerationRemovalRow, error)
+	ListModerationRemovals(context.Context, id.ID, uint64, int32) (ModerationRemovalPage, error)
 }
 
 // BotStructuralEventPage is a bounded snapshot of the community event stream.
@@ -592,6 +622,7 @@ type Communities interface {
 	AddMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
 	RemoveMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) error
 	HasMemberRoleGrant(ctx context.Context, communityID, userID, roleID id.ID, source RoleGrantSource) (bool, error)
+	ListSelfRoleGrantUsers(ctx context.Context, communityID, roleID id.ID) ([]id.ID, error)
 	// RevokeMemberRole atomically removes the effective role and all of its sources.
 	RevokeMemberRole(ctx context.Context, communityID, userID, roleID id.ID) error
 	// SetSelfRolePolicy atomically replaces the approved self-assignable role list.

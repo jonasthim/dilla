@@ -59,3 +59,27 @@ func (r *Repo) HasMemberRoleGrant(ctx context.Context, community, user, role id.
 	}
 	return exists, wrap(err)
 }
+
+func (r *Repo) ListSelfRoleGrantUsers(ctx context.Context, community, role id.ID) ([]id.ID, error) {
+	const q = `SELECT user_id FROM member_role_grant_sources WHERE community_id=$1 AND role_id=$2 AND source='self' ORDER BY user_id`
+	var rows *sql.Rows
+	var err error
+	if r.inTx {
+		rows, err = r.tx.QueryContext(ctx, q, community, role)
+	} else {
+		rows, err = r.db.QueryContext(ctx, q, community, role)
+	}
+	if err != nil {
+		return nil, wrap(err)
+	}
+	defer rows.Close()
+	users := []id.ID{}
+	for rows.Next() {
+		var user id.ID
+		if err := rows.Scan(&user); err != nil {
+			return nil, wrap(err)
+		}
+		users = append(users, user)
+	}
+	return users, wrap(rows.Err())
+}

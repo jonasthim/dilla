@@ -140,7 +140,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
-			"GetMember", "GetRole", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			"GetMember", "GetRole", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
 			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
 			// one-statement community tombstone and per-channel sequencer.
 			"DeleteChannelsOfCommunity", "NextChannelSeq",
@@ -206,7 +206,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
 			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
+			"ListRoles", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
@@ -341,6 +341,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
 		// Task 6: durable structural events, cursors, and retention floor.
 		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
+		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
+		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)

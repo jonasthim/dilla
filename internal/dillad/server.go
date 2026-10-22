@@ -356,6 +356,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		closeWasmOnError()
 		return nil, err
 	}
+	deps.MessageDeleted = delivery.NotifyMessageDeleted
 	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
 	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
 	// every heal window from this start. It runs BEFORE Start, so the sweeper never closes a group

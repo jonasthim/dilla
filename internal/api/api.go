@@ -67,6 +67,10 @@ type Deps struct {
 	// composition root wires it to Sessions.OnRevoke.
 	CloseGateway func(deviceID id.ID)
 
+	// MessageDeleted publishes the replayable gateway wakeup after a signed
+	// moderation removal commits its durable marker and ciphertext tombstone.
+	MessageDeleted func(groupID id.ID, sequence uint64, at int64)
+
 	// Hasher is the Argon2id password hasher. It is an interface for the same
 	// reason GatewayTickets is: the concrete *auth.Hasher is task 9's, and a
 	// struct cannot name a type that does not exist yet. Nil until then, and a
@@ -200,6 +204,7 @@ func Register(m *server.Mux, d Deps) {
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
 	registerBotStructuralEvents(m, d)
+	registerModerationRemovals(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes
 	// are the only /v1 surface a caller reaches without a bearer token, so each
