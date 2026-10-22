@@ -22,16 +22,28 @@ type PostPolicy struct {
 	Resolver *Resolver
 }
 
-// Check decides one upload of class by userID into g at now (unix seconds). The delivery service
-// calls it under the group lock, before the store transaction, and returns its error unchanged.
+// Check decides one upload of class by userID into g at now (unix seconds). It remains available
+// to callers that are not accepting a message. DS upload paths call CheckTx while holding the
+// community and group row fences.
 //
 // Every upload names its class: the route refuses the two-element legacy body web3.7 accepted
 // (web3.8 S1). A class other than 1 is decided as a post. A group whose channel is gone is refused
 // for every class (fail closed). The wait is read from the user's durable mark, which Upload
 // raises on every accepted class-0 post, so a pruned post still holds it.
 func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error {
+	return p.check(ctx, p.Repo, p.Resolver, g, userID, class, now)
+}
+
+// CheckTx runs the upload policy against the caller's locked transaction. The
+// channel permissions, bot eligibility and slowmode mark therefore describe the
+// same serialized state that the accepted message updates.
+func (p PostPolicy) CheckTx(ctx context.Context, tx store.Repository, g store.GroupRow, userID id.ID, class uint8, now int64) error {
+	return p.check(ctx, tx, NewResolver(tx), g, userID, class, now)
+}
+
+func (p PostPolicy) check(ctx context.Context, repo store.Repository, resolver *Resolver, g store.GroupRow, userID id.ID, class uint8, now int64) error {
 	if g.CommunityID == nil {
-		bot, err := botaccess.IsBotUser(ctx, p.Repo, userID)
+		bot, err := botaccess.IsBotUser(ctx, repo, userID)
 		if err != nil {
 			return err
 		}
@@ -39,7 +51,7 @@ func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, c
 			return server.Errorf(server.CodeForbidden, "managed bots cannot post outside their community")
 		}
 	} else {
-		binding, bot, err := botaccess.ForUserCommunity(ctx, p.Repo, userID, *g.CommunityID)
+		binding, bot, err := botaccess.ForUserCommunity(ctx, repo, userID, *g.CommunityID)
 		if err != nil {
 			if errors.Is(err, botaccess.ErrIneligible) {
 				return server.Errorf(server.CodeForbidden, "managed bot installation is not eligible for this community")
@@ -53,7 +65,7 @@ func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, c
 	if g.Kind != GroupText || g.CommunityID == nil {
 		return nil
 	}
-	ch, err := p.Repo.GetChannel(ctx, g.TargetID)
+	ch, err := repo.GetChannel(ctx, g.TargetID)
 	if errors.Is(err, store.ErrNotFound) {
 		// Fail closed (SB1 fix round 1): a deleted channel's group that is still open takes no
 		// upload of any class. The delivery service also refuses a closed group outright.
@@ -62,7 +74,10 @@ func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, c
 	if err != nil {
 		return err
 	}
-	bits, err := p.Resolver.Resolve(ctx, userID, ch)
+	if resolver == nil {
+		resolver = NewResolver(repo)
+	}
+	bits, err := resolver.Resolve(ctx, userID, ch)
 	if err != nil {
 		return err
 	}
@@ -75,7 +90,7 @@ func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, c
 	if ch.SlowmodeSeconds == 0 || bits.Has(PermBypassSlowmode) {
 		return nil
 	}
-	last, err := p.Repo.LastClassZeroUploadAt(ctx, ch.ID, userID)
+	last, err := repo.LastClassZeroUploadAt(ctx, ch.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
 	}

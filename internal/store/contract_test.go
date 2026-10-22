@@ -95,7 +95,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListGroupsForRetention",
 			// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2).
 			"ListIdleCallGroups",
-			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
+			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes", "LockGroup",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",
 			"PutKeyPackages", "PutProposal", "PutWelcomePayload", "PutWelcomes",

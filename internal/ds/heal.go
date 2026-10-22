@@ -336,7 +336,19 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	var high uint64
 	var members memberView
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
-		high = row.Seq
+		if err := tx.LockGroup(ctx, groupID); err != nil {
+			return err
+		}
+		lockedRow, err := tx.GetGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if lockedRow.ClosedAt != nil || !lockedRow.EpochUnknown || lockedRow.Epoch != row.Epoch {
+			return errCommitInvalid("heal_state", "the group changed while this heal was being prepared")
+		}
+		// Sequence-only writers may have committed while the guest replay was being
+		// prepared in another process. Continue from the fenced database high-water.
+		high = lockedRow.Seq
 		for _, r := range replayed {
 			if r.item.Seq <= row.Seq {
 				continue // already in the restored log

@@ -243,9 +243,16 @@ type Options struct {
 // SB1, protocol/02 § Upload class). Upload calls it under the group lock, after the current-leaf
 // check and before the store transaction, and returns its error unchanged.
 type PostPolicy interface {
-	// Check decides an upload of class (0 a post, 1 anything else) by userID into g, under the
-	// group lock. Every upload names its class (web3.8 S1).
+// Check decides an upload of class (0 a post, 1 anything else) by userID into g. Every upload
+// names its class (web3.8 S1). Production implementations should also satisfy
+// TransactionalPostPolicy so acceptance can decide policy and write the message together.
 	Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error
+}
+
+// TransactionalPostPolicy evaluates policy against the same repository transaction
+// that holds the group fence and will commit the accepted message.
+type TransactionalPostPolicy interface {
+	CheckTx(ctx context.Context, tx store.Repository, g store.GroupRow, userID id.ID, class uint8, now int64) error
 }
 
 type DS struct {

@@ -86,3 +86,31 @@ func (p *Policy) RequireGroup(ctx context.Context, wireVersion uint64, groupKind
 	}
 	return p.RequireCommunity(ctx, wireVersion, communityID)
 }
+
+// RequireGroupTx is RequireGroup evaluated against a caller's transaction so a
+// group-row fence also protects the community compatibility decision.
+func (p *Policy) RequireGroupTx(ctx context.Context, tx store.Repository, wireVersion uint64, groupKind uint8, communityID *id.ID) error {
+	if wireVersion >= 3 {
+		return nil
+	}
+	if groupKind == 3 {
+		return &UpgradeRequired{}
+	}
+	if communityID == nil {
+		return nil
+	}
+	if p == nil || p.source == nil {
+		return ErrConfiguration
+	}
+	row, err := tx.GetActiveBotInstallationByCommunity(ctx, *communityID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read bot installation state: %w", err)
+	}
+	if row.RemovedAt == nil && row.State != store.BotInstallationDisabled {
+		return &UpgradeRequired{}
+	}
+	return nil
+}

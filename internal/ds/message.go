@@ -45,68 +45,107 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 	unlock := d.lock(groupID)
 	defer unlock()
-
-	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	initialGroup, err := d.opts.Store.GetGroup(ctx, groupID)
 	if errors.Is(err, store.ErrNotFound) {
 		return UploadResult{}, errNotFound("group")
 	}
 	if err != nil {
 		return UploadResult{}, err
 	}
-	// A closed group (a deleted channel's, or one a restore replaced) takes no message: 404, as
-	// for a group that does not exist (SB1 fix round 1, protocol/02 § Upload class).
-	if row.ClosedAt != nil {
-		return UploadResult{}, errNotFound("group")
-	}
-	if err := d.requireNoFreeze(ctx, groupID, row.Epoch); err != nil {
-		return UploadResult{}, err
-	}
-	if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
-		return UploadResult{}, err
-	}
-	// send_messages and slow mode, under the group lock: two uploads into one group are decided
-	// one after the other, each against what the one before it stored.
-	if d.opts.PostPolicy != nil {
-		if err := d.opts.PostPolicy.Check(ctx, row, s.UserID, class, d.now()); err != nil {
-			return UploadResult{}, err
-		}
-	}
-
 	inst, err := d.opts.Wasm.Acquire(ctx)
 	if err != nil {
 		return UploadResult{}, err
 	}
 	defer inst.Release()
 
-	// The commitment travels only in private_message.authenticated_data; there is no separate
-	// field on the upload, and a length other than 32 is E_COMMITMENT_INVALID.
-	meta, err := inst.PrivateMessageAAD(ctx, pm)
-	if err != nil {
-		return UploadResult{}, errCommitmentInvalid(0)
-	}
-	if len(meta.AuthenticatedData) != 32 {
-		return UploadResult{}, errCommitmentInvalid(len(meta.AuthenticatedData))
-	}
-	// facts-ds-contract.md §1.2's parse ends "u8 content_type (must be 1)". 2 is a Proposal and 3
-	// a Commit, and both are handshakes: the instance is the sole sequencer for them (invariants
-	// 1-5), so one accepted here would reach every member as `message.ct` with a seq out of the
-	// group's one shared seq space and no `mls_handshakes` row behind it — the fork invariant 9
-	// exists to detect. The guest reports the byte without decrypting; only this layer can refuse
-	// on it.
-	if meta.ContentType != contentTypeApplication {
-		return UploadResult{}, errCommitInvalid("content_type",
-			"only application messages may be uploaded here")
-	}
-	if meta.Epoch != row.Epoch {
-		return UploadResult{}, errCommitInvalid("epoch", "the message's epoch is not the group's")
-	}
-	if err := d.requireGroupCapability(ctx, s, row); err != nil {
-		return UploadResult{}, err
-	}
-
-	recvTS := uint64(d.now()) //nolint:gosec // G115: a unix second or row id this server wrote, never negative
+	var row store.GroupRow
 	var out UploadResult
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		// The community row serializes permission and managed-installation changes;
+		// the MLS row then serializes epoch, membership, freeze and sequence state.
+		if initialGroup.CommunityID != nil {
+			if err := tx.LockCommunity(ctx, *initialGroup.CommunityID); err != nil {
+				return err
+			}
+		}
+		if err := tx.LockGroup(ctx, groupID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errNotFound("group")
+			}
+			return err
+		}
+		var err error
+		row, err = tx.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return errNotFound("group")
+		}
+		if err != nil {
+			return err
+		}
+		if !equalNullableID(initialGroup.CommunityID, row.CommunityID) {
+			return botSendConflict("the group's community scope changed during upload")
+		}
+		if row.ClosedAt != nil {
+			return errNotFound("group")
+		}
+		refs, err := tx.ListProposals(ctx, groupID, row.Epoch, false)
+		if err != nil {
+			return err
+		}
+		freezeRefs := make([][]byte, 0, len(refs))
+		for _, proposal := range refs {
+			if proposal.Origin == 0 && proposal.VoidAt == nil {
+				freezeRefs = append(freezeRefs, proposal.Ref)
+			}
+		}
+		if len(freezeRefs) > 0 {
+			return errCommitRequired(freezeRefs, uint64(d.opts.Policy.CommitDeadline.Milliseconds())) //nolint:gosec // G115: a positive configured duration
+		}
+		members, err := tx.ListMembers(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		currentLeaf := false
+		for _, member := range members {
+			if member.DeviceID == s.DeviceID && member.RemovedEpoch == nil {
+				currentLeaf = true
+				break
+			}
+		}
+		if !currentLeaf {
+			return errLeafNotCurrent()
+		}
+		if err := d.requireGroupCapabilityTx(ctx, tx, s, row); err != nil {
+			return err
+		}
+		recvAt := d.now()
+		if policy, ok := d.opts.PostPolicy.(TransactionalPostPolicy); ok {
+			if err := policy.CheckTx(ctx, tx, row, s.UserID, class, recvAt); err != nil {
+				return err
+			}
+		} else if d.opts.PostPolicy != nil {
+			// Compatibility for test and embedding policies predating CheckTx. The
+			// production api.PostPolicy implements the transaction-scoped interface.
+			if err := d.opts.PostPolicy.Check(ctx, row, s.UserID, class, recvAt); err != nil {
+				return err
+			}
+		}
+		// Keep the established policy-before-ciphertext refusal order while the
+		// group row and permission state remain fenced.
+		meta, err := inst.PrivateMessageAAD(ctx, pm)
+		if err != nil {
+			return errCommitmentInvalid(0)
+		}
+		if len(meta.AuthenticatedData) != 32 {
+			return errCommitmentInvalid(len(meta.AuthenticatedData))
+		}
+		if meta.ContentType != contentTypeApplication {
+			return errCommitInvalid("content_type", "only application messages may be uploaded here")
+		}
+		if meta.Epoch != row.Epoch || meta.Epoch != epoch {
+			return errCommitInvalid("epoch", "the message's epoch is not the group's")
+		}
+		recvTS := uint64(recvAt) //nolint:gosec // G115: a server unix timestamp
 		seq, err := nextSeq(ctx, tx, groupID)
 		if err != nil {
 			return err

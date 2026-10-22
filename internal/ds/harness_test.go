@@ -98,7 +98,7 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	// vanishes with its first connection.
 	path := filepath.Join(t.TempDir(), "dilla.db")
 	base := openMigratedSQLite(t, path)
-	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}, calls: &sync.Map{}}
+	repo := &failingRepo{Repository: base, welcomeReads: &atomic.Int64{}, calls: &sync.Map{}, communities: &sync.Map{}}
 
 	h := &dsHarness{t: t, path: path, clk: clk, repo: repo, calls: map[string]int64{}}
 
@@ -388,7 +388,7 @@ type failingRepo struct {
 	// keyed on GroupRow.Kind; the override is the only way to reach them with real MLS state.
 	calls        *sync.Map
 	interactions sync.Map
-	communities  sync.Map
+	communities  *sync.Map
 	// openGroupPages counts ListOpenGroups calls: the call sweeper's per-tick work must not grow with
 	// the number of open groups on the instance.
 	openGroupPages atomic.Int64
@@ -582,7 +582,7 @@ func (r *failingRepo) Tx(ctx context.Context, fn func(store.Repository) error) e
 	return r.Repository.Tx(ctx, func(tx store.Repository) error {
 		sub := &failingRepo{
 			Repository: tx, failOn: r.snapshotFailOn(), onPut: r.snapshotOnPut(),
-			welcomeReads: r.welcomeReads, calls: r.calls, deviceLockHook: r.deviceLockHook,
+			welcomeReads: r.welcomeReads, calls: r.calls, communities: r.communities, deviceLockHook: r.deviceLockHook,
 		}
 		err := fn(sub)
 		// The sub-repository owns the injection for the duration of the transaction; whatever it

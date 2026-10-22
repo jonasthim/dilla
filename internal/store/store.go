@@ -306,6 +306,10 @@ type Invites interface {
 type MLS interface {
 	CreateGroup(ctx context.Context, g GroupRow) error
 	GetGroup(ctx context.Context, groupID id.ID) (GroupRow, error)
+	// LockGroup serializes message acceptance against every mutation of this group's
+	// epoch, membership, freeze state and sequence. It must run inside Tx before
+	// reading policy or allocating the next sequence.
+	LockGroup(ctx context.Context, groupID id.ID) error
 	ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]GroupRow, error)
 	// ListGroupsForRetention is the same paged walk WITHOUT the `closed_at IS NULL`
 	// filter. Invariant 10 caps application ciphertext at thirty days for every

@@ -311,6 +311,16 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 		var welcomeTree, welcomeTreeHash []byte
 		mergeRan := false
 		txErr := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			if err := tx.LockGroup(ctx, groupID); err != nil {
+				return err
+			}
+			lockedGroup, err := tx.GetGroup(ctx, groupID)
+			if err != nil {
+				return err
+			}
+			if lockedGroup.ClosedAt != nil || lockedGroup.Epoch != row.Epoch {
+				return errCommitInvalid("epoch", "the group changed while this commit was being prepared")
+			}
 			epoch, err := g.Merge(ctx, *processed.Staged)
 			if err != nil {
 				return err
@@ -995,6 +1005,16 @@ func (d *DS) Proposal(ctx context.Context, s Session, groupID id.ID, epoch uint6
 		// not be shadowed by the seq variable below.
 		senderDevice := s.DeviceID
 		txErr := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+			if err := tx.LockGroup(ctx, groupID); err != nil {
+				return err
+			}
+			lockedGroup, err := tx.GetGroup(ctx, groupID)
+			if err != nil {
+				return err
+			}
+			if lockedGroup.ClosedAt != nil || lockedGroup.EpochUnknown || lockedGroup.Epoch != row.Epoch {
+				return errCommitInvalid("epoch", "the group changed while this proposal was being prepared")
+			}
 			allocated, err := nextSeq(ctx, tx, groupID)
 			if err != nil {
 				return err
