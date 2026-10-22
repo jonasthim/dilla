@@ -31,6 +31,8 @@ const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
 const STORED = fill(5, 0x1a);
+const ADMISSION_PAYLOAD = fill(128, 0x1b);
+const ADMISSION_SIGNATURE = fill(64, 0x1c);
 
 function octetReply(status: number, body: Uint8Array): Response {
   return new Response(body.slice(), { status, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '7' } });
@@ -79,6 +81,28 @@ it('reads and writes the manager-approved self-role policy and member selection'
   t.replies.push(noContent());
   await routes.selectSelfRole(COMMUNITY, ROLE, USER, true);
   expect(http.requests[2]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/self-roles/${hex(ROLE)}`, body: encode([USER, 1]) });
+});
+
+it('returns the current interaction admission proof without interpreting its signed payload', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).resolves.toEqual({
+    payload: ADMISSION_PAYLOAD, signature: ADMISSION_SIGNATURE,
+  });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/groups/${hex(GROUP)}/interaction-admission-context`,
+    bucket: 'read', idempotent: true, maxBodyBytes: 160 * 1024 });
+});
+
+it('rejects malformed current interaction admission proof envelopes', async () => {
+  const { routes, t } = setup();
+  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, fill(63, 0x1c)]));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+});
+
+it('bounds the current interaction admission proof response to 160 KiB', async () => {
+  const { routes, t } = setup();
+  t.replies.push(bytesReply(200, fill(160 * 1024 + 1, 0)));
+  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
 });
 
 it('reads the active bot join-role setting and writes it with a request ID', async () => {

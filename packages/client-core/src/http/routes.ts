@@ -44,6 +44,8 @@ export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
 export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
 export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
+/** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
+export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number; }
@@ -724,6 +726,14 @@ export class Routes {
   }
   async getGroupTree(groupId: Uint8Array): Promise<Uint8Array> {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/tree`, 'read', true);
+  }
+  /** GET /v1/groups/{id}/interaction-admission-context: preserve the signed payload for core verification. */
+  async getInteractionAdmissionContext(groupId: Uint8Array, signal?: AbortSignal): Promise<InteractionAdmissionContextProof> {
+    const raw = await this.body('GET', `/v1/groups/${id('groupId', groupId)}/interaction-admission-context`, 'read', true,
+      { ok: [200], maxBodyBytes: 160 * 1024, signal });
+    const proof = arr(decode(raw));
+    if (proof.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected current interaction admission payload and signature');
+    return { payload: bin(proof[0]), signature: bin(proof[1], 64) };
   }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
     const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;
