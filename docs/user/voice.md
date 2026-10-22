@@ -327,6 +327,18 @@ play it with another program.
 
 ![The player at 360 pixels wide](screenshots/media-player-phone.png)
 
+## During a server upgrade
+
+When whoever runs your instance upgrades it (web3.13 and later), your call usually keeps going: the people in it stay
+connected while the server restarts. If the upgrade brings a new version of the page, dilla reloads the tab for you
+and puts you back in the call by itself, with no click, typically within a few seconds of audio. The call panel may say
+"reconnecting" for a moment. You do not need to press **join voice**.
+
+If the upgrade restarts the media server itself, or everyone in the call drops at once, the call can take longer to
+come back. Everyone is put back in the same call on their own, up to about half a minute after the server answers. If
+your connection stays down for longer than the server's inactive timeout, you see "You left the call while away." and
+press **join voice**, as before.
+
 ## When voice stops or pauses
 
 ### A contact's identity changed
@@ -379,6 +391,7 @@ checks every device again.
 | "You left the call while away." | Your device was gone (asleep, offline) for longer than the server's inactive timeout, so it did not rejoin by itself; press **join voice** to go back in |
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
+| The browser asks for the microphone again after dilla updated during a call | A browser set to ask for the microphone every time (Firefox can be) asks again when the page reloads for an update, and the page cannot answer for you. Allow it; if the call has not come back, press **join voice** |
 
 ### You see people speaking but hear nothing
 
