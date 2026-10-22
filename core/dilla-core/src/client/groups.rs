@@ -24,7 +24,6 @@ pub(crate) const STATE_GONE: i64 = 4;
 
 struct HumanInteractionWelcome {
     context: crate::bot::human_interaction_context::CurrentContext,
-    proof: Vec<u8>,
 }
 
 #[allow(dead_code)] // The full persisted row is shared with task 6.
@@ -78,6 +77,54 @@ fn human_interaction_welcome_receipt_key(group_id: &[u8; 16]) -> String {
         let _ = write!(key, "{byte:02x}");
     }
     key
+}
+
+/// Stable idempotency receipt for one accepted human Welcome. The current-context proof is
+/// deliberately omitted: its signature and 30-second validity window change on every fetch.
+/// Registration identity and immutable MLS binding fields identify the accepted interaction;
+/// the policy snapshot and proof timestamps are omitted because they can change on refresh.
+fn human_interaction_welcome_receipt(
+    context: &crate::bot::human_interaction_context::CurrentContext,
+    item: &wire::WelcomeItem,
+) -> Vec<u8> {
+    let registration = &context.registration;
+    let binding = &context.binding;
+    let mut input = Encoder::new();
+    input
+        .array(4)
+        .text("dilla.human.interaction.welcome.receipt.v2")
+        .array(11)
+        .bytes(registration.installation.as_bytes())
+        .bytes(registration.operation.as_bytes())
+        .bytes(registration.bot_user.as_bytes())
+        .bytes(registration.bot_device.as_bytes())
+        .bytes(registration.community.as_bytes())
+        .bytes(registration.group.as_bytes())
+        .bytes(&registration.body_sha256)
+        .uint(registration.generation)
+        .uint(registration.accepted_epoch)
+        .uint(registration.next_seq)
+        .uint(registration.accepted_at)
+        .array(8)
+        .bytes(binding.instance_id.as_bytes())
+        .bytes(&binding.installation_id)
+        .bytes(binding.community_id.as_bytes())
+        .bytes(&binding.bot_user_id)
+        .bytes(&binding.participant_user_id)
+        .bytes(binding.participant_device_id.as_bytes())
+        .uint(binding.e2ee_version)
+        .uint(binding.media_version)
+        .array(6)
+        .bytes(&item.group_id)
+        .uint(item.epoch)
+        .uint(item.commit_seq)
+        .bytes(&item.tree_hash)
+        .bytes(&item.blob)
+        .bytes(&item.ratchet_tree);
+    let digest = sha256(&input.into_vec());
+    let mut receipt = Encoder::new();
+    receipt.array(2).uint(2).bytes(&digest);
+    receipt.into_vec()
 }
 
 fn unix_time() -> Result<u64, ClientError> {
@@ -864,10 +911,7 @@ impl ClientCore {
             &expected,
             GroupKind::Interaction,
             None,
-            Some(HumanInteractionWelcome {
-                context,
-                proof: current_context_proof.to_vec(),
-            }),
+            Some(HumanInteractionWelcome { context }),
         )
     }
 
@@ -914,9 +958,15 @@ impl ClientCore {
             if let Some(want) = expected.iter().find(|v| v.group_id == item.group_id) {
                 let id = &item.group_id;
                 let row = self.read(|c| group_row(c, id))?;
-                if human_interaction.is_some() && row.is_some() {
-                    outcome = 2;
-                    reason = E_BINDING;
+                if let (Some(human), Some(row)) = (human_interaction.as_ref(), row.as_ref()) {
+                    if self.human_interaction_welcome_replay_matches(
+                        id, &item, want, &own, human, row,
+                    )? {
+                        outcome = 1;
+                    } else {
+                        outcome = 2;
+                        reason = E_BINDING;
+                    }
                 } else if bot.is_none()
                     && human_interaction.is_none()
                     && row.as_ref().is_some_and(|r| r.state <= STATE_ACTIVE)
@@ -1126,6 +1176,167 @@ impl ClientCore {
         Ok(e.into_vec())
     }
 
+    /// Recognize only an exact, previously accepted human Welcome. This path reads the durable
+    /// receipt and current MLS state but performs no database or ratchet mutation.
+    fn human_interaction_welcome_replay_matches(
+        &mut self,
+        id: &[u8; 16],
+        item: &wire::WelcomeItem,
+        want: &wire::ExpectedGroup,
+        own: &Own,
+        human: &HumanInteractionWelcome,
+        row: &GroupRow,
+    ) -> Result<bool, ClientError> {
+        let context = &human.context;
+        if row.state != STATE_ACTIVE
+            || !row.bound_to(
+                row_kind(GroupKind::Interaction),
+                Some(context.binding.community_id.as_bytes()),
+                &context.binding.bot_user_id,
+            )
+            || context.registration.group.as_bytes() != id
+            || want.community_id != Some(*context.binding.community_id.as_bytes())
+            || want.channel_id != context.binding.bot_user_id
+            || want.policy_version != context.binding.policy_version
+        {
+            return Ok(false);
+        }
+        let key = human_interaction_welcome_receipt_key(id);
+        let expected_receipt = human_interaction_welcome_receipt(context, item);
+        if self.read(|c| super::schema::meta_get(c, &key))?.as_ref() != Some(&expected_receipt) {
+            return Ok(false);
+        }
+
+        let group = match self.take_group(id) {
+            Ok(Some(group)) => group,
+            Ok(None) => return Ok(false),
+            Err(error)
+                if error.code == super::error::E_CORE_STORAGE
+                    || error.code == super::error::E_CORE_RELOAD =>
+            {
+                return Err(error);
+            }
+            Err(_) => return Ok(false),
+        };
+        let checked = (|| {
+            if group.kind() != GroupKind::Interaction || group.member_count() != 2 {
+                return Err(ClientError::new(
+                    E_BINDING,
+                    "interaction replay group rejected",
+                ));
+            }
+            let actual_binding = group
+                .interaction_binding()
+                .map_err(|_| ClientError::new(E_BINDING, "interaction replay binding rejected"))?;
+            let tree_hash = group
+                .tree_hash(&self.provider, self.signer()?)
+                .map_err(ClientError::from)?;
+            if actual_binding != context.binding
+                || group.epoch() != context.current_epoch
+                || tree_hash != context.tree_hash
+            {
+                return Err(ClientError::new(
+                    E_BINDING,
+                    "interaction replay state changed",
+                ));
+            }
+            let mut leaves = Vec::with_capacity(2);
+            let mut saw_bot = false;
+            let mut saw_participant = false;
+            for member in group.members() {
+                let basic = BasicCredential::try_from(member.credential).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction replay credential rejected")
+                })?;
+                let credential = CredentialIdentity::decode(basic.identity()).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction replay credential rejected")
+                })?;
+                let dsk: [u8; 32] =
+                    member.signature_key.as_slice().try_into().map_err(|_| {
+                        ClientError::new(E_BINDING, "interaction replay key rejected")
+                    })?;
+                credential.verify_signatures(&dsk).map_err(|_| {
+                    ClientError::new(E_BINDING, "interaction replay credential rejected")
+                })?;
+                let snapshot = if credential.user_id.as_bytes()
+                    == context.registration.bot_user.as_bytes()
+                    && credential.device_id.as_bytes() == context.registration.bot_device.as_bytes()
+                {
+                    if credential.kind != Kind::Bot
+                        || credential.tier != Tier::Native
+                        || credential.signer_tier != SignerTier::Native
+                    {
+                        return Err(ClientError::new(
+                            E_BINDING,
+                            "interaction replay Bot rejected",
+                        ));
+                    }
+                    saw_bot = true;
+                    &context.bot
+                } else if credential.user_id.as_bytes() == &own.user_id
+                    && credential.device_id.as_bytes() == &own.device_id
+                {
+                    if credential.kind != Kind::User {
+                        return Err(ClientError::new(
+                            E_BINDING,
+                            "interaction replay participant rejected",
+                        ));
+                    }
+                    saw_participant = true;
+                    &context.participant
+                } else {
+                    return Err(ClientError::new(
+                        E_BINDING,
+                        "interaction replay contains another device",
+                    ));
+                };
+                let verdict = self.read(|c| {
+                    super::trust::validate_interaction_leaf(
+                        c,
+                        id,
+                        group.epoch(),
+                        tree_hash,
+                        member.index.u32(),
+                        &credential,
+                        dsk,
+                        snapshot,
+                    )
+                })?;
+                verdict.map_err(|code| {
+                    ClientError::new(code, "interaction replay identity is not trusted")
+                })?;
+                leaves.push((
+                    u64::from(member.index.u32()),
+                    crate::bot::interaction_admission::AuthenticatedRosterLeaf {
+                        user: credential.user_id,
+                        device: credential.device_id,
+                        dsk_pub: dsk,
+                        tier: credential.tier,
+                    },
+                ));
+            }
+            if !saw_bot || !saw_participant {
+                return Err(ClientError::new(
+                    E_BINDING,
+                    "interaction replay roster rejected",
+                ));
+            }
+            context
+                .verify_authenticated_group(&actual_binding, group.epoch(), &tree_hash, &leaves)
+                .map_err(|_| ClientError::new(E_BINDING, "interaction replay proof mismatch"))
+        })();
+        self.keep_group(*id, group);
+        match checked {
+            Ok(()) => Ok(true),
+            Err(error)
+                if error.code == super::error::E_CORE_STORAGE
+                    || error.code == super::error::E_CORE_RELOAD =>
+            {
+                Err(error)
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
     fn apply_human_interaction_welcome(
         &mut self,
         id: &[u8; 16],
@@ -1160,17 +1371,6 @@ impl ClientCore {
             ));
         }
         let receipt_key = human_interaction_welcome_receipt_key(id);
-        let mut receipt_input = Encoder::new();
-        receipt_input
-            .array(8)
-            .text("dilla.human.interaction.welcome.receipt.v1")
-            .bytes(id)
-            .uint(item.epoch)
-            .uint(item.commit_seq)
-            .bytes(&item.tree_hash)
-            .bytes(&human.proof);
-        receipt_input.bytes(&item.blob).bytes(&item.ratchet_tree);
-        let receipt = sha256(&receipt_input.into_vec());
         self.write(|ctx, unit| {
             let signer = ctx
                 .signer
@@ -1279,6 +1479,7 @@ impl ClientCore {
                     &leaves,
                 )
                 .map_err(|_| ClientError::new(E_BINDING, "interaction Welcome proof mismatch"))?;
+            let receipt = human_interaction_welcome_receipt(context, item);
             let next_seq = checked("commit_seq", item.commit_seq)?
                 .checked_add(1)
                 .ok_or_else(|| ClientError::new(E_CORE_INPUT, "commit_seq out of range"))?;
@@ -1298,6 +1499,106 @@ impl ClientCore {
 #[cfg(test)]
 mod interaction_welcome_tests {
     use super::*;
+
+    fn test_context() -> crate::bot::human_interaction_context::CurrentContext {
+        use crate::bot::human_interaction_context::{CurrentContext, Registration, RosterEntry};
+        use crate::bot::interaction_snapshot::SnapshotList;
+        use crate::ids::{CommunityId, DeviceId, InstanceId, MsgId};
+        use crate::mls::DillaInteractionBinding;
+
+        let msg = |v| MsgId::from_bytes([v; 16]);
+        let list = |v| SnapshotList {
+            user: msg(v),
+            umk: [v; 32],
+            ssk: [v; 32],
+            binding_signature: [v; 64],
+            version: 1,
+            blob: vec![v],
+            signature: [v; 64],
+            prev_hash: [v; 32],
+            hash: [v; 32],
+        };
+        CurrentContext {
+            instance: msg(1),
+            instance_key_id: msg(2),
+            instance_signer: [3; 32],
+            issued_at: 100,
+            not_after: 130,
+            registration: Registration {
+                installation: msg(4),
+                operation: msg(5),
+                bot_user: msg(6),
+                bot_device: msg(7),
+                community: msg(8),
+                group: msg(9),
+                body_sha256: [10; 32],
+                generation: 1,
+                accepted_epoch: 2,
+                next_seq: 3,
+                accepted_at: 99,
+            },
+            binding: DillaInteractionBinding {
+                instance_id: InstanceId::from_bytes([1; 16]),
+                bot_user_id: [6; 16],
+                installation_id: [4; 16],
+                community_id: CommunityId::from_bytes([8; 16]),
+                participant_user_id: [11; 16],
+                participant_device_id: DeviceId::from_bytes([12; 16]),
+                policy_version: 4,
+                e2ee_version: 1,
+                media_version: 0,
+            },
+            current_epoch: 2,
+            tree_hash: [13; 32],
+            roster: [
+                RosterEntry {
+                    leaf_index: 0,
+                    user: msg(6),
+                    device: msg(7),
+                    signature_key: [14; 32],
+                },
+                RosterEntry {
+                    leaf_index: 1,
+                    user: msg(11),
+                    device: msg(12),
+                    signature_key: [15; 32],
+                },
+            ],
+            eligibility_revision: 20,
+            policy_version: 4,
+            e2ee_version: 1,
+            media_version: 0,
+            bot: list(6),
+            participant: list(11),
+        }
+    }
+
+    #[test]
+    fn welcome_receipt_is_stable_across_proof_refresh_and_binds_welcome_bytes() {
+        let context = test_context();
+        let mut item = wire::WelcomeItem {
+            welcome_id: 1,
+            group_id: [9; 16],
+            epoch: 2,
+            commit_seq: 3,
+            blob: vec![1, 2],
+            ratchet_tree: vec![3, 4],
+            tree_hash: [16; 32],
+        };
+        let original = human_interaction_welcome_receipt(&context, &item);
+        let mut refreshed = context.clone();
+        refreshed.issued_at += 10;
+        refreshed.not_after += 10;
+        refreshed.eligibility_revision += 1;
+        refreshed.policy_version += 1;
+        refreshed.binding.policy_version += 1;
+        assert_eq!(
+            original,
+            human_interaction_welcome_receipt(&refreshed, &item)
+        );
+        item.blob.push(5);
+        assert_ne!(original, human_interaction_welcome_receipt(&context, &item));
+    }
 
     #[test]
     fn kind3_welcome_target_is_the_bot_user_not_the_participant_user() {
