@@ -181,6 +181,7 @@ export function botVectors() {
   ['receipt zero operation id',0,id(0)],['receipt zero group id',1,id(0)],['receipt wrong hash length',2,new Uint8Array(31)],
   ['receipt generation exceeds int64',3,1n<<63n],['receipt epoch exceeds int64',4,1n<<63n],
   ['receipt next sequence zero',5,0n],
+  ['receipt initial next sequence is not one',5,2n],
  ] as const){const v=[...registrationReceipt];v[index]=value;rej(name,'group_registration_receipt',v);}
  const malformedOuter=[['nonminimal CBOR array head','9800'],['trailing CBOR item','8000'],['CBOR map root','a0'],['indefinite CBOR array','9fff']] as const;
  for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
