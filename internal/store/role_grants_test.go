@@ -68,11 +68,20 @@ func TestRoleGrantSourcesPreserveEffectiveRoleUntilLastSourceIsRemoved(t *testin
 			if err := repo.AddMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil {
 				t.Fatalf("add self grant: %v", err)
 			}
+			if has, err := repo.HasMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil || !has {
+				t.Fatalf("self source exists = %v, %v; want true", has, err)
+			}
+			if has, err := repo.HasMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantManual); err != nil || has {
+				t.Fatalf("manual source exists = %v, %v; want false", has, err)
+			}
 			if err := repo.PutMemberRole(ctx, cid, user, role.ID); err != nil {
 				t.Fatalf("add manual grant: %v", err)
 			}
 			if err := repo.RemoveMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil {
 				t.Fatalf("remove self grant: %v", err)
+			}
+			if has, err := repo.HasMemberRoleGrant(ctx, cid, user, role.ID, store.RoleGrantSelf); err != nil || has {
+				t.Fatalf("self source after removal = %v, %v; want false", has, err)
 			}
 			held, err := repo.ListMemberRoles(ctx, cid, user)
 			if err != nil || !slices.Contains(held, role.ID) {
@@ -131,6 +140,54 @@ func TestRoleGrantSourcesPreserveEffectiveRoleUntilLastSourceIsRemoved(t *testin
 				if err := repo.RemoveMemberRoleGrant(ctx, cid, user, role.ID, source); !errors.Is(err, store.ErrNotFound) {
 					t.Errorf("remove %s after revoke all = %v, want ErrNotFound", source, err)
 				}
+			}
+		})
+	}
+}
+
+func TestSelfRolePolicyIsAtomicPersistentAndCommunityScoped(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			cid := seedCommunity(ctx, t, repo)
+			approver := seedUser(ctx, t, repo).ID
+			first := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "first", Created: 1}
+			second := store.RoleRow{ID: id.New(), CommunityID: cid, Name: "second", Created: 1}
+			if err := repo.PutRole(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutRole(ctx, second); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.SetSelfRolePolicy(ctx, cid, approver, []id.ID{first.ID}, 10); err == nil {
+				t.Fatal("policy write outside transaction succeeded")
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.LockCommunity(ctx, cid); err != nil {
+					return err
+				}
+				return tx.SetSelfRolePolicy(ctx, cid, approver, []id.ID{second.ID, first.ID}, 11)
+			}); err != nil {
+				t.Fatalf("write policy: %v", err)
+			}
+			rows, err := repo.ListSelfRolePolicy(ctx, cid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 2 || rows[0].ApprovedBy != approver || rows[0].ApprovedAt != 11 || rows[1].ApprovedAt != 11 {
+				t.Fatalf("policy rows = %+v", rows)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.LockCommunity(ctx, cid); err != nil {
+					return err
+				}
+				return tx.SetSelfRolePolicy(ctx, cid, approver, []id.ID{first.ID}, 12)
+			}); err != nil {
+				t.Fatalf("replace policy: %v", err)
+			}
+			rows, err = repo.ListSelfRolePolicy(ctx, cid)
+			if err != nil || len(rows) != 1 || rows[0].RoleID != first.ID || rows[0].ApprovedAt != 12 {
+				t.Fatalf("replaced policy = %+v, %v", rows, err)
 			}
 		})
 	}

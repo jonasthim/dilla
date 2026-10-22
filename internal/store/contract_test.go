@@ -133,14 +133,14 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Structure", reflect.TypeOf((*store.Structure)(nil)).Elem(), []string{
 			"AddMemberRoleGrant", "CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
 			"DeleteChannelMember", "DeleteMember", "DeleteMemberRole", "EndVoiceSession",
-			"GetBan", "GetChannel", "GetCommunity", "ListChannelMembers", "ListChannels",
+			"GetBan", "GetChannel", "GetCommunity", "HasMemberRoleGrant", "ListChannelMembers", "ListChannels",
 			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
 			"PutRole", "PutVoiceSession", "RemoveMemberRoleGrant", "RevokeMemberRole", "UpdateChannel", "UpdateCommunityPolicy",
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
-			"GetMember", "GetRole", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			"GetMember", "GetRole", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
 			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
 			// one-statement community tombstone and per-channel sequencer.
 			"DeleteChannelsOfCommunity", "NextChannelSeq",
@@ -204,9 +204,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
-			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner",
+			"ListRoles", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{

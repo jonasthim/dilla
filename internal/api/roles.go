@@ -100,6 +100,7 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 }
 
 func (h *Roles) Register(mux *server.Mux) {
+	h.RegisterSelfRoles(mux)
 	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
 	mux.HandleFunc("GET /v1/communities/{id}/overwrites", h.listOverwrites)
 	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
