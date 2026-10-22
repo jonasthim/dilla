@@ -347,6 +347,7 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 	var members memberView
 	var receipt store.BotGroupRegistrationReceipt
 	var replay bool
+	var welcomeTree, welcomeTreeHash []byte
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		verified, err := d.ValidateKind3RegistrationAuthority(ctx, tx, r.Session, r.InstallationID, r.AdmissionRequestID, r.AdmissionID,
 			r.OperationID, tuple, r.Registration, r.RegistrationBody, registered, evidence)
@@ -383,8 +384,9 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 		if err != nil {
 			return err
 		}
-		if _, _, err := d.storeWelcomesTx(ctx, tx, r.Registration.GroupID, state.Epoch, 0, group,
-			[]WelcomeFor{{DeviceID: tuple.ParticipantDeviceID, Blob: r.Registration.InitialWelcome}}); err != nil {
+		welcomeTree, welcomeTreeHash, err = d.storeWelcomesTx(ctx, tx, r.Registration.GroupID, state.Epoch, 0, group,
+			[]WelcomeFor{{DeviceID: tuple.ParticipantDeviceID, Blob: r.Registration.InitialWelcome}})
+		if err != nil {
 			return err
 		}
 		acceptances, ok := tx.(store.BotGroupRegistrationAdmissionReceipts)
@@ -427,7 +429,7 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 	}
 	release, closeGroup = false, false
 	// The durable queue is authoritative; notification failure never invalidates registration.
-	d.fanOutWelcomes(ctx, r.Registration.GroupID, state.Epoch, r.Registration.RatchetTree, state.TreeHash,
+	d.fanOutWelcomes(ctx, r.Registration.GroupID, state.Epoch, welcomeTree, welcomeTreeHash,
 		[]WelcomeFor{{DeviceID: tuple.ParticipantDeviceID, Blob: r.Registration.InitialWelcome}})
 	return botRegisterReceipt(receipt), true, nil
 }
