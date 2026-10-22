@@ -63,6 +63,9 @@ func (n *membershipFakeNative) StateTransaction(_ context.Context, _ id.ID, chan
 
 type membershipFakeSession struct {
 	communities         []client.Community
+	community           client.Community
+	communityCalls      int
+	communitiesCalls    int
 	channels            []client.Channel
 	welcomes            []client.Welcome
 	acked               []uint64
@@ -73,7 +76,12 @@ type membershipFakeSession struct {
 }
 
 func (s *membershipFakeSession) Communities(context.Context) ([]client.Community, error) {
+	s.communitiesCalls++
 	return s.communities, nil
+}
+func (s *membershipFakeSession) Community(_ context.Context, community id.ID) (client.Community, error) {
+	s.communityCalls++
+	return s.community, nil
 }
 func (s *membershipFakeSession) Channels(context.Context, id.ID) ([]client.Channel, error) {
 	s.channelsCalls++
@@ -116,7 +124,7 @@ func membershipFixture(t *testing.T) (*MembershipReconciler, *membershipFakeNati
 	t.Helper()
 	community, install, channel, group := membershipID(1), membershipID(2), membershipID(3), membershipID(4)
 	n := &membershipFakeNative{binding: native.Binding{Instance: membershipID(9), Community: community, Installation: install}}
-	s := &membershipFakeSession{communities: []client.Community{{ID: community, Name: "own", OwnerID: membershipID(8)}}, channels: []client.Channel{{ID: channel, CommunityID: community, Kind: 0, TextGroupID: &group}}}
+	s := &membershipFakeSession{communities: []client.Community{{ID: community, Name: "own", OwnerID: membershipID(8)}}, community: client.Community{ID: community, Name: "own", OwnerID: membershipID(8)}, channels: []client.Channel{{ID: channel, CommunityID: community, Kind: 0, TextGroupID: &group}}}
 	r, err := newMembershipReconciler(n, sourceSyncOptions{}, membershipOptions{WelcomePageLimit: 8})
 	if err != nil {
 		t.Fatal(err)
@@ -150,14 +158,14 @@ func TestMembershipDuplicateWelcomeIsAppliedIdempotentlyAndAcked(t *testing.T) {
 func TestMembershipRejectsWrongCommunityAndRemovedChannelWithoutAck(t *testing.T) {
 	r, n, s, community, _, group := membershipFixture(t)
 	s.welcomes = []client.Welcome{{ID: 7, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
-	s.communities[0].ID = membershipID(99)
+	s.community.ID = membershipID(99)
 	if _, err := r.reconcileOnce(context.Background(), s); err == nil {
 		t.Fatal("wrong community accepted")
 	}
 	if len(s.acked) != 0 || n.applyCalls != 0 {
 		t.Fatal("wrong community mutated or acknowledged")
 	}
-	s.communities = []client.Community{{ID: community, Name: "own", OwnerID: membershipID(8)}}
+	s.community = client.Community{ID: community, Name: "own", OwnerID: membershipID(8)}
 	s.channels = nil
 	if _, err := r.reconcileOnce(context.Background(), s); err == nil {
 		t.Fatal("inaccessible channel accepted")
@@ -250,5 +258,29 @@ func TestMembershipRechecksVoiceGroupTargetBeforeAcknowledging(t *testing.T) {
 	}
 	if len(s.acked) != 0 || n.state.Revision != 0 {
 		t.Fatal("welcome acknowledged after voice group target changed")
+	}
+}
+
+func TestMembershipReconcilerUsesExactBoundCommunityRead(t *testing.T) {
+	r, _, s, community, _, _ := membershipFixture(t)
+	s.community = client.Community{ID: community, Name: "own", OwnerID: membershipID(8)}
+	result, err := r.reconcileOnce(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.communityCalls != 1 || s.communitiesCalls != 0 {
+		t.Fatalf("community reads: exact=%d global=%d", s.communityCalls, s.communitiesCalls)
+	}
+	_ = result
+}
+
+func TestMembershipReconcilerRejectsMismatchedBoundCommunityResponse(t *testing.T) {
+	r, n, s, _, _, _ := membershipFixture(t)
+	s.community = client.Community{ID: membershipID(99), Name: "other", OwnerID: membershipID(8)}
+	if _, err := r.reconcileOnce(context.Background(), s); err == nil {
+		t.Fatal("mismatched community response accepted")
+	}
+	if n.applyCalls != 0 {
+		t.Fatal("mismatched community caused a mutation")
 	}
 }

@@ -33,7 +33,7 @@ type membershipNative interface {
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
 }
 type membershipSession interface {
-	Communities(context.Context) ([]client.Community, error)
+	Community(context.Context, id.ID) (client.Community, error)
 	Channels(context.Context, id.ID) ([]client.Channel, error)
 	Welcomes(context.Context, uint64, uint64) ([]client.Welcome, error)
 	AcknowledgeWelcome(context.Context, uint64) error
@@ -98,19 +98,11 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
-	communities, err := session.Communities(ctx)
+	own, err := session.Community(ctx, r.binding.Community)
 	if err != nil {
 		return out, err
 	}
-	var own *client.Community
-	for i := range communities {
-		if communities[i].ID == r.binding.Community {
-			copy := communities[i]
-			own = &copy
-			break
-		}
-	}
-	if own == nil {
+	if own.ID != r.binding.Community {
 		return out, errors.New("installation community is no longer accessible")
 	}
 	channels, err := session.Channels(ctx, r.binding.Community)
@@ -252,18 +244,11 @@ func (r *MembershipReconciler) revalidateChannelAccess(ctx context.Context, sess
 	if group.IsZero() || channel.IsZero() || kind > 1 {
 		return ErrMembershipUnproven
 	}
-	communities, err := session.Communities(ctx)
+	own, err := session.Community(ctx, r.binding.Community)
 	if err != nil {
 		return err
 	}
-	found := false
-	for _, community := range communities {
-		if community.ID == r.binding.Community {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if own.ID != r.binding.Community {
 		return errors.New("installation community is no longer accessible")
 	}
 	channels, err := session.Channels(ctx, r.binding.Community)
