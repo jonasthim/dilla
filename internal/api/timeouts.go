@@ -100,7 +100,12 @@ func (h *MemberTimeouts) delete(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := tx.DeleteMemberTimeout(r.Context(), m.community, m.target); err != nil {
-			return notFound(err)
+			if errors.Is(err, store.ErrNotFound) {
+				// A lost 204 response may retry with the same request ID. Clearing an
+				// already absent timeout is the same completed state and has no new audit.
+				return nil
+			}
+			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{Actor: &m.session.UserID, Action: "member.timeout.clear", Target: m.target.String(), Detail: m.community.String() + " " + req.RequestID.String(), At: now})
 	}); err != nil {

@@ -41,6 +41,12 @@ func TestHumanTimeoutRoutesRequireModeratorAndExpireAutomatically(t *testing.T) 
 	if status, body := e.Do(http.MethodDelete, path, ownerTok, []any{clearID}); status != http.StatusNoContent {
 		t.Fatalf("owner DELETE timeout = %d (%x), want 204", status, body)
 	}
+	if status, body := e.Do(http.MethodDelete, path, ownerTok, []any{clearID}); status != http.StatusNoContent {
+		t.Fatalf("retry after accepted DELETE = %d (%x), want 204", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, path, ownerTok, []any{id.New()}); status != http.StatusNoContent {
+		t.Fatalf("DELETE when no timeout remains = %d (%x), want 204", status, body)
+	}
 }
 
 func TestHumanTimeoutCannotTargetEqualOrHigherRole(t *testing.T) {
