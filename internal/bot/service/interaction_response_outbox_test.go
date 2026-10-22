@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
@@ -165,5 +166,22 @@ func TestInteractionResponseOutboxLostSendResponseRetriesSameAttempt(t *testing.
 	first, second := sender.inputs[0], sender.inputs[1]
 	if first.OperationID != second.OperationID || first.AttemptID != second.AttemptID || first.OriginalNow != second.OriginalNow || first.ExpectedGeneration != second.ExpectedGeneration || string(first.RequestBody) != string(second.RequestBody) {
 		t.Fatalf("retry changed attempt: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestInteractionResponseOutboxRejectsSendCoordinatorForDifferentInstallation(t *testing.T) {
+	state, _, _ := responseOutboxFixture(t)
+	otherBinding := state.binding
+	otherBinding.Installation = interactionID(44)
+	if otherBinding.Community != state.binding.Community {
+		t.Fatal("fixture must share community")
+	}
+	n := &sendNativeFake{binding: otherBinding}
+	coordinator, err := newSendCoordinator(n, sendAuthorityFake{discovery: client.Discovery{InstanceID: otherBinding.Instance, Generation: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newInteractionResponseOutboxWithCoordinator(state, coordinator, &client.Session{}); err == nil {
+		t.Fatal("outbox accepted a coordinator bound to a different installation in the same community")
 	}
 }

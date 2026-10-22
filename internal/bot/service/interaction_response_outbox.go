@@ -47,8 +47,15 @@ type InteractionResponseOutbox struct {
 // NewInteractionResponseOutbox wires the durable response outbox to the
 // existing native state store and SendCoordinator.
 func NewInteractionResponseOutbox(n *native.Client, coordinator *SendCoordinator, session *client.Session) (*InteractionResponseOutbox, error) {
+	return newInteractionResponseOutboxWithCoordinator(n, coordinator, session)
+}
+
+func newInteractionResponseOutboxWithCoordinator(n interactionResponseOutboxNative, coordinator *SendCoordinator, session *client.Session) (*InteractionResponseOutbox, error) {
 	if n == nil || coordinator == nil || session == nil {
 		return nil, errors.New("missing interaction response outbox dependency")
+	}
+	if n.Binding() != coordinator.binding {
+		return nil, errors.New("interaction response outbox and send coordinator bindings differ")
 	}
 	o, err := newInteractionResponseOutbox(n, nil)
 	if err != nil {
