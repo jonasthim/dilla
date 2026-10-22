@@ -890,6 +890,8 @@ export class Controller {
   private leadership: Leadership | null = null;
   private readonly typingOn = new Set<string>();
   private readonly incomingTyping = new Map<string, Map<string, number>>();
+  /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
+  private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
@@ -1721,7 +1723,38 @@ export class Controller {
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
     this.incomingTyping.set(channelId, rows);
     this.publishTyping(channelId);
-    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+    if (on === 1n) this.armTypingSweep(channelId, expiry);          // a stop frame has nothing to expire
+  }
+
+  /** One sweep timer per channel, however many frames arrive: a frame moves it only when its deadline is earlier. */
+  private armTypingSweep(channelId: string, at: number): void {
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) {
+      if (pending.at <= at) return;
+      this.deps.clearTimeout(pending.handle);
+    }
+    const handle = this.deps.setTimeout(() => this.sweepTyping(channelId), Math.max(0, at - this.deps.now()));
+    this.typingSweeps.set(channelId, { handle, at });
+  }
+
+  private dropIncomingTyping(channelId: string): void {
+    this.incomingTyping.delete(channelId);
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) this.deps.clearTimeout(pending.handle);
+    this.typingSweeps.delete(channelId);
+  }
+
+  /** The expiry timer. It may fire a millisecond before the clock reaches the deadline it was set for (Firefox does, under
+   *  load); the row is then still live and nothing else would sweep it, so while any row remains it looks again when the
+   *  nearest one is due. */
+  private sweepTyping(channelId: string): void {
+    this.typingSweeps.delete(channelId);
+    this.publishTyping(channelId);
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined) return;
+    let nearest = Infinity;
+    for (const expiry of rows.values()) if (expiry < nearest) nearest = expiry;
+    if (nearest !== Infinity) this.armTypingSweep(channelId, nearest);
   }
 
   private publishTyping(channelId: string): void {
@@ -3434,6 +3467,8 @@ export class Controller {
     // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
     this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
+    for (const { handle } of this.typingSweeps.values()) this.deps.clearTimeout(handle);
+    this.typingSweeps.clear();
     this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
@@ -3547,7 +3582,7 @@ export class Controller {
   private closeChannel(channelId: string): Promise<null> {
     const wasOpen = this.open.has(channelId);
     if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-    this.incomingTyping.delete(channelId);
+    this.dropIncomingTyping(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
     this.dropOpen(channelId);
@@ -4195,7 +4230,7 @@ export class Controller {
       if (this.open.has(channelId) && this.groupState(channelId) === 'active'
         && this.phase === 'ready' && this.connectionState.status === 'online') continue;
       if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-      this.incomingTyping.delete(channelId);
+      this.dropIncomingTyping(channelId);
       this.slices.set(`typing:${channelId}`, []);
     }
   }
