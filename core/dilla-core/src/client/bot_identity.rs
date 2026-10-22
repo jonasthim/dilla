@@ -302,6 +302,62 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 }
 
 impl ClientCore {
+    /// Verify proof, v2 binding and exact signed-device-list roster evidence using the instance
+    /// key already pinned in this encrypted Bot store. This only prepares admission evidence; it
+    /// does not mutate an MLS group or persist an admission outcome.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bot_prepare_interaction_creation(
+        &self,
+        proof: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+        binding: &crate::mls::DillaInteractionBinding,
+        leaves: &[crate::bot::interaction_admission::AuthenticatedRosterLeaf],
+        bot_list: &DeviceList,
+        bot_ssk_pub: &[u8; 32],
+        participant_list: &DeviceList,
+        participant_ssk_pub: &[u8; 32],
+    ) -> Result<crate::bot::interaction_admission::Admission, ClientError> {
+        let own = self.own()?;
+        if own.kind != Kind::Bot.as_u8()
+            || own.tier != Tier::Native.as_u8()
+            || expected.instance.0 != own.instance_id
+            || expected.bot_user.0 != own.user_id
+            || expected.bot_device.0 != own.device_id
+            || binding.policy_version > i64::MAX as u64
+        {
+            return Err(binding_mismatch());
+        }
+        let raw = self.read(|c| schema::meta_get(c, schema::BOT_BINDING))?;
+        let Some(raw) = raw else {
+            return Err(binding_mismatch());
+        };
+        let stored = decode_binding(&raw)?;
+        if expected.community.0 != stored.community_id
+            || expected.installation.0 != stored.installation_id
+            || binding.community_id.0 != stored.community_id
+            || binding.installation_id != stored.installation_id
+        {
+            return Err(binding_mismatch());
+        }
+        let pinned = self.read(|c| schema::meta_get(c, schema::BOT_INSTANCE_KEY))?;
+        let pinned: [u8; 32] = pinned
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "Bot instance key is not pinned"))?
+            .try_into()
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        crate::bot::interaction_admission::prepare_creation(
+            proof,
+            &pinned,
+            expected,
+            binding,
+            leaves,
+            bot_list,
+            bot_ssk_pub,
+            participant_list,
+            participant_ssk_pub,
+        )
+        .map_err(|_| ClientError::new(E_CORE_INPUT, "interaction admission evidence rejected"))
+    }
+
     /// Validate that this open client is the fully enrolled native Bot bound to the helper's
     /// installation tuple. The tuple is public scope metadata; no signing or recovery material is
     /// exposed by this check.

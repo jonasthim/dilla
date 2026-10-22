@@ -110,6 +110,46 @@ pub fn verify_exact_authenticated_roster(
     Ok(())
 }
 
+/// Verify the client-side evidence needed before an interaction group could be prepared. The
+/// caller supplies the inspected v2 binding and roster from authenticated MLS state; this does
+/// not create or persist a group.
+pub fn prepare_creation(
+    proof: &[u8],
+    pinned_instance_key: &[u8; 32],
+    expected: &Expected,
+    binding: &crate::mls::DillaInteractionBinding,
+    leaves: &[AuthenticatedRosterLeaf],
+    bot_list: &DeviceList,
+    bot_ssk_pub: &[u8; 32],
+    participant_list: &DeviceList,
+    participant_ssk_pub: &[u8; 32],
+) -> Result<Admission, CodecError> {
+    let admission = verify_with_pinned_instance_key(proof, pinned_instance_key, expected)?;
+    let expected_binding = crate::mls::DillaInteractionBinding {
+        instance_id: crate::ids::InstanceId::from_bytes(admission.instance.0),
+        bot_user_id: admission.bot_user.0,
+        installation_id: admission.installation.0,
+        community_id: crate::ids::CommunityId::from_bytes(admission.community.0),
+        participant_user_id: admission.participant_user.0,
+        participant_device_id: DeviceId::from_bytes(admission.participant_device.0),
+        policy_version: binding.policy_version,
+        e2ee_version: 1,
+        media_version: 0,
+    };
+    binding
+        .matches_admission(&expected_binding)
+        .map_err(|_| CodecError::Context)?;
+    verify_exact_authenticated_roster(
+        &admission,
+        leaves,
+        bot_list,
+        bot_ssk_pub,
+        participant_list,
+        participant_ssk_pub,
+    )?;
+    Ok(admission)
+}
+
 fn id(d: &mut crate::cbor::Decoder<'_>) -> Result<MsgId, crate::cbor::CborError> {
     Ok(MsgId::from_bytes(d.bytes_exact::<16>()?))
 }
@@ -422,6 +462,49 @@ mod tests {
             &participant_ssk.public(),
         )
         .unwrap();
+
+        let binding = crate::mls::DillaInteractionBinding {
+            instance_id: crate::ids::InstanceId::from_bytes(expected.instance.0),
+            bot_user_id: expected.bot_user.0,
+            installation_id: expected.installation.0,
+            community_id: crate::ids::CommunityId::from_bytes(expected.community.0),
+            participant_user_id: expected.participant_user.0,
+            participant_device_id: DeviceId::from_bytes(expected.participant_device.0),
+            policy_version: 3,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+        let proof = signed(&expected, &key, 11, 100);
+        assert!(
+            prepare_creation(
+                &proof,
+                &key.verifying_key().to_bytes(),
+                &expected,
+                &binding,
+                &leaves,
+                &bot_list,
+                &bot_ssk.public(),
+                &participant_list,
+                &participant_ssk.public(),
+            )
+            .is_ok()
+        );
+        let mut wrong_binding = binding.clone();
+        wrong_binding.participant_device_id = DeviceId::from_bytes([91; 16]);
+        assert_eq!(
+            prepare_creation(
+                &proof,
+                &key.verifying_key().to_bytes(),
+                &expected,
+                &wrong_binding,
+                &leaves,
+                &bot_list,
+                &bot_ssk.public(),
+                &participant_list,
+                &participant_ssk.public(),
+            ),
+            Err(CodecError::Context)
+        );
 
         assert_eq!(
             verify_exact_authenticated_roster(
