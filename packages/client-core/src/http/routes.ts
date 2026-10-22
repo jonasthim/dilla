@@ -85,6 +85,8 @@ export const TOPIC_MAX_BYTES = 1024;
 export const BAN_REASON_MAX_BYTES = 512;
 /** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
 export interface PermissionsRow { bits: bigint; top: number }
+export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
+  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
   hoist: boolean; mentionable: boolean }
 export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
@@ -269,6 +271,17 @@ function banRow(value: CborValue): BanRow {
   return { userId: bin(a[0], 16), reason: str(a[1]), byUser: bin(a[2], 16), created: u64(a[3]), expires: opt(a[4], u64),
     username: a.length > 5 ? str(a[5]) : '', display: a.length > 6 ? str(a[6]) : '' };
 }
+function botInstallationRow(value: CborValue, communityId: Uint8Array): BotInstallationRow {
+  const a = arr(value);
+  if (a.length !== 8) throw new CborError('E_CBOR_SHAPE', 'expected eight bot installation fields');
+  const row: BotInstallationRow = { id: bin(a[0], 16), communityId: bin(a[1], 16), state: oneOf(a[2], [0, 1, 2, 3, 4, 5] as const),
+    revision: u64(a[3]), userId: opt(a[4], v => bin(v, 16)), deviceId: opt(a[5], v => bin(v, 16)),
+    capabilities: u53(a[6]), updatedAt: u64(a[7]) };
+  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > 255) {
+    throw new CborError('E_CBOR_RANGE', 'bot installation scope, revision or capabilities invalid');
+  }
+  return row;
+}
 function inviteRow(value: CborValue): InviteRow {
   const a = atLeast(value, 9);
   return { id: bin(a[0], 16), communityId: opt(a[1], (v) => bin(v, 16)), createdBy: opt(a[2], (v) => bin(v, 16)),
@@ -445,6 +458,29 @@ export class Routes {
     const top = u53(a[1]);
     if (top > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'rank above ' + String(OWNER_TOP));
     return { bits: u64(a[0]), top };
+  }
+  /** A 404 means the community has no active installation; other refusals remain visible. */
+  async getBotInstallation(communityId: Uint8Array): Promise<BotInstallationRow | null> {
+    const path = `/v1/communities/${id('communityId', communityId)}/bot`;
+    try { return botInstallationRow(decode(await this.body('GET', path, 'read', true)), communityId); }
+    catch (e) { if (e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND'
+      && e.detail === 'bot installation absent') return null; throw e; }
+  }
+  /** Request ID is retained across HTTP retries; the server binds it to actor, payload and result. */
+  async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,
+    capabilities: number, stepUp: string): Promise<BotInstallationRow> {
+    if (expectedRevision !== null && expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
+    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > 255) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
+    if (typeof stepUp !== 'string' || stepUp.length === 0) throw new RangeError('E_ROUTE_INPUT: step-up token is required');
+    const body = encode([inputId('requestId', requestId), expectedRevision, capabilities, stepUp]);
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,
+      'write', true, { body, retry429: false })), communityId);
+  }
+  async disableBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint): Promise<BotInstallationRow> {
+    if (expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
+    const body = encode([inputId('requestId', requestId), expectedRevision]);
+    return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
+      'write', true, { body, retry429: false })), communityId);
   }
   /** GET /v1/communities/{id}/roles: [[id, name, color, position, allow, deny, hoist, mentionable]], at most ROLES_MAX. */
   async listRoles(communityId: Uint8Array): Promise<RoleRow[]> {

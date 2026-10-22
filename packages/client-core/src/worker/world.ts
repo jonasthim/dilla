@@ -355,6 +355,13 @@ export function world(opts: {
     sendPresenceActivity: vi.fn(() => Promise.resolve()),
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
+    getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
+    configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>
+      Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 0 as const, revision: 1n,
+        userId: null, deviceId: null, capabilities: 0, updatedAt: NOW_S })),
+    disableBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint) =>
+      Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 4 as const, revision: 2n,
+        userId: null, deviceId: null, capabilities: 0, updatedAt: NOW_S })),
     listRoles: vi.fn((_id: Uint8Array) => Promise.resolve([] as RoleRow[])),
     patchCommunity: vi.fn((_id: Uint8Array, _patch: { name: string }) => Promise.resolve(2n)),
     deleteCommunity: vi.fn((_id: Uint8Array) => Promise.resolve()),

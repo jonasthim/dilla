@@ -24,7 +24,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
-  type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type BotInstallationRow, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -193,6 +193,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createChannel',
   'createInvite',
   'refreshCommunities',
+  'getBotInstallation',
+  'configureBotInstallation',
+  'disableBotInstallation',
   'openChannel',
   'closeChannel',
   'loadEarlier',
@@ -281,6 +284,12 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setChannelPrivate',
 ]);
 const ID = /^[0-9a-f]{32}$/;
+const botInstallationView = (row: BotInstallationRow) => ({
+  id: toHex(row.id), communityId: toHex(row.communityId), state: row.state,
+  revision: row.revision.toString(), userId: row.userId === null ? null : toHex(row.userId),
+  deviceId: row.deviceId === null ? null : toHex(row.deviceId), capabilities: row.capabilities,
+  updatedAt: row.updatedAt.toString(),
+});
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
 const backupCode = normaliseBackupCode;
@@ -297,8 +306,11 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId')[]>> = {
   selectCommunity: ['communityId'],
+  getBotInstallation: ['communityId'],
+  configureBotInstallation: ['communityId', 'requestId'],
+  disableBotInstallation: ['communityId', 'requestId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
   updateRole: ['communityId', 'roleId'],
@@ -378,6 +390,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createChannel',
     'createInvite',
     'refreshCommunities',
+    'getBotInstallation',
+    'configureBotInstallation',
+    'disableBotInstallation',
     'openChannel',
     'closeChannel',
     'loadEarlier',
@@ -525,6 +540,18 @@ function invalid(command: Record<string, unknown>): string | null {
     }
     if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
       return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    }
+  }
+  if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
+    const revision = command.expectedRevision;
+    if (!(m === 'configureBotInstallation' && revision === null)
+      && (typeof revision !== 'string' || !SEQ.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn)) {
+      return 'expectedRevision is not a valid revision';
+    }
+    if (m === 'configureBotInstallation') {
+      const caps = command.capabilities;
+      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
+      if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
   if (m === 'send') {
@@ -1011,6 +1038,9 @@ export class Controller {
       case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce, command.parentId);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
+      case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'configureBotInstallation': return this.configureBotInstallation(command);
+      case 'disableBotInstallation': return this.disableBotInstallation(command);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1104,6 +1134,25 @@ export class Controller {
       case 'setChannelPrivate': return this.rolesCtl.setChannelPrivate(command.channelId, command.private);
       case 'resign': return this.resign(command.nonce);
     }
+  }
+
+  private async getBotInstallation(communityId: string): Promise<ReturnType<typeof botInstallationView> | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotInstallation(fromHex(communityId));
+    return row === null ? null : botInstallationView(row);
+  }
+
+  private async configureBotInstallation(command: Extract<Command, { m: 'configureBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.configureBotInstallation(fromHex(command.communityId), fromHex(command.requestId),
+      command.expectedRevision === null ? null : BigInt(command.expectedRevision), command.capabilities, command.stepUp);
+    return botInstallationView(row);
+  }
+
+  private async disableBotInstallation(command: Extract<Command, { m: 'disableBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.disableBotInstallation(fromHex(command.communityId), fromHex(command.requestId), BigInt(command.expectedRevision));
+    return botInstallationView(row);
   }
 
   // ---- slices ----

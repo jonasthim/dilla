@@ -19,6 +19,9 @@ export type Command =
   // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
+  | { m: 'getBotInstallation'; communityId: string }
+  | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
+  | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }

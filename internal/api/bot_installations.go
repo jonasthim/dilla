@@ -169,7 +169,7 @@ func (d Deps) GetBotInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := d.Repo.GetActiveBotInstallationByCommunity(r.Context(), cid)
 	if errors.Is(err, store.ErrNotFound) {
-		server.WriteError(w, server.Errorf(server.CodeNotFound, "not found"))
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "bot installation absent"))
 		return
 	}
 	if err != nil {

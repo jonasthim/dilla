@@ -1634,3 +1634,38 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     expect(routes.leaveAFK).toBeUndefined();
   });
 });
+
+describe('managed community bot installation routes', () => {
+  const installation = [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1, 1_800_000_000];
+
+  it('reads a bounded installation and treats only its 404 as absent', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, installation));
+    await expect(routes.getBotInstallation(COMMUNITY)).resolves.toMatchObject({
+      id: BOT, communityId: COMMUNITY, state: 1, revision: 3n, userId: USER, deviceId: DEVICE, capabilities: 1,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    t.replies.push(refusal(404, 'E_NOT_FOUND', 'bot installation absent'));
+    await expect(routes.getBotInstallation(COMMUNITY)).resolves.toBeNull();
+    t.replies.push(refusal(404, 'E_NOT_FOUND', 'not found'));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 404, detail: 'not found' });
+    t.replies.push(refusal(403, 'E_FORBIDDEN', 'denied'));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('sends exact request ID, revision, capabilities and step-up for configure', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(201, installation));
+    await routes.configureBotInstallation(COMMUNITY, USER, null, 1, 'stepup');
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
+  });
+
+  it('sends revision-bound disable with its stable request ID', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, installation));
+    await routes.disableBotInstallation(COMMUNITY, USER, 3n);
+    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/disable` });
+    expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, 3n])));
+  });
+});
