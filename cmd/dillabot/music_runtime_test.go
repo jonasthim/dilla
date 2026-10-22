@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,17 +56,27 @@ func (runtimePublisher) Start(context.Context, client.Call, id.ID, livekit.Epoch
 }
 
 type runtimeStateNative struct {
+	mu      sync.Mutex
 	binding native.Binding
 	rows    map[string]native.StateValue
 	closed  bool
 }
 
 func (n *runtimeStateNative) Binding() native.Binding { return n.binding }
-func (n *runtimeStateNative) Close() error            { n.closed = true; return nil }
+func (n *runtimeStateNative) Close() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.closed = true
+	return nil
+}
 func (n *runtimeStateNative) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	return n.rows[string(key)], nil
 }
 func (n *runtimeStateNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	c := changes[0]
 	old := n.rows[string(c.Key)]
 	if old.Revision != c.ExpectedRevision {
@@ -74,6 +85,108 @@ func (n *runtimeStateNative) StateTransaction(_ context.Context, _ id.ID, change
 	revision := old.Revision + 1
 	n.rows[string(c.Key)] = native.StateValue{Revision: revision, Value: append([]byte(nil), c.Value...)}
 	return []uint64{revision}, nil
+}
+
+func TestMusicSnapshotBridgeRejectsStaleAndMissingSessions(t *testing.T) {
+	community, channel := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := unavailableMusicQueueStarter()
+	supervisor, err := newMusicSupervisor(context.Background(), channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &musicQueueRuntime{community: community, store: store, supervisors: map[id.ID]*music.Supervisor{channel: supervisor}}
+	next, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "one", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(context.Background(), channel, 0, next); err != nil {
+		t.Fatal(err)
+	}
+	next, err = music.Apply(next, next.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(context.Background(), channel, 1, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ApplyPersistedSnapshot(context.Background(), channel, saved.Revision-1, starter); !errors.Is(err, music.ErrRevisionConflict) {
+		t.Fatalf("stale bridge error = %v, want revision conflict", err)
+	}
+	if err := runtime.ApplyPersistedSnapshot(context.Background(), id.New(), saved.Revision, starter); err == nil {
+		t.Fatal("missing session was accepted")
+	}
+	if got := runtime.supervisors[channel]; got != supervisor {
+		t.Fatal("failed refresh replaced the current supervisor")
+	}
+}
+
+func TestMusicSnapshotBridgeRefreshesChannelsConcurrentlyAndClosesOnTeardown(t *testing.T) {
+	community := id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := unavailableMusicQueueStarter()
+	channels := []id.ID{id.New(), id.New()}
+	runtime := &musicQueueRuntime{community: community, store: store, supervisors: map[id.ID]*music.Supervisor{}}
+	for _, channel := range channels {
+		s, err := newMusicSupervisor(context.Background(), channel, store, starter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.supervisors[channel] = s
+		state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: channel.String(), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One", RequesterID: "member"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Save(context.Background(), channel, 0, state); err != nil {
+			t.Fatal(err)
+		}
+		state, err = music.Apply(state, state.Revision, music.Operation{Kind: music.OpResume})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Save(context.Background(), channel, 1, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installation := id.New()
+	registry := &musicQueueRegistry{runtimes: map[id.ID]*retainedMusicRuntime{installation: {community: community, queues: runtime, native: n}}}
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(channels))
+	for _, channel := range channels {
+		channel := channel
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- registry.ApplyPersistedSnapshot(context.Background(), installation, community, channel, 2, starter)
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, channel := range channels {
+		if state := runtime.supervisors[channel].State(); state.Revision != 2 || !state.Paused || state.Current == nil {
+			t.Fatalf("channel %s refreshed to %#v; want active revision 2 restored paused", channel, state)
+		}
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, channels[0], 2, starter); err == nil {
+		t.Fatal("bridge after teardown was accepted")
+	}
 }
 
 func testLeaseManager(t *testing.T) *music.SpotifyLeaseManager {
@@ -301,6 +414,9 @@ func TestMusicQueueRegistryRetainsSupervisorsUntilCapabilityIsDisabled(t *testin
 	}
 	if currentNative.closed {
 		t.Fatal("caller-owned native client was closed by disabled reconcile")
+	}
+	if err := registry.ApplyPersistedSnapshot(context.Background(), installation, community, voice, 0, unavailableMusicQueueStarter()); err == nil {
+		t.Fatal("snapshot bridge remained available after capability loss")
 	}
 	if _, err := first.Apply(context.Background(), first.State().Revision, music.Operation{Kind: music.OpPause}); !errors.Is(err, music.ErrSupervisorClosed) {
 		t.Fatalf("supervisor after capability loss error=%v, want closed", err)

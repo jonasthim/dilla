@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -23,14 +24,20 @@ const (
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 
 type musicQueueRuntime struct {
+	mu          sync.Mutex
 	supervisors map[id.ID]*music.Supervisor
 	community   id.ID
 	store       *persistence.Store
+	closed      bool
 }
 
 func (r *musicQueueRuntime) Close() error {
 	if r != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.closed = true
 		closeMusicSupervisors(r.supervisors)
+		r.supervisors = make(map[id.ID]*music.Supervisor)
 	}
 	return nil
 }
@@ -39,7 +46,45 @@ func (r *musicQueueRuntime) Len() int {
 	if r == nil {
 		return 0
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return len(r.supervisors)
+}
+
+// ApplyPersistedSnapshot refreshes one retained supervisor after another
+// authorized component has committed queue state. It never applies an
+// operation or starts playback: construction restores the persisted state
+// paused. expectedRevision must identify the exact committed row.
+func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, expectedRevision uint64, starter session.QueueStarter) error {
+	if ctx == nil || channel.IsZero() || starter.OptionsFor == nil {
+		return errors.New("music runtime dependencies unavailable")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.store == nil {
+		return music.ErrSupervisorClosed
+	}
+	current := r.supervisors[channel]
+	if current == nil {
+		return errors.New("music voice session is unavailable")
+	}
+	snapshot, err := r.store.Load(ctx, channel)
+	if err != nil {
+		return err
+	}
+	if snapshot.Revision != expectedRevision || current.State().Revision >= snapshot.Revision {
+		return music.ErrRevisionConflict
+	}
+	refreshed, err := newMusicSupervisor(ctx, channel, r.store, starter)
+	if err != nil {
+		return err
+	}
+	if refreshed.State().Revision != expectedRevision {
+		_ = refreshed.Close()
+		return music.ErrRevisionConflict
+	}
+	r.supervisors[channel] = refreshed
+	return current.Close()
 }
 
 type musicCallStarter interface {
@@ -184,6 +229,7 @@ type retainedMusicRuntime struct {
 // musicQueueRegistry keeps queue supervisors attached to the native helper
 // that backs their persistence store across reconciliation iterations.
 type musicQueueRegistry struct {
+	mu       sync.Mutex
 	runtimes map[id.ID]*retainedMusicRuntime
 }
 
@@ -195,15 +241,34 @@ func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeN
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	retained := r.runtimes[installation]
 	if retained == nil {
 		return nil
 	}
 	if retained.community != community {
-		_ = r.Disable(installation)
+		_ = r.disableLocked(installation)
 		return nil
 	}
 	return retained.native
+}
+
+// ApplyPersistedSnapshot is the runtime bridge for queue mutations already
+// authorized and committed by the interaction service. A missing registry
+// entry means the capability or retained native session has been torn down.
+func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, revision uint64, starter session.QueueStarter) error {
+	if r == nil {
+		return errors.New("music voice session is unavailable")
+	}
+	r.mu.Lock()
+	retained := r.runtimes[installation]
+	if retained == nil || retained.community != community {
+		r.mu.Unlock()
+		return errors.New("music voice session is unavailable")
+	}
+	r.mu.Unlock()
+	return retained.queues.ApplyPersistedSnapshot(ctx, channel, revision, starter)
 }
 
 // Reconcile returns true only when ownership of nativeClient transfers to the
@@ -212,19 +277,21 @@ func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, commun
 	if r == nil || installation.IsZero() || community.IsZero() || nativeClient == nil {
 		return false, errors.New("music runtime dependencies unavailable")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if capabilities&botMusicCapability == 0 {
-		return false, r.Disable(installation)
+		return false, r.disableLocked(installation)
 	}
 	if binding := nativeClient.Binding(); binding.Installation != installation || binding.Community != community {
-		_ = r.Disable(installation)
+		_ = r.disableLocked(installation)
 		return false, errors.New("music native binding does not match installation")
 	}
 	if existing := r.runtimes[installation]; existing != nil {
 		if existing.community != community {
-			_ = r.Disable(installation)
+			_ = r.disableLocked(installation)
 		} else {
 			if err := syncMusicSupervisors(ctx, existing.queues, channels, starter); err != nil {
-				_ = r.Disable(installation)
+				_ = r.disableLocked(installation)
 				return false, err
 			}
 			return false, nil
@@ -244,6 +311,11 @@ func (r *musicQueueRegistry) Reconcile(ctx context.Context, installation, commun
 func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, channels []client.Channel, starter session.QueueStarter) error {
 	if ctx == nil || runtime == nil || runtime.store == nil || starter.OptionsFor == nil || len(channels) > maxMusicSupervisors*2 {
 		return errors.New("music runtime dependencies unavailable")
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return music.ErrSupervisorClosed
 	}
 	desired := make(map[id.ID]struct{}, len(channels))
 	seen := make(map[id.ID]struct{}, len(channels))
@@ -288,7 +360,16 @@ func syncMusicSupervisors(ctx context.Context, runtime *musicQueueRuntime, chann
 }
 
 func (r *musicQueueRegistry) Disable(installation id.ID) error {
-	if r == nil || r.runtimes[installation] == nil {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.disableLocked(installation)
+}
+
+func (r *musicQueueRegistry) disableLocked(installation id.ID) error {
+	if r.runtimes[installation] == nil {
 		return nil
 	}
 	retained := r.runtimes[installation]
@@ -301,6 +382,8 @@ func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	active := make(map[id.ID]struct{}, len(installations))
 	for _, installation := range installations {
 		active[installation] = struct{}{}
@@ -308,7 +391,7 @@ func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
 	var errs []error
 	for installation := range r.runtimes {
 		if _, ok := active[installation]; !ok {
-			if err := r.Disable(installation); err != nil {
+			if err := r.disableLocked(installation); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -320,9 +403,11 @@ func (r *musicQueueRegistry) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var errs []error
 	for installation := range r.runtimes {
-		if err := r.Disable(installation); err != nil {
+		if err := r.disableLocked(installation); err != nil {
 			errs = append(errs, err)
 		}
 	}
