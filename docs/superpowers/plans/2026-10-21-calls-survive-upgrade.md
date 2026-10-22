@@ -372,16 +372,17 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
 - **Wire (protocol/02 § Handshake records, `:468-476`; frame op 16 `:277`):**
   - **A new handshake `kind` 3, `withdrawn`.** `sender` is null (the instance). `epoch` is the withdrawn proposal's epoch. `blob` is the deterministic CBOR `[proposal_ref(bstr)]`, the MLS `ProposalRef` of an instance-originated Remove.
   - **Invariant 6 gains:**
-    - a withdrawn proposal is neither outstanding nor void;
-    - a commit that references one is refused with **409 `E_COMMIT_CONFLICT`** (detail `withdrawn`);
+    - a withdrawn proposal is neither outstanding nor void, and it appears in no non-void listing;
+    - a commit MAY omit it;
+    - a commit that applies it is refused with **409 `E_COMMIT_CONFLICT`**, detail `withdrawn`, with an empty-bstr `winning_commit` and the current listing;
     - the committer catches up, applies the `withdrawn` row, drops the ref and rebuilds.
-  - **Capability-gated, so wire 2 stays and old clients never break.**
+  - **Capability-gated. Wire stays 2.** `identify` already carries `caps` (`internal/gateway/session.go:359`), so no new wire version is needed.
     - The core before this release rejects `kind > 2` for a whole page (`core/dilla-core/src/client/wire.rs:421`), which would stall the group. So the instance serves kind 3 only to a client that asked for it:
       - `identify`'s `caps` gains bit 0, `withdrawn_rows` (today's instance reads `caps` as nothing; today's clients send 0);
       - `GET /v1/groups/{id}/handshakes` gains `&kinds=3`.
-    - Every other client gets the stream with that seq skipped. The core tolerates a gap (`sync.rs:699` skips by range).
-    - Verify the gap against the **web3.11 and pre-UP6b core** with a vector run on the previous `dilla_core_wasi.wasm`.
-  - **An old client** keeps the withdrawn ref queued. Its commits in that group get 409 until it reloads into the new build, which happens on its own (the update watch).
+    - Every other client gets the stream with that seq left out: on HTTP, on the op 16 fan-out and on the op 16 replay.
+    - An old core tolerates the gap: `throughOf` carries over the gap (`packages/client-core/src/sync/engine.ts:52`), and `group_apply` ends with `next_seq = through + 1`.
+  - **An old client** keeps the withdrawn ref queued. Its commits in that group get 409, and its volunteer goes quiet after five 409s. It recovers at the next epoch's merge, when the queue is cleared, or when it reloads into the new build, which the update watch does on its own.
     - This is a safe refusal: other members commit.
     - The instance never elects a device without bit 0 for `mls.commit_needed` in a group whose epoch has a withdrawal.
   - `protocol/07-versioning.md`: a row reading "Additive, capability-gated (caps bit 0); wire 2; migration 00024".
@@ -395,21 +396,44 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
     - if `app_proposals` holds the ref **and** the queued proposal is a Remove whose sender is the external sender (the instance), call `group.remove_pending_proposal(storage, ref)` (as `group.rs:866` does) and delete the `app_proposals` row;
     - any other case is a no-op that is logged: an unknown ref, an already-committed ref, a member's proposal, a non-Remove;
     - the cursor always advances.
-  - Before `commit_build` and `call_rotate`, drop any queued ref the DS's `GET /proposals` no longer lists as outstanding **and** lists as withdrawn. This covers a client that missed the row.
+  - **Fallback for a client that missed the row:**
+    - `commit_build` already takes the DS's non-void listing. It drops any queued **external-sender Remove** that is absent from that listing at the current epoch, using `remove_pending_proposal`. `GET /proposals` cannot say "withdrawn", and it does not need to.
+    - `call_rotate` takes no listing. It relies on the kind-3 row, plus `retryRotation` after a 409 `withdrawn`, which catches up first.
   - No ABI change: the row rides on `group_apply`'s handshake rows.
 - **DS and store (`internal/ds/proposal.go:231`, `commit.go`, `commit.go:1136 unqueueProposal`; `internal/store`):**
   - **Migration 00024** (main is at 23), in both dialects plus `schema/`. `mls_pending_proposals` gains:
     - `withdrawable INTEGER NOT NULL DEFAULT 0`: set only for Removes from the room sweep (`flushLeafRemovals`) and from `proposeLeave` (`callevents.go`). It is never set for a revocation, a kick or ban, an eviction, a barred device's cut, or a member's own proposal.
+    - **The flag survives every rewrite of the row (C1).** `ProposalTTLCall` is 30 s (`ds.go:120`), and `sweepCallGroup` voids the Remove at TTL. Each of these then writes a fresh row:
+      - `redriveCallRemovesLocked` → `proposeRemoveOfLocked` → `storeInstanceProposal` → `ReissueProposal`;
+      - the re-arm;
+      - the reissue;
+      - the cross-epoch re-drive.
+      All of them carry `withdrawable` over from the row they replace (a sqlc parameter, never the default).
     - `withdrawn_at INTEGER` and `withdrawn_seq INTEGER`. The row stays, marked, so that the 409 can name it. It is pruned with its epoch.
+  - **Withdrawn rows are excluded from every non-void listing, in sqlc (C2).** `ListProposals(includeVoid=false)` adds `AND withdrawn_at IS NULL`. That covers, by construction:
+    - `checkAppliedProposals` clause 1;
+    - `voidExpired`;
+    - `refsOf` (the 409 and 425 lists);
+    - `GET /proposals`;
+    - `instanceRemoveOutstanding`;
+    - `reissueOmitted`;
+    - `outstandingRefs`;
+    - `ready`'s `proposals_outstanding`.
+    A new `IsWithdrawn(group, epoch, ref)` query serves the commit check.
   - Also update the sqlc queries, `contract_test.go`, `dump.go`, and `wantSchemaVersion` to 24.
-  - **`DS.WithdrawAbsenceRemoves(ctx, groupID, resumer device, leaf, added)`.** Under the group lock it does:
-    1. checks that the resumer's membership `(leaf, added)` is still current;
-    2. for every outstanding, `withdrawable`, unwithdrawn Remove in the current epoch whose target is **the resumer's own membership `(leaf, added)`**: marks it withdrawn, `unqueueProposal`s it from the PublicGroup, and appends a kind-3 handshake row (fanned out as op 16 to bit-0 sessions);
-    3. returns whether the resumer's own Remove was withdrawn.
-    All of it is one store transaction.
-  - **Commit:** a commit that references a ref marked withdrawn gets 409 `E_COMMIT_CONFLICT` "withdrawn", before any other check. The freeze (`commit.go:162`) counts only outstanding, unwithdrawn proposals.
-  - **The start (`internal/api/calls.go`, the `requireCurrentLeaf` path `:585-591`, `:944`):** for a device whose leaf is current (the resume of R-UP6), call `WithdrawAbsenceRemoves` under the same group lock as the leaf check.
-    - If a commit landed first, the leaf is gone: the start answers `E_LEAF_NOT_CURRENT`, and the device forgets the group and joins externally. That cannot deadlock, because the Remove is committed.
+  - **Rollback (I5).** 00024's down step runs `DELETE FROM mls_handshakes WHERE kind=3` and **deletes** the withdrawn proposal rows; it does not revive them. Without this, web3.11 would serve kind 3 and the old core would reject the page (`wire.rs:421`).
+  - **`DS.WithdrawAbsenceRemoves(ctx, groupID, resumer device, leaf, added)`.** Under the group lock, in one store transaction:
+    1. check that the resumer's membership `(leaf, added)` is still current; if not, return `ErrMembershipGone`;
+    2. find every `withdrawable`, unwithdrawn Remove at the current epoch whose target is **the resumer's own membership**, outstanding **or voided but not yet re-driven** (I3);
+    3. mark each withdrawn and append a kind-3 handshake row, fanned out as op 16 to bit-0 sessions;
+    4. **do not unqueue (C3).** `unqueueProposal` (`commit.go:1136`) refuses refs that SQL still holds. A client that drops the ref would then make `g.Process` fail with 422, and the client would go quiet (`engine.ts:376`). So the ref stays in the PublicGroup.
+  - **Commit (C3).** Right after `g.Process`, and **before the clause checks and the merge**: if the applied refs contain a ref for which `IsWithdrawn` holds, answer 409 `E_COMMIT_CONFLICT` with detail `withdrawn`, an empty-bstr `winning_commit` and the current listing. The freeze (`commit.go:162`) counts only unwithdrawn proposals, through C2.
+  - **A re-proposal after the withdrawal (I1).** `flushLeafRemovals` runs outside the lock, and its queued Remove yields the same deterministic ref.
+    - Within `admissionJoinWindow` (30 s) after `withdrawn_at`, a withdrawn Remove of the same `(leaf, added)` at the current epoch counts as **standing**: the re-proposal is a no-op.
+    - After that window, a re-proposal **re-arms** the row: it clears `withdrawn_at` and `withdrawn_seq`, keeps the flag, and appends a kind-0 handshake row with the proposal. Clients queue it again, because applying kind 3 deleted their `app_proposals` row.
+  - **The start (I2).** Withdraw **immediately before the token mint and `noteAdmission`** (before `calls.go:624`, the `h.sfu.Token` call, and `:632`), not at the leaf check (`:517`, `:588`). The leaf check runs before `retryOwn`, `isPending`, `callFull` and `CreateRoom`, and any of those may still refuse.
+    - `ErrMembershipGone` answers `E_LEAF_NOT_CURRENT`: a commit landed first, and the device forgets the group and joins externally. That cannot deadlock, because the Remove is committed.
+    - Any other DS error answers 503 `E_UNAVAILABLE`, and no token is minted.
   - **Absence clocks:** unchanged. The resumer is admitted (its token) and is then present, so `trackAbsentLocked` forgets its absence. Another member's Remove is never touched, so a device that is really gone is removed exactly as today.
   - **All dropped at once, and the first one resumes.** Its own Remove is withdrawn. Its queue still holds the others' Removes, which are not self-removals, so it can commit them. The elected commit removes the devices that have not yet resumed. Each of them then:
     - gets `E_LEAF_NOT_CURRENT` at its start;
@@ -424,31 +448,43 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
   - pass kind-3 rows to the core;
   - on 409 `withdrawn` from a commit, catch up and retry once through the existing conflict path.
 - **E2EE analysis (also in the E2EE section, and in protocol/08):**
-  - **Who can withdraw.** Only the instance, and only instance-originated, `withdrawable` Removes. Clients ignore a `withdrawn` row for any other proposal (member proposals, Adds, Updates, a Remove from a revocation). A member cannot write a handshake row of kind 3: the DS has no route for it, and a member's upload of kind 3 is refused.
+  - **Who can withdraw.** Only the instance, and only instance-originated, `withdrawable` Removes. Clients ignore a `withdrawn` row for any other proposal (member proposals, Adds, Updates, a Remove from a revocation). No route lets a member write a handshake row of kind 3: the handshake kind comes from the DS's own code paths, never from a request.
   - **A member cannot keep a departed member.** Withdrawal needs the *departed device itself* to pass the start: an authenticated session, permission to view and connect, not barred, and a current leaf. A device that is kicked, banned, revoked or barred fails those checks, and its Remove (not `withdrawable`) cannot be withdrawn anyway.
   - **A malicious member cannot block Removes.** It cannot withdraw, and committing is still open to every member. A commit that omits a withdrawable Remove is refused while that Remove is outstanding (invariant 6), as today.
   - **A malicious server** could withdraw its own absence Removes, which it could equally never have issued. Call presence is already the instance's word (protocol/08: the instance decides who is in the room). It gains no power over members' proposals, which clients refuse to drop by a `withdrawn` row. Members still see the leaf in the roster and the call code, as today.
   - **The bound on a really departed device** is the normal sweep window, unchanged. No other device's resume can withdraw its Remove, so it never keeps a leaf longer than today. It gets no new media without a token, and a token needs a current leaf plus admission.
 - **Tests:**
   - **Go (`internal/ds`, `internal/api`, `-race`):**
-    - **three devices all drop at once and all come back.** The sweep issues three Removes. The first device resumes, and its own Remove is withdrawn. Its elected commit may remove the other two, which then rejoin externally. Assert:
-      - all three end up connected in the same call within the acceptance window (90 s, as in UP9);
+    - **three devices all drop at once and all come back (DS and API level).** The sweep issues three Removes. The first device resumes, and its own Remove is withdrawn. Its elected commit may remove the other two, which then rejoin externally. Assert:
       - no device sits in `E_REMOVE_PENDING`, and nothing deadlocks: no join waits out `REJOIN_WAIT_MS`;
       - no rotation is blocked: the first commit succeeds, and a `call_rotate` after all three are back succeeds;
       - variant: the second device resumes before the first commit, so it keeps its leaf (409, then a rebuild), and only the third rejoins externally.
-    - **a commit racing the withdrawal:** the commit lands first, so the resume gets `E_LEAF_NOT_CURRENT` and an external join succeeds; the withdrawal lands first, so a commit built on the old queue gets 409 `withdrawn`, and the rebuild succeeds.
-    - **a commit that references a withdrawn ref is refused** (409), and so is a replay of an earlier commit that carries it.
-    - **a member who really left is still removed:** of three, two resume and one never does. Its Remove is never withdrawn by the others' resumes, it is committed, and its leaf is gone within the normal sweep window;
+      - The timing assertion ("all three connected in the same call within 90 s") lives in the testkit scenario and in UP9 (A2), not here (M2).
+    - **TestWithdrawableSurvivesRedrive (C1):** a Remove that has been voided at TTL and re-driven twice, across the epoch too, is still `withdrawable`, and the resume withdraws it.
+    - **TestWithdrawnRowExcludedFromListings (C2):** a member commit that omits the withdrawn ref lands; after the TTL, that row is neither voided nor re-driven; `GET /proposals`, `ready` and the 409/425 ref lists all leave it out.
+    - **TestCommitApplyingWithdrawnRefRefused (C3):** a commit that applies a withdrawn ref gets 409 `withdrawn` with an empty-bstr `winning_commit` and the listing. The PublicGroup still holds the ref (it was not unqueued), so a commit that omits it is processed without a 422. A replay of an earlier commit that carries the ref is refused too.
+    - **a commit racing the withdrawal:**
+      - the commit lands first: the resume gets `E_LEAF_NOT_CURRENT`, and an external join succeeds;
+      - the withdrawal lands first: a commit built on the old queue gets 409 `withdrawn`, and the rebuild succeeds.
+    - **TestFlushRaceAfterWithdrawal (I1):** a sweep Remove flushed just after the withdrawal, inside `admissionJoinWindow`, is a no-op, and the device stays in.
+    - **TestResumeThenLeaveIsRemoved (I1):** a device that resumes and then leaves for good. After the window, the re-proposal re-arms the row (a kind-0 row is appended, and a client queues it again), the Remove is committed, and the leaf is gone.
+    - **TestSecondResumeWithdrawsAgain (I1):** resume, re-arm, then resume again: withdrawn a second time.
+    - **TestStartRefusedWithdrawsNothing (I2):** a start refused by `callFull`, one that is `isPending` (503), and one whose `CreateRoom` fails all leave the Remove outstanding. A DS error at the withdrawal answers 503, and no token is minted.
+    - **TestWithdrawVoidedNotRedriven (I3):** the resumer's own Remove, voided but not yet re-driven, is withdrawn, so the re-drive does not resurrect it.
+    - **a member who really left is still removed:** of three, two resume and one never does. Its Remove is never withdrawn by the others' resumes, it is committed, and its leaf is gone within the normal sweep window.
     - a resume withdraws only its own Remove: another member's outstanding Remove stays outstanding.
     - **attacks:**
       - a revocation's Remove cannot be withdrawn;
       - a barred or kicked device's start withdraws nothing (403);
-      - a member's kind-3 upload is refused;
+      - **the capability filter (M2):** a session without bit 0, and `GET …/handshakes` without `kinds=3`, never receive a kind-3 row, on HTTP, on the op 16 fan-out or on the op 16 replay;
       - a client ignores a `withdrawn` row naming a member's proposal (Rust test);
       - a resume from a device whose leaf was already Removed withdraws nothing.
+    - **TestDown00024ThenOldBinary (I5):** migrate up, withdraw, then run the down step. No kind-3 row is left, and no withdrawn proposal row is left. The previous release's binary starts on the database and serves `GET …/handshakes`, which the previous core decodes.
     - migration 00024 up and down; the dump round-trip.
   - **Rust:**
     - apply kind 3: the ref leaves the OpenMLS pending store, and `commit_build` succeeds;
+    - `commit_build` with a listing that lacks a queued external-sender Remove drops it and succeeds (I4);
+    - a kind-0 row re-queues a ref that a kind-3 row had dropped (I1);
     - an unknown ref is a no-op;
     - a non-instance sender is ignored;
     - the blob decoding vectors.
@@ -456,8 +492,9 @@ Jonas's decision (binding): "Only A, do it properly", that is, a real withdrawal
     - the frames vector;
     - `getHandshakes` sends `kinds=3`;
     - `identify` sends bit 0;
-    - the old core (the previous wasm) with a gap row passes (the vector run).
-  - **Testkit:** `all-drop-resume` and the attack scenarios.
+    - **negative control (M2):** the previous release's core wasm fed a page with a kind-3 row fails (the `wire.rs:421` shape error), and the route without `kinds=3` serves that page with the row left out, which it applies (the carry through the gap);
+    - `retryRotation` after a 409 `withdrawn` catches up first, then rotates.
+  - **Testkit:** `all-drop-resume` asserts that all three are connected in the same call within 90 s, plus the attack scenarios.
 - **Gates:**
   - `cargo test -p dilla-core`; the wasm-pack build and the WASI build (`internal/mlswasi/testdata`);
   - `go test -race ./internal/ds/... ./internal/api/... ./internal/store/...` on both dialects; a clean sqlc diff;
@@ -649,7 +686,8 @@ In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → **UP6b** → UP7 (af
 - **New commands:** `dillad media --idle` and `dillad version --json`.
 - **Schema 23 → 24** (migration 00024, UP6b): `mls_pending_proposals` gains `withdrawable`, `withdrawn_at` and `withdrawn_seq`.
   - A rollback runs `migrate down --to=23` with the new binary first, as in web3.11's notes.
-  - The down step drops the columns. Withdrawn rows become ordinary outstanding proposals again, and the next commit applies them: at worst, the calls of devices that resumed get a fresh join.
+  - The down step deletes every kind-3 handshake row (`DELETE FROM mls_handshakes WHERE kind=3`) and every withdrawn proposal row, then drops the columns. Withdrawn proposals are not revived. Without this, web3.11 would serve kind-3 rows that its core rejects for the whole page.
+  - Clients that already dropped a withdrawn ref stay consistent with the DS, which no longer lists it.
 - **A new handshake kind 3 (`withdrawn`),** sent only to clients that ask for it (caps bit 0, `kinds=3`). Wire stays 2.
   - Tabs from before web3.12 never see it, and until they reload their commits in such a group get `409`.
   - The core's protocol vectors changed, so **`dilla_core_wasi.wasm` has a new hash**. That is expected, and no ABI changed.
@@ -667,7 +705,11 @@ In short: UP1 → (UP2 ∥ UP5) → UP8 → UP3 → UP6 → **UP6b** → UP7 (af
 - **Protocol (UP6b):**
   - only `withdrawable` instance Removes can ever be withdrawn, and the flag is set at exactly two call sites;
   - the withdrawal and the leaf check run in one transaction under the group lock;
-  - the 409 comes before every other commit check;
+  - the 409 `withdrawn` comes right after `g.Process`, before the clause checks and the merge, and the ref is never unqueued from the PublicGroup;
+  - `withdrawable` survives every reissue and re-drive;
+  - withdrawn rows are absent from every non-void listing (one sqlc filter);
+  - the re-proposal window and the re-arm;
+  - the withdrawal sits immediately before the mint, and a DS error mints nothing;
   - clients drop only external-sender Removes;
   - a resume withdraws only the Remove of its own membership `(leaf, added)`, never another's;
   - old clients never receive kind 3 (both the gateway and HTTP paths), and the previous wasm tolerates the seq gap;
