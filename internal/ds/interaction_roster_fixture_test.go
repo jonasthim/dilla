@@ -81,7 +81,7 @@ func TestKind3InteractionFixtureAuthenticatesExactTwoMemberRoster(t *testing.T) 
 	}
 	wasm, err := mlswasi.New(ctx, wasmBytes, mlswasi.Options{PoolSize: 1, CacheDir: t.TempDir()})
 	if err != nil {
-		t.Fatalf("start WASI ABI v9: %v", err)
+		t.Fatalf("start WASI ABI v10: %v", err)
 	}
 	defer wasm.Close(ctx)
 	inst, err := wasm.Acquire(ctx)

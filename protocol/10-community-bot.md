@@ -450,8 +450,8 @@ For first registration, the Go service also obtains the current server generatio
 and durably commits `(operation_id, expected_generation)` before it asks the native
 core to create the group. A retry or restart reuses both values exactly; it never
 substitutes a newly sampled generation or host clock. The native create intent's
-pending result is the exact deterministic-CBOR registration body
-`[group_id,binding,group_info,ratchet_tree]` as bstr. The Go service sends those
+pending result is the exact deterministic-CBOR kind-3 registration body
+`[group_id,binding,group_info,ratchet_tree,initial_welcome]` as bstr. The Go service sends those
 same bytes to the scoped HTTP route and retains them until a receipt resolves the
 intent. The generation fence therefore covers the native MLS mutation that
 produced the body, even though the generation is carried outside that body.
@@ -844,7 +844,10 @@ the nonzero `admission_request_id` as a fourth element.
 signed-int64 max (nonzero for kind-3), and `registration_body` is a bstr of at most 65,505 bytes
 (the whole CBOR request is capped at 64 KiB) containing
 the exact canonical deterministic-CBOR four-element registration array
-`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`. It must
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]` for existing
+non-kind-3 groups. Kind-3 initial registration appends `initial_welcome(bstr)`
+as a fifth element. That Welcome must address exactly one KeyPackageRef
+published by the admitted participant device. The body must
 decode strictly, have no trailing bytes and be byte-for-byte canonical; malformed
 or noncanonical input is `400 E_INVALID_REQUEST`, a wrong media type is `415`,
 and an oversized request is `413 E_TOO_LARGE`. The handler hashes the supplied
@@ -856,8 +859,8 @@ The first acceptance compares `expected_generation` with the instance generation
 under the same transaction/serialization fence as group creation. A stale value
 is `409 E_INVALID_REQUEST` and writes nothing. A fresh acceptance applies the
 current registration ACL and every existing DS group validation, then commits
-the group row, serialized public MLS state, initial member rows and immutable
-receipt in one transaction. The exact receipt tuple is
+the group row, serialized public MLS state, initial member rows, the kind-3
+participant Welcome outbox row and immutable receipt in one transaction. The exact receipt tuple is
 `[operation_id,group_id,registration_sha256,accepted_generation,initial_epoch,
 next_seq]`; new acceptance returns `201`, with `next_seq = 1`, the exact value
 from the original registration response. No gateway, state-cache or hook failure

@@ -209,13 +209,21 @@ func newKind3RegistrationFixture(t *testing.T) kind3RegistrationFixture {
 		t.Fatal(err)
 	}
 	participantEntries, err := inst.DeviceListEntries(ctx, participantList, participantSSK, tuple.ParticipantUserID[:])
+	keyPackage := read("participant_keypackage.mls")
+	kpInfo, kpErr := inst.ValidateKeyPackage(ctx, keyPackage)
 	inst.Release()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if kpErr != nil || !bytes.Equal(kpInfo.DeviceID, tuple.ParticipantDeviceID[:]) {
+		t.Fatalf("participant KeyPackage fixture: %+v, %v", kpInfo, kpErr)
+	}
+	if err := h.repo.PutKeyPackages(ctx, tuple.ParticipantDeviceID, []store.KeyPackageRow{{DeviceID: tuple.ParticipantDeviceID, KPRef: kpInfo.KPRef, Blob: keyPackage, Expires: int64(kpInfo.NotAfter), Created: now}}); err != nil {
+		t.Fatal(err)
+	}
 	tree, groupInfo := read("ratchet_tree.mls"), read("group_info.mls")
-	registration := ds.RegisterRequest{GroupID: tuple.GroupID, Binding: decode("v2 binding", meta.BindingHex), GroupInfo: groupInfo, RatchetTree: tree}
-	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
+	registration := ds.RegisterRequest{GroupID: tuple.GroupID, Binding: decode("v2 binding", meta.BindingHex), GroupInfo: groupInfo, RatchetTree: tree, InitialWelcome: read("welcome.mls")}
+	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree, registration.InitialWelcome})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +247,10 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	members, err := fixture.h.repo.ListMembers(ctx, groupID)
 	if err != nil || len(members) != 2 {
 		t.Fatalf("initial members=%d err=%v", len(members), err)
+	}
+	welcomeRows, err := fixture.h.repo.ListWelcomes(ctx, fixture.request.TrustedPreflight.Expected.ParticipantDeviceID, 0, 10)
+	if err != nil || len(welcomeRows) != 1 || welcomeRows[0].GroupID != groupID || welcomeRows[0].Epoch != 1 || welcomeRows[0].CommitSeq != 0 || !bytes.Equal(welcomeRows[0].Blob, fixture.request.Registration.InitialWelcome) {
+		t.Fatalf("initial Welcome was not atomically queued: rows=%d err=%v", len(welcomeRows), err)
 	}
 	operation, err := fixture.h.repo.GetBotGroupRegistrationReceipt(ctx, fixture.request.InstallationID, fixture.request.OperationID)
 	if err != nil || operation.GroupID != groupID {
@@ -267,6 +279,9 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	if err != nil || created || replayed != receipt {
 		t.Fatalf("expired-proof retry receipt=%+v created=%v err=%v", replayed, created, err)
 	}
+	if got := fixture.h.countRows(t, "mls_welcomes"); got != 1 {
+		t.Fatalf("retry produced %d Welcomes, want one", got)
+	}
 	if _, err := fixture.h.ds.Info(ctx, groupID, fixture.request.Session); err != nil {
 		t.Fatalf("recovered group state unavailable: %v", err)
 	}
@@ -274,7 +289,7 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	conflict := fixture.request
 	conflict.OperationID = fixture.request.OperationID
 	conflict.Registration.RatchetTree = append(bytes.Clone(fixture.request.Registration.RatchetTree), 0)
-	conflict.RegistrationBody, err = cborx.Marshal([]any{conflict.Registration.GroupID, conflict.Registration.Binding, conflict.Registration.GroupInfo, conflict.Registration.RatchetTree})
+	conflict.RegistrationBody, err = cborx.Marshal([]any{conflict.Registration.GroupID, conflict.Registration.Binding, conflict.Registration.GroupInfo, conflict.Registration.RatchetTree, conflict.Registration.InitialWelcome})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +298,82 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	}
 	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, conflict); err == nil {
 		t.Fatal("same operation with a changed registration body succeeded")
+	}
+	changedWelcome := fixture.request
+	changedWelcome.Registration.InitialWelcome = append(bytes.Clone(fixture.request.Registration.InitialWelcome), 0)
+	changedWelcome.RegistrationBody, err = cborx.Marshal([]any{changedWelcome.Registration.GroupID, changedWelcome.Registration.Binding,
+		changedWelcome.Registration.GroupInfo, changedWelcome.Registration.RatchetTree, changedWelcome.Registration.InitialWelcome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fixture.h.ds.ReplayBotInteractionGroup(ctx, changedWelcome); err == nil {
+		t.Fatal("receipt-only replay accepted a changed initial Welcome")
+	}
+}
+
+func TestBotInteractionRegistrationRollsBackWelcomeWithGroup(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	fixture.h.failNextTx("PutWelcomes")
+	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(context.Background(), fixture.request); err == nil {
+		t.Fatal("injected Welcome write failure succeeded")
+	}
+	if _, err := fixture.h.repo.GetGroup(context.Background(), fixture.request.Registration.GroupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("group after Welcome failure: %v", err)
+	}
+	if got := fixture.h.countRows(t, "mls_welcomes"); got != 0 {
+		t.Fatalf("Welcome failure retained %d outbox rows", got)
+	}
+	if _, err := fixture.h.repo.GetBotGroupRegistrationReceipt(context.Background(), fixture.request.InstallationID, fixture.request.OperationID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("operation receipt after Welcome failure: %v", err)
+	}
+}
+
+func TestBotInteractionRegistrationRefusesMissingInitialWelcome(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	fixture.request.Registration.InitialWelcome = nil
+	fixture.request.RegistrationBody, _ = cborx.Marshal([]any{fixture.request.Registration.GroupID, fixture.request.Registration.Binding,
+		fixture.request.Registration.GroupInfo, fixture.request.Registration.RatchetTree})
+	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(context.Background(), fixture.request); err == nil {
+		t.Fatal("kind-3 registration without initial Welcome succeeded")
+	}
+	if _, err := fixture.h.repo.GetGroup(context.Background(), fixture.request.Registration.GroupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing Welcome wrote group: %v", err)
+	}
+}
+
+func TestBotInteractionRegistrationRefusesWelcomeForUnpublishedKeyPackage(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	ctx := context.Background()
+	inst, err := fixture.h.wasm.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := inst.WelcomeKeyPackageRefs(ctx, fixture.request.Registration.InitialWelcome)
+	inst.Release()
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("fixture Welcome refs=%d err=%v", len(refs), err)
+	}
+	welcome := bytes.Clone(fixture.request.Registration.InitialWelcome)
+	offset := bytes.Index(welcome, refs[0])
+	if offset < 0 {
+		t.Fatal("fixture Welcome ref not found in TLS wire")
+	}
+	copy(welcome[offset:offset+32], bytes.Repeat([]byte{0xa5}, 32))
+	fixture.request.Registration.InitialWelcome = welcome
+	fixture.request.TrustedPreflight.Registration.InitialWelcome = welcome
+	fixture.request.RegistrationBody, err = cborx.Marshal([]any{fixture.request.Registration.GroupID, fixture.request.Registration.Binding,
+		fixture.request.Registration.GroupInfo, fixture.request.Registration.RatchetTree, welcome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request); err == nil {
+		t.Fatal("Welcome for an unpublished KeyPackage was accepted")
+	}
+	if _, err := fixture.h.repo.GetGroup(ctx, fixture.request.Registration.GroupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invalid Welcome recipient wrote group: %v", err)
+	}
+	if got := fixture.h.countRows(t, "mls_welcomes"); got != 0 {
+		t.Fatalf("invalid Welcome recipient queued %d Welcomes", got)
 	}
 }
 

@@ -24,6 +24,8 @@ type RegisterRequest struct {
 	Binding     []byte
 	GroupInfo   []byte
 	RatchetTree []byte
+	// InitialWelcome is present only for managed kind-3 first registration.
+	InitialWelcome []byte
 }
 
 type RegisterResult struct {
@@ -185,8 +187,8 @@ func (d *DS) ReplayBotInteractionGroup(ctx context.Context, r BotInteractionRegi
 		r.Session.Scope != auth.ScopeEnrolled || r.Session.Bot == nil || r.Session.Bot.InstallationID != r.InstallationID || len(r.Session.TokenHash) == 0 {
 		return BotRegisterReceipt{}, false, errInvalid("invalid kind-3 managed registration replay intent")
 	}
-	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree})
-	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
+	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree, r.Registration.InitialWelcome})
+	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) || len(r.Registration.InitialWelcome) == 0 {
 		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
 	}
 	bodyHash := sha256.Sum256(append([]byte("dilla bot group registration v1\x00"), r.RegistrationBody...))
@@ -267,8 +269,8 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 	}
 	r.Registration.Session = r.Session
 	r.TrustedPreflight.Registration = r.Registration
-	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree})
-	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) {
+	canonical, err := cborx.Marshal([]any{r.Registration.GroupID, r.Registration.Binding, r.Registration.GroupInfo, r.Registration.RatchetTree, r.Registration.InitialWelcome})
+	if err != nil || !bytes.Equal(canonical, r.RegistrationBody) || len(r.Registration.InitialWelcome) == 0 || len(r.Registration.InitialWelcome) > 65_505 {
 		return BotRegisterReceipt{}, false, errInvalid("registration_body is not canonical")
 	}
 	tuple := r.TrustedPreflight.Expected
@@ -329,6 +331,10 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 	if problem := d.externalSendersProblem(3, state.ExternalSenders); problem != "" {
 		return BotRegisterReceipt{}, false, errBinding(problem)
 	}
+	refs, err := inst.WelcomeKeyPackageRefs(ctx, r.Registration.InitialWelcome)
+	if err != nil || len(refs) != 1 || len(refs[0]) != 32 {
+		return BotRegisterReceipt{}, false, errInvalid("initial Welcome must address exactly one admitted KeyPackage")
+	}
 	if err := d.opts.BotCapability.RequireGroup(ctx, r.Session.WireVersion, 3, nil); err != nil {
 		return BotRegisterReceipt{}, false, err
 	}
@@ -346,6 +352,10 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 			r.OperationID, tuple, r.Registration, r.RegistrationBody, registered, evidence)
 		if err != nil {
 			return err
+		}
+		keyPackage, err := tx.GetKeyPackage(ctx, tuple.ParticipantDeviceID, refs[0])
+		if err != nil || keyPackage.DeviceID != tuple.ParticipantDeviceID || !bytes.Equal(keyPackage.KPRef, refs[0]) || keyPackage.Expires <= d.now() {
+			return errForbidden("initial Welcome does not address the admitted participant KeyPackage")
 		}
 		prior, getErr := tx.GetBotGroupRegistrationReceipt(ctx, r.InstallationID, r.OperationID)
 		if getErr == nil {
@@ -371,6 +381,10 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 		}
 		members, err = d.replaceMembersTx(ctx, tx, r.Registration.GroupID, 3, state)
 		if err != nil {
+			return err
+		}
+		if _, _, err := d.storeWelcomesTx(ctx, tx, r.Registration.GroupID, state.Epoch, 0, group,
+			[]WelcomeFor{{DeviceID: tuple.ParticipantDeviceID, Blob: r.Registration.InitialWelcome}}); err != nil {
 			return err
 		}
 		acceptances, ok := tx.(store.BotGroupRegistrationAdmissionReceipts)
@@ -412,6 +426,9 @@ func (d *DS) RegisterBotInteractionGroup(ctx context.Context, r BotInteractionRe
 		return BotRegisterReceipt{}, false, err
 	}
 	release, closeGroup = false, false
+	// The durable queue is authoritative; notification failure never invalidates registration.
+	d.fanOutWelcomes(ctx, r.Registration.GroupID, state.Epoch, r.Registration.RatchetTree, state.TreeHash,
+		[]WelcomeFor{{DeviceID: tuple.ParticipantDeviceID, Blob: r.Registration.InitialWelcome}})
 	return botRegisterReceipt(receipt), true, nil
 }
 

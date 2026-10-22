@@ -568,6 +568,13 @@ func (r *failingRepo) ListWelcomes(ctx context.Context, deviceID id.ID, afterID 
 	return r.Repository.ListWelcomes(ctx, deviceID, afterID, limit)
 }
 
+func (r *failingRepo) PutWelcomes(ctx context.Context, rows []store.WelcomeRow) error {
+	if r.take("PutWelcomes") {
+		return errInjected
+	}
+	return r.Repository.PutWelcomes(ctx, rows)
+}
+
 // welcomeQueueReads is how many `ListWelcomes` round trips the store has served so far.
 func (h *dsHarness) welcomeQueueReads() int64 { return h.repo.welcomeReads.Load() }
 

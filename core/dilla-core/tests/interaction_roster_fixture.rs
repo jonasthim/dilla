@@ -177,7 +177,10 @@ fn write_interaction_roster_fixture() {
     group
         .merge_pending_commit(&provider)
         .expect("merge participant Add");
-    let _ = bundle;
+    let welcome = bundle
+        .1
+        .tls_serialize_detached()
+        .expect("serialize participant Welcome");
     let group_info = group
         .export_group_info(provider.crypto(), &bot.signer, false)
         .expect("export authenticated GroupInfo")
@@ -234,6 +237,13 @@ fn write_interaction_roster_fixture() {
 
     write(&output.join("group_info.mls"), &group_info);
     write(&output.join("ratchet_tree.mls"), &tree);
+    write(&output.join("welcome.mls"), &welcome);
+    write(
+        &output.join("participant_keypackage.mls"),
+        &MlsMessageOut::from(kp.key_package().clone())
+            .tls_serialize_detached()
+            .expect("serialize participant KeyPackage"),
+    );
     write(&output.join("bot_credential.cbor"), &bot.identity);
     write(
         &output.join("participant_credential.cbor"),

@@ -19,6 +19,9 @@ with a fresh valid group; it never writes private keys.
 Files:
 
 - `group_info.mls`, `ratchet_tree.mls`: two-member authenticated group.
+- `welcome.mls`, `participant_keypackage.mls`: the initial MLS Welcome and the exact admitted
+  participant KeyPackage it addresses. Registration tests prove the Welcome is queued atomically
+  and its recipient ref belongs to that participant device.
 - `extra.group_info.mls`, `extra.ratchet_tree.mls`: three-member authenticated group with the same
   admitted Bot and participant plus an extra human leaf.
 - `*_credential.cbor`: signed Dilla credential identities for the admitted Bot and participant.

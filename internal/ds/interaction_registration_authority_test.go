@@ -170,7 +170,7 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 	}
 	session := auth.Session{UserID: tuple.BotUserID, DeviceID: tuple.BotDeviceID, Scope: auth.ScopeEnrolled, TokenHash: tokenHash, Bot: &auth.BotSessionBinding{InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, State: store.BotInstallationJoining}}
 	binding := interactionBindingForTest(t, tuple)
-	registration := RegisterRequest{Session: session, GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}}
+	registration := RegisterRequest{Session: session, GroupID: tuple.GroupID, Binding: binding, GroupInfo: []byte{1}, RatchetTree: []byte{2}, InitialWelcome: []byte{3}}
 	preflight := InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: revision, ExpectedPolicyVersion: 1, ExpectedE2EEVersion: 1, ReceiptPayload: payload, ReceiptSignature: signature, PinnedInstanceKey: private.Public().(ed25519.PublicKey), BotDeviceList: botList, ParticipantDeviceList: participantList, Now: uint64(now), Registration: registration}
 	extractor := rosterExtractorFunc(func(context.Context, []byte, []byte) (AuthenticatedInteractionRegistration, error) {
 		roster := make([]mlswasi.RosterLeaf, len(leaves))
@@ -183,7 +183,7 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
+	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree, registration.InitialWelcome})
 	if err != nil {
 		t.Fatal(err)
 	}

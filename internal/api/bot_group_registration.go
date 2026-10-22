@@ -213,7 +213,7 @@ func writeBotGroupReceipt(w http.ResponseWriter, status int, receipt ds.BotRegis
 func decodeRegistrationBody(raw []byte) (ds.RegisterRequest, error) {
 	var out ds.RegisterRequest
 	var tuple []any
-	if len(raw) == 0 || cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || len(tuple) != 4 {
+	if len(raw) == 0 || cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || (len(tuple) != 4 && len(tuple) != 5) {
 		return out, server.Errorf(server.CodeInvalidRequest, "invalid registration body")
 	}
 	group, ok := registrationID(tuple[0])
@@ -223,7 +223,16 @@ func decodeRegistrationBody(raw []byte) (ds.RegisterRequest, error) {
 	if !ok || !bindingOK || !infoOK || !treeOK {
 		return out, server.Errorf(server.CodeInvalidRequest, "invalid registration body")
 	}
-	canonical, err := cborx.Marshal([]any{group, binding, info, tree})
+	fields := []any{group, binding, info, tree}
+	if len(tuple) == 5 {
+		welcome, welcomeOK := tuple[4].([]byte)
+		if !welcomeOK || len(welcome) == 0 || len(welcome) > 65_505 {
+			return out, server.Errorf(server.CodeInvalidRequest, "invalid initial Welcome")
+		}
+		out.InitialWelcome = welcome
+		fields = append(fields, welcome)
+	}
+	canonical, err := cborx.Marshal(fields)
 	if err != nil || !bytes.Equal(canonical, raw) {
 		return out, server.Errorf(server.CodeInvalidRequest, "noncanonical registration body")
 	}

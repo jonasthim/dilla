@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -229,6 +230,19 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 			t.Fatal(err)
 		}
 	}
+	inst, err := h.wasm.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPackage := readFixture("participant_keypackage.mls")
+	kpInfo, kpErr := inst.ValidateKeyPackage(ctx, keyPackage)
+	inst.Release()
+	if kpErr != nil || !bytes.Equal(kpInfo.DeviceID, participantDevice[:]) {
+		t.Fatalf("participant KeyPackage fixture: %+v, %v", kpInfo, kpErr)
+	}
+	if err := h.deps.Repo.PutKeyPackages(ctx, participantDevice, []store.KeyPackageRow{{DeviceID: participantDevice, KPRef: kpInfo.KPRef, Blob: keyPackage, Expires: int64(kpInfo.NotAfter), Created: now}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.deps.Repo.CreateCommunity(ctx, store.CommunityRow{ID: community, Owner: participant, Name: "kind3-http", PolicyJSON: []byte(`{}`), PolicyVersion: meta.PolicyVersion, Created: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +323,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return h, meta, map[string][]byte{"token": []byte(token), "request": requestID[:], "admission": admissionID[:], "registration": mustCBOR(t, []any{groupID, decode(meta.BindingHex), readFixture("group_info.mls"), readFixture("ratchet_tree.mls")})}
+	return h, meta, map[string][]byte{"token": []byte(token), "request": requestID[:], "admission": admissionID[:], "registration": mustCBOR(t, []any{groupID, decode(meta.BindingHex), readFixture("group_info.mls"), readFixture("ratchet_tree.mls"), readFixture("welcome.mls")})}
 }
 
 func mustFixtureGroupID(t *testing.T, metadata []byte) id.ID {
@@ -357,6 +371,10 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	members, err := h.deps.Repo.ListMembers(ctx, groupID)
 	if err != nil || len(members) != 2 {
 		t.Fatalf("authenticated roster=%d err=%v, want two members", len(members), err)
+	}
+	welcomes, err := h.deps.Repo.ListWelcomes(ctx, idFromHex(t, meta.ParticipantDeviceID), 0, 10)
+	if err != nil || len(welcomes) != 1 || welcomes[0].GroupID != groupID || welcomes[0].Epoch != 1 {
+		t.Fatalf("initial participant Welcome=%d err=%v", len(welcomes), err)
 	}
 	if err := h.groups.Drain(ctx); err != nil {
 		t.Fatalf("drain after acceptance: %v", err)
@@ -416,7 +434,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	}
 
 	var registrationTuple []any
-	if err := cborx.Unmarshal(fixture["registration"], &registrationTuple); err != nil || len(registrationTuple) != 4 {
+	if err := cborx.Unmarshal(fixture["registration"], &registrationTuple); err != nil || len(registrationTuple) != 5 {
 		t.Fatalf("decode fixture registration: %v", err)
 	}
 	tree, ok := registrationTuple[3].([]byte)
@@ -424,7 +442,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 		t.Fatal("fixture registration tree is not bytes")
 	}
 	conflictingTree := append(append([]byte(nil), tree...), 0)
-	conflictingRegistration := mustCBOR(t, []any{registrationTuple[0], registrationTuple[1], registrationTuple[2], conflictingTree})
+	conflictingRegistration := mustCBOR(t, []any{registrationTuple[0], registrationTuple[1], registrationTuple[2], conflictingTree, registrationTuple[4]})
 	conflictingBody := h.do(t, http.MethodPost, path, newToken, mustCBOR(t, []any{operation, instance.Generation, conflictingRegistration, requestID}))
 	if conflictingBody.Code < 400 {
 		t.Fatalf("changed registration body accepted: %d", conflictingBody.Code)
@@ -451,6 +469,31 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	}
 	if hookCalls.Load() != 0 {
 		t.Fatalf("AfterRegister ran after refusals: %d calls", hookCalls.Load())
+	}
+}
+
+func TestBotInteractionHTTPGroupRegistrationRejectsMalformedInitialWelcome(t *testing.T) {
+	h, meta, fixture := newKind3HTTPAPI(t)
+	var fields []any
+	if err := cborx.Unmarshal(fixture["registration"], &fields); err != nil || len(fields) != 5 {
+		t.Fatalf("fixture body: %v", err)
+	}
+	fields[4] = []byte{1, 2, 3}
+	badRegistration := mustCBOR(t, fields)
+	var requestID id.ID
+	copy(requestID[:], fixture["request"])
+	instance, err := h.deps.Repo.GetInstance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := h.do(t, http.MethodPost, "/v1/bot-runtime/installations/"+meta.InstallationID+"/groups", string(fixture["token"]),
+		mustCBOR(t, []any{id.New(), instance.Generation, badRegistration, requestID}))
+	if result.Code < 400 {
+		t.Fatalf("malformed Welcome was accepted: %d", result.Code)
+	}
+	groupID := mustFixtureGroupID(t, mustReadKind3Metadata(t))
+	if _, err := h.deps.Repo.GetGroup(context.Background(), groupID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("malformed Welcome wrote group: %v", err)
 	}
 }
 

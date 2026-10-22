@@ -258,7 +258,7 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if !equalDeviceListEntries(botEntries, evidence.botDeviceList) || !equalDeviceListEntries(participantEntries, evidence.participantDeviceList) {
 		return out, errors.New("ds: signed device list changed after kind-3 roster preflight")
 	}
-	canonicalBody, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
+	canonicalBody, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree, registration.InitialWelcome})
 	if err != nil || !bytes.Equal(canonicalBody, registrationBody) {
 		return out, errors.New("ds: registration body is not the canonical preflight request")
 	}
@@ -298,7 +298,7 @@ func currentInteractionDeviceList(ctx context.Context, tx store.Repository, veri
 }
 
 func hashInteractionRegistration(r RegisterRequest) ([32]byte, error) {
-	body, err := cborx.Marshal([]any{r.GroupID, r.Binding, r.GroupInfo, r.RatchetTree})
+	body, err := cborx.Marshal([]any{r.GroupID, r.Binding, r.GroupInfo, r.RatchetTree, r.InitialWelcome})
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -309,6 +309,7 @@ func cloneRegisterRequest(r RegisterRequest) RegisterRequest {
 	r.Binding = append([]byte(nil), r.Binding...)
 	r.GroupInfo = append([]byte(nil), r.GroupInfo...)
 	r.RatchetTree = append([]byte(nil), r.RatchetTree...)
+	r.InitialWelcome = append([]byte(nil), r.InitialWelcome...)
 	r.Session.TokenHash = append([]byte(nil), r.Session.TokenHash...)
 	return r
 }
@@ -336,5 +337,5 @@ func equalDeviceListEntries(a, b []mlswasi.DeviceListEntry) bool {
 }
 
 func sameRegistration(a, b RegisterRequest) bool {
-	return a.GroupID == b.GroupID && bytes.Equal(a.Binding, b.Binding) && bytes.Equal(a.GroupInfo, b.GroupInfo) && bytes.Equal(a.RatchetTree, b.RatchetTree)
+	return a.GroupID == b.GroupID && bytes.Equal(a.Binding, b.Binding) && bytes.Equal(a.GroupInfo, b.GroupInfo) && bytes.Equal(a.RatchetTree, b.RatchetTree) && bytes.Equal(a.InitialWelcome, b.InitialWelcome)
 }
