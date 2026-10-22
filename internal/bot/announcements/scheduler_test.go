@@ -15,10 +15,11 @@ import (
 )
 
 type schedulerNative struct {
-	mu       sync.Mutex
-	binding  native.Binding
-	value    native.StateValue
-	failNext bool
+	mu        sync.Mutex
+	binding   native.Binding
+	value     native.StateValue
+	failNext  bool
+	txReceipt map[id.ID][]uint64
 }
 
 func (n *schedulerNative) Binding() native.Binding { return n.binding }
@@ -27,9 +28,12 @@ func (n *schedulerNative) StateGet(_ context.Context, _ uint64, _ []byte) (nativ
 	defer n.mu.Unlock()
 	return n.value, nil
 }
-func (n *schedulerNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+func (n *schedulerNative) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if revisions, ok := n.txReceipt[tx]; ok {
+		return append([]uint64(nil), revisions...), nil
+	}
 	if n.failNext {
 		n.failNext = false
 		return nil, errors.New("injected state failure")
@@ -39,12 +43,22 @@ func (n *schedulerNative) StateTransaction(_ context.Context, _ id.ID, changes [
 	}
 	n.value.Revision++
 	n.value.Value = append([]byte(nil), changes[0].Value...)
-	return []uint64{n.value.Revision}, nil
+	revisions := []uint64{n.value.Revision}
+	if n.txReceipt == nil {
+		n.txReceipt = make(map[id.ID][]uint64)
+	}
+	n.txReceipt[tx] = append([]uint64(nil), revisions...)
+	return revisions, nil
 }
 
-type schedulerDestination bool
+type schedulerDestination struct {
+	group id.ID
+	err   error
+}
 
-func (d schedulerDestination) Exists(context.Context, id.ID) (bool, error) { return bool(d), nil }
+func (d schedulerDestination) ResolveTextGroup(context.Context, id.ID, id.ID) (id.ID, error) {
+	return d.group, d.err
+}
 
 type schedulerAuthorization bool
 
@@ -52,10 +66,10 @@ func (a schedulerAuthorization) CanAnnounce(context.Context, id.ID) (bool, error
 	return bool(a), nil
 }
 
-type schedulerDestinationFunc func(context.Context, id.ID) (bool, error)
+type schedulerDestinationFunc func(context.Context, id.ID, id.ID) (id.ID, error)
 
-func (f schedulerDestinationFunc) Exists(ctx context.Context, dest id.ID) (bool, error) {
-	return f(ctx, dest)
+func (f schedulerDestinationFunc) ResolveTextGroup(ctx context.Context, community, channel id.ID) (id.ID, error) {
+	return f(ctx, community, channel)
 }
 
 type schedulerAuthorizationFunc func(context.Context, id.ID) (bool, error)
@@ -129,7 +143,7 @@ func schedulerFixture(t *testing.T, now *time.Time) (*Scheduler, *schedulerNativ
 	n := &schedulerNative{binding: native.Binding{Instance: schedulerID(3), Community: community, Installation: schedulerID(4)}}
 	sender := &schedulerSender{}
 	s, err := NewScheduler(n, SchedulerOptions{
-		Destination: schedulerDestination(true), Authorization: schedulerAuthorization(true), Sender: sender, ReceiptLookup: sender,
+		Destination: schedulerDestination{group: schedulerID(5)}, Authorization: schedulerAuthorization(true), Sender: sender, ReceiptLookup: sender,
 		Now: func() time.Time { return *now },
 	})
 	if err != nil {
@@ -207,6 +221,41 @@ func TestSchedulerSendsDueAnnouncement(t *testing.T) {
 	}
 }
 
+func TestSchedulerResolvesChannelToMLSGroupBeforeSending(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, _, sender, community, channel := schedulerFixture(t, &now)
+	group := schedulerID(5)
+	if group == channel {
+		t.Fatal("test requires distinct channel and group IDs")
+	}
+	if err := s.Put(context.Background(), dailyAnnouncement(channel, "authorized", 1)); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.requests) != 1 || sender.requests[0].CommunityID != community || sender.requests[0].GroupID != group {
+		t.Fatalf("send did not use the resolved MLS group: %+v", sender.requests)
+	}
+}
+
+func TestSchedulerFailsClosedWhenDestinationHasNoMLSGroup(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, _, sender, _, channel := schedulerFixture(t, &now)
+	s.destination = schedulerDestination{}
+	if err := s.Put(context.Background(), dailyAnnouncement(channel, "must not send", 1)); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	if err := s.RunDue(context.Background()); err == nil {
+		t.Fatal("expected unavailable destination error")
+	}
+	if len(sender.requests) != 0 || len(sender.lookups) != 0 {
+		t.Fatalf("destination failure reached sender or receipt lookup: sends=%+v lookups=%+v", sender.requests, sender.lookups)
+	}
+}
+
 func TestSchedulerRecoversAcceptedReceiptAfterLostStateCommit(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
 	s, n, sender, _, destination := schedulerFixture(t, &now)
@@ -223,29 +272,88 @@ func TestSchedulerRecoversAcceptedReceiptAfterLostStateCommit(t *testing.T) {
 	restarted, _, retry, _, _ := schedulerFixture(t, &now)
 	restarted.native = n
 	restarted.receiptLookup = sender
+	restarted.destination = schedulerDestination{err: errors.New("channel was deleted after send")}
 	if err := restarted.RunDue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(retry.requests) != 0 || len(sender.lookups) != 1 || sender.lookups[0].OperationID != first.OperationID || sender.lookups[0].AttemptID != first.AttemptID {
+	if len(retry.requests) != 0 || len(sender.lookups) != 2 || sender.lookups[1].OperationID != first.OperationID || sender.lookups[1].AttemptID != first.AttemptID || sender.lookups[1].GroupID != first.GroupID {
 		t.Fatalf("accepted send recovery did not resolve same IDs: first=%+v retries=%+v lookups=%+v", first, retry.requests, sender.lookups)
+	}
+}
+
+func TestSchedulerRecoversAcceptedReceiptInWindowAfterDestinationDeletion(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, n, sender, _, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "recover before retry", 1)); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	sender.onSend = func() { n.mu.Lock(); n.failNext = true; n.mu.Unlock() }
+	if err := s.RunDue(context.Background()); err == nil {
+		t.Fatal("expected state commit failure after accepted send")
+	}
+	first := sender.requests[0]
+	now = time.Date(2026, 10, 22, 10, 5, 0, 0, time.UTC)
+	restarted, _, retry, _, _ := schedulerFixture(t, &now)
+	restarted.native = n
+	restarted.receiptLookup = sender
+	restarted.destination = schedulerDestination{err: errors.New("channel was deleted after send")}
+	if err := restarted.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(retry.requests) != 0 || len(sender.lookups) != 2 || sender.lookups[1].GroupID != first.GroupID || sender.lookups[1].OperationID != first.OperationID {
+		t.Fatalf("accepted receipt was not recovered before destination validation: first=%+v retries=%+v lookups=%+v", first, retry.requests, sender.lookups)
+	}
+}
+
+func TestSchedulerReportsUnresolvedLegacySendWhenDestinationIsMissing(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, n, sender, _, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "legacy pending", 1)); err != nil {
+		t.Fatal(err)
+	}
+	states, err := decodeStates(n.value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states[0].Status = occurrenceSending
+	body, err := encodeStates(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	n.value.Revision++
+	n.value.Value = body
+	n.mu.Unlock()
+	s.destination = schedulerDestination{err: errors.New("channel was deleted before group ID was persisted")}
+	now = time.Date(2026, 10, 22, 10, 5, 0, 0, time.UTC)
+	err = s.RunDue(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "legacy announcement receipt recovery") {
+		t.Fatalf("missing destination did not produce an unresolved legacy receipt error: %v", err)
+	}
+	if len(sender.requests) != 0 || len(sender.lookups) != 0 {
+		t.Fatalf("legacy unresolved send reached sender or lookup without a group ID: sends=%+v lookups=%+v", sender.requests, sender.lookups)
 	}
 }
 
 func TestSchedulerDoesNotSendAfterPermissionLossOrDeletedDestination(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		exists, allowed bool
+		name               string
+		available, allowed bool
 	}{{"permission lost", true, false}, {"destination deleted", false, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
 			s, _, sender, _, destination := schedulerFixture(t, &now)
-			s.destination = schedulerDestinationFunc(func(context.Context, id.ID) (bool, error) { return tc.exists, nil })
+			if !tc.available {
+				s.destination = schedulerDestination{err: errors.New("destination unavailable")}
+			}
 			s.authorization = schedulerAuthorizationFunc(func(context.Context, id.ID) (bool, error) { return tc.allowed, nil })
 			if err := s.Put(context.Background(), dailyAnnouncement(destination, "should not send", 1)); err != nil {
 				t.Fatal(err)
 			}
 			now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
-			if err := s.RunDue(context.Background()); err != nil {
+			err := s.RunDue(context.Background())
+			if tc.available && err != nil {
 				t.Fatal(err)
 			}
 			if len(sender.requests) != 0 {
@@ -293,6 +401,64 @@ func TestSchedulerRetriesUncertainSendWithSameOperationID(t *testing.T) {
 	}
 	if len(retry.requests) != 1 || retry.requests[0].OperationID != first.OperationID || retry.requests[0].AttemptID != first.AttemptID {
 		t.Fatalf("retry did not reuse durable IDs: first=%+v retry=%+v", first, retry.requests)
+	}
+}
+
+func TestSchedulerStateSaveDoesNotReplayOldTransactionReceiptAsCurrentSuccess(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, _, _, _, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "revision one", 1)); err != nil {
+		t.Fatal(err)
+	}
+	updated := dailyAnnouncement(destination, "revision two", 2)
+	updated.Schedule.Hour = 11
+	if err := s.Put(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	statesAtRevisionTwo, expectedRevision, err := s.snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expectedRevision != 2 {
+		t.Fatalf("revision after edit = %d, want 2", expectedRevision)
+	}
+	other := dailyAnnouncement(destination, "independent change", 1)
+	other.ID = schedulerID(9)
+	if err := s.Put(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.save(context.Background(), expectedRevision-1, statesAtRevisionTwo); !errors.Is(err, ErrSchedulerConflict) {
+		t.Fatalf("stale identical save error = %v, want scheduler conflict", err)
+	}
+	current, currentRevision, err := s.snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRevision != 3 || len(current) != 2 || current[1].Announcement.Text != "independent change" {
+		t.Fatalf("stale save changed current state: revision=%d state=%+v", currentRevision, current)
+	}
+}
+
+func TestSchedulerDoesNotRetryWhenDestinationMLSGroupChanges(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 59, 0, 0, time.UTC)
+	s, n, sender, _, channel := schedulerFixture(t, &now)
+	sender.err = errors.New("reply lost")
+	if err := s.Put(context.Background(), dailyAnnouncement(channel, "recover me", 1)); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	if err := s.RunDue(context.Background()); err == nil {
+		t.Fatal("expected uncertain send error")
+	}
+	first := sender.requests[0]
+	restarted, _, retry, _, _ := schedulerFixture(t, &now)
+	restarted.native = n
+	restarted.destination = schedulerDestination{group: schedulerID(6)}
+	if err := restarted.RunDue(context.Background()); err == nil {
+		t.Fatal("expected changed destination group error")
+	}
+	if len(retry.requests) != 0 || len(retry.lookups) != 1 || retry.lookups[0].GroupID != first.GroupID || first.GroupID == schedulerID(6) {
+		t.Fatalf("changed destination was used for retry or receipt lookup: first=%+v retries=%+v lookups=%+v", first, retry.requests, retry.lookups)
 	}
 }
 

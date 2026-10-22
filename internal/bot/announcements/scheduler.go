@@ -41,9 +41,9 @@ type Native interface {
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
 }
 
-// Destination rechecks that the target still exists at the time of delivery.
+// Destination resolves a current authorized text channel to its MLS group.
 type Destination interface {
-	Exists(context.Context, id.ID) (bool, error)
+	ResolveTextGroup(context.Context, id.ID, id.ID) (id.ID, error)
 }
 
 // Authorization rechecks current permission to post each due announcement.
@@ -100,6 +100,7 @@ type scheduledState struct {
 	Announcement Announcement
 	Occurrence   Occurrence
 	Status       occurrenceStatus
+	GroupID      id.ID
 }
 
 type Scheduler struct {
@@ -242,7 +243,7 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			if nextErr != nil {
 				return nextErr
 			}
-			state.Occurrence, state.Status = next, occurrenceReady
+			state.Occurrence, state.Status, state.GroupID = next, occurrenceReady, id.ID{}
 			if err := s.replaceOne(ctx, state, revision); err != nil {
 				return err
 			}
@@ -275,6 +276,23 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		if decision == SkipOccurrence {
 			wasSending := state.Status == occurrenceSending
 			if state.Status == occurrenceSending {
+				if state.GroupID.IsZero() {
+					groupID, resolveErr := s.destination.ResolveTextGroup(ctx, s.binding.Community, state.Announcement.DestinationID)
+					if resolveErr != nil {
+						return fmt.Errorf("cannot resolve MLS group for legacy announcement receipt recovery: %w", resolveErr)
+					}
+					if groupID.IsZero() {
+						return errors.New("cannot resolve MLS group for legacy announcement receipt recovery: destination has no MLS group")
+					}
+					state.GroupID = groupID
+					if err := s.replaceOne(ctx, state, revision); err != nil {
+						return err
+					}
+					states, revision, err = s.snapshot(ctx)
+					if err != nil {
+						return err
+					}
+				}
 				req := s.sendRequest(state)
 				receipt, found, lookupErr := s.receiptLookup.LookupAnnouncement(ctx, req)
 				if lookupErr != nil {
@@ -315,39 +333,114 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 		if !ok || current.Announcement.Schedule.Revision != state.Announcement.Schedule.Revision || current.Occurrence.Key != state.Occurrence.Key || current.Status != occurrenceSending {
 			continue
 		}
-		exists, err := s.destination.Exists(ctx, state.Announcement.DestinationID)
+		if state.GroupID.IsZero() {
+			groupID, resolveErr := s.destination.ResolveTextGroup(ctx, s.binding.Community, state.Announcement.DestinationID)
+			if resolveErr != nil {
+				return fmt.Errorf("cannot resolve MLS group for legacy announcement receipt recovery: %w", resolveErr)
+			}
+			if groupID.IsZero() {
+				return errors.New("cannot resolve MLS group for legacy announcement receipt recovery: destination has no MLS group")
+			}
+			state.GroupID = groupID
+			if err := s.replaceOne(ctx, state, revision); err != nil {
+				return err
+			}
+			states, revision, err = s.snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			current, ok = stateByID(states, state.Announcement.ID)
+			if !ok || current.Announcement.Schedule.Revision != state.Announcement.Schedule.Revision || current.Occurrence.Key != state.Occurrence.Key || current.Status != occurrenceSending || current.GroupID != groupID {
+				continue
+			}
+			state = current
+		}
+		req := s.sendRequest(state)
+		receipt, found, lookupErr := s.receiptLookup.LookupAnnouncement(ctx, req)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if found {
+			if !validAcceptedReceipt(receipt, req) {
+				return errors.New("announcement receipt lookup returned an invalid receipt")
+			}
+			state.Status = occurrenceSent
+			if err := s.replaceOne(ctx, state, revision); err != nil {
+				return err
+			}
+			states, revision, err = s.snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		groupID, err := s.destination.ResolveTextGroup(ctx, s.binding.Community, state.Announcement.DestinationID)
 		if err != nil {
 			return err
+		}
+		if groupID.IsZero() {
+			return errors.New("announcement destination has no MLS group")
+		}
+		if !state.GroupID.IsZero() && state.GroupID != groupID {
+			return errors.New("announcement destination MLS group changed")
 		}
 		allowed, err := s.authorization.CanAnnounce(ctx, state.Announcement.DestinationID)
 		if err != nil {
 			return err
 		}
-		if !exists || !allowed {
+		if !allowed {
 			// Leave the durable claim unresolved; a subsequent retry rechecks current
 			// policy and the same idempotency key before any send can be accepted.
 			continue
 		}
-		req := s.sendRequest(state)
+		if state.GroupID.IsZero() {
+			state.GroupID = groupID
+			if err := s.replaceOne(ctx, state, revision); err != nil {
+				return err
+			}
+			states, revision, err = s.snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			current, ok = stateByID(states, state.Announcement.ID)
+			if !ok || current.Announcement.Schedule.Revision != state.Announcement.Schedule.Revision || current.Occurrence.Key != state.Occurrence.Key || current.Status != occurrenceSending || current.GroupID != groupID {
+				continue
+			}
+			state = current
+		}
+		req = s.sendRequest(state)
 		gate := make(chan struct {
 			allowed  bool
 			revision uint64
 			err      error
 		}, 1)
 		req.BeforeSend = func() bool {
+			latestGroup, destinationErr := s.destination.ResolveTextGroup(ctx, s.binding.Community, state.Announcement.DestinationID)
+			if destinationErr == nil && latestGroup.IsZero() {
+				destinationErr = errors.New("announcement destination has no MLS group")
+			}
+			if destinationErr == nil && latestGroup != req.GroupID {
+				destinationErr = errors.New("announcement destination MLS group changed")
+			}
+			latestAllowed := false
+			if destinationErr == nil {
+				var authorizationErr error
+				latestAllowed, authorizationErr = s.authorization.CanAnnounce(ctx, state.Announcement.DestinationID)
+				destinationErr = authorizationErr
+			}
 			// This locked check is the send-start linearization point relative to
 			// Put: an edit either commits first and invalidates this occurrence, or
 			// follows an occurrence that has already started.
 			s.mu.Lock()
 			latest, latestRevision, gateErr := s.load(ctx)
 			latestState, exists := stateByID(latest, state.Announcement.ID)
-			allowedToStart := gateErr == nil && exists && latestState.Announcement.Schedule.Revision == state.Announcement.Schedule.Revision && latestState.Occurrence.Key == state.Occurrence.Key && latestState.Status == occurrenceSending && DecideMissed(state.Occurrence.At, s.now().UTC()) == SendOccurrence
+			allowedToStart := destinationErr == nil && latestAllowed && gateErr == nil && exists && latestState.Announcement.Schedule.Revision == state.Announcement.Schedule.Revision && latestState.Occurrence.Key == state.Occurrence.Key && latestState.Status == occurrenceSending && latestState.GroupID == req.GroupID && DecideMissed(state.Occurrence.At, s.now().UTC()) == SendOccurrence
 			s.mu.Unlock()
 			gate <- struct {
 				allowed  bool
 				revision uint64
 				err      error
-			}{allowed: allowedToStart, revision: latestRevision, err: gateErr}
+			}{allowed: allowedToStart, revision: latestRevision, err: errors.Join(destinationErr, gateErr)}
 			return allowedToStart
 		}
 		receipt, sendErr := s.sender.SendAnnouncement(ctx, req)
@@ -423,7 +516,7 @@ func (s *Scheduler) resolveUnstarted(ctx context.Context, state scheduledState, 
 }
 
 func (s *Scheduler) sendRequest(state scheduledState) SendRequest {
-	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.Announcement.DestinationID, Text: state.Announcement.Text, OriginalNow: uint64(s.now().Unix())}
+	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(s.now().Unix())}
 }
 
 func (s *Scheduler) snapshot(ctx context.Context) ([]scheduledState, uint64, error) {
@@ -483,11 +576,11 @@ func (s *Scheduler) save(ctx context.Context, revision uint64, states []schedule
 		return err
 	}
 	key := s.key()
-	seed := append([]byte("dilla.bot.announcements.state.tx.v1\x00"), key...)
-	seed = appendUint64(seed, revision)
-	seed = append(seed, body...)
-	h := sha256.Sum256(seed)
-	tx := id.ID(h[:16])
+	// State transaction IDs must be fresh per save call. The native layer replays
+	// a prior transaction receipt before checking the current revision, so a
+	// deterministic ID could make a stale save look successful. Send idempotency
+	// is carried separately by the occurrence-derived operation and attempt IDs.
+	tx := id.New()
 	revisions, txErr := s.native.StateTransaction(ctx, tx, []native.StateChange{{Area: schedulerStateArea, Key: key, ExpectedRevision: revision, Value: body}})
 	if txErr == nil && len(revisions) == 1 && revisions[0] == revision+1 {
 		return nil
@@ -579,7 +672,7 @@ func encodeStates(states []scheduledState) ([]byte, error) {
 		if s.Announcement.Enabled {
 			enabled = 1
 		}
-		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(sched.Hour), uint64(sched.Minute), uint64(sched.Weekday), sched.Revision, enabled, occ, uint64(s.Status)}
+		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(sched.Hour), uint64(sched.Minute), uint64(sched.Weekday), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID}
 		a = append(a, row)
 	}
 	b, err := cborx.Marshal([]any{uint64(1), a})
@@ -605,7 +698,7 @@ func decodeStates(data []byte) ([]scheduledState, error) {
 	seen := map[id.ID]bool{}
 	for _, raw := range rows {
 		a, ok := raw.([]any)
-		if !ok || len(a) != 14 || a[0] != uint64(1) {
+		if !ok || (len(a) != 14 && len(a) != 15) || a[0] != uint64(1) {
 			return nil, ErrSchedulerMalformed
 		}
 		idb, iok := a[1].([]byte)
@@ -621,6 +714,14 @@ func decodeStates(data []byte) ([]scheduledState, error) {
 		enabledValue, eok := a[11].(uint64)
 		rawOcc, ook := a[12].([]any)
 		status, sok := a[13].(uint64)
+		var groupID id.ID
+		if len(a) == 15 {
+			groupBytes, groupOK := a[14].([]byte)
+			if !groupOK || len(groupBytes) != 16 {
+				return nil, ErrSchedulerMalformed
+			}
+			copy(groupID[:], groupBytes)
+		}
 		if !iok || len(idb) != 16 || !dok || len(destb) != 16 || !tok || !kok || !zok || !daok || !hok || hour > 23 || !mok || minute > 59 || !wok || weekday > 6 || !rok || !eok || enabledValue > 1 || !ook || !sok || status > uint64(occurrenceSkipped) {
 			return nil, ErrSchedulerMalformed
 		}
@@ -635,7 +736,7 @@ func decodeStates(data []byte) ([]scheduledState, error) {
 		if err := validateAnnouncement(value); err != nil {
 			return nil, ErrSchedulerMalformed
 		}
-		state := scheduledState{Announcement: value, Status: occurrenceStatus(status)}
+		state := scheduledState{Announcement: value, Status: occurrenceStatus(status), GroupID: groupID}
 		if len(rawOcc) == 1 && rawOcc[0] == uint64(0) {
 			if state.Status != occurrenceNone {
 				return nil, ErrSchedulerMalformed
@@ -659,8 +760,4 @@ func decodeStates(data []byte) ([]scheduledState, error) {
 		out = append(out, state)
 	}
 	return out, nil
-}
-
-func appendUint64(dst []byte, n uint64) []byte {
-	return append(dst, byte(n>>56), byte(n>>48), byte(n>>40), byte(n>>32), byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 }
