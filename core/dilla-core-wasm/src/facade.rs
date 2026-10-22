@@ -3,7 +3,7 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 
-use dilla_core::client::{ClientCore, ClientError};
+use dilla_core::client::{ClientCore, ClientError, RemovalFeedEntry};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -338,12 +338,84 @@ impl CoreHandle {
             .map(Vec::into_boxed_slice)
     }
     /// Signs a moderator removal proof using the identity held by ClientCore. Returns CBOR [proof, signature].
-    pub fn sign_removal(&self, request_id: &[u8], group_id: &[u8], target_sequence: u64,
-        expires: u64, now: u64) -> Result<Box<[u8]>, JsError> {
+    pub fn sign_removal(
+        &self,
+        request_id: &[u8],
+        group_id: &[u8],
+        target_sequence: u64,
+        expires: u64,
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
         let request_id = js_fixed_arg::<16>("request_id", request_id)?;
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.sign_removal(&request_id, &group_id, target_sequence, expires, now))
             .map(Vec::into_boxed_slice)
+    }
+    /// Bounded hint for refreshing a previously trusted moderator before ingesting a removal entry.
+    pub fn removal_actor_history_version(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| c.removal_actor_history_version(&group_id, &entry))
+    }
+    /// Extends only the existing UMK-anchored list of the moderator named by this proof.
+    pub fn refresh_removal_actor_history(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+        history_body: &[u8],
+        head_list: &[u8],
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| {
+            c.refresh_removal_actor_history(&group_id, &entry, history_body, head_list)
+        })
+    }
+    /// Returns the durable removal feed cursor.
+    pub fn removal_cursor(&self, group_id: &[u8]) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.ingest_removals(&group_id, &[]))
+    }
+    /// Verifies and durably ingests one authenticated feed entry.
+    pub fn ingest_removal(
+        &self,
+        group_id: &[u8],
+        revision: u64,
+        proof: &[u8],
+        signature: &[u8],
+        accepted_at: u64,
+    ) -> Result<u64, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let signature = js_fixed_arg::<64>("signature", signature)?;
+        let entry = RemovalFeedEntry {
+            revision,
+            proof: proof.to_vec(),
+            signature,
+            accepted_at,
+        };
+        self.with_core(|c| c.ingest_removals(&group_id, &[entry]))
     }
     /// Calls ClientCore::session_store.
     pub fn session_store(

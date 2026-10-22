@@ -1412,6 +1412,10 @@ export class ModelCore implements CorePort {
     this.refoldDeleted(g, row);
     return this.result(g, [seq], false, false);
   }
+  removalCursor(groupId: Id): bigint { this.must(groupId); return 0n; }
+  removalActorHistoryVersion(): bigint { throw coreError('E_CORE_STATE'); }
+  refreshRemovalActorHistory(): bigint { throw coreError('E_CORE_STATE'); }
+  ingestRemoval(): bigint { throw coreError('E_CORE_STATE'); }
 
   // --- sending and reading (L-CORE-09) ---
 
@@ -2180,6 +2184,7 @@ export class ModelCore implements CorePort {
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
+  | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
   | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
   | 'endCallIfAlone'
@@ -2830,6 +2835,7 @@ export class ModelDs {
           }
           return answer;
         }),
+      getModerationRemovals: (id, after) => this.call(d, 'getModerationRemovals', id, after, () => ({ rows: [], nextRevision: after })),
       getProposals: (id) =>
         this.call(d, 'getProposals', id, null, () => {
           const g = this.must(id);

@@ -260,8 +260,8 @@ func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Rep
 	return nil
 }
 
-// Reading deletion markers is necessary for every authorized Bot group member,
-// including installations that cannot request a removal themselves.
+// Bot requests must come from the ready installation bound to this community;
+// human clients read the proof feed through current group membership instead.
 func (h *moderationRemovalAPI) requireBotFeed(r *http.Request, repo store.Repository, s auth.Session, communityID id.ID) error {
 	if err := requireBotWire(s.WireVersion); err != nil {
 		return err
@@ -294,10 +294,6 @@ func (h *moderationRemovalAPI) list(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if err := requireBotWire(s.WireVersion); err != nil {
-		server.WriteError(w, err)
-		return
-	}
 	group, err := h.deps.Repo.GetGroup(r.Context(), groupID)
 	if err != nil {
 		server.WriteError(w, notFound(err))
@@ -323,17 +319,9 @@ func (h *moderationRemovalAPI) list(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "moderation removal feed not found"))
 		return
 	}
-	user, err := h.deps.Repo.GetUser(r.Context(), s.UserID)
-	if err != nil {
-		server.WriteError(w, h.deps.storeError(r, err))
-		return
-	}
-	if user.Kind == 1 {
-		if err := h.requireBotFeed(r, h.deps.Repo, s, *group.CommunityID); err != nil {
-			server.WriteError(w, err)
-			return
-		}
-	}
+	// Every current group member needs the proof feed to recover permanent local
+	// tombstones. The group leaf check above is the same authorization boundary as
+	// message history; bot capability gates remain on accepting removals.
 	page, err := h.deps.Repo.ListModerationRemovals(r.Context(), groupID, after, int32(limit))
 	if err != nil {
 		server.WriteError(w, h.deps.storeError(r, err))

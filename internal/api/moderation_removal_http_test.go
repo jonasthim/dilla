@@ -129,6 +129,17 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	if !ok || len(row) != 4 || row[0] != uint64(1) || string(row[1].([]byte)) != string(proofBytes) || string(row[2].([]byte)) != string(signature) {
 		t.Fatalf("feed row = %#v", rows[0])
 	}
+	reader, readerDevice, readerToken := seedAPISession(t, deps)
+	if err := deps.Repo.ReplaceMembers(ctx, group, 1, []store.MemberRow{
+		{GroupID: group, LeafIndex: 0, UserID: actor.ID, DeviceID: actorDevice.ID, SignatureKey: actorDevice.DSKPub},
+		{GroupID: group, LeafIndex: 1, UserID: reader.ID, DeviceID: readerDevice.ID, SignatureKey: readerDevice.DSKPub},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	humanFeed := doCBORAuth(h, http.MethodGet, path+"?after=0&limit=10", nil, readerToken)
+	if humanFeed.Code != http.StatusOK {
+		t.Fatalf("human group member removal feed = %d %x, want 200", humanFeed.Code, humanFeed.Body.Bytes())
+	}
 	actions, err := deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
 	if err != nil || len(actions.Events) != 1 || actions.Events[0].Kind != protocol.EventModeration || actions.Events[0].Data[7] != uint64(4) {
 		t.Fatalf("moderation action event = %+v, %v", actions, err)

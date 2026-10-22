@@ -9,6 +9,7 @@ export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
 export const MESSAGES_MAX = 256;
 export const WELCOMES_PAGE = 64;
+export const MODERATION_REMOVALS_PAGE = 250;
 // A backup is capped (protocol/09: 256 B kind 0, about 1 MiB kind 1) and sits on the sign-up, sign-in and revoke
 // paths, so it gets a longer per-attempt bound than the 30 s default rather than none. Blobs stay unbounded.
 const BACKUP_TIMEOUT_MS = 120_000;
@@ -41,6 +42,8 @@ export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibi
 export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
+export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
+export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number; }
@@ -713,6 +716,24 @@ export class Routes {
     const path = `/v1/groups/${id('groupId', groupId)}/messages?from=${count('from', from)}&limit=${limit('limit', limitValue, MESSAGES_MAX)}`;
     const p = page(await this.body('GET', path, 'read', true));
     return { raw: p.raw, count: p.count, lastSeq: p.last };
+  }
+  async getModerationRemovals(groupId: Uint8Array, after: bigint, limitValue = MODERATION_REMOVALS_PAGE): Promise<ModerationRemovalPage> {
+    const path = `/v1/groups/${id('groupId', groupId)}/moderation/removals?after=${count('after', after)}&limit=${limit('limit', limitValue, MODERATION_REMOVALS_PAGE)}`;
+    const raw = await this.body('GET', path, 'read', true, { maxBodyBytes: 65_536 });
+    const tuple = arr(decode(raw), 2);
+    const rows = arr(tuple[0]);
+    if (rows.length > limitValue) throw new CborError('E_CBOR_SHAPE', 'too many moderation removals');
+    const nextRevision = u64(tuple[1]);
+    let expected = after;
+    const decoded = rows.map((value) => {
+      const row = arr(value, 4);
+      expected += 1n;
+      const revision = u64(row[0]);
+      if (revision !== expected) throw new CborError('E_CBOR_RANGE', 'moderation removal revision gap');
+      return { revision, proof: bin(row[1]), signature: bin(row[2], 64), acceptedAt: u64(row[3]) };
+    });
+    if (nextRevision !== expected || (rows.length === 0 && nextRevision !== after)) throw new CborError('E_CBOR_RANGE', 'moderation removal cursor mismatch');
+    return { rows: decoded, nextRevision };
   }
   async getProposals(groupId: Uint8Array): Promise<Uint8Array> {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/proposals`, 'read', true);

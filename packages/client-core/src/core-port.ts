@@ -95,6 +95,7 @@ export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; statu
 /** One `threads` row (web3.7): a thread of the group, its held root's seq and excerpt (null and '' when the root is not
  *  held), its shown reply count and the latest reply's `recvTs`. */
 export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
+export interface RemovalFeedEntry { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -121,6 +122,10 @@ export interface CorePort {
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
   cursorBody(groupId: Id): Uint8Array | null; cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void;
   messageDeleted(groupId: Id, seq: bigint): ApplyResult;
+  removalCursor(groupId: Id): bigint;
+  removalActorHistoryVersion(groupId: Id, entry: RemovalFeedEntry): bigint;
+  refreshRemovalActorHistory(groupId: Id, entry: RemovalFeedEntry, history: Uint8Array, headList: Uint8Array): bigint;
+  ingestRemoval(groupId: Id, entry: RemovalFeedEntry): bigint;
   sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id;
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array };
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint };
@@ -258,6 +263,10 @@ export interface CoreHandle {
       cursor_body(group_id: Uint8Array): Uint8Array;
       cursor_acked(group_id: Uint8Array, last_seq: bigint, last_epoch: bigint): void;
       message_deleted(group_id: Uint8Array, seq: bigint): Uint8Array;
+      removal_cursor(group_id: Uint8Array): bigint;
+      removal_actor_history_version(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint): bigint;
+      refresh_removal_actor_history(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint, history: Uint8Array, head_list: Uint8Array): bigint;
+      ingest_removal(group_id: Uint8Array, revision: bigint, proof: Uint8Array, signature: Uint8Array, accepted_at: bigint): bigint;
       send_prepare(group_id: Uint8Array, request: Uint8Array, now: bigint): Uint8Array;
       send_encrypt(msg_id: Uint8Array): Uint8Array;
       send_confirm(msg_id: Uint8Array, response: Uint8Array): Uint8Array;
@@ -498,6 +507,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
     }),
     cursorAcked: (groupId, lastSeq, lastEpoch) => call(() => handle.cursor_acked(groupId, lastSeq, lastEpoch)),
     messageDeleted: (groupId, seq) => call(() => decoded('messageDeleted', handle.message_deleted(groupId, seq), readApply)),
+    removalCursor: (groupId) => call(() => handle.removal_cursor(groupId)),
+    removalActorHistoryVersion: (groupId, entry) => call(() => handle.removal_actor_history_version(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt)),
+    refreshRemovalActorHistory: (groupId, entry, history, headList) => call(() => handle.refresh_removal_actor_history(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt, history, headList)),
+    ingestRemoval: (groupId, entry) => call(() => handle.ingest_removal(groupId, entry.revision, entry.proof, entry.signature, entry.acceptedAt)),
     sendPrepare: (groupId, request, now) => call(() => decoded('sendPrepare', handle.send_prepare(groupId,
       encode([request.type, request.replyTo, request.body, request.attachments.map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]),
         request.threadId ?? null]),

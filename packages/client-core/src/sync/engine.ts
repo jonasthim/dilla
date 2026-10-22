@@ -12,10 +12,11 @@ import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
 import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { recoverModerationRemovals } from './removals';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
-  | 'getDeviceList' | 'getDeviceListHistory'>;
+  | 'getDeviceList' | 'getDeviceListHistory' | 'getModerationRemovals'>;
 export type SyncGateway = Pick<Gateway, 'subscribe' | 'commitAck'>;
 export interface SyncDeps {
   core: CorePort; routes: SyncRoutes; gateway: SyncGateway; instance: Instance; deviceId: Id;
@@ -302,6 +303,8 @@ export class SyncEngine implements SyncInternals {
     return e instanceof DillaHttpError && e.status === 404 && e.code === 'E_NOT_FOUND' && this.row(g)?.state === 2;
   }
   async applyHook(g: Id, r: ApplyResult, source: 'frame' | 'catch-up' | 'commit'): Promise<void> {
+    const group = this.row(g);
+    if (group?.kind === 0 && group.communityId !== null) await recoverModerationRemovals(this.deps.core, this.deps.routes, g);
     this.deps.onGroupChanged(g, r);
     const hex = toHex(g);
     if (r.ownAdopted) {
@@ -453,7 +456,14 @@ export class SyncEngine implements SyncInternals {
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }
   openChannel(ch: { communityId: Id | null; channelId: Id; textGroupId: Id | null }): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
     if (this.isStopped) return Promise.reject(new SyncError('E_SYNC_STOPPED'));
-    return this.queues.run(`c:${toHex(ch.channelId)}`, () => openChannelFlow(this, ch));
+    return this.queues.run(`c:${toHex(ch.channelId)}`, async () => {
+      const opened = await openChannelFlow(this, ch);
+      const group = this.row(opened.groupId);
+      if (opened.state === 2 && group?.kind === 0 && group.communityId !== null) {
+        await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+      }
+      return opened;
+    });
   }
   sendRequest(g: Id, request: SendRequest): Id { return sendRequest(this, g, request); }
   send(g: Id, text: string): Id { return sendMessage(this, g, text); }

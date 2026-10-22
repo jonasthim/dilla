@@ -393,6 +393,10 @@ export class FakeCore implements CorePort {
   cursorBody(groupId: Id): Uint8Array | null { return this.notModelled('cursorBody', groupId); }
   cursorAcked(groupId: Id, lastSeq: bigint, lastEpoch: bigint): void { return this.notModelled('cursorAcked', groupId, lastSeq, lastEpoch); }
   messageDeleted(groupId: Id, seq: bigint): ApplyResult { return this.notModelled('messageDeleted', groupId, seq); }
+  removalCursor(groupId: Id): bigint { return this.notModelled('removalCursor', groupId); }
+  removalActorHistoryVersion(groupId: Id, entry: import('../core-port').RemovalFeedEntry): bigint { return this.notModelled('removalActorHistoryVersion', groupId, entry); }
+  refreshRemovalActorHistory(groupId: Id, entry: import('../core-port').RemovalFeedEntry, history: Uint8Array, headList: Uint8Array): bigint { return this.notModelled('refreshRemovalActorHistory', groupId, entry, history, headList); }
+  ingestRemoval(groupId: Id, entry: import('../core-port').RemovalFeedEntry): bigint { return this.notModelled('ingestRemoval', groupId, entry); }
   sendPrepare(groupId: Id, request: SendRequest, now: bigint): Id { return this.notModelled('sendPrepare', groupId, request, now); }
   sendEncrypt(msgId: Id): { groupId: Id; messageBody: Uint8Array } { return this.notModelled('sendEncrypt', msgId); }
   sendConfirm(msgId: Id, response: Uint8Array): { groupId: Id; seq: bigint } { return this.notModelled('sendConfirm', msgId, response); }

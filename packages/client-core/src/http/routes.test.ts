@@ -6,7 +6,7 @@ import { DillaHttpError } from './errors';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, Routes, WELCOMES_PAGE } from './routes';
+import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -900,6 +900,20 @@ describe('Routes: retries and inputs', () => {
     expect(await routes.getMessages(GROUP, 3n, 256)).toEqual({ raw: MESSAGES, count: 1, lastSeq: 3n });
     expect(t.seen).toHaveLength(2);
     expect(t.sleeps).toEqual([625]);
+  });
+
+  it('decodes a contiguous moderation removal page and refuses gaps or cursor mismatch', async () => {
+    const { t, routes, http } = setup();
+    const proof = encode([1, fill(16, 1), fill(16, 2), fill(16, 3), fill(16, 4), GROUP, 8, 20]);
+    t.replies.push(cborReply(200, [[[5, proof, SIG, 19]], 5]));
+    await expect(routes.getModerationRemovals(GROUP, 4n)).resolves.toEqual({
+      rows: [{ revision: 5n, proof, signature: SIG, acceptedAt: 19n }], nextRevision: 5n,
+    });
+    expect(http.requests[0]).toMatchObject({ path: `/v1/groups/${hex(GROUP)}/moderation/removals?after=4&limit=${MODERATION_REMOVALS_PAGE}` });
+    t.replies.push(cborReply(200, [[[7, proof, SIG, 19]], 7]));
+    await expect(routes.getModerationRemovals(GROUP, 5n)).rejects.toThrow(/revision gap/);
+    t.replies.push(cborReply(200, [[], 9]));
+    await expect(routes.getModerationRemovals(GROUP, 5n)).rejects.toThrow(/cursor mismatch/);
   });
 
   it('refuses bad inputs before sending', async () => {
