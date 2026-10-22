@@ -122,6 +122,19 @@ type testMembers struct {
 	calls   int
 }
 
+type testRoleGranter struct {
+	calls int
+	err   error
+	user  id.ID
+	episode id.ID
+}
+
+func (g *testRoleGranter) GrantJoinRole(_ context.Context, user, episode id.ID) error {
+	g.calls++
+	g.user, g.episode = user, episode
+	return g.err
+}
+
 func (m *testMembers) ResolveCurrentMember(context.Context, id.ID) (bool, string, error) {
 	m.calls++
 	return m.present, m.name, m.err
@@ -189,6 +202,23 @@ func TestConfiguredEventHandlerDistinguishesProvenDisabledFromPending(t *testing
 	}
 	if err = handler(context.Background(), event); err == nil || err.Error() != "configured welcome is pending: authenticated current-membership and member-profile APIs are unavailable" {
 		t.Fatalf("configured join should remain pending, got %v", err)
+	}
+}
+
+func TestJoinRoleRunsWithoutWelcomeConfigurationAndFailsClosed(t *testing.T) {
+	n, _, _, community, user, episode, _ := fixture()
+	event := joinEvent(community, user, episode, 1_999_999)
+	granter := &testRoleGranter{}
+	handler := ConfiguredEventHandlerWithJoinRole(n, granter, nil)
+	if err := handler(context.Background(), event); err != nil {
+		t.Fatalf("unconfigured welcome with role grant: %v", err)
+	}
+	if granter.calls != 1 || granter.user != user || granter.episode != episode {
+		t.Fatalf("role grant calls=%d user=%s episode=%s", granter.calls, granter.user, granter.episode)
+	}
+	granter.err = errors.New("role grant refused")
+	if err := handler(context.Background(), event); err == nil || err.Error() != "role grant refused" {
+		t.Fatalf("refusal was not propagated: %v", err)
 	}
 }
 

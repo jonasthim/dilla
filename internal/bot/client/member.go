@@ -96,3 +96,40 @@ func (m *CommunityMembers) ResolveCurrentMember(ctx context.Context, user id.ID)
 	}
 	return true, profile.Name(), nil
 }
+
+// ResolveCurrentEpisode reads the exact current membership episode through the
+// bot-scoped endpoint. The server serializes this read with membership changes.
+func (m *CommunityMembers) ResolveCurrentEpisode(ctx context.Context, user id.ID) (id.ID, bool, error) {
+	if m == nil || m.session == nil || m.community.IsZero() || user.IsZero() {
+		return id.ID{}, false, ErrInvalidConfig
+	}
+	path := "communities/" + m.community.String() + "/bot/members/" + user.String() + "/episode"
+	raw, _, err := m.session.c.do(ctx, m.session.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return id.ID{}, false, nil
+		}
+		return id.ID{}, false, err
+	}
+	a, err := decode(raw, 2)
+	if err != nil {
+		return id.ID{}, false, err
+	}
+	gotMember, okMember := asID(a[0])
+	episode, okEpisode := asID(a[1])
+	if !okMember || !okEpisode || gotMember != user || episode.IsZero() {
+		return id.ID{}, false, ErrProtocol
+	}
+	return episode, true, nil
+}
+
+// GrantJoinRole verifies that the event episode is still current before
+// calling the idempotent server mutation. A changed or absent episode is stale.
+func (m *CommunityMembers) GrantJoinRole(ctx context.Context, installation, user, episode id.ID) (JoinRoleGrantReceipt, bool, error) {
+	current, present, err := m.ResolveCurrentEpisode(ctx, user)
+	if err != nil || !present || current != episode {
+		return JoinRoleGrantReceipt{}, false, err
+	}
+	return m.session.GrantJoinRole(ctx, m.community, installation, user, episode)
+}

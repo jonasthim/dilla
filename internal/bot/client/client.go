@@ -582,6 +582,12 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "members" && method == http.MethodGet {
 		return 200, true
 	}
+	if len(parts) == 6 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "members" && parts[5] == "episode" && method == http.MethodGet {
+		return http.StatusOK, true
+	}
+	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "join-role-grants" && method == http.MethodPost {
+		return http.StatusOK, true
+	}
 	if len(parts) == 6 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "actors" && parts[5] == "authority" && method == http.MethodGet {
 		return 200, true
 	}
@@ -608,6 +614,10 @@ func statusAllowed(method, path string, got, want int) bool {
 		return true
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if got == http.StatusNoContent && want == http.StatusOK && method == http.MethodPost && len(parts) == 4 &&
+		parts[0] == "communities" && parts[2] == "bot" && parts[3] == "join-role-grants" {
+		return true
+	}
 	// Enrollment and scoped group registration return 201 for first acceptance
 	// and 200 when the same durable request is replayed after a lost reply.
 	// KeyPackage publication keeps 201 for both first acceptance and replay.

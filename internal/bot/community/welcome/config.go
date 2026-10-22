@@ -71,6 +71,16 @@ func LoadConfig(ctx context.Context, n Native) (Config, error) {
 // absent. Configured events require a processor; nil means prerequisites have
 // not been wired and leaves the event pending.
 func ConfiguredEventHandler(n Native, processor func(context.Context, Config) (*Processor, error)) func(context.Context, protocol.Event) error {
+	return ConfiguredEventHandlerWithJoinRole(n, nil, processor)
+}
+
+// JoinRoleGranter handles automatic role policy independently of welcome text
+// configuration. Implementations must verify the exact current episode.
+type JoinRoleGranter interface {
+	GrantJoinRole(context.Context, id.ID, id.ID) error
+}
+
+func ConfiguredEventHandlerWithJoinRole(n Native, granter JoinRoleGranter, processor func(context.Context, Config) (*Processor, error)) func(context.Context, protocol.Event) error {
 	return func(ctx context.Context, event protocol.Event) error {
 		switch event.Kind {
 		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel:
@@ -82,6 +92,22 @@ func ConfiguredEventHandler(n Native, processor func(context.Context, Config) (*
 			// Handled below.
 		default:
 			return fmt.Errorf("welcome handler does not own structural event kind %d", event.Kind)
+		}
+		if protocol.ValidateEventContext(event, n.Binding().Community) != nil {
+			return protocol.ErrContext
+		}
+		if _, err := protocol.EncodeEvent(event); err != nil {
+			return err
+		}
+		if event.Kind == protocol.EventMemberJoin && granter != nil {
+			member, okMember := event.Data[0].(id.ID)
+			episode, okEpisode := event.Data[1].(id.ID)
+			if !okMember || !okEpisode || member.IsZero() || episode.IsZero() {
+				return protocol.ErrInvalid
+			}
+			if err := granter.GrantJoinRole(ctx, member, episode); err != nil {
+				return err
+			}
 		}
 		cfg, err := LoadConfig(ctx, n)
 		if errors.Is(err, ErrUnconfigured) {
