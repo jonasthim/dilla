@@ -111,7 +111,8 @@ options:
   --insecure-skip-verify install local --binary/--core without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
   --node-ip IP           the address LiveKit advertises for media (livekit.node_ip)
-  --check-args           validate the arguments and exit without changing anything
+  --check-args           validate the arguments and exit without changing anything;
+                         the release itself is not checked (download and checksums come later)
   -h, --help             show this help
 USAGE
 }
@@ -369,7 +370,11 @@ if [ -z "$RELEASE_URL" ] && [ "$DOWNLOAD" -eq 1 ]; then
 	URL_TAG="$VERSION"
 fi
 
-[ "$CHECK_ARGS" -eq 0 ] || exit 0
+if [ "$CHECK_ARGS" -eq 1 ]; then
+	# Says what it checked (on stderr: the Proxmox helper reads stdout as the invite link), so an rc of 0 is not read as "this release exists and is good to install".
+	echo "arguments are valid; the release was not checked" >&2
+	exit 0
+fi
 
 # ------------------------------------------------------------------ host ----
 [ "$(id -u)" = 0 ] || die "run this as root (inside the container or VM that will host dilla)"

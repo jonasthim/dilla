@@ -136,14 +136,14 @@ function fakes(o: Options = {}) {
 
   const verified = new Set<string>();
   const installs: EpochKeys[] = [];
-  const manager = {
+  const manager = Object.assign(new Emitter(), {
     installs,
     installEpoch: vi.fn(async (k: EpochKeys) => { installs.push(k); }),
     dispose: vi.fn(() => { order.push('manager.dispose'); }),
     clearKeys: vi.fn(() => { order.push('manager.clearKeys'); }),
     verifiedIdentities: vi.fn(async () => new Set(verified)),
     stats: vi.fn(async () => ({ encrypted: {}, dropped: {} })),
-  };
+  });
 
   const localTracks: FakeTrack[] = [];
   const room = Object.assign(new Emitter(), {
@@ -376,6 +376,19 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.order).toEqual(['manager.dispose', 'room.disconnect', 'worker.terminate', 'lock.release', 'callLeave']);
     expect(f.calls.at(-1)).toEqual({ m: 'callLeave', reason: 'user' });
     expect(call.state.phase).toBe('ended');
+  });
+
+  // fix/firefox-misrouted-audio: a misroute the manager recovered is noted for Diagnostics (callNote), while in the call.
+  it('notes each recovered misroute for Diagnostics, and none after the leave', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.manager.emit('misrouteRecovered', BOB_DEV);
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callNote')).toEqual([{ m: 'callNote', code: 'E_MEDIA_MISROUTE' }]);
+    await call.leave('user');
+    f.manager.emit('misrouteRecovered', BOB_DEV);
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callNote')).toHaveLength(1);
   });
 
   it('a denied microphone joins listen-only with mic "denied" and no publish', async () => {

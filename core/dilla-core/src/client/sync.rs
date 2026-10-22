@@ -318,6 +318,8 @@ impl ClientCore {
     /// or a key is verified. Evidence is retained for a pending leaf and for a leaf whose verdict
     /// failed (unlisted, changed key, wrong key); a row becomes readable only after MLS and the
     /// current leaf verdict both pass in one unit.
+    /// The held reasons below are the ones a later validation can end; `E_DEVICE_REVOKED` is not
+    /// among them: a revoked device's rows are final (`trust::apply_verdict`).
     pub fn revalidate_pending(
         &mut self,
         id: &[u8; 16],
@@ -875,8 +877,10 @@ impl ClientCore {
                                                 }
                                                 // The MLS-authenticated evidence waits, unreadable: it is
                                                 // released only if this exact leaf later validates (a list
-                                                // naming it, or exact-key verification of its key).
-                                                (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
+                                                // naming it, or exact-key verification of its key). A
+                                                // revoked device's message is final and keeps nothing.
+                                                let kept = (e.code != super::error::E_DEVICE_REVOKED).then_some(r);
+                                                (STATUS_CANNOT_DECRYPT, e.code, None, kept)
                                             },
                                         }
                                     }

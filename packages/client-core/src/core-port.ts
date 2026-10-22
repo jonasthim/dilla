@@ -65,8 +65,8 @@ export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cache
 /** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8).
  *  E_BINDING (web-3, ABI 9) is the call gate's refusal of a DM call group bound to a community its text group is not
  *  (client/calls.rs dm_text_id): a block of its own, never folded into E_CREDENTIAL. */
-export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_TIER_MISMATCH' | 'E_BINDING';
-const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_BINDING'];
+export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_DEVICE_REVOKED' | 'E_TIER_MISMATCH' | 'E_BINDING';
+const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED', 'E_TIER_MISMATCH', 'E_BINDING'];
 /** Whether a refusal code is a trust block: the call gate's hard refusals (task 6 blocks or pauses on these). */
 export function isTrustBlock(code: string): code is TrustBlock { return TRUST_BLOCKS.includes(code); }
 /** The core's block_code: a known verdict as it is, any other stored code as a failed identity check (fail closed). */

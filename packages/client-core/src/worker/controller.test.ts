@@ -1317,6 +1317,25 @@ it('never reads a contact with a stored blocked verdict as verified, right after
   expect(row).not.toHaveProperty('unlisted');
 });
 
+// fix/firefox-misrouted-audio: the page's media layer notes a recovered misroute; Diagnostics shows its stable code.
+// Only codes on the call-note list are taken, so the page cannot write arbitrary text into Diagnostics.
+it('callNote records E_MEDIA_MISROUTE in diagnostics and refuses any other code', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.call(7400, { m: 'callNote', code: 'E_MEDIA_MISROUTE' });
+  await vi.waitFor(() => expect(w.ret(7400)).toMatchObject({ ok: true, value: null }));
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code)).toEqual(['E_MEDIA_MISROUTE']);
+  const bad: unknown[] = [{ m: 'callNote', code: 'E_INTERNAL' }, { m: 'callNote', code: 'hello' }, { m: 'callNote' }, { m: 'callNote', code: 1 }];
+  bad.forEach((command, i) => { w.call(7410 + i, command); });
+  await vi.waitFor(() => { for (let i = 0; i < bad.length; i++) expect(w.ret(7410 + i)).toBeDefined(); });
+  bad.forEach((command, i) => {
+    expect(w.ret(7410 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+  });
+  // A refused note is a refused command (recorded as E_BAD_INPUT), never the code it carried.
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code).filter((c) => c !== 'E_BAD_INPUT')).toEqual(['E_MEDIA_MISROUTE']);
+});
+
 it('never keeps a verified contact when trust_state fails: the last rows read pending until the core answers (R3)', async () => {
   const w = world();
   w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
@@ -1638,6 +1657,161 @@ it('advances the instance clock from the ticket by the time elapsed here, and dr
   } });
   expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`)?.map(row => [row.userId, row.expiresAt]))
     .toEqual([[toHex(STRANGER), 1_700_000_024_000]]);
+});
+
+// A timer can fire a millisecond before Date.now() reaches the deadline it was set for (Firefox does, under load). The
+// expiry sweep then finds the row not yet over; it must look again at the deadline, or the row outlives its window for good
+// (CI run 39828967265: the indicator was still up 90 s after the signal's expiry).
+it('drops a typing row whose expiry timer fired a millisecond early', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    let nowMs = 1_700_000_000_000;
+    const w = world({ now: () => nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'frame', frame: {
+      op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 4n],
+    } });
+    const rows = (): unknown[] => w.last<unknown[]>(`typing:${toHex(CHANNEL)}`) ?? [];
+    expect(rows()).toHaveLength(1);
+    nowMs += 3_999;                                           // the 4 s timer fires with 1 ms still to go on the clock
+    vi.advanceTimersByTime(4_000);
+    nowMs += 1;
+    vi.advanceTimersByTime(1);
+    expect(rows()).toEqual([]);
+  } finally { vi.useRealTimers(); }
+});
+
+// One sweep timer per channel: a member who floods typing frames must not pile timers up in every reader's worker.
+describe('incoming typing keeps one sweep timer per channel', () => {
+  const user = (n: number): Uint8Array => new Uint8Array(16).fill(n);
+  const typingFrame = (who: Uint8Array, expires: bigint): GatewayEvent => ({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, who, OTHER_DEVICE, 1n, expires],
+  } });
+  const ready = async (nowMs: () => number) => {
+    const w = world({ now: nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    return w;
+  };
+  const names = (w: ReturnType<typeof world>): string[] =>
+    (w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`) ?? []).map(row => row.userId);
+
+  it('1000 frames in one channel leave exactly one pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      for (let i = 0; i < 1000; i += 1) w.gateway.emit(typingFrame(user(1 + (i % 200)), NOW_S + 5n));
+      expect(names(w).length).toBeGreaterThan(100);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a later frame with an earlier deadline moves the timer forward', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 3n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(1))]);
+      expect(vi.getTimerCount() - before).toBe(1);          // re-armed for the remaining row
+      nowMs += 5_000; vi.advanceTimersByTime(5_000);
+      expect(names(w)).toEqual([]);
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  // Only an earlier deadline may move the timer. Always re-arming to the latest frame would leave the earlier row on
+  // screen until the later one is due.
+  it('a later or equal deadline keeps the pending timer and does not re-arm', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      const armed = vi.spyOn(globalThis, 'setTimeout');
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      expect(armed).toHaveBeenCalledTimes(1);
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));       // later
+      w.gateway.emit(typingFrame(user(3), NOW_S + 3n));       // equal
+      expect(armed).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);             // the 3 s rows went on time, the 8 s one stays
+      expect(vi.getTimerCount() - before).toBe(1);
+      armed.mockRestore();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a stop frame for a channel with no rows arms nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit({ type: 'frame', frame: { op: 49, n: 0n, groupId: null, payload: [CHANNEL, user(1), OTHER_DEVICE, 0n, NOW_S + 3n] } });
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('losing the channel view clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.sync.deps!.onMembership(GROUP, 'not-member');
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a worker reset (sign-out wipe) clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.call(961, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(961)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('cleared');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an earlier row is swept on time when a later deadline arrives after it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('closing the channel clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.call(960, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+      await vi.waitFor(() => expect(w.ret(960)).toMatchObject({ ok: true }));
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 it('clears incoming typing on membership loss without local typing', async () => {

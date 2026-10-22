@@ -130,7 +130,8 @@ accepted only if:
    device list.
 
 Failing 1 or 4 refuses the leaf (`E_CREDENTIAL`); failing 2 is `E_UMK_CHANGED`; failing 3 is
-`E_DEVICE_UNLISTED`; failing 5 is `E_TIER_MISMATCH`. An incomplete, rolled-back, gapped or
+`E_DEVICE_REVOKED` when the newest list names that `device_id` and `dsk_pub` with `revoked_at` set,
+and `E_DEVICE_UNLISTED` otherwise; failing 5 is `E_TIER_MISMATCH`. An incomplete, rolled-back, gapped or
 substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. A proposed `Add`
 whose leaf fails is left out of this device's commit (never committed, and never a refusal that
 stalls the device's commits); one whose history is still unknown is refused until it is fetched.
@@ -201,8 +202,13 @@ Rules: a verifier keeps the newest signed `version` it has validated per user an
 rollback, gap, invalid `prev_hash` or signature. The requested user and the `user_id` of every
 signed list in the history must equal the user extracted from the current authenticated MLS leaf.
 The list entry must bind that leaf's `device_id`, DSK and tier. A leaf whose `device_id` is absent
-or has `revoked_at` set in the newest list is `E_DEVICE_UNLISTED` and no message from it is
-rendered. Revocation is therefore cryptographic and does not depend on the instance. A later
+from the newest list is `E_DEVICE_UNLISTED`, one whose entry has `revoked_at` set is
+`E_DEVICE_REVOKED`, and no message from either is rendered. Revocation is therefore cryptographic
+and does not depend on the instance. A message held for the sender's list (`E_DEVICE_LIST_STALE`)
+takes its leaf's failed verdict as its reason once the leaf is judged. It stays held, so a later
+list that validates the leaf still releases it, except for `E_DEVICE_REVOKED`: a revoked device's
+messages are final, their retained ciphertext is discarded, and a later list that names the
+device unrevoked releases none of them (it validates only what the device sends after). A later
 quarantine (including a pinned UMK's leaf that a verified changed UMK's list does not hold)
 retracts every previously accepted display row attributable to that leaf in that group, refolds
 dependent edits, reactions and replies, removes derived search rows, and
@@ -330,5 +336,5 @@ field of the credential array: a verifier takes it from the MLS leaf's `signatur
 
 ## Error codes
 
-`E_CREDENTIAL`, `E_UMK_CHANGED`, `E_DEVICE_UNLISTED`, `E_DEVICE_LIST_STALE`, `E_PAIRING_LEAVES`,
+`E_CREDENTIAL`, `E_UMK_CHANGED`, `E_DEVICE_UNLISTED`, `E_DEVICE_REVOKED`, `E_DEVICE_LIST_STALE`, `E_PAIRING_LEAVES`,
 `E_PAIRING_FINGERPRINT`, `E_TIER_MISMATCH`, `E_PROVISIONAL_OUTSIDE_PAIRING`.

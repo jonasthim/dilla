@@ -1419,6 +1419,9 @@ at the top of the app tells you when the link drops. Under them come the codes o
 none). **Copy codes** copies those codes, one per line, and nothing else: no message, key or name, so you can paste
 them into a report.
 
+`E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
+automatically: you heard them again about four seconds after they joined or came back.
+
 ![Diagnostics at 360 pixels wide](screenshots/settings-diagnostics-phone.png)
 
 ### Typing

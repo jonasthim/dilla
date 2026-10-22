@@ -65,7 +65,7 @@ const SEARCH = 'search';
 const SETTINGS = 'settings';
 const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
-const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED', 'E_TIER_MISMATCH']);
 
 /**
  * The composer's reason for a send block (W-01, R1). A block only own-user leaves hold names the own account and Devices;

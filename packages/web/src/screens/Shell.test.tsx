@@ -769,12 +769,18 @@ describe('timeline', () => {
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
       item({ key: 'changed', state: 'cannot-read', reason: 'E_UMK_CHANGED', body: '' }),
       item({ key: 'unlisted', state: 'cannot-read', reason: 'E_DEVICE_UNLISTED', body: '' }),
+      item({ key: 'revoked', state: 'cannot-read', reason: 'E_DEVICE_REVOKED', body: '' }),
     ] })));
     const log = screen.getByRole('log', { name: 'messages in #general' });
     expect(log).toHaveTextContent('This contact’s identity changed. Compare the number before sending.');
-    expect(log).toHaveTextContent('This device is not on the contact’s list.');
-    expect(log).not.toHaveTextContent('E_UMK_CHANGED');
-    expect(log).not.toHaveTextContent('E_DEVICE_UNLISTED');
+    // A message from a device never added names the action that makes it readable, not only the state; one from a device
+    // the sender removed says it stays shut, and never asks for an action that cannot help.
+    const unlisted = 'Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do.';
+    const revoked = 'Sent from a device the sender removed from their account. It will not open.';
+    expect(log).toHaveTextContent(unlisted);
+    expect(log).toHaveTextContent(revoked);
+    expect(log.textContent?.split(unlisted)).toHaveLength(2);
+    for (const code of ['E_UMK_CHANGED', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED']) expect(log).not.toHaveTextContent(code);
   });
   it('shows names, tags and every row state, and never an unreadable body', async () => {
     const { fake, user, view } = setup(`/c/${A}/${GEN}`);

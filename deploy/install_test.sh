@@ -596,7 +596,7 @@ expect_refusal "a --udp-port out of range is refused" "--udp-port"
 
 # shellcheck disable=SC2086
 run $PUBLIC_ARGS --version v1.2.3 --check-args
-if expect_rc "--check-args accepts a valid public install" 0 && [ -z "$OUT" ] && [ ! -e "$ROOT/usr" ] && [ ! -s "$LOG" ]; then
+if expect_rc "--check-args accepts a valid public install" 0 && [ -z "$OUT" ] && [ "$ERR" = "arguments are valid; the release was not checked" ] && [ ! -e "$ROOT/usr" ] && [ ! -s "$LOG" ]; then
 	pass "--check-args validates and touches nothing"
 else
 	fail "--check-args validates and touches nothing" "out: $OUT" "log: $(cat "$LOG")"

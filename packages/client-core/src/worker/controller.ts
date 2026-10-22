@@ -120,14 +120,14 @@ E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR
 E_CBOR_RANGE E_CBOR_SHAPE E_CBOR_TRAILING E_CBOR_TRUNCATED E_CBOR_TYPE E_CBOR_UTF8 E_CHANNEL_GONE
 E_COMMITMENT_INVALID E_COMMIT_CONFLICT E_COMMIT_INVALID E_COMMIT_REQUIRED E_CORE_DECODE E_CORE_INPUT
 E_CORE_LIMIT E_CORE_MLS E_CORE_NOT_FOUND E_CORE_NO_IDENTITY E_CORE_RELOAD E_CORE_STATE E_CORE_STORAGE E_CORE_WASM
-E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
+E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_REVOKED E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
 E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQUEST E_INVITE_INVALID
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
@@ -271,6 +271,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callRefresh',
   'callRelay',
   'callStats',
+  'callNote',
   'loadVoice',
   'callDecline',
   'renameCommunity',
@@ -502,6 +503,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callRefresh',
     'callRelay',
     'callStats',
+    'callNote',
     'loadVoice',
     'callDecline',
     'renameCommunity',
@@ -544,6 +546,8 @@ const deviceLabel = (value: unknown): string | null => {
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
+/** fix/firefox-misrouted-audio: the stable codes a page may note for Diagnostics (callNote); nothing else is taken. */
+const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE']);
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
@@ -701,6 +705,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
+  if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
     || (command.communityId === null) === (command.channelId === null))) return 'loadVoice needs exactly one id';
   if (m === 'callDecline' && (typeof command.ringTs !== 'number' || !Number.isSafeInteger(command.ringTs) || command.ringTs < 0)) {
@@ -735,7 +740,8 @@ export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
 export const REMOVALS_MAX = 8;
 
 /** CI1: the reasons a row waits for its sender's trust (core revalidate_pending's set), and the most such live rows
- *  the worker remembers for their notice. */
+ *  the worker remembers for their notice. E_DEVICE_REVOKED is not one: a revoked device's row never opens, so nothing
+ *  waits for it (trust.rs apply_verdict). */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
 export const HELD_LIVE_MAX = 64;
 /** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
@@ -891,6 +897,8 @@ export class Controller {
   private leadership: Leadership | null = null;
   private readonly typingOn = new Set<string>();
   private readonly incomingTyping = new Map<string, Map<string, number>>();
+  /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
+  private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
@@ -1210,6 +1218,7 @@ export class Controller {
       case 'callRefresh': return this.calls.refresh();
       case 'callRelay': return this.calls.relay();
       case 'callStats': return this.calls.stats(command.report);
+      case 'callNote': this.recordError(command.code); return Promise.resolve(null);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);
       case 'deleteCommunity': return this.admin.deleteCommunity(command.communityId);
@@ -1743,7 +1752,38 @@ export class Controller {
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
     this.incomingTyping.set(channelId, rows);
     this.publishTyping(channelId);
-    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+    if (on === 1n) this.armTypingSweep(channelId, expiry);          // a stop frame has nothing to expire
+  }
+
+  /** One sweep timer per channel, however many frames arrive: a frame moves it only when its deadline is earlier. */
+  private armTypingSweep(channelId: string, at: number): void {
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) {
+      if (pending.at <= at) return;
+      this.deps.clearTimeout(pending.handle);
+    }
+    const handle = this.deps.setTimeout(() => this.sweepTyping(channelId), Math.max(0, at - this.deps.now()));
+    this.typingSweeps.set(channelId, { handle, at });
+  }
+
+  private dropIncomingTyping(channelId: string): void {
+    this.incomingTyping.delete(channelId);
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) this.deps.clearTimeout(pending.handle);
+    this.typingSweeps.delete(channelId);
+  }
+
+  /** The expiry timer. It may fire a millisecond before the clock reaches the deadline it was set for (Firefox does, under
+   *  load); the row is then still live and nothing else would sweep it, so while any row remains it looks again when the
+   *  nearest one is due. */
+  private sweepTyping(channelId: string): void {
+    this.typingSweeps.delete(channelId);
+    this.publishTyping(channelId);
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined) return;
+    let nearest = Infinity;
+    for (const expiry of rows.values()) if (expiry < nearest) nearest = expiry;
+    if (nearest !== Infinity) this.armTypingSweep(channelId, nearest);
   }
 
   private publishTyping(channelId: string): void {
@@ -3456,6 +3496,8 @@ export class Controller {
     // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
     this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
+    for (const { handle } of this.typingSweeps.values()) this.deps.clearTimeout(handle);
+    this.typingSweeps.clear();
     this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
@@ -3569,7 +3611,7 @@ export class Controller {
   private closeChannel(channelId: string): Promise<null> {
     const wasOpen = this.open.has(channelId);
     if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-    this.incomingTyping.delete(channelId);
+    this.dropIncomingTyping(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
     this.dropOpen(channelId);
@@ -4217,7 +4259,7 @@ export class Controller {
       if (this.open.has(channelId) && this.groupState(channelId) === 'active'
         && this.phase === 'ready' && this.connectionState.status === 'online') continue;
       if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-      this.incomingTyping.delete(channelId);
+      this.dropIncomingTyping(channelId);
       this.slices.set(`typing:${channelId}`, []);
     }
   }

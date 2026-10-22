@@ -28,6 +28,8 @@ export interface MessageRowProps {
   /** Opens a user's profile card, anchored to `anchor` (a mention pill, the author name or the avatar). */
   onOpenProfile?(userId: string, anchor: HTMLElement, from: 'mention' | 'author'): void;
   time: string;
+  /** The time of day shown in the gutter of a grouped row (the day divider above names the day). Falls back to `time`; when given, `time` rides as the gutter's title. */
+  gutterTime?: string;
   body: string | readonly BodyPart[];
   own?: boolean;
   tag?: 'web' | 'bot';
@@ -137,7 +139,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, authorId, onOpenProfile, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
+  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
   reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
@@ -190,7 +192,7 @@ export function MessageRow({
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
       {grouped === true
-        ? <span className="d-message-row__gutter" aria-hidden="true">{time}</span>
+        ? <span className="d-message-row__gutter" aria-hidden="true" title={gutterTime === undefined ? undefined : time}>{gutterTime ?? time}</span>
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
           onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} /></span>}
       <div className="d-message-row__main">

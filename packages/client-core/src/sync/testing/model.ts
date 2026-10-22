@@ -40,7 +40,7 @@ import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type NewOverwrite, type OverwriteRow, type RoleRow, type Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
-import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
+import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList, type FakeListEntry } from '../../testing/fake-list';
 
 /** The plain message request web-2a sent with a bare body (L-TS-30). */
 export function textRequest(body: string): SendRequest {
@@ -483,10 +483,14 @@ export class ModelCore implements CorePort {
     if (cached === undefined) return 'E_DEVICE_LIST_STALE';
     if (!same(cached.umk, leaf.umk)) return 'E_CREDENTIAL';
     const entry = cached.list.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
-    if (entry === undefined) return 'E_DEVICE_UNLISTED';
+    if (entry === undefined) return this.revoked(cached.list.entries, leaf) ? 'E_DEVICE_REVOKED' : 'E_DEVICE_UNLISTED';
     if (!same(entryKey(entry), leaf.dskPub)) return 'E_CREDENTIAL';
     if ((entry.tier ?? 1) !== leaf.tier) return 'E_TIER_MISMATCH';
     return pin !== undefined ? null : 'E_DEVICE_LIST_STALE';
+  }
+  /** device_list.rs check_leaf: the list names this device under this key, revoked (E_DEVICE_REVOKED, not unlisted). */
+  private revoked(entries: readonly FakeListEntry[], leaf: { deviceId: Id; dskPub: Uint8Array }): boolean {
+    return entries.some((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt !== null && same(entryKey(item), leaf.dskPub));
   }
   /** trust.rs apply_verdict: whether a stored verdict changed. A changed-key block is never overwritten or cleared here. */
   private applyVerdict(leaf: { groupId: Id; dskPub: Uint8Array }, code: string | null): boolean {
@@ -609,7 +613,7 @@ export class ModelCore implements CorePort {
     // Like trust.rs, head_list is the signed list itself (the native peer's head.blob), never the served row around it.
     if (final === null || finalList === null || !same(bin(final[1]), headList)) throw coreError('E_DEVICE_LIST_STALE');
     const entry = finalList.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
-    if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
+    if (entry === undefined) throw coreError(this.revoked(finalList.entries, leaf) ? 'E_DEVICE_REVOKED' : 'E_DEVICE_UNLISTED');
     if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
     if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
     // The own account's key is this device's own credential's; no served list changes it (the stand-in lists carry no

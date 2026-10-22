@@ -507,6 +507,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const live = joinedSession;
     // Review M3: a failure after the room listeners were registered unregisters them and lets every attached track go.
     teardownRoom();
+    offMisroute();
     detachEarly();
     closeCtx();
     // Keys stop first: media is released before the worker is told to leave.
@@ -518,6 +519,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   let endedBy: string | null = null;
   let detachEarly: () => void = () => undefined;
   let teardownRoom: () => void = () => undefined;
+  /** fix/firefox-misrouted-audio: stops noting the manager's recovered misroutes; at the leave or a failed start. */
+  let offMisroute: () => void = () => undefined;
   const checkAborted = (): void => {
     if (aborted) throw new PageCallError('E_ABORTED');
     if (endedBy !== null) throw new PageCallError(endedBy);
@@ -612,6 +615,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   let unwatch: () => void = () => undefined;
   try {
     relay.attach(manager);
+    // fix/firefox-misrouted-audio: a peer whose audio Firefox put on a spare receiver was re-subscribed by the manager;
+    // Diagnostics shows the stable code (callNote), nothing else of it.
+    const managerEvents = manager as unknown as Partial<Events>;
+    const onMisroute = (): void => { void deps.bridge.call({ m: 'callNote', code: 'E_MEDIA_MISROUTE' }).catch(() => undefined); };
+    managerEvents.on?.('misrouteRecovered', onMisroute);
+    offMisroute = () => { managerEvents.off?.('misrouteRecovered', onMisroute); };
     const events = room as unknown as Events;
     const local = room.localParticipant as unknown as Events & {
       identity: string; audioLevel?: number; isSpeaking?: boolean; permissions?: Permissions;
@@ -1521,6 +1530,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       unsubscribe();
       for (const h of [...timers]) cancel(h);
       teardownRoom();
+      offMisroute();
       detachEarly();
       win?.removeEventListener('pagehide', pageHide);
       opts.signal?.removeEventListener('abort', onAbort);

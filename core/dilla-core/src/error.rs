@@ -27,6 +27,8 @@ pub enum ProtocolError {
     UmkChanged,
     #[error("E_DEVICE_UNLISTED")]
     DeviceUnlisted,
+    #[error("E_DEVICE_REVOKED")]
+    DeviceRevoked,
     #[error("E_DEVICE_LIST_STALE")]
     DeviceListStale,
     #[error("E_PAIRING_LEAVES")]
@@ -67,6 +69,7 @@ impl ProtocolError {
             Self::Credential => "E_CREDENTIAL",
             Self::UmkChanged => "E_UMK_CHANGED",
             Self::DeviceUnlisted => "E_DEVICE_UNLISTED",
+            Self::DeviceRevoked => "E_DEVICE_REVOKED",
             Self::DeviceListStale => "E_DEVICE_LIST_STALE",
             Self::PairingLeaves => "E_PAIRING_LEAVES",
             Self::PairingFingerprint => "E_PAIRING_FINGERPRINT",
@@ -93,6 +96,7 @@ impl ProtocolError {
             "E_CREDENTIAL" => Self::Credential,
             "E_UMK_CHANGED" => Self::UmkChanged,
             "E_DEVICE_UNLISTED" => Self::DeviceUnlisted,
+            "E_DEVICE_REVOKED" => Self::DeviceRevoked,
             "E_DEVICE_LIST_STALE" => Self::DeviceListStale,
             "E_PAIRING_LEAVES" => Self::PairingLeaves,
             "E_PAIRING_FINGERPRINT" => Self::PairingFingerprint,
@@ -138,8 +142,8 @@ pub enum CoreError {
 mod tests {
     use super::*;
 
-    /// The 21 stable strings of protocol/01, /03, /04 and /07 (facts-repo.md section 1.11).
-    const ALL: [(ProtocolError, &str); 21] = [
+    /// The 22 stable strings of protocol/01, /03, /04 and /07 (facts-repo.md section 1.11).
+    const ALL: [(ProtocolError, &str); 22] = [
         (ProtocolError::Binding, "E_BINDING"),
         (
             ProtocolError::ExternalSenderForbidden,
@@ -158,6 +162,7 @@ mod tests {
         (ProtocolError::Credential, "E_CREDENTIAL"),
         (ProtocolError::UmkChanged, "E_UMK_CHANGED"),
         (ProtocolError::DeviceUnlisted, "E_DEVICE_UNLISTED"),
+        (ProtocolError::DeviceRevoked, "E_DEVICE_REVOKED"),
         (ProtocolError::DeviceListStale, "E_DEVICE_LIST_STALE"),
         (ProtocolError::PairingLeaves, "E_PAIRING_LEAVES"),
         (ProtocolError::PairingFingerprint, "E_PAIRING_FINGERPRINT"),

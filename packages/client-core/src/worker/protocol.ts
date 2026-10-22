@@ -120,6 +120,8 @@ export type Command =
   | { m: 'callRefresh' }                                                                 // → { token, iceServers }
   | { m: 'callRelay' }                                                                   // → { iceServers } (UP11-b)
   | { m: 'callStats'; report: CallStatsReport }                                          // → null
+  // fix/firefox-misrouted-audio: the page's media layer notes a case Diagnostics should show; code is one of CALL_NOTES.
+  | { m: 'callNote'; code: 'E_MEDIA_MISROUTE' }                                         // → null
   | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null
   | { m: 'callDecline'; callId: string; ringTs: number }                                 // ringTs: op 53's expires_ts → null
   | { m: 'renameCommunity'; communityId: string; name: string }

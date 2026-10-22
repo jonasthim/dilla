@@ -715,7 +715,7 @@ function checkActionReference(line, file, number, problems) {
   const action = match[1];
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
-  } else if (!/^actions\/[\w-]+@[0-9a-f]{40}$/.test(action)) {
+  } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
     problems.push(`${file}:${number}: ${action} must use a 40-hex commit SHA`);
   }
 }

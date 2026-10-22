@@ -17,6 +17,13 @@ export const privacy = {
   'privacy.changed': 'This contact’s identity changed. Compare the number before sending.',
   'privacy.changedNoKey': 'This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed.',
   'privacy.unlisted': 'This device is not on the contact’s list.',
+  // A message held because its device is not on its sender's signed device list (E_DEVICE_UNLISTED): the sender adding
+  // the device to their account is what makes it readable, so the row says that, not only the state. It opens at this
+  // reader's next ready (also an epoch change of the group, a verify of the contact or a send the verdict refuses), when
+  // the worker reads the sender's list again and the core releases the held row.
+  'privacy.unlistedMessage': 'Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do.',
+  // A message from a device its sender removed (E_DEVICE_REVOKED): final in the core, so nothing is asked of anyone.
+  'privacy.revokedMessage': 'Sent from a device the sender removed from their account. It will not open.',
   'privacy.leafFailed': 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.',
   'privacy.noShared': 'Open a conversation with this person to compare numbers.',
   'privacy.removed': 'You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere.',

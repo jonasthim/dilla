@@ -17,7 +17,7 @@ const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'relea
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
-      assert.match(match[1], /^actions\/[\w-]+@[0-9a-f]{40}$/);
+      assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
     }
   }
 });
