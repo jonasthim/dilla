@@ -304,7 +304,10 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 impl ClientCore {
     /// Verify proof, v2 binding and exact signed-device-list roster evidence using the instance
     /// key already pinned in this encrypted Bot store. This only prepares admission evidence; it
-    /// does not mutate an MLS group or persist an admission outcome.
+    /// does not mutate an MLS group or persist an admission outcome. The caller must obtain
+    /// `expected.server_now` and `expected.minimum_eligibility_revision` from current trusted
+    /// server state, and authenticate the supplied MLS leaves and device-list signing keys before
+    /// using the result. Caller-supplied values alone cannot authorize group creation.
     #[allow(clippy::too_many_arguments)]
     pub fn bot_prepare_interaction_creation(
         &self,
