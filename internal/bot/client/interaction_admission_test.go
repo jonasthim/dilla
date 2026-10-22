@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -40,6 +41,34 @@ func TestIssueBotInteractionAdmissionReturnsExactSignedWire(t *testing.T) {
 	got, err := s.IssueBotInteractionAdmission(context.Background(), installation, requestID, group, participant, device)
 	if err != nil || string(got) != string(want) {
 		t.Fatalf("signed wire = %x, %v; want %x", got, err, want)
+	}
+}
+
+func TestIssueBotInteractionAdmissionUncertainResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   []any
+	}{
+		{"server error", http.StatusServiceUnavailable, []any{"E_UNAVAILABLE", "retry", nil}},
+		{"malformed success", http.StatusOK, []any{[]byte{1}, []byte{2}}},
+		{"oversized success", http.StatusOK, []any{make([]byte, maxInteractionAdmissionResponse), make([]byte, 64)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/instance" {
+					reply(w, http.StatusOK, discovery(testID(99)))
+					return
+				}
+				reply(w, tc.status, tc.body)
+			}, 0)
+			s, _ := c.Session("bot-session")
+			_, err := s.IssueBotInteractionAdmission(context.Background(), testID(20), testID(22), testID(23), testID(24), testID(25))
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Outcome != OutcomeUnknown {
+				t.Fatalf("uncertain response = %v, want outcome unknown", err)
+			}
+		})
 	}
 }
 

@@ -27,19 +27,19 @@ func (s *Session) IssueBotInteractionAdmission(ctx context.Context, installation
 	}
 	raw, _, err := s.c.do(ctx, s.token, http.MethodPost,
 		"bot-runtime/installations/"+inst+"/interaction-admissions",
-		nil, request, maxInteractionAdmissionResponse, false)
+		nil, request, maxInteractionAdmissionResponse, true)
 	if err != nil {
 		return nil, err
 	}
 	var response []any
 	if len(raw) > maxInteractionAdmissionResponse || cborx.Unmarshal(raw, &response) != nil || len(response) != 2 {
-		return nil, ErrProtocol
+		return nil, unknown()
 	}
 	if payload, ok := asBytes(response[0], -1); !ok || len(payload) == 0 || len(payload) > maxInteractionAdmissionResponse-80 {
-		return nil, ErrProtocol
+		return nil, unknown()
 	}
 	if _, ok := asBytes(response[1], 64); !ok {
-		return nil, ErrProtocol
+		return nil, unknown()
 	}
 	return append([]byte(nil), raw...), nil
 }
