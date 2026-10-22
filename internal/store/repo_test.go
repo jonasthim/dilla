@@ -28,8 +28,9 @@ import (
 // — and it is worth asserting because a repository that wrote 0 there would
 // pass every round-trip test (deviation ID11).
 var (
-	rawMu  sync.Mutex
-	rawDBs = map[store.Repository]*sql.DB{}
+	rawMu       sync.Mutex
+	rawDBs      = map[store.Repository]*sql.DB{}
+	rawWriteDBs = map[store.Repository]*sql.DB{}
 )
 
 func rawDB(t *testing.T, repo store.Repository) *sql.DB {
@@ -39,6 +40,17 @@ func rawDB(t *testing.T, repo store.Repository) *sql.DB {
 	db, ok := rawDBs[repo]
 	if !ok {
 		t.Fatal("no raw handle registered for this repository")
+	}
+	return db
+}
+
+func rawWriteDB(t *testing.T, repo store.Repository) *sql.DB {
+	t.Helper()
+	rawMu.Lock()
+	defer rawMu.Unlock()
+	db, ok := rawWriteDBs[repo]
+	if !ok {
+		t.Fatal("no raw write handle registered for this repository")
 	}
 	return db
 }
@@ -101,6 +113,7 @@ func engines(t *testing.T) map[string]store.Repository {
 	out["sqlite"] = repo
 	rawMu.Lock()
 	rawDBs[repo] = read
+	rawWriteDBs[repo] = write
 	rawMu.Unlock()
 
 	dsn := os.Getenv("DILLA_TEST_PG")
@@ -124,6 +137,7 @@ func engines(t *testing.T) map[string]store.Repository {
 	out["postgres"] = pgrepo
 	rawMu.Lock()
 	rawDBs[pgrepo] = db
+	rawWriteDBs[pgrepo] = db
 	rawMu.Unlock()
 	return out
 }

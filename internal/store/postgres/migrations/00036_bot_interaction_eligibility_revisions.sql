@@ -46,6 +46,9 @@ BEGIN
     PERFORM bot_bump_interaction_eligibility(OLD.community_id,OLD.user_id);
     RETURN OLD;
   END IF;
+  IF TG_OP = 'UPDATE' AND (OLD.community_id IS DISTINCT FROM NEW.community_id OR OLD.user_id IS DISTINCT FROM NEW.user_id) THEN
+    PERFORM bot_bump_interaction_eligibility(OLD.community_id,OLD.user_id);
+  END IF;
   PERFORM bot_bump_interaction_eligibility(NEW.community_id,NEW.user_id);
   RETURN NEW;
 END;

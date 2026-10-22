@@ -137,3 +137,101 @@ func TestBotInteractionEligibilityRevisionFencesMembershipBanAndDeviceChanges(t 
 		})
 	}
 }
+
+func TestBotInteractionEligibilityRevisionReassignmentFencesOldAndNewPrincipals(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			oldCommunity := seedCommunity(ctx, t, repo)
+			otherOldCommunity := seedCommunity(ctx, t, repo)
+			newCommunity := seedCommunity(ctx, t, repo)
+			oldUser := seedUser(ctx, t, repo).ID
+			newUser := seedUser(ctx, t, repo).ID
+			for _, community := range []id.ID{oldCommunity, otherOldCommunity} {
+				if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: oldUser, Joined: 20}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: newCommunity, UserID: newUser, Joined: 21}); err != nil {
+				t.Fatal(err)
+			}
+			device := store.DeviceRow{ID: id.New(), UserID: oldUser, DSKPub: make([]byte, 32), CredentialBlob: []byte{0}, Created: 22}
+			if err := repo.CreateDevice(ctx, device); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutDeviceList(ctx, store.DeviceListRow{UserID: oldUser, Version: 1, Blob: []byte{0x80}, SSKSignature: make([]byte, 64), PrevHash: make([]byte, 32), Created: 23}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutBan(ctx, store.BanRow{CommunityID: oldCommunity, UserID: oldUser, ByUser: newUser, Created: 24}); err != nil {
+				t.Fatal(err)
+			}
+
+			updateDevice := `UPDATE devices SET user_id=? WHERE id=?`
+			updateDeviceList := `UPDATE device_lists SET user_id=? WHERE user_id=?`
+			updateBan := `UPDATE bans SET community_id=?,user_id=? WHERE community_id=? AND user_id=?`
+			if engine == "postgres" {
+				updateDevice = `UPDATE devices SET user_id=$1 WHERE id=$2`
+				updateDeviceList = `UPDATE device_lists SET user_id=$1 WHERE user_id=$2`
+				updateBan = `UPDATE bans SET community_id=$1,user_id=$2 WHERE community_id=$3 AND user_id=$4`
+			}
+			raw := rawWriteDB(t, repo)
+			tx, err := raw.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(ctx, updateDevice, newUser, device.ID); err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("reassign device: %v", err)
+			}
+			if _, err := tx.ExecContext(ctx, updateDeviceList, newUser, oldUser); err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("reassign device list: %v", err)
+			}
+			if _, err := tx.ExecContext(ctx, updateBan, newCommunity, newUser, oldCommunity, oldUser); err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("reassign ban: %v", err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if got := interactionEligibilityRevision(t, repo, oldCommunity, oldUser); got != 7 {
+				t.Fatalf("old community/user after reassignment = %d, want 7", got)
+			}
+			if got := interactionEligibilityRevision(t, repo, otherOldCommunity, oldUser); got != 5 {
+				t.Fatalf("other old community/user after reassignment = %d, want 5", got)
+			}
+			if got := interactionEligibilityRevision(t, repo, newCommunity, newUser); got != 4 {
+				t.Fatalf("new community/user after reassignment = %d, want 4", got)
+			}
+
+			rollbackTx, err := raw.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rollbackTx.ExecContext(ctx, updateDevice, oldUser, device.ID); err != nil {
+				_ = rollbackTx.Rollback()
+				t.Fatalf("reverse device reassignment: %v", err)
+			}
+			if _, err := rollbackTx.ExecContext(ctx, updateDeviceList, oldUser, newUser); err != nil {
+				_ = rollbackTx.Rollback()
+				t.Fatalf("reverse device-list reassignment: %v", err)
+			}
+			if _, err := rollbackTx.ExecContext(ctx, updateBan, oldCommunity, oldUser, newCommunity, newUser); err != nil {
+				_ = rollbackTx.Rollback()
+				t.Fatalf("reverse ban reassignment: %v", err)
+			}
+			if err := rollbackTx.Rollback(); err != nil {
+				t.Fatalf("rollback reassignment transaction: %v", err)
+			}
+			if got := interactionEligibilityRevision(t, repo, oldCommunity, oldUser); got != 7 {
+				t.Fatalf("old community/user after rollback = %d, want 7", got)
+			}
+			if got := interactionEligibilityRevision(t, repo, otherOldCommunity, oldUser); got != 5 {
+				t.Fatalf("other old community/user after rollback = %d, want 5", got)
+			}
+			if got := interactionEligibilityRevision(t, repo, newCommunity, newUser); got != 4 {
+				t.Fatalf("new community/user after rollback = %d, want 4", got)
+			}
+		})
+	}
+}

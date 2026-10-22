@@ -36,6 +36,10 @@ END;
 -- +goose StatementBegin
 CREATE TRIGGER bot_interaction_eligibility_ban_update AFTER UPDATE ON bans BEGIN
   INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
+  SELECT OLD.community_id,OLD.user_id,1
+  WHERE OLD.community_id IS NOT NEW.community_id OR OLD.user_id IS NOT NEW.user_id
+  ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
+  INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
   VALUES(NEW.community_id,NEW.user_id,1)
   ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
 END;
@@ -56,10 +60,13 @@ CREATE TRIGGER bot_interaction_eligibility_device_insert AFTER INSERT ON devices
 END;
 -- +goose StatementEnd
 -- +goose StatementBegin
-CREATE TRIGGER bot_interaction_eligibility_device_update AFTER UPDATE OF dsk_pub,tier,signer_tier,credential_blob,revoked_at,quarantined_at,verified_at ON devices
-WHEN OLD.dsk_pub IS NOT NEW.dsk_pub OR OLD.tier IS NOT NEW.tier OR OLD.signer_tier IS NOT NEW.signer_tier OR OLD.credential_blob IS NOT NEW.credential_blob OR OLD.revoked_at IS NOT NEW.revoked_at OR OLD.quarantined_at IS NOT NEW.quarantined_at OR OLD.verified_at IS NOT NEW.verified_at BEGIN
+CREATE TRIGGER bot_interaction_eligibility_device_update AFTER UPDATE OF user_id,dsk_pub,tier,signer_tier,credential_blob,revoked_at,quarantined_at,verified_at ON devices
+WHEN OLD.user_id IS NOT NEW.user_id OR OLD.dsk_pub IS NOT NEW.dsk_pub OR OLD.tier IS NOT NEW.tier OR OLD.signer_tier IS NOT NEW.signer_tier OR OLD.credential_blob IS NOT NEW.credential_blob OR OLD.revoked_at IS NOT NEW.revoked_at OR OLD.quarantined_at IS NOT NEW.quarantined_at OR OLD.verified_at IS NOT NEW.verified_at BEGIN
   INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
-  SELECT community_id,NEW.user_id,1 FROM members WHERE user_id=NEW.user_id
+  SELECT community_id,OLD.user_id,1 FROM members WHERE user_id=OLD.user_id
+  ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
+  INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
+  SELECT community_id,NEW.user_id,1 FROM members WHERE user_id=NEW.user_id AND NEW.user_id IS NOT OLD.user_id
   ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
 END;
 -- +goose StatementEnd
@@ -81,7 +88,10 @@ END;
 -- +goose StatementBegin
 CREATE TRIGGER bot_interaction_eligibility_device_list_update AFTER UPDATE ON device_lists BEGIN
   INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
-  SELECT community_id,NEW.user_id,1 FROM members WHERE user_id=NEW.user_id
+  SELECT community_id,OLD.user_id,1 FROM members WHERE user_id=OLD.user_id
+  ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
+  INSERT INTO bot_interaction_eligibility_revisions(community_id,user_id,revision)
+  SELECT community_id,NEW.user_id,1 FROM members WHERE user_id=NEW.user_id AND NEW.user_id IS NOT OLD.user_id
   ON CONFLICT(community_id,user_id) DO UPDATE SET revision=revision+1;
 END;
 -- +goose StatementEnd
