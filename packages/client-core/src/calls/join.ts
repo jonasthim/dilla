@@ -224,6 +224,11 @@ async function resume(d: JoinDeps, t: JoinTarget, groupId: Id): Promise<Joined |
 const behind = (e: unknown): boolean => isHttp(e, 409, 'E_COMMIT_CONFLICT') || isHttp(e, 422, 'E_COMMIT_INVALID')
   || isHttp(e, 425, 'E_COMMIT_REQUIRED');
 
+/** UP6c tail (m1): a core refusal of the resume commit's build, before anything was posted, that is not a trust block:
+ *  the queue this device built from may be behind its own log (a `withdrawn` row not applied yet). A confirm that threw
+ *  is CommitUnconfirmed, never this. */
+const builtBehind = (e: unknown): boolean => e instanceof CoreError && !isTrustBlock(e.code);
+
 /** UP6c: the resume's commit was accepted by the instance but its confirm threw. The pending commit is kept (aborting
  *  it would make its echo a stranger's commit, as for the rotation): the engine adopts it as this device's own when it
  *  arrives, and the resume's next try commits again on top of it. */
@@ -240,10 +245,15 @@ export class CommitUnconfirmed extends Error {
  * - null when the leaf is gone (a catch-up applied its Remove, or the commit is refused 403 E_LEAF_NOT_CURRENT): the
  *   caller forgets the group and joins afresh;
  * - a trust or gate block of the core leaves (the self-Remove, `alone` kept for the controller's conditional end).
- * A refusal that says this device is behind (`behind`) catches up and tries again, at most RESUME_COMMIT_TRIES commits.
- * Every other refusal (transient, behind after the last try, any other HTTP refusal, a core refusal, a confirm that
- * threw) keeps the hold with no leave and no key: the page tries again, and the instance's absence Remove of this
- * device, which the start withdrew, re-arms after WithdrawnStandWindow if it never does.
+ * A refusal that says this device is behind (`behind`) catches up and tries again, at most RESUME_COMMIT_TRIES tries.
+ * So does a core refusal of the build itself (`builtBehind`, nothing posted): the start's answer can beat the
+ * `withdrawn` row of this device's own absence Remove, and call_rotate then refuses to commit a Remove of its own leaf
+ * (OpenMLS CannotRemoveSelf) until the catch-up applies that row (UP6c tail, m1).
+ * Every other refusal (transient, behind after the last try, any other HTTP refusal, a confirm that threw) keeps the
+ * hold with no leave and no key. The page tries again, backing off 1, 2, 4, 8 s (useCall HELD_RETRY_MAX_MS); each try's
+ * start is a fresh admission, so the instance's absence Remove of this device re-arms only once the page stops: the
+ * page's recovery window (RESTORE_WAIT_MS of instance time, HOLD_MS by its clock), then the 30 s admission window and a
+ * sweep pass.
  */
 async function freshEpoch(d: JoinDeps, groupId: Id, alone: boolean): Promise<bigint | null> {
   for (let tries = 1; ; tries++) {
@@ -254,7 +264,7 @@ async function freshEpoch(d: JoinDeps, groupId: Id, alone: boolean): Promise<big
       if (e instanceof JoinRefused) throw e;
       if (d.cancelled()) throw stopped(groupId, alone);
       if (isHttp(e, 403, 'E_LEAF_NOT_CURRENT')) return null;
-      if (behind(e) && tries < RESUME_COMMIT_TRIES) {
+      if ((behind(e) || builtBehind(e)) && tries < RESUME_COMMIT_TRIES) {
         const still = await d.catchUp(groupId);
         if (d.cancelled()) throw stopped(groupId, alone);
         if (!still) return null;

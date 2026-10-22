@@ -2315,6 +2315,77 @@ describe('a held call (UP6, R-UP6)', () => {
     expect(w.model.group(w.callGroup)?.state).toBe(2);
   });
 
+  // UP6c tail (m3): the page's next try after a confirm that threw. Its catch-up adopts the echo of the commit the
+  // instance accepted (this device's own), and the resume commits a fresh epoch on top: held + 2, one key, resumed.
+  it('the next join after a confirm that threw adopts the accepted commit and resumes on a fresh epoch (UP6c m3)', async () => {
+    const w = await joined();
+    const heldEpoch = BigInt(w.result.epoch);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const real = w.model.commitConfirm.bind(w.model);
+    let throws = 1;
+    w.model.commitConfirm = (g: Id) => { if (throws > 0) { throws -= 1; throw new CoreError('E_CORE_STATE', 'merge failed'); } return real(g); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CORE_STATE');
+    expect(keysPosted(w)).toHaveLength(0);
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(BigInt(r.epoch)).toBe(heldEpoch + 2n);
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([r.epoch]);
+    expect(count(w, 'POST commit')).toBe(2);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'commitAbort', w.callGroup)).toBe(0);
+  });
+
+  // UP6c tail (m1): the start's answer can beat the `withdrawn` row of this device's own absence Remove. The commit is
+  // then built with that Remove still queued, and OpenMLS refuses it before anything is posted (CannotRemoveSelf, a core
+  // refusal). The resume catches up once (which applies the row) and builds again, within RESUME_COMMIT_TRIES.
+  it('a resume commit the core refuses before posting (CannotRemoveSelf) catches up and builds again (UP6c m1)', async () => {
+    const w = await joined();
+    const heldEpoch = BigInt(w.result.epoch);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    const real = w.model.callRotate.bind(w.model);
+    let throws = 1;
+    w.model.callRotate = (g: Id) => { if (throws > 0) { throws -= 1; throw new CoreError('E_CORE_MLS', 'CannotRemoveSelf'); } return real(g); };
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), resumed: true });
+    expect(BigInt(r.epoch)).toBe(heldEpoch + 1n);
+    expect(callRoutes(w)).toEqual(['GET channel call', 'POST calls', 'POST commit']);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([r.epoch]);
+  });
+
+  it('a resume commit the core refuses before posting every time keeps the hold with no key (UP6c m1)', async () => {
+    const w = await joined();
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    w.model.callRotate = () => { throw new CoreError('E_CORE_MLS', 'CannotRemoveSelf'); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CORE_MLS');
+    expect(count(w, 'POST commit')).toBe(0);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(keysPosted(w)).toHaveLength(0);
+    expect(w.model.group(w.callGroup)?.state).toBe(2);
+  });
+
+  // UP6c tail (m3): a trust block at a solo caller's resume commit leaves with `alone` kept: the call is ended
+  // conditionally (DELETE call), never left with a self-Remove nobody could commit.
+  it('a trust block at a solo resume commit ends the call conditionally (UP6c m3)', async () => {
+    const w = await harness({ voiceChannel: true });
+    await w.call(JOIN(w));
+    await settled(w);
+    await w.call(LOST);
+    w.server.reset();
+    w.clearPosted();
+    w.model.callRotate = () => { throw new CoreError('E_UMK_CHANGED', 'a changed identity'); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');
+    expect(count(w, 'DELETE call')).toBe(1);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(keysPosted(w)).toHaveLength(0);
+  });
+
   // UP6c fix round 1: a trust block of the core at the resume commit leaves (the blocked phase, one self-Remove).
   it('a resume commit the core refuses with a trust block leaves with its self-Remove (UP6c)', async () => {
     const w = await joined();

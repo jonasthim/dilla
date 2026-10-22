@@ -41,10 +41,15 @@ in a group where everyone dropped it can remove the other absent members) and ta
 commit follows the start because the start withdraws the device's own absence `Remove` (`02`
 invariant 6), which a commit could not leave out. A refusal that says the device is behind
 (`409 E_COMMIT_CONFLICT`, `422 E_COMMIT_INVALID` for a proposal that landed while the commit was on its
-way, `425 E_COMMIT_REQUIRED`) catches the group up and commits again, at most three commits in all;
-`403 E_LEAF_NOT_CURRENT` is a leaf that is no longer current (forgotten, as below); a trust block
-leaves. Every other refusal, and one that says "behind" after the last try, keeps the hold with no
-`Remove` and no key, and the client tries again. A device that never does is bounded by the
+way, `425 E_COMMIT_REQUIRED`) catches the group up and commits again, at most three tries in all; so
+does a refusal of the core to build the commit at all, other than a trust block (the start's answer
+can arrive before the `withdrawn` record of the device's own absence `Remove`, and the commit cannot
+remove its own leaf). `403 E_LEAF_NOT_CURRENT` is a leaf that is no longer current (forgotten, as
+below); a trust block leaves. Every other refusal, and one that says "behind" after the last try,
+keeps the hold with no `Remove` and no key, and the client tries again, backing off up to 8 seconds
+between tries. Each try's start is a fresh admission, which the room sweep spares for 30 seconds, so
+a client that keeps trying is bounded by its own recovery window (two minutes of instance time,
+three minutes by its clock) plus those 30 seconds and a sweep pass; one that stops is bounded by the
 instance: the absence `Remove` its start withdrew re-arms once `WithdrawnStandWindow` (30 seconds)
 has passed and the room sweep proposes it again. The start's current-leaf check decides first: `403 E_LEAF_NOT_CURRENT` there covers both a leaf that is no
 longer in the current tree (removed) and a group whose epoch the instance does not know

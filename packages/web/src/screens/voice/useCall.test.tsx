@@ -9,7 +9,7 @@ import type { PageCallOptions } from '../../call/session.ts';
 import { t } from '../../strings/index.ts';
 import { A, CHANNELS, FakeClient, FakeSession, GENV, callState } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
-import { AFK_READ_WAIT_MS, REMOVED_HOLD_MS, RESTORE_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
+import { AFK_READ_WAIT_MS, HELD_RETRY_MAX_MS, REMOVED_HOLD_MS, RESTORE_WAIT_MS, useCall, VoiceDepsContext, type UseCallOptions, type VoiceDeps, type VoiceModule } from './useCall.tsx';
 
 const AFK_CH = 'af'.repeat(16);
 const B = 'b7'.repeat(16);
@@ -1239,6 +1239,51 @@ describe('UP7 fix round 1', () => {
     await until(() => h.v.recoveryChannelId === null);
     expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.leftWhileAway' });
     expect(h.started).toHaveLength(1);
+  });
+});
+
+describe('UP6c tail (m2): a held restore the worker keeps refusing backs off', () => {
+  /** Advances in 50 ms steps for `ms`, noting the fake time of every new start. */
+  const startsOver = async (h: { started: unknown[] }, ms: number): Promise<number[]> => {
+    const at: number[] = [];
+    let seen = h.started.length;
+    for (let t = 0; t < ms; t += 50) {
+      await advance(50);
+      while (h.started.length > seen) { seen += 1; at.push(Date.now()); }
+    }
+    return at;
+  };
+  // A refusal the worker answers with the hold kept (a 400 at the resume commit): not permanent, not transient.
+  const keptHold = () => Object.assign(new Error('E_INVALID_REQUEST'), { code: 'E_INVALID_REQUEST', status: 400, retryAfterMs: null });
+
+  it('while the instance answers, the retries come 1, 2, 4, then 8 s apart, capped at HELD_RETRY_MAX_MS', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    for (let i = 0; i < 6; i++) h.failures.push(keptHold());
+    const t0 = Date.now();
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    const at = await startsOver(h, 24_500);
+    const gaps = [at[0] - t0, ...at.slice(1).map((x, i) => x - at[i])].map((g) => Math.round(g / 1_000));
+    expect(HELD_RETRY_MAX_MS).toBe(8_000);
+    expect(gaps).toEqual([0, 1, 2, 4, 8, 8]);
+  });
+
+  it('the instance answering again starts the backoff over at 1 s, and a success ends it', async () => {
+    fakeClocks();
+    const h = harness();
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    for (let i = 0; i < 4; i++) h.failures.push(keptHold());
+    act(() => h.v.restore(GENV, false, false, { at: Date.now(), gone: Date.now() }));
+    await startsOver(h, 7_200);                       // attempts at 0, 1, 3 and 7 s: the next would be 8 s later
+    expect(h.started).toHaveLength(4);
+    act(() => { h.client.set('connection', { status: 'offline', generation: null }); });
+    act(() => { h.client.set('connection', { status: 'online', generation: null }); });
+    const at = await startsOver(h, 1_500);           // at once, then (that one succeeding) nothing more
+    expect(at).toHaveLength(1);
+    await until(() => h.v.session !== null, 1_000);
+    await advance(20_000);
+    expect(h.started).toHaveLength(5);
   });
 });
 

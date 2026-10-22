@@ -241,6 +241,10 @@ export const SUSPEND_SETTLE_MS = 60_000;
 export const OUTAGE_LEAD_MS = 5_000;
 /** UP7 (R-UP8): the longest wait between two recovery attempts while the instance is unreachable (1, 2, 4 … 30 s). */
 export const RECOVERY_BACKOFF_MAX_MS = 30_000;
+/** UP6c tail (m2): the longest wait between two attempts of a held restore while the instance answers. A resume the
+ *  worker refuses with the hold kept is tried again 1, 2, 4, then every 8 s; the instance answering again, or the hold
+ *  going, starts over at 1 s. */
+export const HELD_RETRY_MAX_MS = 8_000;
 
 /** UP7 (Q1 = B): a call the update reload held, as the next page restores it (wall ms; see CallView.restore). */
 export interface HeldRestore { at: number; gone: number }
@@ -1353,6 +1357,9 @@ export function useCall(o: UseCallOptions): CallView {
   useEffect(() => {
     if (recoveryChannelId === null) return;
     let delay = 1_000;
+    /** UP6c tail (m2): the held restore's own backoff while the instance answers. The first tick below is its 1 s step
+     *  (the restore itself attempted at once); 0 once the instance answered again (its attempt at once, then 1 s). */
+    let heldDelay = 1_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
     let running = false;
@@ -1374,8 +1381,20 @@ export function useCall(o: UseCallOptions): CallView {
       }
       if (cancelled || recoveryRef.current !== recoveryChannelId) return;
       // A restore asks every second through its window while the instance answers (B-M2); a lost connection, and any
-      // recovery while the instance is unreachable, backs off 1, 2, 4 … 30 s (R-UP8).
-      delay = recoveryWindow.current !== null && instanceOnline() ? 1_000 : Math.min(delay * 2, RECOVERY_BACKOFF_MAX_MS);
+      // recovery while the instance is unreachable, backs off 1, 2, 4 … 30 s (R-UP8). UP6c tail (m2): a held restore
+      // whose resume the worker refused with the hold kept backs off 1, 2, 4, 8 s while the instance answers, since each
+      // attempt is a start and a commit at the instance.
+      if (recoveryWindow.current !== null && instanceOnline()) {
+        if (recoveryHeld.current !== null) {
+          heldDelay = heldDelay === 0 ? 1_000 : Math.min(heldDelay * 2, HELD_RETRY_MAX_MS);
+          delay = heldDelay;
+        } else {
+          heldDelay = 0;
+          delay = 1_000;
+        }
+      } else {
+        delay = Math.min(delay * 2, RECOVERY_BACKOFF_MAX_MS);
+      }
       schedule(delay);
     };
     const attempt = async (): Promise<void> => {
@@ -1423,6 +1442,7 @@ export function useCall(o: UseCallOptions): CallView {
       online = now;
       if (!now || cancelled) return;
       delay = 1_000;
+      heldDelay = 0;
       schedule(0);
     });
     schedule(delay);
