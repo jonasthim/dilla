@@ -384,6 +384,7 @@ type CommunityAFK struct {
 type MemberOfCommunityRow struct {
 	CommunityID id.ID
 	UserID      id.ID
+	EpisodeID   id.ID
 	Joined      int64
 	Nick        string
 }

@@ -584,6 +584,66 @@ func TestRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T) {
 	}
 }
 
+func TestRemoveManagedBotInstallationEmitsMembershipLeave(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			h, deps := newTestAPIWithRepository(t, repo, nil)
+			owner, _, token := seedAPISession(t, deps)
+			cid := seedBotCommunity(t, deps, owner.ID)
+			negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+			if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, token); rec.Code != http.StatusOK {
+				t.Fatalf("negotiate wire 3 = %d (%x)", rec.Code, rec.Body.Bytes())
+			}
+			ctx := context.Background()
+			now := deps.Clock.Now().Unix()
+			botUser := store.UserRow{ID: id.New(), Username: "bot" + id.New().String()[:8], Display: "Managed bot", Kind: 1,
+				UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}
+			device := store.DeviceRow{ID: id.New(), UserID: botUser.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: now}
+			installation := store.BotInstallationRow{ID: id.New(), CommunityID: cid, UserID: &botUser.ID, DeviceID: &device.ID,
+				State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: now, Created: now, Updated: now}
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				if err := tx.CreateUser(ctx, botUser); err != nil {
+					return err
+				}
+				if err := tx.CreateBotDevice(ctx, device); err != nil {
+					return err
+				}
+				if err := tx.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: botUser.ID, Joined: now}); err != nil {
+					return err
+				}
+				return tx.CreateBotInstallation(ctx, installation)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			member, err := repo.GetMember(ctx, cid, botUser.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := cborx.Marshal([]any{id.New(), uint64(1)})
+			path := "/v1/communities/" + cid.String() + "/bot"
+			if rec := doBotCBOR(h, http.MethodDelete, path, body, "Bearer "+token); rec.Code != http.StatusNoContent {
+				t.Fatalf("remove managed bot = %d (%x)", rec.Code, rec.Body.Bytes())
+			}
+			page, err := repo.ListBotStructuralEvents(ctx, cid, 0, 10)
+			if err != nil || len(page.Events) != 2 {
+				t.Fatalf("remove events = %+v, %v; want installation and member leave", page, err)
+			}
+			var leave *botprotocol.Event
+			for i := range page.Events {
+				if page.Events[i].Kind == botprotocol.EventMemberLeave {
+					leave = &page.Events[i]
+				}
+			}
+			if leave == nil || len(leave.Data) != 2 || leave.Data[0] != botUser.ID || leave.Data[1] != member.EpisodeID {
+				t.Fatalf("managed bot leave event = %+v; want [%s,%s]", leave, botUser.ID, member.EpisodeID)
+			}
+			if _, err := repo.GetMember(ctx, cid, botUser.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("managed bot membership after removal = %v, want not found", err)
+			}
+		})
+	}
+}
+
 func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, repo store.Repository) {
 	var manager *botruntime.Manager
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {

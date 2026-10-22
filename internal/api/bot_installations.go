@@ -627,7 +627,17 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 					if _, err := tx.DeleteCommunityChannelMembers(r.Context(), cid, *row.UserID); err != nil {
 						return err
 					}
-					if err := tx.DeleteMember(r.Context(), cid, *row.UserID); err != nil && !errors.Is(err, store.ErrNotFound) {
+					member, err := tx.GetMember(r.Context(), cid, *row.UserID)
+					switch {
+					case err == nil:
+						if err := appendMemberEpisodeEvent(r.Context(), tx, botprotocol.EventMemberLeave, cid, *row.UserID, member.EpisodeID, now); err != nil {
+							return err
+						}
+						if err := tx.DeleteMember(r.Context(), cid, *row.UserID); err != nil {
+							return err
+						}
+					case errors.Is(err, store.ErrNotFound):
+					case err != nil:
 						return err
 					}
 					if managedRoleID != nil {

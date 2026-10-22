@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -129,11 +130,19 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
-		switch err := tx.DeleteMember(r.Context(), m.community, m.target); {
-		case err == nil:
+		member, memberErr := tx.GetMember(r.Context(), m.community, m.target)
+		switch {
+		case memberErr == nil:
+			if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, m.community, m.target, member.EpisodeID, now); err != nil {
+				return err
+			}
+			if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
+				return err
+			}
 			removed = true
-		case !errors.Is(err, store.ErrNotFound):
-			return err
+		case errors.Is(memberErr, store.ErrNotFound):
+		case memberErr != nil:
+			return memberErr
 		}
 		// The user's own channel overwrites and channel_members rows go with the
 		// membership: an overwrite must not reopen a channel on a later rejoin, and

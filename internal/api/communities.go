@@ -16,6 +16,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
@@ -280,9 +281,13 @@ func (c *Communities) create(w http.ResponseWriter, r *http.Request) {
 		if err := tx.CreateCommunity(r.Context(), communityRow); err != nil {
 			return err
 		}
+		episode := id.New()
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
-			CommunityID: out.CommunityID, UserID: s.UserID, Joined: now, Nick: nick,
+			CommunityID: out.CommunityID, UserID: s.UserID, EpisodeID: episode, Joined: now, Nick: nick,
 		}); err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberJoin, out.CommunityID, s.UserID, episode, now); err != nil {
 			return err
 		}
 		if err := tx.PutRole(r.Context(), store.RoleRow{
@@ -540,9 +545,13 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		if err := requireCommunityWire(r.Context(), tx, s.WireVersion, &row.ID); err != nil {
 			return err
 		}
+		episode := id.New()
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
-			CommunityID: cid, UserID: s.UserID, Joined: now, Nick: nick,
+			CommunityID: cid, UserID: s.UserID, EpisodeID: episode, Joined: now, Nick: nick,
 		}); err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberJoin, cid, s.UserID, episode, now); err != nil {
 			return err
 		}
 		joined = true
@@ -845,6 +854,13 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		if err := stillModerates(r.Context(), tx, m, PermKickMembers); err != nil {
 			return err
 		}
+		member, err := tx.GetMember(r.Context(), m.community, m.target)
+		if err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, m.community, m.target, member.EpisodeID, c.clk.Now().Unix()); err != nil {
+			return err
+		}
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
@@ -913,6 +929,13 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 			return server.Errorf(server.CodeForbidden,
 				"the owner must transfer ownership or delete the community")
 		}
+		member, err := tx.GetMember(r.Context(), row.ID, s.UserID)
+		if err != nil {
+			return err
+		}
+		if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, row.ID, s.UserID, member.EpisodeID, c.clk.Now().Unix()); err != nil {
+			return err
+		}
 		if err := tx.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
 			return err
 		}
@@ -932,6 +955,19 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 	c.notify.Removed(afterCommit(r), row.ID, s.UserID)
 	c.notify.Changed(afterCommit(r), row.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// appendMemberEpisodeEvent writes the membership event beside the membership row change. Its
+// payload is only the opaque account id and the episode id; profile data stays out.
+func appendMemberEpisodeEvent(ctx context.Context, tx store.Repository, kind protocol.EventKind, community, user, episode id.ID, at int64) error {
+	if episode.IsZero() || at < 0 {
+		return store.ErrConflict
+	}
+	_, err := tx.AppendBotStructuralEvent(ctx, protocol.Event{
+		ID: id.New(), CommunityID: community, Timestamp: uint64(at), Kind: kind,
+		Data: []any{user, episode},
+	})
+	return err
 }
 
 func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {

@@ -2383,21 +2383,44 @@ func (r *Repo) LockCommunity(ctx context.Context, communityID id.ID) error {
 }
 
 func (r *Repo) PutMember(ctx context.Context, m store.MemberOfCommunityRow) error {
-	return wrap(r.w.PutMember(ctx, pgdb.PutMemberParams{
+	if !r.inTx {
+		return r.Tx(ctx, func(tx store.Repository) error { return tx.PutMember(ctx, m) })
+	}
+	if m.EpisodeID.IsZero() {
+		m.EpisodeID = id.New()
+	}
+	if err := wrap(r.w.PutMember(ctx, pgdb.PutMemberParams{
 		CommunityID: m.CommunityID, UserID: m.UserID, Joined: m.Joined, Nick: m.Nick,
-	}))
+	})); err != nil {
+		return err
+	}
+	_, err := r.writeQuery().ExecContext(ctx, `INSERT INTO community_member_episodes(community_id,user_id,episode_id) VALUES($1,$2,$3) ON CONFLICT(community_id,user_id) DO NOTHING`, m.CommunityID, m.UserID, m.EpisodeID)
+	return wrap(err)
+}
+
+func (r *Repo) writeQuery() interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+} {
+	if r.tx != nil {
+		return r.tx
+	}
+	return r.db
 }
 
 func (r *Repo) GetMember(ctx context.Context, communityID, userID id.ID) (store.MemberOfCommunityRow, error) {
-	row, err := r.r.GetMember(ctx, pgdb.GetMemberParams{CommunityID: communityID, UserID: userID})
+	var q interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	} = r.db
+	if r.tx != nil {
+		q = r.tx
+	}
+	var member store.MemberOfCommunityRow
+	err := q.QueryRowContext(ctx, `SELECT m.community_id,m.user_id,e.episode_id,m.joined,m.nick FROM members m JOIN community_member_episodes e USING(community_id,user_id) WHERE m.community_id=$1 AND m.user_id=$2`, communityID, userID).Scan(&member.CommunityID, &member.UserID, &member.EpisodeID, &member.Joined, &member.Nick)
 	if err != nil {
-		// wrap turns sql.ErrNoRows into store.ErrNotFound, which is what every
-		// membership gate in internal/api tests with errors.Is.
+		// wrap turns sql.ErrNoRows into store.ErrNotFound, which membership gates use.
 		return store.MemberOfCommunityRow{}, wrap(err)
 	}
-	return store.MemberOfCommunityRow{
-		CommunityID: row.CommunityID, UserID: row.UserID, Joined: row.Joined, Nick: row.Nick,
-	}, nil
+	return member, nil
 }
 
 func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) error {
