@@ -7,6 +7,8 @@ function time(ms: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+const RANGE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+
 /** Authenticated transport is not shipped yet; tests and future clients may inject an explicit adapter. */
 export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   channelId: string;
@@ -16,6 +18,12 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const [queueOpen, setQueueOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState(false);
+  const [seekDraft, setSeekDraft] = useState<number | null>(null);
+  const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
+  const pendingRef = useRef(false);
+  const queuedSliders = useRef(new Map<'seek' | 'volume', () => void | Promise<void>>());
+  const seekEditing = useRef(false);
+  const volumeEditing = useRef(false);
   const openButton = useRef<HTMLButtonElement>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -50,16 +58,38 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const track = current.track;
   const control = current.permissions.control;
   const manage = current.permissions.manageQueue;
-  const run = (command: () => void | Promise<void>) => {
-    if (pending) return;
+  const execute = (command: () => void | Promise<void>) => {
+    pendingRef.current = true;
     setPending(true);
     setActionError(false);
-    try {
-      void Promise.resolve(command()).catch(() => setActionError(true)).finally(() => setPending(false));
-    } catch {
-      setActionError(true);
+    const finish = (failed: boolean) => {
+      if (failed) setActionError(true);
+      const nextQueued = queuedSliders.current.entries().next();
+      if (!nextQueued.done) {
+        const [key, next] = nextQueued.value;
+        queuedSliders.current.delete(key);
+        execute(next);
+        return;
+      }
+      pendingRef.current = false;
       setPending(false);
+      if (!failed) {
+        if (!seekEditing.current) setSeekDraft(null);
+        if (!volumeEditing.current) setVolumeDraft(null);
+      }
+    };
+    try {
+      void Promise.resolve(command()).then(() => finish(false), () => finish(true));
+    } catch {
+      finish(true);
     }
+  };
+  const run = (command: () => void | Promise<void>) => {
+    if (!pendingRef.current) execute(command);
+  };
+  const runSlider = (key: 'seek' | 'volume', command: () => void | Promise<void>) => {
+    if (pendingRef.current) queuedSliders.current.set(key, command);
+    else execute(command);
   };
   const queue = <ol className="dw-voice-music__queue" aria-label={t('voice.music.queue')}>
     {current.queue.map((item, index) => <li key={item.id}>
@@ -105,13 +135,23 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
           </select></label>
         </div>
         <label className="dw-voice-music__seek">{t('voice.music.position', { current: time(current.positionMs), duration: time(track.durationMs) })}
-          <input type="range" min="0" max={track.durationMs} value={Math.min(current.positionMs, track.durationMs)} disabled={pending || !control}
-            aria-label={t('voice.music.seek')} onChange={event => run(() => adapter.seek(channelId, Number(event.currentTarget.value)))} />
+          <input type="range" min="0" max={track.durationMs} value={Math.min(seekDraft ?? current.positionMs, track.durationMs)} disabled={!control}
+            aria-label={t('voice.music.seek')} onPointerDown={() => { seekEditing.current = true; }}
+            onKeyDown={event => { if (RANGE_KEYS.has(event.key)) seekEditing.current = true; }}
+            onChange={event => { seekEditing.current = true; setSeekDraft(Number(event.currentTarget.value)); }}
+            onPointerUp={event => { const value = Number(event.currentTarget.value); seekEditing.current = false; setSeekDraft(value); runSlider('seek', () => adapter.seek(channelId, value)); }}
+            onKeyUp={event => { if (RANGE_KEYS.has(event.key)) { const value = Number(event.currentTarget.value); seekEditing.current = false; setSeekDraft(value); runSlider('seek', () => adapter.seek(channelId, value)); } }}
+            onBlur={event => { if (seekEditing.current) { const value = Number(event.currentTarget.value); seekEditing.current = false; setSeekDraft(value); runSlider('seek', () => adapter.seek(channelId, value)); } }} />
         </label>
       </>}
       <label className="dw-voice-music__volume">{t('voice.music.volume', { volume: current.volume })}
-        <input type="range" min="0" max="100" value={current.volume} disabled={pending || !control}
-          aria-label={t('voice.music.volumeLabel')} onChange={event => run(() => adapter.setVolume(channelId, Number(event.currentTarget.value)))} />
+        <input type="range" min="0" max="100" value={volumeDraft ?? current.volume} disabled={!control}
+          aria-label={t('voice.music.volumeLabel')} onPointerDown={() => { volumeEditing.current = true; }}
+          onKeyDown={event => { if (RANGE_KEYS.has(event.key)) volumeEditing.current = true; }}
+          onChange={event => { volumeEditing.current = true; setVolumeDraft(Number(event.currentTarget.value)); }}
+          onPointerUp={event => { const value = Number(event.currentTarget.value); volumeEditing.current = false; setVolumeDraft(value); runSlider('volume', () => adapter.setVolume(channelId, value)); }}
+          onKeyUp={event => { if (RANGE_KEYS.has(event.key)) { const value = Number(event.currentTarget.value); volumeEditing.current = false; setVolumeDraft(value); runSlider('volume', () => adapter.setVolume(channelId, value)); } }}
+          onBlur={event => { if (volumeEditing.current) { const value = Number(event.currentTarget.value); volumeEditing.current = false; setVolumeDraft(value); runSlider('volume', () => adapter.setVolume(channelId, value)); } }} />
       </label>
       <div id="dw-voice-music-queue" className="dw-voice-music__queue-wrap" role="region" aria-labelledby="dw-voice-music-queue-title"
         hidden={!queueOpen}>

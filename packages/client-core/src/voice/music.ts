@@ -37,6 +37,7 @@ export interface VoiceMusicAdapter {
   state(channelId: string): VoiceMusicState;
   /** Notify after each optimistic update, confirmed update or server rollback. */
   subscribe(channelId: string, onChange: () => void): () => void;
+  /** Successful commands resolve after publishing their accepted snapshot; rejection leaves the prior snapshot intact. */
   pause(channelId: string, paused: boolean): void | Promise<void>;
   skip(channelId: string): void | Promise<void>;
   stop(channelId: string): void | Promise<void>;

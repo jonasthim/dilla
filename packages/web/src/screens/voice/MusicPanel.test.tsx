@@ -28,6 +28,14 @@ function adapter(permissions = { control: true, manageQueue: true }): TestAdapte
     current = { ...current, paused };
     listeners.forEach(listener => listener());
   });
+  calls.seek.mockImplementation((_channelId, positionMs) => {
+    current = { ...current, positionMs };
+    listeners.forEach(listener => listener());
+  });
+  calls.setVolume.mockImplementation((_channelId, volume) => {
+    current = { ...current, volume };
+    listeners.forEach(listener => listener());
+  });
   return {
     state: vi.fn(() => current),
     subscribe: (_channelId, onChange) => { listeners.add(onChange); return () => { listeners.delete(onChange); }; },
@@ -54,10 +62,16 @@ describe('MusicPanel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled());
-    fireEvent.change(screen.getByRole('slider', { name: 'Seek' }), { target: { value: '45000' } });
-    await waitFor(() => expect(screen.getByRole('slider', { name: 'Seek' })).toBeEnabled());
-    fireEvent.change(screen.getByRole('slider', { name: 'Music volume' }), { target: { value: '60' } });
-    await waitFor(() => expect(screen.getByRole('slider', { name: 'Music volume' })).toBeEnabled());
+    const seekSlider = screen.getByRole('slider', { name: 'Seek' });
+    fireEvent.pointerDown(seekSlider);
+    fireEvent.change(seekSlider, { target: { value: '45000' } });
+    fireEvent.pointerUp(seekSlider);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Skip' })).toBeEnabled());
+    const volume = screen.getByRole('slider', { name: 'Music volume' });
+    fireEvent.pointerDown(volume);
+    fireEvent.change(volume, { target: { value: '60' } });
+    fireEvent.pointerUp(volume);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Shuffle' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Shuffle' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Shuffle' })).toBeEnabled());
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } });
@@ -99,6 +113,41 @@ describe('MusicPanel', () => {
     await act(() => { rejectAction?.(new Error('write failed')); return Promise.resolve(); });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('The music update failed. Try again.'));
     expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+  });
+
+  it('keeps seek usable during an in-flight command and coalesces to the final drag value', async () => {
+    const music = adapter();
+    let resolveFirst: (() => void) | undefined;
+    music.calls.seek.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }));
+    render(<MusicPanel channelId="channel-1" adapter={music} />);
+    const seek = screen.getByRole('slider', { name: 'Seek' });
+
+    fireEvent.pointerDown(seek);
+    fireEvent.change(seek, { target: { value: '45000' } });
+    fireEvent.pointerUp(seek);
+    await waitFor(() => expect(music.calls.seek).toHaveBeenCalledWith('channel-1', 45_000));
+    expect(seek).toBeEnabled();
+
+    fireEvent.pointerDown(seek);
+    fireEvent.change(seek, { target: { value: '70000' } });
+    fireEvent.pointerUp(seek);
+    const volume = screen.getByRole('slider', { name: 'Music volume' });
+    fireEvent.pointerDown(volume);
+    fireEvent.change(volume, { target: { value: '82' } });
+    fireEvent.pointerUp(volume);
+    expect(seek).toBeEnabled();
+    expect(volume).toBeEnabled();
+    expect(seek).toHaveValue('70000');
+    expect(volume).toHaveValue('82');
+    expect(music.calls.seek).toHaveBeenCalledTimes(1);
+    expect(music.calls.setVolume).not.toHaveBeenCalled();
+
+    await act(() => { resolveFirst?.(); return Promise.resolve(); });
+    await waitFor(() => expect(music.calls.seek).toHaveBeenCalledTimes(2));
+    expect(music.calls.seek).toHaveBeenLastCalledWith('channel-1', 70_000);
+    await waitFor(() => expect(seek).toHaveValue('70000'));
+    expect(music.calls.setVolume).toHaveBeenCalledWith('channel-1', 82);
+    await waitFor(() => expect(volume).toHaveValue('82'));
   });
 
   it('exposes queue management from the desktop player and can collapse it again', async () => {
