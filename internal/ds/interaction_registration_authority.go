@@ -23,6 +23,9 @@ type Kind3PreflightEvidence struct {
 	tuple                 InteractionAdmissionTuple
 	admissionID           id.ID
 	policyVersion         uint64
+	authenticatedGroupID  id.ID
+	authenticatedBinding  []byte
+	authenticatedLeaves   uint64
 	receiptPayload        []byte
 	receiptSig            []byte
 	registration          RegisterRequest
@@ -31,11 +34,12 @@ type Kind3PreflightEvidence struct {
 	participantDeviceList []mlswasi.DeviceListEntry
 }
 
-// RegisteredKind3State is the state read back from the newly registered MLS group in
-// the same transaction that will consume the admission receipt.
+// RegisteredKind3State is the authenticated initial MLS state extracted from the exact
+// submitted GroupInfo/tree before the group is persisted in the final transaction.
 type RegisteredKind3State struct {
 	GroupID    id.ID
 	Binding    []byte
+	LeafCount  uint64
 	Generation uint64
 	Epoch      uint64
 	NextSeq    uint64
@@ -81,6 +85,7 @@ func PrepareKind3PreflightEvidence(ctx context.Context, extractor InteractionReg
 	}
 	return Kind3PreflightEvidence{
 		tuple: preflight.Expected, admissionID: wire.AdmissionID, policyVersion: preflight.ExpectedPolicyVersion,
+		authenticatedGroupID: preflight.Expected.GroupID, authenticatedBinding: append([]byte(nil), preflight.Registration.Binding...), authenticatedLeaves: 2,
 		receiptPayload: append([]byte(nil), preflight.ReceiptPayload...),
 		receiptSig:     append([]byte(nil), preflight.ReceiptSignature...),
 		registration:   cloneRegisterRequest(preflight.Registration), requestHash: hash,
@@ -104,11 +109,24 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if err != nil || requestHash != evidence.requestHash || !sameRegistration(registration, evidence.registration) || state.GroupID != expected.GroupID || !bytes.Equal(state.Binding, registration.Binding) {
 		return out, errors.New("ds: final kind-3 registration differs from authenticated preflight")
 	}
-	if registration.GroupID != expected.GroupID || state.Generation == 0 || state.NextSeq == 0 || len(registrationBody) == 0 {
+	if registration.GroupID != expected.GroupID || state.Generation == 0 || state.Epoch != 0 || state.NextSeq != 1 || len(registrationBody) == 0 || state.LeafCount != 2 || state.GroupID != evidence.authenticatedGroupID || evidence.authenticatedLeaves != 2 || !bytes.Equal(state.Binding, evidence.authenticatedBinding) {
 		return out, errors.New("ds: invalid final kind-3 registered state")
 	}
 	if session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady {
 		return out, errors.New("ds: Bot session state is not eligible for kind-3 registration")
+	}
+	initial, err := tx.GetBotInstallation(ctx, installationID)
+	if err != nil || initial.CommunityID != expected.CommunityID || initial.RuntimeID == nil || initial.RemovedAt != nil {
+		return out, errors.New("ds: active Bot runtime installation required")
+	}
+	if err := tx.LockInstanceGeneration(ctx); err != nil {
+		return out, err
+	}
+	if err := tx.LockBotRuntime(ctx, *initial.RuntimeID); err != nil {
+		return out, err
+	}
+	if err := tx.LockBotCommunity(ctx, expected.CommunityID); err != nil {
+		return out, err
 	}
 	if err := tx.LockCommunity(ctx, expected.CommunityID); err != nil {
 		return out, err
@@ -128,8 +146,12 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	}
 
 	installation, err := tx.GetBotInstallation(ctx, installationID)
-	if err != nil || installation.ID != installationID || installation.CommunityID != expected.CommunityID || installation.State != session.Bot.State || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || installation.CredentialVerifiedAt == nil || *installation.UserID != session.UserID || *installation.DeviceID != session.DeviceID {
+	if err != nil || installation.ID != installationID || installation.CommunityID != expected.CommunityID || installation.RuntimeID == nil || *installation.RuntimeID != *initial.RuntimeID || installation.State != session.Bot.State || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || installation.CredentialVerifiedAt == nil || *installation.UserID != session.UserID || *installation.DeviceID != session.DeviceID {
 		return out, errors.New("ds: current installation does not match kind-3 Bot session")
+	}
+	runtime, err := tx.GetBotRuntime(ctx, *installation.RuntimeID)
+	if err != nil || runtime.RevokedAt != nil {
+		return out, errors.New("ds: managed Bot runtime is no longer active")
 	}
 	bound, err := tx.GetBotSessionBinding(ctx, session.TokenHash)
 	if err != nil || bound.InstallationID != installation.ID || bound.UserID != session.UserID || bound.DeviceID != session.DeviceID {
@@ -192,7 +214,13 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 		return out, errors.New("ds: kind-3 registration policy or protocol versions are stale")
 	}
 	instance, err := tx.GetInstance(ctx)
-	if err != nil || instance.InstanceID != d.opts.Keys.InstanceID || instance.ExternalSenderKeyID != d.opts.Keys.ExternalSenderKeyID || expected.InstanceID != instance.InstanceID {
+	if err != nil {
+		return out, err
+	}
+	if instance.Generation != state.Generation {
+		return out, errors.New("ds: registered MLS state has a stale instance generation")
+	}
+	if instance.InstanceID != d.opts.Keys.InstanceID || instance.ExternalSenderKeyID != d.opts.Keys.ExternalSenderKeyID || expected.InstanceID != instance.InstanceID {
 		return out, errors.New("ds: current instance key context is stale")
 	}
 	instanceKey := ed25519.NewKeyFromSeed(d.opts.Keys.ExternalSenderPriv[:])
@@ -231,7 +259,8 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 	if err != nil || !bytes.Equal(canonicalBody, registrationBody) {
 		return out, errors.New("ds: registration body is not the canonical preflight request")
 	}
-	bodyHash := sha256.Sum256(canonicalBody)
+	domainBody := append([]byte("dilla bot group registration v1\x00"), canonicalBody...)
+	bodyHash := sha256.Sum256(domainBody)
 	out.Admission = issued
 	out.Receipt = store.BotGroupRegistrationReceipt{InstallationID: installation.ID, OperationID: operationID, UserID: bot.ID, DeviceID: botDevice.ID, CommunityID: community.ID, GroupID: state.GroupID, BodySHA256: bodyHash[:], Generation: state.Generation, Epoch: state.Epoch, NextSeq: state.NextSeq, AcceptedAt: now}
 	return out, nil
