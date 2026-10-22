@@ -28,6 +28,11 @@ limit. Each CONNECT tunnel is capped at 512 MiB and all tunnels in one process
 share a 1 GiB budget. PCM sessions end on context cancellation or after at most
 24 hours by default. Metadata runs have a two-minute cap and bounded output.
 
+`OpusStarter` accepts an already-resolved YouTube video track and explicitly
+bridges its sandboxed 44.1 kHz stereo PCM into the existing bounded Opus runtime.
+It returns the sample source without creating a LiveKit publisher or opening a
+voice call; an owning playback lifecycle must make that separate decision.
+
 The tests launch fake extractor and FFmpeg processes in the real local
 bubblewrap namespace, confirm direct public-network access fails, check the
 broker hostname/IP policy, and verify argument, cancellation, and output bounds.

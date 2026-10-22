@@ -75,6 +75,20 @@ func TestResolveRequiresSandboxedRunner(t *testing.T) {
 	}
 }
 
+func TestResolveFailsClosedOnMetadataRunnerError(t *testing.T) {
+	resolver := MetadataResolver{
+		YTDLP: "/configured/yt-dlp",
+		Node:  "/configured/node",
+		runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) {
+			return nil, ErrExtractFailed
+		}),
+	}
+	tracks, err := resolver.Resolve(context.Background(), "study music")
+	if !errors.Is(err, ErrExtractFailed) || len(tracks) != 0 {
+		t.Fatalf("Resolve after extractor failure = (%#v, %v), want no tracks and ErrExtractFailed", tracks, err)
+	}
+}
+
 func TestIsolatedMetadataRunnerUsesArgvWithoutShellExpansion(t *testing.T) {
 	dir := t.TempDir()
 	marker := dir + "/injected"
