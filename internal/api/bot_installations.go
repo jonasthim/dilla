@@ -103,6 +103,7 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	m.Handle("PUT /v1/communities/{community}/bot", botSession("PUT /v1/communities/{community}/bot", http.HandlerFunc(d.ConfigureBotInstallation)))
 	m.Handle("POST /v1/communities/{community}/bot/disable", botSession("POST /v1/communities/{community}/bot/disable", http.HandlerFunc(d.DisableBotInstallation)))
 	m.Handle("DELETE /v1/communities/{community}/bot", botSession("DELETE /v1/communities/{community}/bot", http.HandlerFunc(d.RemoveBotInstallation)))
+	m.Handle("GET /v1/communities/{community}/bot/actors/{actor}/authority", botSession("GET /v1/communities/{community}/bot/actors/{actor}/authority", http.HandlerFunc(d.GetBotActorAuthority)))
 	m.HandleFunc("GET /v1/bot-runtime/installations", d.ListRuntimeInstallations)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/claim", d.ClaimBotInstallation)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/enroll", d.EnrollBotInstallation)
