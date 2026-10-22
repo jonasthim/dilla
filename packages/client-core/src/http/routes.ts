@@ -638,7 +638,8 @@ export class Routes {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/tree`, 'read', true);
   }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
-    const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;
+    // kinds=3 (UP6b): this core applies `withdrawn` rows; without it the instance leaves them out.
+    const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}&kinds=3`;
     const p = page(await this.body('GET', path, 'read', true));
     return { raw: p.raw, count: p.count, lastSeq: p.last };
   }

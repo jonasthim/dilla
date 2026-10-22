@@ -76,6 +76,8 @@ export class CallRefusal extends CoreError {}
 interface Live {
   channel: string; channelId: Id; dm: boolean; members: string[]; groupId: Id; callId: Id; vdec: string;
   postedEpoch: bigint; leaving: boolean;
+  /** UP6b: the last rotation was refused 409 (`withdrawn`): the next one catches the group up first. */
+  catchUpFirst?: boolean;
   /** Re-review N-m1: a hold made the page drop the key of postedEpoch (the pipeline then bars that epoch as a sender), so
    *  the hold ends only with a newer epoch's key. */
   keysDropped: boolean;
@@ -847,6 +849,12 @@ export class CallController {
     const heldOut = this.state.phase === 'paused' && live.rotateOut;
     if (this.state.phase === 'paused' && !heldOut) { this.armRotation(CALL_ROTATE_MS); return; }
     if (this.state.phase !== 'in' && !heldOut) return;
+    if (live.catchUpFirst) {
+      // Outside the lane: catchUp runs on it, and this job's own lane work starts below.
+      live.catchUpFirst = false;
+      await this.deps.catchUp(live.groupId);
+      if (this.live !== live || live.leaving) return;
+    }
     await this.deps.serial(live.groupId, async () => {
       // A leave that started while this waited for the lane (blocked or not, it sets `leaving` first): never a rotation,
       // since call_rotate would cancel the posted self-Remove. This is the one in-lane guard against it.
@@ -858,8 +866,11 @@ export class CallController {
       catch { this.retryRotation(live); return; }
       try {
         await this.deps.routes.postCommit(live.groupId, body);
-      } catch {
+      } catch (e) {
         try { core.commitAbort(live.groupId); } catch { /* nothing pending */ }
+        // UP6b: a 409 (E_COMMIT_CONFLICT, `withdrawn` among them) means this queue is behind the group: the retry
+        // catches up first, which applies the kind-3 row that takes a withdrawn Remove out of the queue.
+        if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_COMMIT_CONFLICT') live.catchUpFirst = true;
         this.retryRotation(live);
         return;
       }

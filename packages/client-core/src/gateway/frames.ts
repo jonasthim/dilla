@@ -43,6 +43,9 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   // predates the class (web3.7 only). Checked before the generic arity rule.
   if (op === 19n && !(payload.length === 6 || (payload.length === 7 && classOrNull(payload[6])))) shape();
   if (spec !== undefined && ((op !== 19n && payload.length !== spec.elements) || spec.grouped !== (groupId !== null))) shape();
+  // op 16 mls.handshake, kind 3 `withdrawn` (UP6b): the sender is null (the instance) and the blob is exactly
+  // [proposal_ref(bstr)]; anything else is a shape error.
+  if (op === 16n && payload[2] === 3n && (payload[3] !== null || !withdrawnBlob(payload[4]))) shape();
   if (op === 49n && (!isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !bit(payload[3]) || !uint(payload[4]))) shape();
   // op 50 voice_state: its flags are the five bits of 02 § voice_state (0..31); op 52's own flags stay 0..3.
   if (op === 50n && (!isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !voiceFlags(payload[3]))) shape();
@@ -58,6 +61,16 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 }
 
 const isId = (value: CborValue | undefined): boolean => value instanceof Uint8Array && value.length === 16;
+/** A `withdrawn` row's blob: the deterministic CBOR of a one-element array holding one non-empty bstr. */
+function withdrawnBlob(value: CborValue | undefined): boolean {
+  if (!(value instanceof Uint8Array)) return false;
+  try {
+    const inner = decode(value);
+    return Array.isArray(inner) && inner.length === 1 && inner[0] instanceof Uint8Array && inner[0].length > 0;
+  } catch {
+    return false;
+  }
+}
 const uint = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n;
 const bit = (value: CborValue | undefined): boolean => value === 0n || value === 1n;
 const classOrNull = (value: CborValue | undefined): boolean => value === null || bit(value);

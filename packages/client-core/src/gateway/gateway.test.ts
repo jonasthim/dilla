@@ -207,7 +207,7 @@ describe('Gateway connect', () => {
     s.open();
     expect(s.sent).toHaveLength(0);
     s.receive(hello());
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
@@ -248,7 +248,7 @@ describe('Gateway connect', () => {
     const s = h.last();
     s.open();
     s.receive(hello({ wire: [1, 2] }));
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1])]);
     for (const bad of [[[2], [2], [1]], [[2], [1], [2]]]) {
       const g = harness();
       g.gw.start();
@@ -599,7 +599,7 @@ describe('Gateway reconnect', () => {
     h.gw.commitAck(GROUP, 3n);
     const ops = [...s1.sentFrames(), ...s2.sentFrames()].map((f) => f.op);
     expect(ops).toEqual([Op.identify, Op.heartbeat, Op.identify, Op.commitAck]);
-    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0]));
+    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 1]));
     expect(s2.protocols).toEqual(['dilla.v1', 'dilla.ticket.t2']);
   });
 });
@@ -622,7 +622,10 @@ it('identifies with the frames.json identify vector, the token aside', async () 
   s.receive(hello());
   const sent = s.sentFrames()[0];
   expect([sent.op, sent.n]).toEqual([vector!.op, BigInt(vector!.n)]);
-  expect(toHex(encode(['tok', ...sent.payload.slice(1)] as CborInput))).toBe(vector!.payload);
+  // The vector's caps is 0; this client sets bit 0, `withdrawn_rows` (UP6b), and the four elements before it are the
+  // vector's.
+  expect(sent.payload[4]).toBe(1n);
+  expect(toHex(encode(['tok', ...sent.payload.slice(1, 4), want[4]!] as CborInput))).toBe(vector!.payload);
   expect(sent.payload[0]).toBe('');
 });
 

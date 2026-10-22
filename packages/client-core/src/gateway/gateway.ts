@@ -46,6 +46,8 @@ export const CLIENT_CLOSE = {
 const DEFAULT_MAX_FRAME_BYTES = 131584;
 /** web3.8 (R2): the wire version this client identifies with; a hello that does not offer it closes 4006 (protocol/07). */
 const WIRE = 2n;
+/** identify's caps (protocol/02 § Control): bit 0 `withdrawn_rows`, handshake kind 3 (UP6b). */
+export const CAPS = 1;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & { versions: bigint[][] };
 
@@ -208,7 +210,8 @@ export class Gateway {
         return;
       }
       this.hello = hello;
-      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, 0]));
+      // caps bit 0 (`withdrawn_rows`, UP6b): this core applies handshake rows of kind 3.
+      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, CAPS]));
       this.phase = 'ready-wait';
       this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => this.teardown(CLIENT_CLOSE.helloTimeout, true));
       return;

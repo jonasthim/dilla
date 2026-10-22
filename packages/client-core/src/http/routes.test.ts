@@ -299,12 +299,12 @@ const CASES: Case[] = [
   },
   {
     name: 'getHandshakes counts rows and reads the last seq', call: (r) => r.getHandshakes(GROUP, 1n, 512),
-    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=1&limit=512`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=1&limit=512&kinds=3`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, HANDSHAKES), expected: { raw: HANDSHAKES, count: 2, lastSeq: 2n },
   },
   {
     name: 'getHandshakes of an empty page', call: (r) => r.getHandshakes(GROUP, 9n, 512),
-    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=9&limit=512`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/handshakes?from=9&limit=512&kinds=3`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, EMPTY_ARRAY), expected: { raw: EMPTY_ARRAY, count: 0, lastSeq: null },
   },
   {

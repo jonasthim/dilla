@@ -936,6 +936,26 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     expect(w.server.routes().filter((r) => r === 'POST commit')).toHaveLength(2);
   });
 
+  // UP6b: a rotation refused 409 E_COMMIT_CONFLICT `withdrawn` (the instance withdrew a Remove this queue still holds)
+  // catches the group up first, which applies the kind-3 row, and only then rotates.
+  it('retryRotation after a 409 withdrawn catches up first, then rotates', async () => {
+    const w = await joined();
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    w.server.reset();
+    w.server.answer('POST commit', 409, 'E_COMMIT_CONFLICT');
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.server.routes().filter((r) => r === 'POST commit')).toHaveLength(1);
+    const catchUp = w.server.holdRaw('getHandshakes');
+    await w.clock.advance(60_000);
+    await catchUp.reached;
+    expect(w.server.routes().filter((r) => r === 'POST commit')).toHaveLength(1);   // the catch-up comes first
+    catchUp.release();
+    await settled(w);
+    expect(w.server.routes().filter((r) => r === 'POST commit')).toHaveLength(2);
+  });
+
   // Progress note of task 5: call_rotate cancels a pending leave, so a worker that has posted its self-Remove must
   // never rotate (it forgets instead).
   it('never rotates after callLeave has posted its self-Remove', async () => {
