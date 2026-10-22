@@ -418,7 +418,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							if scheduleErr == nil {
 								scheduleErr = scheduler.RunDue(ctx)
 							}
-							ensureErr = errors.Join(ensureErr, scheduleErr)
+							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
+							if caseErr == nil {
+								_, caseErr = caseSink.PurgeExpiredResumable(ctx)
+							}
+							if caseErr != nil {
+								logger.Error("bot moderation evidence retention maintenance failed", "installation_id", installation.ID.String(), "error", caseErr.Error())
+							}
+							ensureErr = errors.Join(ensureErr, scheduleErr, caseErr)
 						}
 					}
 				}

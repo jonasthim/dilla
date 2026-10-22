@@ -20,13 +20,16 @@ import (
 )
 
 const (
-	moderationCaseStateArea = uint64(4)
-	moderationCaseVersion   = uint64(1)
-	moderationCaseRetention = 90 * 24 * time.Hour
-	moderationCaseScanLimit = uint64(100)
-	moderationCaseMaxValue  = 16 << 10
-	moderationCaseMaxCursor = 128
+	moderationCaseStateArea   = uint64(4)
+	moderationPurgeCursorArea = uint64(8)
+	moderationCaseVersion     = uint64(1)
+	moderationCaseRetention   = 90 * 24 * time.Hour
+	moderationCaseScanLimit   = uint64(100)
+	moderationCaseMaxValue    = 16 << 10
+	moderationCaseMaxCursor   = 128
 )
+
+var moderationPurgeCursorKey = []byte("dilla.bot.moderation.purge-cursor.v1")
 
 var (
 	ErrModerationCaseState              = errors.New("invalid moderation case state")
@@ -355,4 +358,49 @@ func (s *ModerationCaseSink) PurgeExpired(ctx context.Context, after []byte) (in
 		return removed, page.Next, fmt.Errorf("purge moderation case: %w", txErr)
 	}
 	return removed, append([]byte(nil), page.Next...), nil
+}
+
+// PurgeExpiredResumable removes one bounded page and stores its cursor in
+// encrypted app state, so the next maintenance run can continue after restart.
+// If the cursor write has an uncertain result, reading back the desired value
+// makes retry safe; repeating a page is also safe because deletes use revisions.
+func (s *ModerationCaseSink) PurgeExpiredResumable(ctx context.Context) (int, error) {
+	if s == nil || ctx == nil {
+		return 0, ErrModerationCaseState
+	}
+	cursor, err := s.native.StateGet(ctx, moderationPurgeCursorArea, moderationPurgeCursorKey)
+	if err != nil {
+		return 0, err
+	}
+	if cursor.Revision > 0 && !cursor.Tombstone && (len(cursor.Value) == 0 || len(cursor.Value) > moderationCaseMaxCursor) {
+		return 0, ErrModerationCaseState
+	}
+	var after []byte
+	if cursor.Revision > 0 && !cursor.Tombstone {
+		after = append([]byte(nil), cursor.Value...)
+	}
+	removed, next, err := s.PurgeExpired(ctx, after)
+	if err != nil {
+		return removed, err
+	}
+	if len(next) > moderationCaseMaxCursor {
+		return removed, ErrModerationCaseState
+	}
+	if next == nil && (cursor.Revision == 0 || cursor.Tombstone) || next != nil && !cursor.Tombstone && bytes.Equal(next, cursor.Value) {
+		return removed, nil
+	}
+	var value []byte
+	if next != nil {
+		value = next
+	}
+	_, txErr := s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationPurgeCursorArea, Key: moderationPurgeCursorKey,
+		ExpectedRevision: cursor.Revision, Value: value}})
+	if txErr == nil {
+		return removed, nil
+	}
+	actual, readErr := s.native.StateGet(ctx, moderationPurgeCursorArea, moderationPurgeCursorKey)
+	if readErr == nil && actual.Revision == cursor.Revision+1 && actual.Tombstone == (next == nil) && bytes.Equal(actual.Value, next) {
+		return removed, nil
+	}
+	return removed, fmt.Errorf("persist moderation purge cursor: %w", txErr)
 }

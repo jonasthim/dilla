@@ -15,6 +15,7 @@ import (
 type moderationCaseNativeFake struct {
 	binding        native.Binding
 	rows           map[string]native.StateValue
+	cursor         native.StateValue
 	failAfterWrite bool
 }
 
@@ -23,6 +24,9 @@ func newModerationCaseNative() *moderationCaseNativeFake {
 }
 func (n *moderationCaseNativeFake) Binding() native.Binding { return n.binding }
 func (n *moderationCaseNativeFake) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if area == moderationPurgeCursorArea && string(key) == string(moderationPurgeCursorKey) {
+		return n.cursor, nil
+	}
 	if area != moderationCaseStateArea {
 		return native.StateValue{}, errors.New("wrong area")
 	}
@@ -34,10 +38,20 @@ func (n *moderationCaseNativeFake) StateGet(_ context.Context, area uint64, key 
 	return v, nil
 }
 func (n *moderationCaseNativeFake) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
-	if len(changes) != 1 || changes[0].Area != moderationCaseStateArea {
+	if len(changes) != 1 {
 		return nil, errors.New("bad transaction")
 	}
 	c := changes[0]
+	if c.Area == moderationPurgeCursorArea && string(c.Key) == string(moderationPurgeCursorKey) {
+		if n.cursor.Revision != c.ExpectedRevision {
+			return nil, errors.New("revision conflict")
+		}
+		n.cursor = native.StateValue{Revision: n.cursor.Revision + 1, Tombstone: c.Value == nil, Value: append([]byte(nil), c.Value...)}
+		return []uint64{n.cursor.Revision}, nil
+	}
+	if c.Area != moderationCaseStateArea {
+		return nil, errors.New("wrong area")
+	}
 	old := n.rows[string(c.Key)]
 	if old.Revision != c.ExpectedRevision {
 		return nil, errors.New("revision conflict")
@@ -197,5 +211,39 @@ func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {
 	cases, _, err := sink.List(context.Background(), nil, 10)
 	if err != nil || len(cases) != 1 || cases[0].Message != fresh.Message {
 		t.Fatalf("remaining cases = %#v, %v", cases, err)
+	}
+}
+
+func TestModerationCasePurgeResumesAfterRestartFromEncryptedCursor(t *testing.T) {
+	n := newModerationCaseNative()
+	now := time.Unix(1_800_000_000, 0)
+	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	for i := uint64(0); i < moderationCaseScanLimit+1; i++ {
+		action := sampleModerationAction(n, i+1)
+		action.ReceivedAt = now.Add(-91 * 24 * time.Hour)
+		if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := sink.PurgeExpiredResumable(context.Background())
+	if err != nil || removed == 0 || n.cursor.Tombstone || len(n.cursor.Value) == 0 {
+		t.Fatalf("first resumable purge = %d, cursor=%+v, err=%v", removed, n.cursor, err)
+	}
+
+	// A new sink represents a process restart. It must continue from encrypted
+	// state rather than begin at the first page again.
+	restarted, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	removed, err = restarted.PurgeExpiredResumable(context.Background())
+	if err != nil || removed != 1 {
+		t.Fatalf("resumed purge = %d, cursor=%+v, err=%v", removed, n.cursor, err)
+	}
+	// The page cursor is cleared only after an empty terminal scan.
+	removed, err = restarted.PurgeExpiredResumable(context.Background())
+	if err != nil || removed != 0 || !n.cursor.Tombstone {
+		t.Fatalf("terminal purge = %d, cursor=%+v, err=%v", removed, n.cursor, err)
+	}
+	cases, _, err := restarted.List(context.Background(), nil, 10)
+	if err != nil || len(cases) != 0 {
+		t.Fatalf("remaining cases = %d, err=%v", len(cases), err)
 	}
 }
