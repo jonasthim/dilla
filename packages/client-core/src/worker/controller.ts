@@ -1038,7 +1038,33 @@ export class Controller {
     }
     // In phase 3 a refused session is the sign-in step's own error, not a revocation.
     if (!ok && this.core?.identity().phase !== 3 && !enrolling) this.enterRevoked();
+    if (ok && this.core?.identity().phase === 2 && !enrolling) await this.checkInstanceSignerPin();
     return ok;
+  }
+
+  /** Authenticated discovery must agree with the pin established at enrollment before normal operation resumes. */
+  private async checkInstanceSignerPin(): Promise<void> {
+    const core = this.requireCore();
+    const identity = core.identity();
+    const read = await this.routes.getInstance();
+    if (identity.instanceId === null || toHex(read.instanceId) !== toHex(identity.instanceId)) {
+      const error = new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
+      this.failInstanceSignerPin(error);
+      throw error;
+    }
+    try {
+      core.instanceSignerKeyMatches(read.externalSenderPub);
+    } catch (e) {
+      if (e instanceof CoreError && e.code === 'E_CORE_STATE') this.failInstanceSignerPin(e);
+      throw e;
+    }
+  }
+
+  private failInstanceSignerPin(error: CoreError): void {
+    this.gateway?.stop();
+    if (!this.revoked() && !this.wiping && !this.storeCleared) {
+      this.setAccount({ phase: 'error', error: errorOf(error) });
+    }
   }
 
   handle(data: unknown): void {
@@ -1497,6 +1523,8 @@ export class Controller {
       const ok = await session.ensure();
       if (this.revoked()) return;
       if (!ok) { this.enterRevoked(); return; }
+      await this.checkInstanceSignerPin();
+      if (this.revoked()) return;
       // (c)
       await this.parts.publishDeviceList(core, this.routes);
       if (this.revoked()) return;
@@ -1806,10 +1834,19 @@ export class Controller {
     try {
       const ok = await session.establish();
       if (this.revoked() || this.wiping) return;
-      if (ok) this.gateway?.start();
+      if (ok) {
+        if (this.core?.identity().phase === 2) await this.checkInstanceSignerPin();
+        if (this.revoked() || this.wiping) return;
+        this.gateway?.start();
+      }
       else this.enterRevoked();
     } catch (e) {
       if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return; }
+      if (e instanceof CoreError && e.code === 'E_CORE_STATE') {
+        this.gateway?.stop();
+        this.setAccount({ phase: 'error', error: errorOf(e) });
+        return;
+      }
       // Not a refusal (a network failure, a 5xx): try the socket again later; a refused ticket comes back here.
       if (this.revoked() || this.wiping) return;
       // I4: the handle is kept and cleared by resign, quiesce and enterRevoked; a timer that fires anyway starts only the

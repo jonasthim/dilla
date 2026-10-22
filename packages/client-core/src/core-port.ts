@@ -102,6 +102,7 @@ export interface CorePort {
   signupBegin(instanceId: Id): string;
   signupRequest(invite: string, username: string, display: string, password: string | null): Uint8Array;
   signupComplete(userId: Id, username: string, now: bigint, instanceSignerPub: Uint8Array): Uint8Array;
+  instanceSignerKeyMatches(observedKey: Uint8Array): void;
   signupReset(): void;
   deviceListBody(): Uint8Array; deviceListPublished(): void;
   /** BACKUPS-RECOVERY-02: an unpublished candidate is dropped; the accepted list's own body becomes the candidate. */
@@ -240,6 +241,7 @@ export interface CoreHandle {
       signup_begin(instance_id: Uint8Array): string;
       signup_request(invite: string, username: string, display: string, password?: string | null): Uint8Array;
       signup_complete(user_id: Uint8Array, username: string, now: bigint, instance_signer_pub: Uint8Array): Uint8Array;
+      instance_signer_key_matches(observed_key: Uint8Array): void;
       signup_reset(): void;
       device_list_body(): Uint8Array; device_list_published(): void; device_list_drop(): void;
       session_sign(nonce: Uint8Array, purpose: number): Uint8Array;
@@ -476,6 +478,7 @@ export function wrapCore(handle: CoreHandle): CorePort {
     signupBegin: (instanceId) => call(() => handle.signup_begin(instanceId)),
     signupRequest: (invite, username, display, password) => call(() => handle.signup_request(invite, username, display, password)),
     signupComplete: (userId, username, now, instanceSignerPub) => call(() => handle.signup_complete(userId, username, now, instanceSignerPub)),
+    instanceSignerKeyMatches: (observedKey) => call(() => handle.instance_signer_key_matches(observedKey)),
     signupReset: () => call(() => handle.signup_reset()),
     deviceListBody: () => call(() => handle.device_list_body()),
     deviceListPublished: () => call(() => handle.device_list_published()),

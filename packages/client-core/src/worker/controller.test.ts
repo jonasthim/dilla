@@ -15,9 +15,42 @@ import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
-import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
+import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('checks the persisted instance signer pin on restart before entering ready', async () => {
+    const w = world();
+    await toReady(w);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(1);
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+  });
+
+  it('refuses ready when authenticated discovery reports a rotated instance signer', async () => {
+    const w = world();
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledWith(INSTANCE.externalSenderPub);
+    expect(w.gateway.starts).toBe(0);
+  });
+
+  it('stops reconnect when authenticated discovery no longer matches the pin', async () => {
+    const w = world();
+    await toReady(w);
+    const starts = w.gateway.starts;
+    w.core.instanceSignerKeyMatches.mockImplementation(() => {
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    });
+    w.gateway.emit({ type: 'revoked' });
+    await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
+    await vi.waitFor(() => expect(w.core.instanceSignerKeyMatches).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_CORE_STATE' } }));
+    expect(w.gateway.starts).toBe(starts);
+    expect(w.gateway.stops).toBeGreaterThan(0);
+  });
+
   it('keeps moderation case listing typed but unavailable until an authenticated interaction transport exists', async () => {
     const w = world();
     await toReady(w);

@@ -192,6 +192,11 @@ export class FakeCore implements CorePort {
     this.instanceSignerPub = instanceSignerPub.slice();
     return this.listBody;
   }
+  instanceSignerKeyMatches(observedKey: Uint8Array): void {
+    this.enter('instanceSignerKeyMatches');
+    if (this.instanceSignerPub === null) throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
+    if (!same(this.instanceSignerPub, observedKey)) throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+  }
   signupReset(): void {
     this.enter('signupReset'); this.requirePending();
     if (this.record !== null) throw new CoreError('E_CORE_STATE', 'the account is registered');
