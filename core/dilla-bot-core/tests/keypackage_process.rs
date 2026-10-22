@@ -25,6 +25,7 @@ use std::{
 const INSTANCE: [u8; 16] = [0x31; 16];
 const COMMUNITY: [u8; 16] = [0x32; 16];
 const INSTALLATION: [u8; 16] = [0x33; 16];
+const INSTANCE_KEY: [u8; 32] = [0x77; 32];
 const USER: [u8; 16] = [0x34; 16];
 const KEY: [u8; 32] = [0x53; 32];
 
@@ -167,10 +168,11 @@ fn open_payload() -> Vec<u8> {
 
 fn bootstrap_payload() -> Vec<u8> {
     let mut e = dilla_core::cbor::Encoder::new();
-    e.array(3)
+    e.array(4)
         .bytes(&INSTANCE)
         .bytes(&COMMUNITY)
-        .bytes(&INSTALLATION);
+        .bytes(&INSTALLATION)
+        .bytes(&INSTANCE_KEY);
     e.into_vec()
 }
 

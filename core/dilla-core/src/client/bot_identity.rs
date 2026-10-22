@@ -331,6 +331,23 @@ impl ClientCore {
         Ok(())
     }
 
+    /// Check the external-sender key pinned during the native bootstrap. The
+    /// key itself is never returned to callers; this is a continuity check for
+    /// the Go lifecycle after its authenticated `/v1/instance` discovery.
+    pub fn bot_instance_key_matches(&self, observed_key: &[u8; 32]) -> Result<(), ClientError> {
+        if observed_key.iter().all(|byte| *byte == 0) {
+            return Err(ClientError::new(E_CORE_INPUT, "instance key is all zero"));
+        }
+        let pinned = self.read(|c| schema::meta_get(c, schema::BOT_INSTANCE_KEY))?;
+        if pinned.as_deref() != Some(observed_key.as_slice()) {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "instance external-sender key changed or is not pinned",
+            ));
+        }
+        Ok(())
+    }
+
     /// Start (or resume) the one native bot identity bound to an installation and community.
     /// The returned CBOR is the public `[umk_pub, ssk_pub, sig_umk_ssk, device]` registration tuple.
     pub fn bot_bootstrap_begin(
@@ -338,6 +355,7 @@ impl ClientCore {
         instance_id: &[u8; 16],
         community_id: &[u8; 16],
         installation_id: &[u8; 16],
+        external_sender_key: &[u8; 32],
     ) -> Result<Vec<u8>, ClientError> {
         let binding = BotBinding {
             instance_id: *instance_id,
@@ -350,10 +368,34 @@ impl ClientCore {
                 "bot binding ids must be nonzero",
             ));
         }
+        if external_sender_key.iter().all(|byte| *byte == 0) {
+            return Err(ClientError::new(E_CORE_INPUT, "instance key is all zero"));
+        }
 
         let (body, new_signer) = self.write(|ctx, u| {
             let (identity_raw, signup, enrol) = u.with_conn(load_phase)?;
             let phase = identity::decode_phase(identity_raw, signup, enrol)?;
+            let pin = u.with_conn(|c| schema::meta_get(c, schema::BOT_INSTANCE_KEY))?;
+            match pin {
+                Some(pinned) if pinned.as_slice() != external_sender_key => {
+                    return Err(ClientError::new(
+                        E_CORE_STATE,
+                        "instance external-sender key changed",
+                    ));
+                }
+                Some(_) => {}
+                None if matches!(&phase, Phase::Ready(_)) => {
+                    return Err(ClientError::new(
+                        E_CORE_STATE,
+                        "existing Bot has no pinned instance key; operator recovery required",
+                    ));
+                }
+                None => {
+                    u.with_conn(|c| {
+                        schema::meta_put(c, schema::BOT_INSTANCE_KEY, external_sender_key)
+                    })?;
+                }
+            }
             match phase {
                 Phase::None => {
                     if let Some(raw) = u.with_conn(|c| schema::meta_get(c, schema::BOT_PENDING))? {

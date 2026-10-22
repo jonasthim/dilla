@@ -163,8 +163,11 @@ func (c *Client) invalidateLocked() {
 	_ = c.t.Close()
 }
 
-func (c *Client) Bootstrap(ctx context.Context) (BootstrapResult, error) {
-	p := []any{c.binding.Instance, c.binding.Community, c.binding.Installation}
+func (c *Client) Bootstrap(ctx context.Context, externalSenderKey [32]byte) (BootstrapResult, error) {
+	if allZeroCallKey(externalSenderKey[:]) {
+		return BootstrapResult{}, errors.New("invalid native bootstrap instance key")
+	}
+	p := []any{c.binding.Instance, c.binding.Community, c.binding.Installation, externalSenderKey[:]}
 	v, err := c.call(ctx, protocol.HelperBootstrap, p, true, func(a []any) (any, error) { return decodeBootstrap(a) })
 	if err != nil {
 		return BootstrapResult{}, err

@@ -139,7 +139,7 @@ fn bot_removal_signing_refuses_another_community() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
     let community = [0x22; 16];
-    core.bot_bootstrap_begin(&[0x11; 16], &community, &[0x33; 16])
+    core.bot_bootstrap_begin(&[0x11; 16], &community, &[0x33; 16], &[0x77; 32])
         .expect("bot begin");
     core.bot_bootstrap_complete(&[0x44; 16], "bot", NOW)
         .expect("bot complete");

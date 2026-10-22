@@ -147,7 +147,8 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	if got := helper.call(t, botprotocol.HelperOpen, []any{instanceID, cid, installationID, stateKey[:]}); len(got) != 2 {
 		t.Fatalf("open result has %d fields, want [version,identity]", len(got))
 	}
-	registration := helper.call(t, botprotocol.HelperBootstrap, []any{instanceID, cid, installationID})
+	instanceKey := [32]byte{0x77}
+	registration := helper.call(t, botprotocol.HelperBootstrap, []any{instanceID, cid, installationID, instanceKey[:]})
 	if len(registration) != 4 {
 		t.Fatalf("native registration has %d fields, want [umk,ssk,sig,device]", len(registration))
 	}

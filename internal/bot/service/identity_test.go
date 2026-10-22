@@ -29,6 +29,7 @@ type fakeLifecycleNative struct {
 	stateErrOnce    bool
 	stateTxIDs      []id.ID
 	bootstrap       native.BootstrapResult
+	bootstrapKey    [32]byte
 	pending         bool
 	completeCalls   int
 	completeErrOnce bool
@@ -56,7 +57,11 @@ func (n *fakeLifecycleNative) Identity(context.Context) (native.Identity, error)
 	i, u, d := n.binding.Instance, n.user, n.device
 	return native.Identity{Phase: 2, Instance: &i, User: &u, Device: &d, Username: n.username, DeviceListPublished: n.published}, nil
 }
-func (n *fakeLifecycleNative) Bootstrap(context.Context) (native.BootstrapResult, error) {
+func (n *fakeLifecycleNative) Bootstrap(_ context.Context, key [32]byte) (native.BootstrapResult, error) {
+	if n.bootstrapKey != ([32]byte{}) && n.bootstrapKey != key {
+		return native.BootstrapResult{}, errors.New("instance external-sender key changed")
+	}
+	n.bootstrapKey = key
 	n.pending = true
 	return n.bootstrap, nil
 }
@@ -205,11 +210,32 @@ type fakeIdentityHTTP struct {
 	instance, user, device id.ID
 	session                *fakeIdentitySession
 	challengeCalls         int
+	externalSenderPub      []byte
+}
+
+func TestDiscoveryExternalSenderKeyMustBePresentAndNonzero(t *testing.T) {
+	for _, discovery := range []client.Discovery{
+		{},
+		{ExternalSenderPub: make([]byte, 32)},
+		{ExternalSenderPub: make([]byte, 31)},
+	} {
+		if _, err := discoveryExternalSenderKey(discovery); err == nil {
+			t.Fatalf("accepted missing, zero, or malformed key: %x", discovery.ExternalSenderPub)
+		}
+	}
+	key := append([]byte{1}, make([]byte, 31)...)
+	if got, err := discoveryExternalSenderKey(client.Discovery{ExternalSenderPub: key}); err != nil || got[0] != 1 {
+		t.Fatalf("valid key: %x, %v", got, err)
+	}
 }
 
 func (h *fakeIdentityHTTP) InstanceID() id.ID { return h.instance }
 func (h *fakeIdentityHTTP) DiscoverObserved(context.Context) (client.Discovery, client.ResponseObservation, error) {
-	return client.Discovery{InstanceID: h.instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}}, client.ResponseObservation{ServerTime: 1_800_000_000, HasServerTime: true, Generation: 1, HasGeneration: true}, nil
+	key := h.externalSenderPub
+	if key == nil {
+		key = []byte{0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	}
+	return client.Discovery{InstanceID: h.instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, ExternalSenderPub: key}, client.ResponseObservation{ServerTime: 1_800_000_000, HasServerTime: true, Generation: 1, HasGeneration: true}, nil
 }
 func (*fakeIdentityHTTP) InstanceLimits(context.Context) (client.Limits, error) {
 	return client.Limits{}, nil
@@ -367,6 +393,13 @@ func TestIdentityEnsureReplaysLostEnrollmentWithSameRequestAndReturnsJoining(t *
 	}
 	if s.deviceListCalls != 2 {
 		t.Fatalf("lost device-list response was not reconciled from the authenticated current head: calls=%d", s.deviceListCalls)
+	}
+	if n.bootstrapKey != ([32]byte{0x77}) {
+		t.Fatalf("native bootstrap did not receive authenticated discovery key: %x", n.bootstrapKey)
+	}
+	h.externalSenderPub = append([]byte{0x78}, make([]byte, 31)...)
+	if _, err = service.Ensure(ctx); err == nil {
+		t.Fatal("ready Bot reconciliation accepted changed discovery key")
 	}
 	if got := fmt.Sprintf("%+v", result); got == "" || contains(got, "secret-bearer") {
 		t.Fatalf("result formatting exposed bearer: %q", got)

@@ -658,7 +658,7 @@ mod tests {
             rusqlite::Connection::open_in_memory().expect("sqlite"),
         ));
         let mut core = ClientCore::open(connection).expect("open core");
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .expect("bootstrap bot");
         core.bot_bootstrap_complete(&USER, "adapter bot", 1_800_000_000)
             .expect("complete bot");

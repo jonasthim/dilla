@@ -2447,7 +2447,7 @@ mod bot_send_intent_tests {
 
     fn bot(conn: ConnHandle) -> ClientCore {
         let mut core = ClientCore::open(conn).expect("open core");
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .expect("bootstrap");
         core.bot_bootstrap_complete(&USER, "send bot", 1_800_000_000)
             .expect("enroll");

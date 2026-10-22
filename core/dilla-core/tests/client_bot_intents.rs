@@ -51,7 +51,7 @@ fn reopen_file(path: &PathBuf) -> ConnHandle {
 
 fn ready_bot(conn: ConnHandle) -> ClientCore {
     let mut core = ClientCore::open(conn).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bootstrap begin");
     core.bot_bootstrap_complete(&USER, "intent bot", 1_800_000_000)
         .expect("bootstrap complete");
@@ -616,7 +616,7 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
 
     let mut incomplete = ClientCore::open(conn()).expect("open incomplete Bot");
     incomplete
-        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bootstrap begin");
     assert_eq!(
         incomplete

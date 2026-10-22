@@ -74,7 +74,8 @@ func TestCompiledHelperIntegration(t *testing.T) {
 	if openKey[0] != 0 || openKey[31] != 0 {
 		t.Fatal("Open did not clear its key buffer")
 	}
-	args := []any{instance, community, installation}
+	instanceKey := [32]byte{0x77}
+	args := []any{instance, community, installation, instanceKey[:]}
 	one, err := reopened.Call(context.Background(), protocol.HelperBootstrap, args)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)

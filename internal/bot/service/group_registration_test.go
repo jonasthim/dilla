@@ -225,10 +225,28 @@ func (f *registrationFixture) receipt(next uint64) client.BotGroupRegistrationRe
 	return client.BotGroupRegistrationReceipt{OperationID: f.native.lastOperation, GroupID: f.group, RegistrationSHA256: testRegistrationHash(f.native.lastBody), AcceptedGeneration: 8, InitialEpoch: 0, NextSequence: next}
 }
 
+func TestGroupRegistrationRechecksPinnedInstanceKeyBeforeRetry(t *testing.T) {
+	f := newRegistrationFixture(t)
+	f.session.prepareReceipt = true
+	if _, err := f.coordinator.RegisterFirstGroup(context.Background(), f.request()); err != nil {
+		t.Fatalf("initial registration: %v", err)
+	}
+	createCalls, registerCalls := f.native.createCalls, f.session.registerCalls
+	f.discovery.value.ExternalSenderPub[0] ^= 0xff
+	if _, err := f.coordinator.RegisterFirstGroup(context.Background(), f.request()); err == nil {
+		t.Fatal("registration accepted a changed discovery key")
+	}
+	if f.native.createCalls != createCalls || f.session.registerCalls != registerCalls {
+		t.Fatalf("changed key reached group work: creates %d->%d, registrations %d->%d", createCalls, f.native.createCalls, registerCalls, f.session.registerCalls)
+	}
+}
+
 var errGroupRegistrationNotFound = &client.APIError{Status: http.StatusNotFound, Code: "E_NOT_FOUND"}
 
 type registrationNative struct {
 	binding           native.Binding
+	pinnedKey         [32]byte
+	bootstrapCalls    int
 	values            map[string]native.StateValue
 	createCalls       int
 	registeredNext    uint64
@@ -240,6 +258,14 @@ type registrationNative struct {
 }
 
 func (n *registrationNative) Binding() native.Binding { return n.binding }
+func (n *registrationNative) Bootstrap(_ context.Context, key [32]byte) (native.BootstrapResult, error) {
+	n.bootstrapCalls++
+	if n.pinnedKey != ([32]byte{}) && n.pinnedKey != key {
+		return native.BootstrapResult{}, errors.New("instance external-sender key changed")
+	}
+	n.pinnedKey = key
+	return native.BootstrapResult{}, nil
+}
 func (n *registrationNative) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
 	return n.values[registrationStateMapKey(area, key)], nil
 }

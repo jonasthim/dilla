@@ -95,7 +95,7 @@ func TestSourceSyncWithCompiledHelperAndRealRustPeer(t *testing.T) {
 		return c
 	}
 	n := openNative()
-	if _, err = n.Bootstrap(ctx); err != nil {
+	if _, err = n.Bootstrap(ctx, [32]byte{0x77}); err != nil {
 		t.Fatalf("bootstrap helper: %v", err)
 	}
 	if _, err = n.CompleteEnrollment(ctx, fixedID(0x56), "source sync peer", uint64(time.Now().Unix())); err != nil {

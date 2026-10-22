@@ -363,12 +363,13 @@ impl Helper {
     }
 
     fn bootstrap(&mut self, payload: &[u8]) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
-        let (i, c, n) = decode_strict(payload, |d| {
-            d.array(3)?;
+        let (i, c, n, external_sender_key) = decode_strict(payload, |d| {
+            d.array(4)?;
             Ok((
                 d.bytes_exact::<16>()?,
                 d.bytes_exact::<16>()?,
                 d.bytes_exact::<16>()?,
+                d.bytes_exact::<32>()?,
             ))
         })
         .map_err(|_| DispatchError::Invalid)?;
@@ -380,7 +381,7 @@ impl Helper {
             .core
             .as_mut()
             .expect("opened")
-            .bot_bootstrap_begin(&i, &c, &n)
+            .bot_bootstrap_begin(&i, &c, &n, &external_sender_key)
             .map_err(map_client)?;
         Ok((Zeroizing::new(v), false))
     }

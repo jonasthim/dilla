@@ -840,10 +840,11 @@ fn bot_identity_and_key_packages_reopen_across_processes() {
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
         bootstrap
-            .array(3)
+            .array(4)
             .bytes(&[11; 16])
             .bytes(&[12; 16])
-            .bytes(&[13; 16]);
+            .bytes(&[13; 16])
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [2; 16], 2, bootstrap.into_vec());
         let first = read_response(&mut client, &mut child);
         assert_eq!(first.status, 0);
@@ -892,10 +893,11 @@ fn bot_identity_and_key_packages_reopen_across_processes() {
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
         bootstrap
-            .array(3)
+            .array(4)
             .bytes(&[11; 16])
             .bytes(&[12; 16])
-            .bytes(&[13; 16]);
+            .bytes(&[13; 16])
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [6; 16], 2, bootstrap.into_vec());
         let reopened = read_response(&mut client, &mut child);
         assert_eq!(reopened.status, 0);
@@ -963,7 +965,12 @@ fn helper_group_create_intent_recovers_identical_upload_after_process_restart() 
         write_request(&mut client, [1; 16], 1, open_payload(ids, key));
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
-        bootstrap.array(3).bytes(&ids.0).bytes(&ids.1).bytes(&ids.2);
+        bootstrap
+            .array(4)
+            .bytes(&ids.0)
+            .bytes(&ids.1)
+            .bytes(&ids.2)
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [2; 16], 2, bootstrap.into_vec());
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut complete = Encoder::new();
@@ -1236,7 +1243,12 @@ fn helper_accepts_only_expected_call_welcome_binding_and_kind() {
         write_request(&mut client, [1; 16], 1, open_payload(ids, key));
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
-        bootstrap.array(3).bytes(&ids.0).bytes(&ids.1).bytes(&ids.2);
+        bootstrap
+            .array(4)
+            .bytes(&ids.0)
+            .bytes(&ids.1)
+            .bytes(&ids.2)
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [2; 16], 2, bootstrap.into_vec());
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut complete = Encoder::new();
@@ -1864,7 +1876,12 @@ fn helper_applies_real_text_message_and_acknowledges_authenticated_journal_after
         write_request(&mut client, [1; 16], 1, open_payload(ids, key));
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
-        bootstrap.array(3).bytes(&ids.0).bytes(&ids.1).bytes(&ids.2);
+        bootstrap
+            .array(4)
+            .bytes(&ids.0)
+            .bytes(&ids.1)
+            .bytes(&ids.2)
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [2; 16], 2, bootstrap.into_vec());
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut complete = Encoder::new();
@@ -2292,7 +2309,12 @@ fn helper_large_authenticated_commit_recovers_after_unobserved_execute_and_reads
         write_request(&mut client, [1; 16], 1, open_payload(ids, key));
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut bootstrap = Encoder::new();
-        bootstrap.array(3).bytes(&ids.0).bytes(&ids.1).bytes(&ids.2);
+        bootstrap
+            .array(4)
+            .bytes(&ids.0)
+            .bytes(&ids.1)
+            .bytes(&ids.2)
+            .bytes(&[0x77; 32]);
         write_request(&mut client, [2; 16], 2, bootstrap.into_vec());
         assert_eq!(read_response(&mut client, &mut child).status, 0);
         let mut complete = Encoder::new();

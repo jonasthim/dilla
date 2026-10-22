@@ -167,7 +167,7 @@ never contain database, provider or decrypted-message error text.
 | Op | Request payload | Successful response |
 | --- | --- | --- |
 | 1 open | `[instance_id, community_id, installation_id, database_key32]` | `[store_version, identity_info_body]` |
-| 2 bootstrap | `[instance_id, community_id, installation_id]` | `[umk_pub32, ssk_pub32, sig_umk_ssk64, device]` |
+| 2 bootstrap | `[instance_id, community_id, installation_id, external_sender_key32]` | `[umk_pub32, ssk_pub32, sig_umk_ssk64, device]` |
 | 3 enroll_complete | `[bot_user, username, now]` | `[final_credential, signed_device_list_body]` |
 | 4 session | `[suboperation, ...arguments]`, below | core body or void |
 | 5 key_packages | `[operation_id, count, last_resort, expected_generation]`, count1..32, last_resort0..1 | `[upload_body, package_refs, greatest_expiry]` |
@@ -324,11 +324,16 @@ eligibility_revision,not_after]`. All IDs are nonzero bstr16; revision and
 `not_after` are server uint values at most signed-int64 max. The instance signs
 `ASCII("dilla bot interaction admission v1") || 0x00 || payload` with the
 Ed25519 private key corresponding to its published instance external-sender
-public key. The native core pins that public key when opening the installation
-from authenticated instance metadata and stores it with the Bot binding; a
-caller-supplied key or expected tuple is never a trust anchor. Changing the
-pinned key requires an explicit trusted instance-key transition, not an
-admission retry.
+public key. The Go client obtains that key from authenticated `GET /v1/instance`
+discovery and passes it to native bootstrap over private helper IPC. The client
+requires HTTPS except for explicitly enabled loopback HTTP, disables redirects,
+and checks the configured instance id. The native core stores the key in its
+encrypted Bot store alongside the installation binding. An existing ready Bot
+store without a pin requires operator recovery; bootstrap never silently assigns
+it a new key. A caller-supplied key or expected tuple is never a trust anchor.
+Every later identity reconciliation checks discovery against the stored key.
+Changing the pinned key requires an explicit trusted instance-key transition,
+not an admission retry.
 
 The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
 than authenticated server time, an admission replayed for another operation or

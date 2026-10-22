@@ -16,6 +16,54 @@ const INSTALLATION: [u8; 16] = [0x33; 16];
 const USER: [u8; 16] = [0x44; 16];
 
 #[test]
+fn bot_instance_key_is_pinned_and_rechecked_after_reopen() {
+    let connection = conn();
+    let mut core = ClientCore::open(connection.clone()).expect("open");
+    let key = [0x71; 32];
+    assert!(core.bot_instance_key_matches(&key).is_err());
+    assert!(
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0; 32])
+            .is_err()
+    );
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &key)
+        .expect("pin at bootstrap");
+    assert!(core.bot_instance_key_matches(&key).is_ok());
+    assert!(core.bot_instance_key_matches(&[0x72; 32]).is_err());
+    assert!(
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x72; 32])
+            .is_err()
+    );
+    drop(core);
+
+    let core = ClientCore::open(connection).expect("reopen");
+    assert!(core.bot_instance_key_matches(&key).is_ok());
+    assert!(core.bot_instance_key_matches(&[0x72; 32]).is_err());
+}
+
+#[test]
+fn ready_legacy_bot_without_a_key_pin_requires_recovery() {
+    let connection = conn();
+    let mut core = ClientCore::open(connection.clone()).expect("open");
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x71; 32])
+        .expect("begin");
+    core.bot_bootstrap_complete(&USER, "native-bot", 1_800_000_000)
+        .expect("complete");
+    drop(core);
+    connection
+        .lock()
+        .expect("sqlite lock")
+        .execute("DELETE FROM app_meta WHERE k='bot_instance_key'", [])
+        .expect("simulate legacy store");
+
+    let mut core = ClientCore::open(connection).expect("open legacy ready bot");
+    let error = core
+        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x72; 32])
+        .expect_err("legacy ready bot must not silently pin a new key");
+    assert_eq!(error.code, "E_CORE_STATE");
+    assert!(core.bot_instance_key_matches(&[0x72; 32]).is_err());
+}
+
+#[test]
 fn bot_binding_validation_requires_ready_native_identity_and_exact_store_binding() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
@@ -23,7 +71,7 @@ fn bot_binding_validation_requires_ready_native_identity_and_exact_store_binding
         core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
             .is_err()
     );
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("pending");
     assert!(
         core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
@@ -94,7 +142,7 @@ fn bot_bootstrap_is_bound_idempotent_and_completes_as_native_bot() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
     let first = core
-        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("begin");
     let mut device_decoder = Decoder::new(&first);
     device_decoder.array(4).expect("bot registration");
@@ -123,7 +171,7 @@ fn bot_bootstrap_is_bound_idempotent_and_completes_as_native_bot() {
     drop(core);
     let mut core = ClientCore::open(connection.clone()).expect("reopen pending");
     assert_eq!(
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .expect("repeat begin"),
         first
     );
@@ -178,7 +226,7 @@ fn bot_bootstrap_is_bound_idempotent_and_completes_as_native_bot() {
     let mut core = ClientCore::open(connection).expect("reopen ready bot");
     assert!(!core.identity().expect("identity").is_empty());
     assert_eq!(
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .expect("ready begin is stable"),
         first
     );
@@ -204,7 +252,7 @@ fn bot_bootstrap_is_bound_idempotent_and_completes_as_native_bot() {
 fn failed_bot_completion_rolls_back_and_other_account_cannot_adopt_identity() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("begin");
     {
         let guard = connection.lock().expect("connection lock");
@@ -257,26 +305,26 @@ fn failed_bot_completion_rolls_back_and_other_account_cannot_adopt_identity() {
 fn bot_bootstrap_rejects_zero_and_mismatched_binding_without_replacing_pending() {
     let mut core = ClientCore::open(conn()).expect("open");
     let err = core
-        .bot_bootstrap_begin(&[0; 16], &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&[0; 16], &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect_err("zero instance");
     assert_eq!(err.code, "E_CORE_INPUT");
     let first = core
-        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("begin");
     assert_eq!(
-        core.bot_bootstrap_begin(&INSTANCE, &[0x55; 16], &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &[0x55; 16], &INSTALLATION, &[0x77; 32])
             .expect_err("different community")
             .code,
         "E_CORE_STATE"
     );
     assert_eq!(
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &[0x66; 16])
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &[0x66; 16], &[0x77; 32])
             .expect_err("different installation")
             .code,
         "E_CORE_STATE"
     );
     assert_eq!(
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .expect("original pending remains"),
         first
     );
@@ -297,7 +345,7 @@ fn bot_bootstrap_rejects_zero_and_mismatched_binding_without_replacing_pending()
 #[test]
 fn human_signup_cannot_adopt_bot_pending_material() {
     let mut core = ClientCore::open(conn()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bot pending");
     assert_eq!(
         core.signup_begin(&INSTANCE)
@@ -342,7 +390,7 @@ fn opening_refuses_bot_pending_metadata_mixed_with_human_enrolment() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
     let begin = core
-        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bot begin");
     let mut d = Decoder::new(&begin);
     d.array(4).expect("registration");
@@ -385,7 +433,7 @@ fn opening_refuses_bot_pending_metadata_mixed_with_human_enrolment() {
 fn corrupted_pending_bot_signature_refuses_retry_and_reopen_without_mutating_state() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bot begin");
 
     let original = {
@@ -437,10 +485,11 @@ fn corrupted_pending_bot_signature_refuses_retry_and_reopen_without_mutating_sta
             .expect("corrupt pending signature");
     }
 
-    let retry_error = match core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION) {
-        Err(error) => error,
-        Ok(body) => panic!("retry unexpectedly returned {} bytes", body.len()),
-    };
+    let retry_error =
+        match core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32]) {
+            Err(error) => error,
+            Ok(body) => panic!("retry unexpectedly returned {} bytes", body.len()),
+        };
     assert_eq!(retry_error.code, "E_CORE_STATE");
     let error = match ClientCore::open(connection.clone()) {
         Ok(_) => panic!("reopen rejects bad signature"),
@@ -499,7 +548,7 @@ fn corrupted_pending_bot_signature_refuses_retry_and_reopen_without_mutating_sta
 fn reopening_rejects_ready_bot_umk_mismatch_without_mutating_state() {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bot begin");
     core.bot_bootstrap_complete(&USER, "music-bot", 1)
         .expect("bot complete");

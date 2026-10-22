@@ -41,7 +41,7 @@ func TestCompiledHelperNativeLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = seed.Bootstrap(ctx); err != nil {
+	if _, err = seed.Bootstrap(ctx, [32]byte{0x77}); err != nil {
 		t.Fatal(err)
 	}
 	if err = seed.Close(); err != nil {
@@ -65,11 +65,11 @@ func TestCompiledHelperNativeLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boot, err := c.Bootstrap(ctx)
+	boot, err := c.Bootstrap(ctx, [32]byte{0x77})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootAgain, err := c.Bootstrap(ctx)
+	bootAgain, err := c.Bootstrap(ctx, [32]byte{0x77})
 	if err != nil || !reflect.DeepEqual(boot, bootAgain) {
 		t.Fatalf("repeat bootstrap changed: %v", err)
 	}

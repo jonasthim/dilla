@@ -74,7 +74,8 @@ func TestBootstrapUsesDirectTupleAndRejectsWrappedTuple(t *testing.T) {
 	direct[2].([]byte)[0] = 4
 	f := &fakeTransport{responses: [][]any{direct}}
 	c := newFakeClient(t, f)
-	got, err := c.Bootstrap(context.Background())
+	instanceKey := [32]byte{0x77}
+	got, err := c.Bootstrap(context.Background(), instanceKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestBootstrapUsesDirectTupleAndRejectsWrappedTuple(t *testing.T) {
 	}
 	f = &fakeTransport{responses: [][]any{{wrapper}}}
 	c = newFakeClient(t, f)
-	_, err = c.Bootstrap(context.Background())
+	_, err = c.Bootstrap(context.Background(), instanceKey)
 	if !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("wrapped mutation result: got %v", err)
 	}

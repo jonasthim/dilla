@@ -33,7 +33,7 @@ var ErrRecovery = errors.New("bot identity lifecycle requires operator recovery"
 
 type lifecycleNative interface {
 	Identity(context.Context) (native.Identity, error)
-	Bootstrap(context.Context) (native.BootstrapResult, error)
+	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	CompleteEnrollment(context.Context, id.ID, string, uint64) (native.EnrollmentResult, error)
 	SignSession(context.Context, [32]byte, uint64) (native.SessionSignature, error)
 	StoreSession(context.Context, string, uint64, uint64) error
@@ -156,6 +156,15 @@ func newIdentityLifecycle(instance, community, installation id.ID, n lifecycleNa
 	return &Lifecycle{instance: instance, community: community, install: installation, native: n, runtime: runtime, http: httpClient, now: options.Now, desired: options.DesiredPackages, renewMargin: options.RenewMargin}
 }
 
+func discoveryExternalSenderKey(discovery client.Discovery) ([32]byte, error) {
+	var key [32]byte
+	if len(discovery.ExternalSenderPub) != len(key) || allZeroBytes(discovery.ExternalSenderPub) {
+		return key, errors.New("bot identity: discovery has no valid external-sender key")
+	}
+	copy(key[:], discovery.ExternalSenderPub)
+	return key, nil
+}
+
 // Ensure reconciles one bounded pass of the identity state machine. It returns
 // a usable ordinary device session only after final credential, signed device
 // list and KeyPackage publication are reconciled. Group readiness remains D2's
@@ -184,6 +193,10 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 	}
 	if discovery.InstanceID != l.instance {
 		return out, client.ErrInstanceChanged
+	}
+	externalSenderKey, keyErr := discoveryExternalSenderKey(discovery)
+	if keyErr != nil {
+		return out, keyErr
 	}
 	inst, err := l.findInstallation(ctx)
 	if err != nil {
@@ -218,7 +231,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 				return out, err
 			}
 		}
-		boot, err = l.native.Bootstrap(ctx)
+		boot, err = l.native.Bootstrap(ctx, externalSenderKey)
 		if err != nil {
 			return out, err
 		}
@@ -241,7 +254,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 		if state.PendingDevice.IsZero() || state.BootstrapFingerprint == ([32]byte{}) {
 			return out, fmt.Errorf("%w: completed native Bot has no encrypted bootstrap receipt", ErrRecovery)
 		}
-		boot, bootErr := l.native.Bootstrap(ctx)
+		boot, bootErr := l.native.Bootstrap(ctx, externalSenderKey)
 		if bootErr != nil {
 			return out, bootErr
 		}
@@ -297,7 +310,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 				}
 			}
 			if !hasBootstrap {
-				boot, err = l.native.Bootstrap(ctx)
+				boot, err = l.native.Bootstrap(ctx, externalSenderKey)
 				if err != nil {
 					return out, err
 				}

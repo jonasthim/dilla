@@ -40,7 +40,7 @@ func TestCompiledHelperNativeSendIntentIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.Bootstrap(ctx); err != nil {
+	if _, err = c.Bootstrap(ctx, [32]byte{0x77}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.CompleteEnrollment(ctx, integrationID(114), "send integration", uint64(time.Now().Unix())); err != nil {

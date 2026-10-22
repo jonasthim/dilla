@@ -33,6 +33,7 @@ var (
 
 type groupRegistrationNative interface {
 	Binding() native.Binding
+	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	CreateGroup(context.Context, id.ID, id.ID, id.ID, uint64, uint64, []byte) (native.GroupCreateResult, error)
 	GroupRegistered(context.Context, id.ID, id.ID, uint64) error
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
@@ -105,6 +106,20 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 	if request.GroupID.IsZero() || request.TargetID.IsZero() || request.Kind > 1 || request.Policy > math.MaxInt64 {
 		return client.BotGroupRegistrationReceipt{}, errors.New("invalid first group request")
 	}
+	discovery, err := c.discovery.Discover(ctx)
+	if err != nil {
+		return client.BotGroupRegistrationReceipt{}, err
+	}
+	if discovery.InstanceID != c.instance || discovery.Generation == 0 || discovery.Generation > math.MaxInt64 {
+		return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
+	}
+	externalSenderKey, err := discoveryExternalSenderKey(discovery)
+	if err != nil {
+		return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
+	}
+	if _, err := c.native.Bootstrap(ctx, externalSenderKey); err != nil {
+		return client.BotGroupRegistrationReceipt{}, err
+	}
 	key := groupRegistrationKey(request.GroupID)
 	value, err := c.native.StateGet(ctx, groupRegistrationStateArea, key)
 	if err != nil {
@@ -116,13 +131,6 @@ func (c *GroupRegistrationCoordinator) RegisterFirstGroup(ctx context.Context, r
 		return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
 	}
 	if revision == 0 {
-		discovery, err := c.discovery.Discover(ctx)
-		if err != nil {
-			return client.BotGroupRegistrationReceipt{}, err
-		}
-		if discovery.InstanceID != c.instance || discovery.Generation == 0 || discovery.Generation > math.MaxInt64 || len(discovery.ExternalSenderPub) != 32 || allZeroBytes(discovery.ExternalSenderPub) {
-			return client.BotGroupRegistrationReceipt{}, ErrGroupRegistrationRecovery
-		}
 		intent = groupRegistrationIntent{Operation: id.New(), Group: request.GroupID, Target: request.TargetID, Kind: request.Kind, Policy: request.Policy, ExternalSender: append([]byte(nil), discovery.ExternalSenderPub...), Generation: discovery.Generation}
 		revision, err = c.saveGroupRegistration(ctx, key, revision, intent)
 		if err != nil {

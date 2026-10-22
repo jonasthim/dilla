@@ -349,7 +349,7 @@ fn generation_alone_proves_obsolete_and_wrong_identity_scopes_are_refused() {
     let pending_conn = conn();
     let mut pending = ClientCore::open(pending_conn).expect("pending core");
     pending
-        .bot_bootstrap_begin(&INSTANCE_ID, &COMMUNITY, &INSTALLATION)
+        .bot_bootstrap_begin(&INSTANCE_ID, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("pending bot");
     let payload = intent(5, 1, 0, 4).encode().expect("intent");
     assert_eq!(
@@ -473,7 +473,7 @@ fn resolution(
 fn ready_bot(conn: ConnHandle) -> Core {
     let probe = Arc::clone(&conn);
     let mut core = ClientCore::open(conn).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE_ID, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE_ID, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("bootstrap");
     core.bot_bootstrap_complete(&USER, "native-bot", 1_800_000_000)
         .expect("complete");

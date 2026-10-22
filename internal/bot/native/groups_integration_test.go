@@ -39,7 +39,7 @@ func TestCompiledHelperNativeGroupsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if _, err = c.Bootstrap(ctx); err != nil {
+	if _, err = c.Bootstrap(ctx, [32]byte{0x77}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.CompleteEnrollment(ctx, integrationID(84), "groups integration", uint64(time.Now().Unix())); err != nil {
@@ -178,7 +178,7 @@ func TestCompiledHelperWithRealRustPeerExternalJoinTrustAndJournal(t *testing.T)
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if _, err = c.Bootstrap(ctx); err != nil {
+	if _, err = c.Bootstrap(ctx, [32]byte{0x77}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.CompleteEnrollment(ctx, fillID(0x56), "peer integration", uint64(time.Now().Unix())); err != nil {

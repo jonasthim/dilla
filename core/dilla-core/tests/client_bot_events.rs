@@ -33,7 +33,7 @@ fn conn() -> ConnHandle {
 fn ready_bot() -> (ClientCore, ConnHandle) {
     let connection = conn();
     let mut core = ClientCore::open(connection.clone()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("begin");
     core.bot_bootstrap_complete(&USER, "event-bot", NOW)
         .expect("complete");
@@ -261,7 +261,7 @@ fn human_identity_cannot_read_or_ack_bot_events() {
 #[test]
 fn native_bot_event_api_starts_empty_and_rejects_invalid_limits_and_ack() {
     let mut core = ClientCore::open(conn()).expect("open");
-    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+    core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
         .expect("begin");
     core.bot_bootstrap_complete(&USER, "event-bot", 1_800_000_000)
         .expect("complete");
