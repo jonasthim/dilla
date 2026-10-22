@@ -142,7 +142,9 @@ impl Helper {
                 payload,
             )
             .map(|v| (v, false)),
-            7..=9 => Err(DispatchError::Unavailable),
+            7 => self.prepare_send(payload),
+            8 => self.send_receipt(payload),
+            9 => Err(DispatchError::Unavailable),
             14 => self.keypackage_resolve(payload),
             16 => self.group_transfer(payload, request_id),
             _ => Err(DispatchError::Invalid),
@@ -365,6 +367,33 @@ impl Helper {
         Ok((Zeroizing::new(result), false))
     }
 
+    fn prepare_send(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let (operation, attempt, group, request, now, generation) = decode_prepare_send(payload)?;
+        let result = self
+            .core
+            .as_mut()
+            .expect("opened")
+            .bot_send_prepare(&operation, &attempt, &group, &request, now, generation)
+            .map_err(map_client)?;
+        Ok((Zeroizing::new(result), false))
+    }
+
+    fn send_receipt(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let (operation, receipt) = decode_send_receipt(payload)?;
+        self.core
+            .as_mut()
+            .expect("opened")
+            .bot_send_receipt(&operation, &receipt)
+            .map_err(map_client)?;
+        Ok((empty(), false))
+    }
+
     fn keypackage_resolve(
         &mut self,
         payload: &[u8],
@@ -437,6 +466,40 @@ fn decode_request(input: &[u8]) -> Result<(MsgId, u64, Zeroizing<Vec<u8>>), ()> 
     }
 }
 
+fn decode_prepare_send(
+    payload: &[u8],
+) -> Result<([u8; 16], [u8; 16], [u8; 16], Zeroizing<Vec<u8>>, u64, u64), DispatchError> {
+    let decoded = decode_strict(payload, |d| {
+        d.array(6)?;
+        Ok((
+            d.bytes_exact::<16>()?,
+            d.bytes_exact::<16>()?,
+            d.bytes_exact::<16>()?,
+            Zeroizing::new(d.bytes()?.to_vec()),
+            d.uint()?,
+            d.uint()?,
+        ))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if decoded.0 == [0; 16] || decoded.1 == [0; 16] || decoded.2 == [0; 16] || decoded.3.is_empty()
+    {
+        return Err(DispatchError::Invalid);
+    }
+    Ok(decoded)
+}
+
+fn decode_send_receipt(payload: &[u8]) -> Result<([u8; 16], Zeroizing<Vec<u8>>), DispatchError> {
+    let decoded = decode_strict(payload, |d| {
+        d.array(2)?;
+        Ok((d.bytes_exact::<16>()?, Zeroizing::new(d.bytes()?.to_vec())))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if decoded.0 == [0; 16] || decoded.1.is_empty() || decoded.1.len() > 512 {
+        return Err(DispatchError::Invalid);
+    }
+    Ok(decoded)
+}
+
 pub(crate) fn body(mut v: Vec<u8>) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(1).bytes(&v);
@@ -503,5 +566,63 @@ pub(crate) fn map_client(e: dilla_core::client::ClientError) -> DispatchError {
         | "E_TIER_MISMATCH"
         | "E_UMK_CHANGED" => DispatchError::Forbidden,
         _ => DispatchError::Internal,
+    }
+}
+
+#[cfg(test)]
+mod send_abi_tests {
+    use super::*;
+
+    #[test]
+    fn send_operations_require_exact_shapes_nonzero_ids_and_bounded_receipts() {
+        let mut prepare = Encoder::new();
+        prepare
+            .array(6)
+            .bytes(&[1; 16])
+            .bytes(&[2; 16])
+            .bytes(&[3; 16])
+            .bytes(&[0x80])
+            .uint(4)
+            .uint(5);
+        assert!(decode_prepare_send(&prepare.into_vec()).is_ok());
+
+        let mut extra = Encoder::new();
+        extra
+            .array(7)
+            .bytes(&[1; 16])
+            .bytes(&[2; 16])
+            .bytes(&[3; 16])
+            .bytes(&[0x80])
+            .uint(4)
+            .uint(5)
+            .null();
+        assert!(matches!(
+            decode_prepare_send(&extra.into_vec()),
+            Err(DispatchError::Invalid)
+        ));
+
+        let mut zero_id = Encoder::new();
+        zero_id
+            .array(6)
+            .bytes(&[0; 16])
+            .bytes(&[2; 16])
+            .bytes(&[3; 16])
+            .bytes(&[0x80])
+            .uint(4)
+            .uint(5);
+        assert!(matches!(
+            decode_prepare_send(&zero_id.into_vec()),
+            Err(DispatchError::Invalid)
+        ));
+
+        let mut receipt = Encoder::new();
+        receipt.array(2).bytes(&[1; 16]).bytes(&[0x81]);
+        assert!(decode_send_receipt(&receipt.into_vec()).is_ok());
+        let mut oversized = Encoder::new();
+        oversized.array(2).bytes(&[1; 16]).bytes(&vec![0; 513]);
+        assert!(matches!(
+            decode_send_receipt(&oversized.into_vec()),
+            Err(DispatchError::Invalid)
+        ));
     }
 }

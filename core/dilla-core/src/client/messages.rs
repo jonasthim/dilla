@@ -4,13 +4,14 @@ use super::error::{E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_STATE, E_C
 use super::fold::{self, FoldTrigger};
 use super::groups::{STATE_ACTIVE, STATE_GONE, checked, group_row};
 use super::{ClientCore, ClientError, Own, wire};
-use crate::cbor::Encoder;
+use crate::cbor::{Encoder, decode_strict};
 use crate::envelope::{Envelope, EnvelopeType};
 use crate::ids::MsgId;
 use crate::mls::StorageError;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use rusqlite::{OptionalExtension, params};
+use sha2::{Digest, Sha256};
 
 pub(crate) const OUTBOX_QUEUED: i64 = 0;
 pub(crate) const OUTBOX_IN_FLIGHT: i64 = 1;
@@ -25,6 +26,114 @@ pub(crate) const REASON_SENDER_MISMATCH: &str = "E_SENDER_MISMATCH";
 /// unreadable with type [`TYPE_CLASS_MISMATCH`], outside every displayable and counted query.
 pub(crate) const REASON_CLASS_MISMATCH: &str = "E_CLASS_MISMATCH";
 pub(crate) const TYPE_CLASS_MISMATCH: i64 = 255;
+
+const BOT_SEND_PREPARING: u64 = 0;
+const BOT_SEND_PENDING: u64 = 1;
+const BOT_SEND_ACCEPTED: u64 = 2;
+const BOT_SEND_CLOSED: u64 = 3;
+const BOT_SEND_UNKNOWN: u64 = 4;
+
+#[derive(Clone)]
+struct BotSendAttempt {
+    predecessor: Option<[u8; 16]>,
+    message: [u8; 16],
+}
+
+#[derive(Clone)]
+struct BotSendEncryptIntent {
+    operation: [u8; 16],
+    attempt: [u8; 16],
+    generation: u64,
+    message: [u8; 16],
+}
+
+#[derive(Clone, Debug)]
+struct BotSendRow {
+    state: u64,
+    predecessor: Option<[u8; 16]>,
+    request_hash: [u8; 32],
+    original_now: u64,
+    generation: u64,
+    message: [u8; 16],
+    epoch: Option<u64>,
+    class: Option<u64>,
+    ciphertext_hash: Option<[u8; 32]>,
+    upload: Option<Vec<u8>>,
+    receipt: Option<Vec<u8>>,
+}
+
+struct BotSendReceipt {
+    operation: [u8; 16],
+    attempt: [u8; 16],
+    predecessor: Option<[u8; 16]>,
+    community: [u8; 16],
+    group: [u8; 16],
+    generation: u64,
+    ciphertext_hash: [u8; 32],
+    class: u64,
+    outcome: u64,
+    epoch: u64,
+    response: Option<Vec<u8>>,
+}
+
+fn decode_bot_send_receipt(bytes: &[u8]) -> Result<BotSendReceipt, ClientError> {
+    let receipt = decode_strict(bytes, |d| {
+        d.array(12)?;
+        if d.uint()? != 1 {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 12,
+                actual: 0,
+            });
+        }
+        let r = BotSendReceipt {
+            operation: d.bytes_exact()?,
+            attempt: d.bytes_exact()?,
+            predecessor: d.opt_bytes_exact()?,
+            community: d.bytes_exact()?,
+            group: d.bytes_exact()?,
+            generation: d.uint()?,
+            ciphertext_hash: d.bytes_exact()?,
+            class: d.uint()?,
+            outcome: d.uint()?,
+            epoch: d.uint()?,
+            response: d.opt_bytes()?.map(ToOwned::to_owned),
+        };
+        Ok(r)
+    })
+    .map_err(|_| ClientError::new(E_CORE_INPUT, "bot send receipt is malformed"))?;
+    if receipt.operation == [0; 16]
+        || receipt.attempt == [0; 16]
+        || receipt.predecessor == Some([0; 16])
+        || receipt.community == [0; 16]
+        || receipt.group == [0; 16]
+        || receipt.class > 1
+        || receipt.outcome > 2
+        || (receipt.outcome == 1) != receipt.response.is_some()
+    {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "bot send receipt is malformed",
+        ));
+    }
+    if let Some(response) = receipt.response.as_deref() {
+        let decoded = wire::decode_send_response(response)?;
+        checked("seq", decoded.seq)?;
+        checked("recv_ts", decoded.recv_ts)?;
+        if decoded.seq == 0 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "accepted send receipt sequence must be positive",
+            ));
+        }
+    }
+    Ok(receipt)
+}
+
+fn encode_bot_send_output(message: &[u8; 16], upload: &[u8]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(2).bytes(message).bytes(upload);
+    e.into_vec()
+}
 
 /// The select list every timeline read shares, through the `FROM` keyword (one constant; each
 /// read appends its own clause at run time): the stored columns, whether the row is a fold target
@@ -251,6 +360,229 @@ fn not_found() -> ClientError {
 
 fn no_attachment() -> ClientError {
     ClientError::new(E_CORE_NOT_FOUND, "no such attachment")
+}
+
+fn bot_send_conflict() -> ClientError {
+    ClientError::new(
+        E_CORE_STATE,
+        "bot send attempt conflicts with durable intent",
+    )
+}
+
+fn id_hex(id: &[u8; 16]) -> String {
+    let mut s = String::with_capacity(32);
+    for b in id {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+fn bot_send_op_key(operation: &[u8; 16]) -> String {
+    format!("bot_send_op_{}", id_hex(operation))
+}
+
+fn bot_send_attempt_key(operation: &[u8; 16], attempt: &[u8; 16]) -> String {
+    format!("bot_send_try_{}_{}", id_hex(operation), id_hex(attempt))
+}
+
+fn encode_bot_send_row(row: &BotSendRow) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(12)
+        .uint(1)
+        .uint(row.state)
+        .opt_bytes(row.predecessor.as_ref().map(|v| v.as_slice()))
+        .bytes(&row.request_hash)
+        .uint(row.original_now)
+        .uint(row.generation)
+        .bytes(&row.message)
+        .opt_uint(row.epoch)
+        .opt_uint(row.class)
+        .opt_bytes(row.ciphertext_hash.as_ref().map(|v| v.as_slice()))
+        .opt_bytes(row.upload.as_deref())
+        .opt_bytes(row.receipt.as_deref());
+    e.into_vec()
+}
+
+fn decode_bot_send_row(bytes: &[u8]) -> Result<BotSendRow, ClientError> {
+    let row = decode_strict(bytes, |d| {
+        d.array(12)?;
+        if d.uint()? != 1 {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 12,
+                actual: 0,
+            });
+        }
+        let state = d.uint()?;
+        if state > BOT_SEND_UNKNOWN {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 12,
+                actual: 0,
+            });
+        }
+        Ok(BotSendRow {
+            state,
+            predecessor: d.opt_bytes_exact::<16>()?,
+            request_hash: d.bytes_exact()?,
+            original_now: d.uint()?,
+            generation: d.uint()?,
+            message: d.bytes_exact()?,
+            epoch: d.opt_uint()?,
+            class: d.opt_uint()?,
+            ciphertext_hash: d.opt_bytes_exact::<32>()?,
+            upload: d.opt_bytes()?.map(ToOwned::to_owned),
+            receipt: d.opt_bytes()?.map(ToOwned::to_owned),
+        })
+    })
+    .map_err(|_| ClientError::new(E_CORE_STORAGE, "bot send journal is malformed"))?;
+    let fields_match = match row.state {
+        BOT_SEND_PREPARING => {
+            row.epoch.is_none()
+                && row.class.is_none()
+                && row.ciphertext_hash.is_none()
+                && row.upload.is_none()
+                && row.receipt.is_none()
+        }
+        BOT_SEND_PENDING => {
+            row.epoch.is_some()
+                && row.class.is_some()
+                && row.ciphertext_hash.is_some()
+                && row.upload.is_some()
+                && row.receipt.is_none()
+        }
+        BOT_SEND_ACCEPTED | BOT_SEND_CLOSED | BOT_SEND_UNKNOWN => {
+            row.epoch.is_some()
+                && row.class.is_some()
+                && row.ciphertext_hash.is_some()
+                && row.upload.is_some()
+                && row.receipt.is_some()
+        }
+        _ => false,
+    };
+    if row.message == [0; 16]
+        || row.predecessor == Some([0; 16])
+        || row.original_now > i64::MAX as u64
+        || row.generation > i64::MAX as u64
+        || row.epoch.is_some_and(|v| v > i64::MAX as u64)
+        || row.class.is_some_and(|v| v > 1)
+        || !fields_match
+    {
+        return Err(ClientError::new(
+            E_CORE_STORAGE,
+            "bot send journal is malformed",
+        ));
+    }
+    if let Some(upload) = row.upload.as_deref() {
+        let (epoch, hash, class) = bot_send_upload_fields(upload)?;
+        if row.epoch != Some(epoch) || row.ciphertext_hash != Some(hash) || row.class != Some(class)
+        {
+            return Err(ClientError::new(
+                E_CORE_STORAGE,
+                "bot send ciphertext journal is inconsistent",
+            ));
+        }
+    }
+    if let Some(receipt) = row.receipt.as_deref() {
+        if receipt.len() > 512 {
+            return Err(ClientError::new(
+                E_CORE_STORAGE,
+                "bot send receipt journal is malformed",
+            ));
+        }
+        let decoded = decode_bot_send_receipt(receipt).map_err(|_| {
+            ClientError::new(E_CORE_STORAGE, "bot send receipt journal is malformed")
+        })?;
+        let outcome_matches = matches!(
+            (row.state, decoded.outcome),
+            (BOT_SEND_ACCEPTED, 1) | (BOT_SEND_CLOSED, 0) | (BOT_SEND_UNKNOWN, 2)
+        );
+        if !outcome_matches
+            || row.predecessor != decoded.predecessor
+            || row.generation != decoded.generation
+            || row.epoch != Some(decoded.epoch)
+            || row.class != Some(decoded.class)
+            || row.ciphertext_hash != Some(decoded.ciphertext_hash)
+        {
+            return Err(ClientError::new(
+                E_CORE_STORAGE,
+                "bot send receipt journal is inconsistent",
+            ));
+        }
+    }
+    Ok(row)
+}
+
+fn decode_bot_send_operation(
+    bytes: &[u8],
+) -> Result<
+    (
+        [u8; 16],
+        [u8; 16],
+        [u8; 16],
+        [u8; 16],
+        [u8; 16],
+        [u8; 32],
+        [u8; 16],
+    ),
+    ClientError,
+> {
+    decode_strict(bytes, |d| {
+        d.array(8)?;
+        if d.uint()? != 1 {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 8,
+                actual: 0,
+            });
+        }
+        Ok((
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+            d.bytes_exact()?,
+        ))
+    })
+    .map_err(|_| ClientError::new(E_CORE_STORAGE, "bot send operation journal is malformed"))
+}
+
+fn encode_bot_send_operation(
+    installation: &[u8; 16],
+    user: &[u8; 16],
+    device: &[u8; 16],
+    community: &[u8; 16],
+    group: &[u8; 16],
+    request_hash: &[u8; 32],
+    current_attempt: &[u8; 16],
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(8)
+        .uint(1)
+        .bytes(installation)
+        .bytes(user)
+        .bytes(device)
+        .bytes(community)
+        .bytes(group)
+        .bytes(request_hash)
+        .bytes(current_attempt);
+    e.into_vec()
+}
+
+fn bot_send_upload_fields(upload: &[u8]) -> Result<(u64, [u8; 32], u64), ClientError> {
+    let (epoch, ciphertext, class) = decode_strict(upload, |d| {
+        d.array(3)?;
+        Ok((d.uint()?, d.bytes()?.to_vec(), d.uint()?))
+    })
+    .map_err(|_| ClientError::new(E_CORE_STORAGE, "bot send upload is malformed"))?;
+    checked("epoch", epoch)?;
+    if class > 1 {
+        return Err(ClientError::new(
+            E_CORE_STORAGE,
+            "bot send class is malformed",
+        ));
+    }
+    Ok((epoch, Sha256::digest(&ciphertext).into(), class))
 }
 
 impl ClientCore {
@@ -744,6 +1076,344 @@ fn thread_root(
 }
 
 impl ClientCore {
+    /// Prepare one native Bot send attempt and retain the exact encrypted upload before returning it.
+    pub fn bot_send_prepare(
+        &mut self,
+        operation_id: &[u8; 16],
+        attempt_id: &[u8; 16],
+        group_id: &[u8; 16],
+        request_body: &[u8],
+        original_now: u64,
+        expected_generation: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        if operation_id == &[0; 16] || attempt_id == &[0; 16] || group_id == &[0; 16] {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "bot send ids must be nonzero",
+            ));
+        }
+        checked("now", original_now)?;
+        checked("expected_generation", expected_generation)?;
+        wire::decode_send_request(request_body)?;
+        let binding = super::bot_intents::binding(self)?;
+        let own = self.own()?;
+        let scope = self
+            .read(|c| group_row(c, group_id))?
+            .ok_or_else(not_found)?;
+        if scope.kind != 0
+            || scope.state != STATE_ACTIVE
+            || scope.community_id.as_deref() != Some(binding.community_id.as_slice())
+        {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "bot send group is outside its installation scope",
+            ));
+        }
+        let request_hash: [u8; 32] = Sha256::digest(request_body).into();
+        let op_key = bot_send_op_key(operation_id);
+        let attempt_key = bot_send_attempt_key(operation_id, attempt_id);
+        let existing_op = self.read(|c| super::schema::meta_get(c, &op_key))?;
+        let attempt = if let Some(raw) = existing_op {
+            let (installation, user, device, community, group, old_request_hash, current) =
+                decode_bot_send_operation(&raw)?;
+            if installation != binding.installation_id
+                || user != own.user_id
+                || device != own.device_id
+                || community != binding.community_id
+                || group != *group_id
+                || old_request_hash != request_hash
+            {
+                return Err(bot_send_conflict());
+            }
+            let current_raw = self
+                .read(|c| {
+                    super::schema::meta_get(c, &bot_send_attempt_key(operation_id, &current))
+                })?
+                .ok_or_else(|| {
+                    ClientError::new(E_CORE_STORAGE, "bot send current attempt is missing")
+                })?;
+            let current_row = decode_bot_send_row(&current_raw)?;
+            if current == *attempt_id {
+                if current_row.request_hash != request_hash
+                    || current_row.original_now != original_now
+                    || current_row.generation != expected_generation
+                {
+                    return Err(bot_send_conflict());
+                }
+                if matches!(current_row.state, BOT_SEND_PENDING | BOT_SEND_ACCEPTED) {
+                    return Ok(encode_bot_send_output(
+                        &current_row.message,
+                        current_row
+                            .upload
+                            .as_deref()
+                            .ok_or_else(bot_send_conflict)?,
+                    ));
+                }
+                if current_row.state != BOT_SEND_PREPARING {
+                    return Err(bot_send_conflict());
+                }
+                BotSendAttempt {
+                    predecessor: current_row.predecessor,
+                    message: current_row.message,
+                }
+            } else {
+                if current_row.state != BOT_SEND_CLOSED
+                    || current_row.receipt.is_none()
+                    || self
+                        .read(|c| super::schema::meta_get(c, &attempt_key))?
+                        .is_some()
+                {
+                    return Err(bot_send_conflict());
+                }
+                let message = self
+                    .provider
+                    .rand()
+                    .random_array::<16>()
+                    .map_err(|_| ClientError::new(E_CORE_MLS, "random failed"))?;
+                BotSendAttempt {
+                    predecessor: Some(current),
+                    message,
+                }
+            }
+        } else {
+            if self
+                .read(|c| super::schema::meta_get(c, &attempt_key))?
+                .is_some()
+            {
+                return Err(bot_send_conflict());
+            }
+            let message = self
+                .provider
+                .rand()
+                .random_array::<16>()
+                .map_err(|_| ClientError::new(E_CORE_MLS, "random failed"))?;
+            BotSendAttempt {
+                predecessor: None,
+                message,
+            }
+        };
+
+        let row = BotSendRow {
+            state: BOT_SEND_PREPARING,
+            predecessor: attempt.predecessor,
+            request_hash,
+            original_now,
+            generation: expected_generation,
+            message: attempt.message,
+            epoch: None,
+            class: None,
+            ciphertext_hash: None,
+            upload: None,
+            receipt: None,
+        };
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                if let Some(old) = super::schema::meta_get(c, &attempt_key)? {
+                    let old =
+                        decode_bot_send_row(&old).map_err(|e| StorageError::Codec(e.detail))?;
+                    if old.state == BOT_SEND_PREPARING
+                        && old.predecessor == row.predecessor
+                        && old.request_hash == row.request_hash
+                        && old.original_now == row.original_now
+                        && old.generation == row.generation
+                        && old.message == row.message
+                    {
+                        return Ok(());
+                    }
+                    return Err(StorageError::Codec(
+                        "bot send attempt already exists".into(),
+                    ));
+                }
+                let op_raw = super::schema::meta_get(c, &op_key)?;
+                if let Some(raw) = op_raw {
+                    let (_, _, _, _, _, old_hash, current) = decode_bot_send_operation(&raw)
+                        .map_err(|e| StorageError::Codec(e.detail))?;
+                    if old_hash != request_hash || attempt.predecessor != Some(current) {
+                        return Err(StorageError::Codec("bot send operation changed".into()));
+                    }
+                } else if attempt.predecessor.is_some() {
+                    return Err(StorageError::Codec(
+                        "bot send predecessor is missing".into(),
+                    ));
+                }
+                super::schema::meta_put(
+                    c,
+                    &op_key,
+                    &encode_bot_send_operation(
+                        &binding.installation_id,
+                        &own.user_id,
+                        &own.device_id,
+                        &binding.community_id,
+                        group_id,
+                        &request_hash,
+                        attempt_id,
+                    ),
+                )?;
+                super::schema::meta_put(c, &attempt_key, &encode_bot_send_row(&row))?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+
+        let queued = self.read(|c| outbox_row(c, &attempt.message))?;
+        if queued.is_none() {
+            self.send_prepare_with_id(group_id, request_body, original_now, Some(attempt.message))?;
+        } else if queued
+            .as_ref()
+            .is_some_and(|o| o.group_id != *group_id || o.state != OUTBOX_QUEUED)
+        {
+            return Err(ClientError::new(
+                E_CORE_STORAGE,
+                "bot send outbox conflicts with its journal",
+            ));
+        }
+        let encrypted = self.send_encrypt_inner(
+            &attempt.message,
+            Some(BotSendEncryptIntent {
+                operation: *operation_id,
+                attempt: *attempt_id,
+                generation: expected_generation,
+                message: attempt.message,
+            }),
+        )?;
+        let (encrypted_group, upload) = decode_strict(&encrypted, |d| {
+            d.array(2)?;
+            Ok((d.bytes_exact::<16>()?, d.bytes()?.to_vec()))
+        })
+        .map_err(|_| ClientError::new(E_CORE_STORAGE, "native send result is malformed"))?;
+        if encrypted_group != *group_id {
+            return Err(ClientError::new(
+                E_CORE_STORAGE,
+                "native send group changed",
+            ));
+        }
+        Ok(encode_bot_send_output(&attempt.message, &upload))
+    }
+
+    /// Resolve a native Bot send attempt with the exact canonical receipt returned by the server.
+    pub fn bot_send_receipt(
+        &mut self,
+        operation_id: &[u8; 16],
+        receipt_body: &[u8],
+    ) -> Result<(), ClientError> {
+        if receipt_body.len() > 512 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "bot send receipt exceeds 512 bytes",
+            ));
+        }
+        let receipt = decode_bot_send_receipt(receipt_body)?;
+        if receipt.operation != *operation_id {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "bot send receipt scope is malformed",
+            ));
+        }
+        checked("generation", receipt.generation)?;
+        checked("epoch", receipt.epoch)?;
+        let binding = super::bot_intents::binding(self)?;
+        let own = self.own()?;
+        if receipt.community != binding.community_id {
+            return Err(bot_send_conflict());
+        }
+        let op_key = bot_send_op_key(operation_id);
+        let raw_op = self
+            .read(|c| super::schema::meta_get(c, &op_key))?
+            .ok_or_else(bot_send_conflict)?;
+        let (installation, user, device, community, group, _, current) =
+            decode_bot_send_operation(&raw_op)?;
+        if installation != binding.installation_id
+            || user != own.user_id
+            || device != own.device_id
+            || community != binding.community_id
+            || group != receipt.group
+        {
+            return Err(bot_send_conflict());
+        }
+        let key = bot_send_attempt_key(operation_id, &receipt.attempt);
+        let raw = self
+            .read(|c| super::schema::meta_get(c, &key))?
+            .ok_or_else(bot_send_conflict)?;
+        let mut row = decode_bot_send_row(&raw)?;
+        if row.predecessor != receipt.predecessor
+            || row.generation != receipt.generation
+            || row.epoch != Some(receipt.epoch)
+            || row.class != Some(receipt.class)
+            || row.ciphertext_hash != Some(receipt.ciphertext_hash)
+            || row.upload.is_none()
+        {
+            return Err(bot_send_conflict());
+        }
+        if let Some(old) = row.receipt.as_deref() {
+            if old == receipt_body {
+                return Ok(());
+            }
+            return Err(bot_send_conflict());
+        }
+        if row.state != BOT_SEND_PENDING || (receipt.attempt != current && receipt.outcome == 1) {
+            return Err(bot_send_conflict());
+        }
+        let message = row.message;
+        if receipt.outcome == 1 {
+            let response = receipt.response.as_deref().ok_or_else(bot_send_conflict)?;
+            let decoded = wire::decode_send_response(response)?;
+            let existing: Option<(Vec<u8>, i64, Vec<u8>, i64)> = self.read(|c| {
+                c.query_row(
+                    "SELECT group_id,seq,franking_tag,recv_ts FROM app_messages WHERE msg_id=?1 AND sender_device=?2 ORDER BY seq DESC LIMIT 1",
+                    params![message.as_slice(), own.device_id.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                ).optional().map_err(Into::into)
+            })?;
+            if let Some((stored_group, seq, tag, recv_ts)) = existing {
+                if stored_group.as_slice() != group.as_slice()
+                    || seq != decoded.seq as i64
+                    || tag.as_slice() != decoded.franking_tag
+                    || recv_ts != decoded.recv_ts as i64
+                {
+                    return Err(bot_send_conflict());
+                }
+            } else {
+                self.send_confirm(&message, response)?;
+            }
+            row.state = BOT_SEND_ACCEPTED;
+        } else {
+            let exists: bool = self.read(|c| {
+                c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_messages WHERE msg_id=?1 AND sender_device=?2)",
+                params![message.as_slice(), own.device_id.as_slice()], |r| r.get(0),
+            ).map_err(Into::into)
+            })?;
+            if exists {
+                return Err(bot_send_conflict());
+            }
+            row.state = if receipt.outcome == 0 {
+                BOT_SEND_CLOSED
+            } else {
+                BOT_SEND_UNKNOWN
+            };
+        }
+        row.receipt = Some(receipt_body.to_vec());
+        if receipt.outcome == 1 {
+            self.write(|_, u| {
+                u.with_conn(|c| super::schema::meta_put(c, &key, &encode_bot_send_row(&row)))?;
+                Ok(())
+            })?;
+        } else {
+            self.write(|_, u| {
+                u.with_conn(|c| {
+                    c.execute(
+                        "DELETE FROM app_outbox WHERE msg_id=?1",
+                        [message.as_slice()],
+                    )?;
+                    super::schema::meta_put(c, &key, &encode_bot_send_row(&row))?;
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// `request` = [type uint 0..=6, reply_to b16|null, body tstr,
     ///              attachments [[blob_id b32, key b32, nonce b12, size uint, mime tstr, w uint|null, h uint|null, thumb bstr|null, name tstr]],
     ///              thread_id b16|null]
@@ -757,6 +1427,16 @@ impl ClientCore {
         id: &[u8; 16],
         request: &[u8],
         now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.send_prepare_with_id(id, request, now, None)
+    }
+
+    fn send_prepare_with_id(
+        &mut self,
+        id: &[u8; 16],
+        request: &[u8],
+        now: u64,
+        fixed_message_id: Option<[u8; 16]>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let now = checked("now", now)?;
@@ -847,11 +1527,14 @@ impl ClientCore {
                 _ => {}
             }
         }
-        let msg_id = self
-            .provider
-            .rand()
-            .random_array::<16>()
-            .map_err(|_| ClientError::new(E_CORE_MLS, "random failed"))?;
+        let msg_id = match fixed_message_id {
+            Some(id) => id,
+            None => self
+                .provider
+                .rand()
+                .random_array::<16>()
+                .map_err(|_| ClientError::new(E_CORE_MLS, "random failed"))?,
+        };
         let k_f = self
             .provider
             .rand()
@@ -887,6 +1570,14 @@ impl ClientCore {
     }
 
     pub fn send_encrypt(&mut self, msg_id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.send_encrypt_inner(msg_id, None)
+    }
+
+    fn send_encrypt_inner(
+        &mut self,
+        msg_id: &[u8; 16],
+        bot_intent: Option<BotSendEncryptIntent>,
+    ) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         let o = self
             .read(|c| outbox_row(c, msg_id))?
@@ -954,13 +1645,6 @@ impl ClientCore {
                         .ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?,
                     &env,
                 )?;
-                u.with_conn(|c| {
-                    c.execute(
-                        "UPDATE app_outbox SET state=1,epoch=?2 WHERE msg_id=?1",
-                        params![msg_id.as_slice(), epoch as i64],
-                    )?;
-                    Ok(())
-                })?;
                 // web3.7: the upload class, 0 for a post and 1 for every other type; the host
                 // enforces send and slow mode on class 0 and relays it to every reader.
                 let class = if env.kind == EnvelopeType::Message {
@@ -973,7 +1657,50 @@ impl ClientCore {
                     .uint(epoch)
                     .bytes(&wire::tls(&message)?)
                     .uint(class);
-                Ok(body.into_vec())
+                let body = body.into_vec();
+                let stored_epoch = checked("epoch", epoch)?;
+                if let Some(intent) = bot_intent.as_ref() {
+                    if intent.message != *msg_id || intent.generation > i64::MAX as u64 {
+                        return Err(bot_send_conflict());
+                    }
+                    let (journal_epoch, hash, stored_class) = bot_send_upload_fields(&body)?;
+                    u.with_conn(|c| {
+                        c.execute(
+                            "UPDATE app_outbox SET state=1,epoch=?2 WHERE msg_id=?1",
+                            params![msg_id.as_slice(), stored_epoch as i64],
+                        )?;
+                        let key = bot_send_attempt_key(&intent.operation, &intent.attempt);
+                        let raw = super::schema::meta_get(c, &key)?.ok_or_else(|| {
+                            StorageError::Codec("bot send attempt disappeared".into())
+                        })?;
+                        let mut row =
+                            decode_bot_send_row(&raw).map_err(|e| StorageError::Codec(e.detail))?;
+                        if row.state != BOT_SEND_PREPARING
+                            || row.message != *msg_id
+                            || row.generation != intent.generation
+                            || journal_epoch != stored_epoch as u64
+                            || stored_class != class
+                        {
+                            return Err(StorageError::Codec("bot send attempt changed".into()));
+                        }
+                        row.state = BOT_SEND_PENDING;
+                        row.epoch = Some(journal_epoch);
+                        row.class = Some(stored_class);
+                        row.ciphertext_hash = Some(hash);
+                        row.upload = Some(body.clone());
+                        super::schema::meta_put(c, &key, &encode_bot_send_row(&row))?;
+                        Ok(())
+                    })?;
+                } else {
+                    u.with_conn(|c| {
+                        c.execute(
+                            "UPDATE app_outbox SET state=1,epoch=?2 WHERE msg_id=?1",
+                            params![msg_id.as_slice(), stored_epoch as i64],
+                        )?;
+                        Ok(())
+                    })?;
+                }
+                Ok(body)
             });
             if result.is_ok() {
                 this.keep_group(id, group);
@@ -994,6 +1721,12 @@ impl ClientCore {
         let response = wire::decode_send_response(response)?;
         checked("seq", response.seq)?;
         checked("recv_ts", response.recv_ts)?;
+        if response.seq == 0 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "send confirmation sequence must be positive",
+            ));
+        }
         let o = self.read(|c| outbox_row(c, msg_id))?;
         let (id, seq) = if let Some(o) = o {
             if o.state != OUTBOX_IN_FLIGHT {
@@ -1687,5 +2420,238 @@ mod mention_tests {
                 "{body:?} {mentionable:?} {ok}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bot_send_intent_tests {
+    use super::*;
+    use crate::{cbor::Encoder, mls::ConnHandle};
+    use std::sync::{Arc, Mutex};
+
+    const INSTANCE: [u8; 16] = [0x11; 16];
+    const COMMUNITY: [u8; 16] = [0x22; 16];
+    const INSTALLATION: [u8; 16] = [0x33; 16];
+    const USER: [u8; 16] = [0x44; 16];
+    const GROUP: [u8; 16] = [0x55; 16];
+    const CHANNEL: [u8; 16] = [0x66; 16];
+    const CREATE_OP: [u8; 16] = [0x77; 16];
+    const OPERATION: [u8; 16] = [0x88; 16];
+    const ATTEMPT: [u8; 16] = [0x99; 16];
+
+    fn connection() -> ConnHandle {
+        Arc::new(Mutex::new(
+            rusqlite::Connection::open_in_memory().expect("sqlite"),
+        ))
+    }
+
+    fn bot(conn: ConnHandle) -> ClientCore {
+        let mut core = ClientCore::open(conn).expect("open core");
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .expect("bootstrap");
+        core.bot_bootstrap_complete(&USER, "send bot", 1_800_000_000)
+            .expect("enroll");
+        core.bot_group_create(&CREATE_OP, &GROUP, &CHANNEL, 0, 0, &[0x88; 32])
+            .expect("create group");
+        core.bot_group_registered(&CREATE_OP, &GROUP, 1)
+            .expect("register group");
+        core
+    }
+
+    fn request() -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.array(4)
+            .uint(0)
+            .null()
+            .text("persist exactly once")
+            .array(0);
+        e.into_vec()
+    }
+
+    fn upload_from_output(output: &[u8]) -> ([u8; 16], Vec<u8>) {
+        decode_strict(output, |d| {
+            d.array(2)?;
+            Ok((d.bytes_exact()?, d.bytes()?.to_vec()))
+        })
+        .expect("prepare output")
+    }
+
+    fn receipt(attempt: [u8; 16], upload: &[u8], outcome: u64, response: Option<&[u8]>) -> Vec<u8> {
+        let (epoch, hash, class) = bot_send_upload_fields(upload).expect("upload fields");
+        let mut e = Encoder::new();
+        e.array(12)
+            .uint(1)
+            .bytes(&OPERATION)
+            .bytes(&attempt)
+            .null()
+            .bytes(&COMMUNITY)
+            .bytes(&GROUP)
+            .uint(7)
+            .bytes(&hash)
+            .uint(class)
+            .uint(outcome)
+            .uint(epoch)
+            .opt_bytes(response);
+        e.into_vec()
+    }
+
+    #[test]
+    fn exact_ciphertext_replays_after_reopen_and_after_local_epoch_snapshot_changes() {
+        let conn = connection();
+        let mut core = bot(conn.clone());
+        let request = request();
+        let first = core
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("prepare");
+        let (_, upload) = upload_from_output(&first);
+        drop(core);
+
+        conn.lock()
+            .expect("connection")
+            .execute(
+                "UPDATE app_groups SET epoch=epoch+1 WHERE group_id=?1",
+                [GROUP.as_slice()],
+            )
+            .expect("simulate newer epoch snapshot");
+        let mut restarted = ClientCore::open(conn).expect("reopen core");
+        let replay = restarted
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("replay");
+        assert_eq!(replay, first);
+        assert!(
+            restarted
+                .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 8)
+                .is_err()
+        );
+        assert!(
+            restarted
+                .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &[0x80], 1_800_000_001, 7)
+                .is_err()
+        );
+        let (_, replay_upload) = upload_from_output(&replay);
+        assert_eq!(replay_upload, upload);
+    }
+
+    #[test]
+    fn bot_send_refuses_a_group_outside_its_bound_community() {
+        let mut core = bot(connection());
+        let foreign = [0xbb; 16];
+        let foreign_group = [0xcc; 16];
+        core.group_create(&foreign_group, Some(&foreign), &[0xdd; 16], 0, &[0xee; 32])
+            .expect("foreign group fixture");
+        assert!(
+            core.bot_send_prepare(
+                &OPERATION,
+                &ATTEMPT,
+                &foreign_group,
+                &request(),
+                1_800_000_001,
+                7
+            )
+            .is_err()
+        );
+        assert!(
+            core.read(|c| crate::client::schema::meta_get(c, &bot_send_op_key(&OPERATION)))
+                .expect("read operation")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn only_closed_attempt_allows_an_explicit_successor() {
+        let mut core = bot(connection());
+        let request = request();
+        let first = core
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("prepare");
+        let (_, upload) = upload_from_output(&first);
+        let closed = receipt(ATTEMPT, &upload, 0, None);
+        core.bot_send_receipt(&OPERATION, &closed)
+            .expect("close not accepted");
+
+        let successor = [0xaa; 16];
+        let next = core
+            .bot_send_prepare(&OPERATION, &successor, &GROUP, &request, 1_800_000_002, 8)
+            .expect("successor");
+        assert_ne!(next, first);
+        assert_eq!(
+            core.bot_send_prepare(&OPERATION, &successor, &GROUP, &request, 1_800_000_002, 8)
+                .expect("same successor retry"),
+            next
+        );
+    }
+
+    #[test]
+    fn accepted_receipt_confirms_its_original_response_and_unknown_is_terminal() {
+        let mut core = bot(connection());
+        let request = request();
+        let first = core
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("prepare");
+        let (_, upload) = upload_from_output(&first);
+        let mut response = Encoder::new();
+        response
+            .array(3)
+            .uint(1)
+            .bytes(&[0x5a; 32])
+            .uint(1_800_000_003);
+        let response = response.into_vec();
+        let accepted = receipt(ATTEMPT, &upload, 1, Some(&response));
+        core.bot_send_receipt(&OPERATION, &accepted)
+            .expect("confirm original response");
+        let (message, _) = upload_from_output(&first);
+        let (seq, tag, recv_ts): (i64, Vec<u8>, i64) = core
+            .read(|c| {
+                c.query_row(
+                    "SELECT seq,franking_tag,recv_ts FROM app_messages WHERE msg_id=?1",
+                    [message.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("confirmed own message");
+        assert_eq!(seq, 1);
+        assert_eq!(tag, vec![0x5a; 32]);
+        assert_eq!(recv_ts, 1_800_000_003);
+        core.bot_send_receipt(&OPERATION, &accepted)
+            .expect("idempotent accepted receipt");
+        let downgraded = receipt(ATTEMPT, &upload, 0, None);
+        assert!(core.bot_send_receipt(&OPERATION, &downgraded).is_err());
+
+        let other_conn = connection();
+        let mut other = bot(other_conn);
+        let unknown_first = other
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("prepare");
+        let (_, unknown_upload) = upload_from_output(&unknown_first);
+        let unknown = receipt(ATTEMPT, &unknown_upload, 2, None);
+        other
+            .bot_send_receipt(&OPERATION, &unknown)
+            .expect("resolve unknown");
+        assert!(
+            other
+                .bot_send_prepare(&OPERATION, &[0xaa; 16], &GROUP, &request, 1_800_000_002, 8)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn accepted_receipt_and_direct_confirmation_reject_zero_sequence() {
+        let mut core = bot(connection());
+        let first = core
+            .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request(), 1_800_000_001, 7)
+            .expect("prepare");
+        let (message, upload) = upload_from_output(&first);
+        let mut response = Encoder::new();
+        response
+            .array(3)
+            .uint(0)
+            .bytes(&[0x5a; 32])
+            .uint(1_800_000_003);
+        let response = response.into_vec();
+
+        let accepted = receipt(ATTEMPT, &upload, 1, Some(&response));
+        assert!(core.bot_send_receipt(&OPERATION, &accepted).is_err());
+        assert!(core.send_confirm(&message, &response).is_err());
     }
 }
