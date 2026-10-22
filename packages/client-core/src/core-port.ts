@@ -118,6 +118,8 @@ export interface CorePort {
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array;
   groupJoined(groupId: Id, seq: bigint): void;
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[];
+  /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[];
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
@@ -258,6 +260,7 @@ export interface CoreHandle {
       group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       group_joined(group_id: Uint8Array, seq: bigint): void;
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
+      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array): Uint8Array;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -500,6 +503,11 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupJoined: (groupId, seq) => call(() => handle.group_joined(groupId, seq)),
     welcomesApply: (welcomesBody, expected) => call(() => decoded('welcomesApply', handle.welcomes_apply(welcomesBody,
       encode(expected.map((e) => [e.groupId, e.communityId, e.channelId, e.policyVersion]))), (v) => arr(v).map(readWelcome))),
+    humanInteractionWelcomeApply: (welcomesBody, currentContextProof) => call(() => decoded(
+      'humanInteractionWelcomeApply',
+      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof),
+      (v) => arr(v).map(readWelcome),
+    )),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),

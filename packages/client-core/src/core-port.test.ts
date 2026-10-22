@@ -76,6 +76,20 @@ it('passes moderator-removal signing inputs directly to ClientCore and returns o
   expect(s.calls).toEqual([{ method: 'sign_removal', args: [requestId, G, 9n, 140n, 110n] }]);
 });
 
+it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
+  const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
+  const proof = new Uint8Array([0x81, 0x00]);
+  const result = encode([[1, G, 0, '']]);
+  const s = stub({ human_interaction_welcome_apply: (...args) => {
+    expect(args).toEqual([welcomes, proof]);
+    return result;
+  } });
+  expect(s.port.humanInteractionWelcomeApply(welcomes, proof)).toEqual([
+    { welcomeId: 1n, groupId: G, outcome: 0, reason: '' },
+  ]);
+  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof] }]);
+});
+
 it('fails closed when the generated WASM handle predates moderator-removal signing', () => {
   const staleHandle = { sign_removal: undefined } as unknown as CoreHandle;
   const error = caught(() => wrapCore(staleHandle).signRemoval(new Uint8Array(16), G, 9n, 140n, 110n));

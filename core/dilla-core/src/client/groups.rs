@@ -808,7 +808,6 @@ impl ClientCore {
     pub fn human_interaction_welcome_apply(
         &mut self,
         welcomes_body: &[u8],
-        expected: &[u8],
         current_context_proof: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
@@ -819,21 +818,13 @@ impl ClientCore {
             ));
         }
         let items = wire::decode_welcomes_body(welcomes_body)?;
-        let expected_groups = wire::decode_expected(expected)?;
-        if items.len() != 1 || expected_groups.len() != 1 {
+        if items.len() != 1 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
-                "interaction Welcome requires exactly one expected group",
+                "interaction Welcome requires exactly one item",
             ));
         }
         let item = &items[0];
-        let want = &expected_groups[0];
-        if item.group_id != want.group_id {
-            return Err(ClientError::new(
-                E_BINDING,
-                "interaction Welcome group mismatch",
-            ));
-        }
         let now = unix_time()?;
         let pinned_key = self.pinned_instance_signer_key()?;
         let expected_context = crate::bot::human_interaction_context::Expected {
@@ -849,18 +840,28 @@ impl ClientCore {
             &expected_context,
         )
         .map_err(|_| ClientError::new(E_BINDING, "interaction Welcome context rejected"))?;
-        if want.community_id != Some(*context.binding.community_id.as_bytes())
-            || !interaction_target_matches(&want.channel_id, &context.binding)
-            || *context.registration.group.as_bytes() != item.group_id
-        {
+        if *context.registration.group.as_bytes() != item.group_id {
             return Err(ClientError::new(
                 E_BINDING,
-                "interaction Welcome binding mismatch",
+                "interaction Welcome group mismatch",
             ));
         }
+        // This tuple is derived only after signature, pin, identity and device-list checks.
+        // TypeScript deliberately forwards the proof as opaque bytes and cannot choose the group
+        // target, community or policy that becomes the local app_groups binding. The authenticated
+        // MLS binding and roster are checked before persistence in apply_human_interaction_welcome.
+        let mut expected = Encoder::new();
+        expected
+            .array(1)
+            .array(4)
+            .bytes(item.group_id.as_slice())
+            .bytes(context.binding.community_id.as_bytes())
+            .bytes(&context.binding.bot_user_id)
+            .uint(context.binding.policy_version);
+        let expected = expected.into_vec();
         self.welcomes_apply_kind(
             welcomes_body,
-            expected,
+            &expected,
             GroupKind::Interaction,
             None,
             Some(HumanInteractionWelcome {

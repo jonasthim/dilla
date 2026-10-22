@@ -609,6 +609,16 @@ impl CoreHandle {
         self.with_core(|c| c.welcomes_apply(welcomes_body, expected))
             .map(Vec::into_boxed_slice)
     }
+    /// Calls ClientCore::human_interaction_welcome_apply with opaque context proof bytes; the core
+    /// derives the expected group binding from the verified proof before accepting the Welcome.
+    pub fn human_interaction_welcome_apply(
+        &self,
+        welcomes_body: &[u8],
+        current_context_proof: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.human_interaction_welcome_apply(welcomes_body, current_context_proof))
+            .map(Vec::into_boxed_slice)
+    }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].
     pub fn group_apply(
         &self,

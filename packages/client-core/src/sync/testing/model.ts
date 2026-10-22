@@ -1289,6 +1289,13 @@ export class ModelCore implements CorePort {
     return out;
   }
 
+  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[] {
+    void welcomesBody;
+    void currentContextProof;
+    this.log('humanInteractionWelcomeApply', new Uint8Array(16));
+    throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
+  }
+
   // --- ordered processing (L-CORE-08) ---
 
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult {

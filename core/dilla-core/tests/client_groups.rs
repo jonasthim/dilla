@@ -606,6 +606,30 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
 }
 
 #[test]
+fn a_human_interaction_welcome_refuses_a_forged_context_without_storing_a_group() {
+    let mut human = ready_core(0xa1, "alice");
+    let mut welcome = Encoder::new();
+    welcome
+        .array(1)
+        .array(7)
+        .uint(1)
+        .bytes(&GROUP)
+        .uint(1)
+        .uint(1)
+        .bytes(&[])
+        .bytes(&[])
+        .bytes(&[0; 32]);
+
+    let error = code(
+        human
+            .core
+            .human_interaction_welcome_apply(&welcome.into_vec(), &[0x80]),
+    );
+    assert_eq!(error, "E_BINDING");
+    assert!(groups(&human.core).is_empty());
+}
+
+#[test]
 fn a_welcome_labelled_with_another_group_id_preserves_the_stale_group() {
     let (_instance, _relay, _a, mut joiner) = alice_and_bob_trusted();
     let key_package = joiner.first_key_package();
