@@ -13,6 +13,7 @@ use crate::identity::{
 use crate::ids::{DeviceId, UserId};
 use crate::mls::CIPHERSUITE;
 use openmls_basic_credential::SignatureKeyPair;
+use rusqlite::OptionalExtension;
 use zeroize::Zeroizing;
 
 #[derive(Clone, Copy)]
@@ -405,6 +406,75 @@ impl ClientCore {
             ));
         }
         Ok(())
+    }
+
+    /// Verify a signed interaction context against the instance key and existing user-key/list
+    /// trust state persisted in this Bot store. This is read-only preparation evidence; it does
+    /// not authenticate a candidate MLS roster and cannot authorize group creation.
+    pub fn bot_verify_interaction_snapshot(
+        &self,
+        wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<crate::bot::interaction_snapshot::Snapshot, ClientError> {
+        let own = self.own()?;
+        if own.kind != Kind::Bot.as_u8()
+            || own.tier != Tier::Native.as_u8()
+            || expected.instance.0 != own.instance_id
+            || expected.bot_user.0 != own.user_id
+            || expected.bot_device.0 != own.device_id
+        {
+            return Err(binding_mismatch());
+        }
+        let binding_raw = self.read(|c| schema::meta_get(c, schema::BOT_BINDING))?;
+        let stored = decode_binding(&binding_raw.ok_or_else(binding_mismatch)?)?;
+        if expected.community.0 != stored.community_id
+            || expected.installation.0 != stored.installation_id
+        {
+            return Err(binding_mismatch());
+        }
+        let pinned = self
+            .read(|c| schema::meta_get(c, schema::BOT_INSTANCE_KEY))?
+            .ok_or_else(|| ClientError::new(E_CORE_STATE, "Bot instance key is not pinned"))?;
+        let pinned: [u8; 32] = pinned
+            .try_into()
+            .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
+        let snapshot = crate::bot::interaction_snapshot::verify(wire, &pinned, expected)
+            .map_err(|_| ClientError::new(E_CORE_INPUT, "interaction context snapshot rejected"))?;
+        for list in [&snapshot.bot, &snapshot.participant] {
+            let user = list.user.as_bytes();
+            let (pin, cached): (Option<(Vec<u8>, i64, Option<Vec<u8>>)>, Option<(i64, Vec<u8>, Vec<u8>, Vec<u8>)>) = self.read(|c| {
+                let pin = c.query_row("SELECT umk_pub,verified,changed_umk FROM app_trust_pins WHERE user_id=?1", [user.as_slice()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+                let cached = c.query_row("SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1", [user.as_slice()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+                Ok((pin,cached))
+            })?;
+            let Some((umk, verified, changed)) = pin else {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "interaction user-key pin is unavailable",
+                ));
+            };
+            let Some((version, blob, cached_umk, cached_ssk)) = cached else {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "interaction device-list pin is unavailable",
+                ));
+            };
+            if verified != 1
+                || changed.is_some()
+                || umk.as_slice() != list.umk
+                || cached_umk.as_slice() != list.umk
+                || cached_ssk.as_slice() != list.ssk
+                || version < 0
+                || version as u64 != list.version
+                || blob != list.blob
+            {
+                return Err(ClientError::new(
+                    E_CORE_INPUT,
+                    "interaction device-list trust state changed",
+                ));
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Start (or resume) the one native bot identity bound to an installation and community.

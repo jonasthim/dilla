@@ -5,6 +5,7 @@
 
 pub mod group_registration;
 pub mod interaction_admission;
+pub mod interaction_snapshot;
 pub mod keypackage;
 
 use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
