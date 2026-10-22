@@ -193,7 +193,7 @@ class Sock {
 }
 
 const HELLO = encodeFrame(Op.hello, 0, null, [[2], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
-const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 1, 1, 1, 32, []]);
+const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 2, 1, 1, 32, []]);
 
 /** A world on the real Gateway, whose tickets go through the real HttpClient to `ticket` (the n-th request, 1-based). */
 function socketWorld(ticket: (n: number) => Promise<Response>) {
