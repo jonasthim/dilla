@@ -358,14 +358,56 @@ func addPathMount(args []string, path string) []string {
 	if path == "/usr" || strings.HasPrefix(path, "/usr/") || path == "/bin" || strings.HasPrefix(path, "/bin/") || path == "/lib" || strings.HasPrefix(path, "/lib/") || path == "/lib64" || strings.HasPrefix(path, "/lib64/") {
 		return args
 	}
-	if strings.Contains(path, string(filepath.Separator)+".youtube-venv"+string(filepath.Separator)) {
-		parts := strings.Split(path, string(filepath.Separator)+".youtube-venv")
-		root := parts[0] + string(filepath.Separator) + ".youtube-venv"
+	if root, ok := pythonVenvRoot(path); ok {
 		args = addParentDirs(args, root)
 		return append(args, "--ro-bind", root, root)
 	}
 	args = addParentDirs(args, path)
 	return append(args, "--ro-bind", path, path)
+}
+
+// pythonVenvRoot returns the canonical root of a conventional Python virtual
+// environment only when the executable is directly in its bin directory and
+// the environment contains its own pyvenv.cfg. This avoids mounting arbitrary
+// executable parents or following an untrusted script's shebang.
+func pythonVenvRoot(executable string) (string, bool) {
+	bin, err := filepath.EvalSymlinks(filepath.Dir(executable))
+	if err != nil || filepath.Base(bin) != "bin" {
+		return "", false
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(bin))
+	if err != nil {
+		return "", false
+	}
+	if filepath.Dir(bin) != root {
+		return "", false
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil || !rootInfo.IsDir() {
+		return "", false
+	}
+	config := filepath.Join(root, "pyvenv.cfg")
+	configPath, err := filepath.EvalSymlinks(config)
+	if err != nil {
+		return "", false
+	}
+	if !withinPath(root, configPath) {
+		return "", false
+	}
+	configInfo, err := os.Stat(configPath)
+	if err != nil || !configInfo.Mode().IsRegular() || configInfo.Size() > 64<<10 {
+		return "", false
+	}
+	canonicalExecutable, err := filepath.EvalSymlinks(executable)
+	if err != nil || !withinPath(filepath.Join(root, "bin"), canonicalExecutable) {
+		return "", false
+	}
+	return root, true
+}
+
+func withinPath(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func addParentDirs(args []string, path string) []string {

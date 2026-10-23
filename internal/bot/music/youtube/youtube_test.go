@@ -138,6 +138,43 @@ func TestIsolatedMetadataRunnerUsesArgvWithoutShellExpansion(t *testing.T) {
 	}
 }
 
+func TestIsolatedMetadataRunnerMountsPythonVenvByConfig(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "extractor-env")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pyvenv.cfg"), []byte("home = /usr\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python 3 unavailable")
+	}
+	if err := os.Symlink(python, filepath.Join(bin, "python3")); err != nil {
+		t.Fatal(err)
+	}
+	extractor := filepath.Join(bin, "yt-dlp")
+	if err := os.WriteFile(extractor, []byte("#!/"+filepath.Join(bin, "python3")+"\nprint('venv interpreter mounted')\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("bubblewrap unavailable")
+	}
+	runner := IsolatedMetadataRunner{Bubblewrap: bwrap, Python: python, Timeout: 5 * time.Second}
+	output, err := runner.Run(context.Background(), extractor, nil, 4096)
+	if errors.Is(err, ErrSandboxUnavailable) {
+		t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("Run with nonstandard venv path = %q, %v", output, err)
+	}
+	if string(output) != "venv interpreter mounted\n" {
+		t.Fatalf("Run output = %q, want venv interpreter output", output)
+	}
+}
+
 func TestIsolatedMetadataRunnerBoundsCapturedOutput(t *testing.T) {
 	dir := t.TempDir()
 	extractor := filepath.Join(dir, "large-output")
