@@ -273,7 +273,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await page2.keyboard.press('Escape');
     const mine = await openSettings(page2);
     const nav = mine.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button');
-    await expect(nav).toHaveText([copy('admin.nav.invites'), copy('admin.nav.leave')]);
+    await expect(nav).toHaveText([copy('admin.nav.invites'), copy('admin.nav.selfRoles'), copy('admin.nav.leave')]);
     // WS8: the sidebar has no leave button; leave is a section of server settings.
     await expect(page2.locator('.d-channel-list').getByRole('button', { name: copy('admin.leave.open'), exact: true })).toHaveCount(0);
     await navItem(mine, 'admin.nav.leave').click();

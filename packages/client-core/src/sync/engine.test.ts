@@ -845,6 +845,21 @@ describe('membership loss: a kicked device (rule 7, INTEGRATION-SEAMS-01)', () =
     expect(d.core.outbox(g)).toEqual([]);
   });
 
+  it('a 404 on the open-time moderation feed resyncs a stale active row before retrying the feed', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.kick(g, ME.device); // the local group row is still state 2; no catch-up has observed the removal
+    ds.readmit(ME.device);
+    ds.inject('getModerationRemovals', { fail: httpError(404, 'E_NOT_FOUND') });
+
+    await expect(d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: g }))
+      .resolves.toEqual({ groupId: g, state: 2 });
+    expect(count('getModerationRemovals')).toBe(2);
+    expect(count('postResync')).toBe(1);
+    expect(d.core.group(g)).toMatchObject({ state: 2 });
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
+  });
+
   it('a 404 on getProposals of an active group is a membership loss: the queued message is sent after the rejoin', async () => {
     const { d, g } = await kicked();
     ds.readmit(ME.device);

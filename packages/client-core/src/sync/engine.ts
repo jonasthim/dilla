@@ -498,7 +498,22 @@ export class SyncEngine implements SyncInternals {
       const opened = await openChannelFlow(this, ch);
       const group = this.row(opened.groupId);
       if (opened.state === 2 && group?.kind === 0 && group.communityId !== null) {
-        await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+        try {
+          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+        } catch (e) {
+          // A device can rejoin the community before its background catch-up has noticed the
+          // Remove. The group row is still state 2, but the member-only removal feed refuses it
+          // with the same 404 as messages and handshakes. Resync this channel once on its lane,
+          // then read the feed again before allowing the caller to publish the timeline.
+          if (!this.membershipLost(opened.groupId, e)) throw e;
+          const resynced = await this.queues.run(key(opened.groupId), async () => {
+            const joined = await resyncGroup(this, opened.groupId, true);
+            if (joined) this.healBlocked.delete(toHex(opened.groupId));
+            return joined;
+          });
+          if (!resynced) throw e;
+          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+        }
       }
       return opened;
     });
