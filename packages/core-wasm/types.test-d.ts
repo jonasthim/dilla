@@ -21,6 +21,7 @@ interface ExpectedCoreHandle {
   signup_request(invite: string, username: string, display: string, password?: string | null): Uint8Array;
   signup_complete(user_id: Uint8Array, username: string, now: bigint, instance_signer_pub: Uint8Array): Uint8Array;
   instance_signer_key_matches(observed_key: Uint8Array): void;
+  instance_signer_key_pin(instance_id: Uint8Array, observed_key: Uint8Array): void;
   signup_reset(): void;
   device_list_body(): Uint8Array;
   device_list_published(): void;
@@ -148,6 +149,7 @@ expectTrue<Equals<H['signup_begin'], E['signup_begin']>>();
 expectTrue<Equals<H['signup_request'], E['signup_request']>>();
 expectTrue<Equals<H['signup_complete'], E['signup_complete']>>();
 expectTrue<Equals<H['instance_signer_key_matches'], E['instance_signer_key_matches']>>();
+expectTrue<Equals<H['instance_signer_key_pin'], E['instance_signer_key_pin']>>();
 expectTrue<Equals<H['signup_reset'], E['signup_reset']>>();
 expectTrue<Equals<H['device_list_body'], E['device_list_body']>>();
 expectTrue<Equals<H['device_list_published'], E['device_list_published']>>();

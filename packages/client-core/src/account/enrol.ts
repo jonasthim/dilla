@@ -107,6 +107,8 @@ export class Enrol {
     // reload or a failed establish after this point finds no session and ensure() establishes an enrolled one.
     core.sessionClear();
     if (!(await session.establish())) throw new Error('E_SIGNIN_EVICTED');
+    const instance = await routes.getInstance();
+    core.instanceSignerKeyPin(instance.instanceId, instance.externalSenderPub);
     await routes.putBackup(1, stateSealed);
     core.stateSealedUploaded();
   }

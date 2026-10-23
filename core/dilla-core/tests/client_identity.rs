@@ -2629,6 +2629,45 @@ fn enrol_complete_adds_this_browser_to_the_list_the_root_object_vouches_for() {
 }
 
 #[test]
+fn an_enrolled_browser_pins_only_authenticated_discovery_for_its_instance() {
+    let (a, _ac, rk_text, reg, put_v1) = signed_up();
+    let m = material_of(&a, rk_text, reg, put_v1);
+    let mut b = second();
+    b.core
+        .enrol_complete(&m.rk_text, &m.root, &m.state, &m.put_v1, "alice", LATER)
+        .expect("complete the browser enrolment");
+
+    assert_eq!(
+        err(b.core.instance_signer_key_matches(&INSTANCE_SIGNER_PUB)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "instance signing key is not pinned".into()
+        }
+    );
+    b.core
+        .instance_signer_key_pin(&INSTANCE, &INSTANCE_SIGNER_PUB)
+        .expect("pin after authenticated enrolled discovery");
+    b.core
+        .instance_signer_key_matches(&INSTANCE_SIGNER_PUB)
+        .expect("the stored pin matches discovery");
+
+    let mut wrong_instance = INSTANCE;
+    wrong_instance[0] ^= 1;
+    assert_eq!(
+        err(b
+            .core
+            .instance_signer_key_pin(&wrong_instance, &INSTANCE_SIGNER_PUB)),
+        ClientError {
+            code: "E_CORE_STATE",
+            detail: "authenticated instance discovery does not match identity".into()
+        }
+    );
+    b.core
+        .instance_signer_key_matches(&INSTANCE_SIGNER_PUB)
+        .expect("a failed discovery does not change the stored pin");
+}
+
+#[test]
 fn a_wrong_or_malformed_recovery_key_is_e_recovery_key_and_writes_nothing() {
     let m = material();
     let mut b = second();

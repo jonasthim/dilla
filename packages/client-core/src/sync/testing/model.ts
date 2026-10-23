@@ -1015,6 +1015,10 @@ export class ModelCore implements CorePort {
     if (this.instance === undefined) throw coreError('E_CORE_STATE', 'not modelled');
     if (!same(this.instance.externalSenderPub, observedKey)) throw coreError('E_CORE_STATE', 'instance external-sender key changed');
   }
+  instanceSignerKeyPin(instanceId: Uint8Array, observedKey: Uint8Array): void {
+    if (this.instance === undefined || !same(this.instance.instanceId, instanceId)
+      || !same(this.instance.externalSenderPub, observedKey)) throw coreError('E_CORE_STATE', 'instance pin mismatch');
+  }
   signupBegin(): string {
     throw coreError('E_CORE_STATE', 'not modelled');
   }

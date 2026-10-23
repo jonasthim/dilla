@@ -402,6 +402,16 @@ impl CoreHandle {
         let observed_key = js_fixed_arg::<32>("observed_key", observed_key)?;
         self.with_core(|c| c.instance_signer_key_matches(&observed_key))
     }
+    /// Pins authenticated discovery after an enrolled browser has published its device row.
+    pub fn instance_signer_key_pin(
+        &self,
+        instance_id: &[u8],
+        observed_key: &[u8],
+    ) -> Result<(), JsError> {
+        let instance_id = js_fixed_arg::<16>("instance_id", instance_id)?;
+        let observed_key = js_fixed_arg::<32>("observed_key", observed_key)?;
+        self.with_core(|c| c.instance_signer_key_pin(&instance_id, &observed_key))
+    }
     /// Calls ClientCore::signup_reset.
     pub fn signup_reset(&self) -> Result<(), JsError> {
         self.with_core(|c| c.signup_reset())

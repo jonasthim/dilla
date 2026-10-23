@@ -317,6 +317,7 @@ export function world(opts: {
     sendRetry: vi.fn((_msgId: Uint8Array) => {}),
     sendFail: vi.fn((_msgId: Uint8Array, _error: string) => {}),
     instanceSignerKeyMatches: vi.fn((_key: Uint8Array): void => {}),
+    instanceSignerKeyPin: vi.fn((_instanceId: Uint8Array, _key: Uint8Array): void => {}),
     threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
       const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
       return { root: t.root, rows: t.rows.filter((r) => beforeSeq === 0n || r.seq < beforeSeq).slice(0, limit) };

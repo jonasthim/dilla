@@ -933,6 +933,41 @@ impl ClientCore {
         }
         Ok(())
     }
+
+    /// Pin the instance key discovered through this identity's authenticated enrolled session.
+    /// This is the first-write counterpart to `instance_signer_key_matches` for an enrolled browser.
+    pub fn instance_signer_key_pin(
+        &mut self,
+        instance_id: &[u8; 16],
+        observed_key: &[u8; 32],
+    ) -> Result<(), ClientError> {
+        validate_instance_signer_key(observed_key)?;
+        self.write(|_, u| {
+            ensure_no_bot_identity(u)?;
+            let (identity, signup, enrol) = u.with_conn(load_phase)?;
+            let rec = ready(decode_phase(identity, signup, enrol)?)?;
+            if rec.instance_id != *instance_id {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "authenticated instance discovery does not match identity",
+                ));
+            }
+            let pinned = u.with_conn(|c| schema::meta_get(c, schema::INSTANCE_SIGNER_KEY))?;
+            match pinned {
+                Some(pinned) if pinned.as_slice() != observed_key => Err(ClientError::new(
+                    E_CORE_STATE,
+                    "instance external-sender key changed",
+                )),
+                Some(_) => Ok(()),
+                None => {
+                    u.with_conn(|c| {
+                        schema::meta_put(c, schema::INSTANCE_SIGNER_KEY, observed_key)
+                    })?;
+                    Ok(())
+                }
+            }
+        })
+    }
     pub fn signup_reset(&mut self) -> Result<(), ClientError> {
         self.write(|ctx, u| {
             ensure_no_bot_identity(u)?;

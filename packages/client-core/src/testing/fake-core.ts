@@ -197,6 +197,14 @@ export class FakeCore implements CorePort {
     if (this.instanceSignerPub === null) throw new CoreError('E_CORE_STATE', 'instance signing key is not pinned');
     if (!same(this.instanceSignerPub, observedKey)) throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
   }
+  instanceSignerKeyPin(instanceId: Id, observedKey: Uint8Array): void {
+    this.enter('instanceSignerKeyPin');
+    if (this.info.phase !== 2 || this.info.instanceId === null) throw new CoreError('E_CORE_STATE', 'no identity');
+    if (!same(this.info.instanceId, instanceId)) throw new CoreError('E_CORE_STATE', 'authenticated instance discovery does not match identity');
+    if (this.instanceSignerPub !== null && !same(this.instanceSignerPub, observedKey))
+      throw new CoreError('E_CORE_STATE', 'instance external-sender key changed');
+    this.instanceSignerPub = observedKey.slice();
+  }
   signupReset(): void {
     this.enter('signupReset'); this.requirePending();
     if (this.record !== null) throw new CoreError('E_CORE_STATE', 'the account is registered');
