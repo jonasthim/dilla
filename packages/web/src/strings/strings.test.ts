@@ -80,7 +80,8 @@ describe('the copy rules', () => {
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
     // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(194);
+    // The later GIF attachment label adds one more shell key.
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(195);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);

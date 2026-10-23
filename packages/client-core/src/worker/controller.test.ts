@@ -602,7 +602,7 @@ describe('Controller', () => {
     expect(accepted.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(accepted.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), COMMUNITY,
-      GROUP, CHANNEL, w.state.rows[0].msgId, 3n, 'reviewed by moderator', 'bounded excerpt', 1_700_000_000n, 1_700_000_030n, 1_700_000_000n);
+      GROUP, CHANNEL, w.state.rows[0].msgId, 3n, 'reviewed by moderator', 'bounded excerpt', 1_700_000_000n, 1_700_000_025n, 1_700_000_000n);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
     const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
     const evidenceRequest = decode(prepared[3]) as unknown[];
