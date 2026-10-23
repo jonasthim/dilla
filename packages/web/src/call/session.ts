@@ -19,7 +19,7 @@ import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
 import {
-  callStatsReport, connectionOf, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
+  callStatsReport, connectionOf, EMPTY_REPORT, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
 } from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
@@ -49,12 +49,8 @@ export interface PageCallState {
   camera: boolean;
   sharing: boolean;
   paused: boolean;
-  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only.
-   *  'listen': the AFK channel: the call is listen-only by the server's grant (web3.9 R3); no microphone is asked for. */
-  mic: 'ok' | 'denied' | 'missing' | 'failed' | 'listen';
-  /** web3.9 VOICE-AFK: started with PageCallOptions.listenOnly. Nothing is captured or published: mute stays on, camera and
-   *  share are refused (E_FORBIDDEN), and deafen still silences what is heard. */
-  listenOnly: boolean;
+  /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only. */
+  mic: 'ok' | 'denied' | 'missing' | 'failed';
   /** The input mode in force (task-9 review I2: it follows Settings → Voice during a call). */
   mode: 'vad' | 'ptt';
   tiles: PageCallTile[];
@@ -217,9 +213,6 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
-  /** web3.9 VOICE-AFK: the AFK channel, where the server's grant lets nobody publish (R3). The microphone is never acquired
-   *  (no permission prompt) or published, the call stays muted, and the camera and share are refused before any request. */
-  listenOnly?: boolean;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -400,11 +393,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     : null;
   // A refused device at the start leaves the system default playing.
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
-  // web3.9 VOICE-AFK: a listen-only call never asks for the microphone, so it never prompts and has nothing to publish.
-  const listenOnly = opts.listenOnly === true;
-  let mic: Awaited<ReturnType<typeof acquireMic>> | { mic: 'listen' };
+  let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
-    mic = listenOnly ? { mic: 'listen' } : await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -470,6 +461,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const live = joinedSession;
     // Review M3: a failure after the room listeners were registered unregisters them and lets every attached track go.
     teardownRoom();
+    offMisroute();
     detachEarly();
     closeCtx();
     // Keys stop first: media is released before the worker is told to leave.
@@ -481,6 +473,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   let endedBy: string | null = null;
   let detachEarly: () => void = () => undefined;
   let teardownRoom: () => void = () => undefined;
+  /** fix/firefox-misrouted-audio: stops noting the manager's recovered misroutes; at the leave or a failed start. */
+  let offMisroute: () => void = () => undefined;
   const checkAborted = (): void => {
     if (aborted) throw new PageCallError('E_ABORTED');
     if (endedBy !== null) throw new PageCallError(endedBy);
@@ -558,6 +552,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   let unwatch: () => void = () => undefined;
   try {
     relay.attach(manager);
+    // fix/firefox-misrouted-audio: a peer whose audio Firefox put on a spare receiver was re-subscribed by the manager;
+    // Diagnostics shows the stable code (callNote), nothing else of it.
+    const managerEvents = manager as unknown as Partial<Events>;
+    const onMisroute = (): void => { void deps.bridge.call({ m: 'callNote', code: 'E_MEDIA_MISROUTE' }).catch(() => undefined); };
+    managerEvents.on?.('misrouteRecovered', onMisroute);
+    offMisroute = () => { managerEvents.off?.('misrouteRecovered', onMisroute); };
     const events = room as unknown as Events;
     const local = room.localParticipant as unknown as Events & {
       identity: string; audioLevel?: number; isSpeaking?: boolean; permissions?: Permissions;
@@ -569,8 +569,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      shareAudio: null, shareSource: null, noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false, audio: { attached: 0, expected: 0 }, listenOnly,
+      shareAudio: null, shareSource: null, noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      audioBlocked: false, audio: { attached: 0, expected: 0 },
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -585,7 +585,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const streamVolumes: Volumes = { ...opts.streamVolumes };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
-    let mutedBeforeDeafen = listenOnly || opts.self === 'deafened';
+    let mutedBeforeDeafen = opts.self === 'deafened';
     /** web3.8 MUTE: a mute or deafen pressed while the start runs (selfNow) joins the session's state before it is in use,
      *  never the other way. A deafen is applied as a mute first and then a deafen, so an undeafen keeps the microphone muted
      *  (R25: deafened goes back to muted, never to an open microphone). True when it changed anything. */
@@ -1004,10 +1004,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const list = p.canPublishSources ?? [];
       return list.length === 0 || list.includes(PERMISSION[what]);
     };
-    /** web3.9 VOICE-AFK: nobody sends in the AFK channel (the server refuses the share too, R3); refused before any request. */
-    const sendable = (): void => { if (listenOnly) throw new PageCallError('E_FORBIDDEN'); };
     const ensureShare = async (what: 'camera' | 'screen'): Promise<void> => {
-      sendable();
       if (shareOn && permitted(what)) return;
       let settle: (ok: boolean) => void = () => undefined;
       const granted = new Promise<boolean>((resolve) => { settle = resolve; });
@@ -1072,7 +1069,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setCamera = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopCamera(); await shareOffIfIdle(); return; }
-      sendable();
       usable();
       if (camera !== null) return;
       await ensureShare('camera');
@@ -1105,7 +1101,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     const setSharing = (on: boolean): Promise<void> => inLane(async () => {
       if (!on) { await stopScreen(); await shareOffIfIdle(); return; }
-      sendable();
       usable();
       if (screen !== null) return;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
@@ -1171,7 +1166,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       d.track.stop();
     };
     const setShareSource = (id: string | null): Promise<void> => inLane(async () => {
-      sendable();
       usable();
       const s = screen;
       if (s === null || (s.audio !== null && state.shareSource === 'browser')) throw new PageCallError('E_UNAVAILABLE');
@@ -1308,9 +1302,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
     const readLink = async (): Promise<void> => {
       const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
+      // No subscriber connection (LiveKit's default single-peer-connection mode never makes one) means nothing to read there:
+      // an empty report, so down is 0. Only a getStats that rejects is "no read" (undefined), which the dock shows as a dash.
+      const getSub = pcs?.subscriber?.getStats;
       const [pub, sub] = await Promise.all([
         Promise.resolve(pcs?.publisher?.getStats?.()).catch(() => undefined),
-        Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
+        getSub === undefined ? EMPTY_REPORT : Promise.resolve(pcs?.subscriber?.getStats?.()).catch(() => undefined),
       ]);
       if (ended || state.phase !== 'connected' || state.paused) return;
       const at = deps.now();
@@ -1420,6 +1417,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       unsubscribe();
       for (const h of [...timers]) cancel(h);
       teardownRoom();
+      offMisroute();
       detachEarly();
       win?.removeEventListener('pagehide', pageHide);
       opts.signal?.removeEventListener('abort', onAbort);
@@ -1493,7 +1491,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (flipped || (level() !== state.level && now - lastSetAt >= LEVEL_PUBLISH_MS)) refresh();
       armSample();
     };
-    // The tick idles while no meter exists (a listen-only call on the SFU's flags) and is armed again by the next meter.
+    // The tick idles while no meter exists (a call with no meter on the SFU's flags) and is armed again by the next meter.
     armSample = () => {
       if (!sampling || sampler !== null || ended || !hasMeter()) return;
       sampler = later(sample, SPEAK_TICK_MS);
@@ -1530,8 +1528,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         return () => { listeners.delete(entry); };
       },
       setMuted(on) {
-        // web3.9 VOICE-AFK: listen-only stays muted; there is no microphone to open.
-        if (ended || listenOnly) return;
+        if (ended) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
         // With a local meter the own mic starts silent after an unmute (the detector needs its 50 ms again); without one
@@ -1550,7 +1547,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           ownDetector.reset(); ownOn = false; ownRms = 0;
           set({ deafened: true, muted: true, speaking: false });
         } else {
-          set({ deafened: false, muted: listenOnly || mutedBeforeDeafen });
+          set({ deafened: false, muted: mutedBeforeDeafen });
         }
         applyMic();
         applyGains();

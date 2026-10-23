@@ -62,7 +62,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... (--public-ip IP | --node-ip IP | --no-media-ip) [options]
        install.sh --public --domain NAME --public-ip IP --agree-tos [options]
-       install.sh --upgrade [--version TAG] [--release-url URL] [--binary FILE --core FILE --spotify-helper FILE --sums FILE]
+       install.sh --upgrade [--yes] [--version TAG] [--release-url URL] [--binary FILE --core FILE --spotify-helper FILE --sums FILE]
 
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
@@ -86,7 +86,11 @@ modes (exactly one):
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
   --upgrade              replace the binary, core and available Spotify helper, restart API and media services,
                          and run doctor; migrates livekit.mode from in_process to sidecar
-                         once, saving dilla.toml.prev; rolls back a failed API restart
+                         once, saving dilla.toml.prev; rolls back a failed API restart.
+                         Restarting the SFU ends every live call, so it first runs
+                         `dillad media --rooms` and refuses, changing nothing, if a room
+                         has participants or the check cannot be made
+    --yes                upgrade anyway, ending any live calls (with --upgrade only)
 
 options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
@@ -100,13 +104,15 @@ options:
   --insecure-skip-verify install local files without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
   --node-ip IP           the address LiveKit advertises for media (livekit.node_ip)
-  --check-args           validate the arguments and exit without changing anything
+  --check-args           validate the arguments and exit without changing anything;
+                         the release itself is not checked (download and checksums come later)
   -h, --help             show this help
 USAGE
 }
 
 MODE=""
 UPGRADE=0
+ASSUME_YES=0
 CHECK_ARGS=0
 DOMAIN=""
 PUBLIC_IP=""
@@ -144,7 +150,7 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--behind-proxy | --public | --agree-tos | --upgrade | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
+	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
 	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --spotify-helper | --sums)
@@ -171,6 +177,7 @@ while [ "$#" -gt 0 ]; do
 		saw "$flag"
 		;;
 	--upgrade) UPGRADE=1 ;;
+	--yes) ASSUME_YES=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--no-media-ip)
@@ -296,6 +303,7 @@ valid_domain() {
 if [ "$UPGRADE" -eq 1 ]; then
 	[ -z "$SET_MODE_FLAGS" ] || die "--upgrade keeps the installed network settings; drop$SET_MODE_FLAGS"
 else
+	[ "$ASSUME_YES" -eq 0 ] || die "--yes is for --upgrade"
 	[ -n "$MODE" ] || {
 		usage
 		die "choose a mode: --behind-proxy or --public (or --upgrade for an installed instance)"
@@ -349,7 +357,11 @@ if [ -z "$RELEASE_URL" ] && [ "$DOWNLOAD" -eq 1 ]; then
 	RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
 fi
 
-[ "$CHECK_ARGS" -eq 0 ] || exit 0
+if [ "$CHECK_ARGS" -eq 1 ]; then
+	# Says what it checked (on stderr: the Proxmox helper reads stdout as the invite link), so an rc of 0 is not read as "this release exists and is good to install".
+	echo "arguments are valid; the release was not checked" >&2
+	exit 0
+fi
 
 # ------------------------------------------------------------------ host ----
 [ "$(id -u)" = 0 ] || die "run this as root (inside the container or VM that will host dilla)"
@@ -592,7 +604,7 @@ doctor_and_report() {
 
 # schema_version BINARY: the database's schema version, as BINARY's `migrate status` reads it.
 schema_version() {
-	sv_out="$(runuser -u dillad -- "$1" migrate status --config="$CONF" 2>/dev/null)" || return 1
+	sv_out="$(runuser -u dillad -- "$1" migrate status --config="$CONF")" || return 1
 	sv="$(printf '%s\n' "$sv_out" | awk '$1 == "current" { sub(/,$/, "", $2); print $2; exit }')"
 	case "$sv" in '' | *[!0-9]*) return 1 ;; esac
 	printf '%s\n' "$sv"
@@ -629,6 +641,40 @@ rollback_stuck() {
 	exit 1
 }
 
+# live_calls_preflight refuses (exit 1, nothing touched) while a room has participants or when the
+# check cannot be made, unless --yes. It runs at the moment the upgrade is about to stop things:
+# an answer from earlier does not count. `media --rooms` prints "no live rooms", or per room
+# "<room><TAB><n> participants" followed by the participants' identities indented by two spaces.
+live_calls_preflight() {
+	_rooms=""
+	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
+		_why="livekit.mode is $LIVEKIT_MODE_BEFORE, so the SFU runs inside dilla and its rooms cannot be listed; this upgrade restarts it and ends every live call"
+	elif ! systemctl is-active --quiet dilla-media; then
+		# A stopped SFU holds no rooms (a rollback stops dilla first, and dilla-media with it through PartOf).
+		log "dilla-media is not running, so there are no live calls"
+		return 0
+	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
+		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
+		if [ -z "$_busy" ]; then
+			case "$_rooms" in
+			"no live rooms" | *participants*) return 0 ;;
+			esac
+			_why="dillad media --rooms printed something unexpected: $_rooms"
+		else
+			_why="there are live calls, and restarting the SFU disconnects everyone in them"
+			log "live rooms:"
+			printf '%s\n' "$_busy" | while IFS= read -r _line; do log "$_line"; done
+		fi
+	else
+		_why="could not list the live rooms (runuser -u dillad -- $BIN_DIR/dillad media --rooms --config=$CONF failed)"
+	fi
+	if [ "$ASSUME_YES" -eq 1 ]; then
+		log "warning: $_why; continuing because of --yes"
+		return 0
+	fi
+	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --yes to upgrade anyway"
+}
+
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
@@ -643,6 +689,8 @@ if [ "$UPGRADE" -eq 1 ]; then
 	# the way down).
 	SCHEMA_BEFORE="$(schema_version "$BIN_DIR/dillad")" ||
 		die "could not read the database's schema version with the installed binary (runuser -u dillad -- $BIN_DIR/dillad migrate status --config=$CONF); nothing was changed"
+	# Last check before anything is written or stopped.
+	live_calls_preflight
 	# The previous pair stays beside the new one, for the rollback below and by hand.
 	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
 	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"
@@ -700,7 +748,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 		die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
 	fi
 	doctor_and_report || exit 1
-	log "restarting the sidecar SFU on the new binary; connected calls rejoin"
+	log "restarting the sidecar SFU on the new binary; this disconnects everyone in a call, and not every client rejoins"
 	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
 	fi

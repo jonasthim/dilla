@@ -103,7 +103,7 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 const keylessDeleteGrace = 600
 
 // ListDevices is GET /v1/devices →
-// [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen]].
+// [[device_id, tier, signer_tier, verified_at|null, revoked_at|null, last_seen, label|null]].
 func (d Deps) ListDevices(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -120,9 +120,70 @@ func (d Deps) ListDevices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []any{
 			row.ID, uint64(row.Tier), uint64(row.SignerTier),
 			nullableTime(row.VerifiedAt), nullableTime(row.RevokedAt), uint64(row.LastSeen), //nolint:gosec // G115: a unix second or row id this server wrote, never negative
+			row.Label,
 		})
 	}
 	d.write(w, r, http.StatusOK, out)
+}
+
+// maxDeviceLabel is the longest device name, in characters (protocol/09 § Devices).
+const maxDeviceLabel = 64
+
+// patchDeviceRequest is PATCH /v1/devices/{device_id}'s body: [label|null]. Null clears the name.
+type patchDeviceRequest struct {
+	_     struct{} `cbor:",toarray"`
+	Label *string
+}
+
+// normalizeDeviceLabel is the stored form of a device name: the shared text rule of
+// auth.NormalizeUserText (NFC, trimmed, at most 64 characters, one line, no control, bidi,
+// zero-width or other invisible character). A name that is empty once trimmed is refused;
+// clearing is null.
+func normalizeDeviceLabel(s string) (string, error) {
+	out, err := auth.NormalizeUserText(s, maxDeviceLabel, false)
+	if err != nil {
+		return "", err
+	}
+	if out == "" {
+		return "", auth.ErrTextBlank
+	}
+	return out, nil
+}
+
+// PatchDevice is PATCH /v1/devices/{device_id}: [label|null] → 204. It names (or, with null,
+// unnames) a device of the caller's own account, this one or a sibling; the owner is part of the
+// store's UPDATE, so another user's device answers 404 exactly as an unknown id does. The name is
+// not in the signed device list: the server stores it readable, like a display name, and could
+// change it (protocol/09).
+func (d Deps) PatchDevice(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	deviceID, err := server.PathID(r, "device_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var body patchDeviceRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if body.Label != nil {
+		label, err := normalizeDeviceLabel(*body.Label)
+		if err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "label must be 1 to %d characters with no control, bidi or zero-width character, or null", maxDeviceLabel))
+			return
+		}
+		body.Label = &label
+	}
+	if err := d.Repo.SetDeviceLabel(r.Context(), sess.UserID, deviceID, body.Label); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.noContent(w, r)
 }
 
 // DeleteDevice is DELETE /v1/devices/{device_id} → 204. protocol/02 § Device

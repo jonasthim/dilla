@@ -206,7 +206,9 @@ impl DeviceList {
     }
 
     /// Rules 3 and 5 of protocol/03: the leaf's device is listed, is not revoked, carries this
-    /// exact `dsk_pub`, and its recorded tier equals the credential's.
+    /// exact `dsk_pub`, and its recorded tier equals the credential's. A device the list names
+    /// with `revoked_at` set is `E_DEVICE_REVOKED` (its user removed it); one it does not name, or
+    /// names under another key, is `E_DEVICE_UNLISTED` (never added).
     pub fn check_leaf(
         &self,
         device_id: &DeviceId,
@@ -216,8 +218,11 @@ impl DeviceList {
         let entry = self
             .lookup(device_id)
             .ok_or(ProtocolError::DeviceUnlisted)?;
-        if entry.revoked_at.is_some() || &entry.dsk_pub != dsk_pub {
+        if &entry.dsk_pub != dsk_pub {
             return Err(ProtocolError::DeviceUnlisted);
+        }
+        if entry.revoked_at.is_some() {
+            return Err(ProtocolError::DeviceRevoked);
         }
         if entry.tier != tier {
             return Err(ProtocolError::TierMismatch);
@@ -446,6 +451,11 @@ mod tests {
         );
         assert_eq!(
             l.check_leaf(&revoked.device_id, &revoked.dsk_pub, Tier::Native),
+            Err(ProtocolError::DeviceRevoked)
+        );
+        // A revoked entry under another key: that key was never added.
+        assert_eq!(
+            l.check_leaf(&revoked.device_id, &[0xaa; 32], Tier::Native),
             Err(ProtocolError::DeviceUnlisted)
         );
         assert_eq!(

@@ -416,7 +416,7 @@ describe('AdminController: server and channel edits', () => {
     const w = world();
     const AFK = id16(0x61);
     w.routes.listChannels.mockResolvedValue([channelRow(0xc1, 0), channelRow(0x61, 2 ** 30, { kind: 1, name: 'AFK' })]);
-    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false, away: [] });
     await toReady(w);
     await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${CID}`)?.channelId).toBe(toHex(AFK)));
     await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.some((c) => c.id === toHex(AFK))).toBe(true));
@@ -462,7 +462,7 @@ describe('AdminController: server and channel edits', () => {
         rows.push(channelRow(0xe0 + made, c.position, { kind: 2, name: c.name }));
         return Promise.resolve({ id: new Uint8Array(16).fill(0xe0 + made), mode: 0, visibility: 0 });
       });
-      w.routes.getAFK.mockImplementation(() => (afkRead ? Promise.resolve({ channelId: AFK, timeoutSeconds: 300, pending: false })
+      w.routes.getAFK.mockImplementation(() => (afkRead ? Promise.resolve({ channelId: AFK, timeoutSeconds: 300, pending: false, away: [] })
         : new Promise(() => undefined)));
       return w;
     }

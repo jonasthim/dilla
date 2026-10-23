@@ -73,6 +73,9 @@ var DumpTables = []string{
 	// that replays the table, so the rows' order within it does not matter.
 	"channels",
 	"community_afk",
+	// 019_afk_away.sql, appended by afk-disconnect AW1. Its parent is members (a composite key);
+	// a restore that dropped it would forget who is away after a restart (R-AW5).
+	"community_afk_away",
 	// 006f_voice.sql, appended by Plan 2 task 16 (fix wave C5). Its only parent is channels. A
 	// dump that left it out restored no call history, and LoadPostgres could not TRUNCATE
 	// channels at all while this child table was missing from the list, so every Postgres

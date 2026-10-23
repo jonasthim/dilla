@@ -59,5 +59,8 @@ export const factorSettings = {
   'factorSettings.codes.newTitle': 'Your new backup codes',
   'factorSettings.codes.newBody': 'Your old backup codes no longer work. Each of these signs you in once in place of your second factor. Keep them with your recovery key, away from this computer.',
   'factorSettings.codes.makeBusy': 'Making codes…',
+  'factorSettings.stepUp.codeBody': 'Type the code from your authenticator app, or a backup code, to change how you sign in.',
+  'factorSettings.stepUp.code': 'Code',
+  'factorSettings.stepUp.codeFailed': 'That code did not work.',
   'factorSettings.stepUp.again': 'Nothing was added. Confirm it is you again to try once more.',
 } as const;

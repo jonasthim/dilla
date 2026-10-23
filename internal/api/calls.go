@@ -252,7 +252,65 @@ type Calls struct {
 	afkTracked map[id.ID]afkTracked
 	afkPending map[id.ID]afkPendingEntry
 	afkExempt  map[id.ID]string
-	afkNotify  *StructureNotifier
+	// afkCutRetries is each user whose chosen-AFK cut did not finish (a failed SFU listing or
+	// removal; final review I3), with the retries made so far. AFKMaintenance retries the cut while
+	// the user is still away, at most afkCutRetryMax times. Under afkMu.
+	afkCutRetries map[id.ID]int
+	afkNotify     *StructureNotifier
+	// afkAdmitSeq numbers every admission (afkaway.go); afkAdmits is each device's latest one per
+	// user, which the away mark checks under afkMu so that an admission newer than the decision
+	// wins (R-AW7) and a device still joining keeps its user busy (R-AW2).
+	afkAdmitSeq uint64
+	afkAdmits   map[id.ID]map[id.ID]afkAdmit
+
+	// awayMu serialises every write of the stored away roster (afkaway.go). It is taken before
+	// afkMu, awayIdxMu and awayQMu, never inside them, and nothing waits on a send or an audience
+	// read while holding it.
+	awayMu        sync.Mutex
+	awayGW        VoiceGateway
+	awayConnected func(id.ID) bool
+	awayDraining  func() bool
+	// awayIdxMu guards awaySet, the in-memory index of who may be away, and awaySeeded: readers
+	// (every typing op, upload and post) take the read lock alone, writers the write lock briefly,
+	// with no I/O under it.
+	awayIdxMu  sync.RWMutex
+	awaySet    map[id.ID]map[id.ID]struct{}
+	awaySeeded bool
+	// awayQMu guards the op 55 FIFO the writers append to under awayMu and the drainer goroutine
+	// sends from with no lock held; awaySending is set while the drainer sends a batch.
+	awayQMu     sync.Mutex
+	awayQueue   []awayNote
+	awaySending bool
+	awayWake    chan struct{}
+	// afkCtx is cancelled by StopAFK; afkWG tracks the drainer and the maintenance passes, and
+	// afkStopped refuses new ones after StopAFK. drainerOn is set once the drainer runs.
+	afkCtx     context.Context
+	afkCancel  context.CancelFunc
+	afkWG      sync.WaitGroup
+	afkLifeMu  sync.Mutex
+	afkStopped bool
+	drainerOn  bool
+	// awayGraceUntil is when the boot grace ends (R-AW5); awayGraceDone is set once the rows of
+	// users with no connection were cleared after it; seedNextAt and seedBackoff pace the retries of
+	// a failed seed (R5). All under awayMu.
+	awayGraceUntil time.Time
+	awayGraceDone  bool
+	seedNextAt     time.Time
+	seedBackoff    time.Duration
+	// awayEndPending is set while a boot-time AFK-call end is unfinished (M4); awayMaintaining
+	// keeps AFKMaintenance to one pass at a time.
+	awayEndPending  atomic.Bool
+	awayMaintaining atomic.Bool
+	// awayOff is each user whose last gateway connection closed, waiting out afkOfflineGrace
+	// before their away rows are cleared (Q2 as revised: a reload or a short blip keeps away). One
+	// entry and one timer per user, however often the user reconnects; awayOffMu guards the map and
+	// each entry's deadline, and is taken after awayMu, never before it. awayOffWaiters counts the
+	// goroutines waiting on those timers.
+	awayOffMu      sync.Mutex
+	awayOff        map[id.ID]*awayOffline
+	awayOffWaiters atomic.Int32
+	// afkHook, set by a test only, runs at named points of the AFK paths.
+	afkHook func(stage string)
 }
 
 // WithRinger sets the DM call ring and returns h.
@@ -326,8 +384,10 @@ func (b BarredDevices) DeviceBarred(ctx context.Context, device id.ID) (bool, er
 
 // NewCalls wires the call routes over the SFU.
 func NewCalls(repo store.Repository, res *Resolver, sfu CallTokens, cfg CallsConfig, clk clock.Clock, log *slog.Logger) *Calls {
+	afkCtx, afkCancel := context.WithCancel(context.Background())
 	return &Calls{repo: repo, res: res, sfu: sfu, cfg: cfg, clk: clk, log: log, leases: newShareLeases(),
-		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1)}
+		sweepEvery: RoomSweepInterval, cutWake: make(chan struct{}, 1),
+		awayWake: make(chan struct{}, 1), afkCtx: afkCtx, afkCancel: afkCancel}
 }
 
 // WithCounters sets the label-free counters the routes move and returns h.
@@ -405,6 +465,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	s, ch, bits, err := h.channel(r)
 	if err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// R-AW1: the AFK channel never hosts a call; being there means having no voice connection.
+	if h.isAFKChannel(r.Context(), ch) {
+		server.WriteError(w, errAFKCall())
 		return
 	}
 	var body []cbor.RawMessage
@@ -1180,7 +1245,8 @@ func (h *Calls) callFull(ctx context.Context, room string, dev id.ID) bool {
 // so a token can never confer more at admission than the device holds now (a microphone after speak
 // was revoked, a camera after an unshare). A refusal is a *server.Error: E_LEAF_NOT_CURRENT for a
 // room that is no live call's or a device that is no current leaf of it, E_FORBIDDEN for a device
-// that is barred, lost access or whose repair is pending. Anything else is a store failure.
+// that is barred, lost access or whose repair is pending, and for a room of the AFK channel (R-AW1).
+// Anything else is a store failure.
 func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error) {
 	notLeaf := server.Errorf(server.CodeLeafNotCurrent, "your device is not a current leaf of this call")
 	callHex, _, ok := strings.Cut(room, "-")
@@ -1247,6 +1313,10 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if !bits.Has(PermViewChannel) || !bits.Has(PermConnect) {
 		return nil, server.Errorf(server.CodeForbidden, "your device may no longer join this call")
 	}
+	// R-AW1: a token minted for the AFK channel before it stopped hosting calls admits nobody.
+	if h.isAFKChannel(ctx, ch) {
+		return nil, errAFKCall()
+	}
 	return h.admitGrant(ctx, bits, row, device), nil
 }
 
@@ -1272,11 +1342,20 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 		return
 	}
 	h.noteAdmission(ctx, row, device, resume)
-	// Any admission of the device answers a pending AFK move (R33): it joined somewhere.
+	dv, devErr := h.repo.GetDevice(ctx, device)
+	// Any admission of the device answers a pending AFK move (R33): it joined somewhere. It is also
+	// recorded for the away mark (R-AW7) before the user's away rows are cleared below.
 	h.afkMu.Lock()
 	delete(h.afkPending, device)
+	if devErr == nil {
+		h.noteAFKAdmissionLocked(dv.UserID, device)
+	}
 	h.afkMu.Unlock()
 	h.trackAFKAdmission(ctx, row, device, resume)
+	// R-AW2, R-AW4: an admission anywhere clears every away row of the user.
+	if devErr == nil {
+		h.afkAdmissionClears(ctx, dv.UserID)
+	}
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

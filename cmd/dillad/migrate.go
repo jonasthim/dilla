@@ -57,6 +57,11 @@ func runMigrate(args []string, stdout, stderr io.Writer) error {
 	}
 
 	ctx := context.Background()
+	if sub == "status" || sub == "up" {
+		if _, err := migrationState(ctx, provider); err != nil {
+			return fmt.Errorf("migrate %s: %w: %w", sub, err, exit.Data)
+		}
+	}
 	switch sub {
 	case "status":
 		current, target, err := provider.GetVersions(ctx)

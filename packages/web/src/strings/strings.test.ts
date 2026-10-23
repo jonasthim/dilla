@@ -50,7 +50,7 @@ describe('the copy rules', () => {
   // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
   // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
   it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
-    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.refresh',
+    for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.rename', 'devices.refresh',
       'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
       'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
     for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
@@ -58,11 +58,15 @@ describe('the copy rules', () => {
     expect(en['notify.title.channel']).toBe('#{channel} · {server}');
     expect(en['devices.cap.other']).toBe('{n} devices');
     expect(en['devices.cap.one']).toBe('one device');
+    // EOD E7: a device can be named; the body says who can read the name.
+    expect(en['devices.renameBody']).toBe('The server can change it, so check a device by its id before you remove it.');
+    expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
+    // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(119);
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(150); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
@@ -75,7 +79,7 @@ describe('the copy rules', () => {
     expect(en['shell.dm.log']).toBe('messages with {name}');
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
-    // The inventory includes the Bot moderation outcome and recovery copy.
+    // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
     expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(194);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
@@ -115,6 +119,10 @@ describe('flow 06 (L-COPY-05)', () => {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
   });
+  it('late rejoin (2026-10-21): a device gone longer than the AFK timeout is told it left, and the flow lists the line', () => {
+    expect(en['voice.leftWhileAway']).toBe('You left the call while away.');
+    expect(pairs.find(([k]) => k === 'voice.leftWhileAway')?.[1]).toBe('You left the call while away.');
+  });
   it('names the joined voice row for assistive technology (MP6)', () => {
     expect(en['voice.row.joined']).toBe('connected');
   });
@@ -123,10 +131,10 @@ describe('flow 06 (L-COPY-05)', () => {
     for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
       'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
   });
-  it('MP5: the dock names the channel and shows ping and rates; the flow lists the seven keys, and "voice connected" is gone', () => {
+  it('MP5: the dock names the channel and shows ping and rates; the flow lists the eight keys, and "voice connected" is gone', () => {
     const table = en as Readonly<Record<string, string>>;
     const expected = {
-      'voice.dock.ping': '{ms} ms', 'voice.dock.pingNone': '— ms', 'voice.dock.rate': '↑{up} ↓{down} kb/s',
+      'voice.dock.ping': '{ms} ms', 'voice.dock.pingSub': '<1 ms', 'voice.dock.pingNone': '— ms', 'voice.dock.rate': '↑{up} ↓{down} kb/s',
       'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
       'voice.dock.quality.good': 'good', 'voice.dock.quality.poor': 'poor', 'voice.dock.quality.bad': 'bad',
     };

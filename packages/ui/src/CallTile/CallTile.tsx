@@ -19,6 +19,8 @@ export interface VoiceStateLabels {
 export interface VoiceParticipantView {
   deviceId: string; userId: string; name: string; state: VoiceTileState;
   speaking: boolean; muted: boolean; deafened: boolean; video: boolean; screen: boolean; web: boolean; bot: boolean;
+  /** AW6: listed under the AFK channel with no voice connection (the away roster); a sidebar row says `away`. */
+  away?: boolean;
 }
 
 export interface CallTileProps {

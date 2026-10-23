@@ -205,6 +205,8 @@ active row (never over the row above); cards fill the width; the lightbox and th
 | a reply whose original was deleted | the reply line says `the original message was deleted`; it is not a button |
 | an attachment-only message | the cards with no body line |
 | an image card before its thumbnail is opened | a neutral box of the image's proportions |
+| a GIF card (`image/gif`, 8 MiB or less, not too large, sent) first at least half visible | `openAttachment` (`thumb` false) once; the full GIF replaces the thumbnail in the same `img` (same size and alt text) for five minutes from that first sighting, then the thumbnail is back and the blob is released; scrolling out and in, or a re-mount, keeps the first deadline and never fetches again; a failed open keeps the thumbnail with no error text |
+| a GIF card that is still (before it plays, after the five minutes, over 8 MiB, or with `prefers-reduced-motion: reduce`, which never plays one) | a small `shell.attachment.gif` badge on the card, visual only (`aria-hidden`); the card's name stays `shell.attachment.open`; activating it opens the lightbox with the full, animated file |
 | an image card whose open failed | the box or thumbnail and `could not open ({code})` |
 | an attachment over 25 MB received in a browser | the card with `too large to open in a browser` and no button |
 | a file picked over 25 MB | nothing is uploaded; an alert above the tray in the composer says `{name} is over 25 MB and cannot be sent from a browser.` |
@@ -257,11 +259,20 @@ When the focused control goes away, focus never falls to the page:
   colour alone.
 - A pending action is announced through the row's state text, never by colour alone.
 
+## Markdown in message bodies (E5)
+
+- Parsed on the reader's device, from the decrypted text; the wire body, editing and search stay raw text.
+- Shown: `**strong**`, `*em*` or `_em_`, `~~strike~~`, `` `code` ``, fenced code blocks, `> quote` lines, and bare `http://`, `https://` and `mailto:` links. Anything else, including `[text](url)` and raw HTML, is literal text. A fence whose opening line says more than a language word, or that is never closed, is literal text. A code span is outlined, never filled, so it cannot pass for a mention pill.
+- A body is rendered as React elements from a parsed tree. There is no `dangerouslySetInnerHTML` and no HTML parsing.
+- A link shows exactly the address it opens (the normalised address: a trailing `/` is added, and a host with non-ASCII letters is shown as punycode, `xn--...`, so a lookalike cannot pass for the real domain). It is a left-to-right isolate, opens in a new tab with `rel="noopener noreferrer nofollow"`, and loads nothing by itself. In a message that holds a link, bidi control characters are removed from the text around it. A `mailto:` link is the bare address only (a query such as `?attach=` or `?body=` is not linked). Other schemes (`javascript:`, `data:`, `blob:`, `file:`), addresses with a user name or password, and addresses holding a control, format, bidi, zero-width or filler character are plain text.
+- Mentions stay pills inside formatting; code never makes a pill. Unclosed markers and backslash escapes (`\*`) stay literal.
+- Links are underlined and keep the text colour; a link is a tab stop only while focus is in its row, like the author name and the mention pills.
+
 ## What is not offered, and why
 
 - Threads, quote reply, forward, "mark unread", "save message", "copy link", a right-click menu: later cards (the toolbar's five actions only).
 - Edit history: only the latest edit, marked `edited`.
-- A free emoji picker, custom emoji, emoji in the composer, markdown: the fixed 32 reactions and plain text bodies.
+- A free emoji picker, custom emoji, emoji in the composer: the fixed 32 reactions. Message bodies show a small markdown subset (below), never raw HTML; there is no formatting toolbar, and `[text](url)` links are not links.
 - Byte progress for uploads: `fetch` reports none; the tray shows phases.
 - Deleting someone else's message: only its author can.
 - Files over 25 MB in a browser: refused at the tray, shown as too large on receipt.
@@ -367,6 +378,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.attachment.failed` | `could not open ({code})` | card state after a failed open |
 | `shell.attachment.tooLarge` | `too large to open in a browser` | card state over 25 MB |
 | `shell.attachment.unnamed` | `file` | the shown name of a file sent without one |
+| `shell.attachment.gif` | `GIF` | badge on a still GIF card |
 | `shell.message.attachmentGone` | `A file of this message is no longer on the server. Discard it and attach the file again.` | a sent message that failed with `E_ATTACHMENT_MISSING`; only discard is offered |
 | `shell.attachment.bytes` | `{n} B` | size under 1 KB |
 | `shell.attachment.kb` | `{n} KB` | size under 1 048 576 bytes, one decimal under 10 |

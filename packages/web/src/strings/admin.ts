@@ -195,7 +195,6 @@ export const admin = {
   'admin.bot.automod.prepareError': 'Could not prepare these settings locally. Nothing was sent.',
   'admin.bot.automod.retry': 'Retry the same save request',
   'admin.afk.title': 'AFK channel',
-  'admin.afk.hint': 'Idle people in voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel.',
   'admin.afk.channel': 'AFK destination',
   'admin.afk.disabled': 'Off',
   'admin.afk.timeout': 'Move after',

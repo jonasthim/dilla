@@ -85,6 +85,9 @@ function refuse(status: number, code: string, detail = '', retryAfterMs: number 
 const same = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** An in-memory model of the account routes of dillad, answering through fetch. */
+/** dillad's default auth.session.reauth_window. */
+const REAUTH_WINDOW_S = 300;
+
 export class FakeServer {
   readonly instanceId = new Uint8Array(16).fill(0xab);
   readonly externalSenderPub = fromHex('db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d');
@@ -93,6 +96,8 @@ export class FakeServer {
   readonly accounts = new Map<string, Account>();
   readonly devices = new Map<string, string>();
   readonly tokens = new Map<string, string>();
+  /** When each session token was minted: a first password wants one younger than REAUTH_WINDOW_S (dillad auth.session.reauth_window). */
+  private readonly tokenCreated = new Map<string, number>();
   readonly deviceLists = new Map<string, { version: bigint; blob: Uint8Array }>();
   readonly keyPackages: { device: string; count: number; lastResort: boolean }[] = [];
   scope: 0 | 1 | null = null;
@@ -121,6 +126,8 @@ export class FakeServer {
   readonly listHistory = new Map<string, { version: bigint; blob: Uint8Array; sig: Uint8Array; prev: Uint8Array }[]>();
   readonly revoked = new Map<string, number>();
   readonly createdAt = new Map<string, number>();
+  /** Device labels (PATCH /v1/devices/{id}): device hex → the owner's name for it; absent is unnamed. */
+  readonly labels = new Map<string, string>();
   readonly tiers = new Map<string, 0 | 1>();
   /** token → protocol/02 item 4's scope: 0 enrolled, 1 pending, 2 provisional (the fake mints only 0 and 1; a test
    *  plants a provisional token directly). */
@@ -541,8 +548,22 @@ export class FakeServer {
     if (line === 'DELETE /v1/backups') return refuse(501, 'E_INTERNAL');
     if (line === 'GET /v1/devices') return reply(200, [...this.devices].filter(([, owner]) => owner === user).map(([id]) => [
       fromHex(id), this.tiers.get(id) ?? 1, this.tiers.get(id) ?? 1, null, this.revoked.has(id) ? this.revoked.get(id)! : null,
-      this.createdAt.get(id) ?? this.nowS,
+      this.createdAt.get(id) ?? this.nowS, this.labels.get(id) ?? null,
     ]));
+    const patchDevice = /^PATCH \/v1\/devices\/([0-9a-f]{32})$/.exec(line);
+    if (patchDevice !== null) {
+      const target = patchDevice[1];
+      let label: string | null;
+      try {
+        const b = arr(decode(r.body), 1);
+        if (b.length !== 1 || (b[0] !== null && typeof b[0] !== 'string')) throw new Error('shape');
+        label = b[0] ?? null;
+        if (label !== null && (label.length < 1 || [...label].length > 64)) throw new Error('length');
+      } catch { return refuse(400, 'E_INVALID_REQUEST'); }
+      if (this.devices.get(target) !== user) return refuse(404, 'E_NOT_FOUND');
+      if (label === null) this.labels.delete(target); else this.labels.set(target, label);
+      return reply(204);
+    }
     const deleteSessions = /^DELETE \/v1\/devices\/([0-9a-f]{32})\/sessions$/.exec(line);
     if (deleteSessions !== null) {
       const target = deleteSessions[1];
@@ -825,8 +846,8 @@ export class FakeServer {
       }
       case 'POST /v1/auth/password': {
         // [old|null, new, stepup?] (E). The old password is this route's step-up: guesses go on the step-up ledgers,
-        // never on the login ledger, and a stepup element is then ignored. A first password (no old one) needs a fresh
-        // session in dillad, which the fake does not model, and on an account holding a factor a step-up token, spent.
+        // never on the login ledger, and a stepup element is then ignored. A first password (no old one) needs a session
+        // younger than the reauth window (modelled: 403 E_FORBIDDEN, checked before the step-up), and on an account holding a factor a step-up token, spent.
         const old = body[0] ?? null;
         const next = body[1];
         const stepup = body[2] ?? null;
@@ -841,6 +862,8 @@ export class FakeServer {
             return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_FORBIDDEN', 'the old password is wrong');
           }
           this.stepUpPass(username);
+        } else if (session !== null && this.nowS - (this.tokenCreated.get(session) ?? this.nowS) > REAUTH_WINDOW_S) {
+          return refuse(403, 'E_FORBIDDEN', 'setting a first password needs a session established in the last 300 seconds');
         } else if (held && !this.spendStepUp(stepup, username, session)) {
           return refuse(403, 'E_STEP_UP');
         }
@@ -887,6 +910,7 @@ export class FakeServer {
     this.sessions += 1;
     const token = `tok-${this.sessions}`;
     this.tokens.set(token, deviceHex);
+    this.tokenCreated.set(token, this.nowS);
     this.tokenScope.set(token, scope);
     return token;
   }

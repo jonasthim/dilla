@@ -41,6 +41,16 @@ describe('TextField', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(TAKEN);
   });
 
+  it('shows the note as a second hint line and describes the field with hint, note and error in that order', () => {
+    const NOTE = 'The server can read this.';
+    render(<TextField id="bio" label="Bio" value="" onChange={() => {}} hint={HINT} note={NOTE} error={TAKEN} multiline />);
+    const input = screen.getByRole('textbox', { name: 'Bio' });
+    expect(input).toHaveAccessibleDescription(`${HINT} ${NOTE} ${TAKEN}`);
+    const note = screen.getByText(NOTE);
+    expect(note).toHaveClass('d-text-field__hint');
+    expect(note).toHaveAttribute('id', 'bio-note');
+  });
+
   it('describes the field with the hint alone when there is no error', () => {
     render(<TextField id="username" label="Username" value="" onChange={() => {}} hint={HINT} />);
     const input = screen.getByRole('textbox', { name: 'Username' });
@@ -97,5 +107,33 @@ describe('TextField initial focus', () => {
     expect(screen.getByRole('textbox', { name: 'role name' })).toHaveAttribute('data-autofocus');
     rerender(<TextField id="n" label="role name" value="" onChange={() => {}} />);
     expect(screen.getByRole('textbox', { name: 'role name' })).not.toHaveAttribute('data-autofocus');
+  });
+});
+
+describe('TextField multiline', () => {
+  it('renders a textarea with the label, description, row count and length cap, and reports edits', async () => {
+    const user = userEvent.setup();
+    const onValue = vi.fn();
+    const { container } = render(<Controlled id="bio" label="Bio" multiline rows={4} maxLength={500} hint="Shown on your card." onValue={onValue} />);
+    const area = screen.getByRole('textbox', { name: 'Bio' });
+    expect(area.tagName).toBe('TEXTAREA');
+    expect(area).toHaveAttribute('rows', '4');
+    expect(area).toHaveAttribute('maxlength', '500');
+    expect(area).toHaveAccessibleDescription('Shown on your card.');
+    expect(area).toHaveClass('d-text-field__input');
+    expect(container.querySelector('input')).toBeNull();
+    await user.type(area, 'one{Enter}two');
+    expect(area).toHaveValue('one\ntwo');
+    expect(onValue).toHaveBeenLastCalledWith('one\ntwo');
+  });
+
+  it('is an input when multiline is not set', () => {
+    render(<TextField id="n" label="Name" value="" onChange={() => {}} />);
+    expect(screen.getByRole('textbox', { name: 'Name' }).tagName).toBe('INPUT');
+  });
+
+  it('has no serious axe violations as a textarea with an error', async () => {
+    const { container } = render(<div className="d-root"><TextField id="bio" label="Bio" value="x" onChange={() => {}} multiline error="Too long." /></div>);
+    await expectNoAxeViolations(container);
   });
 });

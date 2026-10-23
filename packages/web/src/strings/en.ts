@@ -12,6 +12,7 @@ import { serverNotify } from './serverNotify.ts';
 import { factor } from './factor.ts';
 import { factorSignin } from './factorSignin.ts';
 import { factorSettings } from './factorSettings.ts';
+import { password } from './password.ts';
 import { nav } from './nav.ts';
 import { activity } from './activity.ts';
 import { you } from './you.ts';
@@ -27,8 +28,11 @@ import { stage } from './stage.ts';
 import { afk } from './afk.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
+import { profile } from './profile.ts';
+import { gif } from './gif.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
+  ...gif,
   ...storeNewer,
   ...privacy,
   ...admin,
@@ -42,6 +46,7 @@ export const en = {
   ...factor,
   ...factorSignin,
   ...factorSettings,
+  ...password,
   ...nav,
   ...activity,
   ...you,
@@ -57,6 +62,7 @@ export const en = {
   ...afk,
   ...layout,
   ...home,
+  ...profile,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -305,6 +311,13 @@ export const en = {
   'devices.keyLabel': 'Recovery key',
   'devices.refresh': 'refresh',
   'devices.revoke': 'remove',
+  'devices.rename': 'rename',
+  'devices.renameTitle': 'Name this device',
+  'devices.renameBody': 'The server can change it, so check a device by its id before you remove it.',
+  'devices.renameLabel': 'Device name',
+  'devices.renameServerReads': 'The server can read this, like your display name.',
+  'devices.renameSave': 'Save',
+  'devices.renameSuggestion': '{browser} on {os}',
   'devices.signOut': 'sign out and remove this browser',
   'devices.forget': 'forget this browser',
   'devices.revokeTitle': 'Remove this device?',
@@ -459,6 +472,7 @@ export const en = {
   'shell.attachment.failed': 'could not open ({code})',
   'shell.attachment.tooLarge': 'too large to open in a browser',
   'shell.attachment.unnamed': 'file',
+  'shell.attachment.gif': 'GIF',
   'shell.message.attachmentGone': 'A file of this message is no longer on the server. Discard it and attach the file again.',
   'shell.attachment.bytes': '{n} B',
   'shell.attachment.kb': '{n} KB',
@@ -475,9 +489,6 @@ export const en = {
   'voice.count': '{n} in voice',
   'voice.join': 'join voice',
   'voice.row.joined': 'connected',
-  'voice.afk.title': 'AFK channel',
-  'voice.afk.loading': 'Loading voice channels…',
-  'voice.afk.silent': 'This channel is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return.',
   'voice.afk.count': '{n} in AFK',
   'voice.afk.move': 'Move to AFK',
   'voice.afk.leave': 'Leave AFK',
@@ -536,6 +547,7 @@ export const en = {
   'voice.dock.connecting': 'connecting',
   'voice.dock.reconnecting': 'reconnecting',
   'voice.dock.ping': '{ms} ms',
+  'voice.dock.pingSub': '<1 ms',
   'voice.dock.pingNone': '— ms',
   'voice.dock.rate': '↑{up} ↓{down} kb/s',
   'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
@@ -607,6 +619,7 @@ export const en = {
   'voice.removed': 'You were removed from voice.',
   'voice.removedNotMember': 'You were removed from this server, so you left its voice.',
   'voice.disconnected': 'The connection to voice was lost. Join again to continue.',
+  'voice.leftWhileAway': 'You left the call while away.',
   'voice.ended': 'Voice ended for everyone.',
   'voice.full': 'This voice is full.',
   'voice.sharersFull': 'Too many people are sharing. Try again when someone stops.',

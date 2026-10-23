@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gateExpression, JOB_GATES } from './ci-areas.mjs';
 import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
+const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
@@ -15,14 +17,14 @@ const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'relea
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
-      assert.match(match[1], /^actions\/[\w-]+@[0-9a-f]{40}$/);
+      assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
     }
   }
 });
 
 test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
   for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
-    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n    runs-on: ubuntu-24\\.04$`, 'm'));
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
   }
   assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
 });
@@ -45,8 +47,8 @@ test('the CI checker rejects a movable GitHub action tag', () => {
 
 test('the CI checker rejects a flow-style action step', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(
-    '      - run: npm test\n',
-    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: npm test\n',
+    NPM_TEST,
+    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n' + NPM_TEST,
   )));
   assert.ok(problems.some((problem) => problem.includes('flow-style action')), problems.join('\n'));
 });
@@ -77,13 +79,25 @@ jobs:
   node:
     runs-on: ubuntu-latest
     steps:
-      - run: npm test
+      - if: needs.changes.outputs.web != 'false'
+        run: npm test
+      - name: vectors are up to date
+        if: needs.changes.outputs.web != 'false'
+        run: npm run vectors
       - run: npm run test:css-check
       - run: npm run check:css
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.text != 'false'
+        with:
+          path: \${{ runner.temp }}/ucd
+          key: ucd-\${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
+      - name: profile-text tables are current
+        if: needs.changes.outputs.text != 'false'
+        run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -113,9 +127,12 @@ jobs:
   rust-native:
     runs-on: ubuntu-latest
     steps:
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-features --locked
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo fmt --all --check
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -461,31 +478,6 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  image:
-    runs-on: ubuntu-latest
-    needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]
-    permissions: { contents: read, packages: write }
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - run: rm -rf internal/web/dist
-      - name: Fetch the web client into the image's build context
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: internal/web/dist
-      - name: The image embeds the real client, not the placeholder
-        run: |
-          test -f internal/web/dist/index.html
-          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - name: Log in to GHCR for a main-branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - run: bash scripts/build-ci-image.sh
 `;
 
 // The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
@@ -507,7 +499,68 @@ function withWasmClang(text) {
   return out.join('\n');
 }
 
-const GOOD = withWasmClang(GOOD_BASE);
+// The shape ci.yml gives the change filter: a `changes` job, a `docs` job that always runs, and every other job gated
+// on `changes` as JOB_GATES says (its own needs merged in).
+const CHANGES_JOB = `  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: \${{ steps.areas.outputs.go }}
+      core: \${{ steps.areas.outputs.core }}
+      web: \${{ steps.areas.outputs.web }}
+      e2e: \${{ steps.areas.outputs.e2e }}
+      text: \${{ steps.areas.outputs.text }}
+      code: \${{ steps.areas.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: areas
+        run: node scripts/ci-areas.mjs
+        env:
+          EVENT_NAME: \${{ github.event_name }}
+          BASE_SHA: \${{ github.event.pull_request.base.sha }}
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run test:docs-check
+      - run: npm run test:brief-check
+      - run: npm run test:copy-check
+      - run: npm run check:docs
+      - run: npm run check:brief
+      - run: npm run check:copy
+      - run: npm run check:ci
+`;
+
+const CI_OK_JOB = (jobs) => `  ci-ok:
+    needs: [${jobs.join(', ')}]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo ok
+`;
+
+function withChanges(text) {
+  const lines = text.replace('jobs:\n', `jobs:\n${CHANGES_JOB}`).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    out.push(line);
+    if (key === null || !(key[1] in JOB_GATES) || !lines.slice(0, i).includes('jobs:')) continue;
+    let needs = [];
+    for (let j = i + 1; j < lines.length && !/^ {2}\S/.test(lines[j]); j++) {
+      const m = /^ {4}needs: \[(.*)\]$/.exec(lines[j]);
+      if (m) { needs = m[1].split(',').map((s) => s.trim()); lines.splice(j, 1); break; }
+    }
+    out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
+  }
+  const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
+  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
+}
+
+const GOOD = withChanges(withWasmClang(GOOD_BASE));
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -553,7 +606,7 @@ test('a missing job is reported by name', () => {
 });
 
 test('|| true is reported with its line number', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('- run: npm test\n', '- run: npm test || true\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('run: npm test\n', 'run: npm test || true\n')));
   assert.ok(problems.some((p) => /\|\| true/.test(p)), problems.join('\n'));
 });
 
@@ -563,7 +616,7 @@ test('continue-on-error is reported', () => {
 });
 
 test('if: always() is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm test\n', '      - if: always()\n        run: npm test\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace(NPM_TEST, '      - if: always()\n        run: npm test\n')));
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
@@ -572,13 +625,13 @@ test('if: always() is reported', () => {
 // catch it too.
 test('if: ${{ always() }} is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: npm test\n', '      - if: ${{ always() }}\n        run: npm test\n')),
+    fixture(GOOD.replace(NPM_TEST, '      - if: ${{ always() }}\n        run: npm test\n')),
   );
   assert.ok(problems.some((p) => p.includes('always()')), problems.join('\n'));
 });
 
 test('a job that lost a required step is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('      - run: cargo fmt --all --check\n', '')));
+  const problems = checkWorkflow(fixture(GOOD.replace("      - if: needs.changes.outputs.core != 'false'\n        run: cargo fmt --all --check\n", '')));
   assert.ok(problems.some((p) => p.includes('cargo fmt')), problems.join('\n'));
 });
 
@@ -605,19 +658,19 @@ test('a rust-wasi job that lost the artifact path is reported', () => {
 });
 
 test('a go job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi]\n', '    needs: [deny]\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi]\n', '    needs: [changes, deny]\n')));
   assert.ok(problems.some((p) => p.includes('"go"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 test('a go-harness job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-wasi, rust-native]\n', '    needs: [rust-native]\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n')));
   assert.ok(problems.some((p) => p.includes('"go-harness"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 // The edges are order-independent to GitHub, so the ordering rule must accept either order.
 test('a go-harness job whose needs: lists the two edges in the other order passes', () => {
   assert.deepEqual(
-    checkWorkflow(fixture(GOOD.replace('needs: [rust-wasi, rust-native]', 'needs: [rust-native, rust-wasi]'))),
+    checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]'))),
     [],
   );
 });
@@ -637,7 +690,7 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('  go-harness:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n', '  go-harness:\n    runs-on: ubuntu-latest\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 30\n/, '$1')));
   assert.ok(problems.some((p) => p.includes('timeout-minutes: 30')), problems.join('\n'));
 });
 
@@ -651,7 +704,7 @@ test('a node job that stopped running the checker\'s own tests is reported', () 
 // deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
 // cross-plan ordering rule already, so it must own this half of the hand-off too.
 test('a go-harness job without needs: rust-native is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [rust-wasi, rust-native]', 'needs: [rust-wasi]')));
+  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]')));
   assert.ok(problems.some((p) => p.includes('needs: rust-native')), problems.join('\n'));
 });
 
@@ -773,20 +826,15 @@ test('a go job that stopped leaving out internal/api is reported', () => {
 test('a go-api job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-api:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, rust-wasi]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('rust-wasi')), problems.join('\n'));
 });
 
 test('a go-ds job without needs: rust-wasi is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [rust-wasi]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, rust-wasi]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('rust-wasi')), problems.join('\n'));
-});
-
-test('an image job that does not wait for go-ds is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-ds"')), problems.join('\n'));
 });
 
 for (const [job, needle] of [
@@ -885,48 +933,20 @@ test('the CLI reports problems in a workflow at the given root, run from elsewhe
   assert.match(result.stderr, /deny/);
 });
 
-// Task 18: the image job.
-test('a workflow without the image job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/  image:[\s\S]*$/, '')));
-  assert.ok(problems.some((p) => p.includes('missing job "image"')), problems.join('\n'));
+// Jonas, 2026-10-21: the container image is dropped.
+test('a workflow that builds or pushes a container image is reported', () => {
+  for (const addition of [
+    '      - run: docker login ghcr.io -u me\n',
+    '      - uses: docker/setup-buildx-action@v4\n',
+    '      - run: bash scripts/build-ci-image.sh\n',
+  ]) {
+    const problems = checkWorkflow(fixture(GOOD.replace('  ci-ok:', () => `  image:\n    runs-on: ubuntu-latest\n    steps:\n${addition}  ci-ok:`)));
+    assert.ok(problems.some((p) => p.includes('container image was dropped')), `${addition}: ${problems.join('\n')}`);
+  }
 });
 
-for (const needle of [
-  'docker login ghcr.io',
-  "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-  'bash scripts/build-ci-image.sh',
-  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
-  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
-  'path: internal/mlswasi/testdata',
-  'timeout-minutes: 30',
-]) {
-  test(`an image job that lost "${needle}" is reported`, () => {
-    const start = GOOD.indexOf('  image:\n');
-    const body = GOOD.slice(start);
-    assert.ok(body.includes(needle), 'fixture sanity: ' + needle);
-    const gutted = body.split('\n').filter((l) => !l.includes(needle)).join('\n');
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => gutted)));
-    assert.ok(problems.some((p) => p.includes('"image"') && p.includes(needle)), problems.join('\n'));
-  });
-}
-
-test('setup-qemu-action anywhere in the workflow is reported', () => {
-  const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: bash scripts/build-ci-image.sh\n', '      - uses: docker/setup-qemu-action@v4\n      - run: bash scripts/build-ci-image.sh\n')),
-  );
-  assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
-});
-
-// `go` is a prefix of `go-lint`: an image job that waits only for go-lint and rust-wasi must still be
-// reported as not waiting for go.
-test('an image job that does not wait for the go job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go-ds, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go"')), problems.join('\n'));
-});
-
-test('an image job that does not wait for go-lint is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"go-lint"')), problems.join('\n'));
+test('the real workflow has no image job', () => {
+  assert.doesNotMatch(REAL_CI, /^ {2}image:/m);
 });
 
 // The rule that covers a job added tomorrow: no job is named in REQUIRED_STEPS, yet its upload-artifact
@@ -935,11 +955,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')),
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -979,7 +999,7 @@ test('the browser-media job requires the real-SFU AV1 leg', () => {
 
 for (const [need, kept] of [['rust-wasi', 'rust-native'], ['rust-native', 'rust-wasi']]) {
   test(`a browser-media job without needs: ${need} is reported`, () => {
-    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi]\n', `    needs: [${kept}]\n`)));
+    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-native, rust-wasi]\n', `    needs: [changes, ${kept}]\n`)));
     assert.ok(problems.some((p) => p.includes('"browser-media"') && p.includes(`needs: ${need}`)), problems.join('\n'));
   });
 }
@@ -1113,7 +1133,7 @@ test('a wasm-pack build with no profile at all is reported', () => {
   assert.ok(problems.some((p) => p.endsWith('wasm-pack build must use --profile wasm-release, not --release (C16)')), problems.join('\n'));
 });
 
-// Task 26 (web-1): the web client's build, its browser suites, and its hand-off to release and image.
+// Task 26 (web-1): the web client's build, its browser suites, and its hand-off to release.
 
 /** One job of GOOD, from its key line to the line before the next job key. */
 function jobBody(job) {
@@ -1124,12 +1144,6 @@ function jobBody(job) {
   while (to < lines.length && !/^ {2}[A-Za-z0-9_-]+:\s*$/.test(lines[to])) to++;
   return lines.slice(from, to).join('\n');
 }
-
-const PLACEHOLDER_GUARD_IMAGE =
-  '      - name: The image embeds the real client, not the placeholder\n' +
-  '        run: |\n' +
-  '          test -f internal/web/dist/index.html\n' +
-  `          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi\n`;
 
 for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
   test(`a workflow without the ${job} job is reported`, () => {
@@ -1175,9 +1189,6 @@ for (const [job, needle] of [
   ['go-release', 'path: internal/web/dist'],
   ['go-release', 'content="placeholder"'],
   ['go-release', 'go test -tags webdist ./internal/web/...'],
-  ['image', 'name: dilla-web-dist'],
-  ['image', 'path: internal/web/dist'],
-  ['image', 'content="placeholder"'],
   ['node', 'npm run test:manifest-writer'],
   ['node', 'npm run test:install'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
@@ -1198,7 +1209,7 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
     test(`a ${job} job without needs: ${need} is reported`, () => {
       const body = jobBody(job);
       const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
-      const cut = body.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`);
+      const cut = body.replace('    needs: [changes, rust-native, rust-wasi, web-build]\n', `    needs: [changes, ${kept}]\n`);
       assert.notEqual(cut, body, 'fixture sanity: needs');
       const problems = checkWorkflow(fixture(GOOD.replace(body, () => cut)));
       assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`needs: ${need}`)), problems.join('\n'));
@@ -1313,27 +1324,8 @@ test('go-release must point the webdist test at the downloaded client', () => {
 
 test('a go-release job without needs: web-build is reported', () => {
   const body = jobBody('go-release');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [web-build]\n', ''))));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, web-build]\n', ''))));
   assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('needs: web-build')), problems.join('\n'));
-});
-
-test('an image job that does not wait for web-build is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [go, go-ds, go-api, go-lint, rust-wasi, web-build]', 'needs: [go, go-ds, go-lint, rust-wasi]')));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('"web-build"')), problems.join('\n'));
-});
-
-// The plan's named mutation for this task: the whole download step, not one line of it.
-test('an image job without the dilla-web-dist download step is reported by name', () => {
-  const step =
-    '      - name: Fetch the web client into the image\'s build context\n' +
-    '        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\n' +
-    '        with:\n' +
-    '          name: dilla-web-dist\n' +
-    '          path: internal/web/dist\n';
-  const body = jobBody('image');
-  assert.ok(body.includes(step), 'fixture sanity: the image download step');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step, ''))));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('name: dilla-web-dist')), problems.join('\n'));
 });
 
 test('a go-release job that builds before it fetches the web client is reported', () => {
@@ -1343,13 +1335,6 @@ test('a go-release job that builds before it fetches the web client is reported'
   const moved = body.replace(build, '').replace('    steps:\n', `    steps:\n${build}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => moved)));
   assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('before it builds')), problems.join('\n'));
-});
-
-test('an image job that checks for the placeholder only after the build is reported', () => {
-  assert.ok(GOOD.includes(PLACEHOLDER_GUARD_IMAGE), 'fixture sanity: the image guard');
-  // image is the last job of GOOD, so appending puts the guard after docker/build-push-action.
-  const problems = checkWorkflow(fixture(GOOD.replace(PLACEHOLDER_GUARD_IMAGE, '') + PLACEHOLDER_GUARD_IMAGE));
-  assert.ok(problems.some((p) => p.includes('"image"') && p.includes('before it builds')), problems.join('\n'));
 });
 
 // web-2b task 11 (L-CI-20, L-CI-21): the screenshots of the web-2b stories and the re-derived browser budget.
@@ -1824,4 +1809,68 @@ test('the CLI checks release.yml too', () => {
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /release\.yml/);
+});
+
+test('a job that lost its change gate is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 25\n')));
+  assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
+});
+
+test('a job that does not need changes is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  deny:\n)    needs: \[changes\]\n/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"deny" must list "changes"')), problems.join('\n'));
+});
+
+test('the docs job may not be gated: it is the one that runs for a docs-only change', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('  docs:\n', "  docs:\n    needs: [changes]\n    if: needs.changes.outputs.code != 'false'\n")));
+  assert.ok(problems.some((p) => p.includes('"docs" must run for every change')), problems.join('\n'));
+});
+
+test('a job added without a gate is reported', () => {
+  const problems = checkWorkflow(fixture(`${GOOD}\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`));
+  assert.ok(problems.some((p) => p.includes('"extra" has no gate')), problems.join('\n'));
+});
+
+test('a gate that can run while a needed job is skipped is reported', () => {
+  // go-release (go or web) needs web-build (e2e): fine. Narrow web-build to core and a UI change would skip go-release's dependency.
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  web-build:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core != 'false'\n")));
+  assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
+});
+
+test('the real ci-ok job needs every other job', () => {
+  const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
+  const needs = /needs: \[([^\]]*)\]/.exec(body)[1].split(',').map((s) => s.trim());
+  const jobs = [...REAL_CI.slice(REAL_CI.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => job !== 'ci-ok');
+  assert.deepEqual(needs.sort(), jobs.sort());
+});
+
+test('a ci-ok job that forgot a job is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[)changes, /, '$1')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"changes"')), problems.join('\n'));
+});
+
+test('a ci-ok job without the failure check, or without always(), is reported', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("contains(needs.*.result, 'cancelled')", 'false')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('cancelled')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace('    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - if: contains', '    runs-on: ubuntu-latest\n    steps:\n      - if: contains')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('always()')), problems.join('\n'));
+});
+
+test('if: always() stays forbidden in every job but ci-ok, and in ci-ok steps', () => {
+  let problems = checkWorkflow(fixture(GOOD.replace("  deny:\n    needs: [changes]\n    if: needs.changes.outputs.core != 'false'\n", '  deny:\n    needs: [changes]\n    if: always()\n')));
+  assert.ok(problems.some((p) => p.includes('if: always()') && p.includes('R22')), problems.join('\n'));
+  problems = checkWorkflow(fixture(GOOD.replace('      - run: echo ok\n', '      - if: always()\n        run: echo ok\n')));
+  assert.ok(problems.some((p) => p.includes('if: always()') && p.includes('R22')), problems.join('\n'));
+});
+
+test('a gate that tests == true instead of != false is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace("needs.changes.outputs.go != 'false'", "needs.changes.outputs.go == 'true'")));
+  assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
+});
+
+test('the docs job must run the real checks, not only their unit tests', () => {
+  for (const step of ['check:brief', 'check:copy', 'check:docs', 'check:ci']) {
+    const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
+    assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
+  }
 });

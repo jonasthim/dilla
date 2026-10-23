@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE } from './routes';
+import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -159,7 +159,7 @@ function member(i: number): Uint8Array {
 interface Case {
   name: string;
   call(r: Routes): Promise<unknown>;
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   bucket: Bucket;
   idempotent: boolean;
@@ -176,13 +176,33 @@ const CASES: Case[] = [
     name: 'AFK snapshot reads [id, timeout, [], pending]', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, 300, [], 1]),
-    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true },
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 1, away: [] },
+  },
+  {
+    // AW5 fix round 3: pending is a reason code; 2 is a cut because this user chose AFK on another device or tab.
+    name: 'AFK snapshot reads pending reason 2 (AFK chosen elsewhere)', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 2, []]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 2, away: [] },
+  },
+  {
+    // AW4: the fifth element is the away roster [[user_id, since_ts]].
+    name: 'AFK snapshot reads the away roster of a 5-element answer', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 1758659040], [member(2), 1758659100]]]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: false, reason: 0,
+      away: [{ userId: member(1), since: 1758659040 }, { userId: member(2), since: 1758659100 }] },
   },
   {
     name: 'AFK snapshot of a 3-element answer is not pending', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [null, 300, []]),
-    expected: { channelId: null, timeoutSeconds: 300, pending: false },
+    expected: { channelId: null, timeoutSeconds: 300, pending: false, reason: 0, away: [] },
+  },
+  {
+    name: 'AFK away (choosing AFK) sends [] and takes 204', call: r => r.putAFKAway(COMMUNITY),
+    method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/away`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([]), reply: () => noContent(), expected: undefined,
   },
   {
     name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
@@ -336,12 +356,12 @@ const CASES: Case[] = [
     name: 'listMembers reads names and kind', call: (r) => r.listMembers(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/members`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [
-      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0],
+      [USER, 1_700_000_000, '', [], 'jonas', 'Jonas', 0, 'on a call', 'hello\nthere'],
       [BOT, 1_700_000_100, 'helper', [ROLE], 'bot1', 'Bot One', 1],
     ]),
     expected: [
-      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] },
-      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE] },
+      { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: 'on a call', bio: 'hello\nthere' },
+      { userId: BOT, username: 'bot1', display: 'Bot One', kind: 1, nick: 'helper', roleIds: [ROLE], statusMsg: '', bio: '' },
     ],
   },
   {
@@ -417,8 +437,14 @@ const CASES: Case[] = [
   {
     name: 'getAccountMe ignores an appended element', call: (r) => r.getAccountMe(),
     method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'appended later']),
-    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3 },
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'on a call', 'bio text', 'appended later']),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: 'on a call', bio: 'bio text' },
+  },
+  {
+    name: 'getAccountMe reads a status message and bio as empty from an instance that sends neither', call: (r) => r.getAccountMe(),
+    method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3]),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3, statusMsg: '', bio: '' },
   },
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),
@@ -476,11 +502,28 @@ const CASES: Case[] = [
   {
     name: 'listDevices', call: (r) => r.listDevices(),
     method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
+    // The seventh element is the owner's label; a row of six (an instance before device names) has none.
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, 'work laptop'], [DEVICE_2, 0, 0, 1_799_000_000, 1_800_000_050, 1_799_999_999]]),
     expected: [
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n },
-      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: 'work laptop' },
+      { id: DEVICE_2, tier: 0, signerTier: 0, verifiedAt: 1_799_000_000n, revokedAt: 1_800_000_050n, lastSeen: 1_799_999_999n, label: null },
     ],
+  },
+  {
+    name: 'listDevices with a null label', call: (r) => r.listDevices(),
+    method: 'GET', path: '/v1/devices', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [[DEVICE, 1, 1, null, null, 1_800_000_000, null]]),
+    expected: [{ id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_800_000_000n, label: null }],
+  },
+  {
+    name: 'patchDevice names a device', call: (r) => r.patchDevice(DEVICE, 'work laptop'),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode(['work laptop']),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'patchDevice with null clears the name', call: (r) => r.patchDevice(DEVICE, null),
+    method: 'PATCH', path: `/v1/devices/${hex(DEVICE)}`, bucket: 'write', idempotent: true, auth: true, sent: encode([null]),
+    reply: () => noContent(), expected: undefined,
   },
   {
     name: 'deleteSessions', call: (r) => r.deleteSessions(DEVICE),
@@ -688,6 +731,16 @@ const FACTOR_CASES: Case[] = [
     reply: () => noContent(), expected: undefined,
   },
   {
+    name: 'changePassword with the old one', call: (r) => r.changePassword('old pw', 'new pw', null),
+    method: 'POST', path: '/v1/auth/password', bucket: 'write', idempotent: false, auth: true, sent: encode(['old pw', 'new pw', null]),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'changePassword, a first password with a step-up', call: (r) => r.changePassword(null, 'new pw', 'su-1'),
+    method: 'POST', path: '/v1/auth/password', bucket: 'write', idempotent: false, auth: true, sent: encode([null, 'new pw', 'su-1']),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
     name: 'regenerateBackupCodes', call: (r) => r.regenerateBackupCodes('su-1'),
     method: 'POST', path: '/v1/auth/recovery/codes', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1']),
     reply: () => cborReply(200, [CODES]), expected: CODES,
@@ -775,6 +828,8 @@ const REFUSALS: RefusalCase[] = [
   { name: 'stepUp 403 E_STEP_UP', call: (r) => r.stepUp(0, 'x'), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
   { name: 'totpEnroll 403 E_STEP_UP', call: (r) => r.totpEnroll(null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
   { name: 'removeFactor 403 E_STEP_UP', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
+  { name: 'changePassword 403 wrong password', call: (r) => r.changePassword('x', 'y', null), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'changePassword 429 throttled', call: (r) => r.changePassword('x', 'y', null), reply: () => refusal(429, 'E_RATE_LIMITED', '', 60_000), status: 429, code: 'E_RATE_LIMITED' },
   { name: 'removeFactor 409 last factor', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(409, 'E_INVALID_REQUEST'), status: 409, code: 'E_INVALID_REQUEST' },
   { name: 'getFactors 403 E_FACTOR_REQUIRED', call: (r) => r.getFactors(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
   { name: 'listDevices 403 E_FACTOR_REQUIRED', call: (r) => r.listDevices(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
@@ -857,6 +912,7 @@ describe('deleteGroupMessage membership check', () => {
 describe('Routes: retries and inputs', () => {
   it('sends one request for a short 429 on login and session routes', async () => {
     for (const call of [
+      (routes: Routes) => routes.changePassword('old', 'new', null),
       (routes: Routes) => routes.passwordLogin('ada', 'pw'),
       (routes: Routes) => routes.postSession(DEVICE, BODY),
       (routes: Routes) => routes.postSessionPending(DEVICE, BODY),
@@ -1076,6 +1132,73 @@ describe('Routes: response shapes', () => {
   });
 });
 
+describe('Routes: patchMe', () => {
+  it('sends [display, status_msg, bio] with null for a field left alone', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: 'on a call' });
+    expect(t.seen[0].init.method).toBe('PATCH');
+    expect(t.seen[0].url).toBe('https://dilla.test/v1/accounts/me');
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'on a call', null]);
+  });
+  it('sends an empty string to clear a field', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ display: 'Ada', bio: '' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
+  });
+  it('sends the text trimmed', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    await routes.patchMe({ statusMsg: '  hello  ', bio: '\nbio\n' });
+    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'hello', 'bio']);
+  });
+  it('refuses a too long field before any request', async () => {
+    const { t, routes } = setup();
+    await expect(routes.patchMe({ display: 'x'.repeat(65) })).rejects.toThrow(/display/);
+    await expect(routes.patchMe({ statusMsg: 'x'.repeat(191) })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ statusMsg: 'a\nb' })).rejects.toThrow(/statusMsg/);
+    await expect(routes.patchMe({ bio: 'x'.repeat(501) })).rejects.toThrow(/bio/);
+    await expect(routes.patchMe({ bio: '   ' })).rejects.toThrow(/bio/);
+    expect(t.seen).toHaveLength(0);
+  });
+});
+
+// The mirror of internal/auth NormalizeUserText. Code points, never literals, so the test shows what it pins.
+describe('profileTextProblem', () => {
+  const glyph = (cp: number) => `a${String.fromCodePoint(cp)}b`;
+  const refused: Record<string, number> = {
+    tab: 0x09, nul: 0x00, esc: 0x1b, 'lone carriage return': 0x0d,
+    lrm: 0x200e, rlm: 0x200f, lre: 0x202a, rlo: 0x202e, lri: 0x2066, pdi: 0x2069,
+    'zero width space': 0x200b, zwnj: 0x200c, 'bare zwj': 0x200d, 'word joiner': 0x2060, bom: 0xfeff,
+    'arabic letter mark': 0x061c, 'line separator': 0x2028, 'paragraph separator': 0x2029,
+  };
+  it('names what is wrong: long, chars, blank', () => {
+    expect(profileTextProblem('x'.repeat(191), 190)).toBe('long');
+    expect(profileTextProblem('x'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem('   ', 190)).toBe('blank');
+    expect(profileTextProblem('\u00a0\u3000', 190)).toBe('blank');
+    expect(profileTextProblem('', 190)).toBeNull();
+    for (const [name, cp] of Object.entries(refused)) expect(profileTextProblem(glyph(cp), 190, true), name).toBe('chars');
+  });
+  it('allows a line break only in a multiline field, and an emoji joiner sequence in both', () => {
+    expect(profileTextProblem('a\nb', 190)).toBe('chars');
+    expect(profileTextProblem('a\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('a\r\nb', 500, true)).toBeNull();
+    expect(profileTextProblem('\n \n', 500, true)).toBe('blank');
+    const zwj = String.fromCodePoint(0x200d);
+    const family = [0x1f468, 0x1f469, 0x1f467].map((cp) => String.fromCodePoint(cp)).join(zwj);
+    expect(profileTextProblem(family, 190)).toBeNull();
+  });
+  it('counts characters after NFC, not UTF-16 units', () => {
+    expect(profileTextProblem('e\u0301'.repeat(190), 190)).toBeNull();
+    expect(profileTextProblem(String.fromCodePoint(0x1f600).repeat(190), 190)).toBeNull();
+  });
+  it('profileTextValue is the NFC, trimmed text with CRLF as LF', () => {
+    expect(profileTextValue('  e\u0301\r\nx  ', true)).toBe('\u00e9\nx');
+  });
+});
+
 describe('Routes: member paging', () => {
   const row = (i: number) => [member(i), 1_700_000_000, '', [], `u${i}`, `U ${i}`, 0];
 
@@ -1090,7 +1213,7 @@ describe('Routes: member paging', () => {
       `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members?after=${hex(member(200))}`,
     ]);
     expect(members).toHaveLength(203);
-    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [] });
+    expect(members[0]).toEqual({ userId: member(1), username: 'u1', display: 'U 1', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' });
     expect(members[202].userId).toEqual(member(203));
   });
 
@@ -1175,7 +1298,7 @@ describe('Routes: web-2b deletes and blobs', () => {
   it('listMembers reads a null role list as empty', async () => {
     const { t, routes } = setup();
     t.replies.push(cborReply(200, [[USER, 1_700_000_000, '', null, 'jonas', 'Jonas', 0]]));
-    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] }]);
+    expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [], statusMsg: '', bio: '' }]);
   });
 });
 
@@ -1725,10 +1848,15 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
-  it('a pending of 2, a raw CBOR true and a raw CBOR false are refused (the subset has no booleans)', async () => {
-    const two = setup();
-    two.t.replies.push(cborReply(200, [CHANNEL, 300, [], 2]));
-    await expect(two.routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+  // AW5 fix round 3b (protocol/07): any non-zero pending is pending; an unknown reason (3 or more) reads as 2, the calm one.
+  it('an unknown pending reason of 3 or more is pending and reads as reason 2, never an error', async () => {
+    for (const n of [3, 7, 255]) {
+      const one = setup();
+      one.t.replies.push(cborReply(200, [CHANNEL, 300, [], n]));
+      await expect(one.routes.getAFK(COMMUNITY)).resolves.toMatchObject({ pending: true, reason: 2 });
+    }
+  });
+  it('a raw CBOR true and a raw CBOR false pending are refused (the subset has no booleans)', async () => {
     for (const tail of [0xf5, 0xf4]) {
       const head = encode([CHANNEL, 300, []]);
       const raw = new Uint8Array([...head, tail]);
@@ -1743,6 +1871,36 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(noContent());
     await routes.sendAFKActivity(COMMUNITY, CHANNEL, false);
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([CHANNEL])));
+  });
+  // AW4: a web3.9 instance answers four elements; its roster is empty.
+  it('a 4-element web3.9 snapshot has an empty away roster', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 1]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([]);
+  });
+  // Fix round 1, N3: a row with since 0 (cleared) is skipped, and a repeated user keeps its first row.
+  it('an away roster skips since 0 and keeps the first row of a repeated user', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, [[member(1), 0], [member(2), 50], [member(2), 70], [member(3), 90]]]));
+    expect((await routes.getAFK(COMMUNITY)).away).toEqual([{ userId: member(2), since: 50 }, { userId: member(3), since: 90 }]);
+  });
+  it('an away roster over 1024 rows, a short user id, a missing since or a since past the safe integers is refused', async () => {
+    const uid = (i: number) => { const u = member(i % 256); u[14] = i >> 8; return u; };
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => [uid(i), 1]);
+    const bad: [CborInput[], string][] = [
+      [rows(1025), 'E_CBOR_SHAPE'],
+      [[[member(1).slice(1), 1]], 'E_CBOR_SHAPE'],
+      [[[member(1)]], 'E_CBOR_SHAPE'],
+      [[[member(1), 2n ** 60n]], 'E_CBOR_RANGE'],
+    ];
+    for (const [away, code] of bad) {
+      const { routes, t } = setup();
+      t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, away]));
+      await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code });
+    }
+    const ok = setup();
+    ok.t.replies.push(cborReply(200, [CHANNEL, 300, [], 0, rows(1024)]));
+    expect((await ok.routes.getAFK(COMMUNITY)).away).toHaveLength(1024);
   });
   it('moveToAFK and leaveAFK no longer exist', () => {
     const { routes } = setup();

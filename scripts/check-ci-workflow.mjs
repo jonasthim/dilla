@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -8,6 +9,11 @@ import { join } from 'node:path';
  * to declare its `needs: rust-wasi` edge (see below).
  */
 export const REQUIRED_JOBS = [
+  // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
+  'changes',
+  'docs',
+  // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
+  'ci-ok',
   'node',
   'ui',
   'rust-native',
@@ -35,8 +41,6 @@ export const REQUIRED_JOBS = [
   'go-sqlc',
   'go-postgres',
   'go-release',
-  // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
-  'image',
   // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
   // job per Playwright engine (BROWSER_WEB_JOBS below).
   'web-build',
@@ -44,6 +48,13 @@ export const REQUIRED_JOBS = [
   'firefox-web',
   'webkit-web',
 ];
+
+/**
+ * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
+ * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
+ * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
+ */
+export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -133,6 +144,20 @@ export const UI_SHOTS_3 = [
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
+  // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
+  // fetch-depth: 0 gives it the base commit to diff against.
+  changes: [
+    'fetch-depth: 0',
+    'node scripts/ci-areas.mjs',
+    'EVENT_NAME: ${{ github.event_name }}',
+    'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
+    ...['go', 'core', 'web', 'e2e', 'text', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
+  ],
+  // The cheap docs gates, for every change.
+  // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
+  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
+  // The only job that may say `if: always()` (checked below): it must run whatever the others did, and fail on a failure or a cancel.
+  'ci-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -141,6 +166,10 @@ const REQUIRED_STEPS = {
     'cargo build -p dilla-testkit --release --locked',
     'name: dilla-testkit',
     'if-no-files-found: error',
+    // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo fmt --all --check",
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo clippy --workspace",
+    "if: needs.changes.outputs.core != 'false'\n        run: cargo test --workspace",
   ],
   'rust-wasm-node': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',
@@ -183,7 +212,7 @@ const REQUIRED_STEPS = {
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
   // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
-  node: ['npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
+  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install', "uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        if: needs.changes.outputs.text != 'false'", "name: profile-text tables are current\n        if: needs.changes.outputs.text != 'false'\n        run: node scripts/gen-profile-text-tables.mjs --download --check \"$RUNNER_TEMP/ucd\""],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -321,25 +350,6 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
-  // The image keeps the checked client and wasi core in its build context. The download of
-  // rust-wasi's artifact is load-bearing: dillad loads the wasi core from
-  // beside its binary and the Dockerfile copies it out of the build context, so without the download
-  // the build fails (fail-closed) rather than shipping an image that cannot start.
-  image: [
-    'runs-on: ubuntu-latest',
-    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
-    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
-    'name: dilla-core-wasi',
-    'path: internal/mlswasi/testdata',
-    // Task 26/C9: the image embeds the same checked client.
-    'name: dilla-web-dist',
-    'path: internal/web/dist',
-    'content="placeholder"',
-    'docker login ghcr.io',
-    "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-    'bash scripts/build-ci-image.sh',
-    'timeout-minutes: 30',
-  ],
 };
 
 /**
@@ -482,7 +492,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
  *
  * The compiler comes from a third-party apt archive and its output ships (web-build's dist is embedded by
- * go-release and image), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * go-release), so the step is pinned: the archive key is checked by fingerprint on the very keyring
  * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
  * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
  * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
@@ -665,7 +675,7 @@ function checkActionReference(line, file, number, problems) {
   const action = match[1];
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
-  } else if (!/^actions\/[\w-]+@[0-9a-f]{40}$/.test(action)) {
+  } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
     problems.push(`${file}:${number}: ${action} must use a 40-hex commit SHA`);
   }
 }
@@ -675,9 +685,14 @@ export function checkWorkflow(root) {
   const text = readFileSync(path, 'utf8');
   const problems = [];
 
+  let currentJob = null;
   text.split('\n').forEach((line, i) => {
     checkActionReference(line, 'ci.yml', i + 1, problems);
+    const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
+      // ci-ok's own job-level `if: always()` is the one allowed escape hatch: a step of it is still held to the rule.
+      if (what === 'if: always()' && currentJob === 'ci-ok' && line === '    if: always()') continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -707,6 +722,37 @@ export function checkWorkflow(root) {
     }
   }
 
+  // Every job but the two exempt ones needs `changes` and carries its gate, or it would run on a docs-only pull
+  // request (or, with a wrong condition, be skipped on code).
+  for (const [name, body] of Object.entries(jobs)) {
+    const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
+    const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
+    if (name === 'ci-ok') {
+      if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
+      for (const other of Object.keys(jobs)) {
+        if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
+      }
+      continue;
+    }
+    if (CHANGE_GATE_EXEMPT.includes(name)) {
+      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`ci.yml: job "${name}" must run for every change: no needs: changes, no job-level if:`);
+      continue;
+    }
+    if (!(name in JOB_GATES)) {
+      problems.push(`ci.yml: job "${name}" has no gate in JOB_GATES (scripts/ci-areas.mjs)`);
+      continue;
+    }
+    if (!needList.includes('changes')) problems.push(`ci.yml: job "${name}" must list "changes" in its needs:`);
+    if (!body.split('\n').includes(`    if: ${gateExpression(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${gateExpression(name)}`);
+    // A job whose needs are skipped is skipped too, so its gate may not be true where a needed job's is false.
+    for (const need of needList) {
+      if (!(need in JOB_GATES)) continue;
+      if (reachableOutputs().some((outputs) => jobRuns(name, outputs) && !jobRuns(need, outputs))) {
+        problems.push(`ci.yml: job "${name}" can run while the job it needs, "${need}", is skipped`);
+      }
+    }
+  }
+
   // The desktop command is a prefix of the phone one, so each must be a whole `- run:` line of the ui job.
   if ('ui' in jobs) {
     const runs = jobs.ui.split('\n').map((line) => line.trim());
@@ -723,20 +769,8 @@ export function checkWorkflow(root) {
   assertWasmPackUsesTheSizeProfile(text, problems);
   assertWasmJobsUseClang23(text, jobs, problems);
 
-  // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
-  // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.
-  if (text.includes('setup-qemu-action')) {
-    problems.push('ci.yml: setup-qemu-action is not needed: the image cross-compiles from $BUILDPLATFORM');
-  }
-  if ('image' in jobs) {
-    // A push of an image nobody tested would be a release of untested code: the two Go gates come first.
-    // rust-wasi is named too, because the job downloads its artifact.
-    for (const need of ['go', 'go-ds', 'go-api', 'go-lint', 'rust-wasi', 'web-build']) {
-      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs.image)) {
-        problems.push(`ci.yml: job "image" must list "${need}" in its needs:`);
-      }
-    }
-  }
+  // Jonas, 2026-10-21: no container image is built or published; deploy/install.sh is the one install.
+  if (/docker\/|ghcr\.io|packages: write|build-ci-image|\bimage:\s*\$\{\{/.test(text)) problems.push('ci.yml: builds or pushes a container image; the container image was dropped, deploy/install.sh is the one install');
 
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
@@ -821,7 +855,7 @@ export function checkWorkflow(root) {
   }
 
   // Task 26: downloading and refusing the placeholder must precede each build.
-  for (const [job, build] of [['go-release', 'go build'], ['image', 'bash scripts/build-ci-image.sh']]) {
+  for (const [job, build] of [['go-release', 'go build']]) {
     if (!(job in jobs)) continue;
     const body = jobs[job];
     const fetchAt = body.indexOf('name: dilla-web-dist');

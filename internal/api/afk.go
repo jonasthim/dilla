@@ -36,8 +36,18 @@ const afkBuiltinSettings = `{"afk":"builtin"}`
 // isBuiltinAFK reports whether ch carries the built-in marker.
 func isBuiltinAFK(ch store.ChannelRow) bool { return string(ch.SettingsJSON) == afkBuiltinSettings }
 
-// afkPendingTTL is how long a move the sweep decided stays pending for its device (R4, R33).
-const afkPendingTTL = 10 * time.Minute
+// afkPendingTTL is the longest a device's pending cut lasts (R4, R33): it stays until an admission of
+// the device clears it, through gateway disconnects and any number of snapshot reads, so a laptop
+// that slept for hours still learns why it left its call. It is held in memory only: a restart ends
+// every call anyway.
+const afkPendingTTL = 24 * time.Hour
+
+// The snapshot's pending reason codes (uint; 0 is none; a client that knows only 0|1 reads any
+// non-zero as pending).
+const (
+	afkPendingSwept = 1 // the sweep moved the device (idle past the timeout)
+	afkPendingChose = 2 // the user chose AFK: PUT …/afk/away cut the device
+)
 
 // afkDefaultTimeout is the timeout a community starts with, in seconds (5 minutes).
 const afkDefaultTimeout = 300
@@ -51,22 +61,35 @@ type afkTracked struct {
 	lastActive               time.Time
 }
 
-// afkPendingEntry is a move the sweep made (R33): the device was cut from its room and its client
-// joins the AFK channel on its own pending, read from the snapshot.
+// afkPendingEntry is a cut of one device (R33, R-AW6): the sweep's move (afkPendingSwept) or a
+// chosen AFK (afkPendingChose). It is device-scoped: every community's snapshot reports it to that
+// device, whose client only tells the user why it left, and never joins anything on it.
 type afkPendingEntry struct {
-	community, channel id.ID
-	at                 time.Time
+	reason uint64
+	at     time.Time
+}
+
+// setAFKPendingLocked records a pending cut of dev; a later one replaces an earlier. The caller
+// holds afkMu.
+func (h *Calls) setAFKPendingLocked(dev id.ID, reason uint64) {
+	if h.afkPending == nil {
+		h.afkPending = make(map[id.ID]afkPendingEntry)
+	}
+	h.afkPending[dev] = afkPendingEntry{reason: reason, at: h.clk.Now()}
 }
 
 // afkSnapshot is GET /v1/communities/{id}/afk: [channel_id|null, timeout_seconds, [], pending(uint
-// 0|1)]. The third element is the retired web3.8 occupant list, always empty, so a web3.8 parser
-// still reads it; the dilla CBOR subset has no booleans (W-1).
+// 0|1), away([[user_id, since_ts]])]. The third element is the retired web3.8 occupant list, always
+// empty, so a web3.8 parser still reads it; the dilla CBOR subset has no booleans (W-1). The fifth is
+// the stored away roster (AW2), ordered by user id, at most afkAwaySnapshotMax entries; a client
+// that reads four elements is unaffected.
 type afkSnapshot struct {
 	_              struct{} `cbor:",toarray"`
 	ChannelID      *id.ID
 	TimeoutSeconds uint64
 	Retired        []struct{}
 	Pending        uint64
+	Away           []afkAwayEntry
 }
 
 // isAFKTimeout is the timeouts an administrator may pick: 1, 5, 15, 30 or 60 minutes.
@@ -468,6 +491,8 @@ func (h *Calls) WithAFKNotify(notify *StructureNotifier) *Calls {
 func (h *Calls) registerAFK(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/afk", h.afkSnapshot)
 	mux.HandleFunc("POST /v1/communities/{id}/afk/activity", h.afkActivity)
+	// AW2 (R-AW3): choosing AFK. There is no DELETE: only the server clears away (Q3).
+	mux.HandleFunc("PUT /v1/communities/{id}/afk/away", h.afkAway)
 	// R41: the web3.8 manual move and leave stay registered so a web3.8 tab gets a mapped refusal
 	// instead of the mux's 405.
 	mux.HandleFunc("POST /v1/communities/{id}/afk", afkRetired)
@@ -542,7 +567,8 @@ func (h *Calls) afkSnapshot(w http.ResponseWriter, r *http.Request) {
 	} else if !live {
 		if _, err := h.ensureAFK(afterCommit(r), cid); err != nil {
 			h.log.ErrorContext(r.Context(), "ensure the AFK channel", "community", cid, "err", err)
-			h.writeAFKSnapshot(w, r, afkSnapshot{TimeoutSeconds: stored.TimeoutSeconds, Retired: []struct{}{}})
+			h.writeAFKSnapshot(w, r, afkSnapshot{TimeoutSeconds: stored.TimeoutSeconds, Retired: []struct{}{},
+				Away: []afkAwayEntry{}})
 			return
 		}
 	}
@@ -551,10 +577,20 @@ func (h *Calls) afkSnapshot(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	out := afkSnapshot{ChannelID: cfg.ChannelID, TimeoutSeconds: cfg.TimeoutSeconds, Retired: []struct{}{}}
+	// The roster goes only with a channel the caller may reach, the audience op 55 goes to (M1).
+	away := []afkAwayEntry{}
+	if cfg.ChannelID != nil {
+		if away, err = h.awaySnapshot(r.Context(), cid); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+	}
+	out := afkSnapshot{ChannelID: cfg.ChannelID, TimeoutSeconds: cfg.TimeoutSeconds, Retired: []struct{}{}, Away: away}
 	h.afkMu.Lock()
-	if p, ok := h.afkPending[dev]; ok && p.community == cid && h.clk.Since(p.at) < afkPendingTTL {
-		out.Pending = 1
+	// Device-scoped and not consumed: a client may read again (a reload on wake) and must see the
+	// same reason until an admission of the device clears it.
+	if p, ok := h.afkPending[dev]; ok && h.clk.Since(p.at) < afkPendingTTL {
+		out.Pending = p.reason
 	}
 	h.afkMu.Unlock()
 	h.writeAFKSnapshot(w, r, out)
@@ -702,21 +738,36 @@ func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked) erro
 		h.afkMu.Unlock()
 		return nil // fresh activity, an exempt report or a different call won the race
 	}
+	// The away mark below is decided here: an admission of the user after this point wins (R-AW7).
+	decided := h.afkAdmitSeq
+	// The reason goes in BEFORE the removal (R3-n1), so the cut client's first read already says
+	// "moved"; a removal that fails puts back what was there.
+	prev, hadPrev := h.afkPending[dev]
+	h.setAFKPendingLocked(dev, afkPendingSwept)
+	mine := h.afkPending[dev]
 	h.afkMu.Unlock()
+	h.afkStage("sweep-pending")
 	removeCtx, cancel := sfuCtx(context.WithoutCancel(ctx))
 	err = h.sfu.RemoveParticipants(removeCtx, row.LivekitRoom, dev)
 	cancel()
 	if err != nil {
+		h.afkMu.Lock()
+		if cur, ok := h.afkPending[dev]; ok && cur.reason == mine.reason && cur.at.Equal(mine.at) {
+			if hadPrev {
+				h.afkPending[dev] = prev
+			} else {
+				delete(h.afkPending, dev)
+			}
+		}
+		h.afkMu.Unlock()
 		return err
 	}
 	h.revokeRelay(dev)
 	h.afkMu.Lock()
-	if h.afkPending == nil {
-		h.afkPending = make(map[id.ID]afkPendingEntry)
-	}
-	h.afkPending[dev] = afkPendingEntry{community: tracked.community, channel: *cfg.ChannelID, at: h.clk.Now()}
 	delete(h.afkTracked, dev)
 	h.afkMu.Unlock()
+	// R-AW3: the cut marks the user away when no other device of theirs is in a call.
+	h.sweepMarkAway(ctx, tracked, dev, decided)
 	h.afkNotify.ChangedTo(context.WithoutCancel(ctx), tracked.community, []id.ID{tracked.user})
 	return nil
 }
@@ -730,6 +781,7 @@ func (h *Calls) SweepAFK(ctx context.Context) {
 			delete(h.afkPending, dev)
 		}
 	}
+	h.pruneAFKAdmitsLocked()
 	tracked := make(map[id.ID]afkTracked, len(h.afkTracked))
 	for dev, row := range h.afkTracked {
 		tracked[dev] = row

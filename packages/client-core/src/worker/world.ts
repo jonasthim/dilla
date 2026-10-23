@@ -8,7 +8,7 @@ import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescripto
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, Routes, type DeviceRow, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
+import { OWNER_TOP, Routes, type DeviceRow, type GifPage, type GifStatus, type AFKSettings, type AFKSnapshot, type AccountMe, type ProfilePatch, type MemberRow, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -396,10 +396,17 @@ export function world(opts: {
       }] : []),
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
-    getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, pending: false })),
+    getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, pending: false, away: [] })),
+    gifStatus: vi.fn((_c: Uint8Array): Promise<GifStatus> => Promise.resolve({ on: false, rating: 'pg-13' })),
+    gifSetKey: vi.fn((_c: Uint8Array, _key: string): Promise<void> => Promise.resolve()),
+    gifClearKey: vi.fn((_c: Uint8Array): Promise<void> => Promise.resolve()),
+    gifSetRating: vi.fn((_c: Uint8Array, _rating: string): Promise<void> => Promise.resolve()),
+    gifSearch: vi.fn((_c: Uint8Array, _q: string, _offset: number): Promise<GifPage> => Promise.resolve({ items: [], next: null })),
+    gifMedia: vi.fn((_c: Uint8Array, _id: string, _variant: 'preview' | 'full'): Promise<Uint8Array> => Promise.resolve(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]))),
     getAFKSettings: vi.fn((_id: Uint8Array): Promise<AFKSettings> => Promise.resolve({ channelId: null, timeoutSeconds: 300 })),
     setAFKSettings: vi.fn(() => Promise.resolve()),
     sendAFKActivity: vi.fn(() => Promise.resolve()),
+    putAFKAway: vi.fn((_id: Uint8Array) => Promise.resolve()),
     createCommunity: vi.fn((name: string) => {
       calls.push('createCommunity');
       state.created.push({ id: NEW_COMMUNITY, name });
@@ -415,7 +422,7 @@ export function world(opts: {
     createInvite: vi.fn((_communityId: Uint8Array, _invite: { maxUses: number; ttlSeconds: number }) => Promise.resolve({
       inviteId: new Uint8Array(16).fill(0x71), code: 'AB12CD34', url: 'https://dilla.test/i/AB12CD34', expires: NOW_S + 604_800n,
     })),
-    listMembers: vi.fn((_id: Uint8Array) => {
+    listMembers: vi.fn((_id: Uint8Array): Promise<MemberRow[]> => {
       calls.push('listMembers');
       return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
     }),
@@ -423,6 +430,7 @@ export function world(opts: {
       _eventSeq: bigint, _emoji: string, _enabled: boolean) => Promise.resolve()),
     getPresenceSnapshot: vi.fn((_id: Uint8Array) => Promise.resolve([{ userId: USER, status: 1 }])),
     setPresenceChoice: vi.fn((_choice: number) => Promise.resolve()),
+    patchMe: vi.fn((_patch: ProfilePatch) => Promise.resolve()),
     sendPresenceActivity: vi.fn(() => Promise.resolve()),
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
@@ -480,7 +488,7 @@ export function world(opts: {
         hasPassword: true });
     }),
     passkeyLoginBegin: vi.fn(() => Promise.resolve({ ceremonyId: new Uint8Array(16).fill(0xce), options: '{"publicKey":{}}' })),
-    getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 1 })),
+    getAccountMe: vi.fn((): Promise<AccountMe> => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 1 })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
     getChannel: vi.fn((_id: Uint8Array) => Promise.resolve({
       id: DM_CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 1n, textGroupId: DM_GROUP,
@@ -490,9 +498,10 @@ export function world(opts: {
       return Promise.resolve({ channelId: DM_CHANNEL, created: true });
     }),
     listDevices: vi.fn((): Promise<DeviceRow[]> => { calls.push('listDevices'); return Promise.resolve([
-      { id: OTHER_DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
-      { id: DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
+      { id: OTHER_DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n, label: null },
+      { id: DEVICE, tier: 1 as const, signerTier: 1 as const, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: 'work laptop' },
     ]); }),
+    patchDevice: vi.fn((_id: Uint8Array, _label: string | null) => { calls.push('patchDevice'); return Promise.resolve(); }),
     deleteSessions: vi.fn((_id: Uint8Array) => { calls.push('deleteSessions'); return Promise.resolve(); }),
     deleteDevice: vi.fn((_id: Uint8Array) => { calls.push('deleteDevice'); return Promise.resolve(); }),
     // The return type is spelled out so the tests' replacements (null, or another Uint8Array) typecheck.

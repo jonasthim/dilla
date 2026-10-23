@@ -30,9 +30,6 @@ export interface VoiceDockProps {
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
    *  `!canCamera` stands for it. */
   paused?: boolean;
-  /** A listen-only call (the AFK channel), as CallControls' `listenReason`: camera and share are aria-disabled and give
-   *  this reason (`afk.stage.muted`) in place of `labels.why`. */
-  listenReason?: string;
   /** Not drawn since web3.9 (R26). */
   shortcuts?: { mute: string; deafen: string };
   /** The latest polite announcement (join, leave, mute, deafen, the end of a pause, the outgoing ring); '' for none. */
@@ -44,8 +41,8 @@ export interface VoiceDockProps {
     /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 1's tooltip and accessible name. Without it, `where`. */
     where?: string;
     reconnecting: string;
-    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
-    ping: string; pingNone: string; rate: string;
+    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingSub` ('<1 ms', a ping that rounds to 0: a real LAN reading, not a missing one), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
+    ping: string; pingSub: string; pingNone: string; rate: string;
     /** `voice.dock.stats`: the stats' accessible text, with `{ms}`, `{quality}`, `{up}` and `{down}`; never announced. */
     stats: string;
     /** `voice.dock.quality.*`: the quality words that fill `{quality}`. */
@@ -91,11 +88,10 @@ const PHASE_GLYPH = {
  * region announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
-  phase, where, stats, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, listenReason,
+  phase, where, stats, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
   announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
-  const why = listenReason !== undefined ? { camera: listenReason, share: listenReason }
-    : voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
+  const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
   const bar = useIconToolbar();
   const full = labels.where ?? where;
@@ -115,12 +111,12 @@ export function VoiceDock({
     <span className="d-voice-dock__stats" data-quality="none">{labels.pingNone}</span>
   ) : (
     <span className="d-voice-dock__stats" data-quality={stats.quality}>
-      <span aria-hidden="true">{fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
+      <span aria-hidden="true">{stats.rttMs < 1 ? labels.pingSub : fill(labels.ping, { ms: stats.rttMs })} · {fill(labels.rate, { up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
       <span className="d-sr-only">{fill(labels.stats, { ms: stats.rttMs, quality: labels.quality[stats.quality], up: stats.upKbps ?? '—', down: stats.downKbps ?? '—' })}</span>
     </span>
   );
-  const cameraInert = busy || !canCamera || listenReason !== undefined;
-  const shareInert = busy || !canShare || listenReason !== undefined;
+  const cameraInert = busy || !canCamera;
+  const shareInert = busy || !canShare;
   return (
     <div className="d-voice-dock" data-phase={phase}>
       <div className="d-voice-dock__status">

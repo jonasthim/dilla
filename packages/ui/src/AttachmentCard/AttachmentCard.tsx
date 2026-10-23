@@ -22,6 +22,8 @@ export interface AttachmentCardProps {
   state: 'idle' | 'loading' | 'failed' | 'too-large';
   stateText?: string;
   tabbable: boolean;
+  /** A small visual mark on a still image card (a GIF that moves when opened); aria-hidden, the open label names the file. */
+  badge?: string;
   /** The inline player of an audio or video card (L-UI-71); without it, or when too large, the card is a file card. */
   player?: Pick<MediaPlayerProps, 'src' | 'state' | 'labels' | 'onPlay' | 'onError'>;
 }
@@ -52,7 +54,7 @@ function cardBox(w: number | null, h: number | null): CSSProperties {
  * own save, with the same text and name, stands in for the card's.
  */
 export function AttachmentCard({
-  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, saveText, onSave, state, stateText, tabbable, player,
+  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, saveText, onSave, state, stateText, tabbable, badge, player,
 }: AttachmentCardProps) {
   const tabIndex = tabbable ? 0 : -1;
   const tooLarge = state === 'too-large';
@@ -74,6 +76,7 @@ export function AttachmentCard({
       <button type="button" className="d-attachment-card__open" aria-label={openLabel} tabIndex={tabIndex}
         aria-busy={state === 'loading' || undefined} style={cardBox(w, h)} onClick={() => onOpen?.()}>
         {thumbUrl !== null ? <img className="d-attachment-card__thumb" alt={name} src={thumbUrl} data-thumb="ready" /> : box}
+        {badge !== undefined ? <span className="d-attachment-card__badge" aria-hidden="true">{badge}</span> : null}
       </button>
     );
   } else if ((kind === 'audio' || kind === 'video') && player !== undefined && !tooLarge) {

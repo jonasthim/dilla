@@ -281,16 +281,17 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("PATCH /v1/accounts/me/presence", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchPresence)))
 	m.Handle("POST /v1/accounts/me/presence/activity", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PresenceActivity)))
 	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
-	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
+	m.Handle("PATCH /v1/accounts/me", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchMe)))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 
 	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside
-	// establish; while pending it reads and publishes only its own device list. The three
+	// establish; while pending it reads and publishes only its own device list. The
 	// /v1/devices routes spend the device session's read and write buckets like the device-list and
 	// backup routes (branch review REGISTRATION-DEVICES-03: unmetered, a stolen session polled GET
 	// for a recovering owner's new row).
 	m.Handle("POST /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.CreateDevice)))
 	m.Handle("GET /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.ListDevices)))
+	m.Handle("PATCH /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchDevice)))
 	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteDevice)))
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassWrite, d.PutDeviceList), auth.ScopePending))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetDeviceList), auth.ScopePending))

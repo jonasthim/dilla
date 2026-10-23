@@ -233,6 +233,20 @@ it('restores the draft after a refreshed tab boots and clears the checkpoint', a
   expect(remove).toHaveBeenCalledOnce();
 });
 
+it('final review M3: a draft restored after an update reload sends no typing signal until the person edits it', async () => {
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { draft: { channelId: GEN, text: 'kept across reload' } }, files: [] }),
+      remove: () => Promise.resolve() },
+    reload: () => undefined };
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(composer()).toHaveValue('kept across reload'));
+  await new Promise(r => setTimeout(r, 50));
+  // Typing clears away (Q1): a restored draft with nobody at the keyboard must not.
+  expect(fake.callsOf('typing').filter(c => c.on)).toEqual([]);
+  await user.type(composer(), '!');
+  await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: true }));
+});
+
 it('restores selected files before clearing a refreshed tab checkpoint', async () => {
   const file = new File(['attachment'], 'kept.txt', { type: 'text/plain' });
   const remove = vi.fn(() => Promise.resolve());
@@ -802,12 +816,18 @@ describe('timeline', () => {
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
       item({ key: 'changed', state: 'cannot-read', reason: 'E_UMK_CHANGED', body: '' }),
       item({ key: 'unlisted', state: 'cannot-read', reason: 'E_DEVICE_UNLISTED', body: '' }),
+      item({ key: 'revoked', state: 'cannot-read', reason: 'E_DEVICE_REVOKED', body: '' }),
     ] })));
     const log = screen.getByRole('log', { name: 'messages in #general' });
     expect(log).toHaveTextContent('This contact’s identity changed. Compare the number before sending.');
-    expect(log).toHaveTextContent('This device is not on the contact’s list.');
-    expect(log).not.toHaveTextContent('E_UMK_CHANGED');
-    expect(log).not.toHaveTextContent('E_DEVICE_UNLISTED');
+    // A message from a device never added names the action that makes it readable, not only the state; one from a device
+    // the sender removed says it stays shut, and never asks for an action that cannot help.
+    const unlisted = 'Sent from a device that is not on the sender’s device list. Ask them to add it to their account; the message opens once they do.';
+    const revoked = 'Sent from a device the sender removed from their account. It will not open.';
+    expect(log).toHaveTextContent(unlisted);
+    expect(log).toHaveTextContent(revoked);
+    expect(log.textContent?.split(unlisted)).toHaveLength(2);
+    for (const code of ['E_UMK_CHANGED', 'E_DEVICE_UNLISTED', 'E_DEVICE_REVOKED']) expect(log).not.toHaveTextContent(code);
   });
   it('shows names, tags and every row state, and never an unreadable body', async () => {
     const { fake, user, view } = setup(`/c/${A}/${GEN}`);
@@ -835,8 +855,8 @@ describe('timeline', () => {
     // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
     expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
-    // Each row names its time once; the gutter of a row folded into its author's run shows a compact time (R29), not this one.
-    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
+    // Each row names its time once, and the gutter of the row folded into its author's run shows the same full time (R29): 8 rows and 1 gutter.
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(9);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
     expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
@@ -1613,6 +1633,74 @@ describe('direct messages', () => {
       // The server tile opens its first channel on the way (general), which the next pick closes.
       { m: 'openChannel', channelId: GEN }, { m: 'closeChannel', channelId: GEN }, { m: 'openChannel', channelId: RAND },
     ]);
+  });
+  describe('the profile card in a DM (EOD E3)', () => {
+    const open = async (body: string, how: 'author' | 'pill') => {
+      const { fake, user } = setup(`/dm/${DM}`, { before: withDms });
+      act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body })] })));
+      const log = screen.getByRole('log', { name: 'messages with bob' });
+      await user.click(await within(log).findByRole('button', { name: how === 'author' ? 'bob' : '@bob' }));
+      return { fake, user, card: await screen.findByRole('dialog', { name: 'bob' }) };
+    };
+    it('opens from the author name with message and compare safety numbers only, outside inert scopes', async () => {
+      const { card } = await open('hi', 'author');
+      expect(card.closest('[inert]')).toBeNull();
+      expect(within(card).getByText('bob')).toBeInTheDocument();
+      expect(within(card).queryByText('owner')).toBeNull();
+      expect(within(card).queryByRole('list')).toBeNull();
+      expect(within(card).getAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent)).toEqual(['message', 'compare safety numbers']);
+    });
+    it('opens from a mention pill', async () => {
+      await open(`hello <@${PEER}>`, 'pill');
+    });
+    it('opens from the avatar', async () => {
+      const { fake, user } = setup(`/dm/${DM}`, { before: withDms });
+      act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body: 'hi' })] })));
+      await user.click(document.querySelector<HTMLElement>('.d-message-row__avatar')!);
+      expect(await screen.findByRole('dialog', { name: 'bob' })).toBeInTheDocument();
+    });
+    it('Escape closes the card and focus returns to the opener', async () => {
+      const { user } = await open('hi', 'author');
+      const opener = within(screen.getByRole('log')).getByRole('button', { name: 'bob' });
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(opener).toHaveFocus();
+    });
+    it('a peer no shared server lists is titled with the DM name and shown offline', async () => {
+      const CAROL = 'cc'.repeat(16);
+      const { fake, user } = setup(`/dm/${DM}`, { before: f => f.set('dms', [{ id: DM, kind: 3, members: [ME.id, CAROL], name: 'carol', group: 'active' }]) });
+      act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body: 'hi', senderUser: CAROL, senderDevice: CAROL })] })));
+      await user.click(await within(screen.getByRole('log')).findByRole('button', { name: /^(carol|cccccccc)/ }));
+      const card = await screen.findByRole('dialog', { name: 'carol' });
+      // No shared server gives a presence snapshot, so the card says offline, as the member list does for an unknown person.
+      expect(card).toHaveTextContent('offline');
+    });
+    it('a third party in a 1:1 DM is a former member, never titled with the peer', async () => {
+      const { fake, user } = setup(`/dm/${DM}`, { before: withDms });
+      act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body: 'yo', senderUser: STRANGER, senderDevice: STRANGER })] })));
+      await user.click(await within(screen.getByRole('log')).findByRole('button', { name: /^4a4a4a4a/ }));
+      const card = await screen.findByRole('dialog', { name: 'former member' });
+      expect(card).not.toHaveTextContent('bob');
+    });
+    it('a member in a group DM is named from the members, an unknown one is a former member, never the group name', async () => {
+      const GROUP = '9b'.repeat(16);
+      const { fake, user } = setup(`/dm/${GROUP}`, { before: f => f.set('dms', [{ id: GROUP, kind: 4, members: [ME.id, PEER, STRANGER], name: 'the crew', group: 'active' }]) });
+      act(() => fake.set(`timeline:${GROUP}`, timeline({ channelId: GROUP, items: [
+        item({ key: 's1', seq: '1', msgId: 'a1'.repeat(16), body: 'hi' }),
+        item({ key: 's2', seq: '2', msgId: 'a2'.repeat(16), body: 'yo', senderUser: STRANGER, senderDevice: STRANGER })] })));
+      const log = screen.getByRole('log');
+      await user.click(await within(log).findByRole('button', { name: 'bob' }));
+      expect(await screen.findByRole('dialog', { name: 'bob' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      await user.click(await within(log).findByRole('button', { name: /^4a4a4a4a/ }));
+      const card = await screen.findByRole('dialog', { name: 'former member' });
+      expect(card).not.toHaveTextContent('the crew');
+    });
+    it('compare opens the safety numbers for that person', async () => {
+      const { user, card } = await open('hi', 'author');
+      await user.click(within(card).getByRole('button', { name: 'compare safety numbers' }));
+      expect(path()).toBe('/settings/privacy');
+    });
   });
   it('leaves a DM it does not know for the first server', () => {
     setup(`/dm/${'7b'.repeat(16)}`, { before: withDms });

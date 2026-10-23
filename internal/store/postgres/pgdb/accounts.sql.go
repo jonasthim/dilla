@@ -78,7 +78,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id = $1
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE id = $1
 `
 
 type GetUserParams struct {
@@ -102,12 +102,14 @@ func (q *Queries) GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 		&i.DisabledAt,
 		&i.DeletedAt,
 		&i.FactorOwed,
+		&i.StatusMsg,
+		&i.Bio,
 	)
 	return i, err
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE username = $1
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE username = $1
 `
 
 type GetUserByUsernameParams struct {
@@ -131,6 +133,8 @@ func (q *Queries) GetUserByUsername(ctx context.Context, arg GetUserByUsernamePa
 		&i.DisabledAt,
 		&i.DeletedAt,
 		&i.FactorOwed,
+		&i.StatusMsg,
+		&i.Bio,
 	)
 	return i, err
 }
@@ -151,7 +155,7 @@ func (q *Queries) GetUserKind(ctx context.Context, arg GetUserKindParams) (int64
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id > $1 ORDER BY id LIMIT $2::bigint
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed, status_msg, bio FROM users WHERE id > $1 ORDER BY id LIMIT $2::bigint
 `
 
 type ListUsersParams struct {
@@ -182,6 +186,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, 
 			&i.DisabledAt,
 			&i.DeletedAt,
 			&i.FactorOwed,
+			&i.StatusMsg,
+			&i.Bio,
 		); err != nil {
 			return nil, err
 		}
@@ -280,7 +286,7 @@ func (q *Queries) SetUserDisabled(ctx context.Context, arg SetUserDisabledParams
 }
 
 const tombstoneUser = `-- name: TombstoneUser :exec
-UPDATE users SET deleted_at = $1, display = '', umk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea, ssk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea,
+UPDATE users SET deleted_at = $1, display = '', status_msg = '', bio = '', umk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea, ssk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea,
                  sig_umk_ssk = '\x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'::bytea, flags = 0
 WHERE id = $2
 `
@@ -293,4 +299,31 @@ type TombstoneUserParams struct {
 func (q *Queries) TombstoneUser(ctx context.Context, arg TombstoneUserParams) error {
 	_, err := q.db.ExecContext(ctx, tombstoneUser, arg.DeletedAt, arg.ID)
 	return err
+}
+
+const updateProfile = `-- name: UpdateProfile :execrows
+UPDATE users SET display = COALESCE($1::text, display), status_msg = COALESCE($2::text, status_msg),
+                 bio = COALESCE($3::text, bio)
+WHERE id = $4 AND deleted_at IS NULL
+`
+
+type UpdateProfileParams struct {
+	Display   sql.NullString
+	StatusMsg sql.NullString
+	Bio       sql.NullString
+	ID        id.ID
+}
+
+// A NULL argument leaves that column as it is, so a write names only the fields it changes.
+func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateProfile,
+		arg.Display,
+		arg.StatusMsg,
+		arg.Bio,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

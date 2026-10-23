@@ -358,6 +358,20 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     expect(server.listHistory.get(toHex(user))?.map((r) => r.version)).toEqual([1n, 2n]);
   });
 
+  it('PATCH /v1/devices/{id} names an own device, null clears it, and another user\'s device is 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual([null]);
+    await c.routes.patchDevice(DEV_A, 'work laptop');
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual(['work laptop']);
+    await c.routes.patchDevice(DEV_A, null);
+    expect((await c.routes.listDevices()).map((d) => d.label)).toEqual([null]);
+    server.register('bea', new Uint8Array(16).fill(0xbe));
+    expect((await refusalOf(c.routes.patchDevice(new Uint8Array(16).fill(0xbe), 'mine'))).status).toBe(404);
+    expect((await refusalOf(c.routes.patchDevice(DEV_A, ''))).status).toBe(400);
+    expect((await refusalOf(c.routes.patchDevice(DEV_A, 'x'.repeat(65)))).status).toBe(400);
+  });
+
   it('DELETE /v1/devices/{id} revokes an own unlisted row and drops its tokens', async () => {
     const server = new FakeServer();
     const { c, user } = await ada(server);
@@ -1267,6 +1281,19 @@ describe('FakeServer sets a first password behind a step-up as dillad does', () 
     expect((await c.routes.passwordLogin('cy', 'new pw')).needs).toBe(2);
     // Spent: the same token does not stand in for a step-up again.
     expect(await refusalOf(c.routes.regenerateBackupCodes(token))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+  });
+
+  it('a first password needs a session younger than the reauth window (403 E_FORBIDDEN), checked before the step-up; a fresh session passes', async () => {
+    const server = new FakeServer();
+    const { c, session } = await noPassword(server);
+    server.nowS += 301;
+    expect(await setFirst(server, session, [null, 'first pw'])).toMatchObject({ status: 403, body: ['E_FORBIDDEN', expect.any(String), null] });
+    expect(await refusalOf(c.routes.passwordLogin('cy', 'first pw'))).toMatchObject({ status: 401 });
+    const fresh = await c.routes.postSession(DEV_A, establishBody(DEV_A, null));
+    expect((await setFirst(server, fresh.token, [null, 'first pw'])).status).toBe(204);
+    // A change with the old password is not subject to the window.
+    server.nowS += 301;
+    expect((await setFirst(server, fresh.token, ['first pw', 'second pw'])).status).toBe(204);
   });
 
   it('the two-element body is still served, and a third element is ignored when a password exists', async () => {

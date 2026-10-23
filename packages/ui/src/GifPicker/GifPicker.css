@@ -1,0 +1,22 @@
+.d-gif-picker { box-sizing: border-box; display: grid; gap: 0.5rem; width: min(100%, 26rem); max-height: min(24rem, 60vh); grid-template-rows: auto minmax(0, 1fr) auto auto; padding: 0.5rem; background: var(--surface); border: 1px solid var(--accent); border-radius: var(--r-lg); box-shadow: var(--shadow-2); }
+.d-gif-picker__search { box-sizing: border-box; width: 100%; min-height: 2rem; padding: 0.25rem 0.5rem; font: inherit; font-size: var(--text-base); color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.d-gif-picker__search::placeholder { color: var(--fg-3); }
+.d-gif-picker__search:focus-visible { border-color: var(--accent); }
+/* A masonry: three columns (two on a phone) of 1 px rows; each tile spans its own height (GifPicker.tsx), and auto-placement fills the highest free slot, left to right, so the DOM order is the reading order. */
+.d-gif-picker__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1px; gap: 0 0.25rem; align-content: start; overflow-y: auto; min-height: 0; }
+.d-gif-picker__cell { position: relative; display: block; box-sizing: border-box; width: 100%; align-self: start; padding: 0; overflow: hidden; background: var(--surface-2); border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; }
+.d-gif-picker__cell:hover, .d-gif-picker__cell:focus-visible { border-color: var(--accent); }
+.d-gif-picker__cell[aria-busy="true"] { opacity: 0.5; cursor: progress; }
+.d-gif-picker__img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.d-gif-picker__loading { display: block; width: 100%; height: 100%; background: var(--surface-hi); }
+.d-gif-picker__status { margin: 0; min-height: 1.25rem; font-size: var(--text-sm); color: var(--fg-2); }
+.d-gif-picker__status[data-kind="error"] { color: var(--danger); }
+.d-gif-picker__foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.d-gif-picker__more { padding: 0.25rem 0.5rem; font: inherit; font-size: var(--text-sm); color: var(--fg); background: transparent; border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer; }
+.d-gif-picker__more:hover { background: var(--surface-hi); }
+.d-gif-picker__powered { font-size: var(--text-xs); color: var(--fg-3); }
+/* Jonas's 44px primary-target rule: on a phone the result cells and the more button are at least 44 px tall. */
+[data-layout="phone"] .d-gif-picker__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+[data-layout="phone"] .d-gif-picker__cell { min-height: 2.75rem; }
+[data-layout="phone"] .d-gif-picker__more { min-height: 2.75rem; }
+[data-layout="phone"] .d-gif-picker__search { min-height: 2.75rem; font-size: 1rem; }

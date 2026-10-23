@@ -16,7 +16,7 @@ export interface AccountState {
   /** passwordSignup, totp and passkeys: auth_methods holds 0, 1 and 2. */
   instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean; totp: boolean; passkeys: boolean } | null;
   /** `display` is the account's display name (read with the presence choice); a person with no server has no member row to name them by. */
-  user: { id: string; username: string; display?: string } | null;
+  user: { id: string; username: string; display?: string; /** EOD E6: absent while empty. */ statusMsg?: string; bio?: string } | null;
   deviceId: string | null;
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
   error: WorkerError | null;                    // the last signup, sign-in or boot error
@@ -52,7 +52,9 @@ export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 |
   /** A text channel whose @everyone overwrite denies send_messages (derived from the overwrites the page can read; false while
    *  they are unknown). */
   announcement: boolean; group: ChannelGroupState; }
-export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
+export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[];
+  /** EOD E6: the account's status message and bio, absent while empty. */
+  statusMsg?: string; bio?: string; }   // roleIds: hex of member-row element 3, in order
 export type PresenceChoice = 'online' | 'idle' | 'dnd' | 'invisible';
 export type PresenceStatus = 'offline' | 'online' | 'idle' | 'dnd';
 /** null means the authenticated snapshot has not arrived yet. */
@@ -97,7 +99,8 @@ export interface TrayItem { id: string; name: string; size: number; mime: string
   phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
 export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
-export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
+export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean;
+  /** The owner's name for the device, or null when unnamed (the server holds it readable; it is not in the signed device list). */ label: string | null; }
 /**
  * L-TS-40's trust row. Ruling (c) of 2026-10-13 adds two worker-derived Privacy states, present only while they hold:
  * `unlisted` (one of the contact's leaves failed its signed list, or Flow 05's "history pending": the list read has not
@@ -199,14 +202,22 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
-/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: the sweep moved
- *  this device and it has not joined yet. */
+/** The built-in AFK channel of one community; null means the initial snapshot is still loading. `pending`: AFK cut this
+ *  device from its call (the sweep, or AFK chosen on another device; web3.11 joins nothing on it). */
 export interface AFKState {
   channelId: string | null; timeoutSeconds: number; pending: boolean;
   /** web3.9 R-AFK4: rises with every landed read (one counter for the worker's life), so each read that says `pending`
    *  is a move of its own: the page keys a move on (community, seq). Set by client-core on every read; a fixture may
    *  leave it out. */
   seq?: number;
+  /** AW4: the community's away roster, sorted by user id (lower-case hex): each member listed under the AFK channel with
+   *  no voice connection, and the unix second it became away there. Set by client-core on every read and kept current by
+   *  op 55; a fixture may leave it out. */
+  away?: { userId: string; since: number }[];
+  /** AW5 fix round 3: why this device is pending (device-scoped: every community's read says it): 1 the idle sweep moved
+   *  it, 2 this user chose AFK on another device or tab, 0 none. Set by client-core on every read; a fixture may leave it
+   *  out (then `pending` reads as 1). */
+  pendingReason?: 0 | 1 | 2;
 }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | `communityChanges:${string}`

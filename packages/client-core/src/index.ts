@@ -10,6 +10,8 @@ export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
 export { createVoiceMusicAdapter, voiceMusicAdapter } from './voice/music';
 export { VoiceMusicError } from './voice/music';
 export type { VoiceMusicAdapter, VoiceMusicState, VoiceMusicTrack, VoiceMusicQueueItem, VoiceMusicSearchResult, VoiceMusicPermissions, VoiceMusicErrorCode } from './voice/music';
+export { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue } from './profile-text';
+export type { ProfileTextProblem } from './profile-text';
 export { attachmentKind } from './state/derive';
 export type { NotifyMode } from './state/settings';
 export type { Command, ToWorker, FromWorker, TestHook } from './worker/protocol';

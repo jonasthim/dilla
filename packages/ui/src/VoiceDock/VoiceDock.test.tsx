@@ -13,7 +13,7 @@ const dock: VoiceDockProps = {
   labels: {
     region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
     paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
-    ping: '{ms} ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+    ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
     stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
     quality: { good: 'good', poor: 'poor', bad: 'bad' },
   },
@@ -43,6 +43,11 @@ describe('VoiceDock (MP5)', () => {
   it('line 2 reads the ping and the rates, e.g. "24 ms · ↑48 ↓96 kb/s"', () => {
     const { container } = render(<VoiceDock {...dock} stats={link} />);
     expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s');
+  });
+
+  it('FD1: a ping that rounds to 0 reads "<1 ms", not "0 ms"', () => {
+    const { container } = render(<VoiceDock {...dock} stats={{ ...link, rttMs: 0 }} />);
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑48 ↓96 kb/s');
   });
 
   it('L5: a direction that could not be read is a dash, never "null" or 0', () => {

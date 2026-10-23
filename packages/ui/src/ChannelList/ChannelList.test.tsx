@@ -302,6 +302,14 @@ describe('ChannelList, one list with voice rooms in place', () => {
     rerender(<ChannelList {...props({ channels: mixed, voice: voice({ onJoin: undefined }) })} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });
+
+  it('final review M4: the AFK row has no join icon (it hosts no call; its page offers go AFK)', () => {
+    const channels: ChannelListProps['channels'] = [{ id: 'v2', name: 'workshop', kind: 'voice', readable: false },
+      { id: 'afk', name: 'AFK', kind: 'voice', readable: false, afk: true }];
+    render(<ChannelList {...props({ channels, voice: voice({ rooms: {} }) })} />);
+    expect(screen.getAllByRole('button', { name: 'join voice' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'voice AFK' })).toBeInTheDocument();
+  });
 });
 
 // web3.9 (UI-2): categories, collapse and the "+" on a header.

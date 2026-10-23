@@ -513,6 +513,8 @@ func TestCommunityMembershipGates(t *testing.T) {
 		Username string
 		Display  string
 		Kind     uint64
+		Status   string
+		Bio      string
 	}
 	mustUnmarshal(t, body, &members)
 	if len(members) != 2 {
@@ -643,6 +645,8 @@ func TestRoleGrantGates(t *testing.T) {
 		Username string
 		Display  string
 		Kind     uint64
+		Status   string
+		Bio      string
 	}
 	mustUnmarshal(t, body, &members)
 	for _, m := range members {

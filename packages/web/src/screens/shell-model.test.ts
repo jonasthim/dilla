@@ -137,7 +137,7 @@ describe('badges', () => {
 
 describe('devicesChunk', () => {
   const dev = (revokedAt: number | null): DeviceSummary =>
-    ({ id: id('c'), tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false });
+    ({ id: id('c'), tier: 1, signerTier: 1, lastSeen: 1, revokedAt, listed: true, own: false, label: null });
   it('counts the devices not removed, and is unknown until loaded', () => {
     expect(devicesChunk(undefined)).toBe('–');
     expect(devicesChunk([])).toBe('0');
@@ -306,7 +306,6 @@ describe('voice (flow 06)', () => {
     expect(joinFailureKey('E_NETWORK')).toBe('voice.failed');
     expect(micNoticeKey('failed')).toBe('voice.micFailed');
     expect(micNoticeKey('ok')).toBeNull();
-    expect(micNoticeKey('listen')).toBeNull(); // web3.9 VOICE-AFK: the AFK channel's listen-only is not a microphone failure
   });
   it('opens a voice channel but not a readable one', () => {
     expect(isVoice({ kind: 1, mode: 0 })).toBe(true);

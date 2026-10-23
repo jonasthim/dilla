@@ -257,6 +257,22 @@
       "group_id": "",
       "payload": "81500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
       "frame": "84183600f681500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+    },
+    {
+      "name": "afk_away",
+      "op": 55,
+      "n": 0,
+      "group_id": "",
+      "payload": "83500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e50090909090909090909090909090909091a68d301e0",
+      "frame": "84183700f683500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e50090909090909090909090909090909091a68d301e0"
+    },
+    {
+      "name": "afk_away cleared",
+      "op": 55,
+      "n": 0,
+      "group_id": "",
+      "payload": "83500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e500909090909090909090909090909090900",
+      "frame": "84183700f683500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e500909090909090909090909090909090900"
     }
   ],
   "rejects": [
@@ -353,6 +369,11 @@
     {
       "name": "message.ct with 8 elements",
       "frame": "841309500707070707070707070707070707070788191022182a50080808080808080808080808080808084301020358200a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1a68d304740000",
+      "code": "E_FRAME_TYPE"
+    },
+    {
+      "name": "afk_away with 4 elements",
+      "frame": "84183700f684500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e50090909090909090909090909090909091a68d301e001",
       "code": "E_FRAME_TYPE"
     }
   ]

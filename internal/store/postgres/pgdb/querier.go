@@ -12,11 +12,15 @@ import (
 
 type Querier interface {
 	AcceptBotAutoModerationGrant(ctx context.Context, arg AcceptBotAutoModerationGrantParams) (int64, error)
+	AFKAwayExists(ctx context.Context, arg AFKAwayExistsParams) (int64, error)
+	AFKAwayExistsUser(ctx context.Context, arg AFKAwayExistsUserParams) (int64, error)
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	ClearAFKAway(ctx context.Context, arg ClearAFKAwayParams) (int64, error)
+	ClearAFKAwayUser(ctx context.Context, arg ClearAFKAwayUserParams) ([]id.ID, error)
 	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
 	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
 	// healed group that kept its deadline would be one restart away from looking overdue again.
@@ -182,6 +186,8 @@ type Querier interface {
 	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
+	ListAFKAway(ctx context.Context, arg ListAFKAwayParams) ([]ListAFKAwayRow, error)
+	ListAFKAwayFirst(ctx context.Context, arg ListAFKAwayFirstParams) ([]ListAFKAwayFirstRow, error)
 	ListAllProposals(ctx context.Context, arg ListAllProposalsParams) ([]MlsPendingProposals, error)
 	ListAppMessages(ctx context.Context, arg ListAppMessagesParams) ([]MlsAppMessages, error)
 	ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error)
@@ -418,9 +424,11 @@ type Querier interface {
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	RotateBotRuntime(ctx context.Context, arg RotateBotRuntimeParams) (int64, error)
+	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error
+	SetDeviceLabel(ctx context.Context, arg SetDeviceLabelParams) (int64, error)
 	SetFactorOwed(ctx context.Context, arg SetFactorOwedParams) (int64, error)
 	// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
 	// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
@@ -451,6 +459,8 @@ type Querier interface {
 	// lost race; the adapter tells the two apart.
 	UpdateCommunityPolicy(ctx context.Context, arg UpdateCommunityPolicyParams) (int64, error)
 	UpdateDeviceCredential(ctx context.Context, arg UpdateDeviceCredentialParams) (int64, error)
+	// A NULL argument leaves that column as it is, so a write names only the fields it changes.
+	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (int64, error)
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateWebauthnCredential(ctx context.Context, arg UpdateWebauthnCredentialParams) error
 	// The quota counts each distinct blob a user uploaded once, however many

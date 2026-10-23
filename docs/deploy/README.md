@@ -4,9 +4,9 @@ dillad is one static binary (`dillad`) plus one file beside it, `dilla_core_wasi
 core it runs inside wazero. Set `livekit.mode = 'sidecar'` and run `dillad media` as a second
 process: the API can restart while the SFU keeps existing rooms. The API owns the `/rtc` join
 gate, webhook receiver, TLS and TURN relay. Replacing the media process ends its rooms;
-the updated client reopens community voice during the upgrade window. This page covers Compose,
-systemd, the install script,
-and the Proxmox LXC helper.
+the updated client reopens community voice during the upgrade window. This page covers the install
+script (`deploy/install.sh`, the one supported install: a native systemd install), the systemd units it
+writes, and the Proxmox LXC helper. There is no container image.
 
 ### Open tabs during an upgrade
 
@@ -82,6 +82,8 @@ with no media port to reach. Run it after every change.
 | `acme_dns` | 443 is not reachable from the internet while the certificate is issued (a home connection, a split-horizon network), or you want a wildcard. | The same, plus `tls.dns.provider` and `tls.dns.credentials_file`. Issuance uses the DNS-01 challenge, which needs no inbound connection. |
 | `acme_ip` | The instance has no domain of its own and clients connect to an address. | A public IP the certificate authority can reach on 443/tcp (validation is TLS-ALPN-01). dillad forces the `shortlived` profile, the only one that permits IP names, so certificates are renewed far more often; `tls.renewal_window_ratio` sets when. |
 | `behind_proxy` | A reverse proxy you already run terminates TLS. | dillad listens on `server.plain_listen` (`127.0.0.1:8080` by default) and trusts `X-Forwarded-For` only from `server.trusted_proxy_cidrs`, which must be non-empty. `instance.public_ip` and `tls.agreed` are not required. |
+
+**Probing health.** `/healthz` (liveness) and `/readyz` (readiness) are served on `server.plain_listen` only. dillad does not also listen on the loopback address, so probe the address configured there, for example `curl -fsS http://10.0.0.5:8080/readyz` for `plain_listen = '10.0.0.5:8080'`. A `curl` to `127.0.0.1` prints `000` unless `plain_listen` is a loopback address. The installer's `--listen` sets it.
 
 In every mode except `behind_proxy`, TURN shares 443 with the web server: a demultiplexer in front
 of the TLS listener hands STUN to the relay and everything else to HTTPS. Only 443/tcp and
@@ -253,19 +255,6 @@ What it fixes, and the keys that change it:
   candidate at all and every call fails, and `dillad serve` refuses to start (exit 78) with a message
   saying so. Use it with host networking or systemd to keep addresses such as `docker0`, WireGuard or
   Tailscale out of the candidates, and never on the address `node_ip` is, or the only address left.
-- **Docker with a bridge network.** Do NOT exclude the bridge range: the container's `172.x`
-  address is its only address, and the socket on it is where Docker delivers the published 7882/udp.
-  Set `livekit.node_ip` to the public address and leave `ips_excludes` empty. With the default
-  `advertise_internal_ip = true` clients also see the `172.x` candidate, which they cannot reach and
-  skip after a failed check; the relay, inside the same container, pairs with it on the bridge. With
-  `advertise_internal_ip = false` only `node_ip` is offered; the relay then reaches the SFU through
-  the host's port mapping (a hairpin through `node_ip`), which works only if the host lets a
-  container reach its own published port on the public address. This recipe is derived from
-  LiveKit's source (mediatransportutil `rtcconfig/webrtc_config.go`, `transport/createmux.go`,
-  livekit/ice `gather.go`) and has not been measured on a real bridge network. Check it on yours:
-  open `chrome://webrtc-internals` during a call and confirm a remote `host` candidate on
-  `node_ip:7882` and a connected pair, then repeat with the browser forced to the relay
-  (`iceTransportPolicy: "relay"`, or UDP to 7882 blocked) and confirm the call still connects.
 - **Logs and metrics.** LiveKit's and pion's logs appear in the media process log (pion's only at
   ERROR) with a fixed set of fields — no SDP, no addresses, ids cut to eight characters — at most
   20 lines in a burst and 5 a second per message, with one "LiveKit log lines suppressed" line
@@ -277,66 +266,7 @@ What it fixes, and the keys that change it:
   `media` process returns. The API stays up. In the older `in_process` mode, dillad exits with
   status 69 (`EX_UNAVAILABLE`) and its supervisor restarts the whole process.
 
-## 2. Compose
-
-The image is `ghcr.io/jonasthim/dilla/dillad`, built for linux/amd64 and linux/arm64 on distroless
-`static-debian13:nonroot`. It runs as UID/GID 65532, has no shell and no package manager, and
-exposes exactly 443/tcp and 7882/udp. `deploy/compose.yaml` is the reference file.
-
-```sh
-mkdir dilla && cd dilla
-mkdir data
-# The data directory must be owned 65532:65532 on the host. distroless has no shell, so nothing
-# can chown it at start, and a root-owned directory makes the container exit with a permission error.
-sudo chown -R 65532:65532 ./data
-cp /path/to/deploy/compose.yaml .
-
-# One-shot init: creates the database, the instance keys, the TURN and LiveKit secrets and
-# the config file named by --config, then prints the bootstrap invite link. It is printed once and
-# stored nowhere. Without --config, init writes /etc/dilla/dilla.toml, which the image does not have.
-docker run --rm -v "$PWD/data:/var/lib/dilla" ghcr.io/jonasthim/dilla/dillad:latest \
-  init --config=/var/lib/dilla/dilla.toml --data-dir=/var/lib/dilla \
-  --domain=chat.example.org --public-ip=203.0.113.10 --agree-tos
-
-# compose.yaml mounts ./dilla.toml; init wrote it into the data directory, owned 65532.
-sudo mv ./data/dilla.toml ./dilla.toml
-# init defaults to the all-in-one mode. Compose runs media as a separate process.
-sudo sed -i "s/mode = 'in_process'/mode = 'sidecar'/" ./dilla.toml
-
-docker compose up -d
-docker compose ps
-docker compose logs -f dillad media
-```
-
-`netns` owns the published ports and stays running while the API and media containers are
-replaced. After pinning the next image version or digest in `compose.yaml`, upgrade in order:
-
-```sh
-docker compose pull
-docker compose up -d --no-deps dillad
-# Wait for /readyz and check the API log before moving active rooms.
-docker compose up -d --no-deps media
-```
-
-Keep `netns` on its existing container during this sequence. Recreating it tears down the shared
-network namespace, including current calls. `media` and `dillad` share only that namespace and
-the instance configuration; the media process does not open the database.
-
-The traps, in the order people meet them:
-
-- **Bind-mount ownership.** `sudo chown -R 65532:65532 ./data` before the first start, as above.
-  The same goes for a directory restored from a backup.
-- **`network_mode: host` cannot bind 443.** Docker sets `net.ipv4.ip_unprivileged_port_start`
-  only for private networks, so a host-networked container running as UID 65532 fails with
-  "permission denied" on 443. Keep the bridged network and the `ports:` mapping, or, if you must use
-  host networking, add `sysctls: { net.ipv4.ip_unprivileged_port_start: "0" }`.
-- **Only 443/tcp and 7882/udp are published.** A firewall in front of the host must allow both.
-- **Keep `turn.relay_ip = "auto"`.** init writes it, and serve binds the relay on the container's
-  own address. The public IP is not an address of a bridged container, so setting it there makes
-  every relay allocation fail; `dillad doctor` then shows the `turn` leg red with a fix naming
-  `turn.relay_ip`.
-- **Update deliberately.** The CA bundle in the image is fixed when the image is built; pin the
-  image by digest and pull a new build rather than floating `:latest`.
+## 2. Building from source
 
 ### Build dillad with the web client from source
 
@@ -508,7 +438,7 @@ curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.1/install.
 sh install.sh --upgrade
 ```
 
-Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 without output when they are valid.
+Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 when they are valid, printing `arguments are valid; the release was not checked` on stderr: it does not look up the release, so a mistyped `--version` still passes here and is refused later, at the download, before anything on disk changes.
 
 It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
 stays up, runs doctor, then restarts the media service. The previous pair stays as `dillad.prev`
@@ -792,10 +722,6 @@ its member-signed GroupInfo and handshake tail. The window for that is 24 hours 
 owner's device re-creates it. Start the instance promptly after a restore and expect clients to
 show a resync notice while they catch up.
 
-In Compose, run the same verbs with `docker compose run --rm dillad backup ...` or
-`docker compose run --rm dillad restore ...` against the stopped service. Mount a directory for
-`--out` and `--from`, and own it 65532:65532.
-
 ## 5. Operating a required second factor
 
 From web-3.6 every human account needs a second factor: a confirmed authenticator app (TOTP) or a passkey. The
@@ -892,6 +818,28 @@ writes a `user.factors_reset` audit row, all in one transaction. A bot account a
   closes no socket itself; the serving process notices the owed account on its next liveness tick and closes the
   connection. The heartbeat interval is `gateway.heartbeat_interval` (30 s by default).
 
+### A person has lost every device: `dillad admin device revoke --all`
+
+```sh
+sudo -u dillad dillad admin device revoke --all --username=mira --config=/etc/dilla/dilla.toml
+```
+
+It takes exactly one of `--username=NAME` or `--id=ID` (the user's id, 32 hex), the same selectors as the other user
+verbs. It first prints the resolved user, its id and its number of active devices. It then asks you to type the
+username back, and revokes only if the answer matches. Pass `--yes` to skip the question; without `--yes` and without a
+terminal to answer on, it refuses. It revokes every device that is not yet revoked, deletes every session of the
+person and writes a `device.revoke_all` audit row, all in one transaction under the user lock. A device revoked before
+keeps its first revoke time. A deleted account is refused, and an account with no active device is reported and left
+alone. It prints each device it revoked.
+
+- **Encrypted history is lost** unless another device still holds it, and after this none of the person's devices is
+  active. The person signs in again to use dilla.
+- **The signed device list is not changed.** The server cannot sign it, so the list clients read still names the
+  revoked devices (marked revoked) until the person's own device removes them.
+- **Live connections close within one heartbeat**, as with `device revoke --id`: the serving process notices that the
+  sessions are gone on its next liveness tick.
+- **Use `--id` for one device.** `device revoke --id=ID` revokes a single device and leaves the others signed in.
+
 ### Changing the instance domain
 
 Moving an instance to a new address is a configuration change with consequences for people. Read them before you start.
@@ -939,6 +887,9 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 | web-3.8 (`v0.1.0-web3.8`) | 5 | 20 | No change to the browser store. Migrations `00019_presence` and `00020_afk` came in from the noise betas; web-3.8 adds none. Hello offers wire version 2 only |
 | web-3.9 (`v0.1.0-web3.9`) | 5 | 20 | No change to the browser store or the server schema. dillad adds an "AFK" voice channel to every server at its first start. |
+| web3.10 and web3.10.1 | 5 | 20 | No change to the browser store or the server schema. |
+| web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
+| web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
@@ -1011,6 +962,66 @@ Rolling back to web-3.8 leaves the new "AFK" channel in place, and web-3.8 treat
 
 Ask people to reload their tabs after the upgrade, as after any release: a tab from before it does not know the AFK
 channel's rules until it reloads.
+
+### The optional GIF picker: a Giphy key per server
+
+GIFs need no configuration in `dilla.toml`. A person who manages a server enters that server's own Giphy API key in
+server settings → overview ("GIFs (Giphy)"; get a key at developers.giphy.com), and that server gets a **gif** button in
+its channels. A server without a key has none; there are no GIFs in direct messages (a known limit). The key is
+**write-only**: the page shows dots afterwards, with **replace** and **remove**, and no route, log line, audit row or
+`dillad doctor` line ever contains it. There is no migration: the key is kept in the instance's settings table
+(`instance_settings`, key `community_gifs:{server id}`) as plain text, like the TOTP secrets, so a database backup holds
+it and should be protected as it is. Deleting a server forgets its key. Setting, replacing or removing a key, and
+changing the rating, are audited (`community.gifs.key_set`, `community.gifs.key_remove`, `community.gifs.rating`) without
+the key.
+
+What this means for privacy:
+
+- Search and the picked GIF go through `dillad`, so **Giphy sees your server, never the people on it**. `dillad` sees what
+  people search for, which GIF they picked and when, and can probably link a pick to the attachment that follows by its
+  timing and size; it cannot read the message.
+- A picked GIF is downloaded by `dillad` and sent as an ordinary encrypted attachment, so **no reader's browser
+  contacts giphy.com**. The server's content-security policy needs no Giphy host.
+- `dillad` fetches only from Giphy's own hosts (`api.giphy.com` and `media*.giphy.com`) over HTTPS, builds each URL
+  itself from a checked Giphy id, refuses redirects off that list and refuses to connect to a non-public address
+  (including private, loopback, link-local, carrier-grade NAT, documentation, 6to4, Teredo and NAT64 ranges). It uses no
+  proxy: the host needs outbound HTTPS to `*.giphy.com`. An outage at Giphy shows people "could not reach the gif
+  service" and nothing else.
+- A GIF is capped at 25 MB (a preview at 5 MB) counted on the bytes received; a fetch times out after 15 seconds. Each
+  fetch holds one of **eight** instance-wide slots (at most **three** per person and **four** per server) from before the request to Giphy until
+  the reply has been written to the person's browser, and a reply that cannot be written within 30 seconds is dropped, so
+  the memory a slow or silent client can pin is bounded by eight GIFs. A request waits up to two seconds for a slot, then
+  gets `503` with `Retry-After`.
+- Search is limited per person, across all the servers they are in (10 at once, then 1 a second), and so is the media route
+  (60 at once, then 20 a second).
+- The rating (g, pg, pg-13 by default, r) filters **search**; the media route fetches any Giphy id a member asks for, so
+  the rating is not a hard limit on what a member can attach (they can attach any file anyway).
+
+Rolling back to a release without GIFs leaves the `community_gifs:*` settings rows in the table, which nothing reads.
+
+### Upgrading with profile text: migration 00022
+
+**Release note.** New display names, status messages and bios refuse control, bidi, zero-width and other invisible characters
+(a joiner is kept where Persian, Sinhala, Devanagari and similar scripts, and emoji, need it); existing display names are kept
+as they are, and sign-up, rename and `PATCH /v1/accounts/me` apply the rule only to a new or changed name.
+
+Migration `00022_profile` adds two columns to `users`, `status_msg` (at most 190 characters) and `bio` (at most 500), both
+empty for every existing account. The server stores them readable, like the display name: they are not end-to-end
+encrypted, and the operator can read them. `PATCH /v1/accounts/me` now writes them (it answered 501 before), and
+`GET /v1/accounts/me` and the member list answer them as their last two elements. A client from before this change reads
+the extra elements as absent and keeps working; ask people to reload their tabs to see the new Settings → profile.
+
+To go back run the rollback by hand above with `--to=21`. Going down from 22 drops `status_msg` and `bio` and discards every status message and bio; the accounts are kept.
+
+### Device names (schema 23)
+
+Migration `00023_device_labels` adds a nullable `label` column to `devices`, empty for every existing device. A person
+names a device in Settings → Devices (`PATCH /v1/devices/{device_id}`). The name is not part of the signed device list: the
+server stores it readable and could read or change it, so a client always shows the first characters of the device id
+beside it. It follows the same text rule as a display name (at most 64 characters, one line, no control or invisible
+character).
+
+To go back run the rollback by hand above with `--to=22`. Going down from 23 drops `devices.label` and discards every device name; the devices are kept.
 
 ## Capacity
 

@@ -725,7 +725,10 @@ danger banner `devices.rootMismatch` stands first in the Devices section, under 
 shell's banner area above the conversation, with no dismiss button, for as long as the slice reports it:
 the recovery key cannot open that object, so removing a device or adding a browser with the key would fail.
 
-Rows. Each device is a `DeviceRow`: the name (first eight hexadecimal characters of the device id), the
+Rows. Each device is a `DeviceRow`: the name (the owner's own name for the device when it has one, else the first
+eight hexadecimal characters of the device id; the name is stored readable by the server, which can change it, and is
+not part of the signed device list). A name is drawn inside `<bdi>` with the first eight characters of the id beside
+it, so the id stays visible whatever the name says. Then the
 tier tag (`devices.tier.web` for a browser, `devices.tier.native` for an app), the tag
 `devices.thisBrowser` on this browser's row, a state (`devices.unlisted` when the device is not in the
 account's newest device list, `devices.revoked` when it was removed, nothing otherwise) and
@@ -733,7 +736,17 @@ account's newest device list, `devices.revoked` when it was removed, nothing oth
 removed devices last. `devices.revoke` is offered on every other device that is not removed: on a listed
 device it opens the remove dialog with the recovery key; on a device that is not yet in the device list
 it opens the remove-unlisted dialog without a key (ruling 30: no signed list names such a device, so
-removing it changes no list). This browser's row and removed rows offer nothing. Under the list stand
+removing it changes no list). `devices.rename` is offered on every device that is not removed, this browser
+included, and opens a `Dialog` titled `devices.renameTitle` with `devices.renameBody`, one text field
+`devices.renameLabel` (hint `devices.renameBody`, then `devices.renameServerReads`; focused, at most 64 characters, started on the current name; on this browser with no name,
+on `devices.renameSuggestion` from the browser and system) and a `devices.renameSave` submit. The page trims the
+text and sends `renameDevice` with it; an empty field sends null, which clears the name. While it runs the submit
+reads `devices.working`, is blocked, and nothing closes the dialog; a refusal is a `role="alert"` banner by its
+code (`settings.error.other`) with the text kept; success closes the dialog and focus returns to the button that
+opened it. Removed rows offer nothing. The name is trimmed, Unicode NFC, 1 to 64 characters, with no control, bidirectional or
+zero-width character (the display-name rule); the page and the worker refuse the same text the server does. Both remove
+dialogs (listed and not yet listed) show the device first as its name, when it has one, and the first eight characters
+of its id, so the person confirms the id and not a name the server could have swapped. Under the list stand
 the count line and `devices.refresh`; under a hairline, `devices.signOut` and `devices.forget`. The count
 line is `devices.cap.other` (`{n} devices`), or `devices.cap.one` (`one device`) when the count is 1; it
 counts the devices that are not removed, this browser included, and the instance's cap is not shown
@@ -910,6 +923,13 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `devices.keyLabel` | `Recovery key` | field label, the two key dialogs of Settings → Devices |
 | `devices.refresh` | `refresh` | button under the list; sends `refreshDevices` |
 | `devices.revoke` | `remove` | button on the row of every other device that is not removed |
+| `devices.rename` | `rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
+| `devices.renameTitle` | `Name this device` | dialog title, the name dialog |
+| `devices.renameBody` | `The server can change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
+| `devices.renameLabel` | `Device name` | field label, the name dialog (at most 64 characters) |
+| `devices.renameServerReads` | `The server can read this, like your display name.` | a second quiet hint line under the name field, in its description after `devices.renameBody` (web3.12.1) |
+| `devices.renameSave` | `Save` | submit, the name dialog |
+| `devices.renameSuggestion` | `{browser} on {os}` | the name dialog's start text on this browser when it has no name yet, e.g. `Firefox on Linux`; nothing when the browser or system is not recognised |
 | `devices.signOut` | `sign out and remove this browser` | button under the hairline |
 | `devices.forget` | `forget this browser` | button under the hairline |
 | `devices.revokeTitle` | `Remove this device?` | dialog title, remove another device |

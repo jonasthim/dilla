@@ -45,32 +45,47 @@ const reloadButton = (page: Page) => page.getByRole('button', { name: copy('relo
 
 const isChromium = (info: TestInfo) => info.project.name.startsWith('chromium');
 
-/** Runs first in every dedicated worker of the page (chromium only): while `refuse` is set, each gateway WebSocket closes itself 4006 once
- *  it is open, which the gateway reads as the server's own close. Playwright's WebSocket routes do not reach a worker's sockets, so
- *  this attaches to the worker through the DevTools protocol while it waits for its debugger, runs the patch, and lets it start. */
-const refusePatch = `(()=>{const N=self.WebSocket;self.WebSocket=class extends N{constructor(u,p){super(u,p);`
-  + `this.addEventListener('open',()=>{if(self.__refuse)this.close(4006,'E_VERSION');});}};})();`;
+/** The gateway ticket the core worker fetches before it opens each socket (POST /v1/gateway/ticket). */
+const TICKET = /\/v1\/gateway\/ticket$/;
 
-/** Counts the gateway sockets the page opens (workers' included: the page event sees them) and its `load` events. */
-async function watch(page: Page): Promise<{ sockets: () => number; loads: () => number; refuse: (on: boolean) => Promise<void> }> {
+/** Runs in each of the page's workers while refusing (chromium only): every WebSocket that gets its first listener from then on
+ *  also closes itself 4006 once it is open, which the gateway reads as the server's own close. Playwright's WebSocket routes do
+ *  not reach a worker's sockets. The patch is on the prototype, so it also covers a WebSocket class the worker took before it. */
+function refuseSockets(): void {
+  const proto = WebSocket.prototype as WebSocket & { dillaRefusing?: true };
+  if (proto.dillaRefusing === true) return;
+  proto.dillaRefusing = true;
+  const add = proto.addEventListener;
+  const armed = new WeakSet<WebSocket>();
+  proto.addEventListener = function (this: WebSocket, ...args: Parameters<WebSocket['addEventListener']>): void {
+    if (!armed.has(this)) {
+      armed.add(this);
+      add.call(this, 'open', () => { this.close(4006, 'E_VERSION'); });
+    }
+    add.apply(this, args);
+  } as WebSocket['addEventListener'];
+}
+
+/** Counts the gateway sockets the page opens (workers' included: the page event sees them), its `load` events, and the gateway
+ *  tickets let through only after the refusal patch was in every worker. */
+async function watch(page: Page): Promise<{ sockets: () => number; loads: () => number; patched: () => number; refuse: (on: boolean) => Promise<void> }> {
   let sockets = 0;
   let loads = 0;
+  let patched = 0;
   page.on('load', () => { loads += 1; });
   page.on('websocket', (ws) => { if (ws.url().endsWith('/gateway')) sockets += 1; });
-  let refusing = false;
-  if (isChromium(test.info())) {
-    const cdp = await page.context().newCDPSession(page);
-    cdp.on('Target.attachedToTarget', (e: { sessionId: string; targetInfo: { type: string } }) => {
-      void (async () => {
-        if (e.targetInfo.type !== 'worker') return;
-        const send = (method: string, params: object = {}) => cdp.send('Target.sendMessageToTarget' as never, { sessionId: e.sessionId, message: JSON.stringify({ id: 1, method, params }) } as never);
-        await send('Runtime.evaluate', { expression: `self.__refuse=${String(refusing)};${refusePatch}` });
-        await send('Runtime.runIfWaitingForDebugger');
-      })();
+  // The worker opens its gateway socket only with a ticket, so the ticket is held until the patch is in: the patch can never land
+  // after the socket exists. (The patch used to be run over the DevTools protocol while the new worker waited for its debugger,
+  // but Playwright resumes the worker too, so on a slow runner the worker could take the unpatched WebSocket first.)
+  const refuse = async (on: boolean): Promise<void> => {
+    if (!on) { await page.unroute(TICKET); return; }
+    await page.route(TICKET, async (route) => {
+      for (const worker of page.workers()) await worker.evaluate(refuseSockets);
+      patched += 1;
+      await route.continue();
     });
-    await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
-  }
-  return { sockets: () => sockets, loads: () => loads, refuse: async (on) => { refusing = on; } };
+  };
+  return { sockets: () => sockets, loads: () => loads, patched: () => patched, refuse };
 }
 
 async function expectNoReconnect(page: Page, sockets: () => number): Promise<void> {
@@ -116,12 +131,13 @@ test('a tab older than the host is refused two ways: banner, no reconnect, and R
   await expect(banner(page)).toHaveCount(0);
   await expectAccessible(page, 'wire 2 again: no banner');
 
-  // The other client path: the server closes the socket 4006 itself (chromium only: the close is injected into the worker over the
-  // DevTools protocol). The same tab, the same banner, still no reconnect loop.
+  // The other client path: the server closes the socket 4006 itself (chromium only: the close is injected into the page's
+  // workers before the gateway ticket is let through). The same tab, the same banner, still no reconnect loop.
   if (!isChromium(test.info())) return;
   await seen.refuse(true);
   const before = seen.sockets();
   await page.reload();
+  await expect.poll(seen.patched, { timeout: WAIT, message: 'the reloaded page\'s ticket waited for the refusal patch' }).toBeGreaterThan(0);
   await expect(banner(page)).toBeVisible({ timeout: WAIT });
   await expect(reloadButton(page)).toBeVisible();
   await expectNoReconnect(page, seen.sockets);

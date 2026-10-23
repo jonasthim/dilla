@@ -12,6 +12,7 @@ import { WebDriver, type PeerAttachRequest, type PeerAttached, type PeerDm, type
 export type { PeerAttachment, PeerAttachRequest, PeerAttached, PeerDm, PeerEnrolled, PeerFetched, PeerOpenedDm, PeerReceived, PeerSendOptions, PeerSetup } from './driver';
 import { runAxe } from './axe';
 import { nextCode } from './totp';
+import { ABORT_WINDOW_MS, isCancelledFetchLine, isNavigationAbortLine } from './abort-line';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
 import { t } from '../../../packages/web/src/strings/index';
@@ -41,6 +42,9 @@ export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server res
 export const ABORTED_FONT_LINE = /^\[JavaScript Error: "downloadable font: download failed \(.*\): status=2152398850 source: /;
 /** Firefox's privileged favicon loader reports this refusal from the static invite page's default-src 'none'. */
 export const FIREFOX_FAVICON_LINE = /^\[JavaScript Error: "Content-Security-Policy: The page.s settings blocked the loading of a resource \(img-src\) at http:\/\/127\.0\.0\.1:\d+\/favicon\.ico .*\{file: "resource:\/\/\/modules\/FaviconLoader\.sys\.mjs" line: \d+\}\]$/;
+// WebKit\'s cancelled-fetch line (support/abort-line.ts) is dropped only within ABORT_WINDOW_MS of a main-frame
+// navigation or a window resize of the same page; anywhere else it still fails the test.
+
 /** Firefox's Playwright juggler worker can log this when a test closes its second browser context. */
 /** Firefox's own line when a reload closes the open LiveKit signal socket (port-free; the query is a token). */
 export const FIREFOX_SOCKET_INTERRUPTED = /^\[JavaScript Error: "The connection to wss?:\/\/[^/"]+\/rtc\/v1\?[^"]* was interrupted while the page was loading\."/;
@@ -320,6 +324,21 @@ function newGuard(projectName: string): Guard {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const workers: Worker[] = [];
+  // Per page: when its main frame last navigated or its window last resized, and the cancelled-fetch lines
+  // counted in consoleErrors so far, so a navigation that follows the line (WebKit may log it first) can take it back.
+  const disturbed = new WeakMap<Page, number>();
+  const cancelled: { page: Page; at: number; text: string }[] = [];
+  const disturb = (p: Page): void => {
+    const now = Date.now();
+    disturbed.set(p, now);
+    for (let i = cancelled.length - 1; i >= 0; i--) {
+      const c = cancelled[i];
+      if (c.page !== p || now - c.at > ABORT_WINDOW_MS) continue;
+      const at = consoleErrors.lastIndexOf(c.text);
+      if (at >= 0) consoleErrors.splice(at, 1);
+      cancelled.splice(i, 1);
+    }
+  };
   const watchWorker = (w: Worker): void => {
     workers.push(w);
     void w.evaluate(() => {
@@ -333,6 +352,7 @@ function newGuard(projectName: string): Guard {
   };
   const watchPage = (p: Page): void => {
     p.on('worker', watchWorker);
+    p.on('framenavigated', (f) => { if (f === p.mainFrame()) disturb(p); });
     for (const w of p.workers()) watchWorker(w);
   };
   return {
@@ -341,7 +361,9 @@ function newGuard(projectName: string): Guard {
       await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => {
         if (!isFirefoxBrowserFaviconViolation(projectName, v)) cspViolations.push(v);
       });
+      await context.exposeBinding('__dillaResized', (source) => { disturb(source.page); });
       await context.addInitScript(() => {
+        window.addEventListener('resize', () => { (window as unknown as { __dillaResized(): void }).__dillaResized(); });
         document.addEventListener('securitypolicyviolation', (e) => {
           (window as unknown as { __dillaCspViolation(v: unknown): void }).__dillaCspViolation({
             directive: e.violatedDirective, blockedURI: e.blockedURI, sourceFile: e.sourceFile, sample: e.sample,
@@ -364,6 +386,11 @@ function newGuard(projectName: string): Guard {
             // and Firefox's own line for the same reload closing the open signal socket (as the voice suite allows)
             FIREFOX_SOCKET_INTERRUPTED.test(m.text()));
         if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
+          const page = m.page();
+          if (page !== null && isCancelledFetchLine(m.text(), projectName)) {
+            if (isNavigationAbortLine(m.text(), projectName, Date.now(), disturbed.get(page) ?? null)) return;
+            cancelled.push({ page, at: Date.now(), text: m.text() });
+          }
           consoleErrors.push(m.text());
         }
       });

@@ -234,6 +234,8 @@ async function expectBar(page: Page, tag: string, name: string, bar: string, wan
 // The world.
 
 const nav = (page: Page) => channelsNav(page);
+/** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
+const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
 async function makeCategory(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -362,7 +364,21 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
     // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
     await openPath(page, serverPath);
     await channelRow(page, 'general').click();
-    await sendText(page, 'general', `and again ${LONG_WORD}`);
+    if (phone !== page) {
+      // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
+      // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
+      // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
+      // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
+      // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
+      await openPath(phone, serverPath);
+      await expectComposerReady(phone, 'general');
+      const here = `the phone is in ${String(Date.now())}`;
+      await sendText(phone, 'general', here);
+      await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    }
+    const again = `and again ${LONG_WORD}`;
+    await sendText(page, 'general', again);
+    if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     for (const size of SIZES.filter(s => s.phone)) {
       await phone.setViewportSize({ width: size.width, height: size.height });
       await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
@@ -759,7 +775,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
   await expectComposerReady(page, 'general');
   const link = await makeInviteLink(page, 'Ydalir');
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
-  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
+  const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions) as typeof launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const cy = second.pages()[0] ?? (await second.newPage());
     await cy.goto(new URL(link).pathname);
@@ -778,7 +794,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     await dmBox.press('Enter');
     await expect(cy.getByRole('log').locator('.d-message-row').filter({ hasText: 'hello Bea' })).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // The AFK channel's path: a click on a desktop voice row joins, and a reload at the path leaves the call (the preview).
+    // The AFK channel's path: a click on its desktop row opens it and marks the person away, with no call (AW5); its stage is the preview.
     await nav(page).getByRole('button', { name: copy('voice.open', { name: 'AFK' }), exact: true }).click();
     await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
     const afkPath = new URL(page.url()).pathname;
@@ -809,34 +825,49 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
     // N4: the AFK preview, one column at the top.
     await page.goto(afkPath);
-    await expect(page.locator('.dw-voice-join')).toBeVisible({ timeout: WAIT });
-    // The reload left the call, but the room can still name this device until the boot sweep (R32) ends the call it left
-    // behind and the room says so; the preview is measured empty, as it settles.
-    await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the reload left the call: the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
-    const join = (await boxes(page, '.dw-voice-join'))[0];
+    await expect(page.locator(AFK_ACTION)).toBeVisible({ timeout: WAIT });
+    // AW5: the AFK channel hosts no call, so its preview has no tiles.
+    await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
+    const join = (await boxes(page, AFK_ACTION))[0];
     const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
     if (join !== undefined && texts.length > 0) {
       const lowest = Math.max(...texts.map(b => b.b));
       expect.soft(join.y - lowest, `N4 the join sits within 120 of its text (${texts.map(b => `${b.t}@${b.x.toFixed(0)},${b.y.toFixed(0)}`).join(' | ')} join@${join.x.toFixed(0)},${join.y.toFixed(0)})`).toBeLessThanOrEqual(120);
-      expectOne('N4 the preview texts and the join share one left edge', [...texts.map(b => b.x), join.x], [...texts.map(b => b.t), 'join']);
+      // The empty room is one centred group: each text and the join share the main area's horizontal centre.
+      const main = (await boxes(page, '.d-app-shell__content'))[0];
+      if (main !== undefined) {
+        const mid = main.x + main.w / 2;
+        for (const b of [...texts, join]) {
+          expect.soft(Math.abs(b.x + b.w / 2 - mid), `N4 "${b.t}" is centred on the main area (centre ${(b.x + b.w / 2).toFixed(1)}, main ${mid.toFixed(1)})`).toBeLessThanOrEqual(0.5);
+        }
+      }
     }
     await expectNoOverflow(page, '1440x900', 'the AFK preview');
 
     // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
-    const phoneJoin = page.locator('.dw-voice-join');
-    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
-    const pjoin = (await boxes(page, '.dw-voice-join'))[0];
+    const afkAction = page.locator(AFK_ACTION);
+    await expect(afkAction).toBeVisible({ timeout: WAIT });
+    const pjoin = (await boxes(page, AFK_ACTION))[0];
     const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
     }
+    // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general, joined with a microphone. Cy's browser
+    // has the fake one (Firefox's default page has none and would hold the join at the permission prompt): the phone's
+    // server list, a tap on its row (a phone's tap only opens the stage, R24), then its join.
+    await cy.setViewportSize({ width: 390, height: 844 });
+    await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
+    await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+    await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
+    const phoneJoin = cy.locator('.dw-voice-join');
+    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
     await phoneJoin.click();
-    await expect(page.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
-    const tabs = (await boxes(page, '.d-tab-bar'))[0];
-    const controls = (await boxes(page, '.d-call-stage__controls'))[0];
+    await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
+    const tabs = (await boxes(cy, '.d-tab-bar'))[0];
+    const controls = (await boxes(cy, '.d-call-stage__controls'))[0];
     expect.soft(tabs !== undefined && controls !== undefined, 'D4 the tab bar and the controls are on screen').toBe(true);
     if (tabs !== undefined && controls !== undefined) {
       expect.soft(tabs.y - controls.b, `D4 the controls' bottom edge is at most 8 above the tab bar (controls ${controls.y.toFixed(0)}..${controls.b.toFixed(0)}, tab bar ${tabs.y.toFixed(0)})`).toBeLessThanOrEqual(8);
@@ -1039,10 +1070,38 @@ test('FB1, FB2: the desktop Home title is not the server name; a file card stack
   const row = messageRow(page, 'general', text);
   await expect(row).toBeVisible({ timeout: WAIT });
   await expect(row.locator('.d-attachment-card__file .d-attachment-card__name')).toBeVisible({ timeout: WAIT });
-  const log = (await boxes(page, '[role="log"]'))[0];
-  const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
-  const name = (await boxes(page, '.d-attachment-card__file .d-attachment-card__name'))[0];
-  const images = await boxes(page, '.d-attachment-card[data-kind="image"]');
+  // FB2 compares rects with each other, so all of them are read in one frame, once the row has settled: both thumbnails
+  // loaded and decoded (a thumbnail takes its card's place) and no rect moving across two frames (the log keeps its end
+  // in view while it fills). Read one call apart, the card was taken before such a move and the images after it: CI run
+  // 39727747643 put the card at y=545 and, a moment later, its own name at y=592.
+  type Settled = { log: Box | undefined; card: Box | undefined; name: Box | undefined; images: Box[] };
+  const got: { v: Settled | null } = { v: null };
+  await expect.poll(async () => {
+    got.v = await row.evaluate(async (el): Promise<Settled | null> => {
+      const thumbs = [...el.querySelectorAll<HTMLImageElement>('.d-attachment-card[data-kind="image"] img')];
+      if (thumbs.length < 2 || thumbs.some(i => !i.complete || i.naturalWidth === 0)) return null;
+      await Promise.all(thumbs.map(i => i.decode().catch(() => undefined)));
+      const box = (e: Element): Box => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom, t: (e.getAttribute('aria-label') ?? e.textContent ?? '').trim().slice(0, 32) };
+      };
+      const read = (): Settled => {
+        const log = document.querySelector('[role="log"]');
+        const card = el.querySelector('.d-attachment-card[data-kind="file"]');
+        const name = el.querySelector('.d-attachment-card__file .d-attachment-card__name');
+        return { log: log === null ? undefined : box(log), card: card === null ? undefined : box(card), name: name === null ? undefined : box(name),
+          images: [...el.querySelectorAll('.d-attachment-card[data-kind="image"]')].map(box) };
+      };
+      const frame = () => new Promise<void>(done => { requestAnimationFrame(() => { done(); }); });
+      const before = read();
+      await frame();
+      await frame();
+      const after = read();
+      return JSON.stringify(before) === JSON.stringify(after) ? after : null;
+    });
+    return got.v !== null;
+  }, { message: 'FB2 the row has both thumbnails decoded and holds still', timeout: WAIT }).toBe(true);
+  const { log, card, name, images } = got.v ?? { log: undefined, card: undefined, name: undefined, images: [] as Box[] };
   expect(log !== undefined && card !== undefined && name !== undefined && images.length > 0, 'FB2 the log, an image card and the file card are drawn').toBe(true);
   if (log === undefined || card === undefined || name === undefined) return;
   expect.soft(name.w, 'FB2 the file name has room').toBeGreaterThan(40);
@@ -1099,4 +1158,39 @@ test('FC: the save button of a file card beside an image is not clipped at 1280 
   if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
   await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
   await measure('1024 with the members aside');
+});
+
+test('a grouped row from an earlier day shows only its time of day in the gutter, which stays left of the content', async ({ page }) => {
+  const h = started();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Gry', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Midgard');
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  const first = `one ${String(Date.now())}`;
+  const second = `two ${String(Date.now())}`;
+  await sendText(page, 'general', first);
+  await expect(messageRow(page, 'general', first)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  await sendText(page, 'general', second);
+  await expect(messageRow(page, 'general', second)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  // The page clock moves two days on, so both rows are from an earlier day; the next render shows them so.
+  await page.evaluate(() => { const real = Date.now.bind(Date); Date.now = () => real() + 2 * 86_400_000; });
+  const third = `three ${String(Date.now())}`;
+  await sendText(page, 'general', third);
+  await expect(messageRow(page, 'general', third)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  const row = messageRow(page, 'general', second);
+  await expect(row).toHaveAttribute('data-grouped', 'true');
+  await row.hover();
+  const m = await row.evaluate(el => {
+    const g = el.querySelector('.d-message-row__gutter')!;
+    const main = el.querySelector('.d-message-row__main')!.getBoundingClientRect();
+    return { right: g.getBoundingClientRect().right, mainLeft: main.left, text: g.textContent ?? '', title: g.getAttribute('title') ?? '', sw: g.scrollWidth, cw: g.clientWidth };
+  });
+  expect(m.text, 'the gutter shows a time of day with no year').not.toMatch(/\d{4}/);
+  expect(m.title.length, 'the title carries the longer, dated time').toBeGreaterThan(m.text.length);
+  expect(m.right, `the gutter's right edge (${m.text}) is not past the content column`).toBeLessThanOrEqual(m.mainLeft + 0.5);
+  expect(m.sw, 'the gutter text is not clipped').toBeLessThanOrEqual(m.cw);
 });

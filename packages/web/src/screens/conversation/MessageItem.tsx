@@ -3,8 +3,8 @@ import { useLayoutEffect, useRef, type PointerEvent } from 'react';
 import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
-import { formatGutterTime, t, type StringKey } from '../../strings/index.ts';
-import { authorName, bodyParts, knownName, messageTime, plainBody, type NameBook } from '../shell-model.ts';
+import { formatTime, t, type StringKey } from '../../strings/index.ts';
+import { authorName, knownName, markdownParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
 
@@ -68,7 +68,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const label = STATE_LABEL[item.state];
   const cannotReadDetail = item.state !== 'cannot-read' ? undefined
     : item.reason === 'E_UMK_CHANGED' ? t('privacy.changed')
-      : item.reason === 'E_DEVICE_UNLISTED' ? t('privacy.unlisted') : undefined;
+      : item.reason === 'E_DEVICE_UNLISTED' ? t('privacy.unlistedMessage')
+        : item.reason === 'E_DEVICE_REVOKED' ? t('privacy.revokedMessage') : undefined;
   const shown = item.state === 'ok' || item.state === 'pending' || item.state === 'failed';
   const gone = item.state === 'failed' && item.reason === 'E_ATTACHMENT_MISSING' && item.msgId !== null;
   const action = item.actions.find(a => a.state === 'failed') ?? item.actions.find(a => a.state === 'pending');
@@ -112,12 +113,13 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
+  const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
-  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time}
+  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}
     authorId={item.senderUser ?? undefined}
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
-      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
-    grouped={p.grouped} gutterTime={p.grouped === true ? formatGutterTime(item.ts) : undefined} revealed={p.revealed} onReveal={p.onReveal}
+      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? markdownParts(item.body, p.book, item.mention) : ''}
+    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

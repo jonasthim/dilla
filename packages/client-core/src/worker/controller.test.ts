@@ -10,7 +10,7 @@ import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import type { DeviceRow } from '../http/routes';
+import type { AFKSnapshot, DeviceRow } from '../http/routes';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
 import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
@@ -815,12 +815,12 @@ describe('Controller', () => {
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: null, timeoutSeconds: 300, pending: false }));
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true }));
     w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
     expect(w.last(key)).toBeNull();
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: false });
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, pending: false, away: [] });
     w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
     w.gateway.emit({ type: 'ready', info: READY_INFO });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: false }));
@@ -838,14 +838,14 @@ describe('Controller', () => {
   });
   it('a community re-read keeps the previous AFK snapshot until the new one lands (R-AFK3 a)', async () => {
     const w = world();
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false });
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false, away: [] });
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), pending: false }));
     const before = w.last(key);
     const nulls = () => w.posted.filter((m) => m.t === 'slice' && m.name === key && m.value === null).length;
     const nullsBefore = nulls();
-    let land: (v: { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }) => void = () => undefined;
+    let land: (v: AFKSnapshot) => void = () => undefined;
     w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
     const reads = w.routes.getAFK.mock.calls.length;
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
@@ -853,12 +853,12 @@ describe('Controller', () => {
     // The read is in flight: the slice still holds the last snapshot, and was never set to null for it.
     expect(w.last(key)).toEqual(before);
     expect(nulls()).toBe(nullsBefore);
-    land({ channelId: CHANNEL, timeoutSeconds: 60, pending: true });
+    land({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), timeoutSeconds: 60, pending: true }));
   });
   it('every landed AFK read gets a higher seq, also when it says the same (R-AFK4)', async () => {
     const w = world();
-    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: true });
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: true, away: [] });
     await toReady(w);
     const key = `afk:${toHex(COMMUNITY)}` as const;
     await vi.waitFor(() => expect(w.last<{ seq?: number }>(key)?.seq).toBeGreaterThan(0));
@@ -866,6 +866,240 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
     await vi.waitFor(() => expect(w.last<{ seq: number }>(key)?.seq).toBeGreaterThan(first.seq));
     expect(w.last(key)).toMatchObject({ channelId: toHex(CHANNEL), pending: true });
+  });
+  // AW4: op 55 afk_away keeps the away roster of a landed snapshot current.
+  describe('the away roster (AW4)', () => {
+    const key = `afk:${toHex(COMMUNITY)}` as const;
+    const OTHER = new Uint8Array(16).fill(0x0b);
+    const away = (user: Uint8Array, since: number): GatewayEvent =>
+      ({ type: 'frame', frame: { op: Op.afkAway, n: 0n, groupId: null, payload: [COMMUNITY, user, BigInt(since)] } });
+    type Held = { seq?: number; away?: { userId: string; since: number }[] };
+
+    it('the snapshot carries the roster, and a web3.9 4-element snapshot has no one away', async () => {
+      const w = world();
+      // M2: the instance's order is not trusted; the slice is sorted by user id (0x0b before 0x5a).
+      w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false,
+        away: [{ userId: STRANGER, since: 100 }, { userId: OTHER, since: 120 }] });
+      await toReady(w);
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(OTHER), since: 120 }, { userId: toHex(STRANGER), since: 100 }]));
+      const w9 = world();
+      await toReady(w9);
+      await vi.waitFor(() => expect(w9.last(key)).toMatchObject({ channelId: null, away: [] }));
+    });
+
+    it('patches the roster in place, sorted by user, and keeps seq steady', async () => {
+      const w = world();
+      w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: true, away: [] });
+      await toReady(w);
+      await vi.waitFor(() => expect(w.last<Held>(key)?.seq).toBeGreaterThan(0));
+      const { seq } = w.last<Held>(key)!;
+      w.gateway.emit(away(STRANGER, 200));
+      w.gateway.emit(away(OTHER, 150));
+      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, pendingReason: 1, seq,
+        away: [{ userId: toHex(OTHER), since: 150 }, { userId: toHex(STRANGER), since: 200 }] });
+      w.gateway.emit(away(OTHER, 0));
+      expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 300, pending: true, pendingReason: 1, seq,
+        away: [{ userId: toHex(STRANGER), since: 200 }] });
+      // A clear of a member who is not away, and a frame for a community this client does not list, change nothing.
+      const posts = w.posted.length;
+      w.gateway.emit(away(OTHER, 0));
+      w.gateway.emit({ type: 'frame', frame: { op: Op.afkAway, n: 0n, groupId: null, payload: [NEW_COMMUNITY, OTHER, 5n] } });
+      expect(w.posted.slice(posts).filter((m) => m.t === 'slice')).toEqual([]);
+    });
+
+    // Fix round 1, I1: an op 55 that arrives while a GET /afk is in flight is buffered and replayed onto the read's
+    // roster when it lands, in order and with the stale-since rule; without a read in flight and no snapshot, it is dropped.
+    const pendingRead = (w: World) => {
+      let land: (v: AFKSnapshot) => void = () => undefined;
+      w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+      return (v: AFKSnapshot) => land(v);
+    };
+    const snapshot = (away: AFKSnapshot['away']): AFKSnapshot => ({ channelId: CHANNEL, timeoutSeconds: 300, pending: false, away });
+
+    it('a set that arrives during the first read survives the read that was served before it', async () => {
+      const w = world();
+      const land = pendingRead(w);
+      await toReady(w);
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(1));
+      w.gateway.emit(away(OTHER, 150));
+      expect(w.last(key) ?? null).toBeNull();
+      land(snapshot([{ userId: STRANGER, since: 100 }]));
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(OTHER), since: 150 }, { userId: toHex(STRANGER), since: 100 }]));
+    });
+
+    it('a clear that arrives during the first read removes the member the read still lists', async () => {
+      const w = world();
+      const land = pendingRead(w);
+      await toReady(w);
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(1));
+      w.gateway.emit(away(STRANGER, 0));
+      land(snapshot([{ userId: STRANGER, since: 100 }]));
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toEqual([]));
+    });
+
+    it('during a re-read, a set and a clear patch the held roster and are replayed onto the read in order', async () => {
+      const w = world();
+      w.routes.getAFK.mockResolvedValueOnce(snapshot([{ userId: STRANGER, since: 100 }]));
+      await toReady(w);
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(STRANGER), since: 100 }]));
+      const land = pendingRead(w);
+      const reads = w.routes.getAFK.mock.calls.length;
+      w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
+      await vi.waitFor(() => expect(w.routes.getAFK.mock.calls.length).toBe(reads + 1));
+      const { seq } = w.last<Held>(key)!;
+      w.gateway.emit(away(OTHER, 150));
+      w.gateway.emit(away(STRANGER, 0));
+      w.gateway.emit(away(OTHER, 140)); // stale against the buffered 150: ignored on replay too
+      expect(w.last(key)).toMatchObject({ seq, away: [{ userId: toHex(OTHER), since: 150 }] });
+      // The re-read was served before both changes: it still lists STRANGER and not OTHER.
+      land(snapshot([{ userId: STRANGER, since: 100 }]));
+      await vi.waitFor(() => expect(w.last<Held>(key)?.seq).toBeGreaterThan(seq!));
+      expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(OTHER), since: 150 }]);
+    });
+
+    it('frames buffered for a read that a newer read superseded, or that offline discarded, are not replayed', async () => {
+      const w = world();
+      const land = pendingRead(w);
+      await toReady(w);
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(1));
+      w.gateway.emit(away(OTHER, 150));
+      // Offline discards the read and its buffer; the reconnect's read starts while the first is still in flight.
+      w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
+      const land2 = pendingRead(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(2));
+      land(snapshot([]));
+      land2(snapshot([]));
+      await vi.waitFor(() => expect(w.last(key)).toMatchObject({ away: [] }));
+    });
+
+    it('a set older than the held since is ignored; a later one replaces it', async () => {
+      const w = world();
+      w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false, away: [{ userId: STRANGER, since: 200 }] });
+      await toReady(w);
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(STRANGER), since: 200 }]));
+      const posts = w.posted.length;
+      w.gateway.emit(away(STRANGER, 150));
+      w.gateway.emit(away(STRANGER, 200));
+      expect(w.posted.slice(posts).filter((m) => m.t === 'slice')).toEqual([]);
+      w.gateway.emit(away(STRANGER, 300));
+      expect(w.last<Held>(key)?.away).toEqual([{ userId: toHex(STRANGER), since: 300 }]);
+    });
+
+    it('going offline clears the roster with the snapshot, and an op 55 while it is null is dropped', async () => {
+      const w = world();
+      w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 300, pending: false, away: [{ userId: STRANGER, since: 200 }] });
+      await toReady(w);
+      await vi.waitFor(() => expect(w.last<Held>(key)?.away).toHaveLength(1));
+      w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
+      expect(w.last(key)).toBeNull();
+      w.gateway.emit(away(OTHER, 150));
+      expect(w.last(key)).toBeNull();
+    });
+
+    it('afkAway sends PUT …/afk/away for a valid community and refuses a bad id', async () => {
+      const w = world();
+      await toReady(w);
+      w.call(998, { m: 'afkAway', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(998)).toMatchObject({ ok: true, value: null }));
+      expect(w.routes.putAFKAway).toHaveBeenCalledWith(COMMUNITY);
+      w.call(999, { m: 'afkAway', communityId: 'nope' });
+      await vi.waitFor(() => expect(w.ret(999)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+      expect(w.routes.putAFKAway).toHaveBeenCalledTimes(1);
+    });
+
+    // AW5 fix round 3: the slice carries the read's pending reason (0 none, 1 the sweep, 2 AFK chosen elsewhere).
+    it('a read lands its pending reason in the slice', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, reason: 2, away: [] });
+      w.call(1040, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1040)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: true, pendingReason: 2 });
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      w.call(1041, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1041)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: true, pendingReason: 1 });
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: false, reason: 0, away: [] });
+      w.call(1042, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1042)).toMatchObject({ ok: true }));
+      expect(w.last(key)).toMatchObject({ pending: false, pendingReason: 0 });
+    });
+
+    // AW5 fix round 2 (B-M1): a newer read of the same community that replaces this one's is waited for, not a failure.
+    it('afkRead answers with a newer read that superseded its own', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      await vi.waitFor(() => expect(w.last(key)).not.toBeUndefined());
+      const reads = w.routes.getAFK.mock.calls.length;
+      let land: (v: Awaited<ReturnType<typeof w.routes.getAFK>>) => void = () => undefined;
+      w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+      w.call(1020, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(reads + 1));
+      // A second read (a reload, setAFK or another afkRead) starts while the first is in flight. The first lands first
+      // and is discarded as superseded; the first afkRead waits for the second, which lands later.
+      let land2: (v: Awaited<ReturnType<typeof w.routes.getAFK>>) => void = () => undefined;
+      w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land2 = resolve; }));
+      w.call(1021, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.routes.getAFK).toHaveBeenCalledTimes(reads + 2));
+      land({ channelId: CHANNEL, timeoutSeconds: 60, pending: false, away: [] });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(w.ret(1020)).toBeUndefined();
+      land2({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      await vi.waitFor(() => expect(w.ret(1020)).toMatchObject({ ok: true, value: null }));
+      await vi.waitFor(() => expect(w.ret(1021)).toMatchObject({ ok: true, value: null }));
+      expect(w.last(key)).toMatchObject({ pending: true });
+    });
+
+    // AW5 fix round 2 (nit): the worker's own bound matches the page's wait.
+    it('afkRead answers E_UNAVAILABLE once its timeoutMs passes with no read landed', async () => {
+      const w = world();
+      await toReady(w);
+      w.routes.getAFK.mockImplementationOnce(() => new Promise(() => undefined));
+      w.call(1030, { m: 'afkRead', communityId: toHex(COMMUNITY), timeoutMs: 50 });
+      await vi.waitFor(() => expect(w.ret(1030)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
+    });
+
+    // AW5 fix round 1 (I1): the page's restore and recovery ask for a fresh read and act only once it landed.
+    it('afkRead answers once a fresh read landed, and refuses when the read fails or the community is unlisted', async () => {
+      const w = world();
+      await toReady(w);
+      const key = `afk:${toHex(COMMUNITY)}` as const;
+      w.routes.getAFK.mockResolvedValueOnce({ channelId: CHANNEL, timeoutSeconds: 60, pending: true, away: [] });
+      const reads = w.routes.getAFK.mock.calls.length;
+      w.call(1010, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1010)).toMatchObject({ ok: true, value: null }));
+      expect(w.routes.getAFK.mock.calls.length).toBe(reads + 1);
+      expect(w.last(key)).toMatchObject({ pending: true });
+      w.routes.getAFK.mockRejectedValueOnce(new DillaHttpError({ status: 503, code: 'E_UNAVAILABLE', detail: '', retryAfterMs: null, extra: [] }));
+      w.call(1011, { m: 'afkRead', communityId: toHex(COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1011)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
+      w.call(1012, { m: 'afkRead', communityId: toHex(NEW_COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1012)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    });
+
+    // Fix round 1, M1: an unlisted community is refused locally, as setAFK refuses it.
+    it('afkAway refuses a community this client does not list, without a request', async () => {
+      const w = world();
+      await toReady(w);
+      w.call(1001, { m: 'afkAway', communityId: toHex(NEW_COMMUNITY) });
+      await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+      expect(w.routes.putAFKAway).not.toHaveBeenCalled();
+    });
+
+    // Fix round 1, M1: a refused PUT reaches the page with its status and code, never as success.
+    it('afkAway passes a 403 or a 404 from the instance to the page', async () => {
+      const w = world();
+      await toReady(w);
+      for (const [n, status, code] of [[1002, 403, 'E_FORBIDDEN'], [1003, 404, 'E_NOT_FOUND']] as const) {
+        w.routes.putAFKAway.mockRejectedValueOnce(new DillaHttpError({ status, code, detail: 'secret', retryAfterMs: null, extra: [] }));
+        w.call(n, { m: 'afkAway', communityId: toHex(COMMUNITY) });
+        await vi.waitFor(() => expect(w.ret(n)).toMatchObject({ ok: false, error: { status, code, detail: '' } }));
+      }
+    });
   });
   it('a held snapshot with no AFK pointer is unknown before a re-read publishes the channels (fix round 3, N-3)', async () => {
     const w = world();
@@ -879,7 +1113,7 @@ describe('Controller', () => {
       { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
       { id: AFK, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'AFK', topic: '', position: 2 ** 30, slowmode: 0, seq: 0n, textGroupId: null },
     ]);
-    let land: (v: { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean }) => void = () => undefined;
+    let land: (v: AFKSnapshot) => void = () => undefined;
     w.routes.getAFK.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
     w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
     await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(AFK))).toBe(true));
@@ -888,7 +1122,7 @@ describe('Controller', () => {
       && (m.value as ChannelSummary[]).some((c) => c.id === toHex(AFK)));
     const afkBefore = w.posted.slice(0, listedAt).filter((m): m is SliceMessage => m.t === 'slice' && m.name === key).at(-1);
     expect(afkBefore?.value).toBeNull();
-    land({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    land({ channelId: AFK, timeoutSeconds: 300, pending: false, away: [] });
     await vi.waitFor(() => expect(w.last(key)).toMatchObject({ channelId: toHex(AFK) }));
   });
   it('a failed AFK read retries at 1 s, 2 s, 4 s … until it lands (R-AFK3 b)', async () => {
@@ -985,6 +1219,69 @@ describe('Controller', () => {
     w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
+  });
+  it('updateProfile sends only the changed fields and shows the saved (trimmed) profile on the account and the own member row, without reading the lists again', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const listReads = w.routes.listMembers.mock.calls.length;
+    const meReads = w.routes.getAccountMe.mock.calls.length;
+    w.call(1001, { m: 'updateProfile', display: 'Ada', statusMsg: ' on a call ', bio: 'hi' });
+    await vi.waitFor(() => expect(w.ret(1001)).toMatchObject({ ok: true }));
+    expect(w.routes.patchMe).toHaveBeenCalledWith({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', statusMsg: 'on a call', bio: 'hi' });
+    expect(w.routes.listMembers.mock.calls.length).toBe(listReads);
+    expect(w.routes.getAccountMe.mock.calls.length).toBe(meReads);
+    // Clearing a field drops it from the slices.
+    w.call(1005, { m: 'updateProfile', statusMsg: '' });
+    await vi.waitFor(() => expect(w.ret(1005)).toMatchObject({ ok: true }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
+    expect(w.account()?.user?.bio).toBe('hi');
+  });
+  it('an account read that began before a save does not undo it', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice: number }>();
+    w.routes.getAccountMe.mockReturnValueOnce(stale.promise);
+    const refresh = (w.controller as unknown as { refreshPresenceChoice(): Promise<void> }).refreshPresenceChoice();
+    w.call(1010, { m: 'updateProfile', display: 'Ada', statusMsg: 'saved status' });
+    await vi.waitFor(() => expect(w.ret(1010)).toMatchObject({ ok: true }));
+    stale.resolve({ userId: USER, username: 'web', display: 'Old name', kind: 0, flags: 0n, presenceChoice: 3 });
+    await refresh;
+    expect(w.account()?.user).toMatchObject({ display: 'Ada', statusMsg: 'saved status' });
+    // the read still brings what it is for: the presence choice
+    expect(w.account()?.presenceChoice).toBe('dnd');
+  });
+  it('a member list read that began before a save does not undo it on the own row', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.length).toBeGreaterThan(0));
+    const stale = deferred<{ userId: Uint8Array; username: string; display: string; kind: 0; nick: string; roleIds: Uint8Array[] }[]>();
+    w.routes.listMembers.mockReturnValueOnce(stale.promise);
+    const reload = (w.controller as unknown as { reloadMembers(id: string): Promise<void> }).reloadMembers(toHex(COMMUNITY));
+    w.call(1011, { m: 'updateProfile', display: 'Ada', bio: 'saved bio' });
+    await vi.waitFor(() => expect(w.ret(1011)).toMatchObject({ ok: true }));
+    stale.resolve([{ userId: USER, username: 'web', display: 'Old name', kind: 0, nick: '', roleIds: [] }]);
+    await reload;
+    expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)?.find((m) => m.userId === toHex(USER))).toMatchObject({ display: 'Ada', bio: 'saved bio' });
+  });
+  it('updateProfile with nothing to change makes no request, and a field of the wrong type is E_BAD_INPUT', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(1002, { m: 'updateProfile' });
+    await vi.waitFor(() => expect(w.ret(1002)).toMatchObject({ ok: true }));
+    w.call(1003, { m: 'updateProfile', bio: 5 as unknown as string });
+    await vi.waitFor(() => expect(w.ret(1003)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.patchMe).not.toHaveBeenCalled();
+  });
+  it('updateProfile reports a refusal and leaves the account as it was', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.patchMe.mockRejectedValueOnce(new Error('refused'));
+    w.call(1004, { m: 'updateProfile', statusMsg: 'x' });
+    await vi.waitFor(() => expect(w.ret(1004)).toMatchObject({ ok: false }));
+    expect(w.account()?.user?.statusMsg).toBeUndefined();
   });
   it('carries the account display name on the user, for a person who has joined no server yet', async () => {
     const w = world();
@@ -1339,6 +1636,37 @@ it('reads one signed history per user and ingests it for each pending leaf', asy
   expect(w.core.deviceListIngest.mock.calls[0][3]).toEqual(w.core.deviceListIngest.mock.calls[1][3]);
 });
 
+// CI trace of PR #59 (webkit-web): a second device of the account reloads mid-sync, before its own signed list arrived.
+// The pass after the reload holds every own leaf at cached version 0 and reads one history, [v1, v2]. The core caches v2
+// on the first leaf's ingest and anchors every later ingest on the cached row (trust.rs ingest_leaf: the history's first
+// row is the cached version), so the full history is refused E_DEVICE_LIST_STALE for every other leaf of the account. A
+// message of the other device, held for its sender's list, was never released and stayed "could not be read".
+it('ingests the rest of a user\'s leaves from the version the first ingest cached, so every held row is released', async () => {
+  const w = world();
+  await toReady(w);
+  const row = (v: number) => [v, new Uint8Array([v]), new Uint8Array(64), new Uint8Array(32)];
+  const headRaw = encode(row(2));
+  w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 2n, blob: new Uint8Array([2]), raw: headRaw }));
+  w.routes.getDeviceListHistory.mockImplementation(() => Promise.resolve({ raw: encode([row(1), row(2)]), count: 2, lastVersion: 2n }));
+  // The core's anchor rule: once a version is cached, a history must start at it.
+  let cached = 0n;
+  w.core.deviceListIngest.mockImplementation((_g: Uint8Array, _l: number, _u: Uint8Array, history: Uint8Array) => {
+    const first = BigInt((decode(history) as [[number | bigint]])[0][0]);
+    if (cached !== 0n && first !== cached) throw new CoreError('E_DEVICE_LIST_STALE', '');
+    cached = 2n;
+    return { version: 2n, changed: false, quarantined: 0 };
+  });
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+    { groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+  ]);
+  w.call(993, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: true }));
+  expect((w.core.revalidatePending.mock.calls as unknown as [Uint8Array, number][]).map(([g, leaf]) => [toHex(g), leaf])).toEqual([[toHex(GROUP), 0], [toHex(DM_GROUP), 1]]);
+  // Still one read of the history for the user in the pass.
+  expect(w.routes.getDeviceListHistory).toHaveBeenCalledTimes(1);
+});
+
 // The core decodes head_list as the signed DeviceList itself (core/dilla-core/src/client/trust.rs bounded_list, a
 // six-element array) and stores it as the cached anchor; the native peer hands it head.blob (testkit web_driver.rs
 // signed_history). The served four-element row [version, blob, ssk_signature, prev_hash] is refused as E_DEVICE_LIST_STALE,
@@ -1594,9 +1922,9 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
       raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
     w.routes.listDevices.mockResolvedValue([
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
-      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
-      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: null },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n, label: null },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n, label: null },
     ]);
     return w;
   }
@@ -1665,9 +1993,9 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
   it('diagnostics counts only live devices and is set after ready without a page command (web3.9)', async () => {
     const w = world();
     const rows: DeviceRow[] = [
-      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
-      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n, lastSeen: 1_699_999_000n },
-      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n, label: null },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: 1_699_000_000n, lastSeen: 1_699_999_000n, label: null },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n, label: null },
     ];
     w.routes.listDevices.mockResolvedValue(rows);
     await toReady(w);
@@ -1685,7 +2013,7 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     w.call(9831, { m: 'refreshDevices' });
     await vi.waitFor(() => expect(w.routes.listDevices).toHaveBeenCalledTimes(2));
     const row = (id: Uint8Array, revokedAt: DeviceRow['revokedAt']): DeviceRow =>
-      ({ id, tier: 1, signerTier: 1, verifiedAt: null, revokedAt, lastSeen: 1_700_000_000n });
+      ({ id, tier: 1, signerTier: 1, verifiedAt: null, revokedAt, lastSeen: 1_700_000_000n, label: null });
     newer.resolve([row(DEVICE, null), row(OTHER_DEVICE, 1_699_000_000n), row(THIRD, null)]);
     await vi.waitFor(() => expect(w.ret(9831)).toMatchObject({ ok: true }));
     expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(2);
@@ -1782,6 +2110,25 @@ it('never reads a contact with a stored blocked verdict as verified, right after
   expect(row).toMatchObject({ verified: false, blocked: 'E_UMK_CHANGED' });
   // Its Verify is the compare dialog's, not "unlisted": the changed key is not an unlisted device.
   expect(row).not.toHaveProperty('unlisted');
+});
+
+// fix/firefox-misrouted-audio: the page's media layer notes a recovered misroute; Diagnostics shows its stable code.
+// Only codes on the call-note list are taken, so the page cannot write arbitrary text into Diagnostics.
+it('callNote records E_MEDIA_MISROUTE in diagnostics and refuses any other code', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.call(7400, { m: 'callNote', code: 'E_MEDIA_MISROUTE' });
+  await vi.waitFor(() => expect(w.ret(7400)).toMatchObject({ ok: true, value: null }));
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code)).toEqual(['E_MEDIA_MISROUTE']);
+  const bad: unknown[] = [{ m: 'callNote', code: 'E_INTERNAL' }, { m: 'callNote', code: 'hello' }, { m: 'callNote' }, { m: 'callNote', code: 1 }];
+  bad.forEach((command, i) => { w.call(7410 + i, command); });
+  await vi.waitFor(() => { for (let i = 0; i < bad.length; i++) expect(w.ret(7410 + i)).toBeDefined(); });
+  bad.forEach((command, i) => {
+    expect(w.ret(7410 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+  });
+  // A refused note is a refused command (recorded as E_BAD_INPUT), never the code it carried.
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code).filter((c) => c !== 'E_BAD_INPUT')).toEqual(['E_MEDIA_MISROUTE']);
 });
 
 it('never keeps a verified contact when trust_state fails: the last rows read pending until the core answers (R3)', async () => {
@@ -2076,6 +2423,161 @@ it('advances the instance clock from the ticket by the time elapsed here, and dr
   } });
   expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`)?.map(row => [row.userId, row.expiresAt]))
     .toEqual([[toHex(STRANGER), 1_700_000_024_000]]);
+});
+
+// A timer can fire a millisecond before Date.now() reaches the deadline it was set for (Firefox does, under load). The
+// expiry sweep then finds the row not yet over; it must look again at the deadline, or the row outlives its window for good
+// (CI run 39828967265: the indicator was still up 90 s after the signal's expiry).
+it('drops a typing row whose expiry timer fired a millisecond early', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    let nowMs = 1_700_000_000_000;
+    const w = world({ now: () => nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'frame', frame: {
+      op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 4n],
+    } });
+    const rows = (): unknown[] => w.last<unknown[]>(`typing:${toHex(CHANNEL)}`) ?? [];
+    expect(rows()).toHaveLength(1);
+    nowMs += 3_999;                                           // the 4 s timer fires with 1 ms still to go on the clock
+    vi.advanceTimersByTime(4_000);
+    nowMs += 1;
+    vi.advanceTimersByTime(1);
+    expect(rows()).toEqual([]);
+  } finally { vi.useRealTimers(); }
+});
+
+// One sweep timer per channel: a member who floods typing frames must not pile timers up in every reader's worker.
+describe('incoming typing keeps one sweep timer per channel', () => {
+  const user = (n: number): Uint8Array => new Uint8Array(16).fill(n);
+  const typingFrame = (who: Uint8Array, expires: bigint): GatewayEvent => ({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, who, OTHER_DEVICE, 1n, expires],
+  } });
+  const ready = async (nowMs: () => number) => {
+    const w = world({ now: nowMs });
+    await toReady(w);
+    await openGeneral(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    return w;
+  };
+  const names = (w: ReturnType<typeof world>): string[] =>
+    (w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`) ?? []).map(row => row.userId);
+
+  it('1000 frames in one channel leave exactly one pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      for (let i = 0; i < 1000; i += 1) w.gateway.emit(typingFrame(user(1 + (i % 200)), NOW_S + 5n));
+      expect(names(w).length).toBeGreaterThan(100);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a later frame with an earlier deadline moves the timer forward', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 3n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(1))]);
+      expect(vi.getTimerCount() - before).toBe(1);          // re-armed for the remaining row
+      nowMs += 5_000; vi.advanceTimersByTime(5_000);
+      expect(names(w)).toEqual([]);
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  // Only an earlier deadline may move the timer. Always re-arming to the latest frame would leave the earlier row on
+  // screen until the later one is due.
+  it('a later or equal deadline keeps the pending timer and does not re-arm', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      const armed = vi.spyOn(globalThis, 'setTimeout');
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      expect(armed).toHaveBeenCalledTimes(1);
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));       // later
+      w.gateway.emit(typingFrame(user(3), NOW_S + 3n));       // equal
+      expect(armed).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount() - before).toBe(1);
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);             // the 3 s rows went on time, the 8 s one stays
+      expect(vi.getTimerCount() - before).toBe(1);
+      armed.mockRestore();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a stop frame for a channel with no rows arms nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit({ type: 'frame', frame: { op: 49, n: 0n, groupId: null, payload: [CHANNEL, user(1), OTHER_DEVICE, 0n, NOW_S + 3n] } });
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('losing the channel view clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.sync.deps!.onMembership(GROUP, 'not-member');
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a worker reset (sign-out wipe) clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await ready(() => 1_700_000_000_000);
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      w.call(961, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(961)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('cleared');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an earlier row is swept on time when a later deadline arrives after it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 3n));
+      w.gateway.emit(typingFrame(user(2), NOW_S + 8n));
+      nowMs += 3_000; vi.advanceTimersByTime(3_000);
+      expect(names(w)).toEqual([toHex(user(2))]);
+      expect(vi.getTimerCount() - before).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('closing the channel clears the pending timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const nowMs = 1_700_000_000_000;
+      const w = await ready(() => nowMs);
+      const before = vi.getTimerCount();
+      w.gateway.emit(typingFrame(user(1), NOW_S + 8n));
+      expect(vi.getTimerCount() - before).toBe(1);
+      w.call(960, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+      await vi.waitFor(() => expect(w.ret(960)).toMatchObject({ ok: true }));
+      expect(vi.getTimerCount() - before).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 it('clears incoming typing on membership loss without local typing', async () => {
@@ -4484,9 +4986,40 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     expect(after.indexOf('refreshOwnDeviceList')).toBeGreaterThanOrEqual(0);
     expect(after.indexOf('refreshOwnDeviceList')).toBeLessThan(after.indexOf('listDevices'));
     expect(w.last<DeviceSummary[]>('devices')).toEqual([
-      { id: toHex(DEVICE), tier: 1, signerTier: 1, lastSeen: 1_700_000_000, revokedAt: null, listed: true, own: true },
-      { id: toHex(OTHER_DEVICE), tier: 1, signerTier: 1, lastSeen: 1_699_999_000, revokedAt: null, listed: false, own: false },
+      { id: toHex(DEVICE), tier: 1, signerTier: 1, lastSeen: 1_700_000_000, revokedAt: null, listed: true, own: true, label: 'work laptop' },
+      { id: toHex(OTHER_DEVICE), tier: 1, signerTier: 1, lastSeen: 1_699_999_000, revokedAt: null, listed: false, own: false, label: null },
     ]);
+  });
+
+  it('renameDevice names the device on the server, then republishes the device list with the name', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(2, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: '  phone  ' });
+    w.call(4, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: 'cafe\u0301' });
+    await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'phone');
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenCalledWith(OTHER_DEVICE, 'caf\u00e9');
+    expect(w.calls.lastIndexOf('listDevices')).toBeGreaterThan(w.calls.indexOf('patchDevice'));
+    w.call(3, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label: null });
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: null }));
+    expect(w.routes.patchDevice).toHaveBeenLastCalledWith(OTHER_DEVICE, null);
+  });
+
+  it('renameDevice refuses a blank, a too long, a control-character or a non-string label, and a bad id, before any request', async () => {
+    const w = world();
+    await toReady(w);
+    const bad: unknown[] = ['', '   ', 'x'.repeat(65), 'two\nlines', 7, undefined, 'a\u202eb', 'a\u2066b', 'a\u200fb', 'a\u200eb',
+      'a\u2028b', 'a\u061cb', 'a\u200bb', 'a\u200db', 'a\ufeffb', 'a\u2060b', 'a\u2061b', 'a\u2065b', 'a\u206ab', 'a\u206fb', 'phone\u0085', 'a\u{E0041}b', 'a\u2800b'];
+    bad.forEach((label, i) => w.call(10 + i, { m: 'renameDevice', deviceId: toHex(OTHER_DEVICE), label }));
+    w.call(99, { m: 'renameDevice', deviceId: 'nothex', label: 'ok' });
+    await vi.waitFor(() => expect(w.ret(99)).toBeDefined());
+    for (let i = 0; i < bad.length; i++) {
+      await vi.waitFor(() => expect(w.ret(10 + i)).toBeDefined());
+      expect(w.ret(10 + i)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    }
+    expect(w.ret(99)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.patchDevice).not.toHaveBeenCalled();
   });
 
   it('signOutRevoke writes the state object, stops the engine and the gateway, publishes the list, then wipes to cleared', async () => {
@@ -5894,7 +6427,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
       { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
       { id: AFK, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'AFK', topic: '', position: 2 ** 30, slowmode: 0, seq: 0n, textGroupId: null },
     ]);
-    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false });
+    w.routes.getAFK.mockResolvedValue({ channelId: AFK, timeoutSeconds: 300, pending: false, away: [] });
     await toReady(w);
     await vi.waitFor(() => expect(w.last<{ channelId: string | null }>(`afk:${toHex(COMMUNITY)}`)?.channelId).toBe(toHex(AFK)));
     await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(AFK))).toBe(true));

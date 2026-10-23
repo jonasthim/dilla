@@ -740,6 +740,9 @@ type memberResp struct {
 	Username string
 	Display  string
 	Kind     uint64
+	// StatusMsg and Bio are the account's profile text (EOD E6); "" when the user row is gone.
+	StatusMsg string
+	Bio       string
 }
 
 func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
@@ -770,7 +773,7 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 		if roles == nil {
 			roles = []id.ID{} // an array on the wire, never null
 		}
-		var username, display string
+		var username, display, statusMsg, bio string
 		var kind uint64
 		u, err := c.repo.GetUser(r.Context(), m.UserID)
 		switch {
@@ -780,9 +783,10 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			username, display, kind = u.Username, u.Display, uint64(u.Kind)
+			statusMsg, bio = u.StatusMsg, u.Bio
 		}
 		out = append(out, memberResp{UserID: m.UserID, Joined: m.Joined, Nick: m.Nick, Roles: roles,
-			Username: username, Display: display, Kind: kind})
+			Username: username, Display: display, Kind: kind, StatusMsg: statusMsg, Bio: bio})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		c.log.Error("encode members", "err", err)
@@ -1062,6 +1066,10 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
 			return err
 		}
+		// E8: the server's Giphy key goes with it; a secret must not outlive the server it belongs to.
+		if err := tx.PutSetting(r.Context(), gifSettingKey(row.ID), []byte("{}"), now); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "community.delete", Target: row.ID.String(),
 			Detail: "", At: now,
@@ -1246,8 +1254,9 @@ func requireMod2FAFlag(v uint64) (uint8, error) {
 
 // memberNick normalises a member nickname. R16: a nick is a display name, not a
 // handle, so it takes auth.NormalizeDisplay's rules (free Unicode, NFC, at most
-// 64 characters, no control or bidi character) rather than the ASCII handle
-// rules. Every members row this package writes goes through it.
+// 64 characters, trimmed, under the shared text rule of auth.NormalizeUserText:
+// no control, bidi, zero-width or other invisible character) rather than the
+// ASCII handle rules. Every members row this package writes goes through it.
 func memberNick(s string) (string, error) {
 	out, err := auth.NormalizeDisplay(s)
 	if err != nil {

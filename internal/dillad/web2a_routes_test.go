@@ -252,7 +252,7 @@ func TestTwoBrowsersEnrolByAssertionAndARevokingListEndsOne(t *testing.T) {
 	revokedListed := false
 	for _, d := range devices {
 		row, _ := d.([]any)
-		if len(row) == 6 && bytes.Equal(row[0].([]byte), d2.ID[:]) {
+		if len(row) == 7 && bytes.Equal(row[0].([]byte), d2.ID[:]) {
 			revokedListed = row[4] != nil
 		}
 	}

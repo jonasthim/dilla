@@ -20,18 +20,19 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, communityChangedOf, voiceStateOf, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
-  type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
+  INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
+  type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -122,14 +123,14 @@ E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR
 E_CBOR_RANGE E_CBOR_SHAPE E_CBOR_TRAILING E_CBOR_TRUNCATED E_CBOR_TYPE E_CBOR_UTF8 E_CHANNEL_GONE
 E_COMMITMENT_INVALID E_COMMIT_CONFLICT E_COMMIT_INVALID E_COMMIT_REQUIRED E_CORE_DECODE E_CORE_INPUT
 E_CORE_LIMIT E_CORE_MLS E_CORE_NOT_FOUND E_CORE_NO_IDENTITY E_CORE_RELOAD E_CORE_STATE E_CORE_STORAGE E_CORE_WASM
-E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
+E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_REVOKED E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
 E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQUEST E_INVITE_INVALID
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
@@ -244,18 +245,24 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'stepUpPasskeyBegin',
   'stepUpPasskeyFinish',
   'removeFactor',
+  'changePassword',
+  'freshSession',
   'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
+  'renameDevice',
   'signOutRevoke',
   'forgetBrowser',
   'markRead',
   'setSetting',
   'setPresenceChoice',
+  'updateProfile',
   'presenceActivity',
   'getAFKSettings',
   'setAFK',
   'afkActivity',
+  'afkAway',
+  'afkRead',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -269,6 +276,12 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'checkpointFiles',
   'discardAttachment',
   'openAttachment',
+  'gifStatus',
+  'gifSetKey',
+  'gifClearKey',
+  'gifSetRating',
+  'gifSearch',
+  'gifFetch',
   'refreshTrust',
   'verifyContact',
   'safetyNumber',
@@ -281,6 +294,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callShare',
   'callRefresh',
   'callStats',
+  'callNote',
   'loadVoice',
   'callDecline',
   'renameCommunity',
@@ -310,6 +324,23 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setOverwrite',
   'setChannelPrivate',
 ]);
+/** The account's user entry with its profile read from `me`: the status message and bio only when set. */
+function profileOf(user: NonNullable<AccountState['user']>, me: { display: string; statusMsg?: string; bio?: string }): NonNullable<AccountState['user']> {
+  const next = { ...user, display: me.display };
+  if (me.statusMsg) next.statusMsg = me.statusMsg; else delete next.statusMsg;
+  if (me.bio) next.bio = me.bio; else delete next.bio;
+  return next;
+}
+
+/** The saved profile fields as a member row carries them: '' for a cleared one. */
+function savedOf(saved: { display?: string; statusMsg?: string; bio?: string }): { display?: string; statusMsg?: string; bio?: string } {
+  return {
+    ...(saved.display === undefined ? {} : { display: saved.display }),
+    ...(saved.statusMsg === undefined ? {} : { statusMsg: saved.statusMsg }),
+    ...(saved.bio === undefined ? {} : { bio: saved.bio }),
+  };
+}
+
 const ID = /^[0-9a-f]{32}$/;
 const botInstallationView = (row: BotInstallationRow) => ({
   id: toHex(row.id), communityId: toHex(row.communityId), state: row.state,
@@ -335,9 +366,22 @@ const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
+const GIF_ID = /^[A-Za-z0-9]{1,64}$/;
+const GIF_KEY = /^[A-Za-z0-9]{8,64}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
+/** AW4: the away roster is sorted by user id, as the instance sorts it. */
+const byUserId = (a: { userId: string }, b: { userId: string }): number => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
+/** AW4: the roster after one op 55 change (since 0 = cleared), or null when it changes nothing: a clear of a member who
+ *  is not away, or a set no newer than the held since (stale). */
+function awayPatched(away: readonly { userId: string; since: number }[], change: { userId: string; since: number }):
+  { userId: string; since: number }[] | null {
+  const at = away.findIndex((row) => row.userId === change.userId);
+  if (change.since === 0) return at < 0 ? null : away.filter((_, i) => i !== at);
+  if (at >= 0 && away[at].since >= change.since) return null;
+  return [...away.filter((_, i) => i !== at), change].sort(byUserId);
+}
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
@@ -381,6 +425,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   retrySend: ['msgId'],
   discardSend: ['msgId'],
   revokeDevice: ['deviceId'],
+  renameDevice: ['deviceId'],
   markRead: ['channelId'],
   openDm: ['userId'],
   editMessage: ['channelId', 'msgId'],
@@ -395,6 +440,12 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   checkpointFiles: ['channelId'],
   discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
+  gifStatus: ['communityId'],
+  gifSetKey: ['communityId'],
+  gifClearKey: ['communityId'],
+  gifSetRating: ['communityId'],
+  gifSearch: ['communityId'],
+  gifFetch: ['communityId'],
   verifyContact: ['userId'],
   safetyNumber: ['userId'],
   typing: ['channelId'],
@@ -405,6 +456,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
+  afkAway: ['communityId'],
+  afkRead: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -475,6 +528,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'discardSend',
     'refreshDevices',
     'revokeDevice',
+    'renameDevice',
     'signOutRevoke',
     'forgetBrowser',
     'refreshFactors',
@@ -486,14 +540,19 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'stepUpPasskeyBegin',
     'stepUpPasskeyFinish',
     'removeFactor',
+    'changePassword',
+    'freshSession',
     'regenerateBackupCodes',
     'markRead',
     'setSetting',
     'setPresenceChoice',
+    'updateProfile',
     'presenceActivity',
     'getAFKSettings',
     'setAFK',
     'afkActivity',
+    'afkAway',
+    'afkRead',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -510,6 +569,12 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'checkpointFiles',
     'discardAttachment',
     'openAttachment',
+    'gifStatus',
+    'gifSetKey',
+    'gifClearKey',
+    'gifSetRating',
+    'gifSearch',
+    'gifFetch',
     'refreshTrust',
     'verifyContact',
     'safetyNumber',
@@ -522,6 +587,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callShare',
     'callRefresh',
     'callStats',
+    'callNote',
     'loadVoice',
     'callDecline',
     'renameCommunity',
@@ -554,11 +620,22 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+/** A device name's length limit, in characters; the server applies the same shared text rule as to a display name. */
+const DEVICE_LABEL_MAX_CHARS = 64;
+/** A device name as the server stores it (NormalizeUserText, one line): null when the value is not a valid one. Empty is not
+ *  a name; clearing is null. */
+const deviceLabel = (value: unknown): string | null => {
+  if (typeof value !== 'string' || profileTextProblem(value, DEVICE_LABEL_MAX_CHARS, false) !== null) return null;
+  const label = profileTextValue(value);
+  return label === '' ? null : label;
+};
 
 /** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
+/** fix/firefox-misrouted-audio: the stable codes a page may note for Diagnostics (callNote); nothing else is taken. */
+const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE']);
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
@@ -753,6 +830,18 @@ function invalid(command: Record<string, unknown>): string | null {
       return 'files is not a non-empty list of files';
     }
   }
+  if (m === 'gifSearch') {
+    const { q, offset } = command;
+    if (typeof q !== 'string' || UTF8.encode(q).length > GIF_QUERY_MAX_BYTES || /\p{Cc}/u.test(q)) return `q is not at most ${String(GIF_QUERY_MAX_BYTES)} bytes of text`;
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > GIF_OFFSET_MAX) return `offset is not an integer 0..${String(GIF_OFFSET_MAX)}`;
+  }
+  // The key is checked for its shape only; the refusal never names or echoes it.
+  if (m === 'gifSetKey' && (typeof command.key !== 'string' || !GIF_KEY.test(command.key))) return 'key is not 8 to 64 letters and digits';
+  if (m === 'gifSetRating' && !['g', 'pg', 'pg-13', 'r'].includes(command.rating as string)) return 'rating is not g, pg, pg-13 or r';
+  if (m === 'gifFetch') {
+    if (typeof command.gifId !== 'string' || !GIF_ID.test(command.gifId)) return 'gifId is not 1..64 letters and digits';
+    if (command.variant !== 'preview' && command.variant !== 'full') return 'variant is not preview or full';
+  }
   if (m === 'discardAttachment' && (typeof command.trayId !== 'string' || command.trayId === '')) return 'trayId is empty';
   if (m === 'openAttachment') {
     if (typeof command.seq !== 'string' || !SEQ.test(command.seq)) return 'seq is not a decimal sequence number';
@@ -790,6 +879,15 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
   }
+  if (m === 'renameDevice' && command.label !== null && deviceLabel(command.label) === null) return 'label is not 1..64 characters without control or invisible characters';
+  if (m === 'updateProfile') {
+    for (const [field, max, multiline] of [['display', DISPLAY_MAX_CHARS, false], ['statusMsg', STATUS_MAX_CHARS, false], ['bio', BIO_MAX_CHARS, true]] as const) {
+      const value = command[field];
+      if (value === undefined) continue;
+      const problem = profileTextProblem(value, max, multiline);
+      if (problem !== null) return `${field}: ${problem}`;
+    }
+  }
   if (m === 'setPresenceChoice' && !['online', 'idle', 'dnd', 'invisible'].includes(command.choice as string)) return 'invalid presence choice';
   if (m === 'setSetting') {
     if (typeof command.key !== 'string') return 'key is not a string';
@@ -803,6 +901,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
+  if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
     || (command.communityId === null) === (command.channelId === null))) return 'loadVoice needs exactly one id';
   if (m === 'callDecline' && (typeof command.ringTs !== 'number' || !Number.isSafeInteger(command.ringTs) || command.ringTs < 0)) {
@@ -837,7 +936,8 @@ export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
 export const REMOVALS_MAX = 8;
 
 /** CI1: the reasons a row waits for its sender's trust (core revalidate_pending's set), and the most such live rows
- *  the worker remembers for their notice. */
+ *  the worker remembers for their notice. E_DEVICE_REVOKED is not one: a revoked device's row never opens, so nothing
+ *  waits for it (trust.rs apply_verdict). */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
 export const HELD_LIVE_MAX = 64;
 /** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
@@ -861,6 +961,14 @@ export class Controller {
   private starting: Promise<null> | null = null;
   private resetting: Promise<null> | null = null;
   private graceTimer: number | null = null;
+  /** A session cut just now. The instance wants one younger than its reauth window for a first password, and the step-up token
+   *  is bound to the session it was made in, so the page runs this before the step-up, not after. */
+  private async freshSession(): Promise<null> {
+    if (this.session === null) throw new Refusal('E_NOT_READY', 'no session');
+    // reauthenticate: a refused establish is a revocation (enterRevoked), and a wipe in progress mints nothing.
+    if (!(await this.reauthenticate())) throw new Error('E_SIGNIN_EVICTED');
+    return null;
+  }
   /** The socket re-establish retry onRevokedSocket armed after a network failure (I4). */
   private reauthTimer: number | null = null;
   private phase: BootPhase = 'loading';
@@ -991,6 +1099,8 @@ export class Controller {
   private leadership: Leadership | null = null;
   private readonly typingOn = new Set<string>();
   private readonly incomingTyping = new Map<string, Map<string, number>>();
+  /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
+  private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
@@ -1327,21 +1437,28 @@ export class Controller {
       case 'stepUp': return this.factorsCtl.stepUp(command.method, command.secret);
       case 'stepUpPasskeyBegin': return this.factorsCtl.stepUpPasskeyBegin();
       case 'stepUpPasskeyFinish': return this.factorsCtl.stepUpPasskeyFinish(command.ceremonyId, command.response);
+      case 'freshSession': return this.freshSession();
+      case 'changePassword': return this.factorsCtl.changePassword(command.old, command.next, command.stepup);
       case 'removeFactor': return this.factorsCtl.removeFactor(command.stepup, command.kind, command.credId);
       case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
       case 'revokeDevice': return this.revokeDevice(command.deviceId, command.recoveryKey);
+      case 'renameDevice': return this.renameDevice(command.deviceId, command.label);
       case 'signOutRevoke': return this.signOutRevoke(command.recoveryKey);
       case 'forgetBrowser': return this.forgetBrowser();
       case 'markRead': return this.markRead(command.channelId);
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
+      case 'updateProfile': return this.updateProfile(command);
       case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
       case 'setAFK': return this.setAFK(command.communityId, command.timeoutSeconds);
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId), command.exempt).then(() => null);
+      // AW4 (R-AW3): choosing AFK. The page leaves its call first; the roster changes by op 55, not here.
+      case 'afkAway': return this.afkAway(command.communityId);
+      case 'afkRead': return this.afkRead(command.communityId, command.timeoutMs);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId, command.seq);
@@ -1358,6 +1475,13 @@ export class Controller {
       case 'checkpointFiles': return Promise.resolve(this.trays.get(command.channelId)?.files() ?? []);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
+      case 'gifStatus': return this.routes.gifStatus(fromHex(command.communityId));
+      case 'gifSetKey': return this.routes.gifSetKey(fromHex(command.communityId), command.key).then(() => null);
+      case 'gifClearKey': return this.routes.gifClearKey(fromHex(command.communityId)).then(() => null);
+      case 'gifSetRating': return this.routes.gifSetRating(fromHex(command.communityId), command.rating).then(() => null);
+      case 'gifSearch': return this.routes.gifSearch(fromHex(command.communityId), command.q, command.offset);
+      case 'gifFetch': return this.routes.gifMedia(fromHex(command.communityId), command.gifId, command.variant)
+        .then(bytes => ({ blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' }) }));
       case 'refreshTrust': return this.refreshTrust();
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);
       case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId, command.umk));
@@ -1370,6 +1494,7 @@ export class Controller {
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
+      case 'callNote': this.recordError(command.code); return Promise.resolve(null);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);
       case 'deleteCommunity': return this.admin.deleteCommunity(command.communityId);
@@ -1855,7 +1980,7 @@ export class Controller {
 
   private setAccount(patch: Partial<AccountState>): void {
     // The cached display name belongs to one signed-in user: any state that clears or revokes the user drops it.
-    if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
+    if (patch.user === null || patch.phase === 'revoked') { this.selfDisplay = null; this.profileSaved = null; }
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     // The status choice belongs to the signed-in account too: with the user gone, the next account starts from the default
@@ -2287,6 +2412,8 @@ export class Controller {
       const changeSlice = `communityChanges:${communityId}` as const;
       this.slices.set(changeSlice, (this.slices.get(changeSlice) ?? 0) + 1);
       this.safely(() => { this.scheduleCommunityReload(communityId); });
+    } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
+      this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -2354,7 +2481,38 @@ export class Controller {
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
     this.incomingTyping.set(channelId, rows);
     this.publishTyping(channelId);
-    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+    if (on === 1n) this.armTypingSweep(channelId, expiry);          // a stop frame has nothing to expire
+  }
+
+  /** One sweep timer per channel, however many frames arrive: a frame moves it only when its deadline is earlier. */
+  private armTypingSweep(channelId: string, at: number): void {
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) {
+      if (pending.at <= at) return;
+      this.deps.clearTimeout(pending.handle);
+    }
+    const handle = this.deps.setTimeout(() => this.sweepTyping(channelId), Math.max(0, at - this.deps.now()));
+    this.typingSweeps.set(channelId, { handle, at });
+  }
+
+  private dropIncomingTyping(channelId: string): void {
+    this.incomingTyping.delete(channelId);
+    const pending = this.typingSweeps.get(channelId);
+    if (pending !== undefined) this.deps.clearTimeout(pending.handle);
+    this.typingSweeps.delete(channelId);
+  }
+
+  /** The expiry timer. It may fire a millisecond before the clock reaches the deadline it was set for (Firefox does, under
+   *  load); the row is then still live and nothing else would sweep it, so while any row remains it looks again when the
+   *  nearest one is due. */
+  private sweepTyping(channelId: string): void {
+    this.typingSweeps.delete(channelId);
+    this.publishTyping(channelId);
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined) return;
+    let nearest = Infinity;
+    for (const expiry of rows.values()) if (expiry < nearest) nearest = expiry;
+    if (nearest !== Infinity) this.armTypingSweep(channelId, nearest);
   }
 
   private publishTyping(channelId: string): void {
@@ -3069,13 +3227,19 @@ export class Controller {
   private async readMembers(communityId: string): Promise<MemberRow[] | null> {
     const seq = (this.memberSeq.get(communityId) ?? 0) + 1;
     this.memberSeq.set(communityId, seq);
+    const profileAt = this.profileSeq;
     const rows = await this.routes.listMembers(fromHex(communityId));
-    return this.memberSeq.get(communityId) === seq ? rows : null;
+    if (this.memberSeq.get(communityId) !== seq) return null;
+    // A profile saved while this read was in flight is newer than what the read saw (N6): the own row keeps the saved text.
+    const saved = this.profileSeq !== profileAt ? this.profileSaved : null;
+    if (saved === null) return rows;
+    return rows.map((m) => (toHex(m.userId) === saved.userId ? { ...m, ...savedOf(saved) } : m));
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[], push = true): void {
     this.slices.set(`members:${communityId}`, rows.map((m) => ({
       userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
+      ...(m.statusMsg ? { statusMsg: m.statusMsg } : {}), ...(m.bio ? { bio: m.bio } : {}),
     })));
     // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
     // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
@@ -3470,6 +3634,9 @@ export class Controller {
 
   /** web3.9 R-AFK3 (b): a failed AFK read is read again after 1 s, 2 s, 4 s … (at most 30 s) while the community stays listed. */
   private readonly afkRetry = new Map<string, { timer: number; attempt: number }>();
+  /** AW4 fix round 1 (I1): per community, the op 55 changes received while its newest read is in flight. Each read owns
+   *  its buffer; a newer read or clearAFK replaces or drops it, so a superseded read's frames are never replayed. */
+  private readonly afkReadBuffer = new Map<string, { frames: { userId: string; since: number }[] }>();
   /** R-AFK4: the seq of the newest landed AFK read, across every community; it only rises. */
   private afkLandedSeq = 0;
   private static readonly AFK_RETRY_MAX_MS = 30_000;
@@ -3485,21 +3652,53 @@ export class Controller {
   private clearAFK(communityId: string): void {
     this.afkReadSeq.set(communityId, (this.afkReadSeq.get(communityId) ?? 0) + 1);
     this.stopAFKRetry(communityId);
+    this.afkReadBuffer.delete(communityId);
     this.slices.set(`afk:${communityId}`, null);
+  }
+
+  /** AW4: op 55 patches the away roster of a landed snapshot in place; `seq` stays, so no move is announced. Fix round 1
+   *  (I1): while a read is in flight the frame is also kept in that read's buffer, and replayed in order onto the read's
+   *  roster when it lands, since the instance may have served the read before the change. With no read in flight and no
+   *  snapshot (offline, unlisted) the frame is dropped: the next read is served after it. */
+  private incomingAFKAway(frame: AFKAwayFrame): void {
+    const communityId = toHex(frame.communityId);
+    const change = { userId: toHex(frame.userId), since: frame.since };
+    this.afkReadBuffer.get(communityId)?.frames.push(change);
+    const key = `afk:${communityId}` as const;
+    const held = this.slices.get(key);
+    if (held == null) return;
+    const next = awayPatched(held.away ?? [], change);
+    if (next !== null) this.slices.set(key, { ...held, away: next });
+  }
+
+  /** AW5 fix round 2 (B-M1): the newest read of each community's snapshot while it is in flight; afkRead waits for it. */
+  private readonly afkLoads = new Map<string, Promise<void>>();
+  /** Starts a read of the snapshot (readAFK) and keeps it as the community's newest. It never rejects. */
+  private loadAFK(communityId: string): Promise<void> {
+    const load = this.readAFK(communityId);
+    this.afkLoads.set(communityId, load);
+    void load.finally(() => { if (this.afkLoads.get(communityId) === load) this.afkLoads.delete(communityId); });
+    return load;
   }
 
   /** Reads the snapshot. R-AFK3 (a): the slice keeps its previous value until this read lands (a re-read never passes
    *  through null), so a voice join that needs it is never held by a re-read. */
-  private async loadAFK(communityId: string): Promise<void> {
+  private async readAFK(communityId: string): Promise<void> {
     const seq = (this.afkReadSeq.get(communityId) ?? 0) + 1;
     this.afkReadSeq.set(communityId, seq);
+    const buffer = { frames: [] as { userId: string; since: number }[] };
+    this.afkReadBuffer.set(communityId, buffer);
     try {
       const row = await this.routes.getAFK(fromHex(communityId));
       if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
       this.stopAFKRetry(communityId);
+      // Fix round 1 (I1): the op 55 frames received while this read was in flight, replayed in order.
+      let away = row.away.map((r) => ({ userId: toHex(r.userId), since: r.since })).sort(byUserId);
+      for (const change of buffer.frames) away = awayPatched(away, change) ?? away;
       // R-AFK4: every landed read gets the next seq, so a read that says pending again (a second sweep) is a new move.
       this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
-        timeoutSeconds: row.timeoutSeconds, pending: row.pending, seq: ++this.afkLandedSeq });
+        timeoutSeconds: row.timeoutSeconds, pending: row.pending, pendingReason: row.reason ?? (row.pending ? 1 : 0),
+        seq: ++this.afkLandedSeq, away });
     } catch {
       // A newer read, an unload or a cleared store owns the snapshot now.
       if (this.storeCleared || !this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
@@ -3512,9 +3711,47 @@ export class Controller {
         void this.barrier.track(this.loadAFK(communityId));
       }, delay);
       this.afkRetry.set(communityId, { timer, attempt: attempt + 1 });
+    } finally {
+      if (this.afkReadBuffer.get(communityId) === buffer) this.afkReadBuffer.delete(communityId);
     }
   }
 
+  /** AW5 fix round 1 (I1): a fresh read of the community's AFK snapshot, answered once one landed after this call; the
+   *  page's restore and recovery act only on such a read, never on a slice left from before a sleep or a reload.
+   *  Fix round 2 (B-M1): a newer read of the same community that supersedes this one's (a reload, setAFK, another
+   *  afkRead) is waited for and answers for it; E_UNAVAILABLE only when no read landed (a failed read, offline) or
+   *  `timeoutMs` (the page's own wait; at most 60 s) passed first. */
+  private async afkRead(communityId: string, timeoutMs: number | undefined): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    if (timeoutMs !== undefined && !(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60_000)) {
+      throw new Refusal('E_BAD_INPUT', 'invalid timeout');
+    }
+    const before = this.afkLandedSeq;
+    const settled = (async () => {
+      let load = this.loadAFK(communityId);
+      for (;;) {
+        await load;
+        const newer = this.afkLoads.get(communityId);
+        if (newer === undefined || newer === load) return;
+        load = newer;
+      }
+    })();
+    let timer: number | undefined;
+    const inTime = timeoutMs === undefined ? settled.then(() => true)
+      : Promise.race([settled.then(() => true), new Promise<boolean>((r) => { timer = this.deps.setTimeout(() => r(false), timeoutMs); })]);
+    const landed = await inTime;
+    if (timer !== undefined) this.deps.clearTimeout(timer);
+    const now = this.slices.get(`afk:${communityId}`);
+    if (!landed || now == null || (now.seq ?? 0) <= before) throw new Refusal('E_UNAVAILABLE', 'the AFK state could not be read');
+    return null;
+  }
+  /** AW4 fix round 1 (M1): an unlisted community is refused here, as setAFK refuses it; the instance's 403 or 404 reaches
+   *  the page unchanged. */
+  private async afkAway(communityId: string): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    await this.routes.putAFKAway(fromHex(communityId));
+    return null;
+  }
   private async setAFK(communityId: string, timeoutSeconds: number): Promise<null> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     if (![60, 300, 900, 1800, 3600].includes(timeoutSeconds)) throw new Refusal('E_BAD_INPUT', 'invalid AFK timeout');
@@ -3535,6 +3772,10 @@ export class Controller {
     this.slices.set(`presence:${communityId}`, null);
   }
 
+  /** Bumped when a profile save lands; a read that began before it does not undo it (N6). */
+  private profileSeq = 0;
+  /** What the person saved this session (the trimmed text), per field, for the reads that were already in flight. */
+  private profileSaved: { userId: string; display?: string; statusMsg?: string; bio?: string } | null = null;
   /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
   private selfDisplay: { userId: string; display: string } | null = null;
   /** The cached display name, only for the user it was read for; another account never inherits it. */
@@ -3545,6 +3786,7 @@ export class Controller {
   private async refreshPresenceChoice(): Promise<void> {
     const seq = ++this.presenceChoiceReadSeq;
     const write = this.presenceChoiceWriteSeq;
+    const profileAt = this.profileSeq;
     try {
       const me = await this.routes.getAccountMe();
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
@@ -3553,9 +3795,44 @@ export class Controller {
       // Only the current user's own read counts: a read for another account (a switch while it was in flight) is not applied.
       const user = this.accountState.user;
       const mine = user !== null && toHex(me.userId) === user.id;
-      if (mine) this.selfDisplay = { userId: user.id, display: me.display };
-      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...user, display: me.display } } : {}) });
+      // A profile saved while this read was in flight is newer than what the read saw (N6): keep the saved text.
+      const saved = this.profileSeq !== profileAt && mine && this.profileSaved?.userId === user.id ? this.profileSaved : null;
+      const seen = saved === null ? me : { display: saved.display ?? me.display, statusMsg: saved.statusMsg ?? me.statusMsg, bio: saved.bio ?? me.bio };
+      if (mine) this.selfDisplay = { userId: user.id, display: seen.display };
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...profileOf(user, seen) } } : {}) });
     } catch { /* the next ready retries */ }
+  }
+
+  /** EOD E6: saves the given profile fields (a field left out is left alone, '' clears one), then shows the saved text on the
+   *  account and on the own row of every loaded member list, with no read: the server stored what was sent, trimmed. Other
+   *  people's edits arrive with their next member-list read. */
+  private async updateProfile(command: { display?: string; statusMsg?: string; bio?: string }): Promise<null> {
+    const saved = {
+      ...(command.display === undefined ? {} : { display: profileTextValue(command.display) }),
+      ...(command.statusMsg === undefined ? {} : { statusMsg: profileTextValue(command.statusMsg) }),
+      ...(command.bio === undefined ? {} : { bio: profileTextValue(command.bio, true) }),
+    };
+    if (Object.keys(saved).length === 0) return null;
+    await this.routes.patchMe(saved);
+    const user = this.accountState.user;
+    if (user === null) return null;
+    this.profileSaved = { ...(this.profileSaved?.userId === user.id ? this.profileSaved : {}), ...saved, userId: user.id };
+    this.profileSeq++;
+    const apply = <T extends { display?: string; statusMsg?: string; bio?: string }>(row: T): T => {
+      const next = { ...row, ...saved };
+      if (next.statusMsg === '') delete next.statusMsg;
+      if (next.bio === '') delete next.bio;
+      return next;
+    };
+    if (saved.display !== undefined) this.selfDisplay = { userId: user.id, display: saved.display };
+    this.setAccount({ user: apply(user) });
+    for (const community of this.slices.get('communities') ?? []) {
+      const key = `members:${community.id}` as const;
+      const rows = this.slices.get(key);
+      if (rows == null) continue;
+      this.slices.set(key, rows.map((m) => (m.userId === user.id ? apply(m) : m)));
+    }
+    return null;
   }
 
   private async setPresenceChoice(choice: PresenceChoice): Promise<null> {
@@ -3702,7 +3979,7 @@ export class Controller {
     const devices: DeviceSummary[] = rows.map((r) => {
       const id = toHex(r.id);
       return {
-        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen),
+        id, tier: r.tier, signerTier: r.signerTier, lastSeen: Number(r.lastSeen), label: r.label,
         revokedAt: r.revokedAt === null ? null : Number(r.revokedAt),
         listed: entries.some((e) => toHex(e.deviceId) === id && e.revokedAt === null),
         own: id === ownHex,
@@ -3813,6 +4090,15 @@ export class Controller {
       await this.routes.putBackup(1, signed.stateSealed);
       core.stateSealedUploaded();
     } catch { /* the next ready uploads it */ }
+    await this.refreshDevices();
+    return null;
+  }
+
+  /** Names (or, with null, unnames) one of the account's devices. The name is not in the signed device list, so no key
+   *  and no list change: the server stores it, and the list is read again so the slice shows what it holds. */
+  private async renameDevice(deviceId: string, label: string | null): Promise<null> {
+    this.requireCore();
+    await this.routes.patchDevice(fromHex(deviceId), label === null ? null : deviceLabel(label));
     await this.refreshDevices();
     return null;
   }
@@ -3950,6 +4236,8 @@ export class Controller {
     // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
     this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
+    for (const { handle } of this.typingSweeps.values()) this.deps.clearTimeout(handle);
+    this.typingSweeps.clear();
     this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
@@ -4063,7 +4351,7 @@ export class Controller {
   private closeChannel(channelId: string): Promise<null> {
     const wasOpen = this.open.has(channelId);
     if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-    this.incomingTyping.delete(channelId);
+    this.dropIncomingTyping(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
     this.dropOpen(channelId);
@@ -4450,6 +4738,11 @@ export class Controller {
           if (e instanceof CoreError && e.code === 'E_UMK_CHANGED' && own) this.ownRefusedLeaves.add(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
           throw e;
         }
+        // The core caches verdict.version now and anchors every later ingest of this user on it: the user's other leaves
+        // in this pass are ingested from that version (a full history from below it is refused E_DEVICE_LIST_STALE, which
+        // left their held rows unreadable until some later pass). The head is the history's last row, so the slice holds it.
+        const rest = historyFrom(history, verdict.version);
+        if (rest !== null) historyByUser.set(user, { head, history: rest });
         // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
         if (verdict.changed) keyChanged = true;
         if (own && ownVersion !== null && verdict.version > ownVersion) ownChanged = true;
@@ -4706,7 +4999,7 @@ export class Controller {
       if (this.open.has(channelId) && this.groupState(channelId) === 'active'
         && this.phase === 'ready' && this.connectionState.status === 'online') continue;
       if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
-      this.incomingTyping.delete(channelId);
+      this.dropIncomingTyping(channelId);
       this.slices.set(`typing:${channelId}`, []);
     }
   }

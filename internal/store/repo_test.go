@@ -211,6 +211,18 @@ func TestRepositoryConformance(t *testing.T) {
 				if updated != 9999 {
 					t.Fatalf("a second PutSetting left updated at %d", updated)
 				}
+				// E8: a server's Giphy setting is a JSON value under a per-server key, written and replaced in a
+				// transaction on both engines (the value is bytes, not parsed by the store).
+				gifKey := "community_gifs:" + id.New().String()
+				for _, value := range []string{`{"key":"abcdEFGH1234","rating":"pg-13"}`, `{"key":"","rating":"g"}`, `{}`} {
+					if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutSetting(ctx, gifKey, []byte(value), 5) }); err != nil {
+						t.Fatalf("PutSetting %s in a transaction: %v", value, err)
+					}
+					got, err := repo.GetSetting(ctx, gifKey)
+					if err != nil || string(got) != value {
+						t.Fatalf("GetSetting(%s) = %q, %v; want %q", gifKey, got, err, value)
+					}
+				}
 			})
 
 			t.Run("accounts and devices", func(t *testing.T) {

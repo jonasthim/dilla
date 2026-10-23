@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,26 +108,33 @@ func TestQueryHeadersAreByteIdenticalAcrossEngines(t *testing.T) {
 	}
 }
 
-// wantSchemaVersion is the goose version a fully migrated database reports: one
-// per embedded migration file, derived rather than written down so that the task
-// which adds a migration does not also have to edit two unrelated assertions.
-// Task 19's 00002_mls.sql was the first to make the number move off 1.
+// wantSchemaVersion is the goose version a fully migrated database reports: the highest version
+// among the embedded migration files, derived rather than written down so that the task which adds
+// a migration does not also have to edit two unrelated assertions. It is the highest number, not the
+// file count, because goose does not need the numbers to be contiguous: a branch that takes 00022
+// while 00021 is still unreleased reports 22 with 21 files.
 func wantSchemaVersion(t *testing.T) int64 {
 	t.Helper()
 	entries, err := sqlitemigrations.FS.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var n int64
+	var highest int64
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			n++
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !strings.HasSuffix(e.Name(), ".sql") || !ok {
+			continue
 		}
+		v, err := strconv.ParseInt(num, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s does not start with a number: %v", e.Name(), err)
+		}
+		highest = max(highest, v)
 	}
-	if n == 0 {
+	if highest == 0 {
 		t.Fatal("no embedded migrations at all")
 	}
-	return n
+	return highest
 }
 
 func openSQLite(t *testing.T) *sql.DB {
@@ -271,7 +279,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // runtime, installation, claim and session-binding tables, task 5B4B adds publication receipts,
 // and Task5 adds managed group-registration receipts.
 var wantTables = []string{
-	"audit_log", "automod_stepup_grants", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_event_acks", "bot_event_streams", "bot_group_registration_admission_receipts", "bot_group_registration_receipts", "bot_installations", "bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_structural_events", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "dj_role_policy", "fork_reports",
+	"audit_log", "automod_stepup_grants", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_event_acks", "bot_event_streams", "bot_group_registration_admission_receipts", "bot_group_registration_receipts", "bot_installations", "bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_structural_events", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "dj_role_policy", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"manual_warning_actions", "member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",

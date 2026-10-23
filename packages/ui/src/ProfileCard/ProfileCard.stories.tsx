@@ -29,7 +29,7 @@ function Beside(props: Omit<ProfileCardProps, 'anchor'>) {
 const meta = {
   title: 'Shell/ProfileCard', component: ProfileCard,
   args: {
-    name: 'Astrid', username: 'astrid', presence: 'online', isOwner: true, isYou: true, status: 'writing the release notes',
+    name: 'Astrid', username: 'astrid', presence: 'online', isOwner: true, isYou: true, status: 'writing the release notes', bio: 'Maintainer of dilla.\nAsk me about releases.',
     roles: [{ name: 'moderators', color: 0xe74c3c }, { name: 'builders', color: 0x3498db }, { name: 'members', color: null }],
     actions, onAction: () => {}, onClose: () => {},
   },

@@ -116,6 +116,10 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	// tells the user it removed once.
 	notify := api.NewStructureNotifier(p.gw, repo, log)
 	calls.WithAFKNotify(notify)
+	// AW2: the away roster's changes go out as op 55 to the AFK channel's audience, and a mark needs
+	// the user to hold a gateway connection (Q2). The calls left live in AFK channels end in
+	// New, after the delivery service starts (EndAFKCalls).
+	calls.WithAFKAway(p.gw, p.gw.UserConnected).WithAFKDraining(p.gw.Draining)
 	// R1: every community that predates web3.9, or lost its pointer, gets its built-in AFK channel
 	// once, before any listener exists (dillad serve and dilla-testhost alike).
 	// It logs its own summary and each community it could not finish; only a failure to list the
@@ -135,9 +139,12 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	api.NewMemberWarnings(repo, clk).Register(m)
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
-	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithRoles(roles).Register(m)
+	// A readable post is activity: it takes the sender out of the community's AFK list (AW2, Q1).
+	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithRoles(roles).WithAFK(calls).Register(m)
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).WithUploadMeter(p.uploads).Register(m)
 	api.NewReports(repo, p.keys, clk, log).Register(m)
+	// E8: the GIF picker. The Giphy key is a per-server setting; a server without one answers 404.
+	api.NewGifs(repo, p.limiter, clk, log).Register(m)
 	calls.Register(m)
 	stats.Register(m)
 	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).

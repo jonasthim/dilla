@@ -136,14 +136,14 @@ function fakes(o: Options = {}) {
 
   const verified = new Set<string>();
   const installs: EpochKeys[] = [];
-  const manager = {
+  const manager = Object.assign(new Emitter(), {
     installs,
     installEpoch: vi.fn(async (k: EpochKeys) => { installs.push(k); }),
     dispose: vi.fn(() => { order.push('manager.dispose'); }),
     clearKeys: vi.fn(() => { order.push('manager.clearKeys'); }),
     verifiedIdentities: vi.fn(async () => new Set(verified)),
     stats: vi.fn(async () => ({ encrypted: {}, dropped: {} })),
-  };
+  });
 
   const localTracks: FakeTrack[] = [];
   const room = Object.assign(new Emitter(), {
@@ -364,6 +364,19 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.order).toEqual(['manager.dispose', 'room.disconnect', 'worker.terminate', 'lock.release', 'callLeave']);
     expect(f.calls.at(-1)).toEqual({ m: 'callLeave', reason: 'user' });
     expect(call.state.phase).toBe('ended');
+  });
+
+  // fix/firefox-misrouted-audio: a misroute the manager recovered is noted for Diagnostics (callNote), while in the call.
+  it('notes each recovered misroute for Diagnostics, and none after the leave', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.manager.emit('misrouteRecovered', BOB_DEV);
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callNote')).toEqual([{ m: 'callNote', code: 'E_MEDIA_MISROUTE' }]);
+    await call.leave('user');
+    f.manager.emit('misrouteRecovered', BOB_DEV);
+    await flush();
+    expect(f.calls.filter((c) => c.m === 'callNote')).toHaveLength(1);
   });
 
   it('a denied microphone joins listen-only with mic "denied" and no publish', async () => {
@@ -792,6 +805,48 @@ describe('the page call session (L-WEB-50)', () => {
     s.received = 84_000;
     await f.advance(2_000);
     expect(call.state.link?.upKbps).toBe(Math.round(24_000 * 8 / 6_000)); // the lost ticks are spanned, not a spike
+  });
+
+  it('FD1: with no subscriber connection (nothing subscribed) the down rate is 0, not a dash', async () => {
+    const { f, s } = linkFakes();
+    (f.room.engine.pcManager as unknown as { subscriber?: unknown }).subscriber = undefined;
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    await f.advance(2_000);
+    expect(call.state.link).toEqual({ rttMs: 24, upKbps: 48, downKbps: 0, lossPct: 0 });
+  });
+
+  it('FD1: a subscriber getStats that rejects is no read: the down rate is kept one tick, then a dash', async () => {
+    const { f, s } = linkFakes();
+    const call = await start(f);
+    await f.advance(2_000);
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: 96 });
+    s.sub = () => Promise.reject(new Error('closed'));
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: 96 });
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ downKbps: null });
+  });
+
+  it('FD1: single-peer-connection inbound on the publisher report is the down rate, counted once', async () => {
+    const { f, s } = linkFakes();
+    (f.room.engine.pcManager as unknown as { subscriber?: unknown }).subscriber = undefined;
+    s.pub = () => Promise.resolve(new Map<string, unknown>([
+      ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+      ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', currentRoundTripTime: s.rtt }],
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'host' }],
+      ['O', { id: 'O', type: 'outbound-rtp', bytesSent: s.sent }],
+      ['I', { id: 'I', type: 'inbound-rtp', bytesReceived: s.received }],
+    ]));
+    const call = await start(f);
+    await f.advance(2_000);
+    s.sent = 12_000;
+    s.received = 24_000;
+    await f.advance(2_000);
+    expect(call.state.link).toMatchObject({ upKbps: 48, downKbps: 96 });
   });
 
   it('MP5: the poll stops while the call is paused and restarts with a fresh baseline', async () => {
@@ -3175,93 +3230,6 @@ describe('web3.9 VOICE-FIX fix round 1 (I1): concurrentCapture', () => {
   });
 });
 
-describe('web3.9 VOICE-AFK: a listen-only call (the AFK channel, R3)', () => {
-  const open: PageCall[] = [];
-  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
-  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
-    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
-    open.push(call);
-    return call;
-  };
-
-  it('a listen-only call never asks for the microphone', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true, noise: 'on' });
-    expect(call.state.phase).toBe('connected');
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.media.enumerateDevices).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.mic).toBe('listen');
-    expect(call.state.listenOnly).toBe(true);
-    expect(call.state.muted).toBe(true);
-    expect(call.state.error).toBeNull();
-    // The others hear of it as a muted member at once (voiceSelf flag 1).
-    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
-    // A mute press is a no-op that stays muted: nothing is acquired or published by it, or by the other controls.
-    call.setMuted(false);
-    expect(call.state.muted).toBe(true);
-    call.setMode('ptt');
-    call.pushToTalk(true);
-    await call.setNoise('off');
-    await call.setNoise('on');
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-  });
-
-  it('an ordinary call still asks for the microphone and publishes it (control)', async () => {
-    const f = fakes();
-    const call = await start(f);
-    expect(f.media.getUserMedia).toHaveBeenCalledTimes(1);
-    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(1);
-    expect(call.state.mic).toBe('ok');
-    expect(call.state.listenOnly).toBe(false);
-  });
-
-  it('camera and share are refused in a listen-only call', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    f.calls.length = 0;
-    await expect(call.setCamera(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    // Refused before any request: no callShare, no capture, no picker, no publish.
-    expect(f.calls.filter((c) => c.m === 'callShare')).toEqual([]);
-    expect(f.media.getUserMedia).not.toHaveBeenCalled();
-    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.camera).toBe(false);
-    expect(call.state.sharing).toBe(false);
-    // Turning them off stays harmless.
-    await call.setCamera(false);
-    await call.setSharing(false);
-    // Control: an ordinary call turns the camera on.
-    const g = fakes();
-    const other = await start(g);
-    await other.setCamera(true);
-    expect(other.state.camera).toBe(true);
-  });
-
-  it('deafen still mutes playback in a listen-only call', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    const bob = f.addRemote(BOB_DEV);
-    f.subscribeTrack(bob, 'microphone');
-    expect(bob.gains.microphone).toBe(1);
-    call.setDeafened(true);
-    expect(call.state.deafened).toBe(true);
-    expect(bob.gains.microphone).toBe(0);
-    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
-    call.setDeafened(false);
-    expect(call.state.deafened).toBe(false);
-    expect(call.state.muted).toBe(true);
-    expect(bob.gains.microphone).toBe(1);
-    // An unmute while deafened stays muted too (mute is a no-op here).
-    call.setDeafened(true);
-    call.setMuted(false);
-    expect(call.state.muted).toBe(true);
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-  });
-});
-
 describe('web3.9 ruling V-1: the session owns page leave, LiveKit does not', () => {
   const open: PageCall[] = [];
   afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
@@ -3780,13 +3748,4 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     });
   });
 
-  it('a listen-only call refuses share before the picker', async () => {
-    const f = fakes();
-    const call = await start(f, { listenOnly: true });
-    await expect(call.setSharing(true)).rejects.toMatchObject({ code: 'E_FORBIDDEN' });
-    expect(f.media.getDisplayMedia).not.toHaveBeenCalled();
-    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalled();
-    expect(call.state.sharing).toBe(false);
-    expect(call.state.shareAudio).toBeNull();
-  });
 });

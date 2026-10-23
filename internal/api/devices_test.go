@@ -141,6 +141,7 @@ func TestAPendingSessionReachesItsOwnDeviceListAndNothingElse(t *testing.T) {
 		{http.MethodDelete, "/v1/devices/" + dev.ID.String(), nil},
 		{http.MethodDelete, "/v1/devices/" + dev.ID.String() + "/sessions", nil},
 		{http.MethodGet, "/v1/accounts/me", nil},
+		{http.MethodPatch, "/v1/accounts/me", []any{nil, "x", nil}},
 		{http.MethodPost, "/v1/gateway/ticket", []any{}},
 	} {
 		rec := cborCall(t, h, r.method, r.path, pending, r.body)
