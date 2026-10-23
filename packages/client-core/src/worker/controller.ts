@@ -197,6 +197,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'listModerationCases',
   'getBotJoinRole',
   'configureBotJoinRole',
+  'getBotDjRoles',
+  'configureBotDjRoles',
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
@@ -325,6 +327,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   listModerationCases: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
+  getBotDjRoles: ['communityId'],
+  configureBotDjRoles: ['communityId', 'requestId', 'installationId'],
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
@@ -420,6 +424,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'listModerationCases',
     'getBotJoinRole',
     'configureBotJoinRole',
+    'getBotDjRoles',
+    'configureBotDjRoles',
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
@@ -587,6 +593,9 @@ function invalid(command: Record<string, unknown>): string | null {
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
   if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
+  if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
+    || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
+    || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
@@ -1163,6 +1172,8 @@ export class Controller {
       case 'listModerationCases': return Promise.reject(new Refusal('E_UNAVAILABLE', 'authenticated encrypted interaction transport is unavailable'));
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
+      case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
+      case 'configureBotDjRoles': return this.configureBotDjRoles(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
@@ -1286,6 +1297,19 @@ export class Controller {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const installationId = await this.routes.configureBotJoinRole(fromHex(command.communityId), fromHex(command.requestId), fromHex(command.roleId), fromHex(command.installationId));
     return { installationId: toHex(installationId) };
+  }
+
+  private async getBotDjRoles(communityId: string): Promise<{ roleIds: string[]; installationId: string } | null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotDjRoles(fromHex(communityId));
+    return row === null ? null : { roleIds: row.roleIds.map(toHex), installationId: toHex(row.installationId) };
+  }
+
+  private async configureBotDjRoles(command: Extract<Command, { m: 'configureBotDjRoles' }>): Promise<{ acceptedCount: number }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const acceptedCount = await this.routes.configureBotDjRoles(fromHex(command.communityId), fromHex(command.requestId),
+      fromHex(command.installationId), command.roleIds.map(fromHex));
+    return { acceptedCount };
   }
 
   private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {

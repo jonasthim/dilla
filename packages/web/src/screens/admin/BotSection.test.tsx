@@ -31,6 +31,7 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
   fake.handler = async command => {
     if (command.m === 'getBotInstallation') return failGet ? Promise.reject(refusal({ code: 'E_NETWORK' })) : initial;
     if (command.m === 'getBotJoinRole') return initial === null ? null : { roleId: null, installationId: initial.id };
+    if (command.m === 'getBotDjRoles') return initial === null ? null : { roleIds: [], installationId: initial.id };
     if (command.m === 'stepUp') return { token: 'short-lived-step-up' };
     if (command.m === 'configureBotInstallation') return { ...ROW, state: 0, revision: '1' };
     if (command.m === 'disableBotInstallation') return { ...ROW, state: 4, revision: '2' };
@@ -114,7 +115,7 @@ describe('the server bot settings', () => {
     expect(screen.getByText(en['admin.bot.music.providerUnknown'])).toBeInTheDocument();
     expect(screen.getByText(en['admin.bot.music.youtubeHelp'])).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: /spotify/i })).not.toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
+    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'getBotJoinRole', 'getBotDjRoles', 'refreshFactors', 'stepUp', 'beginBotSpotifyAttempt']);
   });
 
   it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {
@@ -134,6 +135,48 @@ describe('the server bot settings', () => {
     expect(fake.callsOf('configureBotJoinRole')[0]).toMatchObject({ communityId: SERVER, roleId: '22'.repeat(16), installationId: initial.id });
     expect(fake.callsOf('configureBotJoinRole')[0].requestId).toMatch(/^[0-9a-f]{32}$/);
     expect(announce).toHaveBeenCalledWith(en['admin.bot.joinRole.saved']);
+  });
+
+  it('edits DJ role policy only for the current ready installation and below the actor hierarchy', async () => {
+    const initial = { ...ROW, state: 3 as const, capabilities: 1 };
+    const { fake, user, announce } = setup(initial);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
+      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: command.roleIds.length });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    act(() => {
+      fake.set(`permissions:${SERVER}`, { ...ACCESS, owner: false, top: 2 });
+      fake.set(`roles:${SERVER}`, [
+        { id: '22'.repeat(16), name: 'Members', position: 1, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
+        { id: '33'.repeat(16), name: 'Higher role', position: 3, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
+      ]);
+    });
+    const checkbox = await screen.findByRole('checkbox', { name: 'Members' });
+    expect(screen.queryByRole('checkbox', { name: 'Higher role' })).not.toBeInTheDocument();
+    expect(screen.getByText(en['admin.bot.music.djRoles.help'])).toBeInTheDocument();
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.music.djRoles.save'] }));
+    await waitFor(() => expect(fake.callsOf('configureBotDjRoles')).toHaveLength(1));
+    expect(fake.callsOf('configureBotDjRoles')[0]).toMatchObject({ communityId: SERVER, installationId: initial.id, roleIds: ['22'.repeat(16)] });
+    expect(fake.callsOf('configureBotDjRoles')[0].requestId).toMatch(/^[0-9a-f]{32}$/);
+    expect(announce).toHaveBeenCalledWith(en['admin.bot.music.djRoles.saved']);
+    expect(screen.getByText(en['admin.bot.music.djRoles.help'])).toHaveTextContent(/does not mean playback is ready/i);
+  });
+
+  it('shows DJ role policy read-only without both current manager permissions', async () => {
+    const initial = { ...ROW, state: 3 as const };
+    const { fake } = setup(initial, false, false, false);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(initial);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    expect(await screen.findByText(en['admin.bot.music.djRoles.readOnly'])).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: en['admin.bot.music.djRoles.save'] })).not.toBeInTheDocument();
   });
 
   it('keeps installation controls available when join-role read is forbidden', async () => {

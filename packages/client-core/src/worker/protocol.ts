@@ -24,6 +24,8 @@ export type Command =
   | { m: 'listModerationCases'; communityId: string; offset: 0 }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
+  | { m: 'getBotDjRoles'; communityId: string }
+  | { m: 'configureBotDjRoles'; communityId: string; requestId: string; installationId: string; roleIds: string[] }
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }

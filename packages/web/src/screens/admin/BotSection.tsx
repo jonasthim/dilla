@@ -14,6 +14,7 @@ type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 
 type Phase = 'idle' | 'stepup';
 type StepUpPurpose = 'bot' | 'spotify';
 type JoinRoleSetting = { roleId: string | null; installationId: string };
+type DjRoleSetting = { roleIds: string[]; installationId: string };
 const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
 const BOT_STATUS_POLL_INTERVAL_MS = 2_000;
 const BOT_STATUS_POLL_LIMIT = 30;
@@ -58,6 +59,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [joinRoleValue, setJoinRoleValue] = useState('');
   const [joinRoleLoadedFor, setJoinRoleLoadedFor] = useState<string | null>(null);
   const [joinRoleError, setJoinRoleError] = useState<string | null>(null);
+  const [djRoles, setDjRoles] = useState<DjRoleSetting | null>(null);
+  const [djRoleValues, setDjRoleValues] = useState<string[]>([]);
+  const [djRolesLoadedFor, setDjRolesLoadedFor] = useState<string | null>(null);
+  const [djRolesError, setDjRolesError] = useState<string | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -82,6 +87,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     setJoinRoleValue('');
     setJoinRoleLoadedFor(null);
     setJoinRoleError(null);
+    setDjRoles(null);
+    setDjRoleValues([]);
+    setDjRolesLoadedFor(null);
+    setDjRolesError(null);
     setLoadedFor(null);
     setError(null);
     setPhase('idle');
@@ -110,6 +119,17 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       if (generation !== readGeneration.current) return;
       setJoinRoleError(errorMessage(errorOf(e)));
       setJoinRoleLoadedFor(communityId);
+    });
+    void client.call({ m: 'getBotDjRoles', communityId }).then(value => {
+      if (generation !== readGeneration.current) return;
+      const setting = value as DjRoleSetting | null;
+      setDjRoles(setting);
+      setDjRoleValues(setting?.roleIds ?? []);
+      setDjRolesLoadedFor(communityId);
+    }).catch((e: unknown) => {
+      if (generation !== readGeneration.current) return;
+      setDjRolesError(errorMessage(errorOf(e)));
+      setDjRolesLoadedFor(communityId);
     });
     void client.call({ m: 'refreshFactors' }).catch(() => undefined);
     return () => {
@@ -249,6 +269,24 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
     }).catch((e: unknown) => { if (generation === readGeneration.current) setJoinRoleError(errorMessage(errorOf(e))); })
       .finally(() => setBusyFor(value => value === requestCommunity ? null : value));
   };
+  const saveDjRoles = () => {
+    if (busy || selectedCommunity.current !== communityId || !current || currentError !== null
+      || access?.loaded !== true || !access.manageCommunity || !access.manageRoles || djRoles === null
+      || currentInstallation?.state !== 3 || currentInstallation.id !== djRoles.installationId
+      || djRoleValues.length > 250 || new Set(djRoleValues).size !== djRoleValues.length
+      || djRoleValues.some(id => !djRoleCandidates.some(role => role.id === id))) return;
+    const requestCommunity = communityId;
+    const generation = readGeneration.current;
+    setBusyFor(requestCommunity);
+    setDjRolesError(null);
+    void client.call({ m: 'configureBotDjRoles', communityId: requestCommunity, requestId: requestId(),
+      installationId: djRoles.installationId, roleIds: djRoleValues }).then(() => {
+      if (generation !== readGeneration.current) return;
+      setDjRoles(value => value === null ? value : { ...value, roleIds: djRoleValues });
+      announce(t('admin.bot.music.djRoles.saved'));
+    }).catch((e: unknown) => { if (generation === readGeneration.current) setDjRolesError(errorMessage(errorOf(e))); })
+      .finally(() => setBusyFor(value => value === requestCommunity ? null : value));
+  };
   const linkSpotify = () => {
     if (busy || !current || currentError !== null || factors === undefined) return;
     setStepUpPurpose('spotify');
@@ -300,6 +338,10 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const joinRoleCandidates = (roles ?? []).filter(role => role.position > 0
     && (access?.owner === true || role.position < (access?.top ?? 0)));
   const joinRoleReady = current && joinRole !== null && currentInstallation?.id === joinRole.installationId;
+  const djRoleCandidates = (roles ?? []).filter(role => role.position > 0
+    && (access?.owner === true || role.position < (access?.top ?? 0)));
+  const djRolesReady = current && djRoles !== null && currentInstallation?.state === 3 && currentInstallation?.id === djRoles.installationId;
+  const canEditDjRoles = djRolesReady && access?.loaded === true && access.manageCommunity && access.manageRoles;
   const canSelectCapability = (option: typeof CAPABILITY_OPTIONS[number]): boolean => access?.loaded === true && access.manageCommunity
     && (option.permission === null || access[option.permission] === true);
   const showCapabilitySelection = current && currentError === null
@@ -377,6 +419,25 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       </section>
       <section aria-labelledby={`${base}-music-title`}>
         <h3 id={`${base}-music-title`}>{t('admin.bot.music.title')}</h3>
+        <p>{t('admin.bot.music.djRoles.help')}</p>
+        {djRolesLoadedFor !== communityId ? <p aria-busy="true">{t('admin.bot.loading')}</p> : null}
+        {djRolesLoadedFor === communityId && djRoles === null && djRolesError === null ? <p>{t('admin.bot.music.djRoles.requiresBot')}</p> : null}
+        {currentInstallation?.state === 3 && access?.loaded === true && (!access.manageCommunity || !access.manageRoles)
+          ? <p role="note">{t('admin.bot.music.djRoles.readOnly')}</p> : null}
+        {djRolesError !== null ? <p role="alert">{djRolesError}</p> : null}
+        {djRolesReady ? <SettingsRow id={`${base}-dj-roles-row`} label={t('admin.bot.music.djRoles.label')}>
+          <fieldset disabled={!canEditDjRoles || busy}>
+            <legend>{t('admin.bot.music.djRoles.label')}</legend>
+            {djRoleCandidates.map(role => <label key={role.id}>
+              <input type="checkbox" value={role.id} checked={djRoleValues.includes(role.id)} disabled={!canEditDjRoles || busy}
+                onChange={event => { const checked = event.currentTarget.checked; setDjRoleValues(value => checked
+                  ? [...value, role.id] : value.filter(id => id !== role.id)); }} />{role.name}
+            </label>)}
+            {djRoleCandidates.length === 0 ? <p>{t('admin.bot.music.djRoles.noCandidates')}</p> : null}
+          </fieldset>
+          {canEditDjRoles ? <Button aria-disabled={busy || (djRoles?.roleIds.join(',') ?? '') === djRoleValues.join(',') || undefined}
+            onClick={saveDjRoles}>{t('admin.bot.music.djRoles.save')}</Button> : null}
+        </SettingsRow> : null}
         <SettingsRow id={`${base}-spotify-row`} label={t('admin.bot.music.spotify')}>
           <Button aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
             onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>

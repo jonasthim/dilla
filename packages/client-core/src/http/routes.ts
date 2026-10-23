@@ -93,6 +93,7 @@ export interface PermissionsRow { bits: bigint; top: number }
 export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
   revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
 export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uint8Array }
+export interface BotDjRolesRow { roleIds: Uint8Array[]; installationId: Uint8Array }
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
@@ -521,6 +522,23 @@ export class Routes {
       throw new CborError('E_CBOR_SHAPE', 'invalid bot join-role acknowledgement');
     }
     return bin(ack[1], 16);
+  }
+  /** DJ role policy belongs to the currently ready bot installation; the installation ID fences stale settings forms. */
+  async getBotDjRoles(communityId: Uint8Array): Promise<BotDjRolesRow | null> {
+    try {
+      const a = arr(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'read', true)));
+      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected DJ role ids and installation id');
+      const roles = bounded(a[0], 250, 'DJ roles').map(value => bin(value, 16));
+      if (new Set(roles.map(toHex)).size !== roles.length) throw new CborError('E_CBOR_SHAPE', 'duplicate DJ role id');
+      return { roleIds: roles, installationId: bin(a[1], 16) };
+    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  }
+  async configureBotDjRoles(communityId: Uint8Array, requestId: Uint8Array, installationId: Uint8Array, roleIds: Uint8Array[]): Promise<number> {
+    if (roleIds.length > 250 || new Set(roleIds.map(toHex)).size !== roleIds.length) throw new RangeError('E_ROUTE_INPUT: invalid DJ role ids');
+    const a = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'write', true,
+      { body: encode([inputId('requestId', requestId), inputId('installationId', installationId), roleIds.map(role => inputId('roleId', role))]), retry429: false })));
+    if (a.length !== 2 || !bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'invalid DJ role acknowledgement');
+    return u53(a[1]);
   }
   /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
   async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {

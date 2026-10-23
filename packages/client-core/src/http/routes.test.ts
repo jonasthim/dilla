@@ -116,6 +116,17 @@ it('reads the active bot join-role setting and writes it with a request ID', asy
     body: encode([USER, ROLE, BOT]), idempotent: true });
 });
 
+it('reads and writes DJ roles with the ready installation fence', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(200, [[ROLE], BOT]));
+  await expect(routes.getBotDjRoles(COMMUNITY)).resolves.toEqual({ roleIds: [ROLE], installationId: BOT });
+  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles` });
+  t.replies.push(cborReply(200, [USER, 1]));
+  await expect(routes.configureBotDjRoles(COMMUNITY, USER, BOT, [ROLE])).resolves.toBe(1);
+  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles`,
+    body: encode([USER, BOT, [ROLE]]), idempotent: true });
+});
+
 function member(i: number): Uint8Array {
   const id = new Uint8Array(16);
   id[15] = i;
