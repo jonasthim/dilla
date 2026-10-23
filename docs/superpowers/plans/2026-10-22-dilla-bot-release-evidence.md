@@ -1,5 +1,11 @@
 # Dilla Bot release evidence — 22 October 2026
 
+## Latest checkpoint — 23 October 2026
+
+Strict Chromium passed the public YouTube playlist acceptance, including playlist import, authenticated encrypted media, audible playback after Skip, and queue isolation. Music publishers now reserve durable SFrame counters per call epoch and Bot leaf. Admin rejoin Chromium passes on `043102f7`; the second-device Bot interaction scenario remains open.
+
+The full local Go suite, client-core suite (2,316 tests), web suite (2,585 tests), full Rust workspace, and docs/vector checks pass. CI run 305 is still running. Real Spotify Premium playback on the intended host remains unqualified. No release or deployment has occurred.
+
 ## 23 October PR review and release gate checkpoint
 
 ### 18:43 CEST verification after CI repair
