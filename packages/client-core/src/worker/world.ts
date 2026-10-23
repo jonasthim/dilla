@@ -530,6 +530,7 @@ export function world(opts: {
     setChannels: vi.fn(), setExpected: vi.fn((_groups: unknown) => {}), send: vi.fn(), retry: vi.fn(), discard: vi.fn(),
     sendRequest: vi.fn((_g: Uint8Array, _r: SendRequest): Uint8Array => new Uint8Array(16).fill(0x77)),
     runOnGroup: vi.fn((_g: Uint8Array, send: () => Promise<unknown>) => send()),
+    pollWelcomes: vi.fn(() => Promise.resolve()),
     openChannel: vi.fn((_c: unknown) => Promise.resolve({ groupId: GROUP, state: 2 as const })),
     rejoined: vi.fn((_communityId: Uint8Array) => {}),
   };

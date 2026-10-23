@@ -1400,8 +1400,13 @@ export class Controller {
     if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
     const communityId = fromHex(communityHex);
     const requestId = fromHex(requestHex);
-    const groupRows = this.requireCore().groups().filter((row) => row.kind === 3 && row.state === 2
+    const activeGroups = (): ReturnType<CorePort['groups']> => this.requireCore().groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === communityHex);
+    let groupRows = activeGroups();
+    if (groupRows.length === 0) {
+      await this.requireSync().pollWelcomes();
+      groupRows = activeGroups();
+    }
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;

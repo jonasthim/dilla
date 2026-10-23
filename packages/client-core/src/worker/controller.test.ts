@@ -274,6 +274,24 @@ describe('Controller', () => {
     expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
   });
 
+  it('fetches a late interaction Welcome before refusing a Bot request with no local group', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
+      name: 'voice', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.sync.pollWelcomes.mockImplementation(async () => {
+      w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_195, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),
+      requestId: toHex(requestId), operation: 10, args: [], revision: null });
+    await vi.waitFor(() => expect(w.ret(10_195)).toEqual({ t: 'ret', id: 10_195, ok: true, value: { requestId: toHex(requestId), upload: 'accepted' } }), { timeout: 1000 });
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+  });
+
   it('arms a step-up grant with only the deterministic config digest and binds op 63 to the same group and request', async () => {
     const w=world(); await toReady(w);
     const groupId=new Uint8Array(16).fill(0x52), requestId=new Uint8Array(16).fill(0x54);
