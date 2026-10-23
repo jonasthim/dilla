@@ -230,7 +230,7 @@ func TestPreimageIsEightyOneBytesAndMatchesTheVector(t *testing.T) {
 func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	s, repo, clk := newSessions(t)
 	ctx := context.Background()
-	owner, _, _ := seedDevice(t, repo)
+	owner, ownerDevice, _ := seedDevice(t, repo)
 	community := store.CommunityRow{ID: id.New(), Owner: owner, Name: "bot session",
 		PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: clk.Now().Unix()}
 	if err := repo.CreateCommunity(ctx, community); err != nil {
@@ -520,6 +520,37 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	if err := repo.CreateGroup(ctx, interactionGroupRow); err != nil {
 		t.Fatal(err)
 	}
+	registeredInteraction := store.BotGroupRegistrationReceipt{
+		InstallationID: installation.ID, OperationID: id.New(), UserID: botUser.ID, DeviceID: deviceID,
+		CommunityID: community.ID, GroupID: interactionGroupRow.GroupID, BodySHA256: bytes.Repeat([]byte{0x31}, 32),
+		Generation: 1, Epoch: 1, NextSeq: 1, AcceptedAt: clk.Now().Unix(),
+	}
+	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.CreateBotGroupRegistrationReceipt(ctx, registeredInteraction)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unregisteredInteraction := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, unregisteredInteraction); err != nil {
+		t.Fatal(err)
+	}
+	foreignInstallInteraction := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 3, CommunityID: &community.ID,
+		TargetID: owner, Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 0,
+		PolicyVersion: 1, Created: clk.Now().Unix()}
+	if err := repo.CreateGroup(ctx, foreignInstallInteraction); err != nil {
+		t.Fatal(err)
+	}
+	foreignInstallReceipt := registeredInteraction
+	foreignInstallReceipt.DeviceID = ownerDevice
+	foreignInstallReceipt.OperationID = id.New()
+	foreignInstallReceipt.GroupID = foreignInstallInteraction.GroupID
+	if err := repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.CreateBotGroupRegistrationReceipt(ctx, foreignInstallReceipt)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, pattern, method, installation, group string
 		allow                                      bool
@@ -564,6 +595,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
 		{name: "ready bot can redeem its automatic moderation grant", pattern: "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String()},
 		{name: "ready bot can upload to own community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: ownGroup.String()},
+		{name: "ready bot can send to its accepted interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
 		{name: "ready bot can read own community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
@@ -591,6 +623,8 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot cannot upload to foreign community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignGroup.String()},
+		{name: "ready bot cannot send to an unregistered interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: unregisteredInteraction.GroupID.String()},
+		{name: "ready bot cannot send to an interaction group registered to another device", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignInstallInteraction.GroupID.String()},
 		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
 	} {

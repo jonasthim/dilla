@@ -1181,6 +1181,44 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID && group.Kind == 3 && group.ClosedAt == nil, nil
 	}
+	interactionSendGroupPath := func() (bool, error) {
+		if !ready {
+			return false, nil
+		}
+		allowed, err := communityPathForBot(ctx, s.repo, bot)
+		if err != nil || !allowed {
+			return false, err
+		}
+		groupID, ok := pathID(r, "group")
+		if !ok {
+			return false, nil
+		}
+		group, err := s.repo.GetGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
+			return false, nil
+		}
+		if group.Kind <= 1 {
+			return true, nil
+		}
+		if group.Kind != 3 {
+			return false, nil
+		}
+		receipt, err := s.repo.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return receipt.InstallationID == bot.InstallationID && receipt.UserID == session.UserID &&
+			receipt.DeviceID == session.DeviceID && receipt.CommunityID == bot.CommunityID && receipt.GroupID == groupID, nil
+	}
 	channelPath := func(name string) (bool, error) {
 		allowed, err := communityPathForBot(ctx, s.repo, bot)
 		if err != nil || !allowed {
@@ -1388,10 +1426,12 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 			return false, nil
 		}
 		return communityPathForBot(ctx, s.repo, bot)
+	case "POST /v1/groups/{group}/bot/messages":
+		return interactionSendGroupPath()
 	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
 		"GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
-		"POST /v1/groups/{group}/bot/messages", "POST /v1/groups/{group}/moderation/removals",
+		"POST /v1/groups/{group}/moderation/removals",
 		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
 		if !ready {
 			return false, nil
