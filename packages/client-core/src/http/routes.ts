@@ -595,6 +595,18 @@ export class Routes {
       throw new CborError('E_CBOR_SHAPE', 'invalid role panel acknowledgement');
     }
   }
+  /** Applies a human-authenticated role-panel action only after the matching encrypted event was accepted. */
+  async applyRolePanelReaction(communityId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
+    groupId: Uint8Array, eventSeq: bigint, emoji: string, enabled: boolean): Promise<void> {
+    if (messageSeq < 1n || messageSeq > (1n << 63n) - 1n || eventSeq < 1n || eventSeq > (1n << 63n) - 1n
+      || new TextEncoder().encode(emoji).length < 1 || new TextEncoder().encode(emoji).length > 32) {
+      throw new RangeError('E_ROUTE_INPUT: invalid role panel reaction');
+    }
+    await this.http.request({ method: 'POST',
+      path: `/v1/communities/${id('communityId', communityId)}/role-panels/${id('channelId', channelId)}/${messageSeq}/reaction`,
+      bucket: 'write', idempotent: true, body: encode([inputId('groupId', groupId), eventSeq, emoji, enabled ? 1 : 0]),
+      retry429: false, ok: [204], maxBodyBytes: 0 });
+  }
   /** Request ID is retained across HTTP retries; the server binds it to actor, payload and result. */
   async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,
     capabilities: number, stepUp: string): Promise<BotInstallationRow> {

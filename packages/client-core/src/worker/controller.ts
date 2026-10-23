@@ -37,7 +37,7 @@ import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
-  type PresenceChoice, type PresenceStatus,
+  type PresenceChoice, type PresenceStatus, type TimelineState,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -2183,7 +2183,7 @@ export class Controller {
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
       onSlow: (g, untilMs, queued) => { this.safely(() => { this.onSlow(g, untilMs, queued); }); },
-      onPosted: (g, type) => { this.safely(() => { this.onPosted(g, type); }); },
+      onPosted: (g, type, row) => { this.safely(() => { this.onPosted(g, type, row); }); },
     });
     this.sync = sync;
     sync.start();
@@ -5129,7 +5129,28 @@ export class Controller {
   }
 
   /** CB2: a confirmed own post (type 0) starts the channel's countdown of slowmode seconds; a fold never does. */
-  private onPosted(g: Id, type: number): void {
+  private onPosted(g: Id, type: number, posted?: OutboxRow): void {
+    if ((type === 3 || type === 4) && posted?.replyTo !== null && posted?.replyTo !== undefined) {
+      const core = this.core;
+      const group = core?.groupRow(g);
+      const me = this.me;
+      if (core !== null && core !== undefined && group !== null && group !== undefined && me !== null) {
+        const channelId = toHex(group.targetId);
+        const channel = this.target(channelId);
+        if (channel?.communityId !== null && channel?.communityId !== undefined) {
+          const rows = core.timeline(g, 0n, 200);
+          const event = rows.find(row => row.msgId !== null && toHex(row.msgId) === toHex(posted.msgId));
+          const targetTimeline = this.slices.get(`timeline:${channelId}`) as TimelineState | undefined;
+          const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
+          if (event?.status === 0 && event.type === type && event.senderDevice.every((byte, i) => byte === me.deviceId[i])
+            && target?.state === 'ok' && target.seq !== null) {
+            const apply = this.routes.applyRolePanelReaction(fromHex(channel.communityId), channel.channel.id, BigInt(target.seq),
+              g, event.seq, posted.body, type === 3);
+            void this.barrier.track(apply).catch(() => undefined);
+          }
+        }
+      }
+    }
     if (type !== 0) return;
     const channel = this.slowChannel(g);
     if (channel === null || channel.slowmode <= 0) return;

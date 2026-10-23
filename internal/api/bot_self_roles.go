@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -44,15 +45,181 @@ type rolePanelRegistrationRequest struct {
 	Options    []rolePanelOptionRequest
 }
 
+type rolePanelReactionRequest struct {
+	_        struct{} `cbor:",toarray"`
+	GroupID  id.ID
+	EventSeq uint64
+	Emoji    string
+	Enabled  uint8
+}
+
 func (h *Roles) RegisterSelfRoles(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/self-roles", h.listSelfRoles)
 	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/policy", h.configureSelfRoles)
 	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/{role_id}", h.selectSelfRole)
 	mux.HandleFunc("PUT /v1/communities/{id}/role-panels", h.registerRolePanel)
+	mux.HandleFunc("POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction", h.rolePanelReaction)
 	mux.HandleFunc("PUT /v1/communities/{id}/bot-join-role", h.configureBotJoinRole)
 	mux.HandleFunc("GET /v1/communities/{id}/bot-join-role", h.getBotJoinRole)
 	mux.HandleFunc("GET /v1/communities/{id}/music/dj-roles", h.getDJRolePolicy)
 	mux.HandleFunc("PUT /v1/communities/{id}/music/dj-roles", h.putDJRolePolicy)
+}
+
+// rolePanelReaction records the authenticated member's explicit selection for
+// a registered panel after the encrypted reaction message has been accepted by
+// the delivery service. The server cannot inspect the MLS plaintext; the API
+// action itself is constrained to the exact approved panel mapping.
+func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
+	var req rolePanelReactionRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		refuseCBOR(w, r, err)
+		return
+	}
+	cid, actor, err := h.selfRoleCommunity(r, h.repo)
+	if err != nil {
+		h.fail(w, r, "apply role panel reaction", err)
+		return
+	}
+	channelID, err := server.PathID(r, "channel_id")
+	if err != nil {
+		h.fail(w, r, "apply role panel reaction", err)
+		return
+	}
+	seq, err := strconv.ParseUint(r.PathValue("message_seq"), 10, 64)
+	if err != nil || seq == 0 || seq > math.MaxInt64 || req.GroupID.IsZero() || req.EventSeq == 0 || req.EventSeq > math.MaxInt64 ||
+		req.Emoji == "" || len(req.Emoji) > 32 || !utf8.ValidString(req.Emoji) || req.Enabled > 1 {
+		h.fail(w, r, "apply role panel reaction", server.Errorf(server.CodeInvalidRequest, "invalid panel reaction"))
+		return
+	}
+	var changed bool
+	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), cid); err != nil {
+			return notFound(err)
+		}
+		channel, err := tx.GetChannel(r.Context(), channelID)
+		if err != nil || channel.CommunityID == nil || *channel.CommunityID != cid || channel.Kind != ChannelText || channel.DeletedAt != nil {
+			return server.Errorf(server.CodeNotFound, "channel not found")
+		}
+		if _, err := tx.GetMember(r.Context(), cid, actor.UserID); err != nil {
+			return notFound(err)
+		}
+		group, err := tx.GetGroup(r.Context(), req.GroupID)
+		if err != nil || group.Kind != 0 || group.CommunityID == nil || *group.CommunityID != cid || group.TargetID != channelID || group.ClosedAt != nil {
+			return server.Errorf(server.CodeForbidden, "accepted reaction is not from this open channel group")
+		}
+		if err := tx.LockGroup(r.Context(), group.GroupID); err != nil {
+			return err
+		}
+		group, err = tx.GetGroup(r.Context(), req.GroupID)
+		if err != nil || group.Kind != 0 || group.CommunityID == nil || *group.CommunityID != cid || group.TargetID != channelID || group.ClosedAt != nil {
+			return server.Errorf(server.CodeForbidden, "accepted reaction is not from this open channel group")
+		}
+		members, err := tx.ListMembers(r.Context(), req.GroupID)
+		if err != nil {
+			return err
+		}
+		memberDevice := false
+		for _, member := range members {
+			if member.UserID == actor.UserID && member.DeviceID == actor.DeviceID {
+				memberDevice = true
+				break
+			}
+		}
+		if !memberDevice {
+			return server.Errorf(server.CodeForbidden, "reaction sender is not a current channel device")
+		}
+		event, err := tx.GetAppMessage(r.Context(), req.GroupID, req.EventSeq)
+		if err != nil || event.UploaderDevice != actor.DeviceID || event.DeletedAt != nil || (event.Class != nil && *event.Class != 0) {
+			return server.Errorf(server.CodeForbidden, "reaction event is not an accepted message from this device")
+		}
+		panel, err := tx.GetRolePanel(r.Context(), channelID, seq)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if panel.CommunityID != cid || panel.SendOperationID.IsZero() {
+			return nil
+		}
+		options, err := tx.ListRolePanelOptions(r.Context(), channelID, seq)
+		if err != nil {
+			return err
+		}
+		var roleID id.ID
+		for _, option := range options {
+			if option.Emoji == req.Emoji {
+				roleID = option.RoleID
+				break
+			}
+		}
+		if roleID.IsZero() {
+			return server.Errorf(server.CodeForbidden, "emoji is not mapped by this panel")
+		}
+		source := store.ReactionRoleGrant{CommunityID: cid, UserID: actor.UserID, RoleID: roleID, ChannelID: channelID, MessageSeq: seq, Reaction: req.Emoji}
+		if req.Enabled == 0 {
+			err = tx.(store.ReactionRoleGrantSources).RemoveReactionRoleGrant(r.Context(), source)
+			if errors.Is(err, store.ErrNotFound) {
+				err = nil
+			}
+			changed = err == nil
+			return err
+		}
+		installation, err := tx.GetBotInstallation(r.Context(), panel.InstallationID)
+		if err != nil || installation.CommunityID != cid || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.UserID == nil || *installation.UserID != panel.AuthorID {
+			return server.Errorf(server.CodeForbidden, "role panel is no longer active")
+		}
+		bot, err := tx.GetUser(r.Context(), panel.AuthorID)
+		if err != nil || bot.Kind != 1 {
+			return server.Errorf(server.CodeForbidden, "role panel author is not the installed bot")
+		}
+		if err := verifyRolePanelBotSend(r.Context(), tx, installation, bot.ID, channel, rolePanelRegistrationRequest{
+			RequestID: panel.SendOperationID, ChannelID: channelID, MessageSeq: seq,
+		}); err != nil {
+			return err
+		}
+		policy, err := tx.ListSelfRolePolicy(r.Context(), cid)
+		if err != nil {
+			return err
+		}
+		approved := false
+		var approvedBy id.ID
+		for _, row := range policy {
+			if row.RoleID == roleID {
+				approved, approvedBy = true, row.ApprovedBy
+				break
+			}
+		}
+		if !approved {
+			return server.Errorf(server.CodeForbidden, "panel role is no longer approved for self-service")
+		}
+		actorSnap, err := LoadSnapshot(r.Context(), tx, cid, actor.UserID, nil)
+		if err != nil {
+			return notFound(err)
+		}
+		actorBits := actorSnap.Resolve(actor.UserID)
+		if !actorBits.Has(PermViewChannel) || !actorBits.Has(PermAddReactions) {
+			return server.Errorf(server.CodeForbidden, "view_channel and add_reactions required")
+		}
+		if err := h.selfRoleCandidate(r, tx, cid, actor.UserID, roleID, actorBits, actorSnap); err != nil {
+			return err
+		}
+		approverSnap, err := LoadSnapshot(r.Context(), tx, cid, approvedBy, nil)
+		if err != nil || !approverSnap.Resolve(approvedBy).Has(PermManageRoles) || h.selfRoleCandidate(r, tx, cid, approvedBy, roleID, approverSnap.Resolve(approvedBy), approverSnap) != nil {
+			return server.Errorf(server.CodeForbidden, "panel role approval is no longer valid")
+		}
+		err = tx.(store.ReactionRoleGrantSources).AddReactionRoleGrant(r.Context(), source)
+		changed = err == nil
+		return err
+	})
+	if err != nil {
+		h.fail(w, r, "apply role panel reaction", err)
+		return
+	}
+	if changed {
+		h.reactionRoleChanged(r.Context(), cid, actor.UserID)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type djRolePolicyRequest struct {

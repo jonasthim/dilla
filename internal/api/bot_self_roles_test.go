@@ -224,6 +224,41 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if status != http.StatusOK {
 		t.Fatalf("register installation-authored panel = %d (%x), want 200", status, body)
 	}
+	ownerSession := e.sess[ownerTok]
+	if err := e.Repo.ReplaceMembers(t.Context(), groupID, 0, []store.MemberRow{{GroupID: groupID, LeafIndex: 0,
+		UserID: ownerSession.UserID, DeviceID: ownerSession.DeviceID, SignatureKey: make([]byte, 32)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: groupID, Seq: 1, UploaderDevice: ownerSession.DeviceID, Blob: []byte{1}, FrankingTag: make([]byte, 32), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	reactionPath := path + "/" + channel.String() + "/9/reaction"
+	status, body = e.Do(http.MethodPost, reactionPath, ownerTok, []any{groupID, uint64(1), "✅", uint64(1)})
+	if status != http.StatusNoContent {
+		t.Fatalf("accepted encrypted panel reaction = %d (%x), want 204", status, body)
+	}
+	held, err := e.Repo.ListMemberRoles(t.Context(), cid, ownerSession.UserID)
+	if err != nil || !slices.Contains(held, role) {
+		t.Fatalf("role after accepted panel action = %v, %v; want role", held, err)
+	}
+	if err := e.Repo.PutMemberRole(t.Context(), cid, ownerSession.UserID, role); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPost, reactionPath, ownerTok, []any{groupID, uint64(1), "✅", uint64(0)})
+	if status != http.StatusNoContent {
+		t.Fatalf("remove accepted encrypted panel reaction = %d (%x), want 204", status, body)
+	}
+	held, err = e.Repo.ListMemberRoles(t.Context(), cid, ownerSession.UserID)
+	if err != nil || !slices.Contains(held, role) {
+		t.Fatalf("manual grant after panel action removal = %v, %v; want role retained", held, err)
+	}
+	if err := e.Repo.DeleteMemberRole(t.Context(), cid, ownerSession.UserID, role); err != nil {
+		t.Fatal(err)
+	}
+	held, err = e.Repo.ListMemberRoles(t.Context(), cid, ownerSession.UserID)
+	if err != nil || slices.Contains(held, role) {
+		t.Fatalf("role after both sources removed = %v, %v; want absent", held, err)
+	}
 	status, body = e.Do(http.MethodPut, path, ownerTok, []any{id.New(), channel, uint64(9), []any{[]any{"✅", role}}})
 	if status != http.StatusForbidden {
 		t.Fatalf("register with forged operation id = %d (%x), want 403", status, body)
@@ -278,7 +313,6 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if status != http.StatusForbidden {
 		t.Fatalf("register against a closed text group = %d (%x), want 403", status, body)
 	}
-	ownerSession := e.sess[ownerTok]
 	ownerSession.WireVersion, ownerSession.E2EEVersion, ownerSession.MediaVersion = 3, 1, 1
 	e.sess[ownerTok] = ownerSession
 	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, owner); err != nil || !slices.Contains(held, role) {

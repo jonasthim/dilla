@@ -183,7 +183,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     s.queued.delete(msgHex);
     // The clear first, so the countdown onPosted starts is not cleared after it.
     if (s.slowed.delete(msgHex) && row.type === 0 && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
-    s.deps.onPosted(g, row.type);
+    s.deps.onPosted(g, row.type, row);
     s.requestDrain(g);
   } catch (e) {
     if (s.stopped()) return;

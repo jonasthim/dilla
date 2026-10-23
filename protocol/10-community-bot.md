@@ -1255,13 +1255,16 @@ unknown network outcome and must not infer expiry from transport errors.
 Role lists have at most 100 unique ids and entries are `[role_id, emoji|null]`,
 emoji at most32 UTF8 bytes. Configuring human must satisfy normal rank and
 permission ceilings; privileged roles and roles above the ceiling are refused.
-Panels must name an accepted bot-authored message in that channel; spoofed panels,
-deleted roles and inactive panels are inert. Human selection acts only on the
-session user. Reaction grants use the authenticated reaction uploader, never the
-panel author. Source_kind0 join,1 selection,2 reaction; source_id is membership
-episode, selection operation or reaction message id respectively. Server verifies
-membership episode/panel/event attribution before a constrained grant. Tracking
-sources preserves an independent manual grant when a reaction is removed. A
+Panels must name an accepted bot-authored send receipt in that channel; spoofed
+panels, deleted roles and inactive panels are inert. Human selection acts only
+on the session user. In E2EE channels, the client submits an explicit
+human-authenticated panel action only after the encrypted reaction upload is
+accepted. The server binds its event sequence to the session device's accepted
+application message, but cannot inspect the encrypted emoji plaintext; the API
+action is constrained to the exact registered mapping and current self-role
+policy. Reaction grants use the authenticated session user, never the panel
+author. Tracking independent sources preserves a manual grant when a panel
+reaction is removed, including after the self-role approval is withdrawn. A
 manual revocation clears relevant selection sources; new selection reevaluates
 current policy. The bot never receives unrestricted manage_roles.
 

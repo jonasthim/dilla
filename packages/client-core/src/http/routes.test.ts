@@ -95,6 +95,17 @@ it('registers only bounded unique mappings against an accepted Bot message ident
   ])).rejects.toThrow(/duplicate role panel mapping/u);
 });
 
+it('submits only a bounded explicit panel action after an accepted encrypted event', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(noContent());
+  await routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 11n, '✅', true);
+  expect(http.requests[0]).toMatchObject({ method: 'POST',
+    path: `/v1/communities/${hex(COMMUNITY)}/role-panels/${hex(CHANNEL)}/9/reaction`,
+    body: encode([GROUP, 11n, '✅', 1]), bucket: 'write', idempotent: true, retry429: false, ok: [204] });
+  await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 0n, GROUP, 11n, '✅', true)).rejects.toThrow(/invalid role panel reaction/u);
+  await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 0n, '✅', false)).rejects.toThrow(/invalid role panel reaction/u);
+});
+
 it('returns the current interaction admission proof without interpreting its signed payload', async () => {
   const { routes, t, http } = setup();
   t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));

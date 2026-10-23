@@ -307,12 +307,24 @@ CBOR API request, not a public redirect endpoint.
 | `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B (ready, Music capability, owning installation) | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current policy, `Cache-Control: no-store` |
 | `GET /v1/communities/{community}/bot/members/{member}/episode` | B (ready, wire v3, current installed bot/member) | Empty | `[member_id, episode_id]` for the current membership episode; 404 when the member is absent |
 | `POST /v1/communities/{community}/bot/join-role-grants` | E (ready Bot session, wire v3, roles capability) | `[request_id, member_id, episode_id]` | `[request_id, installation_id, community_id, member_id, episode_id, role_id]` immutable grant receipt; 204 when the episode is current but no join role is configured; 404 for a stale episode; repeated identical requests return the same receipt |
-| `PUT /v1/communities/{id}/role-panels` | E (current manage_roles session; ready Roles-capable Bot) | `[request_id, channel_id, accepted_message_seq, [[emoji, role_id]...]]` | `[request_id, accepted_option_count]`; requires a live readable message authored by the installed Bot user and device, and every role must remain approved and eligible |
+| `PUT /v1/communities/{id}/role-panels` | E (current manage_roles session; ready Roles-capable Bot) | `[request_id, channel_id, accepted_message_seq, [[emoji, role_id]...]]` | `[request_id, accepted_option_count]`; requires an accepted Bot send receipt for the channel and every role must remain approved and eligible; readable rows, when present, must match the receipt |
+| `POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction` | E (current human channel member; after an accepted encrypted event) | `[group_id, event_seq, emoji, enabled(uint 0 or 1)]` | `204`; actor is the session user, and only the exact approved mapping for this registered panel may change that actor's reaction grant source |
 | `PUT /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id, expires_unix]` | `[request_id, expires_unix]` |
 | `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |
 | `GET /v1/communities/{id}/members/{user_id}/timeout` | E (member or moderate_members) | — | `[expires_unix|null]` |
 | `POST /v1/communities/{id}/members/{user_id}/warning` | E (moderate_members; actor must outrank target) | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}` | B (ready installation with warnings capability; owning session) | — | `[request_id, action_id, community_id, actor_user_id, actor_device_id, target_user_id, community_revision, accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
+
+The role-panel action route is an explicit authenticated self-service action. The
+client calls it only after the corresponding encrypted reaction upload has been
+accepted; the server binds `event_seq` to the current session device's accepted
+application-message row in the named open channel group. MLS plaintext remains
+opaque to the server, so the request's emoji and enabled flag are the action
+itself, not a server-verified interpretation of ciphertext. The server rechecks
+the exact registered panel, Bot send receipt, current role approval, hierarchy,
+and channel membership before adding a source; removal deletes only that
+session user's matching panel source and remains available if policy approval
+was later withdrawn.
 
 The warning route writes an immutable warning action and audit metadata. It does
 not accept or store a plaintext reason. The request ID is idempotent for the same
