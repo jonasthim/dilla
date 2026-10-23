@@ -24,6 +24,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -310,7 +311,13 @@ func sweep(t *testing.T, h http.Handler, token string, alive bool) map[docRoute]
 }
 
 func TestAnAccountThatOwesASecondFactorReachesOnlyTheAllowList(t *testing.T) {
-	srv, h, code := newInstance(t)
+	// This route sweep intentionally exercises every documented endpoint, then reuses the
+	// same bearer for a control sweep. Keep its session lifetime independent of defaults so
+	// unrelated test-config changes or slow CI workers cannot turn the control into an expiry
+	// test. The assertions below still fail on any 401 before the final account deletion.
+	srv, h, code := newInstanceWith(t, func(cfg *config.Config) {
+		cfg.Auth.Session.NativeLifetime = "720h"
+	})
 	defer srv.Shutdown(context.Background())
 	ctx := context.Background()
 	ssk := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7c}, 32))
