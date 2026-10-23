@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation"
+	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -73,10 +74,16 @@ func (a AcceptedModerationAction) matches(request ModerationAction, binding nati
 	community, cErr := id.Parse(request.Community)
 	group, gErr := id.Parse(request.Group)
 	message, mErr := id.Parse(request.Message)
-	return cErr == nil && gErr == nil && mErr == nil && request.Decision.Action == moderation.ActionRemove &&
+	if cErr != nil || gErr != nil || mErr != nil || community != binding.Community || request.Decision.Action != a.action {
+		return false
+	}
+	operation := operationid.Automatic(group, request.SourceRevision)
+	if a.action == moderation.ActionRemove {
+		operation = moderationRemovalOperationID(group, message, request.SourceRevision)
+	}
+	return (a.action == moderation.ActionRemove || a.action == moderation.ActionWarn || a.action == moderation.ActionTimeout) &&
 		!a.actionID.IsZero() && a.serverRevision > 0 && a.serverRevision <= math.MaxInt64 && a.community == binding.Community && a.community == community &&
-		a.group == group && a.targetSequence == request.SourceRevision && a.action == moderation.ActionRemove &&
-		a.operationID == moderationRemovalOperationID(group, message, request.SourceRevision)
+		a.group == group && a.targetSequence == request.SourceRevision && a.operationID == operation
 }
 
 // ModerationCase is an installation-bound record stored in encrypted helper
@@ -270,8 +277,18 @@ func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
 		if !c.ServerActionID.IsZero() || !c.ServerOperationID.IsZero() || c.ServerRevision != 0 {
 			return nil, ErrModerationCaseState
 		}
-	} else if c.Action != moderation.ActionRemove || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 {
-		return nil, ErrModerationAcceptanceMismatch
+	} else {
+		group, groupErr := id.Parse(c.Group)
+		message, messageErr := id.Parse(c.Message)
+		operation := operationid.Automatic(group, c.SourceRevision)
+		if c.Action == moderation.ActionRemove {
+			operation = moderationRemovalOperationID(group, message, c.SourceRevision)
+		}
+		if (c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) ||
+			c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
+			groupErr != nil || messageErr != nil || operation.IsZero() || c.ServerOperationID != operation {
+			return nil, ErrModerationAcceptanceMismatch
+		}
 	}
 	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, c.Community, c.Group, c.Channel, c.Actor, c.Message,
 		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli()), c.ServerActionID, c.ServerRevision, c.ServerOperationID})
@@ -365,8 +382,12 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 	} else {
 		group, groupErr := id.Parse(c.Group)
 		message, messageErr := id.Parse(c.Message)
-		if c.Action != moderation.ActionRemove || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
-			groupErr != nil || messageErr != nil || c.ServerOperationID != moderationRemovalOperationID(group, message, c.SourceRevision) {
+		operation := operationid.Automatic(group, c.SourceRevision)
+		if c.Action == moderation.ActionRemove {
+			operation = moderationRemovalOperationID(group, message, c.SourceRevision)
+		}
+		if (c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
+			groupErr != nil || messageErr != nil || operation.IsZero() || c.ServerOperationID != operation {
 			return ModerationCase{}, ErrModerationCaseState
 		}
 	}

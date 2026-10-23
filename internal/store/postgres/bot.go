@@ -292,7 +292,7 @@ func botOperationRow(b pgdb.BotOperations) store.BotOperationRow {
 	return store.BotOperationRow{CommunityID: b.CommunityID, RequestID: b.RequestID, InstallationID: b.InstallationID, ActorKind: uint8(b.ActorKind), ActorID: b.ActorID, ActorDevice: b.ActorDevice, Operation: uint8(b.Operation), PayloadHash: b.PayloadHash, ResultCBOR: b.ResultCbor, Created: b.Created}
 }
 func (r *Repo) CreateBotOperation(ctx context.Context, b store.BotOperationRow) error {
-	if b.ActorKind > 2 || b.Operation < 1 || b.Operation > 7 || len(b.PayloadHash) != 32 || len(b.ResultCBOR) > 8192 {
+	if b.ActorKind > 2 || b.Operation < 1 || b.Operation > 8 || len(b.PayloadHash) != 32 || len(b.ResultCBOR) > 8192 {
 		return store.ErrConflict
 	}
 	return wrap(r.w.CreateBotOperation(ctx, pgdb.CreateBotOperationParams{CommunityID: b.CommunityID, RequestID: b.RequestID, InstallationID: b.InstallationID, ActorKind: int64(b.ActorKind), ActorID: b.ActorID, ActorDevice: b.ActorDevice, Operation: int64(b.Operation), PayloadHash: b.PayloadHash, ResultCbor: b.ResultCBOR, Created: b.Created}))

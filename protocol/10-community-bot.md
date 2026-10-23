@@ -131,6 +131,25 @@ preimage with its device key; the server verifies it against the authenticated
 session and current authority.
 Accepted stored proofs remain evidence after expiry; decoding never applies time.
 
+## Automatic warning and timeout acceptance
+
+`POST /v1/bot-runtime/installations/{installation}/moderation/actions` accepts
+`[request_id, group_id, source_seq, action, rules, timeout_ms, expires]` and
+returns `[action_id, community_revision, expires|null]`. The request is accepted
+only for an enrolled session bound to that exact Ready installation and when
+both the current installation and session capabilities include warnings/timeouts.
+The server rechecks the active installation, source text group and recent
+undeleted message, uploader membership, current `moderate_members` permission,
+and role hierarchy in the same transaction that records the event and receipt.
+The source sequence and group determine a stable operation ID; an exact replay
+returns the original receipt, including after the request acceptance window.
+Timeouts update the member timeout row, which applies to every upload class.
+
+The server can verify the source message and authorization, but it cannot inspect
+the encrypted message or independently attest that a listed rule matched. Rule
+IDs and the runtime-generated action are inputs from the authenticated bot
+session. This endpoint does not claim cryptographic evaluator attestation.
+
 ## Durable structural event
 
 `[1, event_id, sequence uint>0, community_id, timestamp uint, kind uint1..7, data]`.

@@ -37,6 +37,19 @@ type removalSessionFake struct {
 	emptyReceipt bool
 }
 
+func (f *removalSessionFake) AcceptBotModerationAction(context.Context, id.ID, id.ID, id.ID, uint64, string, []string, uint64, uint64) (client.ModerationActionReceipt, error) {
+	if f.err != nil {
+		return client.ModerationActionReceipt{}, f.err
+	}
+	if f.emptyReceipt {
+		return client.ModerationActionReceipt{}, nil
+	}
+	if !f.receipt.ActionID.IsZero() {
+		return client.ModerationActionReceipt{ActionID: f.receipt.ActionID, Revision: f.receipt.Revision}, nil
+	}
+	return client.ModerationActionReceipt{ActionID: testID(88), Revision: 23}, nil
+}
+
 func (f *removalSessionFake) AcceptModerationRemoval(_ context.Context, _ id.ID, body []byte) (client.ModerationRemovalReceipt, error) {
 	f.bodies = append(f.bodies, append([]byte(nil), body...))
 	if len(f.errs) > 0 {
@@ -72,13 +85,41 @@ func TestModerationRemovalBackendRefusesUnsupportedActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []moderation.Action{moderation.ActionLog, moderation.ActionWarn, moderation.ActionTimeout} {
+	for _, action := range []moderation.Action{moderation.ActionLog} {
 		if err := b.EnforceModerationAction(context.Background(), removalAction(action)); !errors.Is(err, ErrModerationActionUnsupported) {
 			t.Fatalf("action %q error = %v, want unsupported", action, err)
 		}
 	}
 	if len(n.ids) != 0 || len(s.bodies) != 0 {
 		t.Fatalf("unsupported action reached signer/server: signs=%d posts=%d", len(n.ids), len(s.bodies))
+	}
+}
+
+func TestModerationEnforcementAcceptsRuntimeGeneratedWarnAndTimeout(t *testing.T) {
+	binding := native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}
+	n := &removalSignerFake{binding: binding}
+	s := &removalSessionFake{}
+	b, err := newModerationRemovalBackend(n, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, actionKind := range []moderation.Action{moderation.ActionWarn, moderation.ActionTimeout} {
+		a := removalAction(actionKind)
+		if actionKind == moderation.ActionTimeout {
+			a.Decision.Timeout = 10 * time.Minute
+		}
+		accepted, err := b.AcceptModerationAction(context.Background(), a)
+		if err != nil {
+			t.Fatalf("%s: %v", actionKind, err)
+		}
+		if !accepted.matches(a, binding) || accepted.action != actionKind {
+			t.Fatalf("%s acceptance mismatch: %+v", actionKind, accepted)
+		}
+	}
+	bad := removalAction(moderation.ActionWarn)
+	bad.runtimeGenerated = false
+	if _, err := b.AcceptModerationAction(context.Background(), bad); !errors.Is(err, ErrModerationActionSource) {
+		t.Fatalf("untrusted warning = %v", err)
 	}
 }
 

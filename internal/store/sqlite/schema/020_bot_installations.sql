@@ -54,7 +54,7 @@ CREATE TABLE bot_operations (
   actor_kind      INTEGER NOT NULL CHECK (actor_kind IN (0, 1, 2)),
   actor_id        BLOB    NOT NULL CHECK (length(actor_id) = 16),
   actor_device    BLOB    CHECK (actor_device IS NULL OR length(actor_device) = 16),
-  operation       INTEGER NOT NULL CHECK (operation BETWEEN 1 AND 7),
+  operation       INTEGER NOT NULL CHECK (operation BETWEEN 1 AND 8),
   payload_hash    BLOB    NOT NULL CHECK (length(payload_hash) = 32),
   result_cbor     BLOB    NOT NULL CHECK (length(result_cbor) <= 8192),
   created         INTEGER NOT NULL,
