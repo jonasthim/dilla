@@ -344,9 +344,6 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
     await expect(page.locator('.d-chrow', { hasText: RAID })).toHaveAttribute('data-unread', /^[1-9]/, { timeout: WAIT });
 
     lap('world: Mira, DM, voice');
-    expect(guard.interactionAdmissionRefusals.length,
-      'ordinary Welcome rows are refused only by the signed kind-3 interaction-context endpoint')
-      .toBeGreaterThan(0);
     if (CHECK_WEBROOT !== null) {
       // The red runs: the same server data and the same browsers, served the other build (the live call does not survive the restart).
       await h.stop();

@@ -430,6 +430,28 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if h.do(t, http.MethodGet, contextPath, token, nil).Code < 400 {
 		t.Fatal("managed Bot session obtained human current interaction context")
 	}
+	// A regular channel group can have the same participant and community, but it
+	// has no accepted kind-3 registration. It must not obtain the signed proof that
+	// authorizes accepting an interaction Welcome.
+	ordinaryGroupID := id.New()
+	ordinaryCommunityID := idFromHex(t, meta.CommunityID)
+	if err := h.deps.Repo.CreateGroup(ctx, store.GroupRow{
+		GroupID: ordinaryGroupID, Binding: []byte{0x80}, Kind: 0, CommunityID: &ordinaryCommunityID,
+		TargetID: id.New(), Ciphersuite: 1, Epoch: 1, ExternalSenderKeyID: id.New(),
+		E2EEVersion: 1, MediaVersion: 1, PolicyVersion: meta.PolicyVersion, Created: now,
+	}); err != nil {
+		t.Fatalf("create ordinary Welcome group: %v", err)
+	}
+	ordinaryContextPath := "/v1/groups/" + ordinaryGroupID.String() + "/interaction-admission-context"
+	ordinaryContext := h.do(t, http.MethodGet, ordinaryContextPath, humanToken, nil)
+	if ordinaryContext.Code != http.StatusForbidden {
+		t.Fatalf("ordinary group current context: %d %x, want 403", ordinaryContext.Code, ordinaryContext.Body.Bytes())
+	}
+	var ordinaryRefusal []any
+	if err := cborx.Unmarshal(ordinaryContext.Body.Bytes(), &ordinaryRefusal); err != nil || len(ordinaryRefusal) != 3 ||
+		ordinaryRefusal[0] != string(server.CodeForbidden) || ordinaryRefusal[1] != "current interaction context unavailable" || ordinaryRefusal[2] != nil {
+		t.Fatalf("ordinary group current context refusal: %v (%v), want E_FORBIDDEN/current interaction context unavailable", ordinaryRefusal, err)
+	}
 	readyInstallationID := idFromHex(t, meta.InstallationID)
 	installRow, err := h.deps.Repo.GetBotInstallation(ctx, readyInstallationID)
 	if err != nil {
