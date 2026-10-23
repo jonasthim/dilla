@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"testing"
 
@@ -52,6 +53,21 @@ func TestReactionRoleGrantSourcesAreIndependentAndRetainEffectiveRole(t *testing
 			}
 			if err := repo.AddReactionRoleGrant(ctx, first); err != nil {
 				t.Fatalf("repeat add: %v", err)
+			}
+			tooLarge := first
+			tooLarge.MessageSeq = uint64(math.MaxInt64) + 1
+			if err := repo.AddReactionRoleGrant(ctx, tooLarge); err == nil {
+				t.Fatal("reaction grant above MaxInt64 was accepted")
+			}
+			if err := repo.RemoveReactionRoleGrant(ctx, tooLarge); err == nil {
+				t.Fatal("reaction grant removal above MaxInt64 was accepted")
+			}
+			maxGrant := panelGrant(uint64(math.MaxInt64))
+			if err := repo.AddReactionRoleGrant(ctx, maxGrant); err != nil {
+				t.Fatalf("add reaction grant at MaxInt64: %v", err)
+			}
+			if err := repo.RemoveReactionRoleGrant(ctx, maxGrant); err != nil {
+				t.Fatalf("remove reaction grant at MaxInt64: %v", err)
 			}
 			if err := repo.RemoveReactionRoleGrant(ctx, first); err != nil {
 				t.Fatalf("remove first grant: %v", err)

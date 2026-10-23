@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"testing"
 
@@ -255,6 +256,37 @@ func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) 
 			tooLong[0].Emoji = "🟦🟦🟦🟦🟦🟦🟦🟦🟦"
 			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, tooLong) }); err == nil {
 				t.Fatal("emoji mapping longer than 32 UTF-8 bytes was accepted")
+			}
+			tooLargeSeq := uint64(math.MaxInt64) + 1
+			tooLargePanel := panel
+			tooLargePanel.MessageSeq = tooLargeSeq
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, tooLargePanel, options) }); err == nil {
+				t.Fatal("panel sequence above MaxInt64 was accepted")
+			}
+			if _, err := repo.GetRolePanel(ctx, panel.ChannelID, tooLargeSeq); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("get panel above MaxInt64 = %v, want ErrNotFound", err)
+			}
+			if _, err := repo.ListRolePanelOptions(ctx, panel.ChannelID, tooLargeSeq); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("list panel options above MaxInt64 = %v, want ErrNotFound", err)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.DeleteRolePanel(ctx, panel.ChannelID, tooLargeSeq) }); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("delete panel above MaxInt64 = %v, want ErrNotFound", err)
+			}
+			if got, err := repo.GetRolePanel(ctx, panel.ChannelID, panel.MessageSeq); err != nil || got != panel {
+				t.Fatalf("panel after oversized delete = %+v, %v; want original panel", got, err)
+			}
+			maxPanel := panel
+			maxPanel.MessageSeq = uint64(math.MaxInt64)
+			maxPanel.SendOperationID = id.New()
+			maxOptions := []store.RolePanelOptionRow{{Emoji: "✅", RoleID: roleA.ID}}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, maxPanel, maxOptions) }); err != nil {
+				t.Fatalf("set panel at MaxInt64: %v", err)
+			}
+			if got, err := repo.GetRolePanel(ctx, panel.ChannelID, maxPanel.MessageSeq); err != nil || got != maxPanel {
+				t.Fatalf("panel at MaxInt64 = %+v, %v; want %+v", got, err, maxPanel)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.DeleteRolePanel(ctx, panel.ChannelID, maxPanel.MessageSeq) }); err != nil {
+				t.Fatalf("delete panel at MaxInt64: %v", err)
 			}
 			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.DeleteRolePanel(ctx, panel.ChannelID, panel.MessageSeq) }); err != nil {
 				t.Fatalf("delete role panel: %v", err)

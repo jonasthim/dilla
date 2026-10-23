@@ -136,6 +136,9 @@ func (r *Repo) DeleteRolePanel(ctx context.Context, channel id.ID, seq uint64) e
 	if !r.inTx {
 		return fmt.Errorf("store: role panel delete requires transaction")
 	}
+	if seq == 0 || seq > math.MaxInt64 {
+		return store.ErrNotFound
+	}
 	res, err := r.tx.ExecContext(ctx, `DELETE FROM role_panels WHERE channel_id=$1 AND message_seq=$2`, channel, int64(seq))
 	if err != nil {
 		return wrap(err)
