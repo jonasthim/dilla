@@ -1691,6 +1691,20 @@ cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$TMP/dilla-media.simple.s
 has "$(cat "$LOG")" "systemctl disable --now dilla-media-refresh.timer" || problems="$problems|the refresh timer stays on for web3.12.3"
 verdict "a rollback to web3.12.3 is accepted, and its turn.listen limit (dilla-media first) applies"
 
+# Final review M1: a rollback to web3.12.3 whose dilla fails to start restores web3.13, and with it
+# the refresh timer the rollback had disabled (restore_prev re-enables it for a level-2 dillad).
+fresh "$C13"
+STUB_SYSTEMCTL_FAIL=restart KEEP_ROOT=1 run --upgrade --release-url "file://$W123"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want the failed rollback's non-zero"
+has "$ERR" "the upgrade failed and was rolled back; the previous release is running" || problems="$problems|it did not roll back to web3.13"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-c13" || problems="$problems|the binary is not web3.13 again"
+off="$(line_of 'systemctl disable --now dilla-media-refresh.timer')"
+on="$(grep -nx -- 'systemctl enable --now dilla-media-refresh.timer' "$LOG" | tail -n 1 | cut -d: -f1)"
+[ -n "$off" ] || problems="$problems|the rollback to web3.12.3 never disabled the refresh timer"
+{ [ -n "$on" ] && [ -n "$off" ] && [ "$on" -gt "$off" ]; } || problems="$problems|the refresh timer was not enabled again after the restore"
+verdict "a failed rollback to web3.12.3 restores web3.13 with its refresh timer enabled again"
+
 fresh "$C13" public
 set_turn true ':5349'
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-preflight"

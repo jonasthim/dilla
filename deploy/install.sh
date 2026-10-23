@@ -1401,14 +1401,22 @@ restart_api() {
 }
 
 # restore_prev: the previous binary and core back in place, and dilla-media.service rewritten for
-# the previous binary (no PartOf either way, so starting dilla never restarts the SFU).
+# the previous binary (no PartOf either way, so starting dilla never restarts the SFU). The refresh
+# timer follows the previous binary too: off below the new scheme, and on again for a web3.13 or
+# later one, whose timer a failed rollback below web3.13 had disabled (final review M1). A timer
+# that will not enable is a warning here, not a second failure on top of the rollback.
 restore_prev() {
 	put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
 	put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
 	NEW_LEVEL="$OLD_LEVEL"
 	write_media_unit "$(media_unit_type)"
 	systemctl daemon-reload >&2 || :
-	[ "$OLD_LEVEL" -ge 2 ] || systemctl disable --now dilla-media-refresh.timer >&2 || :
+	if [ "$OLD_LEVEL" -ge 2 ]; then
+		systemctl enable --now dilla-media-refresh.timer >&2 ||
+			log "warning: systemd could not enable dilla-media-refresh.timer again; run: systemctl enable --now dilla-media-refresh.timer"
+	else
+		systemctl disable --now dilla-media-refresh.timer >&2 || :
+	fi
 }
 
 # restart_media_on_previous: dilla-media back on the previous binary, stopped first so the new one
