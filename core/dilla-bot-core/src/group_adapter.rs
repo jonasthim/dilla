@@ -347,7 +347,10 @@ fn interaction_create(
     }
     let result = core
         .bot_interaction_group_create(&operation, &group, &snapshot, &expected, &key_package)
-        .map_err(map_client)?;
+        .map_err(|error| {
+            log_private_core_refusal("interaction_create_refusal", error.code);
+            map_client(error)
+        })?;
     Ok(Zeroizing::new(body(result)))
 }
 
@@ -820,13 +823,13 @@ fn trust_sender(
     let verdict = core
         .device_list_ingest(&g, leaf as u32, &user, &history, &heads, now)
         .map_err(|error| {
-            log_private_trust_sender_refusal(error.code);
+            log_private_core_refusal("trust_sender_refusal", error.code);
             map_client(error)
         })?;
     Ok(Zeroizing::new(body(verdict)))
 }
 
-fn trust_sender_refusal_class(code: &str) -> &'static str {
+fn private_core_error_class(code: &str) -> &'static str {
     match code {
         "E_BINDING" => "binding",
         "E_CREDENTIAL" => "credential",
@@ -841,16 +844,19 @@ fn trust_sender_refusal_class(code: &str) -> &'static str {
     }
 }
 
-fn log_private_trust_sender_refusal(code: &'static str) {
+fn log_private_core_refusal(kind: &'static str, code: &'static str) {
     if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
         != Some(std::ffi::OsStr::new("1"))
     {
         return;
     }
-    eprintln!(
-        "dilla_bot_helper trust_sender_refusal={}",
-        trust_sender_refusal_class(code)
-    );
+    if matches!(kind, "trust_sender_refusal" | "interaction_create_refusal") {
+        eprintln!(
+            "dilla_bot_helper {}={}",
+            kind,
+            private_core_error_class(code)
+        );
+    }
 }
 fn proposed_adds(
     core: &mut ClientCore,
@@ -1034,14 +1040,15 @@ mod tests {
     const BINDING: Binding = (INSTANCE, COMMUNITY, INSTALLATION);
 
     #[test]
-    fn private_trust_refusal_diagnostic_is_fixed_and_allowlisted() {
+    fn private_core_refusal_diagnostic_is_fixed_and_allowlisted() {
         assert_eq!(
-            trust_sender_refusal_class("E_DEVICE_LIST_STALE"),
+            private_core_error_class("E_DEVICE_LIST_STALE"),
             "device_list_stale"
         );
-        assert_eq!(trust_sender_refusal_class("E_UMK_CHANGED"), "umk_changed");
+        assert_eq!(private_core_error_class("E_UMK_CHANGED"), "umk_changed");
+        assert_eq!(private_core_error_class("E_CORE_STATE"), "core_state");
         assert_eq!(
-            trust_sender_refusal_class("arbitrary sensitive text"),
+            private_core_error_class("arbitrary sensitive text"),
             "other"
         );
     }

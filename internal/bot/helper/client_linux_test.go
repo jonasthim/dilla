@@ -22,7 +22,10 @@ func TestPrivateDiagnosticWriterForwardsOnlyFixedTrustClasses(t *testing.T) {
 	if _, err := w.Write([]byte("dilla_bot_helper trust_sender_refusal=unexpected\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "dilla_bot_helper trust_sender_refusal=device_list_stale\n"; got != want {
+	if _, err := w.Write([]byte("dilla_bot_helper interaction_create_refusal=core_state\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "dilla_bot_helper trust_sender_refusal=device_list_stale\ndilla_bot_helper interaction_create_refusal=core_state\n"; got != want {
 		t.Fatalf("diagnostic output = %q, want %q", got, want)
 	}
 }

@@ -74,7 +74,7 @@ func (w *privateDiagnosticWriter) Write(p []byte) (int, error) {
 		consumed++ // newline
 		line := string(w.partial)
 		w.partial = w.partial[:0]
-		if isPrivateTrustDiagnostic(line) && w.out != nil {
+		if isPrivateBotDiagnostic(line) && w.out != nil {
 			if _, err := io.WriteString(w.out, line+"\n"); err != nil {
 				return len(p), nil
 			}
@@ -83,8 +83,13 @@ func (w *privateDiagnosticWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func isPrivateTrustDiagnostic(line string) bool {
-	const prefix = "dilla_bot_helper trust_sender_refusal="
+func isPrivateBotDiagnostic(line string) bool {
+	const trustPrefix = "dilla_bot_helper trust_sender_refusal="
+	const createPrefix = "dilla_bot_helper interaction_create_refusal="
+	prefix := trustPrefix
+	if len(line) >= len(createPrefix) && line[:len(createPrefix)] == createPrefix {
+		prefix = createPrefix
+	}
 	if len(line) <= len(prefix) || line[:len(prefix)] != prefix {
 		return false
 	}
