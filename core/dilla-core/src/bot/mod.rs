@@ -150,6 +150,10 @@ pub enum RequestArgs {
         reason: String,
         excerpt: String,
     },
+    AutoModerationPut {
+        grant_token: String,
+        document: Vec<u8>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -266,7 +270,7 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|10..=23|30|40|50..=52|60|61) {
+        if !matches!(self.operation, 0|1|2|10..=23|30|40|50..=52|60..=63) {
             return Err(CodecError::Operation);
         }
         if !args_match(self.operation, &self.args) {
@@ -274,6 +278,18 @@ impl Request {
         }
         match &self.args {
             RequestArgs::SettingsPut { document, .. } => {
+                if document.is_empty() || document.len() > 2400 {
+                    return Err(CodecError::Limit);
+                }
+                check_root_array(document)?;
+            }
+            RequestArgs::AutoModerationPut {
+                grant_token,
+                document,
+            } => {
+                if !text_valid(grant_token, 1, 512, true) {
+                    return Err(CodecError::Value);
+                }
                 if document.is_empty() || document.len() > 2400 {
                     return Err(CodecError::Limit);
                 }
@@ -312,7 +328,7 @@ impl Request {
 }
 
 fn is_mutation(op: u64) -> bool {
-    matches!(op, 2 | 12..=23 | 51 | 52 | 61)
+    matches!(op, 2 | 12..=23 | 51 | 52 | 61 | 63)
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
@@ -335,6 +351,10 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         52 => matches!(a, RequestArgs::AnnouncementDelete { .. }),
         61 => {
             matches!(a,RequestArgs::Evidence{reason,excerpt,..} if reason.len()<=1024 && excerpt.len()<=512)
+        }
+        62 => matches!(a, RequestArgs::None),
+        63 => {
+            matches!(a,RequestArgs::AutoModerationPut{grant_token,document} if text_valid(grant_token,1,512,true) && !document.is_empty() && document.len()<=2400)
         }
         _ => false,
     }
@@ -399,6 +419,12 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
                 .bytes(action.as_bytes())
                 .text(reason)
                 .text(excerpt);
+        }
+        RequestArgs::AutoModerationPut {
+            grant_token,
+            document,
+        } => {
+            e.array(2).text(grant_token).bytes(document);
         }
     }
 }
@@ -487,6 +513,17 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
                 action: read_msg(d)?,
                 reason: bounded_text(d, 0, 1024, false)?,
                 excerpt: bounded_text(d, 0, 512, false)?,
+            }
+        }
+        62 => {
+            d.array(0)?;
+            RequestArgs::None
+        }
+        63 => {
+            d.array(2)?;
+            RequestArgs::AutoModerationPut {
+                grant_token: bounded_text(d, 1, 512, true)?,
+                document: bounded_bytes(d, 1, 2400, true)?,
             }
         }
         _ => return Err(typeerr()),

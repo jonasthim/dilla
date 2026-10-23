@@ -72,6 +72,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},
   30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
+  62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},
 };
 function validateArgs(op: number, a: unknown[]): void {
   const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
@@ -101,6 +102,7 @@ function validateArgs(op: number, a: unknown[]): void {
     case 51: a[0]=nullable(a[0],id); a[1]=cborBytes(a[1],1,2200); break;
     case 52: ident(0); u(1,1n,(1n<<63n)-1n); break;
     case 61: ident(0); t(1,0,1024); t(2,0,512); break;
+    case 63: t(0,1,512,true); a[1]=cborBytes(a[1],1,2400); break;
   }
 }
 function requestValue(x: BotRequest): CborInput[] {

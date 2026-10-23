@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,6 +179,84 @@ func TestAutoModerationRuntimeDefaultsToDisabledAndLogOnly(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("disabled runtime called sink %d times", calls)
+	}
+}
+
+func TestAutoModerationRuntimeConfigRevisionFencesInFlightActions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config moderation.Config
+	}{
+		{name: "disable", config: moderation.Config{}},
+		{name: "change punitive rule to log", config: moderation.Config{Enabled: true,
+			Actions: map[moderation.Rule]moderation.Action{moderation.RuleMentions: moderation.ActionLog}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1_800_000_000, 0)
+			started, release := make(chan struct{}), make(chan struct{})
+			var punitive atomic.Int32
+			sink := automodSinkFunc(func(_ context.Context, action ModerationAction) error {
+				if action.Decision.Action == moderation.ActionWarn || action.Decision.Action == moderation.ActionTimeout || action.Decision.Action == moderation.ActionRemove {
+					punitive.Add(1)
+					if punitive.Load() == 1 {
+						close(started)
+						<-release
+					}
+				}
+				return nil
+			})
+			runtime := NewAutoModerationRuntime(moderation.Config{Enabled: true,
+				Actions: map[moderation.Rule]moderation.Action{moderation.RuleMentions: moderation.ActionWarn}},
+				automodAuthorityFunc(ordinaryAutomodAuthority), sink, func() time.Time { return now })
+			makeEvent := func(sequence byte) native.GroupEvent {
+				body := "a message"
+				return native.GroupEvent{DeliveryID: uint64(sequence), Community: id.New(), Group: id.New(), Channel: id.New(),
+					SourceSequence: uint64(sequence), ReceivedAt: uint64(now.UnixMilli()), SenderUser: id.New(), SenderDevice: id.New(),
+					SenderKind: 0, EnvelopeType: 0, Body: &body, Message: id.New()}
+			}
+			first := makeEvent(1)
+			eventDone := make(chan error, 1)
+			go func() {
+				_, err := runtime.Handle(context.Background(), first, false, []string{"1", "2", "3", "4", "5", "6"})
+				eventDone <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("initial punitive action did not reach the sink")
+			}
+			var persistedRevision atomic.Uint64
+			updateDone := make(chan error, 1)
+			go func() {
+				updateDone <- runtime.PersistConfig(tc.config, func() error {
+					persistedRevision.Add(1)
+					return nil
+				})
+			}()
+			select {
+			case err := <-updateDone:
+				t.Fatalf("config save completed while an old action was in flight: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
+			if persistedRevision.Load() != 0 {
+				t.Fatal("config persisted before the old action drained")
+			}
+			close(release)
+			if err := <-eventDone; err != nil {
+				t.Fatalf("old event: %v", err)
+			}
+			if err := <-updateDone; err != nil || persistedRevision.Load() != 1 {
+				t.Fatalf("config update revision=%d err=%v", persistedRevision.Load(), err)
+			}
+			second := makeEvent(2)
+			decision, err := runtime.Handle(context.Background(), second, false, []string{"1", "2", "3", "4", "5", "6"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Action != moderation.ActionLog || punitive.Load() != 1 {
+				t.Fatalf("post-write decision=%+v punitive actions=%d", decision, punitive.Load())
+			}
+		})
 	}
 }
 

@@ -619,6 +619,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID},
 														musicInteractions,
 														nativeClient,
+														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
+														moderationRuntime,
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,

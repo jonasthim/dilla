@@ -426,7 +426,7 @@ fn shared_bot_corpus_round_trips_and_rejects() {
         operations,
         [
             0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 30, 40, 50, 51, 52,
-            60, 61
+            60, 61, 62, 63
         ]
         .into_iter()
         .collect()

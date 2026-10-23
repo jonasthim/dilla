@@ -39,6 +39,7 @@ type ModerationActorAuthority interface {
 // events. Callers must pass events obtained from native.ReadGroupEvents.
 type AutoModerationRuntime struct {
 	mu        sync.RWMutex
+	configMu  sync.RWMutex
 	engine    *moderation.Engine
 	authority ModerationActorAuthority
 	sink      ModerationActionSink
@@ -65,10 +66,31 @@ func (r *AutoModerationRuntime) UpdateActionDependencies(authority ModerationAct
 	r.mu.Unlock()
 }
 
+// PersistConfig fences event processing while the encrypted CAS and evaluator
+// replacement complete. If persistence fails, the active evaluator is kept.
+// When this method returns successfully, no event can still finish with the
+// previous configuration.
+func (r *AutoModerationRuntime) PersistConfig(cfg moderation.Config, persist func() error) error {
+	if r == nil || persist == nil {
+		return errors.New("missing automatic moderation config update dependency")
+	}
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	if r.engine == nil {
+		return errors.New("missing automatic moderation runtime")
+	}
+	if err := persist(); err != nil {
+		return err
+	}
+	r.engine = moderation.New(cfg)
+	r.enabled = cfg.Enabled
+	return nil
+}
+
 // Handle evaluates one decrypted message. replay must be derived from the
 // durable event cursor/recovery path, never from message contents.
 func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEvent, replay bool, mentionIDs []string) (moderation.Decision, error) {
-	if r == nil || r.engine == nil {
+	if r == nil {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation runtime")
 	}
 	if event.DeliveryID == 0 || event.Community.IsZero() || event.Group.IsZero() || event.Channel.IsZero() || event.Message.IsZero() ||
@@ -76,11 +98,17 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 		event.SenderKind > 1 || event.SenderTier > 1 || event.EnvelopeType > 1 || event.Body == nil || event.ReceivedAt == 0 || event.ReceivedAt > math.MaxInt64 {
 		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, nil
 	}
+	r.configMu.RLock()
+	defer r.configMu.RUnlock()
+	engine, enabled := r.engine, r.enabled
+	if engine == nil {
+		return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation runtime")
+	}
 	r.mu.RLock()
 	authority, sink := r.authority, r.sink
 	r.mu.RUnlock()
 	var owner, admin bool
-	if r.enabled {
+	if enabled {
 		if authority == nil {
 			return moderation.Decision{Action: moderation.ActionLog, Ignored: true}, errors.New("missing moderation actor authority")
 		}
@@ -106,7 +134,7 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	if replay && (receivedAt.After(now) || now.Sub(receivedAt) > moderation.DuplicateWindow) {
 		evaluationTime = receivedAt
 	}
-	decision := r.engine.Evaluate(input, evaluationTime)
+	decision := engine.Evaluate(input, evaluationTime)
 	if replay || decision.Ignored || decision.DuplicateDelivery || len(decision.Rules) == 0 || sink == nil {
 		return decision, nil
 	}

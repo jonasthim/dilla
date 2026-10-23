@@ -81,6 +81,35 @@ func TestConfigStoreSaveUsesRevisionCASAndRoundTrips(t *testing.T) {
 	}
 }
 
+type unknownConfigTransactionOutcome struct {
+	*configNative
+	calls int
+}
+
+func (n *unknownConfigTransactionOutcome) StateTransaction(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	n.calls++
+	revisions, err := n.configNative.StateTransaction(ctx, tx, changes)
+	if n.calls == 1 && err == nil {
+		return nil, errors.New("state receipt response lost")
+	}
+	return revisions, err
+}
+
+func TestConfigStoreRetriesUnknownTransactionOutcomeWithSameID(t *testing.T) {
+	base := testConfigNative()
+	nativeState := &unknownConfigTransactionOutcome{configNative: base}
+	store := NewStore(nativeState)
+	transactionID := id.New()
+	cfg := Config{Enabled: true, Actions: map[Rule]Action{RuleRate: ActionWarn}}
+	if err := store.SaveWithID(context.Background(), transactionID, cfg, 0); err != nil {
+		t.Fatalf("save after lost receipt = %v", err)
+	}
+	loaded, revision, err := store.Load(context.Background())
+	if err != nil || revision != 1 || !loaded.Enabled || nativeState.calls != 2 {
+		t.Fatalf("retry result config=%+v revision=%d calls=%d err=%v", loaded, revision, nativeState.calls, err)
+	}
+}
+
 func TestConfigStoreRejectsInvalidConfig(t *testing.T) {
 	cases := []struct {
 		name string

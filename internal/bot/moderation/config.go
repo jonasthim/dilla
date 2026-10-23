@@ -45,6 +45,15 @@ func NewStore(n configStateClient) *Store {
 	return &Store{native: n, binding: n.Binding()}
 }
 
+// Binding identifies the installation scope whose encrypted configuration this
+// store reads and writes.
+func (s *Store) Binding() native.Binding {
+	if s == nil {
+		return native.Binding{}
+	}
+	return s.binding
+}
+
 // Load returns evaluator-ready settings and the revision to use for the next
 // Save. An absent row is safely disabled with every rule set to log-only.
 func (s *Store) Load(ctx context.Context) (Config, uint64, error) {
@@ -115,7 +124,16 @@ func (s *Store) Load(ctx context.Context) (Config, uint64, error) {
 // Save validates and persists settings only when expectedRevision still
 // matches the encrypted state row. Zero timeout is normalized to ten minutes.
 func (s *Store) Save(ctx context.Context, cfg Config, expectedRevision uint64) error {
+	return s.SaveWithID(ctx, id.New(), cfg, expectedRevision)
+}
+
+// SaveWithID persists settings with a stable transaction ID so exact
+// interaction retries can recover the original encrypted-state receipt.
+func (s *Store) SaveWithID(ctx context.Context, transactionID id.ID, cfg Config, expectedRevision uint64) error {
 	if s == nil || s.native == nil || !validConfigBinding(s.binding) {
+		return ErrConfigState
+	}
+	if transactionID.IsZero() || expectedRevision >= math.MaxInt64 {
 		return ErrConfigState
 	}
 	cfg, err := normalizeConfig(cfg)
@@ -136,12 +154,17 @@ func (s *Store) Save(ctx context.Context, cfg Config, expectedRevision uint64) e
 		return ErrConfigState
 	}
 	key := configKey(s.binding)
-	// A retry of this API call is a new compare-and-swap attempt. Reusing a
-	// content-derived transaction ID could replay an earlier successful receipt
-	// before the helper checks this call's stale expected revision.
-	tx := id.New()
-	_, err = s.native.StateTransaction(ctx, tx, []native.StateChange{{Area: configStateArea, Key: key, ExpectedRevision: expectedRevision, Value: body}})
+	change := []native.StateChange{{Area: configStateArea, Key: key, ExpectedRevision: expectedRevision, Value: body}}
+	revisions, err := s.native.StateTransaction(ctx, transactionID, change)
 	if err != nil {
+		// The helper may have committed but lost the response. Reusing this exact
+		// transaction ID recovers that receipt without applying the change twice.
+		revisions, err = s.native.StateTransaction(ctx, transactionID, change)
+	}
+	if err != nil {
+		return ErrConfigConflict
+	}
+	if len(revisions) != 1 || revisions[0] != expectedRevision+1 {
 		return ErrConfigConflict
 	}
 	return nil

@@ -24,6 +24,7 @@ export async function botVectors() {
   [30,['hello'],false,false,'welcome.preview'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
   [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66),1n],false,true,'announcements.delete'],
   [60,[null],false,false,'moderation.cases'],[61,[id(0x77),'reason','excerpt'],false,true,'moderation.evidence'],
+  [62,[],false,false,'automod.config.get'],[63,['grant-token',encode([1n,0n,'log','log','log',600000n,[]])],false,true,'automod.config.put'],
  ];
  const cases:any[]=inputs.map(([op,a,ch,mu,n])=>app(op,a,ch,mu,n));
  const response=[1n,id(2),comm,0n,null,new Uint8Array()];
@@ -65,6 +66,11 @@ export async function botVectors() {
  rej('missing required channel','request',[1n,id(1),comm,null,10n,null,null,[]]);
  rej('wrong argument type','request',[1n,id(1),comm,null,1n,null,null,['bad']]);
  rej('wrong argument count','request',[1n,id(1),comm,null,0n,null,null,[1n]]);
+ rej('automod config get has arguments','request',[1n,id(1),comm,null,62n,null,null,[0n]]);
+ const automodDoc=encode([1n,0n,'log','log','log',600000n,[]]);
+ rej('automod config put empty grant','request',[1n,id(64),comm,null,63n,1n,120n,['',automodDoc]]);
+ rej('automod config put oversized grant','request',[1n,id(64),comm,null,63n,1n,120n,['g'.repeat(513),automodDoc]]);
+ rej('automod config put oversized document','request',[1n,id(64),comm,null,63n,1n,120n,['grant-token',encode([new Uint8Array(2400)])]]);
  rej('query over UTF8 byte limit','request',[1n,id(1),comm,id(0x44),11n,null,null,['é'.repeat(101)]]);
  rej('cross community context','request',base,{body:bodyOf(base),context:{community:hex(id(0x23)),now}});
  const mut=[1n,id(1),comm,null,2n,100n,131n,[0n,encode([1n])]];

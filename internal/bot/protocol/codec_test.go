@@ -143,6 +143,37 @@ func TestAnnouncementDeleteRequiresScheduleRevision(t *testing.T) {
 	}
 }
 
+func TestAutoModerationConfigOperationShapes(t *testing.T) {
+	community := fixtureID(34)
+	requestID := fixtureID(80)
+	document, err := cborx.Marshal([]any{uint64(1), uint64(0), "log", "log", "log", uint64(600000), []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := Request{RequestID: requestID, CommunityID: community, Operation: OpAutoModerationGet}
+	if _, err := EncodeRequestCBOR(get); err != nil {
+		t.Fatalf("encode get: %v", err)
+	}
+	revision, expires := uint64(4), uint64(120)
+	put := Request{RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", document}}
+	if _, err := EncodeRequestCBOR(put); err != nil {
+		t.Fatalf("encode put: %v", err)
+	}
+	for name, bad := range map[string]Request{
+		"get args":             {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationGet, Args: []any{uint64(0)}},
+		"put without revision": {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Args: []any{"grant-token", document}},
+		"missing grant":        {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"", document}},
+		"oversized document":   {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", make([]byte, 2401)}},
+		"non-array document":   {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", []byte{0x01}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := EncodeRequestCBOR(bad); err == nil {
+				t.Fatal("accepted malformed request")
+			}
+		})
+	}
+}
+
 func TestKeyPackageResultWorstCaseFitsHelperPayload(t *testing.T) {
 	resultBytes := 1 + 5 + MaxKeyPackageUploadBody + 2 + 33*34 + 9
 	if resultBytes != 1_048_435 || MaxHelperPayload-resultBytes != 45 {

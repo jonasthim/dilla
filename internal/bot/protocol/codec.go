@@ -60,6 +60,8 @@ const (
 	OpAnnouncementsDelete Operation = 52
 	OpModerationCases     Operation = 60
 	OpModerationEvidence  Operation = 61
+	OpAutoModerationGet   Operation = 62
+	OpAutoModerationPut   Operation = 63
 )
 
 type Request struct {
@@ -248,6 +250,10 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return false, false, 1
 	case OpModerationEvidence:
 		return true, false, 3
+	case OpAutoModerationGet:
+		return false, false, 0
+	case OpAutoModerationPut:
+		return true, false, 2
 	default:
 		return false, false, -1
 	}
@@ -315,6 +321,10 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(nullableID(a[0]) && data(1, 1, 2200))
 	case OpModerationEvidence:
 		return boolErr(idarg(0) && str(1, 0, 1024, false) && str(2, 0, 512, false))
+	case OpAutoModerationGet:
+		return nil
+	case OpAutoModerationPut:
+		return boolErr(str(0, 1, 512, true) && data(1, 1, 2400))
 	default:
 		return invalid()
 	}

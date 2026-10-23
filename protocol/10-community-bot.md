@@ -53,6 +53,8 @@ Operation, arguments, channel requirement, mutation:
 - 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; request revision is the expected scheduler document revision and the argument's positive revision must match the stored schedule
 - 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 61 moderation.evidence: [action_request_id, reason tstr(0..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)], no channel, mutation
+- 62 automod.config.get: [], no channel, read
+- 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 
 For no-channel operations channel MUST be null. For reads revision/expires MUST
 be null. For mutations both MUST be uint; expiry must satisfy now < expires <=
@@ -108,6 +110,66 @@ delayed encrypted page after that check; before rendering its reason or excerpt,
 recheck the current human moderator's `view_audit_log` authority through the authoritative human
 API. MLS sender authentication and request correlation do not establish the receiving human's
 current permission.
+
+`automod.config.get` returns the encrypted-state revision and the canonical
+configuration document `[1, enabled 0|1, rate_action, duplicate_action,
+mention_action, timeout_ms, exempt_user_ids]`. Actions are `log`, `remove`,
+`warn`, or `timeout`; timeout is `1..2419200000` ms, and there are at most 256
+unique nonempty exempt user IDs of at most 128 UTF-8 bytes each. An absent row
+reads as disabled, all rules log-only, a 600000 ms timeout, and no exemptions.
+Both configuration operations bind the encrypted state to the bot installation,
+community, and instance as the existing area-8 store does.
+
+Each read and write resolves the authenticated MLS sender's current server
+membership and permissions. The actor must currently be an owner, administrator,
+or hold `manage_community`; writing a config that names `remove` additionally
+requires current `manage_messages`, and `warn` or `timeout` additionally requires
+current `moderate_members`. Owners and administrators satisfy those action
+requirements. A denied actor or cross-community request is refused before the
+encrypted row is read or changed. This check uses the authenticated bot session's
+current actor-authority endpoint, never actor data in `args`.
+
+`automod.config.put` compares the top-level request revision atomically with the
+encrypted-state revision. A stale or racing update returns status 4 and the
+current revision, without changing the row. Its `grant_token` is an opaque,
+one-use grant issued after the configuring human's current step-up; it carries no
+configuration plaintext. Redemption is bound to the exact authenticated actor
+and interaction context plus community, request ID, operation 63, expected
+revision, request expiry, and SHA-256 of the exact canonical configuration
+document. The bot sends only that digest to the redemption endpoint; plaintext
+configuration remains inside the MLS-decrypting bot process. It redeems before
+attempting the state transaction. The state transaction ID is the request ID, so exact retries of a
+committed write recover the original revision receipt. Grant redemption must
+return the same receipt for an exact retry, including after restart: if a grant
+was redeemed but the state transaction then conflicted or failed, the row is
+unchanged and the same request can retry with that receipt. Reusing a grant for a
+different request tuple is refused.
+
+The config service does not treat stored bot capability bits as actor authority.
+At event enforcement time, the moderation action endpoint rechecks the active
+installation's approved warning/timeout or removal capability and the actor's
+current moderation permission. If either has been revoked, the action fails
+closed and no punitive action is accepted. The human step-up grant implementation
+is required for op 63; deployments without a configured redeemer return status 5.
+
+The human arms a config write with `POST /v1/groups/{group}/automod-grants/arm`
+using `[request_id, community_id, expected_revision, request_expires,
+config_hash32, step_up_token]`; the response is `[grant_token,
+grant_expires_unix]`. This requires the current human group context, community
+membership, bot installation, and a valid session-bound step-up. Revision zero
+is valid for the first write. The server stores the digest and exact interaction
+tuple, and stores only a hash of the opaque grant token.
+
+The bot redeems through
+`POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` with
+`[grant_token, community_id, group_id, request_id, expected_revision,
+request_expires, actor_user, actor_device, config_hash32]`; success returns
+`[true, receipt_id]`. The request must come from the matching ready installation
+and current bot session. The server validates the current interaction group,
+roster, participant device, actor membership, exact config digest, and every
+stored tuple field. An exact duplicate redemption returns the original stable
+receipt; changed or expired tuples fail. Config plaintext is never sent to these
+HTTP endpoints.
 Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 0 ok,1 invalid,2 forbidden,3 expired,4 conflict,5 unavailable,6 busy,7 not_found,
 8 upgrade_required,9 internal. Validate expected community on response separately;
