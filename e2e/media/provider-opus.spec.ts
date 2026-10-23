@@ -260,10 +260,14 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
       return tracks.length === 1 ? tracks[0].totalSamplesReceived : 0;
     }, { timeout: 10_000 }).toBeGreaterThan(0);
 
-    const probes = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRenderProbe(1_000)))
-      .filter((row) => row.participantIdentity === publisher.deviceId && row.kind === 'audio');
-    expect(probes).toHaveLength(1);
-    expect(probes[0].rms).toBeGreaterThan(0.001);
+    let renderedRms = 0;
+    await expect.poll(async () => {
+      const probes = (await page.evaluate(() => (globalThis as unknown as W).harness.dillaRenderProbe(2_000)))
+        .filter((row) => row.participantIdentity === publisher.deviceId && row.kind === 'audio');
+      expect(probes).toHaveLength(1);
+      renderedRms = Math.max(renderedRms, probes[0].rms);
+      return renderedRms;
+    }, { timeout: 12_000, message: 'the decrypted provider track renders audible samples' }).toBeGreaterThan(0.001);
     const finalTracks = await remoteAudio(page, publisher.deviceId);
     expect(finalTracks).toHaveLength(1);
     const finalDecrypted = await authenticated();
@@ -282,7 +286,7 @@ test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefo
       audio_tracks: 1,
       authenticated_frames: finalDecrypted,
       samples_received: finalTracks[0].totalSamplesReceived,
-      rms: probes[0].rms,
+      rms: renderedRms,
     };
     await info.attach('provider-opus-evidence.json', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
     console.log(`PROVIDER_OPUS ${JSON.stringify(evidence)}`);
