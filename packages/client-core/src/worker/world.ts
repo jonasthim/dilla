@@ -252,6 +252,8 @@ export function world(opts: {
     signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
       encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array) => requestId),
+    humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number) => ({ events: [], next: 0n, highWater: 0n })),
+    humanInteractionEventsAck: vi.fn((_through: bigint) => {}),
     sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
     sendConfirm: vi.fn((_msgId: Uint8Array, _response: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), seq: 1n })),
     sendRetry: vi.fn((_msgId: Uint8Array) => {}),

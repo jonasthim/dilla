@@ -46,12 +46,37 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
-  it('shows the moderation log as unavailable without requesting or inventing case data', async () => {
+  it('does not request or invent moderation details before the user asks', async () => {
     const { fake } = setup({ ...ROW, state: 3 });
     expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();
-    expect(screen.getByText(en['admin.bot.moderationLog.unavailable'])).toHaveAttribute('role', 'note');
+    expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
+    expect(fake.calls.map(call => call.m)).not.toContain('listModerationCases');
+    expect(fake.calls.map(call => call.m)).not.toContain('readHumanInteractionResponses');
     expect(fake.calls.map(call => call.m)).not.toContain('getModerationCases');
     expect(screen.queryByText(/reason|excerpt|case #/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a typed response page, then acknowledges it after rendering', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    const requestId = '54'.repeat(16);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return { ...ROW, state: 3 };
+      if (command.m === 'getBotJoinRole') return { roleId: null, installationId: ROW.id };
+      if (command.m === 'getBotDjRoles') return { roleIds: [], installationId: ROW.id };
+      if (command.m === 'listModerationCases') return { requestId, status: 'accepted' };
+      if (command.m === 'readHumanInteractionResponses') return { authorized: true, blocked: false, through: '3', responses: [
+        { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
+          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
+          reason: 'duplicate', action: 'remove', excerpt: 'bounded response excerpt', receivedAt: '1800000000' }] },
+      ] };
+      return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    expect(await screen.findByText('bounded response excerpt')).toBeInTheDocument();
+    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
+      { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
+    ]));
+    expect(fake.callsOf('listModerationCases')).toHaveLength(1);
   });
 
   it('manually refreshes installation status and capabilities from the server', async () => {
@@ -144,7 +169,7 @@ describe('the server bot settings', () => {
       if (command.m === 'getBotInstallation') return Promise.resolve(initial);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: initial.id });
       if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: initial.id });
-      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: command.roleIds.length });
+      if (command.m === 'configureBotDjRoles') return Promise.resolve({ acceptedCount: (command.roleIds as string[]).length });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
     act(() => {

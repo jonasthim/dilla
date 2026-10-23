@@ -22,6 +22,8 @@ export type Command =
   | { m: 'getBotInstallation'; communityId: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
+  | { m: 'readHumanInteractionResponses'; communityId: string }
+  | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
   | { m: 'getBotDjRoles'; communityId: string }

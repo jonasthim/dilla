@@ -6,6 +6,7 @@ import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
+import { ModerationLog } from './ModerationLog.tsx';
 import { type SectionProps } from './shared.ts';
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 
@@ -447,10 +448,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{t('admin.bot.music.youtubeHelp')}</p>
         </SettingsRow>
       </section>
-      <section aria-labelledby={`${base}-moderation-log-title`}>
-        <h3 id={`${base}-moderation-log-title`}>{t('admin.bot.moderationLog.title')}</h3>
-        <p role="note">{t('admin.bot.moderationLog.unavailable')}</p>
-      </section>
+      <ModerationLog communityId={communityId} />
       {currentError === null ? null : <p role="alert">{currentError}</p>}
       {statusRefreshError === null ? null : <p role="alert">{statusRefreshError}</p>}
       <div>

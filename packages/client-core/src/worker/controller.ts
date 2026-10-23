@@ -13,7 +13,8 @@ import { safeName } from '../attachments/name';
 import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
-import { encodeBotRequestBytes, validateBotContext } from '../bot/protocol';
+import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
+import { arr, decode as decodeCbor } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
@@ -196,6 +197,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'listModerationCases',
+  'readHumanInteractionResponses',
+  'ackHumanInteractionResponses',
   'getBotJoinRole',
   'configureBotJoinRole',
   'getBotDjRoles',
@@ -326,6 +329,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
+  readHumanInteractionResponses: ['communityId'],
+  ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
   getBotDjRoles: ['communityId'],
@@ -423,6 +428,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'listModerationCases',
+    'readHumanInteractionResponses',
+    'ackHumanInteractionResponses',
     'getBotJoinRole',
     'configureBotJoinRole',
     'getBotDjRoles',
@@ -599,6 +606,8 @@ function invalid(command: Record<string, unknown>): string | null {
     || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
   if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
+    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -768,6 +777,7 @@ export class Controller {
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
   private readonly acceptedHumanInteractionSends = new Set<string>();
+  private readonly pendingHumanInteractionAcks = new Map<string, string>();
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1173,6 +1183,8 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'listModerationCases': return this.listModerationCases(command);
+      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
+      case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
       case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
@@ -1350,6 +1362,93 @@ export class Controller {
       }
       return { requestId: command.requestId, status: 'accepted' };
     });
+  }
+
+  /** A response body is only returned after a fresh permission read and strict decoding. The
+   *  event journal remains unacknowledged here; the page acknowledges only after it has committed
+   *  the returned rows to its rendered state. */
+  private async readHumanInteractionResponses(communityHex: string): Promise<{
+    authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
+      cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
+        reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean }[];
+    through: string | null; blocked: boolean;
+  }> {
+    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const communityId = fromHex(communityHex);
+    // This is deliberately independent of the cached permissions slice. The response can contain
+    // private excerpts, so the authority decision must come from the instance on every read.
+    const permissions = await this.routes.getPermissions(communityId);
+    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
+      return { authorized: false, responses: [], through: null, blocked: false };
+    }
+    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex);
+    // The journal ack is global, so this screen may consume only the contiguous prefix for its
+    // community. Events for another server stay pending and are handled in that server's Bot tab.
+    // The journal is global and read pages are bounded. Show only this community's decoded
+    // responses even when another community occurs earlier in the page; only the contiguous
+    // current-community prefix is eligible for acknowledgement below.
+    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex);
+    const responses = visibleEvents.map(event => {
+      const response = decodeBotResponse(event.body);
+      validateBotResponseForRequest(response, communityId, event.requestId);
+      const cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
+        reason: string; action: string; excerpt: string; receivedAt: string }[] = [];
+      let hasMore = false;
+      if (response.status === 0) {
+        const data = arr(decodeCbor(response.data));
+        if (data.length !== 3 || data[0] !== 1n || !Array.isArray(data[1])
+          || (data[2] !== null && !(data[2] instanceof Uint8Array)) || data[1].length > 8) {
+          throw new Refusal('E_CORE_STATE', 'moderation response shape is invalid');
+        }
+        hasMore = data[2] !== null;
+        for (const value of data[1]) {
+          const row = arr(value);
+          if (row.length !== 10 || row.slice(0, 5).some(v => typeof v !== 'string' || !/^[0-9a-f]{32}$/u.test(v))
+            || typeof row[5] !== 'bigint' || typeof row[6] !== 'string'
+            || !['log', 'remove', 'warn', 'timeout'].includes(String(row[7])) || typeof row[8] !== 'string'
+            || typeof row[9] !== 'bigint' || row[8].length > 700) {
+            throw new Refusal('E_CORE_STATE', 'moderation case shape is invalid');
+          }
+          const rowCommunity = String(row[0]);
+          const channelId = String(row[2]);
+          const actorId = String(row[3]);
+          const messageId = String(row[4]);
+          if (rowCommunity !== communityHex) throw new Refusal('E_CORE_STATE', 'moderation case community changed');
+          cases.push({ key: `${messageId}:${String(row[5])}`, channelId, actorId, messageId,
+            revision: String(row[5]), reason: String(row[6]), action: String(row[7]),
+            excerpt: String(row[8]), receivedAt: String(row[9]) });
+        }
+      }
+      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore };
+    });
+    const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
+    const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;
+    const through = throughValue > 0n ? String(throughValue) : null;
+    if (through !== null) {
+      const key = `${communityHex}:${through}`;
+      this.pendingHumanInteractionAcks.set(key, through);
+      while (this.pendingHumanInteractionAcks.size > 32) {
+        const oldest = this.pendingHumanInteractionAcks.keys().next().value;
+        if (oldest === undefined) break;
+        this.pendingHumanInteractionAcks.delete(oldest);
+      }
+    }
+    return { authorized: true, responses, through, blocked: firstOtherCommunity >= 0 };
+  }
+
+  private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
+    const key = `${communityHex}:${through}`;
+    if (!this.listed(communityHex) || this.pendingHumanInteractionAcks.get(key) !== through) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
+    }
+    const permissions = await this.routes.getPermissions(fromHex(communityHex));
+    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
+      throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
+    }
+    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    this.pendingHumanInteractionAcks.delete(key);
+    return null;
   }
 
   private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {
