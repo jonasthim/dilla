@@ -66,6 +66,20 @@ func (d *DS) CurrentBotInteractionGroupContext(ctx context.Context, groupID id.I
 // revalidate and sign before a concurrent commit or close can change the group's epoch/state.
 // fn must not start another repository transaction.
 func (d *DS) WithCurrentBotInteractionGroupContext(ctx context.Context, groupID id.ID, fn func(CurrentBotInteractionGroupContext) error) error {
+	if fn == nil {
+		return errors.New("ds: current kind-3 interaction context callback unavailable")
+	}
+	return d.WithCurrentBotInteractionGroupRead(ctx, groupID, func(current CurrentBotInteractionGroupContext, _ store.Repository) error {
+		return fn(current)
+	})
+}
+
+// WithCurrentBotInteractionGroupRead runs fn while both the local group mutex and the
+// repository group fence are held, after verifying the accepted kind-3 registration and its
+// exact current two-leaf roster. Reads performed through the supplied tx therefore observe the
+// same group state that was validated, before a concurrent commit or close can proceed. fn must
+// use tx for all repository reads and must not start another repository transaction.
+func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.ID, fn func(CurrentBotInteractionGroupContext, store.Repository) error) error {
 	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || groupID.IsZero() {
 		return errors.New("ds: current kind-3 interaction context dependencies unavailable")
 	}
@@ -165,7 +179,7 @@ func (d *DS) WithCurrentBotInteractionGroupContext(ctx context.Context, groupID 
 				PolicyVersion: binding.PolicyVersion, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion},
 			Epoch: state.Epoch, LeafCount: state.LeafCount, TreeHash: append([]byte(nil), state.TreeHash...), Roster: roster,
 		}
-		return fn(out)
+		return fn(out, tx)
 	})
 	return err
 }
