@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -83,7 +84,7 @@ func (s *Session) StartCall(ctx context.Context, channel id.ID) (Call, error) {
 	if out.GroupID, _ = asID(a[1]); out.GroupID.IsZero() {
 		return Call{}, unknown()
 	}
-	if out.LiveKitURL, _ = a[2].(string); !validLiveKitURL(out.LiveKitURL) {
+	if out.LiveKitURL, _ = a[2].(string); !validLiveKitURL(out.LiveKitURL, s.c.allowLoopback) {
 		return Call{}, unknown()
 	}
 	if out.Token, _ = a[3].(string); !validCallSecret(out.Token, maxCallTokenBytes) {
@@ -110,12 +111,23 @@ func (s *Session) StartCall(ctx context.Context, channel id.ID) (Call, error) {
 	return out, nil
 }
 
-func validLiveKitURL(raw string) bool {
+func validLiveKitURL(raw string, allowLoopback bool) bool {
 	if len(raw) == 0 || len(raw) > maxCallURLBytes || strings.ContainsAny(raw, "\r\n\x00") {
 		return false
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "wss" && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Opaque == "" && !u.ForceQuery
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.ForceQuery {
+		return false
+	}
+	if u.Scheme == "wss" {
+		return true
+	}
+	if u.Scheme != "ws" || !allowLoopback {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback() || host == "localhost"
 }
 
 func validCallSecret(v string, max int) bool {

@@ -100,6 +100,27 @@ func TestStartCallRejectsForeignCallAndMalformedSecretFields(t *testing.T) {
 	}
 }
 
+func TestLiveKitURLAllowsWebSocketOnlyForConfiguredLoopback(t *testing.T) {
+	if !validLiveKitURL("ws://127.0.0.1:8524", true) {
+		t.Fatal("configured loopback WebSocket URL was rejected")
+	}
+	for _, raw := range []string{
+		"ws://media.example.invalid/rtc",
+		"ws://127.0.0.1:8524?token=secret",
+		"ws://user@127.0.0.1:8524",
+	} {
+		if validLiveKitURL(raw, true) {
+			t.Fatalf("unsafe WebSocket URL accepted: %q", raw)
+		}
+	}
+	if validLiveKitURL("ws://127.0.0.1:8524", false) {
+		t.Fatal("loopback WebSocket URL accepted without loopback development opt-in")
+	}
+	if !validLiveKitURL("wss://media.example.invalid/rtc", false) {
+		t.Fatal("secure WebSocket URL rejected")
+	}
+}
+
 func TestChannelCallAndEndCallUseExpectedRoutes(t *testing.T) {
 	channel, group, callID := testID(41), testID(42), testID(41)
 	var gotPath, gotQuery string

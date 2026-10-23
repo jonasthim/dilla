@@ -52,11 +52,12 @@ type Config struct {
 }
 
 type Client struct {
-	base       *url.URL
-	http       *http.Client
-	instance   id.ID
-	timeout    time.Duration
-	discovered atomic.Bool
+	base          *url.URL
+	http          *http.Client
+	instance      id.ID
+	timeout       time.Duration
+	allowLoopback bool
+	discovered    atomic.Bool
 }
 
 type Runtime struct {
@@ -104,7 +105,7 @@ func New(cfg Config) (*Client, error) {
 		timeout = DefaultTimeout
 	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout}, nil
+	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {
@@ -701,6 +702,7 @@ func decode(raw []byte, n int) ([]any, error) {
 	}
 	return a, nil
 }
+
 func asUint(v any) (uint64, bool) { n, ok := v.(uint64); return n, ok }
 func asBytes(v any, size int) ([]byte, bool) {
 	b, ok := v.([]byte)
