@@ -363,6 +363,10 @@ func TestMusicLiveResumeStartsOnlyItsRoomAfterPausedRestart(t *testing.T) {
 		if _, err := queues.ApplyPersistedSnapshot(context.Background(), channel, saved.State, saved.Revision, true); err != nil {
 			t.Fatal(err)
 		}
+		liveState, liveRevision, err := queues.CurrentState(context.Background(), channel)
+		if err != nil || liveRevision != saved.Revision || liveState.Paused {
+			t.Fatalf("live runtime state=%+v revision=%d err=%v; want unpaused committed revision %d", liveState, liveRevision, err, saved.Revision)
+		}
 	}
 	publishers.mu.Lock()
 	if publishers.starts[channels[0]] != 1 || publishers.starts[channels[1]] != 1 {

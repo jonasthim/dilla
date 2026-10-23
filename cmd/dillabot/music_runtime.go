@@ -71,6 +71,26 @@ func (r *musicQueueRuntime) Len() int {
 	return len(r.supervisors)
 }
 
+func (r *musicQueueRuntime) CurrentState(ctx context.Context, channel id.ID) (music.State, uint64, error) {
+	if ctx == nil || channel.IsZero() {
+		return music.State{}, 0, errors.New("music runtime dependencies unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return music.State{}, 0, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return music.State{}, 0, music.ErrSupervisorClosed
+	}
+	supervisor := r.supervisors[channel]
+	if supervisor == nil {
+		return music.State{}, 0, errors.New("music voice session is unavailable")
+	}
+	state := supervisor.State()
+	return state, state.Revision, nil
+}
+
 // ApplyPersistedSnapshot hands an exact committed revision to its retained
 // supervisor. Only a live explicit Resume may start playback.
 func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, committed music.State, expectedRevision uint64, liveResume bool) (uint64, error) {
@@ -238,6 +258,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 	return &service.MusicInteractions{
 		Store: stateStore, Authority: authority,
 		InstallationID: installation, CommunityID: community,
+		CurrentState:        registry.CurrentState,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
 	}, nil
 }
@@ -394,6 +415,21 @@ func (r *musicQueueRegistry) QueueStore(installation, community id.ID) (*persist
 		return nil, false
 	}
 	return retained.queues.store, true
+}
+
+func (r *musicQueueRegistry) CurrentState(ctx context.Context, installation, community, channel id.ID) (music.State, uint64, error) {
+	if r == nil {
+		return music.State{}, 0, errors.New("music voice session is unavailable")
+	}
+	r.mu.Lock()
+	retained := r.runtimes[installation]
+	if retained == nil || retained.community != community || retained.queues == nil {
+		r.mu.Unlock()
+		return music.State{}, 0, errors.New("music voice session is unavailable")
+	}
+	queues := retained.queues
+	r.mu.Unlock()
+	return queues.CurrentState(ctx, channel)
 }
 
 // ApplyPersistedSnapshot is the runtime bridge for queue mutations already

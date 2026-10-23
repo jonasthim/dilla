@@ -19,6 +19,14 @@ type musicInteractionStoreFake struct {
 func (s *musicInteractionStoreFake) Load(context.Context, id.ID) (persistence.Snapshot, error) {
 	return s.snapshot, nil
 }
+
+type musicInteractionRestartViewStore struct{ *musicInteractionStoreFake }
+
+func (s musicInteractionRestartViewStore) Load(_ context.Context, _ id.ID) (persistence.Snapshot, error) {
+	snapshot := s.musicInteractionStoreFake.snapshot
+	snapshot.State.Paused = true // Match persistence.Store's restart-safe read view.
+	return snapshot, nil
+}
 func (s *musicInteractionStoreFake) Save(_ context.Context, _ id.ID, expected uint64, state music.State) (persistence.Snapshot, error) {
 	if expected != s.snapshot.Revision {
 		return persistence.Snapshot{}, persistence.ErrConflict
@@ -130,6 +138,59 @@ func TestMusicInteractionsMarksOnlyCommittedResumeForLiveHandoff(t *testing.T) {
 	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
 	if err != nil || result.Status != 0 || !liveResume || result.Revision == nil || *result.Revision != 3 {
 		t.Fatalf("resume result=%+v err=%v liveResume=%v, want committed explicit resume", result, err, liveResume)
+	}
+}
+
+func TestMusicInteractionsPreservesLivePlaybackAcrossQueueMetadataMutations(t *testing.T) {
+	channel, community := interactionID(35), interactionID(32)
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{
+		ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Track", RequesterID: "member",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = music.Apply(state, state.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	var callbackState music.State
+	h := MusicInteractions{Store: musicInteractionRestartViewStore{base}, Authority: authority, CommunityID: community,
+		CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+			return state, state.Revision, nil
+		},
+		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, committed music.State, revision uint64, liveResume bool) (uint64, error) {
+			callbackState = committed
+			if liveResume {
+				t.Error("volume change was incorrectly marked as Resume")
+			}
+			return revision, nil
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision), Args: []any{uint64(35)}}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicVolume)
+	if err != nil || result.Status != 0 || callbackState.Paused || base.snapshot.State.Paused || base.snapshot.State.Volume != 35 {
+		t.Fatalf("live volume mutation result=%+v err=%v callback=%+v persisted=%+v", result, err, callbackState, base.snapshot.State)
+	}
+}
+
+func TestMusicInteractionsRejectsUnsyncedRuntimeStateBeforeMutation(t *testing.T) {
+	channel, community := interactionID(45), interactionID(42)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	callbacks := 0
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
+		CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+			return music.State{Revision: 1, Queue: []music.Track{}, Paused: false}, 1, nil
+		},
+		OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+			callbacks++
+			return 0, nil
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{uint64(35)}}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicVolume)
+	if err != nil || result.Status != interactionStatusConflict || store.saves != 0 || callbacks != 0 {
+		t.Fatalf("unsynced runtime result=%+v err=%v saves=%d callbacks=%d", result, err, store.saves, callbacks)
 	}
 }
 

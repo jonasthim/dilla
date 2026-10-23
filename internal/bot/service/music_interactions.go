@@ -36,6 +36,8 @@ type musicStateStore interface {
 	Save(context.Context, id.ID, uint64, music.State) (persistence.Snapshot, error)
 }
 
+type musicRuntimeStateReader func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error)
+
 // MusicInteractions updates only encrypted queue state. It does not control
 // audio; a playback supervisor must consume these revisions separately.
 type MusicInteractions struct {
@@ -43,6 +45,9 @@ type MusicInteractions struct {
 	Authority      MusicInteractionAuthority
 	InstallationID id.ID
 	CommunityID    id.ID
+	// CurrentState exposes the retained supervisor's live state. The handler
+	// accepts it only when its revision still matches the durable store row.
+	CurrentState musicRuntimeStateReader
 	// OnPersistedSnapshot applies the exact state returned by a successful CAS
 	// commit. The liveResume flag is true only for an explicit Resume operation.
 	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error)
@@ -95,6 +100,17 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	snapshot, err := h.Store.Load(ctx, channel)
 	if err != nil {
 		return InteractionResult{}, err
+	}
+	if h.CurrentState != nil {
+		state, revision, err := h.CurrentState(ctx, h.InstallationID, h.CommunityID, channel)
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		if revision != snapshot.Revision || state.Revision != snapshot.Revision {
+			currentRevision := snapshot.Revision
+			return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
+		}
+		snapshot.State = state
 	}
 	if op == protocol.OpMusicState {
 		data, err := encodeMusicSnapshot(snapshot.State)
