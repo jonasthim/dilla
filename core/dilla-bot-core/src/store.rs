@@ -288,6 +288,7 @@ fn create_init_stage(
 ) -> Result<PathBuf, StoreError> {
     let mut random = File::open("/dev/urandom").map_err(|_| StoreError::File)?;
     let (nonce, stage, stage_file) = loop {
+        // This is only a read buffer; read_exact replaces every byte from the OS CSPRNG.
         let mut nonce = [0u8; 16];
         random
             .read_exact(&mut nonce)

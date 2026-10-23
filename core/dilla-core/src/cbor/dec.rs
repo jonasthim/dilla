@@ -168,6 +168,7 @@ impl<'a> Decoder<'a> {
                 actual: s.len(),
             });
         }
+        // This is a copy destination, fully replaced by the validated input slice below.
         let mut out = [0u8; N];
         out.copy_from_slice(s);
         Ok(out)
