@@ -42,6 +42,17 @@ type AutoModerationConfigRuntime interface {
 	PersistConfig(moderation.Config, func() error) error
 }
 
+func autoModerationConfigRuntimeUnavailable(runtime AutoModerationConfigRuntime) bool {
+	if runtime == nil {
+		return true
+	}
+	// The production runtime is a pointer receiver. A nil *AutoModerationRuntime
+	// stored in this interface is non-nil, and calling PersistConfig on it would
+	// consume a grant before failing. Treat that typed nil as unavailable too.
+	concrete, ok := runtime.(*AutoModerationRuntime)
+	return ok && concrete == nil
+}
+
 // AutoModerationGrantBinding contains only the tuple and config digest needed
 // for server-side grant redemption. It deliberately excludes plaintext config.
 type AutoModerationGrantBinding struct {
@@ -143,7 +154,7 @@ func (h AutoModerationConfigInteractions) put(ctx context.Context, actor Interac
 	// A successful PUT must be fenced against the live evaluator. Persisting
 	// without Runtime could report success while moderation continues using an
 	// older policy, so treat runtime startup failure as unavailable.
-	if h.Runtime == nil {
+	if autoModerationConfigRuntimeUnavailable(h.Runtime) {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if h.GrantRedeemer == nil {

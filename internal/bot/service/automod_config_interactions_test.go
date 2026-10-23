@@ -175,6 +175,19 @@ func TestAutoModerationConfigPutFailsClosedWhenRuntimeUnavailable(t *testing.T) 
 	}
 }
 
+func TestAutoModerationConfigPutFailsClosedForTypedNilRuntime(t *testing.T) {
+	h, _, n, actor := automodConfigFixture()
+	var runtime *AutoModerationRuntime
+	h.Runtime = runtime
+	request := automodConfigPutRequest(h.CommunityID, id.New(), 0,
+		automodConfigDocument(t, false, moderation.ActionLog, moderation.ActionLog, moderation.ActionLog))
+	grant := h.GrantRedeemer.(*automodGrantRedeemerFake)
+	result, err := h.Handlers()[protocol.OpAutoModerationPut].Handle(context.Background(), actor, request)
+	if err != nil || result.Status != interactionStatusUnavailable || n.writes != 0 || grant.calls != 0 {
+		t.Fatalf("PUT with typed-nil runtime result=%+v writes=%d grant calls=%d err=%v", result, n.writes, grant.calls, err)
+	}
+}
+
 func TestAutoModerationConfigPutUsesDistinctRemovalAndWarningPermissions(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

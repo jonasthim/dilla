@@ -18,6 +18,7 @@ import (
 func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRevisionChecks(t *testing.T) {
 	community := id.New()
 	state := &runtimeWelcomeSettingsNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}}
+	var unavailableRuntime *service.AutoModerationRuntime
 	handlers := runtimeInteractionHandlers(
 		service.OverviewInteractions{CommunityID: community},
 		service.AnnouncementInteractions{Authority: runtimeWelcomeAuthority{}, CommunityID: community},
@@ -25,7 +26,7 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 		nil,
 		state,
 		nil,
-		nil,
+		unavailableRuntime,
 	)
 	if len(handlers) != 10 {
 		t.Fatalf("runtime handlers has %d operations, want overview, announcements, welcome, moderation cases, and automatic moderation settings", len(handlers))
