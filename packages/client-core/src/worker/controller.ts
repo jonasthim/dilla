@@ -1303,7 +1303,7 @@ export class Controller {
       && row.communityId !== null && toHex(row.communityId) === command.communityId);
     if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
-    const groupId = groupRows[0]!.groupId;
+    const groupId = groupRows[0].groupId;
     const requestId = fromHex(command.requestId);
     const now = BigInt(Math.floor(this.deps.now() / 1000));
     const request = { requestId, communityId, channelId: null, operation: 60, revision: null, expires: null, args: [null] };
@@ -1341,7 +1341,7 @@ export class Controller {
     }
     this.acceptedHumanInteractionSends.add(acceptedKey);
     if (this.acceptedHumanInteractionSends.size > 128) {
-      const oldest = this.acceptedHumanInteractionSends.values().next().value as string | undefined;
+      const oldest = this.acceptedHumanInteractionSends.values().next().value;
       if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
     }
     return { requestId: command.requestId, status: 'accepted' };

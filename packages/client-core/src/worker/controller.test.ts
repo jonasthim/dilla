@@ -162,7 +162,7 @@ describe('Controller', () => {
     const command = { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 } as const;
     w.call(10_196, command);
     await vi.waitFor(() => expect(w.ret(10_196)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
-    w.state.outbox[0]!.state = 1;
+    w.state.outbox[0].state = 1;
     w.call(10_195, command);
     await vi.waitFor(() => expect(w.ret(10_195)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
     expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
