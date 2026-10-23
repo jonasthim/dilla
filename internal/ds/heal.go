@@ -23,6 +23,7 @@ type HealStatus struct {
 	NextSeq     uint64
 	Generation  uint64
 	NeedFromSeq uint64
+	NeedsHeal   bool
 }
 
 type HealTailItem struct {
@@ -159,6 +160,7 @@ func (d *DS) HealStatus(ctx context.Context, s Session, groupID id.ID) (HealStat
 		NextSeq:     row.Seq + 1,
 		Generation:  instance.Generation,
 		NeedFromSeq: row.Seq + 1,
+		NeedsHeal:   row.EpochUnknown,
 	}, nil
 }
 

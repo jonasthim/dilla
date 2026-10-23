@@ -490,6 +490,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
 		{name: "joining can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost, wantNext: true},
 		{name: "joining can sync own community group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: ownGroup.String(), wantNext: true},
+		{name: "joining cannot use human heal-state route", pattern: "GET /v1/groups/{id}/heal-state", method: http.MethodGet, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
 		{name: "joining cannot sync foreign group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: foreignGroup.String(), wantNext: false},
 		{name: "joining cannot sync DM group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: dmGroup.String(), wantNext: false},
 		{name: "joining cannot upload application message", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost, pathName: "id", pathValue: ownGroup.String(), wantNext: false},

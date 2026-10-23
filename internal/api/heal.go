@@ -18,6 +18,7 @@ func (h *Groups) RegisterHeal(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}
 	mux.Handle("GET /v1/groups/{id}/heal", enrolled(dsMeter(h.Limiter, dsClassRead, h.healStatus)))
+	mux.Handle("GET /v1/groups/{id}/heal-state", enrolled(dsMeter(h.Limiter, dsClassRead, h.memberHealState)))
 	mux.Handle("POST /v1/groups/{id}/heal", enrolled(dsMeter(h.Limiter, dsClassCommit, h.heal)))
 }
 
@@ -27,6 +28,45 @@ type healStatusResponse struct {
 	NextSeq     uint64
 	Generation  uint64
 	NeedFromSeq uint64
+}
+
+type memberHealStateResponse struct {
+	_           struct{} `cbor:",toarray"`
+	Epoch       uint64
+	NextSeq     uint64
+	Generation  uint64
+	NeedFromSeq uint64
+	NeedsHeal   uint64
+}
+
+// memberHealState adds a restore marker for current enrolled members while the
+// original four-field /heal status remains compatible with older clients.
+func (h *Groups) memberHealState(w http.ResponseWriter, r *http.Request) {
+	groupID, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	status, err := h.DS.HealStatus(r.Context(), session, groupID)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	needsHeal := uint64(0)
+	if status.NeedsHeal {
+		needsHeal = 1
+	}
+	if err := server.EncodeBody(w, http.StatusOK, memberHealStateResponse{
+		Epoch: status.Epoch, NextSeq: status.NextSeq, Generation: status.Generation,
+		NeedFromSeq: status.NeedFromSeq, NeedsHeal: needsHeal,
+	}); err != nil {
+		server.WriteError(w, err)
+	}
 }
 
 // healStatus is endpoint 13: `[epoch, next_seq, generation, need_from_seq]`. The generation is how
