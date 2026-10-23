@@ -888,7 +888,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         d.array(3)?;
         let count = d.array_len()?;
         for _ in 0..count {
-            d.array(11)?;
+            d.array(13)?;
             d.uint()?;
             d.bytes_exact::<16>()?;
             d.bytes_exact::<16>()?;
@@ -900,6 +900,8 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             d.bytes_exact::<16>()?;
             d.bytes_exact::<16>()?;
             d.text()?;
+            d.uint()?;
+            d.opt_bytes_exact::<16>()?;
         }
         d.uint()?;
         d.uint()?;
@@ -919,7 +921,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             d.array(3)?;
             let count = d.array_len()?;
             for _ in 0..count {
-                d.array(11)?;
+                d.array(13)?;
                 d.uint()?;
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
@@ -931,6 +933,8 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
                 d.text()?;
+                d.uint()?;
+                d.opt_bytes_exact::<16>()?;
             }
             d.uint()?;
             d.uint()?;
@@ -969,7 +973,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             d.array(3)?;
             let count = d.array_len()?;
             for _ in 0..count {
-                d.array(11)?;
+                d.array(13)?;
                 d.uint()?;
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
@@ -981,6 +985,8 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
                 d.text()?;
+                d.uint()?;
+                d.opt_bytes_exact::<16>()?;
             }
             d.uint()?;
             d.uint()?;
@@ -1007,7 +1013,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             d.array(3)?;
             let count = d.array_len()?;
             for _ in 0..count {
-                d.array(11)?;
+                d.array(13)?;
                 d.uint()?;
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
@@ -1019,6 +1025,8 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
                 d.bytes_exact::<16>()?;
                 d.bytes_exact::<16>()?;
                 d.text()?;
+                d.uint()?;
+                d.opt_bytes_exact::<16>()?;
             }
             d.uint()?;
             d.uint()?;
