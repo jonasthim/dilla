@@ -487,6 +487,10 @@ impl CoreHandle {
             .map(|rows| encode_manual_removal_evidence(&rows).into_boxed_slice())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The web ABI binds each warning evidence field independently."
+    )]
     pub fn prepare_manual_warning_evidence(
         &self,
         request_id: &[u8],
@@ -601,7 +605,6 @@ impl CoreHandle {
     pub fn reject_manual_removal(&mut self, request_id: &[u8], now: u64) -> Result<(), JsError> {
         let request_id = fixed_arg::<16>("request_id", request_id)?;
         self.with_core(|c| c.reject_manual_removal(&request_id, now))
-            .map_err(Into::into)
     }
     /// Bounded hint for refreshing a previously trusted moderator before ingesting a removal entry.
     pub fn removal_actor_history_version(
@@ -623,6 +626,10 @@ impl CoreHandle {
         self.with_core(|c| c.removal_actor_history_version(&group_id, &entry))
     }
     /// Extends only the existing UMK-anchored list of the moderator named by this proof.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The web ABI carries the signed removal and history context separately."
+    )]
     pub fn refresh_removal_actor_history(
         &self,
         group_id: &[u8],
