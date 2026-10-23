@@ -77,7 +77,7 @@ type planTwo struct {
 // route (api.SessionRoute), the same two layers Plan 1's delivery-service routes sit behind. Every
 // group that takes the delivery service gets the one *ds.DS, every group that takes a resolver the
 // one api.Resolver, and the readable fan-out is the gateway's.
-func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
+func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	cfg := p.o.Config
 	repo, clk, log := p.o.Repo, p.o.Clock, p.o.Log
 	res := api.NewResolver(repo)
@@ -142,7 +142,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	stats.Register(m)
 	api.NewAdmin(repo, p.blobs, clk, log).WithMetrics(p.o.Metrics).
 		WithDiagnostics(withCallLegs(p.diagnose, stats, cfg.TURN, p.o.Metrics)).WithCalls(calls).Register(m)
-	return calls
+	return calls, roles
 }
 
 // callsConfig is what the call routes hand a client besides the token (task 16): the signalling URL,

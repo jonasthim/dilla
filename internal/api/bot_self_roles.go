@@ -257,7 +257,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			if len(messages) != 1 || messages[0].Seq != req.MessageSeq || messages[0].Sender != botUser.ID || messages[0].UploaderDevice != *installation.DeviceID || messages[0].Deleted != nil {
+			if len(messages) > 0 && messages[0].Seq == req.MessageSeq && (messages[0].Sender != botUser.ID || messages[0].UploaderDevice != *installation.DeviceID || messages[0].Deleted != nil) {
 				return server.Errorf(server.CodeForbidden, "panel must reference a live message authored by the installed bot")
 			}
 		}
@@ -286,7 +286,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 				return server.Errorf(server.CodeForbidden, "panel role is no longer within the approved policy")
 			}
 		}
-		panel = store.RolePanelRow{CommunityID: cid, ChannelID: req.ChannelID, MessageSeq: req.MessageSeq, AuthorID: botUser.ID, InstallationID: installation.ID}
+		panel = store.RolePanelRow{CommunityID: cid, ChannelID: req.ChannelID, MessageSeq: req.MessageSeq, AuthorID: botUser.ID, InstallationID: installation.ID, SendOperationID: req.RequestID}
 		affected, err = tx.(store.ReactionRoleGrantSources).ListReactionRolePanelGrantUsers(r.Context(), cid, req.ChannelID, req.MessageSeq)
 		if err != nil {
 			return err
@@ -454,13 +454,6 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	if reactor.Kind != kindHuman {
 		return false, nil
 	}
-	rows, err := tx.ListReadableMessages(r.Context(), ch.ID, seq, 1)
-	if err != nil {
-		return false, err
-	}
-	if len(rows) != 1 || rows[0].Seq != seq || rows[0].Deleted != nil {
-		return false, nil
-	}
 	panel, err := tx.GetRolePanel(r.Context(), ch.ID, seq)
 	if err == store.ErrNotFound {
 		return false, nil
@@ -468,14 +461,14 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	if err != nil {
 		return false, err
 	}
-	if panel.CommunityID != *ch.CommunityID || rows[0].Sender != panel.AuthorID {
+	if panel.CommunityID != *ch.CommunityID {
 		return false, nil
 	}
 	installation, err := tx.GetBotInstallation(r.Context(), panel.InstallationID)
 	if err != nil {
 		return false, err
 	}
-	if installation.CommunityID != *ch.CommunityID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || *installation.UserID != panel.AuthorID || *installation.DeviceID != rows[0].UploaderDevice {
+	if installation.CommunityID != *ch.CommunityID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || *installation.UserID != panel.AuthorID {
 		return false, nil
 	}
 	bot, err := tx.GetUser(r.Context(), panel.AuthorID)
@@ -483,6 +476,25 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 		return false, err
 	}
 	if bot.Kind != 1 {
+		return false, nil
+	}
+	rows, err := tx.ListReadableMessages(r.Context(), ch.ID, seq, 1)
+	if err != nil {
+		return false, err
+	}
+	hasReadableSource := len(rows) > 0 && rows[0].Seq == seq
+	if hasReadableSource && (rows[0].Deleted != nil || rows[0].Sender != panel.AuthorID || rows[0].UploaderDevice != *installation.DeviceID) {
+		return false, nil
+	}
+	if panel.SendOperationID.IsZero() {
+		// Legacy readable panels have no durable operation link; they remain
+		// usable only while their original readable message row is present.
+		if !hasReadableSource {
+			return false, nil
+		}
+	} else if err := verifyRolePanelBotSend(r.Context(), tx, installation, panel.AuthorID, ch, rolePanelRegistrationRequest{
+		RequestID: panel.SendOperationID, ChannelID: ch.ID, MessageSeq: seq,
+	}); err != nil {
 		return false, nil
 	}
 	if _, err := tx.GetMember(r.Context(), *ch.CommunityID, panel.AuthorID); err != nil {

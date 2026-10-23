@@ -195,7 +195,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"GetManualWarningAction", "PutManualWarningAction",
 		}},
 		{"RolePanels", reflect.TypeOf((*store.RolePanels)(nil)).Elem(), []string{
-			"GetRolePanel", "ListRolePanelOptions", "SetRolePanel",
+			"DeleteRolePanel", "GetRolePanel", "ListRolePanelOptions", "SetRolePanel",
 		}},
 		{"ReactionRoleGrantSources", reflect.TypeOf((*store.ReactionRoleGrantSources)(nil)).Elem(), []string{
 			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleChannelGrants", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",

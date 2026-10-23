@@ -260,7 +260,7 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 		t.Fatalf("register nonaccepted send receipt = %d (%x), want 403", status, body)
 	}
 	registered, err := e.Repo.GetRolePanel(t.Context(), channel, 9)
-	if err != nil || registered.AuthorID != botID || registered.InstallationID != installationID {
+	if err != nil || registered.AuthorID != botID || registered.InstallationID != installationID || registered.SendOperationID != requestID {
 		t.Fatalf("registered panel identity = %+v, %v", registered, err)
 	}
 	if err := e.Repo.AddReactionRoleGrant(t.Context(), store.ReactionRoleGrant{CommunityID: cid, UserID: owner, RoleID: role, ChannelID: channel, MessageSeq: 9, Reaction: "✅"}); err != nil {

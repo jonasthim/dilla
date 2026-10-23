@@ -221,7 +221,7 @@ func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) 
 			if err := repo.CreateChannel(ctx, channel); err != nil {
 				t.Fatal(err)
 			}
-			panel := store.RolePanelRow{CommunityID: cid, ChannelID: channel.ID, MessageSeq: 17, AuthorID: bot, InstallationID: installation}
+			panel := store.RolePanelRow{CommunityID: cid, ChannelID: channel.ID, MessageSeq: 17, AuthorID: bot, InstallationID: installation, SendOperationID: id.New()}
 			// The API returns role-panel options in bytewise emoji order, independent
 			// of insertion order and database locale.
 			options := []store.RolePanelOptionRow{{Emoji: "🟦", RoleID: roleB.ID}, {Emoji: "✅", RoleID: roleA.ID}}
@@ -255,6 +255,15 @@ func TestRolePanelsArePersistentAndReplaceEmojiMappingsAtomically(t *testing.T) 
 			tooLong[0].Emoji = "🟦🟦🟦🟦🟦🟦🟦🟦🟦"
 			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.SetRolePanel(ctx, panel, tooLong) }); err == nil {
 				t.Fatal("emoji mapping longer than 32 UTF-8 bytes was accepted")
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.DeleteRolePanel(ctx, panel.ChannelID, panel.MessageSeq) }); err != nil {
+				t.Fatalf("delete role panel: %v", err)
+			}
+			if _, err := repo.GetRolePanel(ctx, panel.ChannelID, panel.MessageSeq); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("panel after delete = %v, want ErrNotFound", err)
+			}
+			if got, err := repo.ListRolePanelOptions(ctx, panel.ChannelID, panel.MessageSeq); err != nil || len(got) != 0 {
+				t.Fatalf("options after delete = %+v, %v; want empty", got, err)
 			}
 		})
 	}

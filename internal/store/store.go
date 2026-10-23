@@ -631,14 +631,16 @@ type RolePanels interface {
 	SetRolePanel(ctx context.Context, panel RolePanelRow, options []RolePanelOptionRow) error
 	GetRolePanel(ctx context.Context, channelID id.ID, messageSeq uint64) (RolePanelRow, error)
 	ListRolePanelOptions(ctx context.Context, channelID id.ID, messageSeq uint64) ([]RolePanelOptionRow, error)
+	DeleteRolePanel(ctx context.Context, channelID id.ID, messageSeq uint64) error
 }
 
 type RolePanelRow struct {
-	CommunityID    id.ID
-	ChannelID      id.ID
-	MessageSeq     uint64
-	AuthorID       id.ID
-	InstallationID id.ID
+	CommunityID     id.ID
+	ChannelID       id.ID
+	MessageSeq      uint64
+	AuthorID        id.ID
+	InstallationID  id.ID
+	SendOperationID id.ID
 }
 
 type RolePanelOptionRow struct {

@@ -29,7 +29,7 @@ func (r *Repo) SetRolePanel(ctx context.Context, panel store.RolePanelRow, optio
 		}
 		seen[option.Emoji] = true
 	}
-	res, err := r.tx.ExecContext(ctx, `INSERT INTO role_panels(community_id,channel_id,message_seq,author_id,installation_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(channel_id,message_seq) DO UPDATE SET community_id=excluded.community_id WHERE role_panels.community_id=excluded.community_id AND role_panels.author_id=excluded.author_id AND role_panels.installation_id=excluded.installation_id`, panel.CommunityID, panel.ChannelID, int64(panel.MessageSeq), panel.AuthorID, panel.InstallationID)
+	res, err := r.tx.ExecContext(ctx, `INSERT INTO role_panels(community_id,channel_id,message_seq,author_id,installation_id,send_operation_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(channel_id,message_seq) DO UPDATE SET community_id=excluded.community_id WHERE role_panels.community_id=excluded.community_id AND role_panels.author_id=excluded.author_id AND role_panels.installation_id=excluded.installation_id AND role_panels.send_operation_id=excluded.send_operation_id`, panel.CommunityID, panel.ChannelID, int64(panel.MessageSeq), panel.AuthorID, panel.InstallationID, panel.SendOperationID)
 	if err != nil {
 		return wrap(err)
 	}
@@ -128,8 +128,24 @@ func (r *Repo) GetRolePanel(ctx context.Context, channel id.ID, seq uint64) (sto
 	if r.inTx {
 		q = r.tx
 	}
-	err := q.QueryRowContext(ctx, `SELECT community_id,channel_id,message_seq,author_id,installation_id FROM role_panels WHERE channel_id=$1 AND message_seq=$2`, channel, int64(seq)).Scan(&p.CommunityID, &p.ChannelID, &p.MessageSeq, &p.AuthorID, &p.InstallationID)
+	err := q.QueryRowContext(ctx, `SELECT community_id,channel_id,message_seq,author_id,installation_id,send_operation_id FROM role_panels WHERE channel_id=$1 AND message_seq=$2`, channel, int64(seq)).Scan(&p.CommunityID, &p.ChannelID, &p.MessageSeq, &p.AuthorID, &p.InstallationID, &p.SendOperationID)
 	return p, wrap(err)
+}
+
+func (r *Repo) DeleteRolePanel(ctx context.Context, channel id.ID, seq uint64) error {
+	if !r.inTx {
+		return fmt.Errorf("store: role panel delete requires transaction")
+	}
+	res, err := r.tx.ExecContext(ctx, `DELETE FROM role_panels WHERE channel_id=$1 AND message_seq=$2`, channel, int64(seq))
+	if err != nil {
+		return wrap(err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repo) ListRolePanelOptions(ctx context.Context, channel id.ID, seq uint64) ([]store.RolePanelOptionRow, error) {

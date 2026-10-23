@@ -162,9 +162,6 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: seq, Sender: botID, Envelope: []byte{1}, Body: "Pick a role", FrankingTag: make([]byte, 32), Created: now, UploaderDevice: deviceID}); err != nil {
-		t.Fatal(err)
-	}
 	groupID := seedTextGroup(t, e, channel, f.cid)
 	requestID, attemptID := id.New(), id.New()
 	seedAcceptedRolePanelBotSend(t, e, installationID, botID, deviceID, f.cid, groupID, requestID, attemptID, seq)
@@ -220,6 +217,11 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 		t.Fatalf("role from removed allowlist = %v, %v; want absent", held, err)
 	}
 	if err := e.Repo.AddReactionRoleGrant(t.Context(), store.ReactionRoleGrant{CommunityID: f.cid, UserID: member, RoleID: role, ChannelID: channel, MessageSeq: seq, Reaction: "🎨"}); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the existing readable-message tombstone path separately after
+	// proving registration and reaction work from the accepted MLS receipt alone.
+	if _, err := e.Repo.PutReadableMessage(t.Context(), store.ReadableMessageRow{ChannelID: channel, ChannelHex: channel.String(), Seq: seq, Sender: botID, Envelope: []byte{1}, Body: "Pick a role", FrankingTag: make([]byte, 32), Created: now, UploaderDevice: deviceID}); err != nil {
 		t.Fatal(err)
 	}
 	botToken := "panel-bot-delete"

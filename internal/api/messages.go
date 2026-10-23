@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Messages is the application-ciphertext half of the delivery service's HTTP surface: endpoints 7
@@ -21,12 +23,15 @@ import (
 // `*ds.DS` must not silently turn four documented routes into 501s.
 type Messages struct {
 	DS                 *ds.DS
+	roles              *Roles
 	MaxCiphertextBytes int64 // zero means defaultMaxCiphertextBytes
 	MaxBody            int64 // §5.3's cap for the three small routes; zero means maxCBORBody
 	// Limiter meters every route per device session from `[limits.rate]` (dsmeter.go); nil
 	// meters nothing.
 	Limiter *server.RateLimiter
 }
+
+func (h *Messages) WithRoles(roles *Roles) *Messages { h.roles = roles; return h }
 
 // defaultMaxCiphertextBytes is the MLS ciphertext cap of the Global Constraints, 131072 bytes. The
 // delivery service enforces it again on the decoded `private_message`, which is the enforcement
@@ -215,8 +220,71 @@ func (h *Messages) delete(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if err := h.DS.DeleteMessage(r.Context(), session, groupID, seq); err != nil {
-		server.WriteError(w, dsError(err))
+	deleteErr := h.DS.DeleteMessage(r.Context(), session, groupID, seq)
+	var deliveryErr *ds.Error
+	isAlreadyDeleted := errors.As(deleteErr, &deliveryErr) && deliveryErr.Code == string(server.CodeNotFound)
+	if deleteErr != nil && !isAlreadyDeleted {
+		server.WriteError(w, dsError(deleteErr))
+		return
+	}
+	panelCleaned := false
+	if h.roles != nil {
+		group, err := h.roles.repo.GetGroup(r.Context(), groupID)
+		if err == nil && group.Kind == 0 && group.CommunityID != nil {
+			panel, panelErr := h.roles.repo.GetRolePanel(r.Context(), group.TargetID, seq)
+			if panelErr == nil && panel.CommunityID == *group.CommunityID {
+				mayRetryCleanup := deleteErr == nil
+				if isAlreadyDeleted && !panel.SendOperationID.IsZero() && panel.AuthorID == session.UserID {
+					members, memberErr := h.roles.repo.ListMembers(r.Context(), groupID)
+					if memberErr != nil {
+						server.WriteError(w, memberErr)
+						return
+					}
+					for _, member := range members {
+						if member.UserID == session.UserID && member.DeviceID == session.DeviceID {
+							mayRetryCleanup = true
+							break
+						}
+					}
+				}
+				if !mayRetryCleanup {
+					server.WriteError(w, dsError(deleteErr))
+					return
+				}
+				var affected []id.ID
+				err = h.roles.repo.Tx(r.Context(), func(tx store.Repository) error {
+					if err := tx.LockCommunity(r.Context(), *group.CommunityID); err != nil {
+						return err
+					}
+					var err error
+					affected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRolePanelGrants(r.Context(), *group.CommunityID, group.TargetID, seq)
+					if err != nil {
+						return err
+					}
+					if err := tx.DeleteRolePanel(r.Context(), group.TargetID, seq); err != nil && !errors.Is(err, store.ErrNotFound) {
+						return err
+					}
+					return nil
+				})
+				if err != nil {
+					server.WriteError(w, err)
+					return
+				}
+				panelCleaned = true
+				for _, user := range affected {
+					h.roles.reactionRoleChanged(r.Context(), *group.CommunityID, user)
+				}
+			} else if panelErr != nil && !errors.Is(panelErr, store.ErrNotFound) {
+				server.WriteError(w, panelErr)
+				return
+			}
+		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+			server.WriteError(w, err)
+			return
+		}
+	}
+	if deleteErr != nil && !panelCleaned {
+		server.WriteError(w, dsError(deleteErr))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -516,20 +516,19 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	groups.RegisterDirectory(mux, sessions)    // rows 10, 12, 15-16
 	groups.RegisterBotDirectory(mux, sessions) // managed Bot KeyPackage publication and receipts
 	groups.RegisterHeal(mux, sessions)         // rows 13-14
-	(&api.Messages{
-		DS:                 delivery,
-		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
-		Limiter:            limiter,
-	}).Register(mux, sessions) // rows 11, 17, 18 and the cursor
-
 	// Plan 2: communities, channels and their members, roles, bans, community invites, DMs,
 	// readable channels, blobs, reports, calls and the admin routes (routes.go), behind the same
 	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
 	// paths when this process runs an SFU.
-	callRoutes = mountPlanTwo(mux, planTwo{
+	callRoutes, roles := mountPlanTwo(mux, planTwo{
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
+	(&api.Messages{
+		DS:                 delivery,
+		MaxCiphertextBytes: o.Config.Limits.MaxCiphertextBytes,
+		Limiter:            limiter,
+	}).WithRoles(roles).Register(mux, sessions) // rows 11, 17, 18 and the cursor
 	if o.SFU != nil {
 		if err := mountRTC(mux, o.SFU, callRoutes, o.Config.Server.TrustedProxyCIDRs, limiter); err != nil {
 			closeWasmOnError()
