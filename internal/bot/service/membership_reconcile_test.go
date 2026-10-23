@@ -114,6 +114,9 @@ type membershipFakeSession struct {
 	acked                 []uint64
 	ackErr                error
 	channelsCalls         int
+	groupInfo             client.GroupInfo
+	groupPageErr          error
+	groupPageCalls        int
 	removeOnSecond        bool
 	changeGroupOnSecond   bool
 	interactionBinding    native.InteractionGroupBinding
@@ -161,6 +164,9 @@ func (s *membershipFakeSession) AcknowledgeWelcome(_ context.Context, w uint64) 
 	return s.ackErr
 }
 func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
+	if s.groupInfo.NextSequence != 0 {
+		return s.groupInfo, nil
+	}
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
@@ -170,6 +176,10 @@ func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, 
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error) {
+	s.groupPageCalls++
+	if s.groupPageErr != nil {
+		return client.Page{}, s.groupPageErr
+	}
 	return client.Page{Next: 1}, nil
 }
 func (s *membershipFakeSession) BotInteractionGroupPage(_ context.Context, _, _ id.ID, kind string, from, _ uint64) (client.Page, error) {
@@ -290,6 +300,37 @@ func TestMembershipSyncsOnlyGroupsWhoseNativeBindingMatchesAuthorizedChannel(t *
 	n.inspected.Target = membershipID(77)
 	if _, err = r.reconcileOnce(context.Background(), s); err == nil {
 		t.Fatal("native group rebound to another channel was accepted")
+	}
+}
+
+func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    uint64
+		wantErr bool
+	}{
+		{name: "call group", kind: 1},
+		{name: "text group", kind: 0, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, n, s, community, channel, group := membershipFixture(t)
+			channelKind := tc.kind
+			s.channels = []client.Channel{{ID: channel, CommunityID: community, Kind: channelKind}}
+			if tc.kind == 0 {
+				s.channels[0].TextGroupID = &group
+			}
+			info := native.GroupInfo{ID: group, Kind: tc.kind, Community: &community, Target: channel, State: 2, NextSequence: 1}
+			n.groups, n.inspected = []native.GroupInfo{info}, info
+			s.groupInfo = client.GroupInfo{NextSequence: 2}
+			s.groupPageErr = &client.APIError{Status: 404, Code: "E_NOT_FOUND"}
+			_, err := r.reconcileOnce(context.Background(), s)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("reconcile error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if s.groupPageCalls != 1 {
+				t.Fatalf("group page calls = %d, want 1", s.groupPageCalls)
+			}
+		})
 	}
 }
 

@@ -235,6 +235,14 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: ch.ID, Kind: g.Kind})
 		if e != nil {
+			// A call group can remain readable through channel-level reader access after
+			// this device stops being a current MLS member. Its member-only source reads
+			// intentionally answer 404 in that case. Keep reconciliation of unrelated
+			// groups and interactions moving; a later pass will retry if membership returns.
+			var apiErr *client.APIError
+			if g.Kind == 1 && errors.As(e, &apiErr) && apiErr.Status == 404 {
+				continue
+			}
 			return out, e
 		}
 		out.GroupsSynced++
