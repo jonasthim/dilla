@@ -1,6 +1,8 @@
 //! Prepared sends, delivery confirmation, outbox and timeline reads.
 
-use super::error::{E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_STATE, E_CORE_STORAGE};
+use super::error::{
+    E_BINDING, E_CORE_INPUT, E_CORE_MLS, E_CORE_NOT_FOUND, E_CORE_STATE, E_CORE_STORAGE,
+};
 use super::fold::{self, FoldTrigger};
 use super::groups::{STATE_ACTIVE, STATE_GONE, checked, group_row};
 use super::{ClientCore, ClientError, Own, wire};
@@ -8,6 +10,7 @@ use crate::cbor::{Encoder, decode_strict};
 use crate::envelope::{Envelope, EnvelopeType};
 use crate::ids::MsgId;
 use crate::mls::StorageError;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use rusqlite::{OptionalExtension, params};
@@ -37,6 +40,53 @@ const BOT_SEND_UNKNOWN: u64 = 4;
 struct BotSendAttempt {
     predecessor: Option<[u8; 16]>,
     message: [u8; 16],
+}
+
+#[derive(Clone, Copy)]
+struct HumanInteractionIntent {
+    request_id: [u8; 16],
+    community: [u8; 16],
+    group: [u8; 16],
+    input_hash: [u8; 32],
+}
+
+fn human_interaction_intent_key(request_id: &[u8; 16]) -> String {
+    let mut key = String::from("human_interaction_send/v1/");
+    for byte in request_id {
+        use core::fmt::Write as _;
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
+fn encode_human_interaction_intent(intent: HumanInteractionIntent) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(1)
+        .bytes(&intent.community)
+        .bytes(&intent.group)
+        .bytes(&intent.input_hash)
+        .bytes(&intent.request_id);
+    e.into_vec()
+}
+
+fn decode_human_interaction_intent(bytes: &[u8]) -> Result<HumanInteractionIntent, ClientError> {
+    decode_strict(bytes, |d| {
+        d.array(5)?;
+        if d.uint()? != 1 {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        Ok(HumanInteractionIntent {
+            community: d.bytes_exact()?,
+            group: d.bytes_exact()?,
+            input_hash: d.bytes_exact()?,
+            request_id: d.bytes_exact()?,
+        })
+    })
+    .map_err(|_| ClientError::new(E_CORE_STORAGE, "human interaction send intent is malformed"))
 }
 
 #[derive(Clone)]
@@ -127,6 +177,123 @@ fn decode_bot_send_receipt(bytes: &[u8]) -> Result<BotSendReceipt, ClientError> 
         }
     }
     Ok(receipt)
+}
+
+fn encode_human_interaction_request(
+    operation_id: &[u8; 16],
+    community_id: &[u8; 16],
+    request: &[u8],
+) -> Result<String, ClientError> {
+    // 4000 body bytes minus the 12-byte prefix leave at most 3988 base64url bytes.
+    if request.len() > 2991 {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "human interaction request exceeds body limit",
+        ));
+    }
+    let parsed = decode_strict(request, |d| {
+        d.array(8)?;
+        if d.uint()? != 1 {
+            return Err(crate::cbor::CborError::WrongArrayLen {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        let request_id = d.bytes_exact::<16>()?;
+        let community = d.bytes_exact::<16>()?;
+        d.null()?; // read-only bot operations are community scoped
+        let operation = d.uint()?;
+        d.null()?; // reads have no revision
+        d.null()?; // reads have no expiry
+        let argument_count = d.array_len()?;
+        match operation {
+            0 if argument_count == 0 => {}
+            50 if argument_count == 1 => {
+                d.uint()?;
+            }
+            60 if argument_count == 1 => {
+                if !d.try_null()? {
+                    let cursor = d.bytes()?;
+                    if cursor.is_empty() || cursor.len() > 256 {
+                        return Err(crate::cbor::CborError::WrongByteLen {
+                            expected: 256,
+                            actual: cursor.len(),
+                        });
+                    }
+                }
+            }
+            0 | 50 | 60 => {
+                return Err(crate::cbor::CborError::WrongArrayLen {
+                    expected: 0,
+                    actual: argument_count,
+                });
+            }
+            _ => {
+                return Err(crate::cbor::CborError::WrongArrayLen {
+                    expected: 3,
+                    actual: operation as usize,
+                });
+            }
+        }
+        Ok((request_id, community))
+    })
+    .map_err(|_| ClientError::new(E_CORE_INPUT, "human interaction request is malformed"))?;
+    if parsed.0 != *operation_id || parsed.1 != *community_id {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "human interaction request binding mismatch",
+        ));
+    }
+    let body = format!("dilla.bot/1:{}", URL_SAFE_NO_PAD.encode(request));
+    if body.len() > 4000 {
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "human interaction request exceeds body limit",
+        ));
+    }
+    Ok(body)
+}
+
+fn interaction_roster_matches(
+    group: &crate::mls::DillaGroup,
+    own: &Own,
+    bot_user: &[u8; 16],
+) -> bool {
+    if group.kind() != crate::mls::GroupKind::Interaction {
+        return false;
+    }
+    let mut human = false;
+    let mut bot = false;
+    for member in group.members() {
+        let Ok(basic) = openmls::prelude::BasicCredential::try_from(member.credential) else {
+            return false;
+        };
+        let Ok(identity) = crate::identity::CredentialIdentity::decode(basic.identity()) else {
+            return false;
+        };
+        let Ok(dsk) = <[u8; 32]>::try_from(member.signature_key.as_slice()) else {
+            return false;
+        };
+        if identity.verify_signatures(&dsk).is_err() {
+            return false;
+        }
+        if identity.user_id.as_bytes() == &own.user_id
+            && identity.device_id.as_bytes() == &own.device_id
+            && identity.kind == crate::identity::Kind::User
+            && dsk == own.dsk_pub
+        {
+            human = true;
+        } else if identity.user_id.as_bytes() == bot_user
+            && identity.kind == crate::identity::Kind::Bot
+            && identity.tier == crate::identity::Tier::Native
+            && identity.signer_tier == crate::identity::SignerTier::Native
+        {
+            bot = true;
+        } else {
+            return false;
+        }
+    }
+    human && bot
 }
 
 fn encode_bot_send_output(message: &[u8; 16], upload: &[u8]) -> Vec<u8> {
@@ -1254,7 +1421,14 @@ impl ClientCore {
 
         let queued = self.read(|c| outbox_row(c, &attempt.message))?;
         if queued.is_none() {
-            self.send_prepare_with_id(group_id, request_body, original_now, Some(attempt.message))?;
+            self.send_prepare_with_id(
+                group_id,
+                request_body,
+                original_now,
+                Some(attempt.message),
+                false,
+                None,
+            )?;
         } else if queued
             .as_ref()
             .is_some_and(|o| o.group_id != *group_id || o.state != OUTBOX_QUEUED)
@@ -1425,7 +1599,168 @@ impl ClientCore {
         request: &[u8],
         now: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        self.send_prepare_with_id(id, request, now, None)
+        self.send_prepare_with_id(id, request, now, None, false, None)
+    }
+
+    /// Prepare a read-only Bot interaction request for an authenticated human participant.
+    /// `request_body` is the strict deterministic CBOR request tuple from protocol/10; the core
+    /// binds its request and community ids to the supplied values, derives the application body,
+    /// and uses the stable request id as the MLS message id for exact retries.
+    pub fn human_interaction_send_prepare(
+        &mut self,
+        request_id: &[u8; 16],
+        expected_community: &[u8; 16],
+        group_id: &[u8; 16],
+        request_body: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        if request_id == &[0; 16] || expected_community == &[0; 16] || group_id == &[0; 16] {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "human interaction ids must be nonzero",
+            ));
+        }
+        checked("now", now)?;
+        let body = encode_human_interaction_request(request_id, expected_community, request_body)?;
+        let own = self.own()?;
+        if own.kind != crate::identity::Kind::User.as_u8() {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "human identity required for interaction request",
+            ));
+        }
+        let row = self
+            .read(|c| group_row(c, group_id))?
+            .ok_or_else(not_found)?;
+        if row.kind != 3
+            || row.state != STATE_ACTIVE
+            || row.community_id.as_deref() != Some(expected_community.as_slice())
+        {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "group is not an active interaction in the expected community",
+            ));
+        }
+        let group = self.take_group(group_id)?.ok_or_else(not_found)?;
+        let binding = match group.interaction_binding() {
+            Ok(binding) => binding,
+            Err(_) => {
+                self.keep_group(*group_id, group);
+                return Err(ClientError::new(
+                    E_BINDING,
+                    "interaction group binding rejected",
+                ));
+            }
+        };
+        if binding.community_id.as_bytes() != expected_community
+            || binding.instance_id.as_bytes() != &own.instance_id
+            || binding.participant_user_id != own.user_id
+            || *binding.participant_device_id.as_bytes() != own.device_id
+            || row.target_id.as_slice() != binding.bot_user_id.as_slice()
+            || row.max_epoch < 0
+            || row.max_epoch as u64 != group.epoch()
+            || group.members().len() != 2
+            || !interaction_roster_matches(&group, &own, &binding.bot_user_id)
+        {
+            self.keep_group(*group_id, group);
+            return Err(ClientError::new(
+                E_BINDING,
+                "interaction group does not match the authenticated human device",
+            ));
+        }
+        let stored_epoch: Result<i64, ClientError> = self.read(|c| {
+            c.query_row(
+                "SELECT epoch FROM app_groups WHERE group_id=?1",
+                [group_id.as_slice()],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+        });
+        let stored_epoch = match stored_epoch {
+            Ok(epoch) => epoch,
+            Err(err) => {
+                self.keep_group(*group_id, group);
+                return Err(err);
+            }
+        };
+        if stored_epoch < 0 || stored_epoch as u64 != group.epoch() {
+            self.keep_group(*group_id, group);
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "interaction group epoch is stale",
+            ));
+        }
+        let blocked = self.read(|c| super::trust::send_block(c, &group, group_id));
+        self.keep_group(*group_id, group);
+        let blocked = blocked?;
+        if let Some(code) = blocked {
+            return Err(ClientError::new(code, ""));
+        }
+
+        let intent = HumanInteractionIntent {
+            request_id: *request_id,
+            community: *expected_community,
+            group: *group_id,
+            input_hash: Sha256::digest(request_body).into(),
+        };
+        let key = human_interaction_intent_key(request_id);
+        if let Some(raw) = self.read(|c| super::schema::meta_get(c, &key))? {
+            let old = decode_human_interaction_intent(&raw)?;
+            if old.request_id != intent.request_id
+                || old.community != intent.community
+                || old.group != intent.group
+                || old.input_hash != intent.input_hash
+            {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "interaction request id conflicts with a prior request",
+                ));
+            }
+            let mut out = Encoder::new();
+            out.array(1).bytes(request_id);
+            return Ok(out.into_vec());
+        }
+
+        // The operation id is also the durable outbox message id. An outbox row without its
+        // matching intent is a collision with another send and must never be adopted.
+        if let Some((stored_group, envelope)) = self.read(|c| {
+            c.query_row(
+                "SELECT group_id,envelope FROM app_outbox WHERE msg_id=?1",
+                [request_id.as_slice()],
+                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()
+            .map_err(Into::into)
+        })? {
+            let stored = Envelope::decode(&envelope).map_err(|_| {
+                ClientError::new(E_CORE_STORAGE, "interaction outbox envelope is malformed")
+            })?;
+            if stored_group.as_slice() != group_id
+                || stored.kind != EnvelopeType::Message
+                || stored.body != body
+                || !stored.attachments.is_empty()
+                || stored.reply_to.is_some()
+                || stored.thread_id.is_some()
+            {
+                return Err(ClientError::new(
+                    E_CORE_STATE,
+                    "interaction request id conflicts with an existing send",
+                ));
+            }
+            let mut out = Encoder::new();
+            out.array(1).bytes(request_id);
+            return Ok(out.into_vec());
+        }
+        let mut send = Encoder::new();
+        send.array(4).uint(0).null().text(&body).array(0);
+        self.send_prepare_with_id(
+            group_id,
+            &send.into_vec(),
+            now,
+            Some(*request_id),
+            true,
+            Some(intent),
+        )
     }
 
     fn send_prepare_with_id(
@@ -1434,6 +1769,8 @@ impl ClientCore {
         request: &[u8],
         now: u64,
         fixed_message_id: Option<[u8; 16]>,
+        interaction: bool,
+        human_intent: Option<HumanInteractionIntent>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let now = checked("now", now)?;
@@ -1468,7 +1805,7 @@ impl ClientCore {
             Ok((row, target, root))
         })?;
         let row = row.ok_or_else(not_found)?;
-        if row.kind != 0 {
+        if row.kind != 0 && !(interaction && row.kind == 3) {
             // L-CORE-52: sending stays text-only; a call group carries no messages.
             return Err(ClientError::new(E_CORE_INPUT, "not a text group"));
         }
@@ -1557,6 +1894,18 @@ impl ClientCore {
                      VALUES(?1,?2,?3,?4,0)",
                     params![msg_id.as_slice(), id.as_slice(), bytes, now],
                 )?;
+                if let Some(intent) = human_intent {
+                    if intent.request_id != msg_id || intent.group != *id {
+                        return Err(StorageError::Codec(
+                            "human interaction intent changed".into(),
+                        ));
+                    }
+                    super::schema::meta_put(
+                        c,
+                        &human_interaction_intent_key(&intent.request_id),
+                        &encode_human_interaction_intent(intent),
+                    )?;
+                }
                 Ok(())
             })?;
             Ok(())

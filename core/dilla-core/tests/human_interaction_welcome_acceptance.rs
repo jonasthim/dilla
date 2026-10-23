@@ -589,4 +589,133 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     .expect("changed-Welcome outcome");
     assert_eq!(changed, (2, "E_BINDING".to_owned()));
     assert_eq!(client_support::groups(&human.core), before_replay);
+
+    // A kind-3 send uses the already-authenticated MLS binding and a stable request id as its
+    // outbox message id, so an exact retry returns the same encrypted-send handle.
+    let request_id = [0x42; 16];
+    let mut bot_request = Encoder::new();
+    bot_request
+        .array(8)
+        .uint(1)
+        .bytes(&request_id)
+        .bytes(&COMMUNITY)
+        .null()
+        .uint(0)
+        .null()
+        .null()
+        .array(0);
+    let bot_request = bot_request.into_vec();
+    let prepared = human
+        .core
+        .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now)
+        .expect("prepare encrypted human interaction request");
+    let encrypted = human
+        .core
+        .send_encrypt(&request_id)
+        .expect("encrypt interaction request");
+    let (encrypted_group, upload) = decode_strict(&encrypted, |d| {
+        d.array(2)?;
+        Ok((d.bytes_exact::<16>()?, d.bytes()?.to_vec()))
+    })
+    .expect("encrypted upload shape");
+    assert_eq!(encrypted_group, GROUP_ID);
+    assert!(!upload.is_empty());
+    assert_eq!(
+        human
+            .core
+            .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now,)
+            .expect("idempotent request retry"),
+        prepared
+    );
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "DELETE FROM app_outbox WHERE msg_id=?1",
+            [request_id.as_slice()],
+        )
+        .expect("simulate completed upload cleanup");
+    assert_eq!(
+        human
+            .core
+            .human_interaction_send_prepare(&request_id, &COMMUNITY, &GROUP_ID, &bot_request, now,)
+            .expect("completed interaction request remains idempotent"),
+        prepared
+    );
+    let mut changed_request = Encoder::new();
+    changed_request
+        .array(8)
+        .uint(1)
+        .bytes(&request_id)
+        .bytes(&COMMUNITY)
+        .null()
+        .uint(50)
+        .null()
+        .null()
+        .array(1)
+        .uint(0);
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &request_id,
+                &COMMUNITY,
+                &GROUP_ID,
+                &changed_request.into_vec(),
+                now,
+            )
+            .is_err(),
+        "request ids cannot be reused for a different operation"
+    );
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(&request_id, &[0x23; 16], &GROUP_ID, &bot_request, now,)
+            .is_err()
+    );
+    let ordinary_group = [0x45; 16];
+    human
+        .core
+        .group_create(
+            &ordinary_group,
+            Some(&COMMUNITY),
+            &[0x46; 16],
+            POLICY,
+            &[0x47; 32],
+        )
+        .expect("ordinary group fixture");
+    human
+        .core
+        .group_registered(&ordinary_group, 1)
+        .expect("ordinary group registration");
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(
+                &[0x48; 16],
+                &COMMUNITY,
+                &ordinary_group,
+                &bot_request,
+                now,
+            )
+            .is_err(),
+        "ordinary text groups cannot use the interaction request API"
+    );
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_groups SET max_epoch=epoch+1 WHERE group_id=?1",
+            [GROUP_ID.as_slice()],
+        )
+        .expect("mark interaction group stale");
+    assert!(
+        human
+            .core
+            .human_interaction_send_prepare(&[0x43; 16], &COMMUNITY, &GROUP_ID, &bot_request, now,)
+            .is_err(),
+        "a stale local epoch must not prepare a request"
+    );
 }
