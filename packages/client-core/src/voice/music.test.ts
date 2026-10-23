@@ -57,7 +57,8 @@ describe('authenticated voice music adapter', () => {
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
     const state = f.adapter.state(CHANNEL);
     expect(state).toMatchObject({ status: 'available', track: { id: 'ef'.repeat(16), title: 'Track', artist: 'Artist' },
-      queue: [], positionMs: 0, volume: 75, paused: false, shuffle: false, repeat: 'off' });
+      queue: [], positionMs: 0, volume: 75, paused: false, shuffle: false, repeat: 'off',
+      permissions: { control: false, manageQueue: false } });
     unsubscribe();
   });
 
@@ -96,6 +97,37 @@ describe('authenticated voice music adapter', () => {
     f.answer(f.getRequest(13), 2, '1', encode([]));
     await expect(command).rejects.toThrow(/permission/);
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
+    unsubscribe();
+  });
+
+  it('refreshes the revision after a conflict before rejecting, so the next control uses current state', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+
+    const conflict = Promise.resolve(f.adapter.pause(CHANNEL, true));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(1));
+    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 13)!;
+    expect(firstMutation.revision).toBe('1');
+    f.answer(firstMutation, 4, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, false));
+    await expect(conflict).rejects.toThrow(/state changed/);
+    expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
+
+    const retry = Promise.resolve(f.adapter.pause(CHANNEL, true));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(2));
+    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)[1];
+    expect(secondMutation.revision).toBe('2');
+    f.answer(secondMutation, 0, '3', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
+    const updatedReads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(updatedReads[2], 0, '3', snapshot(3n, true));
+    await retry;
+    expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
     unsubscribe();
   });
 });

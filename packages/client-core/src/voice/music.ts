@@ -43,6 +43,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   if (!ID.test(communityId)) throw new Error('Invalid community id.');
   const states = new Map<string, VoiceMusicState>();
   const revisions = new Map<string, string>();
+  const staleChannels = new Set<string>();
   const listeners = new Map<string, Set<() => void>>();
   const waiters = new Map<string, { resolve: (response: InteractionResponse) => void; reject: (error: Error) => void }>();
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -100,28 +101,34 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       if (sent.upload !== 'accepted') throw new Error(sent.upload === 'pending'
         ? 'The encrypted music request is still pending upload.'
         : sent.upload === 'rejected' ? 'The encrypted music request was rejected.' : 'The encrypted music request upload is unknown.');
-      const result = await waitFor(resultPromise);
-      if (result.status !== 0) throw new Error(result.status === 2 ? 'You do not have permission to control this Bot.'
-        : result.status === 4 ? 'Music state changed. Refresh and try again.' : 'The Bot could not complete the music request.');
-      return result;
+      return await waitFor(resultPromise);
     } finally {
       waiters.delete(requestId);
     }
   };
   const refresh = async (channelId: string) => {
     const response = await request(channelId, 10, [], null);
+    if (response.status !== 0) throw responseError(response.status);
     if (response.revision === null || response.revision !== revisions.get(channelId)) {
       throw new Error('The Bot music snapshot revision does not match its authenticated operation response.');
     }
     const state = states.get(channelId);
     if (state?.status !== 'available') throw new Error('The Bot did not return a music snapshot.');
+    staleChannels.delete(channelId);
   };
   const mutate = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[]) => {
     const current = states.get(channelId);
-    if (current?.status !== 'available') await refresh(channelId);
+    if (current?.status !== 'available' || staleChannels.has(channelId)) await refresh(channelId);
     const before = states.get(channelId);
     if (before?.status !== 'available') throw new Error('Music state is unavailable.');
     const result = await request(channelId, operation, args, revisions.get(channelId) ?? null);
+    if (result.status === 4) {
+      // A conflict means our cached revision is stale. Refresh before rejecting so the next action can proceed.
+      staleChannels.add(channelId);
+      await refresh(channelId);
+      throw responseError(result.status);
+    }
+    if (result.status !== 0) throw responseError(result.status);
     // A successful operation response is not the accepted state. Wait for an authenticated state read
     // after the operation result so the panel only settles when the server-confirmed snapshot arrives.
     await refresh(channelId);
@@ -183,6 +190,10 @@ interface InteractionResponse { requestId: string; channelId: string | null; ope
 interface ReadResult { responses: InteractionResponse[]; through: string | null; blocked: boolean; }
 interface UploadResult { upload: 'accepted' | 'pending' | 'rejected' | 'unknown'; }
 function unavailable(): Promise<never> { return Promise.reject(new Error('Authenticated voice music transport is unavailable.')); }
+function responseError(status: number): Error {
+  return new Error(status === 2 ? 'You do not have permission to control this Bot.'
+    : status === 4 ? 'Music state changed. Refresh and try again.' : 'The Bot could not complete the music request.');
+}
 function delay(ms: number): Promise<null> { return new Promise(resolve => setTimeout(() => resolve(null), ms)); }
 function newRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -243,9 +254,8 @@ function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: s
     return { id: decoded.id, track: decoded };
   });
   const repeat = uint(field(row, 8), 2);
-  // Permissions are deliberately treated as affordances only: every mutation is checked by the Bot against
-  // the current server roles, and a denial is surfaced from the authenticated operation response.
+  // The snapshot protocol does not report the actor's DJ grants, so never claim control authority in the UI.
   return { revision, state: { status: 'available', track: current, queue, positionMs: uint(field(row, 4)), paused: uint(field(row, 5), 1) === 1,
     volume: uint(field(row, 6), 100), shuffle: uint(field(row, 7), 1) === 1,
-    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: true, manageQueue: true } } };
+    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: false, manageQueue: false } } };
 }
