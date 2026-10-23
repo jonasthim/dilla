@@ -89,14 +89,14 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
         setBlocked(page.blocked);
         if (page.responses.length > 0) {
           setResponses(page.responses);
+          setListedCases(previous => {
+            const seen = new Set(previous.map(row => row.key));
+            const pageCases = page.responses.flatMap(response => response.cases);
+            return [...previous, ...pageCases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
+          });
           if (page.through !== null) setAckThrough(page.through);
           const result = page.responses.find(response => response.requestId === request);
           if (result !== undefined) {
-            setListedCases(previous => {
-              const seen = new Set(previous.map(row => row.key));
-              const pageCases = page.responses.flatMap(response => response.cases);
-              return [...previous, ...pageCases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
-            });
             setCursor(source === 'manual' ? result.nextCursor : null);
             setAutomaticHasMore(source === 'automatic' && result.hasMore);
             setPhase('ready');

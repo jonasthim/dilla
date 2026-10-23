@@ -343,6 +343,29 @@ describe('the server bot settings', () => {
     await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toHaveLength(1));
   });
 
+  it('renders an older response before acknowledging it while the current request is pending', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ROW.id });
+      if (command.m === 'listManualModerationEvidence') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
+      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '2', responses: [
+        { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
+          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
+          reason: 'earlier reason', action: 'warn', excerpt: 'earlier evidence', receivedAt: '1800000000' }] },
+      ] });
+      if (command.m === 'ackHumanInteractionResponses') {
+        expect(screen.getByText('earlier evidence')).toBeInTheDocument();
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toHaveLength(1));
+    expect(screen.getByText('earlier evidence')).toBeInTheDocument();
+  });
+
   it('renders a safe date fallback for an out-of-range received timestamp', async () => {
     const { fake, user } = setup({ ...ROW, state: 3 });
     let requestId = '';
