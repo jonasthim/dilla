@@ -60,7 +60,7 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 	botKey[0], participantKey[0] = 1, 2
 	for _, device := range []store.DeviceRow{
 		{ID: botDevice, UserID: bot, DSKPub: botKey, CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now},
-		{ID: participantDevice, UserID: participant, DSKPub: participantKey, Tier: 1, CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now},
+		{ID: participantDevice, UserID: participant, DSKPub: participantKey, Tier: 1, CredentialBlob: []byte{1}, Created: now},
 	} {
 		if err := deps.Repo.CreateDevice(ctx, device); err != nil {
 			t.Fatal(err)

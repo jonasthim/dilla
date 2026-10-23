@@ -527,6 +527,36 @@ func TestInteractionRegistrationQueueRetainsTransientPackageFailure(t *testing.T
 	}
 }
 
+func TestInteractionRegistrationQueueRetriesIneligibleCurrentCandidate(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	device := id.New()
+	f.s.candidates = []id.ID{device}
+	f.s.keyPackage = []byte{7, 8, 9}
+	f.s.admissionErr = &client.APIError{Status: http.StatusForbidden}
+	if err := f.coordinator.QueueMemberJoin(context.Background(), f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 1, f.s, f.s); err == nil {
+		t.Fatal("ineligible candidate failure was not reported")
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, []byte(interactionRegistrationQueueKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := decodeInteractionRegistrationJobs(value.Value)
+	if err != nil || len(jobs) != 1 || len(jobs[0].Processed) != 0 {
+		t.Fatalf("ineligible current candidate was discarded: jobs=%+v err=%v", jobs, err)
+	}
+	f.s.admissionErr = nil // eligibility recovers while the same episode is current.
+	if err := f.coordinator.ProcessPending(context.Background(), 1, 1, f.s, f.s); err != nil {
+		t.Fatalf("recovered candidate pass: %v", err)
+	}
+	if f.s.registerCalls != 1 || f.n.createCalls != 1 {
+		t.Fatalf("recovery duplicated or missed group creation: posts=%d creates=%d", f.s.registerCalls, f.n.createCalls)
+	}
+}
+
 func TestInteractionRegistrationQueueRetriesOnlyFailedDevice(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	f.s.currentEpisode = f.episode

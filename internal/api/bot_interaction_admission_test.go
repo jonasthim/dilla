@@ -111,7 +111,9 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	if err := deps.Repo.CreateUser(ctx, store.UserRow{ID: participant, Username: "human" + participant.String()[:8], Display: "Human", Kind: 0, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Repo.CreateDevice(ctx, store.DeviceRow{ID: participantDevice, UserID: participant, DSKPub: dsk, Tier: 1, CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now}); err != nil {
+	// Normal browser signups have no VerifiedAt stamp; signed-list membership is
+	// the trust proof for a human interaction participant.
+	if err := deps.Repo.CreateDevice(ctx, store.DeviceRow{ID: participantDevice, UserID: participant, DSKPub: dsk, Tier: 1, CredentialBlob: []byte{1}, Created: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: participant, Joined: now}); err != nil {
@@ -147,6 +149,14 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	if !pOK || !sOK || len(signature) != ed25519.SignatureSize || !ed25519.Verify(private.Public().(ed25519.PublicKey), append([]byte("dilla bot interaction admission v1\x00"), payload...), signature) {
 		t.Fatalf("admission signature invalid: %#v", result)
 	}
+	wrongListKey := append([]byte(nil), dsk...)
+	wrongListKey[0] ^= 0xff
+	verifier.entry.DSKPub = wrongListKey
+	wrongList := postCBORAuth(h, path, mustCBOR(t, []any{id.New(), id.New(), participant, participantDevice}), token)
+	if wrongList.Code != http.StatusForbidden {
+		t.Fatalf("wrong signed participant device key admission = %d, want 403", wrongList.Code)
+	}
+	verifier.entry.DSKPub = dsk
 	var fields []any
 	if err := cborx.Unmarshal(payload, &fields); err != nil || len(fields) != 12 {
 		t.Fatalf("payload tuple decode: %v; %#v", err, fields)

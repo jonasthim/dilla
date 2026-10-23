@@ -177,7 +177,7 @@ func (d *DS) ValidateKind3RegistrationAuthority(ctx context.Context, tx store.Re
 		return out, errors.New("ds: active human participant required")
 	}
 	participantDevice, err := tx.GetDevice(ctx, expected.ParticipantDeviceID)
-	if err != nil || participantDevice.UserID != participant.ID || participantDevice.VerifiedAt == nil || participantDevice.RevokedAt != nil || participantDevice.QuarantinedAt != nil {
+	if err != nil || !ActiveHumanInteractionDevice(participant.ID, participantDevice) {
 		return out, errors.New("ds: participant device is no longer active")
 	}
 	if _, err = tx.GetMember(ctx, installation.CommunityID, bot.ID); err != nil {
@@ -289,12 +289,37 @@ func currentInteractionDeviceList(ctx context.Context, tx store.Repository, veri
 	if err != nil {
 		return nil, err
 	}
-	for _, entry := range entries {
-		if bytes.Equal(entry.DeviceID, device.ID[:]) && !entry.Revoked && entry.Tier == device.Tier && bytes.Equal(entry.DSKPub, device.DSKPub) {
-			return entries, nil
-		}
+	if interactionDeviceMatchesSignedList(device, entries) {
+		return entries, nil
 	}
 	return nil, errors.New("device is absent from current signed list")
+}
+
+// EligibleHumanInteractionDevice is the shared kind-3 participant device
+// predicate. Human device trust comes from the current verified signed list;
+// VerifiedAt is reserved for Bot native-device attestation and is not set on
+// ordinary human browser or native signup devices.
+func EligibleHumanInteractionDevice(user id.ID, device store.DeviceRow, entries []mlswasi.DeviceListEntry) bool {
+	if !ActiveHumanInteractionDevice(user, device) {
+		return false
+	}
+	return interactionDeviceMatchesSignedList(device, entries)
+}
+
+// ActiveHumanInteractionDevice checks that an enrolled human device belongs
+// to the account and remains active. Signed-list membership is checked by
+// EligibleHumanInteractionDevice after signature verification.
+func ActiveHumanInteractionDevice(user id.ID, device store.DeviceRow) bool {
+	return !user.IsZero() && !device.ID.IsZero() && device.UserID == user && len(device.DSKPub) == 32 && device.Tier <= 1 && device.RevokedAt == nil && device.QuarantinedAt == nil
+}
+
+func interactionDeviceMatchesSignedList(device store.DeviceRow, entries []mlswasi.DeviceListEntry) bool {
+	for _, entry := range entries {
+		if bytes.Equal(entry.DeviceID, device.ID[:]) && !entry.Revoked && entry.Tier == device.Tier && bytes.Equal(entry.DSKPub, device.DSKPub) {
+			return true
+		}
+	}
+	return false
 }
 
 func hashInteractionRegistration(r RegisterRequest) ([32]byte, error) {

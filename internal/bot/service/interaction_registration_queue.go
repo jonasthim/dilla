@@ -139,9 +139,6 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			devicesVisited++
 			group := interactionRegistrationGroupID(c.installation, c.community, job.Episode, job.User, device)
 			_, err = c.Register(ctx, InteractionRegistrationRequest{Group: group, ParticipantUser: job.User, ParticipantDevice: device})
-			if errors.Is(err, ErrInteractionNotEligible) {
-				err = nil
-			}
 			if errors.Is(err, ErrInteractionRegistrationManualRecovery) {
 				failures = append(failures, fmt.Errorf("manual recovery required for device registration: %w", err))
 				processed[device] = struct{}{}
@@ -149,6 +146,10 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 				continue
 			}
 			if err != nil {
+				// Eligibility can change while the member episode remains current.
+				// Keep rejected candidates pending so a later bounded pass can
+				// recheck them; Register derives a stable group ID and resumes its
+				// durable intent, so this does not create duplicate groups.
 				failures = append(failures, fmt.Errorf("register eligible device: %w", err))
 				continue
 			}

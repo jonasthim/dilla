@@ -143,7 +143,7 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 			return errors.New("inactive human participant")
 		}
 		device, err = tx.GetDevice(r.Context(), s.DeviceID)
-		if err != nil || device.UserID != user.ID || device.VerifiedAt == nil || device.RevokedAt != nil || device.QuarantinedAt != nil {
+		if err != nil || !ds.ActiveHumanInteractionDevice(user.ID, device) {
 			return errors.New("inactive participant device")
 		}
 		if _, err := tx.GetMember(r.Context(), communityID, user.ID); err != nil {
@@ -174,7 +174,7 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 			return err
 		}
 		participantEntries, err := d.DeviceLists.Verify(r.Context(), participantList.Blob, user.SSKPub, user.ID)
-		if err != nil || !deviceListContains(participantEntries, device) {
+		if err != nil || !ds.EligibleHumanInteractionDevice(user.ID, device, participantEntries) {
 			return errors.New("participant device absent from signed list")
 		}
 		botEntries, err := d.DeviceLists.Verify(r.Context(), botList.Blob, bot.SSKPub, bot.ID)

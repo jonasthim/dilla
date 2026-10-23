@@ -116,7 +116,7 @@ func TestValidateKind3RegistrationAuthorityUsesCurrentReceiptAndGeneration(t *te
 	}
 	for _, device := range []store.DeviceRow{
 		{ID: tuple.BotDeviceID, UserID: tuple.BotUserID, DSKPub: botList[0].DSKPub, Tier: botList[0].Tier, CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now},
-		{ID: tuple.ParticipantDeviceID, UserID: tuple.ParticipantUserID, DSKPub: participantList[0].DSKPub, Tier: participantList[0].Tier, CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now},
+		{ID: tuple.ParticipantDeviceID, UserID: tuple.ParticipantUserID, DSKPub: participantList[0].DSKPub, Tier: participantList[0].Tier, CredentialBlob: []byte{1}, Created: now},
 	} {
 		if err := repo.CreateDevice(ctx, device); err != nil {
 			t.Fatal(err)

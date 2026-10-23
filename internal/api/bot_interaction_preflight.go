@@ -117,7 +117,7 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 			return err
 		}
 		participantDevice, err := tx.GetDevice(ctx, req.ParticipantDeviceID)
-		if err != nil || participantDevice.UserID != participant.ID || participantDevice.VerifiedAt == nil || participantDevice.RevokedAt != nil || participantDevice.QuarantinedAt != nil {
+		if err != nil || !ds.ActiveHumanInteractionDevice(participant.ID, participantDevice) {
 			return errors.New("api: participant device is not active")
 		}
 		botList, err := tx.GetDeviceList(ctx, bot.ID)
@@ -133,7 +133,7 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 			return fmt.Errorf("api: participant has no current signed device list: %w", err)
 		}
 		participantEntries, err := d.DeviceLists.Verify(ctx, participantList.Blob, participant.SSKPub, participant.ID)
-		if err != nil || !deviceListContains(participantEntries, participantDevice) {
+		if err != nil || !ds.EligibleHumanInteractionDevice(participant.ID, participantDevice, participantEntries) {
 			return errors.New("api: participant device is not in its current signed device list")
 		}
 		eligibility, ok := tx.(store.BotInteractionEligibility)

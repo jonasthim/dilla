@@ -224,7 +224,9 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	}
 	for _, device := range []store.DeviceRow{
 		{ID: botDevice, UserID: botUser, DSKPub: botDSK, CredentialBlob: botCredential, VerifiedAt: &verified, Created: now, LastSeen: now},
-		{ID: participantDevice, UserID: participant, DSKPub: participantDSK, CredentialBlob: participantCredential, VerifiedAt: &verified, Created: now, LastSeen: now},
+		// Browser signup devices are trusted through their current signed list;
+		// they intentionally have no VerifiedAt stamp.
+		{ID: participantDevice, UserID: participant, DSKPub: participantDSK, CredentialBlob: participantCredential, Created: now, LastSeen: now},
 	} {
 		if err := h.deps.Repo.CreateDevice(ctx, device); err != nil {
 			t.Fatal(err)

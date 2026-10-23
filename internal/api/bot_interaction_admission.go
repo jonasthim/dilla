@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -137,7 +138,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 			return err
 		}
 		device, err := tx.GetDevice(r.Context(), req.ParticipantDevice)
-		if err != nil || device.UserID != participant.ID || device.VerifiedAt == nil || device.RevokedAt != nil || device.QuarantinedAt != nil {
+		if err != nil || !ds.ActiveHumanInteractionDevice(participant.ID, device) {
 			return server.Errorf(server.CodeForbidden, "participant device is not active")
 		}
 		list, err := tx.GetDeviceList(r.Context(), participant.ID)
@@ -148,14 +149,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			return server.Errorf(server.CodeForbidden, "participant device list is invalid")
 		}
-		active := false
-		for _, entry := range entries {
-			if bytes.Equal(entry.DeviceID, req.ParticipantDevice[:]) && !entry.Revoked && entry.Tier == device.Tier && bytes.Equal(entry.DSKPub, device.DSKPub) {
-				active = true
-				break
-			}
-		}
-		if !active {
+		if !ds.EligibleHumanInteractionDevice(participant.ID, device, entries) {
 			return server.Errorf(server.CodeForbidden, "participant device is not in the active signed device list")
 		}
 		now := d.Clock.Now().Unix()
