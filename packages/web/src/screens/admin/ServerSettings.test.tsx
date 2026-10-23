@@ -127,7 +127,7 @@ describe('ServerSettings tabs', () => {
       channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
         position: 0, slowmode: 0, announcement: false, group: 'active' }],
       installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
-      uploadHandler: async () => { throw refusal({ code: 'E_CORE_INPUT' }); } });
+      uploadHandler: () => Promise.reject(refusal({ code: 'E_CORE_INPUT' })) });
     await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
