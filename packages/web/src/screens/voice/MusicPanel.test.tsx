@@ -208,6 +208,27 @@ describe('MusicPanel', () => {
     expect(screen.getByRole('button', { name: 'Add to queue' })).toBeEnabled();
   });
 
+  it('resets queue input and ignores a pending enqueue completion after switching channels', async () => {
+    const music = adapter();
+    let resolveEnqueue: (() => void) | undefined;
+    music.calls.enqueue.mockImplementationOnce(() => new Promise(resolve => { resolveEnqueue = resolve; }));
+    const view = render(<MusicPanel channelId="channel-1" adapter={music} />);
+    const input = screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' });
+
+    fireEvent.change(input, { target: { value: 'spotify:track:1234567890123456789012' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to queue' }));
+    expect(screen.getByText('Adding to queue…')).toBeInTheDocument();
+
+    view.rerender(<MusicPanel channelId="channel-2" adapter={music} />);
+    expect(screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' })).toHaveValue('');
+    expect(screen.queryByText('Adding to queue…')).toBeNull();
+    fireEvent.change(input, { target: { value: 'https://www.youtube.com/watch?v=abcdefghijk' } });
+    await act(async () => { resolveEnqueue?.(); await Promise.resolve(); });
+
+    expect(screen.getByRole('textbox', { name: 'YouTube or Spotify link or URI' })).toHaveValue('https://www.youtube.com/watch?v=abcdefghijk');
+    expect(screen.queryByText('Added to the queue.')).toBeNull();
+  });
+
   it('refreshes from the adapter subscription after an action succeeds', async () => {
     const music = adapter();
     render(<MusicPanel channelId="channel-1" adapter={music} />);

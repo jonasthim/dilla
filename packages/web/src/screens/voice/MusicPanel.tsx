@@ -41,6 +41,9 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   const searchSequence = useRef(0);
   const searchContext = useRef({ channelId, adapter });
   searchContext.current = { channelId, adapter };
+  const enqueueSequence = useRef(0);
+  const enqueueContext = useRef({ channelId, adapter });
+  enqueueContext.current = { channelId, adapter };
   const pendingRef = useRef(false);
   const queuedSliders = useRef(new Map<'seek' | 'volume', () => void | Promise<void>>());
   const seekEditing = useRef(false);
@@ -60,6 +63,9 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
     setSearchResults(null);
     setSearchMessage('none');
     setSearchQuery('');
+    enqueueSequence.current += 1;
+    setQueueInput('');
+    setEnqueueMessage('idle');
   }, [channelId, adapter]);
 
   useEffect(() => {
@@ -152,13 +158,16 @@ export function MusicPanel({ channelId, adapter = voiceMusicAdapter }: {
   };
   const enqueue = (input: string) => {
     if (pendingRef.current || !manage || enqueueMessage === 'pending') return;
+    const sequence = ++enqueueSequence.current;
     setEnqueueMessage('pending');
     run(async () => {
       try {
         await adapter.enqueue(channelId, input);
+        if (sequence !== enqueueSequence.current || enqueueContext.current.channelId !== channelId || enqueueContext.current.adapter !== adapter) return;
         setEnqueueMessage('added');
         setQueueInput('');
       } catch (error) {
+        if (sequence !== enqueueSequence.current || enqueueContext.current.channelId !== channelId || enqueueContext.current.adapter !== adapter) return;
         setEnqueueMessage(error instanceof VoiceMusicError && (error.code === 'spotify-unavailable' || error.code === 'spotify-busy')
           ? error.code : 'error');
       }
