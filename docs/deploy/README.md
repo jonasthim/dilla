@@ -643,6 +643,48 @@ the Dilla server or prove that an installation is reconciled; use `systemctl sta
 `journalctl -u dillabot` for process and reconciliation diagnostics. A healthy local doctor is not
 qualification of Bot interactions or music.
 
+YouTube extraction and playback need separate host tools; the Bot installer does not install them.
+On Debian 13, install the system tools and a Node runtime, then install the hash-pinned Python pair
+from a repository checkout:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y bubblewrap curl ffmpeg python3 python3-venv xz-utils
+# Install Node 24.15.0, the version used by the recorded adapter smoke.
+case "$(uname -m)" in x86_64) node_arch=x64 ;; aarch64) node_arch=arm64 ;; *) exit 1 ;; esac
+node_version=24.15.0
+node_archive="node-v${node_version}-linux-${node_arch}.tar.xz"
+curl -fsSLO "https://nodejs.org/dist/v${node_version}/${node_archive}"
+curl -fsSLO "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt"
+grep " ${node_archive}$" SHASUMS256.txt | sha256sum -c -
+sudo install -d -o root -g root -m 0755 /usr/local/lib/nodejs
+sudo tar -xJf "$node_archive" -C /usr/local/lib/nodejs
+sudo ln -sfn "/usr/local/lib/nodejs/node-v${node_version}-linux-${node_arch}/bin/node" /usr/local/bin/node
+sudo install -d -o root -g root -m 0755 /usr/local/lib/dillabot
+sudo python3 -m venv /usr/local/lib/dillabot/.youtube-venv
+sudo /usr/local/lib/dillabot/.youtube-venv/bin/python -m pip install \
+  --require-hashes --only-binary=:all: --no-deps \
+  -r experiments/bot-providers/youtube-requirements.txt
+sudo ln -sfn /usr/local/lib/dillabot/.youtube-venv/bin/yt-dlp /usr/local/bin/yt-dlp
+sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
+```
+
+That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
+`--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
+`ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. This doctor check does not inspect the
+installed EJS package, test unprivileged namespace support, contact YouTube, or qualify playback;
+the pinned pair must be installed together from the requirements file. YouTube remains optional,
+so a missing dependency appears as a `WARN` in the normal doctor and does not block service
+installation. `--youtube` makes these checks required and returns a failure if a dependency is
+missing or outside the checked minimum/version.
+
+The earlier 2026.8.19 pin resolved a video and captured a bounded PCM sample on 2026-10-22, but a
+later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2026.10.21 succeeded.
+The lock now uses 2026.10.21 with EJS 0.8.0, which its upstream project metadata also specifies.
+The direct test does not establish cross-server or full provider qualification; keep YouTube music
+reported as unavailable until its intended-host acceptance is complete.
+
 The server `install.sh` also places the architecture-matched Spotify PCM helper at
 `/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
 `spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps

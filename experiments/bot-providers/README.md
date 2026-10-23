@@ -58,7 +58,11 @@ python3 -m unittest -v test_provider_harness test_youtube_probe test_youtube_san
 python3 provider_harness.py doctor --yt-dlp-bin .youtube-venv/bin/yt-dlp --librespot-bin librespot-probe/target/debug/dilla-librespot-probe
 ```
 
-The candidate pair is yt-dlp 2026.8.19 and yt-dlp-ejs 0.8.0. The probe disables
+The pinned pair is yt-dlp 2026.10.21 and yt-dlp-ejs 0.8.0. The wheel hashes are
+in `youtube-requirements.txt`; yt-dlp 2026.10.21's upstream project metadata pins
+that EJS version. A direct test with 2026.10.21 succeeded after 2025.09.26 failed
+in the integrated Bot path. That is dependency evidence only, not full provider or
+cross-server qualification. The probe disables
 remote component downloads and explicitly selects Node. Its packaged EJS setup
 follows the [upstream instructions](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
 Use Node 22 or newer on PATH. The sandbox mounts that single executable at

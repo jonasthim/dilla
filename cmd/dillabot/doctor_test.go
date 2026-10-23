@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -263,6 +264,14 @@ func TestDillabotDoctorChecksLocalDependenciesWithoutPrintingPathsOrSecrets(t *t
 	oldDoctorWASI := doctorWASI
 	doctorWASI = func(context.Context, []byte) error { return nil }
 	t.Cleanup(func() { doctorWASI = oldDoctorWASI })
+	oldDoctorLookPath := doctorLookPath
+	doctorLookPath = func(name string) (string, error) {
+		if name == "yt-dlp" {
+			return "", exec.ErrNotFound
+		}
+		return exec.LookPath(name)
+	}
+	t.Cleanup(func() { doctorLookPath = oldDoctorLookPath })
 
 	var stdout, stderr bytes.Buffer
 	if code := runDoctorCommand([]string{"--config", config}, &stdout, &stderr); code != 0 {
@@ -273,8 +282,55 @@ func TestDillabotDoctorChecksLocalDependenciesWithoutPrintingPathsOrSecrets(t *t
 			t.Errorf("doctor output lacks %q:\n%s", check, stdout.String())
 		}
 	}
+	if !strings.Contains(stdout.String(), "youtube_dependencies WARN") {
+		t.Fatalf("normal doctor did not warn that YouTube is unavailable:\n%s", stdout.String())
+	}
+	stdout.Reset()
+	if code := runDoctorCommand([]string{"--config", config, "--youtube"}, &stdout, &stderr); code == 0 || !strings.Contains(stdout.String(), "youtube_dependencies FAIL") {
+		t.Fatalf("required YouTube check did not fail for missing yt-dlp (exit %d):\n%s", code, stdout.String())
+	}
 	if strings.Contains(stdout.String()+stderr.String(), credentialText) || strings.Contains(stdout.String()+stderr.String(), dir) {
 		t.Fatal("doctor output disclosed secret material or configured filesystem paths")
+	}
+}
+
+func TestDillabotDoctorYoutubeChecksTheQualifiedToolchain(t *testing.T) {
+	dir := t.TempDir()
+	for name, version := range map[string]string{
+		"yt-dlp": "2026.10.21", "node": "v24.15.0", "bwrap": "bubblewrap 0.13.1",
+		"python3": "Python 3.14.8", "ffmpeg": "ffmpeg version n9.0.2",
+	} {
+		path := filepath.Join(dir, name)
+		body := "#!/bin/sh\nprintf '%s\\n' '" + version + "'\n"
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lookup := func(name string) (string, error) { return filepath.Join(dir, name), nil }
+	var out bytes.Buffer
+	if ok := checkYouTubeDependencies(&out, lookup); !ok {
+		t.Fatalf("qualified toolchain was rejected: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "yt-dlp 2026.10.21") || !strings.Contains(out.String(), "Node v24.15.0") {
+		t.Fatalf("doctor omitted dependency evidence: %s", out.String())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "yt-dlp"), []byte("#!/bin/sh\necho 2026.8.19\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if ok := checkYouTubeDependencies(&out, lookup); ok || !strings.Contains(out.String(), "expected 2026.10.21") {
+		t.Fatalf("an unqualified yt-dlp version was accepted: %s", out.String())
+	}
+
+	lookup = func(name string) (string, error) {
+		if name == "yt-dlp" {
+			return "", exec.ErrNotFound
+		}
+		return filepath.Join(dir, name), nil
+	}
+	out.Reset()
+	if ok := checkYouTubeDependencies(&out, lookup); ok || !strings.Contains(out.String(), "yt-dlp unavailable") {
+		t.Fatalf("missing yt-dlp was accepted or not identified: %s", out.String())
 	}
 }
 
