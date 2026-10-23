@@ -174,13 +174,13 @@ func concrete(t *testing.T, r docRoute) string {
 	const hex32 = "0102030405060708090a0b0c0d0e0f10"
 	return pathParameter.ReplaceAllStringFunc(path, func(p string) string {
 		switch p {
-		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}", "{request}":
+		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{channel_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}", "{request}":
 			return hex32
 		case "{blob_id}":
 			return hex32 + hex32
 		case "{kind}", "{chunk_seq}":
 			return "0"
-		case "{seq}", "{welcome_id}":
+		case "{seq}", "{message_seq}", "{welcome_id}":
 			return "1"
 		}
 		t.Fatalf("protocol/%s: %s %s names a path parameter the sweep cannot fill: %s", r.doc, r.method, r.path, p)
