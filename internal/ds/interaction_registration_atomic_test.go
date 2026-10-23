@@ -311,6 +311,44 @@ func TestBotInteractionRegistrationAtomicallyAcceptsAndRecoversExpiredProof(t *t
 	}
 }
 
+func TestReadyBotInteractionSendPassesTheExactCurrentRegistrationGate(t *testing.T) {
+	fixture := newKind3RegistrationFixture(t)
+	ctx := context.Background()
+	registered, created, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request)
+	if err != nil || !created {
+		t.Fatalf("register interaction group created=%v err=%v", created, err)
+	}
+	installation, err := fixture.h.repo.GetBotInstallation(ctx, fixture.request.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation.State = store.BotInstallationReady
+	installation.Revision++
+	installation.Updated = fixture.h.clk.Now().Unix()
+	if err := fixture.h.repo.UpdateBotInstallation(ctx, installation.ID, installation.Revision-1, installation); err != nil {
+		t.Fatalf("make registered installation Ready: %v", err)
+	}
+	session := fixture.request.Session
+	session.Bot.State = store.BotInstallationReady
+	group, err := fixture.h.repo.GetGroup(ctx, registered.GroupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := fixture.h.repo.GetInstance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.h.ds.AcceptBotMessage(ctx, ds.BotMessageRequest{
+		Session: session, InstallationID: installation.ID, OperationID: id.New(), AttemptID: id.New(),
+		CommunityID: fixture.request.TrustedPreflight.Expected.CommunityID, GroupID: registered.GroupID,
+		ExpectedGeneration: instance.Generation, Epoch: group.Epoch, Class: 1, Ciphertext: []byte{0x01},
+	})
+	var refusal *ds.Error
+	if !errors.As(err, &refusal) || refusal.Code != "E_COMMITMENT_INVALID" {
+		t.Fatalf("valid current kind-3 registration did not pass the authorization gate before ciphertext validation: err=%v", err)
+	}
+}
+
 func TestBotInteractionRegistrationRollsBackWelcomeWithGroup(t *testing.T) {
 	fixture := newKind3RegistrationFixture(t)
 	fixture.h.failNextTx("PutWelcomes")
