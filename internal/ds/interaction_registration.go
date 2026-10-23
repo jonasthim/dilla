@@ -127,8 +127,11 @@ func (d *DS) withCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 		if err != nil {
 			return err
 		}
-		if !(validCurrentInteractionRegistration(row, registration, d.opts.Keys.InstanceID) ||
-			(allowEpochUnknown && row.EpochUnknown && validCurrentInteractionRegistrationAfterRestore(row, registration, d.opts.Keys.InstanceID))) {
+		valid := validCurrentInteractionRegistration(row, registration, d.opts.Keys.InstanceID)
+		if allowEpochUnknown && row.EpochUnknown {
+			valid = validCurrentInteractionRegistrationAfterRestore(row, registration, d.opts.Keys.InstanceID)
+		}
+		if !valid {
 			return errors.New("ds: accepted kind-3 registration and current group row disagree")
 		}
 		var binding interactionBindingV2
