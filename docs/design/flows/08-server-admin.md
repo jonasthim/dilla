@@ -25,6 +25,7 @@
 | overview: saved | the saved note | `admin.overview.saved` | `admin.overview.saved` in the status region |
 | overview: error | the field's error | `admin.overview.error.empty`, `admin.overview.error.long`, `admin.overview.error.refused`, `admin.overview.error.forbidden`, `admin.overview.error.conflict`, `admin.overview.error.other` | the error (`role="alert"`) |
 | AFK settings | replaced in v0.1.0-web3.9: the built-in AFK channel; one inactive-timeout row (flow 14) | `admin.afk.title`, `admin.afk.hint`, `admin.afk.channel`, `admin.afk.disabled`, `admin.afk.timeout`, `admin.afk.minutes`, `admin.afk.save`, `admin.afk.saved`, `admin.afk.error`, `admin.afk.loadError`, `admin.afk.restricted` | `admin.afk.saved` through the shell announcer; errors use `role="alert"` |
+| Bot welcome settings | available only for a ready installation with the welcome capability and Manage Server; loads operation 1 and saves operation 2 against the returned revision; a success appears only after a correlated Bot response | `admin.bot.welcomeSettings.title`, `admin.bot.welcomeSettings.help`, `admin.bot.welcomeSettings.requiresCapability`, `admin.bot.welcomeSettings.readOnly`, `admin.bot.welcomeSettings.noChannels`, `admin.bot.welcomeSettings.channel`, `admin.bot.welcomeSettings.chooseChannel`, `admin.bot.welcomeSettings.template`, `admin.bot.welcomeSettings.tokens`, `admin.bot.welcomeSettings.load`, `admin.bot.welcomeSettings.loading`, `admin.bot.welcomeSettings.reload`, `admin.bot.welcomeSettings.save`, `admin.bot.welcomeSettings.saving`, `admin.bot.welcomeSettings.saved`, `admin.bot.welcomeSettings.configured`, `admin.bot.welcomeSettings.waiting`, `admin.bot.welcomeSettings.uploadUncertain`, `admin.bot.welcomeSettings.uploadFailed`, `admin.bot.welcomeSettings.responseFailed`, `admin.bot.welcomeSettings.conflict`, `admin.bot.welcomeSettings.readFailed`, `admin.bot.welcomeSettings.invalid` | a successful Bot response shows `admin.bot.welcomeSettings.saved`; errors use `role="alert"` |
 | channels: list | channels grouped by category, with edit, move and delete per row and a new category button | `admin.channels.title`, `admin.channels.newCategory`, `admin.channels.edit`, `admin.channels.editLabel`, `admin.channels.up`, `admin.channels.upLabel`, `admin.channels.down`, `admin.channels.downLabel`, `admin.channels.delete`, `admin.channels.deleteLabel`, `admin.channels.noCategory` | none |
 | channels: moved | the list in its new order | `admin.channels.moved`, `admin.channels.error.move` | `admin.channels.moved`; a failed move is the error (`role="alert"`) |
 | channels: new category | dialog with a name field; focus in the field | `admin.category.title`, `admin.category.name`, `admin.category.hint`, `admin.category.submit`, `admin.category.busy`, `admin.category.error.empty`, `admin.category.error.other` | dialog title; the error (`role="alert"`) |
@@ -236,6 +237,29 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.joinRole.save='Save join role setting'`
 - `admin.bot.joinRole.saving='Saving…'`
 - `admin.bot.joinRole.saved='Join role setting saved.'`
+- `admin.bot.welcomeSettings.title='Welcome messages'`
+- `admin.bot.welcomeSettings.help='Choose a text channel and the message the bot posts when a member joins.'`
+- `admin.bot.welcomeSettings.requiresCapability='Enable the welcome messages capability on a ready bot installation first.'`
+- `admin.bot.welcomeSettings.readOnly='Welcome settings are read-only because you need Manage Server.'`
+- `admin.bot.welcomeSettings.noChannels='Create a text channel before configuring welcome messages.'`
+- `admin.bot.welcomeSettings.channel='Welcome channel'`
+- `admin.bot.welcomeSettings.chooseChannel='Choose a text channel'`
+- `admin.bot.welcomeSettings.template='Welcome message'`
+- `admin.bot.welcomeSettings.tokens='Available placeholders: member, server, channel.'`
+- `admin.bot.welcomeSettings.load='Load welcome settings'`
+- `admin.bot.welcomeSettings.loading='Waiting for the bot…'`
+- `admin.bot.welcomeSettings.reload='Reload settings'`
+- `admin.bot.welcomeSettings.save='Save welcome settings'`
+- `admin.bot.welcomeSettings.saving='Waiting for the bot…'`
+- `admin.bot.welcomeSettings.saved='Welcome settings saved.'`
+- `admin.bot.welcomeSettings.configured='The bot will post this message for future joins.'`
+- `admin.bot.welcomeSettings.waiting='Request uploaded. Waiting for the bot response; changes are not saved yet.'`
+- `admin.bot.welcomeSettings.uploadUncertain='Upload status is uncertain. Waiting for the bot response.'`
+- `admin.bot.welcomeSettings.uploadFailed='Could not upload the welcome settings request.'`
+- `admin.bot.welcomeSettings.responseFailed='The bot could not apply this welcome settings request.'`
+- `admin.bot.welcomeSettings.conflict='Welcome settings changed elsewhere. Reload before saving again.'`
+- `admin.bot.welcomeSettings.readFailed='Could not read the Bot response yet. The request remains pending.'`
+- `admin.bot.welcomeSettings.invalid='Choose a text channel and enter a message of at most 2,000 UTF-8 bytes.'`
 - `admin.bot.status.pending='Pending'`
 - `admin.bot.status.joining='Joining'`
 - `admin.bot.status.ready='Ready'`

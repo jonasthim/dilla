@@ -6,6 +6,7 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { en } from '../../strings/index.ts';
+import { encode } from '@dilla/client-core';
 import { ServerSettings } from './ServerSettings.tsx';
 
 vi.mock('./spotify-link.ts', async importOriginal => ({ ...await importOriginal<typeof import('./spotify-link.ts')>(), authorizeSpotify: vi.fn() }));
@@ -46,6 +47,44 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
 }
 
 describe('the server bot settings', () => {
+  it('reaches welcome get and put through authenticated Bot interactions and waits for correlated responses', async () => {
+    const ready = { ...ROW, state: 3 as const, capabilities: 1 << 1, revision: '7' };
+    const { fake, user } = setup(ready);
+    const channelId = 'cc'.repeat(16);
+    act(() => fake.set(`channels:${SERVER}`, [{ id: channelId, communityId: SERVER, kind: 0, mode: 0, name: 'general', topic: '',
+      parentId: null, position: 1, slowmode: 0, announcement: false, group: 'active' }]));
+    let lastInteraction: { requestId: string; operation: number } | undefined;
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
+      if (command.m === 'getBotDjRoles') return Promise.resolve({ roleIds: [], installationId: ready.id });
+      if (command.m === 'humanInteractionRequest') {
+        lastInteraction = command;
+        return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+      }
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: '1', blocked: false, responses: lastInteraction === undefined ? [] : [{
+        deliveryId: '1', sourceSeq: '1', requestId: lastInteraction.requestId, communityId: SERVER, operation: lastInteraction.operation,
+        channelId: null, status: 0, revision: lastInteraction.operation === 1 ? '7' : '8', data: encode([]),
+      }] });
+      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+    };
+    await screen.findByText(en['admin.bot.status.ready']);
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toMatchObject([
+      { communityId: SERVER, channelId: null, operation: 1, args: [5], revision: null },
+    ]));
+    expect(await screen.findByRole('combobox', { name: en['admin.bot.welcomeSettings.channel'] })).toHaveValue(channelId);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(2));
+    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ communityId: SERVER, channelId: null,
+      operation: 2, revision: '7', args: [5, expect.any(Uint8Array)] });
+    expect(await screen.findByText(en['admin.bot.welcomeSettings.saved'])).toBeInTheDocument();
+    expect(fake.callsOf('readBotInteractionResponses').every(call => call.communityId === SERVER && call.operations.join(',') === '1,2')).toBe(true);
+    expect(fake.callsOf('ackBotInteractionResponses').every(call => call.communityId === SERVER && call.through === '1')).toBe(true);
+    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
+  });
+
   it('does not request or invent moderation details before the user asks', async () => {
     const { fake } = setup({ ...ROW, state: 3 });
     expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();

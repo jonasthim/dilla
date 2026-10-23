@@ -1,5 +1,5 @@
 // Server Settings → Bot: inspect the managed installation and enable/disable it through the core worker.
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Avatar, Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -7,6 +7,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
 import { ModerationLog } from './ModerationLog.tsx';
+import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
 import { type SectionProps } from './shared.ts';
 import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 
@@ -50,6 +51,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const base = useId();
   const factors = useSlice('factors');
   const members = useSlice(`members:${communityId}`);
+  const channelsState = useSlice(`channels:${communityId}`);
+  const communities = useSlice('communities');
   const roles = useSlice(`roles:${communityId}`);
   const access = useSlice(`permissions:${communityId}`);
   const [installation, setInstallation] = useState<Installation | null>(null);
@@ -76,6 +79,20 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const statusPollAttempts = useRef({ communityId, attempts: 0 });
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
+  const serverName = communities?.find(community => community.id === communityId)?.name ?? '';
+  const textChannels = useMemo(() => (channelsState ?? []).filter(channel => channel.kind === 0)
+    .map(channel => ({ id: channel.id, name: channel.name })), [channelsState]);
+  const welcomeGateway = useMemo<WelcomeSettingsGateway>(() => ({
+    request: async input => {
+      const result = await client.call({ m: 'humanInteractionRequest', ...input });
+      return result as Awaited<ReturnType<WelcomeSettingsGateway['request']>>;
+    },
+    read: async (id, operations) => {
+      const page = await client.call({ m: 'readBotInteractionResponses', communityId: id, operations });
+      return page as Awaited<ReturnType<WelcomeSettingsGateway['read']>>;
+    },
+    ack: async (id, through) => { await client.call({ m: 'ackBotInteractionResponses', communityId: id, through }); return null; },
+  }), [client]);
 
   useEffect(() => {
     const generation = ++readGeneration.current;
@@ -332,6 +349,7 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const bot = currentInstallation?.userId === null || currentInstallation?.userId === undefined
     ? undefined : members?.find(m => m.userId === currentInstallation.userId && m.kind === 1);
   const enabled = currentInstallation !== null && currentInstallation.state !== 4;
+  const welcomeEnabled = currentInstallation?.state === 3 && (currentInstallation.capabilities & (1 << 1)) !== 0;
   const canEditInstallationCapabilities = currentInstallation !== null && currentInstallation.state <= 3;
   const enableUnavailable = !current || currentError !== null || factors === undefined
     || access?.loaded !== true || !access.manageCommunity;
@@ -448,6 +466,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
           <p>{t('admin.bot.music.youtubeHelp')}</p>
         </SettingsRow>
       </section>
+      <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
+        enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />
       <ModerationLog communityId={communityId} />
       {currentError === null ? null : <p role="alert">{currentError}</p>}
       {statusRefreshError === null ? null : <p role="alert">{statusRefreshError}</p>}
