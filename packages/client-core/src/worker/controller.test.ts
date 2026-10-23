@@ -281,8 +281,9 @@ describe('Controller', () => {
     await toReady(w);
     const groupId = new Uint8Array(16).fill(0x52);
     const requestId = new Uint8Array(16).fill(0x54);
-    w.sync.pollWelcomes.mockImplementation(async () => {
+    w.sync.pollWelcomes.mockImplementation(() => {
       w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+      return Promise.resolve();
     });
     w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'request', type: 0, replyTo: null, attachments: [] });
     w.call(10_195, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),

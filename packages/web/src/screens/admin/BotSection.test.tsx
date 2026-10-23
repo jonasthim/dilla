@@ -688,17 +688,17 @@ describe('the server bot settings', () => {
       const ready = { ...ROW, state: 3 as const, capabilities: 1, revision: '3', userId: '77'.repeat(16) };
       let installationReads = 0;
       let djRoleReads = 0;
-      const { fake } = setup(pending, false, false, true, true, async command => {
+      const { fake } = setup(pending, false, false, true, true, command => {
         if (command.m === 'getBotInstallation') {
           installationReads += 1;
-          return installationReads === 1 ? pending : ready;
+          return Promise.resolve(installationReads === 1 ? pending : ready);
         }
         if (command.m === 'getBotDjRoles') {
           djRoleReads += 1;
-          return djRoleReads === 1 ? null : { roleIds: [], installationId: ready.id };
+          return Promise.resolve(djRoleReads === 1 ? null : { roleIds: [], installationId: ready.id });
         }
-        if (command.m === 'getBotJoinRole') return null;
-        return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+        if (command.m === 'getBotJoinRole') return Promise.resolve(null);
+        return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
       });
       await act(async () => { await Promise.resolve(); await Promise.resolve(); });
       expect(screen.getByText(en['admin.bot.music.djRoles.requiresBot'])).toBeInTheDocument();

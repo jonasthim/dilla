@@ -1293,6 +1293,7 @@ export class ModelCore implements CorePort {
   humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, _now: bigint): WelcomeOutcome[] {
     void welcomesBody;
     void currentContextProof;
+    void _now;
     this.log('humanInteractionWelcomeApply', new Uint8Array(16));
     throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
   }

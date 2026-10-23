@@ -52,7 +52,7 @@ describe('authenticated voice music adapter', () => {
         f.commands.push(command);
         if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
         return Promise.resolve({ responses: [], through: null, blocked: false });
-      }) as typeof f.client.call;
+      });
       const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
       await vi.advanceTimersByTimeAsync(5_500);
       expect(f.commands.filter(command => command.m === 'humanInteractionRequest' && command.operation === 10).length).toBeGreaterThanOrEqual(2);
