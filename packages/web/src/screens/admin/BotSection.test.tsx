@@ -21,7 +21,8 @@ const ROW: Installation = { id: 'b2'.repeat(16), communityId: SERVER, state: 0, 
 const ACCESS = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
   banMembers: true, moderateMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 
-function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true, fakeTimers = false) {
+function setup(initial: Installation | null = null, failGet = false, phone = false, manageRoles = true, fakeTimers = false,
+  handler?: (command: Parameters<FakeClient['call']>[0]) => Promise<unknown>) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
@@ -30,7 +31,7 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
   fake.set(`roles:${SERVER}`, [
     { id: '22'.repeat(16), name: 'Members', position: 1, members: 0, allow: 0, deny: 0, color: 0, hoist: false, mentionable: false },
   ]);
-  fake.handler = async command => {
+  fake.handler = handler ?? (async command => {
     if (command.m === 'getBotInstallation') return failGet ? Promise.reject(refusal({ code: 'E_NETWORK' })) : initial;
     if (command.m === 'getBotJoinRole') return initial === null ? null : { roleId: null, installationId: initial.id };
     if (command.m === 'getBotDjRoles') return initial === null ? null : { roleIds: [], installationId: initial.id };
@@ -38,7 +39,7 @@ function setup(initial: Installation | null = null, failGet = false, phone = fal
     if (command.m === 'configureBotInstallation') return { ...ROW, state: 0, revision: '1' };
     if (command.m === 'disableBotInstallation') return { ...ROW, state: 4, revision: '2' };
     return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
-  };
+  });
   const announce = vi.fn();
   const user = fakeTimers ? userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) : userEvent.setup();
   const view = render(<PhoneLayoutProvider value={phone}><div className="d-root"><CoreProvider client={fake}>
@@ -675,6 +676,35 @@ describe('the server bot settings', () => {
       expect(screen.getByRole('status')).toHaveTextContent(en['admin.bot.status.ready']);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(fake.callsOf('getBotInstallation')).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reloads DJ roles when an installation becomes Ready after its initial empty read', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = { ...ROW, state: 0 as const };
+      const ready = { ...ROW, state: 3 as const, capabilities: 1, revision: '3', userId: '77'.repeat(16) };
+      let installationReads = 0;
+      let djRoleReads = 0;
+      const { fake } = setup(pending, false, false, true, true, async command => {
+        if (command.m === 'getBotInstallation') {
+          installationReads += 1;
+          return installationReads === 1 ? pending : ready;
+        }
+        if (command.m === 'getBotDjRoles') {
+          djRoleReads += 1;
+          return djRoleReads === 1 ? null : { roleIds: [], installationId: ready.id };
+        }
+        if (command.m === 'getBotJoinRole') return null;
+        return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+      });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByText(en['admin.bot.music.djRoles.requiresBot'])).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByRole('checkbox', { name: 'Members' })).toBeInTheDocument();
+      expect(fake.callsOf('getBotDjRoles')).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }

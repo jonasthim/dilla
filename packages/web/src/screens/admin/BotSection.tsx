@@ -77,6 +77,8 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
   const [editingCapabilities, setEditingCapabilities] = useState(false);
   const editingCapabilitiesRef = useRef(false);
   const readGeneration = useRef(0);
+  const djRolesReadGeneration = useRef(0);
+  const previousInstallation = useRef<{ communityId: string; id: string; state: Installation['state'] } | null>(null);
   const statusPollAttempts = useRef({ communityId, attempts: 0 });
   const selectedCommunity = useRef(communityId);
   selectedCommunity.current = communityId;
@@ -139,8 +141,9 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       setJoinRoleError(errorMessage(errorOf(e)));
       setJoinRoleLoadedFor(communityId);
     });
+    const djRolesRead = ++djRolesReadGeneration.current;
     void client.call({ m: 'getBotDjRoles', communityId }).then(value => {
-      if (generation !== readGeneration.current) return;
+      if (generation !== readGeneration.current || djRolesRead !== djRolesReadGeneration.current) return;
       const setting = value as DjRoleSetting | null;
       setDjRoles(setting);
       setDjRoleValues(setting?.roleIds ?? []);
@@ -155,6 +158,29 @@ export function BotSection({ communityId, announce }: SectionProps): React.JSX.E
       canceled = true;
     };
   }, [client, communityId]);
+
+  useEffect(() => {
+    if (installation?.communityId !== communityId) return;
+    const previous = previousInstallation.current;
+    previousInstallation.current = { communityId, id: installation.id, state: installation.state };
+    if (installation.state !== 3) return;
+    if (previous?.communityId !== communityId || previous.id !== installation.id || previous.state === 3) return;
+    const generation = readGeneration.current;
+    const djRolesRead = ++djRolesReadGeneration.current;
+    setDjRolesLoadedFor(null);
+    setDjRolesError(null);
+    void client.call({ m: 'getBotDjRoles', communityId }).then(value => {
+      if (generation !== readGeneration.current || djRolesRead !== djRolesReadGeneration.current) return;
+      const setting = value as DjRoleSetting | null;
+      setDjRoles(setting);
+      setDjRoleValues(setting?.roleIds ?? []);
+      setDjRolesLoadedFor(communityId);
+    }).catch((e: unknown) => {
+      if (generation !== readGeneration.current || djRolesRead !== djRolesReadGeneration.current) return;
+      setDjRolesError(errorMessage(errorOf(e)));
+      setDjRolesLoadedFor(communityId);
+    });
+  }, [client, communityId, installation]);
 
   const installationCommunityId = installation?.communityId;
   const installationState = installation?.state;
