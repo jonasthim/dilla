@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -90,8 +91,12 @@ type botOperationPayload struct {
 // appendBotInstallationEvent runs inside the installation mutation transaction.
 // A replay returns the recorded operation before reaching this function.
 func appendBotInstallationEvent(ctx context.Context, tx store.Repository, row store.BotInstallationRow) error {
+	timestamp, ok := checkedUint64(row.Updated)
+	if !ok {
+		return store.ErrConflict
+	}
 	_, err := tx.AppendBotStructuralEvent(ctx, botprotocol.Event{
-		ID: id.New(), CommunityID: row.CommunityID, Timestamp: uint64(row.Updated),
+		ID: id.New(), CommunityID: row.CommunityID, Timestamp: timestamp,
 		Kind: botprotocol.EventInstallation,
 		Data: []any{row.ID, uint64(row.State), row.Revision},
 	})
@@ -120,7 +125,11 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	registerBotSpotifyAttempt(m, d)
 }
 
-func botInstallationValue(row store.BotInstallationRow) []any {
+func botInstallationValue(row store.BotInstallationRow) ([]any, error) {
+	updated, ok := checkedUint64(row.Updated)
+	if !ok {
+		return nil, store.ErrConflict
+	}
 	var user, device any
 	if row.UserID != nil {
 		user = *row.UserID
@@ -129,7 +138,16 @@ func botInstallationValue(row store.BotInstallationRow) []any {
 		device = *row.DeviceID
 	}
 	return []any{row.ID, row.CommunityID, uint64(row.State), row.Revision, user, device,
-		uint64(row.Capabilities), uint64(row.Updated)}
+		uint64(row.Capabilities), updated}, nil
+}
+
+func (d Deps) writeBotInstallation(w http.ResponseWriter, r *http.Request, status int, row store.BotInstallationRow) {
+	value, err := botInstallationValue(row)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, status, value)
 }
 
 func humanForBot(r *http.Request, repo store.Repository, community id.ID, s auth.Session) (store.CommunityRow, Bits, error) {
@@ -186,7 +204,7 @@ func (d Deps) GetBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, botInstallationValue(row))
+	d.writeBotInstallation(w, r, http.StatusOK, row)
 }
 
 func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +223,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if req.RequestID.IsZero() || req.Capabilities & ^botKnownCaps != 0 {
+	if req.RequestID.IsZero() || req.Capabilities > math.MaxUint8 || req.Capabilities&^botKnownCaps != 0 {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "invalid request id or capability mask"))
 		return
 	}
@@ -255,8 +273,12 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if err := requireBotWire(s.WireVersion); err != nil {
 				return err
 			}
+			capabilities, ok := checkedUint8(req.Capabilities)
+			if !ok {
+				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
+			}
 			current = store.BotInstallationRow{ID: id.New(), CommunityID: cid, State: store.BotInstallationPending, Revision: 1,
-				Capabilities: uint8(req.Capabilities), ApprovedBy: s.UserID, ApprovedAt: now, Created: now, Updated: now}
+				Capabilities: capabilities, ApprovedBy: s.UserID, ApprovedAt: now, Created: now, Updated: now}
 			created = true
 			if err := d.spendBotStepUp(req.StepUp, s); err != nil {
 				return err
@@ -273,7 +295,11 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 			if req.ExpectedRevision == nil || *req.ExpectedRevision != current.Revision {
 				return botConflict("installation revision changed")
 			}
-			if current.State != store.BotInstallationDisabled && current.Capabilities == uint8(req.Capabilities) {
+			capabilities, ok := checkedUint8(req.Capabilities)
+			if !ok {
+				return server.Errorf(server.CodeInvalidRequest, "invalid capability mask")
+			}
+			if current.State != store.BotInstallationDisabled && current.Capabilities == capabilities {
 				if err := requireBotWire(s.WireVersion); err != nil {
 					return err
 				}
@@ -324,7 +350,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 			}
-			current.Capabilities = uint8(req.Capabilities)
+			current.Capabilities = capabilities
 			current.ApprovedBy, current.ApprovedAt = s.UserID, now
 			current.Updated, current.Revision = now, current.Revision+1
 			if current.UserID != nil {
@@ -355,7 +381,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 	if created {
 		status = http.StatusCreated
 	}
-	d.write(w, r, status, botInstallationValue(result))
+	d.writeBotInstallation(w, r, status, result)
 }
 
 func checkBotCapabilityAuthority(have Bits, caps uint64) error {
@@ -462,7 +488,11 @@ func botConflict(detail string) error {
 }
 
 func encodeBotInstallationResult(row store.BotInstallationRow) ([]byte, error) {
-	return cborx.Marshal(botInstallationValue(row))
+	value, err := botInstallationValue(row)
+	if err != nil {
+		return nil, err
+	}
+	return cborx.Marshal(value)
 }
 func decodeBotInstallationResult(raw []byte, row *store.BotInstallationRow) error {
 	var v []any
@@ -518,10 +548,11 @@ func decodeBotInstallationResult(raw []byte, row *store.BotInstallationRow) erro
 	}
 	row.Capabilities = uint8(caps)
 	updated, ok := v[7].(uint64)
-	if !ok || updated > uint64(^uint64(0)>>1) {
+	updatedInt64, inRange := checkedInt64(updated)
+	if !ok || !inRange {
 		return store.ErrConflict
 	}
-	row.Updated = int64(updated)
+	row.Updated = updatedInt64
 	return nil
 }
 
@@ -638,16 +669,14 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 						return err
 					}
 					member, err := tx.GetMember(r.Context(), cid, *row.UserID)
-					switch {
-					case err == nil:
+					if err == nil {
 						if err := appendMemberEpisodeEvent(r.Context(), tx, botprotocol.EventMemberLeave, cid, *row.UserID, member.EpisodeID, now); err != nil {
 							return err
 						}
 						if err := tx.DeleteMember(r.Context(), cid, *row.UserID); err != nil {
 							return err
 						}
-					case errors.Is(err, store.ErrNotFound):
-					case err != nil:
+					} else if !errors.Is(err, store.ErrNotFound) {
 						return err
 					}
 					if managedRoleID != nil {
@@ -677,7 +706,7 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 		d.noContent(w, r)
 		return
 	}
-	d.write(w, r, http.StatusOK, botInstallationValue(result))
+	d.writeBotInstallation(w, r, http.StatusOK, result)
 }
 
 func runtimeBearer(r *http.Request) string {
@@ -763,7 +792,12 @@ func (d Deps) ListRuntimeInstallations(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, len(rows))
 	for i, row := range rows {
-		items[i] = botInstallationValue(row)
+		value, err := botInstallationValue(row)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		items[i] = value
 	}
 	d.write(w, r, http.StatusOK, items)
 }
@@ -789,6 +823,10 @@ func (d Deps) ClaimBotInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	bearer := runtimeBearer(r)
 	now := d.Clock.Now().Unix()
+	if now < 0 || now > math.MaxInt64-600 {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is outside the claim range"))
+		return
+	}
 	var claim store.BotClaimRow
 	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := verifyLiveRuntime(r.Context(), tx, runtimeID, bearer); err != nil {
@@ -832,7 +870,12 @@ func (d Deps) ClaimBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{claim.InstallationID, claim.ClaimID, uint64(claim.Expires)})
+	expires, ok := checkedUint64(claim.Expires)
+	if !ok {
+		server.WriteError(w, d.storeError(r, store.ErrConflict))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{claim.InstallationID, claim.ClaimID, expires})
 }
 
 func botHandle(repo store.Repository, ctx context.Context, installation id.ID) (string, error) {
@@ -1184,7 +1227,7 @@ func (d Deps) FinalizeBotCredential(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, botInstallationValue(row))
+	d.writeBotInstallation(w, r, http.StatusOK, row)
 }
 
 func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
@@ -1329,7 +1372,7 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, botInstallationValue(row))
+	d.writeBotInstallation(w, r, http.StatusOK, row)
 }
 
 func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store.BotInstallationRow) (bool, error) {
@@ -1341,12 +1384,15 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 		return false, err
 	}
 	list, err := repo.GetDeviceList(ctx, *row.UserID)
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	entries, err := d.DeviceLists.Verify(ctx, list.Blob, user.SSKPub, *row.UserID)
 	if err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // An invalid signed device list must fail readiness closed.
 	}
 	if len(entries) != 1 || entries[0].Revoked || !bytes.Equal(entries[0].DeviceID, row.DeviceID[:]) {
 		return false, nil

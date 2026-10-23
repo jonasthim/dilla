@@ -118,7 +118,7 @@ func (f *automodGrantFixture) call(t *testing.T, path, token string, body any) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(encoded))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
@@ -169,14 +169,12 @@ func (f *automodGrantFixture) redeem(t *testing.T, token string, community, grou
 
 func TestAutoModerationGrantArmAndRedeemBindExactTupleAndRetry(t *testing.T) {
 	f := newAutoModGrantFixture(t)
-	now := uint64(f.deps.Clock.Now().Unix())
 	request, hash := id.New(), bytes.Repeat([]byte{0x22}, 32)
-	expires := now + 240
-	step, _ := f.deps.StepUps.Issue(f.human, auth.TokenHash(f.humanToken))
+	expires := uint64(f.deps.Clock.Now().Unix() + 240)
 	if status, _ := f.arm(t, "", f.community, f.group, request, 0, expires, hash); status != http.StatusForbidden {
 		t.Fatalf("missing step-up arm=%d", status)
 	}
-	step, _ = f.deps.StepUps.Issue(f.human, auth.TokenHash(f.humanToken))
+	step, _ := f.deps.StepUps.Issue(f.human, auth.TokenHash(f.humanToken))
 	if status, _ := f.arm(t, step, f.community, id.New(), request, 0, expires, hash); status != http.StatusForbidden {
 		t.Fatalf("wrong group arm=%d", status)
 	}
@@ -227,9 +225,7 @@ func TestAutoModerationGrantArmAndRedeemBindExactTupleAndRetry(t *testing.T) {
 
 func TestAutoModerationGrantRefusesExpiredStepUpGrantAndRevokedInstallation(t *testing.T) {
 	f := newAutoModGrantFixture(t)
-	now := uint64(f.deps.Clock.Now().Unix())
 	request, hash := id.New(), bytes.Repeat([]byte{0x44}, 32)
-	expires := now + 240
 	stale, _ := f.deps.StepUps.Issue(f.human, auth.TokenHash(f.humanToken))
 	f.clk.Advance(6 * time.Minute)
 	if status, _ := f.arm(t, stale, f.community, f.group, request, 0, uint64(f.deps.Clock.Now().Unix()+240), hash); status != http.StatusForbidden {
@@ -237,7 +233,7 @@ func TestAutoModerationGrantRefusesExpiredStepUpGrantAndRevokedInstallation(t *t
 	}
 	step, _ := f.deps.StepUps.Issue(f.human, auth.TokenHash(f.humanToken))
 	request = id.New()
-	expires = uint64(f.deps.Clock.Now().Unix() + 240)
+	expires := uint64(f.deps.Clock.Now().Unix() + 240)
 	status, grant := f.arm(t, step, f.community, f.group, request, 0, expires, hash)
 	if status != http.StatusOK {
 		t.Fatalf("arm=%d", status)

@@ -90,7 +90,12 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is invalid"))
 		return
 	}
-	if err := protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, uint64(requestNow)); errors.Is(err, protocol.ErrContext) {
+	requestNowUnix, ok := checkedUint64(requestNow)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	if err := protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, requestNowUnix); errors.Is(err, protocol.ErrContext) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "removal proof does not match this session and group"))
 		return
 	} else if err != nil && !errors.Is(err, protocol.ErrExpired) {
@@ -123,7 +128,8 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.deps.Clock.Now().Unix()
-	if now < 0 || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, uint64(now)) != nil {
+	nowUnix, ok := checkedUint64(now)
+	if !ok || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, nowUnix) != nil {
 		server.WriteError(w, server.Errorf(server.CodeRemovalProofExpired, "removal proof has expired or exceeds the acceptance window"))
 		return
 	}
@@ -180,7 +186,8 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		now := h.deps.Clock.Now().Unix()
-		if now < 0 || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, uint64(now)) != nil {
+		nowUnix, ok := checkedUint64(now)
+		if !ok || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, nowUnix) != nil {
 			return server.Errorf(server.CodeRemovalProofExpired, "removal proof has expired or exceeds the acceptance window")
 		}
 		accepted, err = tx.AcceptModerationRemoval(r.Context(), store.ModerationRemovalRow{
@@ -192,7 +199,7 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 			return notFound(err)
 		}
 		created = true
-		event := protocol.Event{ID: actionID, CommunityID: communityID, Timestamp: uint64(now), Kind: protocol.EventModeration,
+		event := protocol.Event{ID: actionID, CommunityID: communityID, Timestamp: nowUnix, Kind: protocol.EventModeration,
 			Data: []any{actionID, proof.RequestID, s.UserID, s.DeviceID, targetUser, groupID, proof.TargetSequence, uint64(4), nil}}
 		_, err = tx.AppendBotStructuralEvent(r.Context(), event)
 		return err
@@ -322,14 +329,19 @@ func (h *moderationRemovalAPI) list(w http.ResponseWriter, r *http.Request) {
 	// Every current group member needs the proof feed to recover permanent local
 	// tombstones. The group leaf check above is the same authorization boundary as
 	// message history; bot capability gates remain on accepting removals.
-	page, err := h.deps.Repo.ListModerationRemovals(r.Context(), groupID, after, int32(limit))
+	page, err := h.deps.Repo.ListModerationRemovals(r.Context(), groupID, after, limit)
 	if err != nil {
 		server.WriteError(w, h.deps.storeError(r, err))
 		return
 	}
 	rows := make([][]any, 0, len(page.Rows))
 	for _, row := range page.Rows {
-		rows = append(rows, []any{row.Revision, row.Proof, row.Signature, uint64(row.AcceptedAt)})
+		acceptedAt, ok := checkedUint64(row.AcceptedAt)
+		if !ok {
+			server.WriteError(w, server.Unavailable(1000, "stored moderation removal has an invalid timestamp"))
+			return
+		}
+		rows = append(rows, []any{row.Revision, row.Proof, row.Signature, acceptedAt})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, moderationRemovalPageResponse{Rows: rows, NextRevision: page.NextRevision}); err != nil {
 		h.deps.logf(r, "api: encode moderation removal page", "err", err)
@@ -346,7 +358,7 @@ func removalConflict() *server.Error {
 	return server.Errorf(server.CodeCommitConflict, "request id was already used for another removal")
 }
 
-func parseModerationRemovalQuery(r *http.Request) (uint64, uint64, error) {
+func parseModerationRemovalQuery(r *http.Request) (uint64, int32, error) {
 	query := r.URL.Query()
 	for key, values := range query {
 		if key != "after" && key != "limit" || len(values) != 1 {
@@ -369,5 +381,9 @@ func parseModerationRemovalQuery(r *http.Request) (uint64, uint64, error) {
 		}
 		limit = value
 	}
-	return after, limit, nil
+	pageSize, ok := checkedInt32(limit)
+	if !ok {
+		return 0, 0, server.Errorf(server.CodeInvalidRequest, "limit exceeds the supported range")
+	}
+	return after, pageSize, nil
 }

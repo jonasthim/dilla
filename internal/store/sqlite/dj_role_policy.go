@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -24,7 +25,7 @@ func (r *Repo) SetDJRolePolicy(ctx context.Context, installation, approver id.ID
 	return nil
 }
 
-func (r *Repo) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]store.DJRolePolicyRow, error) {
+func (r *Repo) ListDJRolePolicy(ctx context.Context, installation id.ID) (out []store.DJRolePolicyRow, retErr error) {
 	q := `SELECT installation_id,role_id,approved_by,approved_at FROM dj_role_policy WHERE installation_id=? ORDER BY role_id`
 	var rows *sql.Rows
 	var err error
@@ -36,8 +37,8 @@ func (r *Repo) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]stor
 	if err != nil {
 		return nil, wrap(err)
 	}
-	defer rows.Close()
-	out := []store.DJRolePolicyRow{}
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+	out = []store.DJRolePolicyRow{}
 	for rows.Next() {
 		var v store.DJRolePolicyRow
 		if err := rows.Scan(&v.InstallationID, &v.RoleID, &v.ApprovedBy, &v.ApprovedAt); err != nil {

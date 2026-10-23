@@ -131,8 +131,7 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		member, memberErr := tx.GetMember(r.Context(), m.community, m.target)
-		switch {
-		case memberErr == nil:
+		if memberErr == nil {
 			if err := appendMemberEpisodeEvent(r.Context(), tx, protocol.EventMemberLeave, m.community, m.target, member.EpisodeID, now); err != nil {
 				return err
 			}
@@ -140,8 +139,7 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			removed = true
-		case errors.Is(memberErr, store.ErrNotFound):
-		case memberErr != nil:
+		} else if !errors.Is(memberErr, store.ErrNotFound) {
 			return memberErr
 		}
 		// The user's own channel overwrites and channel_members rows go with the

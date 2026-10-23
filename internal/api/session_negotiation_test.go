@@ -180,7 +180,7 @@ func TestSessionNegotiationRequiresBearerAndCannotBeGrantedByHeaders(t *testing.
 	if rec.Code != http.StatusUnauthorized || refusalCode(t, rec) != "E_UNAUTHENTICATED" {
 		t.Fatalf("headerless negotiation = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, refusalCode(t, rec))
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/sessions/negotiate", bytes.NewReader([]byte{0x83, 0x81, 0x03, 0x81, 0x01, 0x81, 0x01}))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/sessions/negotiate", bytes.NewReader([]byte{0x83, 0x81, 0x03, 0x81, 0x01, 0x81, 0x01}))
 	request.Header.Set("Content-Type", "application/cbor")
 	request.Header.Set("X-Dilla-Wire-Version", "3")
 	response := httptest.NewRecorder()
@@ -189,7 +189,7 @@ func TestSessionNegotiationRequiresBearerAndCannotBeGrantedByHeaders(t *testing.
 		t.Fatalf("header negotiation = %d %q, want 401 E_UNAUTHENTICATED", response.Code, refusalCode(t, response))
 	}
 	_, _, token := seedAPISession(t, deps)
-	request = httptest.NewRequest(http.MethodPost, "/v1/accounts/me", bytes.NewReader([]byte{0x80}))
+	request = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/accounts/me", bytes.NewReader([]byte{0x80}))
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/cbor")
 	request.Header.Set("X-Dilla-Wire-Version", "3")
@@ -213,7 +213,7 @@ func TestBotSessionRoutePreservesEnrollmentAuthAndDefersResourceWireGate(t *test
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	call := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/bot/capability-check", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/bot/capability-check", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)

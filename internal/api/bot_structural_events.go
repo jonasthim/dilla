@@ -59,7 +59,7 @@ func (h *botStructuralEventsAPI) get(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "Bot event stream not found"))
 		return
 	}
-	page, err := h.deps.Repo.ListBotStructuralEvents(r.Context(), community, after, int32(limit))
+	page, err := h.deps.Repo.ListBotStructuralEvents(r.Context(), community, after, limit)
 	if err != nil {
 		server.WriteError(w, h.deps.storeError(r, err))
 		return
@@ -122,7 +122,7 @@ func (h *botStructuralEventsAPI) ack(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func parseBotStructuralEventQuery(r *http.Request) (uint64, uint64, error) {
+func parseBotStructuralEventQuery(r *http.Request) (uint64, int32, error) {
 	query := r.URL.Query()
 	for key, values := range query {
 		if key != "after" && key != "limit" || len(values) != 1 {
@@ -145,7 +145,11 @@ func parseBotStructuralEventQuery(r *http.Request) (uint64, uint64, error) {
 		}
 		limit = value
 	}
-	return after, limit, nil
+	pageSize, ok := checkedInt32(limit)
+	if !ok {
+		return 0, 0, server.Errorf(server.CodeInvalidRequest, "limit exceeds the supported range")
+	}
+	return after, pageSize, nil
 }
 
 func parseBotEventUint(value string) (uint64, error) {

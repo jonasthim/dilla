@@ -110,7 +110,7 @@ func (h *Groups) botInteractionGroupHandshakes(w http.ResponseWriter, r *http.Re
 		if group.HandshakesPruned > 0 && from <= group.HandshakesPruned {
 			return server.WithStatus(http.StatusGone, server.Errorf(server.CodePruned, "seq %d is older than the retention floor %d", from, group.HandshakesPruned+1))
 		}
-		rows, err := tx.ListHandshakes(r.Context(), groupID, from, int32(limit))
+		rows, err := tx.ListHandshakes(r.Context(), groupID, from, limit)
 		if err != nil {
 			return err
 		}
@@ -142,14 +142,18 @@ func (h *Groups) botInteractionGroupMessages(w http.ResponseWriter, r *http.Requ
 		if group.PrunedBelow > 0 && from <= group.PrunedBelow {
 			return server.WithStatus(http.StatusGone, server.Errorf(server.CodePruned, "seq %d is older than the retention floor %d", from, group.PrunedBelow+1))
 		}
-		rows, err := tx.ListAppMessages(r.Context(), groupID, from, int32(limit))
+		rows, err := tx.ListAppMessages(r.Context(), groupID, from, limit)
 		if err != nil {
 			return err
 		}
 		out = make([]messageItem, 0, len(rows))
 		for _, row := range rows {
+			recvTS, ok := checkedUint64(row.Created)
+			if !ok {
+				return store.ErrConflict
+			}
 			item := messageItem{Seq: row.Seq, Epoch: row.Epoch, UploaderDevice: row.UploaderDevice, Blob: row.Blob,
-				Commitment: row.CommitmentC, FrankingTag: row.FrankingTag, RecvTS: uint64(row.Created)}
+				Commitment: row.CommitmentC, FrankingTag: row.FrankingTag, RecvTS: recvTS}
 			if row.DeletedAt != nil {
 				item.Deleted = 1
 			}
@@ -200,11 +204,15 @@ func (h *Groups) botInteractionGroupCursor(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func botInteractionPageBounds(r *http.Request) (uint64, uint64, error) {
+func botInteractionPageBounds(r *http.Request) (uint64, int32, error) {
 	from := queryFrom(r, "from")
 	limit := queryUint(r, "limit", 256)
 	if limit == 0 || limit > 256 {
 		return 0, 0, server.Errorf(server.CodeInvalidRequest, "limit must be between 1 and 256")
 	}
-	return from, limit, nil
+	pageSize, ok := checkedInt32(limit)
+	if !ok {
+		return 0, 0, server.Errorf(server.CodeInvalidRequest, "limit exceeds the supported range")
+	}
+	return from, pageSize, nil
 }

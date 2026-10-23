@@ -568,7 +568,7 @@ func (h *Readable) applyDelete(ctx context.Context, ch store.ChannelRow, s auth.
 			return notFound(err)
 		}
 		var err error
-		affected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRolePanelGrants(ctx, *ch.CommunityID, ch.ID, seq)
+		affected, err = tx.RemoveReactionRolePanelGrants(ctx, *ch.CommunityID, ch.ID, seq)
 		if err != nil {
 			return err
 		}

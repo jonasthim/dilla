@@ -3,7 +3,6 @@ package api
 import (
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/bot/protocol"
@@ -50,7 +49,12 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.clk.Now().Unix()
-	if now <= 0 || now > math.MaxInt64 {
+	if now <= 0 {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	nowUnix, ok := checkedUint64(now)
+	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
 		return
 	}
@@ -80,7 +84,7 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 		}
 		actionID = id.New()
 		event, err := tx.AppendBotStructuralEvent(r.Context(), protocol.Event{ID: actionID, CommunityID: m.community,
-			Timestamp: uint64(now), Kind: protocol.EventModeration,
+			Timestamp: nowUnix, Kind: protocol.EventModeration,
 			Data: []any{actionID, req.RequestID, m.session.UserID, m.session.DeviceID, m.target, nil, nil, uint64(0), nil}})
 		if err != nil {
 			return err
@@ -98,5 +102,10 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, actionID, revision, uint64(acceptedAt)})
+	acceptedAtUnix, ok := checkedUint64(acceptedAt)
+	if !ok {
+		server.WriteError(w, server.Unavailable(1000, "stored warning has an invalid timestamp"))
+		return
+	}
+	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, actionID, revision, acceptedAtUnix})
 }

@@ -78,7 +78,7 @@ type Repository interface {
 	ModerationRemovals
 }
 
-// BotAutoModerationGrants stores only a digest of the opaque bearer grant and a
+// BotAutoModerationGrantRow stores only a digest of the opaque bearer grant and a
 // digest of the encrypted op63 document. Plaintext moderation config never enters storage.
 type BotAutoModerationGrantRow struct {
 	TokenHash, RequestHash, ConfigHash                    []byte
@@ -864,7 +864,7 @@ type Overwrites interface {
 	DeleteUserOverwrites(ctx context.Context, communityID, userID id.ID) (int64, error)
 }
 
-// Bans is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
+// MemberTimeouts is the part of Structure whose table is 00007_bans.sql (Plan 2 task 4):
 // §4.1's three ban methods plus P2-D10's listing.
 type MemberTimeouts interface {
 	PutMemberTimeout(context.Context, MemberTimeoutRow) error

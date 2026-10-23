@@ -140,8 +140,8 @@ func (r *Repo) GetInstance(ctx context.Context) (store.InstanceRow, error) {
 	}, nil
 }
 
-// SQLite begins write transactions with BEGIN IMMEDIATE, which holds its single-writer fence
-// until commit. This method mirrors the PostgreSQL repository contract.
+// LockInstanceGeneration is a no-op in SQLite because BEGIN IMMEDIATE holds
+// the single-writer fence until commit, mirroring the PostgreSQL contract.
 func (r *Repo) LockInstanceGeneration(context.Context) error {
 	if !r.inTx {
 		return sql.ErrTxDone
@@ -3520,7 +3520,7 @@ func (r *Repo) ListLiveVoiceSessions(ctx context.Context, channelID id.ID) ([]st
 
 var _ store.Repository = (*Repo)(nil)
 
-// ---------------------------------------------------------------- Member timeouts
+// PutMemberTimeout persists a member timeout.
 func (r *Repo) PutMemberTimeout(ctx context.Context, v store.MemberTimeoutRow) error {
 	_, err := r.writeQuery().ExecContext(ctx, `INSERT INTO community_member_timeouts(community_id,user_id,by_user,created,expires) VALUES(?,?,?,?,?) ON CONFLICT(community_id,user_id) DO UPDATE SET by_user=excluded.by_user,created=excluded.created,expires=excluded.expires`, v.CommunityID, v.UserID, v.ByUser, v.Created, v.Expires)
 	return wrap(err)

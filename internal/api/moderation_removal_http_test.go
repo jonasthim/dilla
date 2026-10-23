@@ -90,7 +90,7 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	}
 	// Exact replay is idempotent and keeps the original allocated revision.
 	replayed := doCBORAuth(h, http.MethodPost, path, postBody, token.Token)
-	if replayed.Code != http.StatusOK || string(replayed.Body.Bytes()) != string(accepted.Body.Bytes()) {
+	if replayed.Code != http.StatusOK || replayed.Body.String() != accepted.Body.String() {
 		t.Fatalf("replay = %d %x, original %d %x", replayed.Code, replayed.Body.Bytes(), accepted.Code, accepted.Body.Bytes())
 	}
 	if notifications != 1 {

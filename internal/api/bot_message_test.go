@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,7 +25,7 @@ func TestBotMessageRejectsMalformedAndOversizeBodiesBeforeSessionOrDS(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &Groups{MaxBody: tc.max}
-			r := httptest.NewRequest(http.MethodPost, "/v1/groups/00000000000000000000000000000001/bot/messages", bytes.NewReader(tc.body))
+			r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/groups/00000000000000000000000000000001/bot/messages", bytes.NewReader(tc.body))
 			r.Header.Set("Content-Type", "application/cbor")
 			r.SetPathValue("group", "00000000000000000000000000000001")
 			w := httptest.NewRecorder()

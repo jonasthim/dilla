@@ -89,7 +89,13 @@ func (d Deps) proveBotInteractionGroupAbsent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var proof botInteractionAdmissionPayload
-	if err := cborx.Unmarshal(receipt.Payload, &proof); err != nil || receipt.InstallationID != installationID || receipt.RequestID != requestID || len(receipt.Signature) != ed25519.SignatureSize || len(d.ExternalSenderPub) != ed25519.PublicKeySize || proof.Version != 1 || proof.AdmissionID.IsZero() || proof.InstanceID != d.Instance.InstanceID || proof.InstallationID != installationID || proof.CommunityID != installation.CommunityID || proof.BotUserID != s.UserID || proof.BotDeviceID != s.DeviceID || proof.NotAfter <= uint64(d.Clock.Now().Unix()) || receipt.NotAfter != int64(proof.NotAfter) || !ed25519.Verify(ed25519.PublicKey(d.ExternalSenderPub), append([]byte("dilla bot interaction admission v1\x00"), receipt.Payload...), receipt.Signature) {
+	if err := cborx.Unmarshal(receipt.Payload, &proof); err != nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "interaction admission is unavailable or expired"))
+		return
+	}
+	nowUnix, nowOK := checkedUint64(d.Clock.Now().Unix())
+	proofNotAfter, proofNotAfterOK := checkedInt64(proof.NotAfter)
+	if !nowOK || !proofNotAfterOK || receipt.InstallationID != installationID || receipt.RequestID != requestID || len(receipt.Signature) != ed25519.SignatureSize || len(d.ExternalSenderPub) != ed25519.PublicKeySize || proof.Version != 1 || proof.AdmissionID.IsZero() || proof.InstanceID != d.Instance.InstanceID || proof.InstallationID != installationID || proof.CommunityID != installation.CommunityID || proof.BotUserID != s.UserID || proof.BotDeviceID != s.DeviceID || proof.NotAfter <= nowUnix || receipt.NotAfter != proofNotAfter || !ed25519.Verify(ed25519.PublicKey(d.ExternalSenderPub), append([]byte("dilla bot interaction admission v1\x00"), receipt.Payload...), receipt.Signature) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "interaction admission is unavailable or expired"))
 		return
 	}
@@ -226,7 +232,8 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 			return server.Errorf(server.CodeForbidden, "participant device is not in the active signed device list")
 		}
 		now := d.Clock.Now().Unix()
-		if now < 0 || now > math.MaxInt64-30 {
+		nowUnix, nowOK := checkedUint64(now)
+		if !nowOK || now > math.MaxInt64-30 {
 			return server.Errorf(server.CodeUnavailable, "server time outside admission range")
 		}
 		receipts, ok := tx.(store.BotInteractionAdmissionReceipts)
@@ -246,7 +253,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 				reissue = true
 			} else {
 				var prior botInteractionAdmissionPayload
-				if err := cborx.Unmarshal(receipt.Payload, &prior); err != nil || prior.EligibilityRevision != revision || prior.NotAfter <= uint64(now) {
+				if err := cborx.Unmarshal(receipt.Payload, &prior); err != nil || prior.EligibilityRevision != revision || prior.NotAfter <= nowUnix {
 					return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "admission receipt is no longer current"))
 				}
 				payload, signature = receipt.Payload, receipt.Signature
@@ -256,7 +263,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		if receiptErr != nil && !errors.Is(receiptErr, store.ErrNotFound) {
 			return receiptErr
 		}
-		v := botInteractionAdmissionPayload{Version: 1, AdmissionID: id.New(), InstanceID: d.Instance.InstanceID, InstallationID: installation.ID, CommunityID: installation.CommunityID, BotUserID: *installation.UserID, BotDeviceID: *installation.DeviceID, ParticipantUserID: participant.ID, ParticipantDeviceID: device.ID, GroupID: req.GroupID, EligibilityRevision: revision, NotAfter: uint64(now + 30)}
+		v := botInteractionAdmissionPayload{Version: 1, AdmissionID: id.New(), InstanceID: d.Instance.InstanceID, InstallationID: installation.ID, CommunityID: installation.CommunityID, BotUserID: *installation.UserID, BotDeviceID: *installation.DeviceID, ParticipantUserID: participant.ID, ParticipantDeviceID: device.ID, GroupID: req.GroupID, EligibilityRevision: revision, NotAfter: nowUnix + 30}
 		payload, err = cborx.Marshal(v)
 		if err != nil {
 			return err

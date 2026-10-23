@@ -73,13 +73,17 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		// or policy state. For a fresh request, it writes inside this transaction;
 		// any failed authority check below rolls that write back atomically.
 		var created bool
-		receipt, created, err = tx.(store.BotJoinRoleGrants).GrantBotJoinRoleForEpisode(r.Context(), store.BotJoinRoleGrantRequest{
+		receipt, created, err = tx.GrantBotJoinRoleForEpisode(r.Context(), store.BotJoinRoleGrantRequest{
 			RequestID: req.RequestID, InstallationID: installation.ID, CommunityID: cid, UserID: req.MemberID, EpisodeID: req.EpisodeID,
 		})
 		if errors.Is(err, store.ErrNotFound) {
 			member, memberErr := tx.GetMember(r.Context(), cid, req.MemberID)
 			if memberErr == nil && member.EpisodeID == req.EpisodeID {
-				_, policyErr := tx.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(r.Context(), installation.ID)
+				policyRepo, ok := tx.(store.BotJoinRolePolicy)
+				if !ok {
+					return errors.New("store does not support bot join role policy")
+				}
+				_, policyErr := policyRepo.GetBotJoinRolePolicy(r.Context(), installation.ID)
 				if errors.Is(policyErr, store.ErrNotFound) {
 					noPolicy = true
 					return nil
@@ -93,7 +97,11 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		if err != nil || member.EpisodeID != req.EpisodeID {
 			return server.Errorf(server.CodeNotFound, "current member episode not found")
 		}
-		policy, err := tx.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(r.Context(), installation.ID)
+		policyRepo, ok := tx.(store.BotJoinRolePolicy)
+		if !ok {
+			return errors.New("store does not support bot join role policy")
+		}
+		policy, err := policyRepo.GetBotJoinRolePolicy(r.Context(), installation.ID)
 		if err != nil || policy.CommunityID != cid || policy.RoleID != receipt.RoleID {
 			return server.Errorf(server.CodeForbidden, "approved join role unavailable")
 		}

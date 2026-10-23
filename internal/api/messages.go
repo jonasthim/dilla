@@ -264,7 +264,7 @@ func (h *Messages) delete(w http.ResponseWriter, r *http.Request) {
 						return err
 					}
 					var err error
-					affected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRolePanelGrants(r.Context(), *group.CommunityID, group.TargetID, seq)
+					affected, err = tx.RemoveReactionRolePanelGrants(r.Context(), *group.CommunityID, group.TargetID, seq)
 					if err != nil {
 						return err
 					}

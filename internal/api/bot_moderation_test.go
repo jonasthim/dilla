@@ -22,7 +22,7 @@ type botModerationFixture struct {
 	deps                    api.Deps
 	community, installation id.ID
 	bot, device, target     id.ID
-	group, channel, message id.ID
+	group, channel          id.ID
 	token                   string
 }
 

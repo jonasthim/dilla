@@ -15,8 +15,6 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-const currentInteractionContextDomain = "dilla bot current interaction context v1\x00"
-
 type currentInteractionContextWire struct {
 	_                   struct{} `cbor:",toarray"`
 	Version             uint64
@@ -115,13 +113,16 @@ func (d Deps) verifyCurrentInteractionLiveState(ctx context.Context, current ds.
 		if bytes.Compare(lockedUsers[0][:], lockedUsers[1][:]) > 0 {
 			lockedUsers[0], lockedUsers[1] = lockedUsers[1], lockedUsers[0]
 		}
-		for i, uid := range lockedUsers {
-			if i > 0 && uid == lockedUsers[i-1] {
+		var previousUser id.ID
+		havePreviousUser := false
+		for _, uid := range lockedUsers {
+			if havePreviousUser && uid == previousUser {
 				continue
 			}
 			if err := tx.LockUserForDeviceRegistration(ctx, uid); err != nil {
 				return err
 			}
+			previousUser, havePreviousUser = uid, true
 		}
 		state.Bot, err = tx.GetUser(ctx, botUserID)
 		if err != nil || state.Bot.Kind != 1 || state.Bot.Flags != 0 || state.Bot.DisabledAt != nil || state.Bot.DeletedAt != nil {
@@ -172,7 +173,7 @@ func (d Deps) verifyCurrentInteractionLiveState(ctx context.Context, current ds.
 		}
 		botEntries, verifyErr := d.DeviceLists.Verify(ctx, state.BotList.Blob, state.Bot.SSKPub, state.Bot.ID)
 		if verifyErr != nil || !deviceListContains(botEntries, state.BotDevice) {
-			return errors.New("Bot device absent from signed list")
+			return errors.New("bot device absent from signed list")
 		}
 		eligibility, ok := tx.(store.BotInteractionEligibility)
 		if !ok {
@@ -227,7 +228,9 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 		return
 	}
 	now := d.Clock.Now().Unix()
-	if now < 0 || current.Registration.AcceptedAt < 0 {
+	nowU, nowOK := checkedUint64(now)
+	acceptedAt, acceptedAtOK := checkedUint64(current.Registration.AcceptedAt)
+	if !nowOK || !acceptedAtOK {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "current interaction context unavailable"))
 		return
 	}
@@ -240,9 +243,8 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 	}
 	user, bot := live.User, live.Bot
 	participantList, botList, revision := live.ParticipantList, live.BotList, live.EligibilityRevision
-	nowU := uint64(now)
 	wire := currentInteractionContextWire{Version: 1, InstanceID: current.Binding.InstanceID, InstanceKeyID: d.Instance.ExternalSenderKeyID, InstanceSignerPub: append([]byte(nil), d.ExternalSenderPub...), IssuedAt: nowU, NotAfter: nowU + 30,
-		Registration: currentInteractionRegistrationWire{InstallationID: current.Registration.InstallationID, OperationID: current.Registration.OperationID, UserID: current.Registration.UserID, DeviceID: current.Registration.DeviceID, CommunityID: current.Registration.CommunityID, GroupID: current.Registration.GroupID, BodySHA256: current.Registration.BodySHA256, Generation: current.Registration.Generation, Epoch: current.Registration.Epoch, NextSeq: current.Registration.NextSeq, AcceptedAt: uint64(current.Registration.AcceptedAt)},
+		Registration: currentInteractionRegistrationWire{InstallationID: current.Registration.InstallationID, OperationID: current.Registration.OperationID, UserID: current.Registration.UserID, DeviceID: current.Registration.DeviceID, CommunityID: current.Registration.CommunityID, GroupID: current.Registration.GroupID, BodySHA256: current.Registration.BodySHA256, Generation: current.Registration.Generation, Epoch: current.Registration.Epoch, NextSeq: current.Registration.NextSeq, AcceptedAt: acceptedAt},
 		Binding:      currentInteractionBindingWire{InstanceID: current.Binding.InstanceID, InstallationID: current.Binding.InstallationID, CommunityID: current.Binding.CommunityID, BotUserID: current.Binding.BotUserID, ParticipantUserID: current.Binding.ParticipantUserID, ParticipantDeviceID: current.Binding.ParticipantDeviceID, PolicyVersion: current.Binding.PolicyVersion, E2EEVersion: current.Binding.E2EEVersion, MediaVersion: current.Binding.MediaVersion},
 		Epoch:        current.Epoch, LeafCount: current.LeafCount, TreeHash: current.TreeHash, EligibilityRevision: revision, PolicyVersion: current.Binding.PolicyVersion, E2EEVersion: current.Binding.E2EEVersion, MediaVersion: current.Binding.MediaVersion,
 		Bot:         snapshotListWire(interactionSnapshotDeviceList{UserID: bot.ID, UMKPub: bot.UMKPub, SSKPub: bot.SSKPub, SSKBindingSignature: bot.SigUMKSSK, Version: botList.Version, Blob: botList.Blob, Signature: botList.SSKSignature, PrevHash: botList.PrevHash}),

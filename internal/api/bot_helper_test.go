@@ -260,7 +260,7 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	}
 	operationID := id.New()
 	intentRaw, err := botprotocol.EncodeKeyPackageIntent(botprotocol.KeyPackageIntent{
-		OperationID: operationID, Count: 1, ExpectedGeneration: uint64(instance.Generation),
+		OperationID: operationID, Count: 1, ExpectedGeneration: instance.Generation,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		t.Fatalf("native helper KeyPackage expiry is outside delivery lifetime: not_after=%d now=%d delta=%s", packageInfo.NotAfter, time.Now().Unix(), time.Duration(int64(packageInfo.NotAfter)-time.Now().Unix())*time.Second)
 	}
 	publicationBody, err := botprotocol.EncodeKeyPackagePublication(botprotocol.KeyPackagePublication{
-		OperationID: operationID, ExpectedGeneration: uint64(instance.Generation), UploadBody: intentResult.UploadBody,
+		OperationID: operationID, ExpectedGeneration: instance.Generation, UploadBody: intentResult.UploadBody,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -340,12 +340,12 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		t.Fatalf("read native helper publication receipt: %d (%x)", receiptResponse.Code, receiptResponse.Body.Bytes())
 	}
 	receipt, err := botprotocol.DecodeKeyPackagePublicationReceipt(receiptResponse.Body.Bytes())
-	if err != nil || receipt.ExpectedGeneration != uint64(instance.Generation) || receipt.UploadSHA256 != sha256.Sum256(intentResult.UploadBody) || receipt.Count != 1 {
+	if err != nil || receipt.ExpectedGeneration != instance.Generation || receipt.UploadSHA256 != sha256.Sum256(intentResult.UploadBody) || receipt.Count != 1 {
 		t.Fatalf("native helper publication receipt=%+v err=%v", receipt, err)
 	}
 	resolutionRaw, err := botprotocol.EncodeKeyPackageResolution(botprotocol.KeyPackageResolution{
 		OperationID: operationID, PackageRefs: intentResult.PackageRefs, Outcome: 0,
-		Now: uint64(deps.Clock.Now().Unix()), CurrentGeneration: uint64(instance.Generation),
+		Now: uint64(deps.Clock.Now().Unix()), CurrentGeneration: instance.Generation,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -489,14 +489,10 @@ type nativeBotHelper struct {
 
 func startNativeBotHelper(t *testing.T, binary string) *nativeBotHelper {
 	t.Helper()
-	state, err := os.MkdirTemp("", "dilla-bot-api-helper-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	state := t.TempDir()
 	if err := os.Chmod(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(state) })
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)

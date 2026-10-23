@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 
@@ -47,20 +48,19 @@ func (r *Repo) SetRolePanel(ctx context.Context, panel store.RolePanelRow, optio
 		role  id.ID
 	}
 	var oldOptions []oldOption
-	for old.Next() {
-		var v oldOption
-		if err := old.Scan(&v.emoji, &v.role); err != nil {
-			old.Close()
-			return wrap(err)
+	scanErr := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(old.Close())) }()
+		for old.Next() {
+			var v oldOption
+			if err := old.Scan(&v.emoji, &v.role); err != nil {
+				return wrap(err)
+			}
+			oldOptions = append(oldOptions, v)
 		}
-		oldOptions = append(oldOptions, v)
-	}
-	if err := old.Err(); err != nil {
-		old.Close()
-		return wrap(err)
-	}
-	if err := old.Close(); err != nil {
-		return wrap(err)
+		return wrap(old.Err())
+	}()
+	if scanErr != nil {
+		return scanErr
 	}
 	for _, prior := range oldOptions {
 		keep := false
@@ -78,20 +78,19 @@ func (r *Repo) SetRolePanel(ctx context.Context, panel store.RolePanelRow, optio
 			return wrap(err)
 		}
 		var affected []id.ID
-		for users.Next() {
-			var u id.ID
-			if err := users.Scan(&u); err != nil {
-				users.Close()
-				return wrap(err)
+		scanErr := func() (retErr error) {
+			defer func() { retErr = errors.Join(retErr, wrap(users.Close())) }()
+			for users.Next() {
+				var u id.ID
+				if err := users.Scan(&u); err != nil {
+					return wrap(err)
+				}
+				affected = append(affected, u)
 			}
-			affected = append(affected, u)
-		}
-		if err := users.Err(); err != nil {
-			users.Close()
-			return wrap(err)
-		}
-		if err := users.Close(); err != nil {
-			return wrap(err)
+			return wrap(users.Err())
+		}()
+		if scanErr != nil {
+			return scanErr
 		}
 		if _, err := r.tx.ExecContext(ctx, `DELETE FROM reaction_role_grant_sources WHERE community_id=$1 AND channel_id=$2 AND message_seq=$3 AND reaction=$4 AND role_id=$5`, panel.CommunityID, panel.ChannelID, int64(panel.MessageSeq), prior.emoji, prior.role); err != nil {
 			return wrap(err)
@@ -151,7 +150,7 @@ func (r *Repo) DeleteRolePanel(ctx context.Context, channel id.ID, seq uint64) e
 	return nil
 }
 
-func (r *Repo) ListRolePanelOptions(ctx context.Context, channel id.ID, seq uint64) ([]store.RolePanelOptionRow, error) {
+func (r *Repo) ListRolePanelOptions(ctx context.Context, channel id.ID, seq uint64) (out []store.RolePanelOptionRow, retErr error) {
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil, store.ErrNotFound
 	}
@@ -163,8 +162,8 @@ func (r *Repo) ListRolePanelOptions(ctx context.Context, channel id.ID, seq uint
 	if err != nil {
 		return nil, wrap(err)
 	}
-	defer rows.Close()
-	out := []store.RolePanelOptionRow{}
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+	out = []store.RolePanelOptionRow{}
 	for rows.Next() {
 		var v store.RolePanelOptionRow
 		if err := rows.Scan(&v.Emoji, &v.RoleID); err != nil {

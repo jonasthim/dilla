@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 
 	"github.com/jonasthim/dilla/internal/bot/protocol"
@@ -25,7 +26,7 @@ func (r *Repo) AppendBotStructuralEvent(ctx context.Context, event protocol.Even
 	if err := r.tx.QueryRowContext(ctx, `SELECT high_water FROM bot_event_streams WHERE community_id=$1 FOR UPDATE`, event.CommunityID).Scan(&highWater); err != nil {
 		return protocol.Event{}, wrap(err)
 	}
-	if highWater >= math.MaxInt64 {
+	if highWater == math.MaxInt64 {
 		return protocol.Event{}, store.ErrExhausted
 	}
 	event.Sequence = uint64(highWater + 1)
@@ -42,8 +43,7 @@ func (r *Repo) AppendBotStructuralEvent(ctx context.Context, event protocol.Even
 	return event, nil
 }
 
-func (r *Repo) ListBotStructuralEvents(ctx context.Context, community id.ID, after uint64, limit int32) (store.BotStructuralEventPage, error) {
-	var page store.BotStructuralEventPage
+func (r *Repo) ListBotStructuralEvents(ctx context.Context, community id.ID, after uint64, limit int32) (page store.BotStructuralEventPage, retErr error) {
 	if community.IsZero() || after > math.MaxInt64 || limit < 1 || limit > 250 {
 		return page, store.ErrConflict
 	}
@@ -51,7 +51,7 @@ func (r *Repo) ListBotStructuralEvents(ctx context.Context, community id.ID, aft
 	if err != nil {
 		return page, wrap(err)
 	}
-	defer rows.Close()
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
 	page.Events = make([]protocol.Event, 0, limit)
 	for rows.Next() {
 		var highWater, floor sql.NullInt64
@@ -104,19 +104,18 @@ func (r *Repo) PruneBotStructuralEvents(ctx context.Context, before int64) (int6
 	if err != nil {
 		return 0, wrap(err)
 	}
-	for locks.Next() {
-		var community id.ID
-		if err := locks.Scan(&community); err != nil {
-			locks.Close()
-			return 0, err
+	lockErr := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(locks.Close())) }()
+		for locks.Next() {
+			var community id.ID
+			if err := locks.Scan(&community); err != nil {
+				return err
+			}
 		}
-	}
-	if err := locks.Err(); err != nil {
-		locks.Close()
-		return 0, err
-	}
-	if err := locks.Close(); err != nil {
-		return 0, err
+		return wrap(locks.Err())
+	}()
+	if lockErr != nil {
+		return 0, lockErr
 	}
 	rows, err := r.tx.QueryContext(ctx, `SELECT e.community_id,e.sequence,e.occurred_at,s.floor FROM bot_structural_events e JOIN bot_event_streams s ON s.community_id=e.community_id WHERE e.sequence>s.floor ORDER BY e.community_id,e.sequence`)
 	if err != nil {
@@ -131,33 +130,32 @@ func (r *Repo) PruneBotStructuralEvents(ctx context.Context, before int64) (int6
 		blocked        bool
 	}
 	progressByCommunity := make(map[id.ID]*progress)
-	for rows.Next() {
-		var community id.ID
-		var sequence, occurredAt, floor int64
-		if err := rows.Scan(&community, &sequence, &occurredAt, &floor); err != nil {
-			rows.Close()
-			return 0, err
+	rowsErr := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+		for rows.Next() {
+			var community id.ID
+			var sequence, occurredAt, floor int64
+			if err := rows.Scan(&community, &sequence, &occurredAt, &floor); err != nil {
+				return err
+			}
+			p := progressByCommunity[community]
+			if p == nil {
+				p = &progress{floor: floor, through: floor}
+				progressByCommunity[community] = p
+			}
+			if p.blocked {
+				continue
+			}
+			if sequence != p.through+1 || occurredAt >= before {
+				p.blocked = true
+				continue
+			}
+			p.through = sequence
 		}
-		p := progressByCommunity[community]
-		if p == nil {
-			p = &progress{floor: floor, through: floor}
-			progressByCommunity[community] = p
-		}
-		if p.blocked {
-			continue
-		}
-		if sequence != p.through+1 || occurredAt >= before {
-			p.blocked = true
-			continue
-		}
-		p.through = sequence
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
+		return wrap(rows.Err())
+	}()
+	if rowsErr != nil {
+		return 0, rowsErr
 	}
 	var floors []pruned
 	for community, p := range progressByCommunity {

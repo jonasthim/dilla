@@ -106,8 +106,9 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 			return priorErr
 		}
 		now := d.Clock.Now().Unix()
-		if now <= 0 || now > math.MaxInt64-int64(botModerationRequestLifetime/time.Second) ||
-			req.Expires <= uint64(now) || req.Expires-uint64(now) > uint64(botModerationRequestLifetime/time.Second) {
+		nowUnix, ok := checkedUint64(now)
+		if !ok || now <= 0 || now > math.MaxInt64-int64(botModerationRequestLifetime/time.Second) ||
+			req.Expires <= nowUnix || req.Expires-nowUnix > uint64(botModerationRequestLifetime/time.Second) {
 			return server.Errorf(server.CodeInvalidRequest, "moderation request has expired or exceeds its acceptance window")
 		}
 		group, err := tx.GetGroup(r.Context(), groupID)
@@ -149,19 +150,23 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		var expiresInt64 *int64
 		if req.Action == string(automod.ActionTimeout) {
 			seconds := (req.TimeoutMillis + 999) / 1000
-			if seconds == 0 || seconds > uint64(automod.MaxTimeout/time.Second) || uint64(now) > math.MaxInt64-seconds {
+			if seconds == 0 || seconds > uint64(automod.MaxTimeout/time.Second) || nowUnix > math.MaxInt64-seconds {
 				return server.Errorf(server.CodeInvalidRequest, "timeout is outside the supported range")
 			}
-			until := uint64(now) + seconds
+			until := nowUnix + seconds
+			untilInt64, ok := checkedInt64(until)
+			if !ok {
+				return server.Errorf(server.CodeInvalidRequest, "timeout is outside the supported range")
+			}
 			expires = &until
 			eventExpires = until
-			expiresValue := int64(until)
+			expiresValue := untilInt64
 			expiresInt64 = &expiresValue
 			moderationKind = 1 // timeout; every upload class observes this row
 		}
 		actionID := id.New()
 		event, err := tx.AppendBotStructuralEvent(r.Context(), protocol.Event{ID: actionID, CommunityID: communityID,
-			Timestamp: uint64(now), Kind: protocol.EventModeration,
+			Timestamp: nowUnix, Kind: protocol.EventModeration,
 			Data: []any{actionID, req.RequestID, s.UserID, s.DeviceID, uploader.UserID, nil, nil, moderationKind, eventExpires}})
 		if err != nil {
 			return err

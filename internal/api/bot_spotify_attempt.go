@@ -125,6 +125,11 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := &botSpotifyAttempt{id: id.New(), community: cid, installation: inst.ID, runtime: *inst.RuntimeID, user: s.UserID, sessionHash: append([]byte(nil), s.TokenHash...), state: state, verifier: verifier, expires: d.Clock.Now().Add(spotifyAttemptTTL).Unix()}
+	expires, ok := checkedUint64(a.expires)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
 	challenge := sha256.Sum256([]byte(verifier))
 	u, _ := url.Parse("https://accounts.spotify.com/authorize")
 	q := u.Query()
@@ -150,7 +155,7 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 	}
 	d.botSpotify.attempts[a.id] = a
 	d.botSpotify.mu.Unlock()
-	d.write(w, r, http.StatusOK, []any{a.id, u.String(), uint64(a.expires)})
+	d.write(w, r, http.StatusOK, []any{a.id, u.String(), expires})
 }
 func (d Deps) BotSpotifyAttemptCallback(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)

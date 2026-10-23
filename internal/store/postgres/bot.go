@@ -109,7 +109,7 @@ func (r *Repo) ListBotRuntimes(ctx context.Context, after id.ID, limit int32) ([
 }
 
 func checkBotInstallation(b store.BotInstallationRow) error {
-	if b.State > store.BotInstallationError || b.Revision == 0 || b.Revision > math.MaxInt64 || b.Capabilities > math.MaxUint8 {
+	if b.State > store.BotInstallationError || b.Revision == 0 || b.Revision > math.MaxInt64 {
 		return store.ErrConflict
 	}
 	if b.RemovedAt != nil && b.State != store.BotInstallationDisabled {

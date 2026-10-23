@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 
@@ -12,18 +13,21 @@ import (
 
 func validateReactionRoleGrant(g store.ReactionRoleGrant) error {
 	if g.CommunityID.IsZero() || g.UserID.IsZero() || g.RoleID.IsZero() || g.ChannelID.IsZero() || g.MessageSeq == 0 || g.MessageSeq > math.MaxInt64 || len([]byte(g.Reaction)) == 0 || len([]byte(g.Reaction)) > 32 {
-		return fmt.Errorf("store: invalid reaction role grant reaction length")
+		return fmt.Errorf("store: invalid reaction role grant")
 	}
 	return nil
 }
 
 func (r *Repo) AddReactionRoleGrant(ctx context.Context, g store.ReactionRoleGrant) error {
+	if g.MessageSeq > math.MaxInt64 {
+		return fmt.Errorf("store: invalid reaction role grant")
+	}
 	if err := validateReactionRoleGrant(g); err != nil {
 		return err
 	}
 	if !r.inTx {
 		return r.Tx(ctx, func(tx store.Repository) error {
-			return tx.(store.ReactionRoleGrantSources).AddReactionRoleGrant(ctx, g)
+			return tx.AddReactionRoleGrant(ctx, g)
 		})
 	}
 	if _, err := r.tx.ExecContext(ctx, `INSERT INTO member_roles(community_id,user_id,role_id) VALUES(?,?,?) ON CONFLICT DO NOTHING`, g.CommunityID, g.UserID, g.RoleID); err != nil {
@@ -36,12 +40,15 @@ func (r *Repo) AddReactionRoleGrant(ctx context.Context, g store.ReactionRoleGra
 }
 
 func (r *Repo) RemoveReactionRoleGrant(ctx context.Context, g store.ReactionRoleGrant) error {
+	if g.MessageSeq > math.MaxInt64 {
+		return fmt.Errorf("store: invalid reaction role grant")
+	}
 	if err := validateReactionRoleGrant(g); err != nil {
 		return err
 	}
 	if !r.inTx {
 		return r.Tx(ctx, func(tx store.Repository) error {
-			return tx.(store.ReactionRoleGrantSources).RemoveReactionRoleGrant(ctx, g)
+			return tx.RemoveReactionRoleGrant(ctx, g)
 		})
 	}
 	res, err := r.tx.ExecContext(ctx, `DELETE FROM reaction_role_grant_sources WHERE community_id=? AND user_id=? AND role_id=? AND channel_id=? AND message_seq=? AND reaction=?`, g.CommunityID, g.UserID, g.RoleID, g.ChannelID, int64(g.MessageSeq), g.Reaction)
@@ -74,7 +81,7 @@ func (r *Repo) RemoveReactionRolePanelGrants(ctx context.Context, community, cha
 		var users []id.ID
 		err := r.Tx(ctx, func(tx store.Repository) error {
 			var e error
-			users, e = tx.(store.ReactionRoleGrantSources).RemoveReactionRolePanelGrants(ctx, community, channel, seq)
+			users, e = tx.RemoveReactionRolePanelGrants(ctx, community, channel, seq)
 			return e
 		})
 		return users, err
@@ -84,20 +91,19 @@ func (r *Repo) RemoveReactionRolePanelGrants(ctx context.Context, community, cha
 		return nil, wrap(err)
 	}
 	var users []id.ID
-	for rows.Next() {
-		var u id.ID
-		if err := rows.Scan(&u); err != nil {
-			rows.Close()
-			return nil, wrap(err)
+	scanErr := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+		for rows.Next() {
+			var u id.ID
+			if err := rows.Scan(&u); err != nil {
+				return wrap(err)
+			}
+			users = append(users, u)
 		}
-		users = append(users, u)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, wrap(err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, wrap(err)
+		return wrap(rows.Err())
+	}()
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	type pair struct{ user, role id.ID }
 	pr, err := r.tx.QueryContext(ctx, `SELECT DISTINCT user_id,role_id FROM reaction_role_grant_sources WHERE community_id=? AND channel_id=? AND message_seq=?`, community, channel, int64(seq))
@@ -105,20 +111,19 @@ func (r *Repo) RemoveReactionRolePanelGrants(ctx context.Context, community, cha
 		return nil, wrap(err)
 	}
 	var pairs []pair
-	for pr.Next() {
-		var p pair
-		if err := pr.Scan(&p.user, &p.role); err != nil {
-			pr.Close()
-			return nil, wrap(err)
+	scanErr = func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(pr.Close())) }()
+		for pr.Next() {
+			var p pair
+			if err := pr.Scan(&p.user, &p.role); err != nil {
+				return wrap(err)
+			}
+			pairs = append(pairs, p)
 		}
-		pairs = append(pairs, p)
-	}
-	if err := pr.Err(); err != nil {
-		pr.Close()
-		return nil, wrap(err)
-	}
-	if err := pr.Close(); err != nil {
-		return nil, wrap(err)
+		return wrap(pr.Err())
+	}()
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	if _, err := r.tx.ExecContext(ctx, `DELETE FROM reaction_role_grant_sources WHERE community_id=? AND channel_id=? AND message_seq=?`, community, channel, int64(seq)); err != nil {
 		return nil, wrap(err)
@@ -137,7 +142,7 @@ func (r *Repo) RemoveReactionRolePanelGrants(ctx context.Context, community, cha
 	return users, nil
 }
 
-func (r *Repo) ListReactionRolePanelGrantUsers(ctx context.Context, community, channel id.ID, seq uint64) ([]id.ID, error) {
+func (r *Repo) ListReactionRolePanelGrantUsers(ctx context.Context, community, channel id.ID, seq uint64) (users []id.ID, retErr error) {
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil, store.ErrNotFound
 	}
@@ -151,8 +156,8 @@ func (r *Repo) ListReactionRolePanelGrantUsers(ctx context.Context, community, c
 	if err != nil {
 		return nil, wrap(err)
 	}
-	defer rows.Close()
-	var users []id.ID
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+	users = nil
 	for rows.Next() {
 		var u id.ID
 		if err := rows.Scan(&u); err != nil {
@@ -168,7 +173,7 @@ func (r *Repo) RemoveReactionRoleChannelGrants(ctx context.Context, community, c
 		var users []id.ID
 		err := r.Tx(ctx, func(tx store.Repository) error {
 			var e error
-			users, e = tx.(store.ReactionRoleGrantSources).RemoveReactionRoleChannelGrants(ctx, community, channel)
+			users, e = tx.RemoveReactionRoleChannelGrants(ctx, community, channel)
 			return e
 		})
 		return users, err
@@ -178,20 +183,19 @@ func (r *Repo) RemoveReactionRoleChannelGrants(ctx context.Context, community, c
 		return nil, wrap(err)
 	}
 	var users []id.ID
-	for rows.Next() {
-		var u id.ID
-		if err := rows.Scan(&u); err != nil {
-			rows.Close()
-			return nil, wrap(err)
+	scanErr := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+		for rows.Next() {
+			var u id.ID
+			if err := rows.Scan(&u); err != nil {
+				return wrap(err)
+			}
+			users = append(users, u)
 		}
-		users = append(users, u)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, wrap(err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, wrap(err)
+		return wrap(rows.Err())
+	}()
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	type pair struct{ user, role id.ID }
 	pr, err := r.tx.QueryContext(ctx, `SELECT DISTINCT user_id,role_id FROM reaction_role_grant_sources WHERE community_id=? AND channel_id=?`, community, channel)
@@ -199,20 +203,19 @@ func (r *Repo) RemoveReactionRoleChannelGrants(ctx context.Context, community, c
 		return nil, wrap(err)
 	}
 	var pairs []pair
-	for pr.Next() {
-		var p pair
-		if err := pr.Scan(&p.user, &p.role); err != nil {
-			pr.Close()
-			return nil, wrap(err)
+	scanErr = func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, wrap(pr.Close())) }()
+		for pr.Next() {
+			var p pair
+			if err := pr.Scan(&p.user, &p.role); err != nil {
+				return wrap(err)
+			}
+			pairs = append(pairs, p)
 		}
-		pairs = append(pairs, p)
-	}
-	if err := pr.Err(); err != nil {
-		pr.Close()
-		return nil, wrap(err)
-	}
-	if err := pr.Close(); err != nil {
-		return nil, wrap(err)
+		return wrap(pr.Err())
+	}()
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	if _, err := r.tx.ExecContext(ctx, `DELETE FROM reaction_role_grant_sources WHERE community_id=? AND channel_id=?`, community, channel); err != nil {
 		return nil, wrap(err)

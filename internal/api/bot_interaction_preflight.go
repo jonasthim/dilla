@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -72,16 +71,20 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 		if bytes.Compare(users[0][:], users[1][:]) > 0 {
 			users[0], users[1] = users[1], users[0]
 		}
-		for i, userID := range users {
-			if i > 0 && userID == users[i-1] {
+		var previousUser id.ID
+		havePreviousUser := false
+		for _, userID := range users {
+			if havePreviousUser && userID == previousUser {
 				continue
 			}
 			if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
 				return err
 			}
+			previousUser, havePreviousUser = userID, true
 		}
 		now = d.Clock.Now().Unix()
-		if now < 0 || now > math.MaxInt64 {
+		nowUnix, ok := checkedUint64(now)
+		if !ok {
 			return errors.New("api: server time outside interaction admission range")
 		}
 		bot, err := tx.GetUser(ctx, *installation.UserID)
@@ -167,7 +170,8 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 			return errors.New("api: interaction admission receipt is stale or malformed")
 		}
 		var payload botInteractionAdmissionPayload
-		if err := cborx.Unmarshal(receipt.Payload, &payload); err != nil || payload.Version != 1 || payload.InstanceID != instance.InstanceID || payload.InstallationID != installation.ID || payload.CommunityID != installation.CommunityID || payload.BotUserID != bot.ID || payload.BotDeviceID != botDevice.ID || payload.ParticipantUserID != participant.ID || payload.ParticipantDeviceID != participantDevice.ID || payload.GroupID != req.GroupID || payload.EligibilityRevision != minimumRevision || payload.NotAfter <= uint64(now) || payload.NotAfter != uint64(receipt.NotAfter) {
+		receiptNotAfter, receiptNotAfterOK := checkedUint64(receipt.NotAfter)
+		if err := cborx.Unmarshal(receipt.Payload, &payload); err != nil || !receiptNotAfterOK || payload.Version != 1 || payload.InstanceID != instance.InstanceID || payload.InstallationID != installation.ID || payload.CommunityID != installation.CommunityID || payload.BotUserID != bot.ID || payload.BotDeviceID != botDevice.ID || payload.ParticipantUserID != participant.ID || payload.ParticipantDeviceID != participantDevice.ID || payload.GroupID != req.GroupID || payload.EligibilityRevision != minimumRevision || payload.NotAfter <= nowUnix || payload.NotAfter != receiptNotAfter {
 			return errors.New("api: interaction admission receipt does not match current trusted context")
 		}
 		canonicalPayload, err := cborx.Marshal(payload)
@@ -186,12 +190,12 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 			Expected:                   ds.InteractionAdmissionTuple{InstanceID: instance.InstanceID, InstallationID: installation.ID, CommunityID: installation.CommunityID, BotUserID: bot.ID, BotDeviceID: botDevice.ID, ParticipantUserID: participant.ID, ParticipantDeviceID: participantDevice.ID, GroupID: req.GroupID},
 			MinimumEligibilityRevision: minimumRevision, ExpectedPolicyVersion: community.PolicyVersion, ExpectedE2EEVersion: 1, ExpectedMediaVersion: 0,
 			ReceiptPayload: append([]byte(nil), receipt.Payload...), ReceiptSignature: append([]byte(nil), receipt.Signature...), PinnedInstanceKey: append(ed25519.PublicKey(nil), d.ExternalSenderPub...),
-			BotDeviceList: botEntries, ParticipantDeviceList: participantEntries, Now: uint64(now),
+			BotDeviceList: botEntries, ParticipantDeviceList: participantEntries, Now: nowUnix,
 		}
 		if snapshot != nil {
 			*snapshot = botInteractionContextSnapshot{
 				RequestID: req.AdmissionRequestID, AdmissionPayload: append([]byte(nil), receipt.Payload...),
-				AdmissionSignature: append([]byte(nil), receipt.Signature...), Now: uint64(now),
+				AdmissionSignature: append([]byte(nil), receipt.Signature...), Now: nowUnix,
 				MinimumEligibilityRevision: minimumRevision, PolicyVersion: community.PolicyVersion,
 				E2EEVersion: 1, MediaVersion: 0, InstanceID: instance.InstanceID,
 				InstanceKeyID: instance.ExternalSenderKeyID, InstanceSignerPub: append([]byte(nil), d.ExternalSenderPub...),

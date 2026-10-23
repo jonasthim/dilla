@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -58,11 +59,16 @@ func (h *MemberTimeouts) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.clk.Now().Unix()
-	if req.RequestID.IsZero() || req.Expires <= uint64(now) || req.Expires-uint64(now) > maxBanSeconds {
+	nowUnix, nowOK := checkedUint64(now)
+	expires, expiresOK := checkedInt64(req.Expires)
+	if !nowOK {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	if !expiresOK || req.RequestID.IsZero() || req.Expires <= nowUnix || req.Expires-nowUnix > maxBanSeconds || req.Expires > math.MaxInt64 {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "request_id and a future expires timestamp are required"))
 		return
 	}
-	expires := int64(req.Expires)
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)

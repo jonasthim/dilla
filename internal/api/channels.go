@@ -1123,7 +1123,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
 		}
-		roleAffected, err = tx.(store.ReactionRoleGrantSources).RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
+		roleAffected, err = tx.RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
 		if err != nil {
 			return err
 		}

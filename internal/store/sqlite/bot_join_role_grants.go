@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jonasthim/dilla/internal/store"
@@ -11,7 +12,7 @@ import (
 func scanBotJoinReceipt(row interface{ Scan(...any) error }) (store.BotJoinRoleGrantReceipt, error) {
 	var v store.BotJoinRoleGrantReceipt
 	err := row.Scan(&v.RequestID, &v.InstallationID, &v.CommunityID, &v.UserID, &v.EpisodeID, &v.RoleID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return store.BotJoinRoleGrantReceipt{}, store.ErrNotFound
 	}
 	return v, wrap(err)
@@ -32,7 +33,7 @@ func (r *Repo) GrantBotJoinRoleForEpisode(ctx context.Context, req store.BotJoin
 		}
 		return got, false, nil
 	}
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		return store.BotJoinRoleGrantReceipt{}, false, err
 	}
 	var priorID []byte
@@ -40,7 +41,7 @@ func (r *Repo) GrantBotJoinRoleForEpisode(ctx context.Context, req store.BotJoin
 	if err == nil {
 		return store.BotJoinRoleGrantReceipt{}, false, store.ErrConflict
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return store.BotJoinRoleGrantReceipt{}, false, wrap(err)
 	}
 	var active int

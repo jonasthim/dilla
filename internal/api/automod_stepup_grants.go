@@ -71,8 +71,13 @@ func (d Deps) armAutoModerationGrant(w http.ResponseWriter, r *http.Request) {
 		refuseCBOR(w, r, err)
 		return
 	}
-	nowUnix := d.Clock.Now().Unix()
-	if nowUnix < 0 || req.RequestID.IsZero() || req.CommunityID.IsZero() || req.ExpectedRevision > math.MaxInt64 || req.RequestExpires <= uint64(nowUnix) || req.RequestExpires > uint64(d.Clock.Now().Add(5*time.Minute).Unix()) || len(req.ConfigHash) != sha256.Size {
+	now := d.Clock.Now()
+	nowUnix, nowOK := checkedUint64(now.Unix())
+	maximumRequestExpiry := now.Add(5 * time.Minute).Unix()
+	maximumRequestExpiryUnix, maximumExpiryOK := checkedUint64(maximumRequestExpiry)
+	expectedRevision, expectedRevisionOK := checkedInt64(req.ExpectedRevision)
+	requestExpires, requestExpiryOK := checkedInt64(req.RequestExpires)
+	if !nowOK || !maximumExpiryOK || !expectedRevisionOK || !requestExpiryOK || req.RequestID.IsZero() || req.CommunityID.IsZero() || req.ExpectedRevision > math.MaxInt64 || req.RequestExpires <= nowUnix || req.RequestExpires > maximumRequestExpiryUnix || len(req.ConfigHash) != sha256.Size {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "invalid automatic moderation grant tuple"))
 		return
 	}
@@ -118,12 +123,17 @@ func (d Deps) armAutoModerationGrant(w http.ResponseWriter, r *http.Request) {
 	token := base64.RawURLEncoding.EncodeToString(secret)
 	hash := sha256.Sum256([]byte(token))
 	expires := d.Clock.Now().Add(automodGrantTTL).Unix()
-	row := store.BotAutoModerationGrantRow{TokenHash: hash[:], CommunityID: req.CommunityID, InstallationID: inst.ID, GroupID: group, RequestID: req.RequestID, ActorUser: s.UserID, ActorDevice: s.DeviceID, ExpectedRevision: int64(req.ExpectedRevision), RequestExpires: int64(req.RequestExpires), ConfigHash: req.ConfigHash, Expires: expires}
+	expiresUnix, expiresOK := checkedUint64(expires)
+	if !expiresOK {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	row := store.BotAutoModerationGrantRow{TokenHash: hash[:], CommunityID: req.CommunityID, InstallationID: inst.ID, GroupID: group, RequestID: req.RequestID, ActorUser: s.UserID, ActorDevice: s.DeviceID, ExpectedRevision: expectedRevision, RequestExpires: requestExpires, ConfigHash: req.ConfigHash, Expires: expires}
 	if err = d.Repo.CreateBotAutoModerationGrant(r.Context(), row); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, automodGrantArmResponse{Token: token, Expires: uint64(expires)})
+	d.write(w, r, http.StatusOK, automodGrantArmResponse{Token: token, Expires: expiresUnix})
 }
 
 func (d Deps) redeemAutoModerationGrant(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +198,12 @@ func (d Deps) redeemAutoModerationGrant(w http.ResponseWriter, r *http.Request) 
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "grant tuple mismatch"))
 		return
 	}
-	if grant.ConsumedAt == 0 && req.RequestExpires <= uint64(d.Clock.Now().Unix()) {
+	nowUnix, nowOK := checkedUint64(d.Clock.Now().Unix())
+	if !nowOK {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	if grant.ConsumedAt == 0 && req.RequestExpires <= nowUnix {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "automatic moderation request expired"))
 		return
 	}

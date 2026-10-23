@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -24,7 +25,7 @@ func (r *Repo) SetSelfRolePolicy(ctx context.Context, community id.ID, approver 
 	return nil
 }
 
-func (r *Repo) ListSelfRolePolicy(ctx context.Context, community id.ID) ([]store.SelfRolePolicyRow, error) {
+func (r *Repo) ListSelfRolePolicy(ctx context.Context, community id.ID) (out []store.SelfRolePolicyRow, retErr error) {
 	q := `SELECT community_id,role_id,approved_by,approved_at FROM self_role_policy WHERE community_id=? ORDER BY role_id`
 	var rows *sql.Rows
 	var err error
@@ -36,8 +37,8 @@ func (r *Repo) ListSelfRolePolicy(ctx context.Context, community id.ID) ([]store
 	if err != nil {
 		return nil, wrap(err)
 	}
-	defer rows.Close()
-	out := []store.SelfRolePolicyRow{}
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+	out = []store.SelfRolePolicyRow{}
 	for rows.Next() {
 		var v store.SelfRolePolicyRow
 		if err := rows.Scan(&v.CommunityID, &v.RoleID, &v.ApprovedBy, &v.ApprovedAt); err != nil {
@@ -62,7 +63,7 @@ func (r *Repo) HasMemberRoleGrant(ctx context.Context, community, user, role id.
 
 // ListSelfRoleGrantUsers is used while replacing a policy under the community
 // lock, so removed approvals can revoke only their self-service grant source.
-func (r *Repo) ListSelfRoleGrantUsers(ctx context.Context, community, role id.ID) ([]id.ID, error) {
+func (r *Repo) ListSelfRoleGrantUsers(ctx context.Context, community, role id.ID) (users []id.ID, retErr error) {
 	const q = `SELECT user_id FROM member_role_grant_sources WHERE community_id=? AND role_id=? AND source='self' ORDER BY user_id`
 	var rows *sql.Rows
 	var err error
@@ -74,8 +75,8 @@ func (r *Repo) ListSelfRoleGrantUsers(ctx context.Context, community, role id.ID
 	if err != nil {
 		return nil, wrap(err)
 	}
-	defer rows.Close()
-	users := []id.ID{}
+	defer func() { retErr = errors.Join(retErr, wrap(rows.Close())) }()
+	users = []id.ID{}
 	for rows.Next() {
 		var user id.ID
 		if err := rows.Scan(&user); err != nil {

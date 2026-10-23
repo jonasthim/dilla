@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -95,7 +96,7 @@ func TestBotJoinRoleApprovalStoresConfigurationWithoutAssigningRoles(t *testing.
 	if status, body := e.Do(http.MethodPut, path, ownerTok, []any{id.New(), id.ID{}, installation.ID}); status != http.StatusOK {
 		t.Fatalf("clear approved role = %d (%x), want 200", status, body)
 	}
-	if _, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID); err != store.ErrNotFound {
+	if _, err := e.Repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(t.Context(), installation.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("policy after clear = %v, want not found", err)
 	}
 	assertRead(id.ID{})

@@ -42,7 +42,12 @@ func (h *Roles) getBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "get bot join role", server.Errorf(server.CodeNotFound, "ready community bot not found"))
 		return
 	}
-	policy, err := h.repo.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(r.Context(), installation.ID)
+	policyRepo, ok := h.repo.(store.BotJoinRolePolicy)
+	if !ok {
+		h.fail(w, r, "get bot join role", errors.New("store does not support bot join role policy"))
+		return
+	}
+	policy, err := policyRepo.GetBotJoinRolePolicy(r.Context(), installation.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		_ = server.WriteCBOR(w, http.StatusOK, []any{nil, installation.ID})
 		return
@@ -109,8 +114,12 @@ func (h *Roles) configureBotJoinRole(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.GetMember(r.Context(), cid, bot.ID); err != nil {
 			return server.Errorf(server.CodeForbidden, "installed bot must be a community member")
 		}
+		policyRepo, ok := tx.(store.BotJoinRolePolicy)
+		if !ok {
+			return errors.New("store does not support bot join role policy")
+		}
 		if req.RoleID.IsZero() {
-			if _, err := tx.(store.BotJoinRolePolicy).GetBotJoinRolePolicy(r.Context(), installation.ID); err != nil && err != store.ErrNotFound {
+			if _, err := policyRepo.GetBotJoinRolePolicy(r.Context(), installation.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
 		} else {
@@ -119,7 +128,7 @@ func (h *Roles) configureBotJoinRole(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		installationID = installation.ID
-		return tx.(store.BotJoinRolePolicy).SetBotJoinRolePolicy(r.Context(), installation.ID, req.RoleID, actor.UserID, h.clk.Now().Unix())
+		return policyRepo.SetBotJoinRolePolicy(r.Context(), installation.ID, req.RoleID, actor.UserID, h.clk.Now().Unix())
 	})
 	if err != nil {
 		h.fail(w, r, "configure bot join role", err)

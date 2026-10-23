@@ -245,14 +245,10 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir, err := os.MkdirTemp("", "dilla-bot-lifecycle-state-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateDir := t.TempDir()
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(stateDir) })
 	var storageKey [32]byte
 	if _, err := rand.Read(storageKey[:]); err != nil {
 		t.Fatal(err)
@@ -316,7 +312,7 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	if err != nil || len(deviceList) == 0 || !identity.DeviceListPublished {
 		t.Fatalf("native signed device list is not published: bytes=%d published=%t err=%v", len(deviceList), identity.DeviceListPublished, err)
 	}
-	if result.Packages.Generation != uint64(deps.Instance.Generation) || result.Packages.OrdinaryActive != 8 || !result.Packages.HasCurrentFallback {
+	if result.Packages.Generation != deps.Instance.Generation || result.Packages.OrdinaryActive != 8 || !result.Packages.HasCurrentFallback {
 		t.Fatalf("actual directory inventory=%+v, want generation %d, eight active and current fallback", result.Packages, deps.Instance.Generation)
 	}
 	if !transport.lost.Load() || transport.acceptedCount() != 1 {

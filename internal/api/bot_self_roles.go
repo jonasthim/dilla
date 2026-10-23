@@ -158,7 +158,7 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 		}
 		source := store.ReactionRoleGrant{CommunityID: cid, UserID: actor.UserID, RoleID: roleID, ChannelID: channelID, MessageSeq: seq, Reaction: req.Emoji}
 		if req.Enabled == 0 {
-			err = tx.(store.ReactionRoleGrantSources).RemoveReactionRoleGrant(r.Context(), source)
+			err = tx.RemoveReactionRoleGrant(r.Context(), source)
 			if errors.Is(err, store.ErrNotFound) {
 				err = nil
 			}
@@ -205,7 +205,7 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !approverSnap.Resolve(approvedBy).Has(PermManageRoles) || h.selfRoleCandidate(r, tx, cid, approvedBy, roleID, approverSnap.Resolve(approvedBy), approverSnap) != nil {
 			return server.Errorf(server.CodeForbidden, "panel role approval is no longer valid")
 		}
-		err = tx.(store.ReactionRoleGrantSources).AddReactionRoleGrant(r.Context(), source)
+		err = tx.AddReactionRoleGrant(r.Context(), source)
 		changed = err == nil
 		return err
 	})
@@ -451,7 +451,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		panel = store.RolePanelRow{CommunityID: cid, ChannelID: req.ChannelID, MessageSeq: req.MessageSeq, AuthorID: botUser.ID, InstallationID: installation.ID, SendOperationID: req.RequestID}
-		affected, err = tx.(store.ReactionRoleGrantSources).ListReactionRolePanelGrantUsers(r.Context(), cid, req.ChannelID, req.MessageSeq)
+		affected, err = tx.ListReactionRolePanelGrantUsers(r.Context(), cid, req.ChannelID, req.MessageSeq)
 		if err != nil {
 			return err
 		}
@@ -603,10 +603,10 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	}
 	seq, err := targetSeq(env)
 	if err != nil || seq == 0 {
-		return false, nil
+		return false, nil //nolint:nilerr // An invalid reply target is an ordinary reaction, not a panel.
 	}
 	if _, err := tx.GetMember(r.Context(), *ch.CommunityID, actor.UserID); err != nil {
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -619,7 +619,7 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 		return false, nil
 	}
 	panel, err := tx.GetRolePanel(r.Context(), ch.ID, seq)
-	if err == store.ErrNotFound {
+	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -659,10 +659,10 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	} else if err := verifyRolePanelBotSend(r.Context(), tx, installation, panel.AuthorID, ch, rolePanelRegistrationRequest{
 		RequestID: panel.SendOperationID, ChannelID: ch.ID, MessageSeq: seq,
 	}); err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // Invalid panel provenance makes this reaction ordinary.
 	}
 	if _, err := tx.GetMember(r.Context(), *ch.CommunityID, panel.AuthorID); err != nil {
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -684,7 +684,7 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	source := store.ReactionRoleGrant{CommunityID: *ch.CommunityID, UserID: actor.UserID, RoleID: roleID, ChannelID: ch.ID, MessageSeq: seq, Reaction: env.Body}
 	if env.Type == EnvReactionRemove {
 		err := tx.RemoveReactionRoleGrant(r.Context(), source)
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return err == nil, err
@@ -705,11 +705,14 @@ func (h *Roles) applyRolePanelReaction(r *http.Request, tx store.Repository, ch 
 	}
 	approverSnap, err := LoadSnapshot(r.Context(), tx, *ch.CommunityID, approval.ApprovedBy, nil)
 	if err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // A stale approval cannot grant a role.
 	}
 	approverBits := approverSnap.Resolve(approval.ApprovedBy)
-	if !approverBits.Has(PermManageRoles) || h.selfRoleCandidate(r, tx, *ch.CommunityID, approval.ApprovedBy, roleID, approverBits, approverSnap) != nil {
+	if !approverBits.Has(PermManageRoles) {
 		return false, nil
+	}
+	if err := h.selfRoleCandidate(r, tx, *ch.CommunityID, approval.ApprovedBy, roleID, approverBits, approverSnap); err != nil {
+		return false, nil //nolint:nilerr // A role that no longer meets approval constraints stays ungranted.
 	}
 	if err := tx.AddReactionRoleGrant(r.Context(), source); err != nil {
 		return false, err
@@ -753,7 +756,7 @@ func (h *Roles) listSelfRoles(w http.ResponseWriter, r *http.Request) {
 		if enabled {
 			selected = 1
 		}
-		rows = append(rows, []any{p.RoleID, role.Name, uint64(role.Position), selected})
+		rows = append(rows, []any{p.RoleID, role.Name, role.Position, selected})
 	}
 	_ = server.EncodeBody(w, http.StatusOK, rows)
 }
