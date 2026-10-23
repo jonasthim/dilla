@@ -417,6 +417,22 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
             nonzero(d.uint()?)?;
             true
         }
+        (26, 8) => {
+            d.array(11)?; // exact Bot interaction admission tuple
+            for _ in 0..8 {
+                id(d)?;
+            }
+            nonzero(d.uint()?)?; // minimum eligibility revision
+            nonzero(d.uint()?)?; // server_now
+            nonzero(d.uint()?)?; // policy version
+            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
+            id(d)?; // operation ID
+            id(d)?; // attempt ID
+            bounded_bytes(d, 1, MAX_LOGICAL)?; // deterministic send request, checked by adapter
+            nonzero(d.uint()?)?; // original_now
+            nonzero(d.uint()?)?; // expected generation
+            true
+        }
         (2, 7) => {
             id(d)?;
             id(d)?;
@@ -819,7 +835,7 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=25 {
+        for sub in 0..=26 {
             let mut e = Encoder::new();
             match sub {
                 0 | 17 | 23 => {
@@ -946,6 +962,18 @@ mod tests {
                     }
                     e.uint(1).uint(1).uint(1);
                 }
+                26 => {
+                    e.array(8).uint(sub).array(11);
+                    for byte in 1..=8 {
+                        id(&mut e, byte);
+                    }
+                    e.uint(1).uint(1).uint(1);
+                    body(&mut e);
+                    id(&mut e, 9);
+                    id(&mut e, 10);
+                    body(&mut e);
+                    e.uint(1).uint(1);
+                }
                 22 => {
                     e.array(4).uint(sub);
                     id(&mut e, 1);
@@ -963,6 +991,22 @@ mod tests {
                 "minimal contract payload for group suboperation {sub} must validate"
             );
         }
+    }
+
+    #[test]
+    fn accepts_proof_bound_interaction_response_prepare_payload() {
+        let mut request = Encoder::new();
+        request.array(4).uint(0).null().text("response").array(0);
+        let mut payload = Encoder::new();
+        payload.array(8).uint(26).array(11);
+        for byte in 1..=8 {
+            payload.bytes(&[byte; 16]);
+        }
+        payload.uint(1).uint(1).uint(1);
+        payload.bytes(&[0x80]);
+        payload.bytes(&[9; 16]).bytes(&[10; 16]);
+        payload.bytes(&request.into_vec()).uint(1).uint(1);
+        assert!(validate_target_payload(&payload.into_vec()).is_ok());
     }
 
     #[test]
