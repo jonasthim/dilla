@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -106,6 +107,67 @@ func TestInteractionRegistrationRejectsStaleContextWithoutPosting(t *testing.T) 
 	}
 	if f.n.createCalls != 1 || f.s.registerCalls != 0 || f.n.registered != 0 {
 		t.Fatalf("stale context side effects: create=%d register=%d native-resolve=%d", f.n.createCalls, f.s.registerCalls, f.n.registered)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Operation != f.n.createOperations[0] || intent.AdmissionRequest != f.s.requestIDs[0] || len(intent.Snapshot) == 0 {
+		t.Fatalf("uncertain create error rotated pinned durable intent: %+v", intent)
+	}
+}
+
+func TestInteractionRegistrationRenewsExpiredCreateContext(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.n.createErr = &helper.StatusError{Status: 3}
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+		t.Fatalf("expired create context error = %v, want recoverable pending state", err)
+	}
+	if len(f.s.requestIDs) != 2 {
+		t.Fatalf("first admission/context request IDs = %v", f.s.requestIDs)
+	}
+	oldRequest, operation := f.s.requestIDs[0], f.n.createOperations[0]
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.AdmissionRequest == oldRequest || intent.AdmissionRequest.IsZero() || intent.Operation == operation || intent.Operation.IsZero() || len(intent.Admission) != 0 || len(intent.Snapshot) != 0 || intent.Group != f.request.Group || intent.ParticipantUser != f.request.ParticipantUser || intent.ParticipantDevice != f.request.ParticipantDevice || !bytes.Equal(intent.KeyPackage, f.request.ParticipantKeyPackage) {
+		t.Fatalf("expired admission was not safely renewed: request=%v intent=%+v", oldRequest, intent)
+	}
+	newOperation := intent.Operation
+	if intent.MinimumRevision != 0 {
+		t.Fatalf("expired snapshot revision was retained: %d", intent.MinimumRevision)
+	}
+	f.n.createErr = nil
+	f.s.minimumRevision = 5 // Server membership advanced before the renewed admission.
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register with renewed context (creates=%d requests=%v): %v", f.n.createCalls, f.s.requestIDs, err)
+	}
+	if f.n.createCalls != 2 || f.s.registerCalls != 1 || f.s.lastOperation != newOperation || len(f.s.requestIDs) != 5 {
+		t.Fatalf("renewed registration duplicated or lost durable intent: creates=%d posts=%d operation=%v request IDs=%v", f.n.createCalls, f.s.registerCalls, f.s.lastOperation, f.s.requestIDs)
+	}
+	if f.n.discarded != nil {
+		t.Fatalf("definitive expired retry discarded groups: %v", f.n.discarded)
+	}
+	newRequest := f.s.requestIDs[2]
+	if newRequest == oldRequest || f.s.requestIDs[3] != newRequest || f.s.requestIDs[4] != newRequest {
+		t.Fatalf("renewed admission/context/register IDs differ: %v", f.s.requestIDs)
+	}
+	value, err = f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err = decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || intent.MinimumRevision != 5 {
+		t.Fatalf("refreshed eligibility revision was not adopted: minimum=%d err=%v", intent.MinimumRevision, err)
 	}
 }
 
@@ -638,6 +700,7 @@ type interactionRegistrationNativeFake struct {
 	transactionCalls        uint64
 	createdExpected         native.InteractionGroupExpected
 	createdKeyPackage       []byte
+	createOperations        []id.ID
 }
 
 func (n *interactionRegistrationNativeFake) Binding() native.Binding { return n.binding }
@@ -647,8 +710,9 @@ func (n *interactionRegistrationNativeFake) Bootstrap(context.Context, [32]byte)
 func (n *interactionRegistrationNativeFake) Identity(context.Context) (native.Identity, error) {
 	return n.identity, nil
 }
-func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, _ id.ID, e native.InteractionGroupExpected, _ []byte, keyPackage []byte) (native.InteractionGroupCreateResult, error) {
+func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, operation id.ID, e native.InteractionGroupExpected, _ []byte, keyPackage []byte) (native.InteractionGroupCreateResult, error) {
 	n.createCalls++
+	n.createOperations = append(n.createOperations, operation)
 	n.createdExpected = e
 	n.createdKeyPackage = append([]byte(nil), keyPackage...)
 	if n.createErr != nil {
@@ -740,6 +804,7 @@ type interactionRegistrationSessionFake struct {
 	registeredGroups            []id.ID
 	admissionErr                error
 	currentTime                 uint64
+	minimumRevision             uint64
 	admissions                  map[id.ID]uint64
 	keyPackage                  []byte
 	keyPackageErr               error
@@ -787,7 +852,28 @@ func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ con
 		return nil, errors.New("admission expired or missing")
 	}
 	expected := append(append([]any(nil), s.expected...), user, device, group)
-	return makeSignedSnapshotFixtureFor(request, expected, s.currentTime)
+	wire, err := makeSignedSnapshotFixtureFor(request, expected, s.currentTime)
+	if err != nil || s.minimumRevision == 0 {
+		return wire, err
+	}
+	var envelope []any
+	if err := cborx.Unmarshal(wire, &envelope); err != nil {
+		return nil, err
+	}
+	payload, ok := envelope[0].([]byte)
+	if !ok {
+		return nil, errors.New("bad signed snapshot fixture")
+	}
+	var fields []any
+	if err := cborx.Unmarshal(payload, &fields); err != nil || len(fields) < 7 {
+		return nil, errors.New("bad snapshot payload fixture")
+	}
+	fields[6] = s.minimumRevision
+	payload, err = cborx.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	return cborx.Marshal([]any{payload, make([]byte, 64)})
 }
 func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionRequest(_ context.Context, _ id.ID, op id.ID, generation uint64, body []byte, admissionRequest id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.requestIDs = append(s.requestIDs, admissionRequest)

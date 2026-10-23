@@ -56,6 +56,7 @@ impl Helper {
             Ok((body, stop)) => (0, body, stop),
             Err(DispatchError::Invalid) => (1, empty(), false),
             Err(DispatchError::Forbidden) => (2, empty(), false),
+            Err(DispatchError::Expired) => (3, empty(), false),
             Err(DispatchError::Conflict) => (4, empty(), false),
             Err(DispatchError::Unavailable) => (5, empty(), false),
             Err(DispatchError::Busy) => (6, empty(), false),
@@ -656,6 +657,7 @@ fn dispatch_status(error: DispatchError) -> u64 {
     match error {
         DispatchError::Invalid => 1,
         DispatchError::Forbidden => 2,
+        DispatchError::Expired => 3,
         DispatchError::Conflict => 4,
         DispatchError::Unavailable => 5,
         DispatchError::Busy => 6,
@@ -668,6 +670,7 @@ fn dispatch_status(error: DispatchError) -> u64 {
 pub(crate) enum DispatchError {
     Invalid,
     Forbidden,
+    Expired,
     Conflict,
     Unavailable,
     Busy,
@@ -713,6 +716,11 @@ pub(crate) fn map_client(e: dilla_core::client::ClientError) -> DispatchError {
 #[cfg(test)]
 mod send_abi_tests {
     use super::*;
+
+    #[test]
+    fn expired_dispatch_status_is_frozen_status_three() {
+        assert_eq!(dispatch_status(DispatchError::Expired), 3);
+    }
 
     #[test]
     fn send_operations_require_exact_shapes_nonzero_ids_and_bounded_receipts() {

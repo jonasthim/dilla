@@ -780,6 +780,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			var membershipErr *service.MembershipPhaseError
 			if errors.As(ensureErr, &membershipErr) {
 				attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
+				attrs = append(attrs, safeMembershipErrorAttrs(membershipErr)...)
 			}
 			var trustErr *service.TrustPhaseError
 			if errors.As(ensureErr, &trustErr) {
@@ -796,6 +797,44 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		return fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
 	}
 	return nil
+}
+
+func safeMembershipErrorAttrs(err error) []any {
+	var helperErr *helper.StatusError
+	if errors.As(err, &helperErr) {
+		name := "other"
+		switch helperErr.Status {
+		case 1:
+			name = "invalid"
+		case 2:
+			name = "forbidden"
+		case 3:
+			name = "expired"
+		case 4:
+			name = "conflict"
+		case 5:
+			name = "unavailable"
+		case 6:
+			name = "busy"
+		case 7:
+			name = "not_found"
+		case 8:
+			name = "upgrade_required"
+		case 9:
+			name = "internal"
+		}
+		return []any{"membership_failure", "native_helper", "helper_status", name}
+	}
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		code := "other"
+		switch apiErr.Code {
+		case "E_BAD_INPUT", "E_CONFLICT", "E_FORBIDDEN", "E_INTERNAL", "E_NOT_FOUND", "E_PRUNED", "E_UNAVAILABLE":
+			code = apiErr.Code
+		}
+		return []any{"membership_failure", "api", "api_status", apiErr.Status, "api_code", code}
+	}
+	return []any{"membership_failure", "other"}
 }
 
 func safeTrustErrorAttrs(err error) []any {

@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -162,7 +163,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 	} else {
 		in, err = decodeInteractionRegistrationIntent(v.Value)
-		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
+		if err != nil || in.Group != req.Group || in.ParticipantUser != req.ParticipantUser || in.ParticipantDevice != req.ParticipantDevice || (req.MinimumEligibilityRevision != 0 && in.MinimumRevision != 0 && in.MinimumRevision < req.MinimumEligibilityRevision) || in.BotUser != *identity.User || in.BotDevice != *identity.Device || (len(req.ParticipantKeyPackage) != 0 && !equalBytes(in.KeyPackage, req.ParticipantKeyPackage)) {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
 		if in.ManualRecovery {
@@ -208,7 +209,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 			}
 		}
 		snapshot, err := interactionSnapshotDetailsFromWire(in.Snapshot)
-		if err != nil || snapshot.Request != in.AdmissionRequest || snapshot.PolicyVersion != d.PolicyVersion || (in.MinimumRevision != 0 && in.MinimumRevision != snapshot.MinimumRevision) || (req.MinimumEligibilityRevision != 0 && req.MinimumEligibilityRevision != snapshot.MinimumRevision) ||
+		if err != nil || snapshot.Request != in.AdmissionRequest || snapshot.PolicyVersion != d.PolicyVersion || (in.MinimumRevision != 0 && in.MinimumRevision != snapshot.MinimumRevision) || (req.MinimumEligibilityRevision != 0 && req.MinimumEligibilityRevision > snapshot.MinimumRevision) ||
 			snapshot.Instance != c.instance || snapshot.Installation != c.installation || snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice || snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice || snapshot.Group != in.Group {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 		}
@@ -226,6 +227,22 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		expected := native.InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community, BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice, Group: in.Group, MinimumEligibilityRevision: in.MinimumRevision, ServerNow: snapshot.Now, PolicyVersion: in.Policy}
 		created, err := c.native.CreateInteractionGroup(ctx, in.Operation, expected, in.Snapshot, in.KeyPackage)
 		if err != nil {
+			var statusErr *helper.StatusError
+			if errors.As(err, &statusErr) && statusErr.Status == 3 {
+				// The signed admission snapshot is short lived. The helper's
+				// definitive expired status guarantees no group was created, so
+				// rotate both one-shot IDs while retaining the pinned participants
+				// and package. Uncertain helper outcomes never reach this branch.
+				in.Operation = id.New()
+				in.AdmissionRequest = id.New()
+				in.MinimumRevision = 0
+				in.Admission = nil
+				in.Snapshot = nil
+				if _, saveErr := c.saveInteractionRegistration(ctx, key, revision, in); saveErr != nil {
+					return InteractionRegistrationResult{}, fmt.Errorf("persist renewed interaction admission: %w", saveErr)
+				}
+				return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+			}
 			return InteractionRegistrationResult{}, fmt.Errorf("%w: native create remains pending: %w", ErrInteractionRegistrationRecovery, err)
 		}
 		if !validInteractionCreateResult(created, expected, d) {

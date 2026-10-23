@@ -26,6 +26,20 @@ func TestSafeTrustErrorAttrsUseFixedClassifications(t *testing.T) {
 	}
 }
 
+func TestSafeMembershipErrorAttrsExposeOnlyFixedStatus(t *testing.T) {
+	if got, want := safeMembershipErrorAttrs(&helper.StatusError{Status: 3}), []any{"membership_failure", "native_helper", "helper_status", "expired"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("helper attrs = %#v, want %#v", got, want)
+	}
+	secretCode := "E_PRIVATE_BODY_SHOULD_NOT_LOG"
+	got := safeMembershipErrorAttrs(&client.APIError{Status: 403, Code: secretCode})
+	if want := []any{"membership_failure", "api", "api_status", 403, "api_code", "other"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("API attrs = %#v, want %#v", got, want)
+	}
+	if fmt.Sprint(got) == secretCode {
+		t.Fatal("API code was not filtered through the fixed allowlist")
+	}
+}
+
 func TestLoadConfigRequiresAbsoluteProtectedCredentialPaths(t *testing.T) {
 	dir := t.TempDir()
 	credential := filepath.Join(dir, "runtime.token")

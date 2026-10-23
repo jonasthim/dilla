@@ -2049,17 +2049,32 @@ mod interaction_snapshot_tests {
             );
             let before_counts = counts(&connection.lock().unwrap());
             let before_openmls = openmls_row_count(&connection.lock().unwrap());
-            assert!(
-                core.bot_interaction_group_create(
-                    &[group_bytes[0]; 16],
+            let operation = [group_bytes[0]; 16];
+            let error = core
+                .bot_interaction_group_create(
+                    &operation,
                     &group_bytes,
                     &stale_wire,
                     &stale_expected,
                     &kp_wire,
                 )
-                .is_err()
+                .expect_err("stale interaction context must not create a group");
+            assert_eq!(error.code, E_CORE_INPUT);
+            let c = connection.lock().unwrap();
+            assert_eq!(counts(&c), before_counts);
+            let residue: (i64, i64) = c
+                .query_row(
+                    "SELECT (SELECT count(*) FROM app_groups WHERE group_id=?1),(SELECT count(*) FROM app_bot_intents WHERE operation_id=?2)",
+                    rusqlite::params![group_bytes.as_slice(), operation.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                residue,
+                (0, 0),
+                "rejected snapshot left durable create state"
             );
-            assert_eq!(counts(&connection.lock().unwrap()), before_counts);
+            drop(c);
             assert_eq!(
                 openmls_row_count(&connection.lock().unwrap()),
                 before_openmls

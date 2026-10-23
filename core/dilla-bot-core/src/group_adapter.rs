@@ -348,6 +348,9 @@ fn interaction_create(
     let result = core
         .bot_interaction_group_create(&operation, &group, &snapshot, &expected, &key_package)
         .map_err(|error| {
+            if interaction_create_refusal_class(&error) == "snapshot_expired" {
+                return DispatchError::Expired;
+            }
             if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
                 == Some(std::ffi::OsStr::new("1"))
             {
