@@ -24,6 +24,15 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest({ ...request(13, [1n]), channelId: id(3), revision: 1n, expires: 110n })).toThrow(bot.BotError);
   });
 
+  it('accepts null first-page and bounded opaque moderation cursors', () => {
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(request(60, [null]))).args).toEqual([null]);
+    const cursor = new Uint8Array([1, 2, 3]);
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(request(60, [cursor]))).args).toEqual([cursor]);
+    expect(() => bot.encodeBotRequest(request(60, [new Uint8Array()]))).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest(request(60, [new Uint8Array(257)]))).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
+  });
+
   it('rejects noncanonical base64url even when it decodes to valid CBOR', () => {
     const good = bot.encodeBotRequest(request());
     expect(() => bot.decodeBotRequest(`${good}=`)).toThrow(bot.BotError);

@@ -83,7 +83,8 @@ function validateArgs(op: number, a: unknown[]): void {
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
     case 21: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
-    case 30: t(0,1,2000); break; case 40: case 50: case 60: u(0); break;
+    case 30: t(0,1,2000); break; case 40: case 50: u(0); break;
+    case 60: if (a[0] !== null) { const cursor = bytes(a[0]); if (cursor.length < 1 || cursor.length > 256) fail('E_BOT_RANGE'); } break;
     case 51: a[0]=nullable(a[0],id); a[1]=cborBytes(a[1],1,2200); break;
     case 52: ident(0); u(1,1n,(1n<<63n)-1n); break;
     case 61: ident(0); t(1,0,1024); t(2,0,512); break;
