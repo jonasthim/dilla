@@ -89,6 +89,38 @@ func TestNativeInteractionGroupDiscoveryIsSeparateAndStrict(t *testing.T) {
 	}
 }
 
+func TestNativeInteractionHealSnapshotDecodesBoundedComponents(t *testing.T) {
+	group := testID(8)
+	tail, err := cborx.Marshal([]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := cborx.Marshal([]any{[]byte{1, 2}, tail, []byte{3, 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTransport{responses: [][]any{{body}}}
+	c := newFakeClient(t, f)
+	got, err := c.InteractionHealSnapshot(context.Background(), group)
+	if err != nil || !reflect.DeepEqual(got, InteractionHealSnapshot{GroupInfo: []byte{1, 2}, Tail: [][]any{}, RatchetTree: []byte{3, 4}}) {
+		t.Fatalf("snapshot=%#v err=%v", got, err)
+	}
+	if len(f.groupPayloads) != 1 || !reflect.DeepEqual(f.groupPayloads[0], []any{uint64(27), group}) {
+		t.Fatalf("heal snapshot request=%#v", f.groupPayloads)
+	}
+	if _, err := c.InteractionHealSnapshot(context.Background(), id.ID{}); err == nil || len(f.groupPayloads) != 1 {
+		t.Fatalf("zero group accepted or dispatched: %v", err)
+	}
+
+	badTail, _ := cborx.Marshal([]any{uint64(1)})
+	badBody, _ := cborx.Marshal([]any{[]byte{1}, badTail, []byte{3}})
+	f = &fakeTransport{responses: [][]any{{badBody}}}
+	c = newFakeClient(t, f)
+	if _, err := c.InteractionHealSnapshot(context.Background(), group); err == nil || errors.Is(err, ErrOutcomeUnknown) || f.closed != 0 {
+		t.Fatalf("malformed snapshot did not quarantine helper: %v closed=%d", err, f.closed)
+	}
+}
+
 func TestNativeGroupRequestsValidateLocallyAndUseExactSuboperations(t *testing.T) {
 	g := testID(9)
 	channel := testID(10)

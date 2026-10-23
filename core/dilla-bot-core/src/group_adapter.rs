@@ -83,8 +83,37 @@ pub(crate) fn dispatch(
         24 => interaction_apply(core, payload),
         25 => interaction_cursor(core, payload),
         26 => interaction_send_prepare(core, payload),
+        27 => interaction_heal_snapshot(core, bind, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+/// Export only authenticated local MLS material. No group info, tree, roster, or tail is accepted
+/// from the caller; a paired restore starts with an empty replay tail.
+fn interaction_heal_snapshot(
+    core: &ClientCore,
+    bind: Binding,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let group = decode_strict(payload, |d| {
+        d.array(2)?;
+        if d.uint()? != 27 {
+            return Err(dilla_core::cbor::CborError::TypeMismatch {
+                expected: "interaction heal snapshot",
+                offset: 0,
+            });
+        }
+        d.bytes_exact::<16>()
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    let snapshot = core
+        .bot_interaction_heal_snapshot(&group, &bind.0, &bind.1, &bind.2)
+        .map_err(map_client)?;
+    let output = body(snapshot);
+    if output.len() > dilla_core::bot::HELPER_PAYLOAD_MAX {
+        return Err(DispatchError::Unavailable);
+    }
+    Ok(Zeroizing::new(output))
 }
 
 fn interaction_send_prepare(

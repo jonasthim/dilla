@@ -326,6 +326,125 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 }
 
 impl ClientCore {
+    /// Export the authenticated local MLS state for a persisted Bot interaction group so the
+    /// delivery service can repair a paired restore. The only caller input is public scope and
+    /// group identity; every cryptographic field is derived from the locally stored MLS group.
+    pub fn bot_interaction_heal_snapshot(
+        &self,
+        group_id: &[u8; 16],
+        expected_instance: &[u8; 16],
+        expected_community: &[u8; 16],
+        expected_installation: &[u8; 16],
+    ) -> Result<Vec<u8>, ClientError> {
+        use super::groups::{STATE_ACTIVE, STATE_NEEDS_RESYNC};
+
+        if group_id.iter().all(|byte| *byte == 0) {
+            return Err(binding_mismatch());
+        }
+        self.bot_validate_binding(expected_instance, expected_community, expected_installation)?;
+        let own = self.own()?;
+        let row = self
+            .read(|c| super::groups::group_row(c, group_id))?
+            .ok_or_else(binding_mismatch)?;
+        let (persisted_epoch, pending_commit): (i64, i64) = self.read(|c| {
+            c.query_row(
+                "SELECT epoch,pending_commit FROM app_groups WHERE group_id=?1",
+                [group_id.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        if row.kind != GroupKind::Interaction.as_u8() as i64
+            || !matches!(row.state, STATE_ACTIVE | STATE_NEEDS_RESYNC)
+            || row.community_id.as_deref() != Some(expected_community.as_slice())
+            || pending_commit != 0
+        {
+            return Err(binding_mismatch());
+        }
+        let group = DillaGroup::load(&self.provider, &GroupId::from_slice(group_id))
+            .map_err(|_| binding_mismatch())?
+            .ok_or_else(binding_mismatch)?;
+        if group.kind() != GroupKind::Interaction
+            || group.group_id().as_slice() != group_id
+            || group.member_count() != 2
+            || u64::try_from(persisted_epoch).ok() != Some(group.epoch())
+        {
+            return Err(binding_mismatch());
+        }
+        let binding = group
+            .interaction_binding()
+            .map_err(|_| binding_mismatch())?;
+        if binding.instance_id.as_bytes() != expected_instance
+            || binding.community_id.as_bytes() != expected_community
+            || binding.installation_id != *expected_installation
+            || binding.bot_user_id != own.user_id
+            || row.target_id.as_slice() != binding.participant_user_id.as_slice()
+        {
+            return Err(binding_mismatch());
+        }
+        let own_leaf = group.own_leaf_index().u32();
+        let mut saw_bot = false;
+        let mut saw_participant = false;
+        for member in group.members() {
+            let basic =
+                BasicCredential::try_from(member.credential).map_err(|_| binding_mismatch())?;
+            let credential =
+                CredentialIdentity::decode(basic.identity()).map_err(|_| binding_mismatch())?;
+            let dsk: [u8; 32] = member
+                .signature_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| binding_mismatch())?;
+            credential
+                .verify_signatures(&dsk)
+                .map_err(|_| binding_mismatch())?;
+            if member.index.u32() == own_leaf {
+                if credential.user_id.as_bytes() != &own.user_id
+                    || credential.device_id.as_bytes() != &own.device_id
+                    || credential.kind != Kind::Bot
+                    || credential.tier != Tier::Native
+                    || credential.signer_tier != SignerTier::Native
+                {
+                    return Err(binding_mismatch());
+                }
+                saw_bot = true;
+            } else if credential.user_id.as_bytes() == &binding.participant_user_id
+                && credential.device_id.as_bytes() == binding.participant_device_id.as_bytes()
+                && credential.kind == Kind::User
+            {
+                saw_participant = true;
+            } else {
+                return Err(binding_mismatch());
+            }
+        }
+        if !saw_bot || !saw_participant {
+            return Err(binding_mismatch());
+        }
+        let signer = self.signer()?;
+        let group_info = super::wire::tls(&group.export_group_info(&self.provider, signer)?)?;
+        let ratchet_tree = super::wire::tls(&group.export_ratchet_tree())?;
+        if group_info.len() > crate::bot::HELPER_PAYLOAD_MAX
+            || ratchet_tree.len() > crate::bot::HELPER_PAYLOAD_MAX
+        {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction heal snapshot exceeds helper limit",
+            ));
+        }
+        let mut out = crate::cbor::Encoder::new();
+        out.array(3)
+            .bytes(&group_info)
+            .bytes(&[0x80])
+            .bytes(&ratchet_tree);
+        if out.as_slice().len() > crate::bot::HELPER_PAYLOAD_MAX {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction heal snapshot exceeds helper limit",
+            ));
+        }
+        Ok(out.into_vec())
+    }
+
     /// Discover locally persisted kind-3 groups and read their authenticated context binding.
     /// Generic group enumeration remains deliberately unaware of kind-3 groups.
     pub fn bot_interaction_group_descriptors(
@@ -1539,6 +1658,14 @@ mod interaction_snapshot_tests {
         assert_eq!(result_fields.0, expected.group.as_bytes());
         assert!(!result_fields.1.is_empty() && !result_fields.2.is_empty());
         assert!(!result_fields.3.is_empty() && !result_fields.4.is_empty());
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_groups SET state=2 WHERE group_id=?1",
+                [expected.group.as_bytes().as_slice()],
+            )
+            .unwrap();
 
         let descriptors = core
             .bot_interaction_group_descriptors(&INSTANCE, &COMMUNITY, &INSTALLATION)
@@ -1556,6 +1683,72 @@ mod interaction_snapshot_tests {
             *expected.participant_device.as_bytes()
         );
         assert_eq!(descriptors[0].policy_version, expected.policy_version);
+
+        core.bot_validate_binding(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .expect("persisted Bot binding");
+        let heal = core
+            .bot_interaction_heal_snapshot(
+                expected.group.as_bytes(),
+                expected.instance.as_bytes(),
+                expected.community.as_bytes(),
+                expected.installation.as_bytes(),
+            )
+            .expect("export authenticated heal snapshot");
+        let heal_fields = crate::cbor::decode_strict(&heal, |d| {
+            d.array(3)?;
+            Ok((
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+                d.bytes()?.to_vec(),
+            ))
+        })
+        .unwrap();
+        assert!(!heal_fields.0.is_empty());
+        assert_eq!(heal_fields.1, [0x80]);
+        assert!(!heal_fields.2.is_empty());
+        assert!(
+            core.bot_interaction_heal_snapshot(
+                expected.group.as_bytes(),
+                expected.instance.as_bytes(),
+                expected.community.as_bytes(),
+                &[0x44; 16],
+            )
+            .is_err()
+        );
+        assert!(
+            core.bot_interaction_heal_snapshot(
+                &[0x77; 16],
+                expected.instance.as_bytes(),
+                expected.community.as_bytes(),
+                expected.installation.as_bytes(),
+            )
+            .is_err()
+        );
+
+        drop(core);
+        let mut core = ClientCore::open(connection.clone()).unwrap();
+        let after_restart = core
+            .bot_interaction_heal_snapshot(
+                expected.group.as_bytes(),
+                expected.instance.as_bytes(),
+                expected.community.as_bytes(),
+                expected.installation.as_bytes(),
+            )
+            .expect("export after helper/core restart");
+        let after_fields = crate::cbor::decode_strict(&after_restart, |d| {
+            d.array(3)?;
+            Ok((d.bytes()?.len(), d.bytes()?.len(), d.bytes()?.len()))
+        })
+        .unwrap();
+        assert!(after_fields.0 > 0 && after_fields.1 == 1 && after_fields.2 > 0);
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_groups SET state=0 WHERE group_id=?1",
+                [expected.group.as_bytes().as_slice()],
+            )
+            .unwrap();
 
         std::thread::sleep(std::time::Duration::from_secs(14));
         let replay = core

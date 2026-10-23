@@ -50,6 +50,11 @@ type InteractionGroupBinding struct {
 	ParticipantUser, ParticipantDevice         id.ID
 	PolicyVersion, E2EEVersion, MediaVersion   uint64
 }
+type InteractionHealSnapshot struct {
+	GroupInfo   []byte
+	Tail        [][]any
+	RatchetTree []byte
+}
 type InteractionGroupCreateResult struct {
 	Group   id.ID
 	Binding InteractionGroupBinding
@@ -865,6 +870,43 @@ func (c *Client) InspectInteractionGroup(ctx context.Context, expected Interacti
 		return InteractionGroupInspectResult{}, err
 	}
 	return resultAs[InteractionGroupInspectResult](v)
+}
+
+// InteractionHealSnapshot exports the helper's current authenticated MLS snapshot for a paired
+// restore. The returned Tail contains deterministic CBOR event rows; an equal paired restore
+// returns an empty slice.
+func (c *Client) InteractionHealSnapshot(ctx context.Context, group id.ID) (InteractionHealSnapshot, error) {
+	if err := checkedGroupID(group); err != nil {
+		return InteractionHealSnapshot{}, errors.New("invalid interaction heal group")
+	}
+	v, err := c.groupCall(ctx, []any{uint64(27), group}, false, groupWrapped(func(body []byte) (any, error) {
+		if len(body) == 0 || len(body) > protocol.MaxHelperPayload {
+			return nil, errors.New("interaction heal snapshot size")
+		}
+		var fields [][]byte
+		if err := cborx.Unmarshal(body, &fields); err != nil || len(fields) != 3 {
+			return nil, errors.New("interaction heal snapshot shape")
+		}
+		if len(fields[0]) == 0 || len(fields[0]) > protocol.MaxHelperPayload ||
+			len(fields[1]) == 0 || len(fields[1]) > protocol.MaxHelperPayload ||
+			len(fields[2]) == 0 || len(fields[2]) > protocol.MaxHelperPayload {
+			return nil, errors.New("interaction heal snapshot component size")
+		}
+		var tail [][]any
+		if err := cborx.Unmarshal(fields[1], &tail); err != nil || len(tail) > 256 {
+			return nil, errors.New("interaction heal snapshot tail")
+		}
+		return InteractionHealSnapshot{
+			GroupInfo:   append([]byte(nil), fields[0]...),
+			Tail:        tail,
+			RatchetTree: append([]byte(nil), fields[2]...),
+		}, nil
+	}),
+	)
+	if err != nil {
+		return InteractionHealSnapshot{}, err
+	}
+	return resultAs[InteractionHealSnapshot](v)
 }
 
 func (c *Client) GroupRegistered(ctx context.Context, operation, group id.ID, next uint64) error {

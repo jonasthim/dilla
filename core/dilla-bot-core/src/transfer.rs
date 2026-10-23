@@ -351,7 +351,7 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
     let sub = d.uint()?;
     let valid = match (sub, n) {
         (0 | 17 | 23, 1) => true,
-        (1 | 12, 2) => {
+        (1 | 12 | 27, 2) => {
             id(d)?;
             true
         }
@@ -835,13 +835,13 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=26 {
+        for sub in 0..=27 {
             let mut e = Encoder::new();
             match sub {
                 0 | 17 | 23 => {
                     e.array(1).uint(sub);
                 }
-                1 | 12 => {
+                1 | 12 | 27 => {
                     e.array(2).uint(sub);
                     id(&mut e, 1);
                 }
