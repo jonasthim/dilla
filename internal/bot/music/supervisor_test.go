@@ -190,7 +190,8 @@ func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing
 	}
 	defer s.Close()
 	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
-	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+	nextTrack := music.Track{ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "member"}
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track, nextTrack}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,6 +218,20 @@ func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing
 	}
 	if len(starter.starts) != 1 || starter.starts[0].ID != track.ID {
 		t.Fatalf("committed resume starts=%v, want one start of %s", starter.starts, track.ID)
+	}
+	skipped, err := music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpSkip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(context.Background(), channel, saved.Revision, skipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(starter.starts) != 2 || starter.starts[1].ID != nextTrack.ID || starter.current == nil {
+		t.Fatalf("committed active Skip starts=%v, want playback of %s", starter.starts, nextTrack.ID)
 	}
 	loaded, err := store.Load(context.Background(), channel)
 	if err != nil {

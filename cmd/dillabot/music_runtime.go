@@ -32,13 +32,13 @@ const (
 var errMusicPCMUnavailable = errors.New("music PCM provider is unavailable")
 
 // musicSnapshotCommitCallback hands a committed revision to the retained
-// supervisor. Only a successful, explicit Resume is allowed to start audio.
+// supervisor. Only an explicit Resume or a Skip that continues existing playback starts audio.
 func musicSnapshotCommitCallback(registry *musicQueueRegistry, logger *slog.Logger) func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, liveResume bool) (uint64, error) {
-		appliedRevision, err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, liveResume)
+	return func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, startPlayback bool) (uint64, error) {
+		appliedRevision, err := registry.ApplyPersistedSnapshot(ctx, installation, community, channel, state, revision, startPlayback)
 		if err != nil {
 			logger.Warn("persisted music queue snapshot could not refresh retained runtime", "installation_id", installation.String(), "community_id", community.String(), "channel_id", channel.String(), "revision", revision, "error", err.Error())
 		}
@@ -95,8 +95,8 @@ func (r *musicQueueRuntime) CurrentState(ctx context.Context, channel id.ID) (mu
 }
 
 // ApplyPersistedSnapshot hands an exact committed revision to its retained
-// supervisor. Only a live explicit Resume may start playback.
-func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, committed music.State, expectedRevision uint64, liveResume bool) (uint64, error) {
+// supervisor. Only an explicit Resume or active Skip may start playback.
+func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel id.ID, committed music.State, expectedRevision uint64, startPlayback bool) (uint64, error) {
 	if ctx == nil || channel.IsZero() {
 		return 0, errors.New("music runtime dependencies unavailable")
 	}
@@ -109,7 +109,7 @@ func (r *musicQueueRuntime) ApplyPersistedSnapshot(ctx context.Context, channel 
 	if current == nil {
 		return 0, errors.New("music voice session is unavailable")
 	}
-	return current.ApplyPersistedSnapshot(ctx, committed, expectedRevision, liveResume)
+	return current.ApplyPersistedSnapshot(ctx, committed, expectedRevision, startPlayback)
 }
 
 type musicCallStarter interface {
@@ -499,7 +499,7 @@ func (r *musicQueueRegistry) CurrentState(ctx context.Context, installation, com
 // ApplyPersistedSnapshot is the runtime bridge for queue mutations already
 // authorized and committed by the interaction service. A missing registry
 // entry means the capability or retained native session has been torn down.
-func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, liveResume bool) (uint64, error) {
+func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64, startPlayback bool) (uint64, error) {
 	if r == nil {
 		return 0, errors.New("music voice session is unavailable")
 	}
@@ -510,7 +510,7 @@ func (r *musicQueueRegistry) ApplyPersistedSnapshot(ctx context.Context, install
 		return 0, errors.New("music voice session is unavailable")
 	}
 	r.mu.Unlock()
-	return retained.queues.ApplyPersistedSnapshot(ctx, channel, state, revision, liveResume)
+	return retained.queues.ApplyPersistedSnapshot(ctx, channel, state, revision, startPlayback)
 }
 
 // Reconcile returns true only when ownership of nativeClient transfers to the

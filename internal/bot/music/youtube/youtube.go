@@ -306,7 +306,8 @@ func parseTracks(data metadata, kind inputKind) ([]music.Track, error) {
 		}
 		return []music.Track{track}, nil
 	}
-	if data.Extractor != "Youtube" || data.Type == nil || *data.Type != "playlist" || data.PlaylistCount == nil || *data.PlaylistCount <= 0 ||
+	rootIsYouTube := data.Extractor == "Youtube" || kind == kindPlaylist && data.Extractor == "YoutubeTab"
+	if !rootIsYouTube || data.Type == nil || *data.Type != "playlist" || data.PlaylistCount == nil || *data.PlaylistCount <= 0 ||
 		*data.PlaylistCount > MaxPlaylistItems || len(data.Entries) != *data.PlaylistCount ||
 		(kind == kindSearch && len(data.Entries) > MaxSearchResults) {
 		return nil, ErrMetadataInvalid

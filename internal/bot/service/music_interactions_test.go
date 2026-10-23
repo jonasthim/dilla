@@ -164,21 +164,111 @@ func TestMusicInteractionsMarksOnlyCommittedResumeForLiveHandoff(t *testing.T) {
 	}
 	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
 	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
-	var liveResume bool
+	var startPlayback bool
 	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
-		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, _ music.State, revision uint64, resume bool) (uint64, error) {
-			liveResume = resume
+		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, _ music.State, revision uint64, start bool) (uint64, error) {
+			startPlayback = start
 			return revision, nil
 		}}
 	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision)}
 	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
-	if err != nil || result.Status != 0 || liveResume {
-		t.Fatalf("pause result=%+v err=%v liveResume=%v", result, err, liveResume)
+	if err != nil || result.Status != 0 || startPlayback {
+		t.Fatalf("pause result=%+v err=%v startPlayback=%v", result, err, startPlayback)
 	}
 	request.Revision = result.Revision
 	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
-	if err != nil || result.Status != 0 || !liveResume || result.Revision == nil || *result.Revision != 3 {
-		t.Fatalf("resume result=%+v err=%v liveResume=%v, want committed explicit resume", result, err, liveResume)
+	if err != nil || result.Status != 0 || !startPlayback || result.Revision == nil || *result.Revision != 3 {
+		t.Fatalf("resume result=%+v err=%v startPlayback=%v, want committed explicit resume", result, err, startPlayback)
+	}
+}
+
+func TestMusicInteractionsContinuesActivePlaybackAfterSkipOnly(t *testing.T) {
+	channel, community := interactionID(25), interactionID(22)
+	makeState := func(paused bool) music.State {
+		state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{
+			{ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "First", RequesterID: "member"},
+			{ID: "track-2", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "Second", RequesterID: "member"},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err = music.Apply(state, state.Revision, music.Operation{Kind: music.OpResume})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if paused {
+			state, err = music.Apply(state, state.Revision, music.Operation{Kind: music.OpPause})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state
+	}
+	for _, tc := range []struct {
+		name      string
+		paused    bool
+		wantStart bool
+	}{
+		{name: "active playback continues", wantStart: true},
+		{name: "paused queue stays paused", paused: true, wantStart: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := makeState(tc.paused)
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+			var startPlayback bool
+			h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
+				CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+					return state, state.Revision, nil
+				},
+				OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, committed music.State, revision uint64, shouldStart bool) (uint64, error) {
+					if committed.Current == nil || committed.Current.Title != "Second" {
+						t.Errorf("committed state after Skip = %+v, want Second as current", committed)
+					}
+					startPlayback = shouldStart
+					return revision, nil
+				}}
+			request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision)}
+			result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSkip)
+			if err != nil || result.Status != 0 || startPlayback != tc.wantStart {
+				t.Fatalf("skip result=%+v err=%v startPlayback=%v, want successful skip and startPlayback=%v", result, err, startPlayback, tc.wantStart)
+			}
+		})
+	}
+}
+
+func TestMusicInteractionsPausesPersistedSkipWhenPlaybackHandoffFails(t *testing.T) {
+	channel, community := interactionID(29), interactionID(26)
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{
+		{ID: "track-1", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "First", RequesterID: "member"},
+		{ID: "track-2", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "Second", RequesterID: "member"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = music.Apply(state, state.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community,
+		CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+			return state, state.Revision, nil
+		},
+		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, _ music.State, _ uint64, startPlayback bool) (uint64, error) {
+			if !startPlayback {
+				t.Error("active Skip was not marked for playback continuation")
+			}
+			return 0, errors.New("retained playback session unavailable")
+		}}
+	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(state.Revision)}
+	result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSkip)
+	if err != nil || result.Status != interactionStatusUnavailable || result.Revision == nil || *result.Revision != state.Revision+2 {
+		t.Fatalf("skip result=%+v err=%v, want unavailable after committed compensation pause", result, err)
+	}
+	if !store.snapshot.State.Paused || store.snapshot.Revision != *result.Revision || store.snapshot.State.Current == nil || store.snapshot.State.Current.Title != "Second" {
+		t.Fatalf("failed skip handoff left persisted state=%+v revision=%d, want paused at Second", store.snapshot.State, store.snapshot.Revision)
 	}
 }
 
@@ -201,9 +291,9 @@ func TestMusicInteractionsPreservesLivePlaybackAcrossQueueMetadataMutations(t *t
 		CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
 			return state, state.Revision, nil
 		},
-		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, committed music.State, revision uint64, liveResume bool) (uint64, error) {
+		OnPersistedSnapshot: func(_ context.Context, _, _, _ id.ID, committed music.State, revision uint64, startPlayback bool) (uint64, error) {
 			callbackState = committed
-			if liveResume {
+			if startPlayback {
 				t.Error("volume change was incorrectly marked as Resume")
 			}
 			return revision, nil

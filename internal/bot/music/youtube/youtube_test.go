@@ -67,6 +67,29 @@ func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsYoutubeTabPlaylistMetadataFromQualifiedYTDLP(t *testing.T) {
+	// This bounded metadata shape was returned by yt-dlp 2026.10.21 for a
+	// public two-item playlist. URLs and signed media data are intentionally omitted.
+	body := `{"_type":"playlist","extractor":"youtube:tab","extractor_key":"YoutubeTab","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"0VH1Lim8gL8","title":"Deep Learning State of the Art (2020)","uploader":"Lex Fridman","duration":5261,"availability":null},{"_type":"url","ie_key":"Youtube","id":"O5xeyoRL95U","title":"Deep Learning Basics: Introduction and Overview","uploader":"Lex Fridman","duration":4086,"availability":null}]}`
+	resolver := NonProductionMetadataResolver{
+		YTDLP: "/qualified/yt-dlp", Node: "/qualified/node",
+		runner: runnerFunc(func(_ context.Context, _ string, args []string, _ int) ([]byte, error) {
+			if got := args[len(args)-1]; got != "https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf" {
+				t.Fatalf("playlist URL passed to yt-dlp = %q", got)
+			}
+			return []byte(body), nil
+		}),
+	}
+	tracks, err := resolver.Resolve(context.Background(), "https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 2 || tracks[0].CanonicalID != "0VH1Lim8gL8" || tracks[0].Title != "Deep Learning State of the Art (2020)" ||
+		tracks[1].CanonicalID != "O5xeyoRL95U" || tracks[1].Title != "Deep Learning Basics: Introduction and Overview" {
+		t.Fatalf("resolved playlist entries = %#v, want the two ordered YouTube tracks", tracks)
+	}
+}
+
 func TestResolvedVideoCanonicalIDFitsDurableQueueAndPlaybackAdapter(t *testing.T) {
 	body := `{"_type":"video","extractor_key":"Youtube","id":"aqz-KE-bpKQ","title":"sample","duration":1}`
 	resolver := NonProductionMetadataResolver{
@@ -293,6 +316,7 @@ func TestResolveRejectsIncompleteOrNonYouTubeMetadata(t *testing.T) {
 		`{"_type":"playlist","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one"}]}`,
 		`{"_type":"playlist","playlist_count":1,"entries":[{"_type":"url","ie_key":"Generic","id":"aqz-KE-bpKQ","title":"bad"}]}`,
 		`{"_type":"playlist","extractor_key":"Generic","playlist_count":1,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one"}]}`,
+		`{"_type":"playlist","extractor_key":"YoutubeTab","playlist_count":1,"entries":[{"_type":"url","ie_key":"Generic","id":"aqz-KE-bpKQ","title":"bad"}]}`,
 		`{"_type":"playlist","playlist_count":1,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one"}]}`,
 		`{"_type":"playlist","extractor_key":"Youtube","playlist_count":1,"entries":[{"_type":"","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one"}]}`,
 	}

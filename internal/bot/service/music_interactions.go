@@ -65,7 +65,8 @@ type MusicInteractions struct {
 	// the system clock.
 	Now func() time.Time
 	// OnPersistedSnapshot applies the exact state returned by a successful CAS
-	// commit. The liveResume flag is true only for an explicit Resume operation.
+	// commit. startPlayback is true for an explicit Resume or for a Skip that
+	// advances an already-playing queue.
 	OnPersistedSnapshot func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error)
 }
 
@@ -284,10 +285,11 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{}, err
 	}
 	if h.OnPersistedSnapshot != nil {
-		appliedRevision, handoffErr := h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, op == protocol.OpMusicResume)
+		startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
+		appliedRevision, handoffErr := h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
 		if handoffErr != nil {
-			if op == protocol.OpMusicResume {
-				appliedRevision = h.pauseUnappliedResume(ctx, channel, saved.Revision, appliedRevision)
+			if startPlayback {
+				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
 			}
 			if appliedRevision == 0 {
 				appliedRevision = saved.Revision
@@ -314,7 +316,7 @@ func isSpotifyCatalogInput(input string) bool {
 	return host == "open.spotify.com" || host == "www.spotify.com"
 }
 
-func (h MusicInteractions) pauseUnappliedResume(ctx context.Context, channel id.ID, committedRevision, observedRevision uint64) uint64 {
+func (h MusicInteractions) pauseUnstartedPlayback(ctx context.Context, channel id.ID, committedRevision, observedRevision uint64) uint64 {
 	pausedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	current, err := h.Store.Load(pausedCtx, channel)

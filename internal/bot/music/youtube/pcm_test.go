@@ -28,6 +28,58 @@ func TestPCMStarterFailsClosedWithoutBubblewrap(t *testing.T) {
 	}
 }
 
+func TestSandboxTempDirUsesConfiguredTMPDIRWithPrivatePermissions(t *testing.T) {
+	parent := t.TempDir()
+	t.Setenv("TMPDIR", parent)
+	root, err := newSandboxTempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(root) != parent {
+		t.Fatalf("sandbox temp dir parent = %q, want configured TMPDIR %q", filepath.Dir(root), parent)
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("sandbox temp dir permissions = %04o, want 0700", info.Mode().Perm())
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox temp dir cleanup stat error = %v, want not-exist", err)
+	}
+}
+
+func TestSandboxTempDirUsesDefaultTempDirectoryWhenTMPDIRIsUnset(t *testing.T) {
+	t.Setenv("TMPDIR", "")
+	defaultDir := os.TempDir()
+	probe, err := os.CreateTemp(defaultDir, "dilla-yt-probe-")
+	if err != nil {
+		t.Skipf("default temp directory is not writable in this environment: %v", err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := newSandboxTempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(root) != defaultDir {
+		t.Fatalf("sandbox temp dir parent = %q, want default temp dir %q", filepath.Dir(root), defaultDir)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPCMStarterExecutableResolvesBareNameAndRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	target := writeScript(t, dir, "ffmpeg-test", `exit 0`)

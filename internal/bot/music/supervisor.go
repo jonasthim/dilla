@@ -124,9 +124,10 @@ func (s *Supervisor) Apply(ctx context.Context, expected uint64, op Operation) (
 
 // ApplyPersistedSnapshot adopts a revision committed by another authorized
 // component. It never writes that mutation again. startPlayback must be true
-// only for a live, explicit Resume interaction; restored or metadata-only
-// snapshots cannot start audio. A failed start is durably paused at a new CAS
-// revision so the persisted queue cannot claim playback is active.
+// only for a live, explicit Resume or a Skip from an already-playing queue;
+// restored or metadata-only snapshots cannot start audio. A failed start is
+// durably paused at a new CAS revision so the persisted queue cannot claim
+// playback is active.
 func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State, expected uint64, startPlayback bool) (uint64, error) {
 	if ctx == nil {
 		return 0, errors.New("nil persisted music snapshot context")

@@ -83,12 +83,8 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (*isolatedPCM, error) {
-	root, err := os.MkdirTemp("/tmp", "dilla-yt-")
+	root, err := newSandboxTempDir()
 	if err != nil {
-		return nil, ErrSandboxUnavailable
-	}
-	if err := os.Chmod(root, 0700); err != nil { // #nosec G302 -- temporary directory is owner-only and requires execute permission.
-		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
 	socketPath := filepath.Join(root, "e.sock")
@@ -130,6 +126,18 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = process.Close()
 		return nil, ErrSandboxUnavailable
 	}
+}
+
+func newSandboxTempDir() (string, error) {
+	root, err := os.MkdirTemp("", "dilla-yt-")
+	if err != nil {
+		return "", ErrSandboxUnavailable
+	}
+	if err := os.Chmod(root, 0700); err != nil { // #nosec G302 -- the socket directory is owner-only.
+		_ = os.RemoveAll(root)
+		return "", ErrSandboxUnavailable
+	}
+	return root, nil
 }
 
 func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs []string, socketPath string) (*exec.Cmd, io.ReadCloser, error) {
