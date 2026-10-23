@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   FIREFOX_FAVICON_LINE, addServerVia, completeSignUp, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
-  openChannel, reactionChip, rowAction, signUp, test,
+  openChannel, reactionChip, rowAction, signIn, signUp, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
@@ -11,6 +11,56 @@ const HOST: HostConfig = { port: 8491, control: 8492, webRoot: 'packages/web/dis
 const ROLE_PANEL_PORT = Number(process.env.DILLA_E2E_ROLE_PANEL_PORT ?? HOST.port);
 const ROLE_PANEL_HOST: HostConfig = { ...HOST, port: ROLE_PANEL_PORT, control: ROLE_PANEL_PORT + 1, advanceClockWithWall: true };
 const SERVER = 'Runtime Bot Acceptance';
+const RECOVERY_SERVER = 'Bot Response Recovery';
+
+async function traceCoreWorker(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => {
+    const root = window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
+    root.__dillaWorkerTrace = { calls: [], returns: [] };
+    const OriginalWorker = window.Worker;
+    window.Worker = new Proxy(OriginalWorker, {
+      construct(target, args, newTarget) {
+        const worker = Reflect.construct(target, args, newTarget) as Worker;
+        const post = worker.postMessage.bind(worker);
+        worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
+          root.__dillaWorkerTrace?.calls.push(message);
+          post(message, transfer as Transferable[]);
+        };
+        worker.addEventListener('message', event => root.__dillaWorkerTrace?.returns.push(event.data));
+        return worker;
+      },
+    }) as typeof Worker;
+  });
+}
+
+async function lastWorkerCommandOutcome(page: import('@playwright/test').Page, commandName: string): Promise<{
+  requestId: string | null; state: 'waiting' | 'accepted' | 'pending' | 'rejected' | 'unknown' | 'refused'; code: string | null; detail: string | null;
+}> {
+  return page.evaluate(name => {
+    const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } }).__dillaWorkerTrace;
+    const calls = trace?.calls.map(value => value as { id?: number; command?: { m?: string; requestId?: string } }).reverse() ?? [];
+    const call = calls.find(value => value.command?.m === name);
+    if (call === undefined) return { requestId: null, state: 'waiting', code: null, detail: null };
+    const returned = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; error?: { code?: string; detail?: string }; value?: { status?: string } })
+      .find(value => value.t === 'ret' && value.id === call.id);
+    if (returned === undefined) return { requestId: call.command?.requestId ?? null, state: 'waiting', code: null, detail: null };
+    if (returned.ok === false) {
+      const safeCodes = new Set(['E_CORE_STATE', 'E_SYNC_STOPPED', 'E_BAD_INPUT', 'E_FORBIDDEN', 'E_UNAVAILABLE', 'E_INTERNAL']);
+      const detailText = returned.error?.detail ?? '';
+      const safeDetails: Record<string, string> = {
+        'no active interaction group for this community': 'missing_interaction_group',
+        'multiple active interaction groups make the Bot target ambiguous': 'ambiguous_interaction_group',
+        'unknown community': 'unknown_community',
+      };
+      return { requestId: call.command?.requestId ?? null, state: 'refused',
+        code: safeCodes.has(returned.error?.code ?? '') ? returned.error?.code ?? null : 'other',
+        detail: safeDetails[detailText] ?? 'other' };
+    }
+    const status = returned.value?.status;
+    const state = status === 'accepted' || status === 'pending' || status === 'rejected' || status === 'unknown' ? status : 'unknown';
+    return { requestId: call.command?.requestId ?? null, state, code: null, detail: null };
+  }, commandName);
+}
 
 test.use({ baseURL: `http://127.0.0.1:${ROLE_PANEL_PORT}` });
 
@@ -69,6 +119,112 @@ test('a bot enabled through server settings reaches ready through the native run
       return refreshed.getByRole('status').innerText();
     }, { timeout: 90_000, intervals: [1_000, 2_000, 3_000] }).toBe(copy('admin.bot.status.ready'));
   } finally {
+    await host?.stop();
+  }
+});
+
+test('device 1 recovers its exact encrypted Bot response after Bot and browser restart; device 2 uses its own group', async ({ page, instanceName, relaunch, browser, guard }) => {
+  let host: StartedHost | null = null;
+  let secondContext: import('@playwright/test').BrowserContext | null = null;
+  let secondPage: import('@playwright/test').Page | null = null;
+  try {
+    await traceCoreWorker(page);
+    host = await startTestHost(HOST);
+    const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
+    await addServerVia(page, 'create');
+    const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+    await create.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(RECOVERY_SERVER);
+    await page.keyboard.press('Enter');
+
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.warnings'), exact: true }).check();
+    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
+    await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
+    await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
+    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(settings).toBeHidden();
+
+    // Device 1 submits a real encrypted request while the Bot is offline. The pending response
+    // must remain available in this device's native journal after both processes restart.
+    await host.stopBotRuntime();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    const loadAutomatic = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
+    await loadAutomatic.click();
+    await expect(settings.getByText(copy('admin.bot.moderationLog.waiting'), { exact: true })).toBeVisible();
+    await expect.poll(async () => page.evaluate(() => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
+      const call = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string } }).reverse()
+        .find(value => value.command?.m === 'listModerationCases');
+      return call?.command?.requestId ?? null;
+    })).toMatch(/^[0-9a-f]{32}$/u);
+    const requestOneId = await page.evaluate(() => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
+      const call = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string } }).reverse()
+        .find(value => value.command?.m === 'listModerationCases');
+      return call?.command?.requestId ?? null;
+    });
+    expect(requestOneId).toMatch(/^[0-9a-f]{32}$/u);
+
+    const reopened = await relaunch();
+    let deviceOne = reopened.page;
+    await traceCoreWorker(deviceOne);
+    await deviceOne.goto(host.url);
+    await expect(deviceOne.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+      .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
+    await host.startBotRuntimeNow();
+    await deviceOne.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    settings = deviceOne.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+    await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
+    await expect.poll(async () => deviceOne.evaluate(requestId => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { returns: unknown[] } }).__dillaWorkerTrace;
+      return trace?.returns.some(value => {
+        const result = value as { t?: string; value?: { responses?: { requestId?: string }[] } };
+        return result.t === 'ret' && result.value?.responses?.some(response => response.requestId === requestId) === true;
+      }) ?? false;
+    }, requestOneId), { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toBe(true);
+
+    // Device 2 enrolls from the same recovery key, gets its own per-device interaction group,
+    // and proves that its own encrypted Bot request/response path is usable. This is not a claim
+    // that device 2 receives device 1's request ID or response group.
+    secondContext = await browser.newContext({ baseURL: host.url });
+    await guard.attach(secondContext);
+    secondPage = await secondContext.newPage();
+    await traceCoreWorker(secondPage);
+    await signIn(secondPage, owner, instanceName);
+    await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
+      .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    const secondSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+      .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
+    await secondSettings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+    await expect.poll(() => lastWorkerCommandOutcome(secondPage!, 'listModerationCases'),
+      { timeout: 20_000, intervals: [250, 500, 1_000] }).toEqual({
+      requestId: expect.stringMatching(/^[0-9a-f]{32}$/u), state: 'accepted', code: null, detail: null,
+    });
+    const secondRequestId = (await lastWorkerCommandOutcome(secondPage, 'listModerationCases')).requestId;
+    expect(secondRequestId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(secondRequestId).not.toBe(requestOneId);
+    await expect.poll(async () => secondPage!.evaluate(requestId => {
+      const trace = (window as unknown as { __dillaWorkerTrace?: { returns: unknown[] } }).__dillaWorkerTrace;
+      return trace?.returns.some(value => {
+        const result = value as { t?: string; value?: { responses?: { requestId?: string }[] } };
+        return result.t === 'ret' && result.value?.responses?.some(response => response.requestId === requestId) === true;
+      }) ?? false;
+    }, secondRequestId), { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toBe(true);
+  } finally {
+    await secondContext?.close();
     await host?.stop();
   }
 });

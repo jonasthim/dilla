@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
@@ -24,6 +24,18 @@ const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${Strin
 
 function ensureShippingCoreWasm(): void {
   const artifact = join(REPO_ROOT, 'packages', 'core-wasm', 'pkg', 'dilla_core_wasm_bg.wasm');
+  if (process.env.CI === 'true') {
+    // Chromium consumes the web-build artifact. Its checkout timestamps are newer than the
+    // downloaded artifact, so mtime cannot establish staleness here. Validate the module shape
+    // and use the artifact produced by that upstream build instead of requiring wasm-pack again.
+    if (!existsSync(artifact)) throw new Error('CI requires the verified web-build shipping core WASM artifact');
+    const bytes = readFileSync(artifact);
+    const wasmHeader = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    if (bytes.length < wasmHeader.length || bytes.length > 3_500_000 || wasmHeader.some((byte, index) => bytes[index] !== byte)) {
+      throw new Error('CI web-build shipping core WASM artifact failed validation');
+    }
+    return;
+  }
   const inputs = [join(REPO_ROOT, 'Cargo.toml'), join(REPO_ROOT, 'Cargo.lock')];
   for (const root of ['core/dilla-core', 'core/dilla-core-wasm']) {
     const visit = (dir: string): void => {
@@ -100,7 +112,8 @@ function stop(child: ChildProcess): Promise<void> {
 
 /** A started test host: its public origin, its control origin, the bootstrap invite it printed, and its stop. */
 export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string;
-  restartBotRuntime(): Promise<void>; snapshotServer(name: string): Promise<void>; restoreServer(name: string): Promise<void>;
+  stopBotRuntime(): Promise<void>; startBotRuntimeNow(): Promise<void>; restartBotRuntime(): Promise<void>;
+  snapshotServer(name: string): Promise<void>; restoreServer(name: string): Promise<void>;
   snapshotBotRuntime(name: string): Promise<void>; restoreBotRuntime(name: string): Promise<void>;
   snapshotPair(name: string): Promise<void>; restorePair(name: string): Promise<void>; stop(): Promise<void> }
 
@@ -166,6 +179,14 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       bot = await startBotRuntime(url, dataDir, c.port,
         c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
     };
+    const stopBotRuntime = async (): Promise<void> => {
+      if (c.botRuntime !== true) throw new Error('test host has no Bot runtime');
+      if (bot !== null) await stopBot();
+    };
+    const startBotRuntimeNow = async (): Promise<void> => {
+      if (c.botRuntime !== true) throw new Error('test host has no Bot runtime');
+      if (bot === null) await startBot();
+    };
     const restartBotRuntime = async (): Promise<void> => { await stopBot(); await startBot(); };
     const snapshotServer = async (name: string): Promise<void> => postControl(c.control, '/debug/snapshot', { name });
     const restoreServer = async (name: string): Promise<void> => postControl(c.control, '/debug/restore', { name });
@@ -216,7 +237,8 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
     };
     return { url, control: `http://127.0.0.1:${c.control}`, invite,
       ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}),
-      restartBotRuntime, snapshotServer, restoreServer, snapshotBotRuntime, restoreBotRuntime, snapshotPair, restorePair, stop: teardown };
+      stopBotRuntime, startBotRuntimeNow, restartBotRuntime, snapshotServer, restoreServer, snapshotBotRuntime, restoreBotRuntime,
+      snapshotPair, restorePair, stop: teardown };
   } catch (e) { await teardown(); throw e; }
 }
 
