@@ -490,6 +490,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if result.Session == nil {
 				ensureErr = errors.New("identity lifecycle returned no scoped device session")
 			} else {
+				var healed int
+				healed, ensureErr = healRestoredInteractionGroups(ctx, nativeClient, result.Session)
+				if ensureErr == nil && healed > 0 {
+					logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
+				}
+			}
+			if ensureErr == nil {
 				var membership *service.MembershipReconciler
 				membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 				if ensureErr == nil {
