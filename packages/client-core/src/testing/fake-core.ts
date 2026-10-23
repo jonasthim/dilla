@@ -395,6 +395,7 @@ export class FakeCore implements CorePort {
     throw new CoreError('E_CORE_STATE', 'not modelled');
   }
   groups(): GroupInfo[] { return this.notModelled('groups'); }
+  groupHealSnapshot(groupId: Id): Uint8Array { return this.notModelled('groupHealSnapshot', groupId); }
   groupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array { return this.notModelled('groupCreate', groupId, communityId, channelId, policyVersion, externalSenderPub); }
   groupRegistered(groupId: Id, nextSeq: bigint): void { return this.notModelled('groupRegistered', groupId, nextSeq); }
   groupDiscard(groupId: Id): void { return this.notModelled('groupDiscard', groupId); }

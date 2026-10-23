@@ -15,6 +15,7 @@ import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { recoverModerationRemovals } from './removals';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
+  | 'getGroupHealState' | 'postGroupHeal'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
   | 'getInteractionAdmissionContext'
   | 'getDeviceList' | 'getDeviceListHistory' | 'getModerationRemovals'>;
@@ -82,6 +83,8 @@ export class SyncEngine implements SyncInternals {
   private readonly opened = new Map<string, ExpectedGroup>();
   private ready: ReadyInfo | null = null;
   private readonly held = new Map<string, Frame[]>();
+  /** Active groups stay unable to drain queued sends until their current ready's heal check succeeds. */
+  private readonly healBlocked = new Set<string>();
   private readonly volunteer = new Map<string, number>();
   private readonly cursorTimer = new Map<string, number>();
   private readonly timers = new Set<number>();
@@ -156,12 +159,26 @@ export class SyncEngine implements SyncInternals {
     if (this.isStopped) return;
     if (e.type === 'ready') {
       this.ready = e.info; this.quiet.clear(); this.resyncTried.clear();
+      this.healBlocked.clear();
+      const readyGroups = this.deps.core.groups();
+      for (const g of readyGroups) if (g.state === 2) this.healBlocked.add(toHex(g.groupId));
       for (const g of e.info.groups) if (g.proposalsOutstanding > 0 && this.row(g.groupId)?.state === 2) this.armVolunteer(g.groupId);
       void this.queues.run('w', async () => {
         try { await welcomeStep(this); } catch { /* later ready retries */ }
         if (this.isStopped) return;
-        for (const g of this.deps.core.groups()) {
-          if (g.state === 2) { this.requestCatchUp(g.groupId); this.requestDrain(g.groupId); }
+        for (const g of readyGroups) {
+          if (g.state === 2) {
+            try {
+              await this.ensureGroupHealed(g, e.info.generation);
+              this.healBlocked.delete(toHex(g.groupId));
+              if (!this.isStopped && this.row(g.groupId)?.state === 2) {
+                this.requestCatchUp(g.groupId); this.requestDrain(g.groupId);
+              }
+            } catch (err) {
+              if (err instanceof DillaHttpError && err.status === 404 && !this.isStopped) this.requestCatchUp(g.groupId);
+              // A 404 catch-up can still identify a removed member; every other failed repair holds this group until next ready.
+            }
+          }
           else if (g.state === 3 && !this.resyncTried.has(toHex(g.groupId))) {
             this.queues.coalesce(key(g.groupId), 'resync', async () => { await this.resync(g.groupId); });
           }
@@ -184,6 +201,21 @@ export class SyncEngine implements SyncInternals {
       void this.queues.run(key(g), () => this.deletedJob(f)).catch(() => undefined);
     } else if (f.op === Op.welcome) {
       void this.queues.run('w', () => welcomeFrame(this, f)).catch(() => undefined);
+    }
+  }
+  private async ensureGroupHealed(group: GroupInfo, generation: bigint): Promise<void> {
+    const status = await this.deps.routes.getGroupHealState(group.groupId);
+    if (status.generation !== generation) throw new Error('E_SYNC_HEAL_GENERATION');
+    if (!status.needsHeal) return;
+    const snapshot = this.deps.core.groupHealSnapshot(group.groupId);
+    const parts = arr(decode(snapshot), 3);
+    bin(parts[0]); arr(parts[1]); bin(parts[2]);
+    const result = await this.deps.routes.postGroupHeal(group.groupId, snapshot);
+    const current = this.row(group.groupId);
+    if (current?.state !== 2 || result.epoch !== current.epoch || result.nextSeq !== current.nextSeq) throw new Error('E_SYNC_HEAL_MISMATCH');
+    const confirmed = await this.deps.routes.getGroupHealState(group.groupId);
+    if (confirmed.generation !== generation || confirmed.needsHeal || confirmed.epoch !== result.epoch || confirmed.nextSeq !== result.nextSeq) {
+      throw new Error('E_SYNC_HEAL_MISMATCH');
     }
   }
   private async frameJob(f: Frame): Promise<void> {
@@ -331,7 +363,8 @@ export class SyncEngine implements SyncInternals {
     }
   }
   requestCatchUp(g: Id): void { if (!this.isStopped) this.queues.coalesce(key(g), 'catch-up', async () => { await this.catchUpNow(g, 'catch-up'); }); }
-  requestDrain(g: Id): void { if (!this.isStopped) this.queues.coalesce(key(g), 'drain', () => drainOne(this, g)); }
+  requestDrain(g: Id): void { if (!this.isStopped && !this.healBlocked.has(toHex(g))) this.queues.coalesce(key(g), 'drain', () => drainOne(this, g)); }
+  canSendInGroup(g: Id): boolean { return !this.healBlocked.has(toHex(g)); }
   requestCommit(g: Id, attempt: number): void {
     if (!this.isStopped) this.queues.coalesce(key(g), 'commit', async () => { await this.commitNow(g, attempt); });
   }
@@ -428,7 +461,9 @@ export class SyncEngine implements SyncInternals {
       this.reportMembership(g, 'not-member');
       return false;
     }
-    return resyncGroup(this, g, false);
+    const resynced = await resyncGroup(this, g, false);
+    if (resynced) this.healBlocked.delete(toHex(g));
+    return resynced;
   }
   /**
    * The account joined the community again (web3.4: a kick, a lifted ban or a leave, then a join in the same tab). A
@@ -449,7 +484,9 @@ export class SyncEngine implements SyncInternals {
       const g = row.groupId;
       this.resyncTried.delete(toHex(g));
       if (!lost(g)) continue;
-      this.queues.coalesce(key(g), 'resync', async () => { if (lost(g)) await resyncGroup(this, g, true); });
+      this.queues.coalesce(key(g), 'resync', async () => {
+        if (lost(g) && await resyncGroup(this, g, true)) this.healBlocked.delete(toHex(g));
+      });
     }
   }
   /** Runs a job on the group's lane, serialised with every apply, catch-up and commit of that group (review M7). */

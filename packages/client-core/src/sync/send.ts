@@ -115,7 +115,7 @@ function foldBesideWait(s: SyncInternals, rows: readonly OutboxRow[]): OutboxRow
 }
 export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   const hex = toHex(g);
-  if (s.stopped() || s.echoWait.has(hex) || s.row(g)?.state !== 2) return;
+  if (s.stopped() || !s.canSendInGroup(g) || s.echoWait.has(hex) || s.row(g)?.state !== 2) return;
   const rows = inQueueOrder(s, s.deps.core.outbox(g));
   const inFlight = rows.find((x) => x.state === 1);
   if (inFlight !== undefined) { await afterLostResponse(s, g, inFlight.msgId); return; }

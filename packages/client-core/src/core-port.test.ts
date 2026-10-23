@@ -434,6 +434,12 @@ describe('wrapCore errors', () => {
 const DSK = new Uint8Array(32).fill(0xd5);
 
 describe('wrapCore web-2a', () => {
+  it('passes the group ID bytes to the deterministic heal snapshot export', () => {
+    const snapshot = encode([new Uint8Array([1]), [], new Uint8Array([2])]);
+    const s = stub({ group_heal_snapshot: (...args) => { expect(args).toEqual([G]); return snapshot; } });
+    expect(s.port.groupHealSnapshot(G)).toBe(snapshot);
+    expect(s.calls).toEqual([{ method: 'group_heal_snapshot', args: [G] }]);
+  });
   it('reads phase 3 in identity', () => {
     expect(stub({ identity: () => encode([3, INST, null, DEV, '', 0]) }).port.identity())
       .toEqual({ phase: 3, instanceId: INST, userId: null, deviceId: DEV, username: '', listPublished: false });

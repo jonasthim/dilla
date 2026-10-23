@@ -144,6 +144,8 @@ export interface CorePort {
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
+  /** Deterministic CBOR [group_info_bytes, tail_array, ratchet_tree_bytes] for repairing server history. */
+  groupHealSnapshot(groupId: Id): Uint8Array;
   groupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array;
   groupRegistered(groupId: Id, nextSeq: bigint): void;
   groupDiscard(groupId: Id): void;
@@ -306,6 +308,7 @@ export interface CoreHandle {
       key_packages(count: number, last_resort: boolean): Uint8Array;
       sealed_objects(): Uint8Array;
       groups(): Uint8Array;
+      group_heal_snapshot?(group_id: Uint8Array): Uint8Array;
       group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
       group_registered(group_id: Uint8Array, next_seq: bigint): void;
       group_discard(group_id: Uint8Array): void;
@@ -623,6 +626,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
     sessionClear: () => call(() => handle.session_clear()),
     keyPackages: (count, lastResort) => call(() => handle.key_packages(count, lastResort)),
     groups: () => call(() => decoded('groups', handle.groups(), (v) => arr(v).map(readGroup))),
+    groupHealSnapshot: (groupId) => call(() => {
+      if (handle.group_heal_snapshot === undefined) throw new CoreError('E_CORE_STATE', 'group healing is not available in this WASM build');
+      return handle.group_heal_snapshot(groupId);
+    }),
     groupCreate: (groupId, communityId, channelId, policyVersion, externalSenderPub) => call(() => handle.group_create(groupId, communityId, channelId, policyVersion, externalSenderPub)),
     groupRegistered: (groupId, nextSeq) => call(() => handle.group_registered(groupId, nextSeq)),
     groupDiscard: (groupId) => call(() => handle.group_discard(groupId)),

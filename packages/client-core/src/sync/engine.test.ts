@@ -169,6 +169,85 @@ describe('a failed Add candidate (security F2, controller ruling 3)', () => {
 });
 
 describe('catch-up on every ready (rule 2)', () => {
+  it('allows a newly registered group to send when opened after the ready sweep', async () => {
+    const d = device(ds, clock, ME);
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    const opened = await d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: null });
+    expect(opened.state).toBe(2);
+    ds.join(opened.groupId, PEER.device);
+    d.engine.send(opened.groupId, 'created after ready');
+    await settle();
+    expect(ds.view(opened.groupId).messages.map((m) => m.body)).toEqual(['created after ready']);
+  });
+
+  it('repairs only when requested, verifies the repair, then catches up and drains', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.healNeeded.set(toHex(g), true);
+    ds.resetCalls();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    const routes = ds.calls.filter((c) => c.group === toHex(g)).map((c) => c.route);
+    const before = routes.indexOf('getGroupHealState');
+    const post = routes.indexOf('postGroupHeal');
+    const verify = routes.indexOf('getGroupHealState', before + 1);
+    const catchup = routes.indexOf('getHandshakes');
+    expect(before).toBeGreaterThanOrEqual(0);
+    expect(post).toBeGreaterThan(before);
+    expect(verify).toBeGreaterThan(post);
+    expect(catchup).toBeGreaterThan(verify);
+    expect(ds.healNeeded.get(toHex(g))).toBe(false);
+    expect(d.core.calls.filter((c) => c.m === 'groupHealSnapshot' && c.g === toHex(g))).toHaveLength(1);
+  });
+  it('holds an already queued send until the ready heal check succeeds', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    const lane = deferred();
+    const heal = deferred();
+    const blockedLane = d.engine.runOnGroup(g, () => lane.promise);
+    d.engine.send(g, 'queued through restore');
+    ds.healNeeded.set(toHex(g), true);
+    ds.inject('getGroupHealState', { gate: heal.promise });
+    ds.resetCalls();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    lane.resolve();
+    await blockedLane;
+    await settle();
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual([]);
+    heal.resolve();
+    await settle();
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual(['queued through restore']);
+    expect(ds.calls.findIndex((c) => c.route === 'postGroupHeal' && c.group === toHex(g)))
+      .toBeLessThan(ds.calls.findIndex((c) => c.route === 'postMessage' && c.group === toHex(g)));
+  });
+  it('keeps one failed repair from blocking another group on the same ready', async () => {
+    const d = device(ds, clock, ME);
+    const groupA = await openRegistered(ds, d);
+    const groupB = await openRegistered(ds, d, idOf(0x28, 1));
+    const [failed, healthy] = [groupA, groupB].sort((a, b) => toHex(a).localeCompare(toHex(b)));
+    ds.healNeeded.set(toHex(failed), true);
+    ds.healNeeded.set(toHex(healthy), true);
+    ds.inject('postGroupHeal', { fail: new Error('repair refused') });
+    ds.resetCalls();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(ds.calls.some((c) => c.route === 'getHandshakes' && c.group === toHex(failed))).toBe(false);
+    expect(ds.calls.some((c) => c.route === 'getHandshakes' && c.group === toHex(healthy))).toBe(true);
+  });
+  it('does not catch up a group when the heal response disagrees with its local snapshot', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.healNeeded.set(toHex(g), true);
+    d.engine.deps.routes.postGroupHeal = async () => ({ epoch: 99n, nextSeq: 99n });
+    ds.resetCalls();
+    d.gateway.ready(readyInfo(ME));
+    await settle();
+    expect(ds.calls.some((c) => c.route === 'getHandshakes' && c.group === toHex(g))).toBe(false);
+    expect(ds.calls.some((c) => c.route === 'getMessages' && c.group === toHex(g))).toBe(false);
+  });
+
   it('reports a persisted trust quarantine even if groupApply then refuses the batch', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

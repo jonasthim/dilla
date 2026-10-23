@@ -1078,6 +1078,12 @@ export class ModelCore implements CorePort {
       .sort((a, b) => (toHex(a.groupId) < toHex(b.groupId) ? -1 : 1))
       .map((g) => this.info(g));
   }
+  groupHealSnapshot(groupId: Id): Uint8Array {
+    this.log('groupHealSnapshot', groupId);
+    const g = this.must(groupId);
+    if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    return encode([wire.info(g.groupId, g.epoch), [], wire.tree(g.groupId, g.epoch)]);
+  }
   groupRow(groupId: Id): GroupInfo | null {
     const g = this.gs.get(toHex(groupId));
     return g === undefined ? null : this.info(g);
@@ -2219,6 +2225,7 @@ export class ModelCore implements CorePort {
 // ---------------------------------------------------------------------------------------------
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
+  | 'getGroupHealState' | 'postGroupHeal'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
   | 'getInteractionAdmissionContext'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
@@ -2356,6 +2363,7 @@ export class ModelDs {
   };
 
   readonly calls: DsCall[] = [];
+  readonly healNeeded = new Map<string, boolean>();
   /** `${device hex}/${group hex}` -> the last acknowledged [last_seq, last_epoch]. */
   readonly cursors = new Map<string, readonly [bigint, bigint]>();
   /** Device hexes whose external commits are refused with 403 E_FORBIDDEN. */
@@ -2862,6 +2870,19 @@ export class ModelDs {
           if (this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
           return encode([g.epoch, wire.tree(g.id, g.epoch), new Uint8Array(32)]);
         }),
+      getGroupHealState: (id) => this.call(d, 'getGroupHealState', id, null, () => {
+        const g = this.must(id);
+        if (!g.members.has(d) || this.aclDeny.has(d)) throw httpError(404, 'E_NOT_FOUND');
+        return { epoch: g.epoch, nextSeq: g.next, generation: 1n, needFromSeq: g.next, needsHeal: this.healNeeded.get(toHex(id)) ?? false };
+      }),
+      postGroupHeal: (id, snapshot) => this.call(d, 'postGroupHeal', id, null, () => {
+        const g = this.must(id);
+        if (!g.members.has(d)) throw httpError(404, 'E_NOT_FOUND');
+        const a = arr(decode(snapshot), 3);
+        if (!(a[0] instanceof Uint8Array) || !Array.isArray(a[1]) || !(a[2] instanceof Uint8Array)) throw httpError(400, 'E_INVALID_REQUEST');
+        this.healNeeded.set(toHex(id), false);
+        return { epoch: g.epoch, nextSeq: g.next };
+      }),
       getHandshakes: (id, from, limit) => this.call(d, 'getHandshakes', id, from, () => this.page(d, id, from, limit, true)),
       getMessages: (id, from, limit) =>
         this.call(d, 'getMessages', id, from, () => {

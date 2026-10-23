@@ -148,6 +148,7 @@ export interface Ceremony { ceremonyId: Uint8Array; options: string }
 export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
 export interface PasskeyLogin { assertion: string; needs: 0 | 1 }
 export interface StepUpToken { token: string; expires: bigint }
+export interface GroupHealState { epoch: bigint; nextSeq: bigint; generation: bigint; needFromSeq: bigint; needsHeal: boolean }
 
 /** E8 (internal/api/gifs.go): the query, offset and id bounds, and the size caps of a preview and a full GIF. */
 export const GIF_QUERY_MAX_BYTES = 100;
@@ -884,6 +885,20 @@ export class Routes {
   }
   async getGroupTree(groupId: Uint8Array): Promise<Uint8Array> {
     return this.body('GET', `/v1/groups/${id('groupId', groupId)}/tree`, 'read', true);
+  }
+  /** GET /v1/groups/{id}/heal-state: member-scoped server cursor and whether restored history needs repair. */
+  async getGroupHealState(groupId: Uint8Array): Promise<GroupHealState> {
+    const a = arr(decode(await this.body('GET', `/v1/groups/${id('groupId', groupId)}/heal-state`, 'read', true)));
+    if (a.length !== 5) throw new CborError('E_CBOR_SHAPE', 'group heal state has five elements');
+    const needsHeal = u53(a[4]);
+    if (needsHeal !== 0 && needsHeal !== 1) throw new CborError('E_CBOR_SHAPE', 'needs_heal is 0 or 1');
+    return { epoch: u64(a[0]), nextSeq: u64(a[1]), generation: u64(a[2]), needFromSeq: u64(a[3]), needsHeal: needsHeal === 1 };
+  }
+  /** POST /v1/groups/{id}/heal: sends the core's CBOR [group_info, tail, ratchet_tree] snapshot. */
+  async postGroupHeal(groupId: Uint8Array, snapshot: Uint8Array): Promise<{ epoch: bigint; nextSeq: bigint }> {
+    const a = arr(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/heal`, 'write', false, { body: snapshot })));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'group heal result has two elements');
+    return { epoch: u64(a[0]), nextSeq: u64(a[1]) };
   }
   /** GET /v1/groups/{id}/interaction-admission-context: preserve the signed payload for core verification. */
   async getInteractionAdmissionContext(groupId: Uint8Array, signal?: AbortSignal): Promise<InteractionAdmissionContextProof> {

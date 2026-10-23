@@ -375,6 +375,16 @@ const CASES: Case[] = [
     reply: () => bytesReply(200, INFO), expected: INFO,
   },
   {
+    name: 'getGroupHealState decodes the member status', call: (r) => r.getGroupHealState(GROUP),
+    method: 'GET', path: `/v1/groups/${hex(GROUP)}/heal-state`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [3, 14, 9, 4, 1]), expected: { epoch: 3n, nextSeq: 14n, generation: 9n, needFromSeq: 4n, needsHeal: true },
+  },
+  {
+    name: 'postGroupHeal submits snapshot and reads status', call: async (r) => { const result = await r.postGroupHeal(GROUP, BODY); return result; },
+    method: 'POST', path: `/v1/groups/${hex(GROUP)}/heal`, bucket: 'write', idempotent: false, auth: true, sent: BODY,
+    reply: () => cborReply(200, [3, 14]), expected: { epoch: 3n, nextSeq: 14n },
+  },
+  {
     name: 'getGroupTree returns the body unchanged', call: (r) => r.getGroupTree(GROUP),
     method: 'GET', path: `/v1/groups/${hex(GROUP)}/tree`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => bytesReply(200, TREE_BODY), expected: TREE_BODY,
