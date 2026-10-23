@@ -339,15 +339,28 @@ func verifyRolePanelBotSend(ctx context.Context, tx store.Repository, installati
 	if sendGroup == nil {
 		return deny()
 	}
+	// A group may close concurrently on PostgreSQL. Take the standard group
+	// lock after the community lock and re-read state before accepting the
+	// receipt, so registration cannot race the close transaction.
+	if err := tx.LockGroup(ctx, operation.GroupID); err != nil {
+		return err
+	}
+	lockedGroup, err := tx.GetGroup(ctx, operation.GroupID)
+	if err != nil {
+		return err
+	}
+	if lockedGroup.Kind != 0 || lockedGroup.CommunityID == nil || *lockedGroup.CommunityID != *channel.CommunityID || lockedGroup.TargetID != channel.ID || lockedGroup.ClosedAt != nil {
+		return deny()
+	}
 	attempt, err := sends.GetBotSendAttempt(ctx, installation.ID, req.RequestID, *operation.AcceptedAttempt)
 	if err != nil || attempt.InstallationID != installation.ID || attempt.OperationID != req.RequestID || attempt.AttemptID != *operation.AcceptedAttempt || attempt.Outcome != uint8(store.BotSendAttemptAccepted) || attempt.Class != 0 {
 		return deny()
 	}
 	receipt, err := botprotocol.DecodeReceipt(attempt.Receipt)
-	if err != nil || receipt.OperationID != req.RequestID || receipt.AttemptID != attempt.AttemptID || receipt.CommunityID != *channel.CommunityID || receipt.GroupID != sendGroup.GroupID || receipt.ExpectedGeneration != attempt.Generation || receipt.Epoch != attempt.Epoch || receipt.Class != uint64(attempt.Class) || receipt.Class != 0 || receipt.Outcome != botprotocol.ReceiptAccepted || receipt.SendResponse == nil || receipt.SendResponse.Sequence != req.MessageSeq || !bytes.Equal(receipt.CiphertextHash, attempt.CiphertextSHA256) || !sameOptionalID(receipt.PredecessorAttemptID, attempt.PredecessorID) {
+	if err != nil || receipt.OperationID != req.RequestID || receipt.AttemptID != attempt.AttemptID || receipt.CommunityID != *channel.CommunityID || receipt.GroupID != lockedGroup.GroupID || receipt.ExpectedGeneration != attempt.Generation || receipt.Epoch != attempt.Epoch || receipt.Class != uint64(attempt.Class) || receipt.Class != 0 || receipt.Outcome != botprotocol.ReceiptAccepted || receipt.SendResponse == nil || receipt.SendResponse.Sequence != req.MessageSeq || !bytes.Equal(receipt.CiphertextHash, attempt.CiphertextSHA256) || !sameOptionalID(receipt.PredecessorAttemptID, attempt.PredecessorID) {
 		return deny()
 	}
-	if message, err := tx.GetAppMessage(ctx, sendGroup.GroupID, req.MessageSeq); err == nil {
+	if message, err := tx.GetAppMessage(ctx, lockedGroup.GroupID, req.MessageSeq); err == nil {
 		if message.UploaderDevice != *installation.DeviceID || message.DeletedAt != nil || (message.Class != nil && *message.Class != 0) {
 			return deny()
 		}

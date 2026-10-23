@@ -266,6 +266,18 @@ func TestRolePanelRegistrationRejectsHumanAuthoredLookalikeMessage(t *testing.T)
 	if err := e.Repo.AddReactionRoleGrant(t.Context(), store.ReactionRoleGrant{CommunityID: cid, UserID: owner, RoleID: role, ChannelID: channel, MessageSeq: 9, Reaction: "✅"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := e.Repo.Tx(t.Context(), func(tx store.Repository) error {
+		if err := tx.LockGroup(t.Context(), groupID); err != nil {
+			return err
+		}
+		return tx.CloseGroup(t.Context(), groupID, now+1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, body = e.Do(http.MethodPut, path, ownerTok, []any{requestID, channel, uint64(9), []any{[]any{"✅", role}}})
+	if status != http.StatusForbidden {
+		t.Fatalf("register against a closed text group = %d (%x), want 403", status, body)
+	}
 	ownerSession := e.sess[ownerTok]
 	ownerSession.WireVersion, ownerSession.E2EEVersion, ownerSession.MediaVersion = 3, 1, 1
 	e.sess[ownerTok] = ownerSession
