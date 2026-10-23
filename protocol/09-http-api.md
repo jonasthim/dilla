@@ -311,6 +311,11 @@ CBOR API request, not a public redirect endpoint.
 | `PUT /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id, expires_unix]` | `[request_id, expires_unix]` |
 | `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |
 | `GET /v1/communities/{id}/members/{user_id}/timeout` | E (member or moderate_members) | — | `[expires_unix|null]` |
+| `POST /v1/communities/{id}/members/{user_id}/warning` | E (moderate_members; actor must outrank target) | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
+
+The warning route writes an immutable warning action and audit metadata. It does
+not accept or store a plaintext reason. Encrypted warning-case submission is not
+defined by this endpoint.
 
 DJ role policy is retained when an installation is soft-disabled, but both
 routes return 404 while it is disabled or not ready. Explicitly re-enabling and

@@ -138,6 +138,7 @@ export type Command =
   | { m: 'getMemberTimeout'; communityId: string; userId: string } // → Unix-second timestamp string|null
   | { m: 'setMemberTimeout'; communityId: string; userId: string; requestId: string; expires: string } // expires is Unix seconds
   | { m: 'clearMemberTimeout'; communityId: string; userId: string; requestId: string }
+  | { m: 'warnMember'; communityId: string; userId: string; requestId: string }
   | { m: 'loadBans'; communityId: string }      // slice bans:<cid>
   | { m: 'loadInvites'; communityId: string }   // slice invites:<cid>, live only
   | { m: 'revokeInvite'; communityId: string; inviteId: string }

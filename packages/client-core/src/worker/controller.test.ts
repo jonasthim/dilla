@@ -675,6 +675,20 @@ describe('Controller', () => {
     expect(putMemberTimeout).not.toHaveBeenCalled();
   });
 
+  it('returns the accepted manual warning action metadata', async () => {
+    const w = world();
+    const requestId = new Uint8Array(16).fill(0x55);
+    const actionId = new Uint8Array(16).fill(0x66);
+    const warnMember = vi.fn(() => Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 }));
+    Object.assign(w.routes, { warnMember });
+    await toReady(w);
+    w.call(996, { m: 'warnMember', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId) });
+    await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true, value: {
+      requestId: toHex(requestId), actionId: toHex(actionId), revision: '7', acceptedAt: 1_800_000_000,
+    } }));
+    expect(warnMember).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
+  });
+
   it('returns full AFK settings through the authenticated settings route', async () => {
     const w = world();
     await toReady(w);

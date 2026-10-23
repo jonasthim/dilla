@@ -720,6 +720,13 @@ export class Routes {
     await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'write', true,
       { body: encode([inputId('requestId', requestId)]), ok: [204] });
   }
+  /** POST .../warning: [request_id] → [request_id, action_id, community_revision, accepted_at]. The request carries no reason. */
+  async warnMember(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<{ requestId: Uint8Array; actionId: Uint8Array; revision: number; acceptedAt: number }> {
+    const a = atLeast(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/warning`,
+      'write', true, { body: encode([inputId('requestId', requestId)]) })), 4);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning response request id mismatch');
+    return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), revision: u53(a[2]), acceptedAt: u53(a[3]) };
+  }
   /** GET /v1/communities/{id}/bans: [[user_id, reason, by_user, created, expires|null, username, display]]; the last two
    *  are absent from an older instance and read as ''. */
   async listBans(communityId: Uint8Array): Promise<BanRow[]> {

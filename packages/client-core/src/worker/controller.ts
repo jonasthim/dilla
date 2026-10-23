@@ -296,6 +296,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getMemberTimeout',
   'setMemberTimeout',
   'clearMemberTimeout',
+  'warnMember',
   'loadBans',
   'loadInvites',
   'revokeInvite',
@@ -410,6 +411,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getMemberTimeout: ['communityId', 'userId'],
   setMemberTimeout: ['communityId', 'userId', 'requestId'],
   clearMemberTimeout: ['communityId', 'userId', 'requestId'],
+  warnMember: ['communityId', 'userId', 'requestId'],
   loadBans: ['communityId'],
   loadInvites: ['communityId'],
   revokeInvite: ['communityId', 'inviteId'],
@@ -528,6 +530,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getMemberTimeout',
     'setMemberTimeout',
     'clearMemberTimeout',
+    'warnMember',
     'loadBans',
     'loadInvites',
     'revokeInvite',
@@ -1358,6 +1361,7 @@ export class Controller {
       case 'getMemberTimeout': return this.getMemberTimeout(command.communityId, command.userId);
       case 'setMemberTimeout': return this.setMemberTimeout(command);
       case 'clearMemberTimeout': return this.clearMemberTimeout(command);
+      case 'warnMember': return this.warnMember(command);
       case 'loadBans': return this.admin.loadBans(command.communityId);
       case 'loadInvites': return this.admin.loadInvites(command.communityId);
       case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
@@ -1725,6 +1729,12 @@ export class Controller {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     await this.routes.deleteMemberTimeout(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId));
     return null;
+  }
+
+  private async warnMember(command: Extract<Command, { m: 'warnMember' }>): Promise<{ requestId: string; actionId: string; revision: string; acceptedAt: number }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const receipt = await this.routes.warnMember(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId));
+    return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt };
   }
 
   private async configureBotInstallation(command: Extract<Command, { m: 'configureBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {

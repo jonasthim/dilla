@@ -1228,6 +1228,7 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `PUT /v1/communities/{community}/members/{member}/timeout` | E or capability-approved B | `[request_id, expires]` | `[request_id, expires]` |
 | `DELETE /v1/communities/{community}/members/{member}/timeout` | E, moderate_members | `[request_id]` | 204 |
 | `GET /v1/communities/{community}/members/{member}/timeout` | E, own member or moderate_members | — | `[expires|null]` |
+| `POST /v1/communities/{community}/members/{member}/warning` | E, moderate_members and actor outranks target | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
 | `POST /v1/communities/{community}/moderation/actions` | E or capability-approved B | `[request_id, action, target_user|null, expires|null]` | `[action_id]` |
 | `POST /v1/groups/{group}/moderation/removals` | E or capability-approved B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B, ready installation with removal capability | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
@@ -1256,6 +1257,8 @@ current policy. The bot never receives unrestricted manage_roles.
 
 Action uses the structural-event moderation enum. Normal current permissions,
 hierarchy and step-up apply; manual UI requests use the initiating human session.
+The human warning endpoint above accepts no reason and stores none in plaintext;
+the encrypted manual warning-case submission flow is not yet defined.
 Timeout defaults ten minutes for automation, maximum28 days per request. Expiry
 is evaluated at request time without a cleanup dependency. Timeout blocks text,
 reactions, edits and pins before encrypted class-1 shortcuts and on readable

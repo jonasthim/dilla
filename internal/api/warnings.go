@@ -1,0 +1,82 @@
+package api
+
+import (
+	"fmt"
+	"math"
+	"net/http"
+
+	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/store"
+)
+
+// MemberWarnings serves human-authenticated warning actions. The reason is
+// intentionally absent from this request and from server storage; encrypted
+// case delivery is a separate client-to-Bot interaction.
+type MemberWarnings struct {
+	repo store.Repository
+	clk  clock.Clock
+}
+
+func NewMemberWarnings(repo store.Repository, clk clock.Clock) *MemberWarnings {
+	return &MemberWarnings{repo: repo, clk: clk}
+}
+
+func (h *MemberWarnings) Register(mux *server.Mux) {
+	mux.HandleFunc("POST /v1/communities/{id}/members/{user_id}/warning", h.post)
+}
+
+type warningPostReq struct {
+	_         struct{} `cbor:",toarray"`
+	RequestID id.ID
+}
+
+func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
+	m, err := moderate(r, h.repo, PermModerateMembers)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var req warningPostReq
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if req.RequestID.IsZero() {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "request_id is required"))
+		return
+	}
+	now := h.clk.Now().Unix()
+	if now <= 0 || now > math.MaxInt64 {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
+		return
+	}
+	actionID := id.New()
+	var revision uint64
+	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
+			return notFound(err)
+		}
+		if err := stillModerates(r.Context(), tx, m, PermModerateMembers); err != nil {
+			return err
+		}
+		if _, err := tx.GetMember(r.Context(), m.community, m.target); err != nil {
+			return notFound(err)
+		}
+		event, err := tx.AppendBotStructuralEvent(r.Context(), protocol.Event{ID: actionID, CommunityID: m.community,
+			Timestamp: uint64(now), Kind: protocol.EventModeration,
+			Data: []any{actionID, req.RequestID, m.session.UserID, m.session.DeviceID, m.target, nil, nil, uint64(0), nil}})
+		if err != nil {
+			return err
+		}
+		revision = event.Sequence
+		return tx.Audit(r.Context(), store.AuditRow{Actor: &m.session.UserID, Action: "member.warn", Target: m.target.String(),
+			Detail: fmt.Sprintf("%s %s %s", m.community, actionID, req.RequestID), At: now})
+	}); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, actionID, revision, uint64(now)})
+}

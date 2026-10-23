@@ -1773,6 +1773,25 @@ describe('member timeout routes', () => {
   });
 });
 
+describe('manual warning route', () => {
+  const REQUEST = fill(16, 0x41);
+  it('sends only a stable request id and returns immutable accepted action metadata', async () => {
+    const { routes, t } = setup();
+    const action = fill(16, 0x52);
+    t.replies.push(cborReply(200, [REQUEST, action, 7, 1_800_000_000]));
+    await expect(routes.warnMember(COMMUNITY, PEER_USER, REQUEST)).resolves.toEqual({
+      requestId: REQUEST, actionId: action, revision: 7, acceptedAt: 1_800_000_000,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'POST',
+      url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(PEER_USER)}/warning`, body: encode([REQUEST]) });
+  });
+  it('rejects a response that changes the request id', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [fill(16, 0x45), fill(16, 0x52), 7, 1_800_000_000]));
+    await expect(routes.warnMember(COMMUNITY, PEER_USER, REQUEST)).rejects.toThrow('warning response request id mismatch');
+  });
+});
+
 describe('managed community bot installation routes', () => {
   const installation = [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1, 1_800_000_000];
 
