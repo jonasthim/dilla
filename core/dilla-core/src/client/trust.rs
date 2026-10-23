@@ -863,6 +863,10 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
 
 /// Bind a server-signed current-context list to the MLS leaf's complete identity chain and this
 /// device's existing pin/cache. The proof's signature cannot establish a user's UMK or SSK pin.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each argument is part of the authenticated MLS leaf context."
+)]
 pub(super) fn validate_interaction_leaf(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],

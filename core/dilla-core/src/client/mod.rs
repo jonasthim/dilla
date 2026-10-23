@@ -450,6 +450,10 @@ fn interaction_bot_leaf_identity_matches(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "The reload tests stay beside the identity predicates they cover."
+)]
 mod interaction_reload_tests {
     use super::{
         Own, interaction_binding_matches_own, interaction_bot_binding_matches_identity,

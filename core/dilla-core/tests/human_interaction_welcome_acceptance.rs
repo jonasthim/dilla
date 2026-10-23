@@ -209,6 +209,10 @@ fn mutate_welcome_body(body: &[u8]) -> Vec<u8> {
     e.into_vec()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The helper builds proof bytes from independently scoped test fixtures."
+)]
 fn current_context_proof(
     server_key: &SigningKey,
     human: &Core,

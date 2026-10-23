@@ -1347,6 +1347,10 @@ impl ClientCore {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Inputs are the authenticated welcome and its scoped provenance."
+    )]
     fn apply_human_interaction_welcome(
         &mut self,
         id: &[u8; 16],

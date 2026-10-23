@@ -19,6 +19,8 @@ use zeroize::Zeroizing;
 
 const MAX_BOT_INTERACTION_GROUP_DESCRIPTORS: usize = 2048;
 
+type CachedDeviceListRow = (i64, Vec<u8>, Vec<u8>, Vec<u8>);
+
 #[derive(Clone, Copy)]
 pub(super) struct BotBinding {
     pub instance_id: [u8; 16],
@@ -766,9 +768,7 @@ impl ClientCore {
                     "interaction user-key pin is unavailable",
                 ));
             };
-            let cached: Option<(i64, Vec<u8>, Vec<u8>, Vec<u8>)> = if list.user.as_bytes()
-                == &own.user_id
-            {
+            let cached: Option<CachedDeviceListRow> = if list.user.as_bytes() == &own.user_id {
                 let raw = self
                     .read(|c| schema::meta_get(c, schema::IDENTITY))?
                     .ok_or_else(|| {
@@ -1537,8 +1537,8 @@ mod interaction_snapshot_tests {
         })
         .unwrap();
         assert_eq!(result_fields.0, expected.group.as_bytes());
-        assert!(result_fields.1.len() > 0 && result_fields.2.len() > 0);
-        assert!(result_fields.3.len() > 0 && result_fields.4.len() > 0);
+        assert!(!result_fields.1.is_empty() && !result_fields.2.is_empty());
+        assert!(!result_fields.3.is_empty() && !result_fields.4.is_empty());
 
         let descriptors = core
             .bot_interaction_group_descriptors(&INSTANCE, &COMMUNITY, &INSTALLATION)
@@ -1754,7 +1754,7 @@ mod interaction_snapshot_tests {
         crate::cbor::decode_strict(&response_upload, |d| {
             d.array(2)?;
             assert_ne!(d.bytes_exact::<16>()?, [0; 16]);
-            assert!(d.bytes()?.len() > 0);
+            assert!(!d.bytes()?.is_empty());
             Ok(())
         })
         .expect("encoded interaction response upload");

@@ -291,6 +291,10 @@ impl ClientCore {
     /// Atomically reserve a fresh op61 envelope ID and expiry before request-body construction.
     /// Reuses the current reservation while it is valid; rotates it after expiry, keeping proof ID
     /// and the exact evidence bytes stable across safe server-side duplicates.
+    #[expect(
+        clippy::let_and_return,
+        reason = "The transaction wrapper preserves the existing nested error mapping."
+    )]
     pub fn ensure_manual_removal_evidence_request(
         &mut self,
         proof_request_id: &[u8; 16],
@@ -362,6 +366,10 @@ impl ClientCore {
     }
 
     /// Remove the record from the pending queue only after the op61 send has an accepted receipt.
+    #[expect(
+        clippy::let_and_return,
+        reason = "The transaction wrapper preserves the existing nested error mapping."
+    )]
     pub fn complete_manual_removal_evidence(
         &mut self,
         request_id: &[u8; 16],
@@ -387,6 +395,10 @@ impl ClientCore {
     }
 
     /// A signed proof that never crossed the POST boundary and has expired is known not accepted.
+    #[expect(
+        clippy::let_and_return,
+        reason = "The transaction wrapper preserves the existing nested error mapping."
+    )]
     pub fn reject_unsubmitted_manual_removal(
         &mut self,
         request_id: &[u8; 16],
@@ -413,6 +425,10 @@ impl ClientCore {
     }
 
     /// Retire a submitted proof only after an authoritative HTTP refusal establishes it was not accepted.
+    #[expect(
+        clippy::let_and_return,
+        reason = "The transaction wrapper preserves the existing nested error mapping."
+    )]
     pub fn reject_manual_removal(
         &mut self,
         request_id: &[u8; 16],
@@ -440,6 +456,10 @@ impl ClientCore {
 
     /// Persist a manual warning reason before POST. Reusing a request id is
     /// allowed only for the exact same actor, target, reason and evidence id.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The persisted warning evidence binds each field independently."
+    )]
     pub fn prepare_manual_warning_evidence(
         &mut self,
         request_id: &[u8; 16],
@@ -622,6 +642,10 @@ impl ClientCore {
         })?)
     }
 
+    #[expect(
+        clippy::let_and_return,
+        reason = "The transaction wrapper preserves the existing nested error mapping."
+    )]
     fn update_manual_evidence(
         &mut self,
         request_id: &[u8; 16],

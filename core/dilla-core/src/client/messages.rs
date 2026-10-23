@@ -1226,6 +1226,10 @@ impl ClientCore {
 
     /// Prepare a Bot response for a kind-3 interaction only after revalidating the current signed
     /// admission and the exact authenticated two-leaf roster.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The request fields are bound independently into the durable intent."
+    )]
     pub fn bot_interaction_send_prepare(
         &mut self,
         operation_id: &[u8; 16],
@@ -1249,6 +1253,10 @@ impl ClientCore {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The request fields are bound independently into the durable intent."
+    )]
     fn bot_send_prepare_scoped(
         &mut self,
         operation_id: &[u8; 16],

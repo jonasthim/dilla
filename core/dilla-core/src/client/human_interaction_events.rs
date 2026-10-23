@@ -196,6 +196,10 @@ fn human_owns_interaction(
     own_seen && bot_seen
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each argument is provenance persisted in one atomic event row."
+)]
 pub(super) fn record_accepted(
     c: &rusqlite::Connection,
     group: &DillaGroup,
@@ -218,7 +222,7 @@ pub(super) fn record_accepted(
     {
         return Ok(());
     }
-    let group_row: Option<(i64, Option<Vec<u8>>, Vec<u8>, i64)> = c
+    let group_row: Option<super::bot_events::GroupBindingRow> = c
         .query_row(
             "SELECT kind,community_id,target_id,state FROM app_groups WHERE group_id=?1",
             [group_id.as_slice()],

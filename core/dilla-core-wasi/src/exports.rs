@@ -154,7 +154,7 @@ fn public_group_roster_extract(req: &[u8]) -> Result<Vec<u8>, AbiError> {
         tls::verifiable_group_info(group_info_bytes)?,
     )?;
     let members = group.members();
-    if group.leaf_count() > MAX_LEAVES || members.len() != group.leaf_count() as usize {
+    if group.leaf_count() > MAX_LEAVES || members.len() != group.leaf_count() {
         return Err(AbiError::new(
             "E_ROSTER_LIMIT",
             "roster has too many leaves or contains an unsupported credential",

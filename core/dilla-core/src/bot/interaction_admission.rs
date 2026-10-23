@@ -115,6 +115,10 @@ pub(crate) fn verify_exact_authenticated_roster(
 /// Verify the client-side evidence needed before an interaction group could be prepared. The
 /// caller supplies the inspected v2 binding and roster from authenticated MLS state; this does
 /// not create or persist a group.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Inputs are independently authenticated evidence fields."
+)]
 pub(crate) fn prepare_creation(
     proof: &[u8],
     pinned_instance_key: &[u8; 32],

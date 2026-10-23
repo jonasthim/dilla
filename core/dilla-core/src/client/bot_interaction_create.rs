@@ -23,6 +23,10 @@ pub(super) fn snapshot_is_fresh(snapshot_now: u64, not_after: u64, local_now: u6
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "The test module stays beside its focused freshness helper."
+)]
 mod freshness_tests {
     use super::snapshot_is_fresh;
 

@@ -7,6 +7,8 @@ use crate::identity::CredentialIdentity;
 use crate::mls::{DillaGroup, DillaInteractionBinding, GroupKind, StorageError};
 use rusqlite::{OptionalExtension, params};
 
+pub(super) type GroupBindingRow = (i64, Option<Vec<u8>>, Vec<u8>, i64);
+
 const PAGE_LIMIT: u64 = 100;
 // Leaves room for the helper response tuple and the outer 4-byte frame when the helper wraps
 // this body as a bstr. The cap applies to the complete encoded core page.
@@ -82,6 +84,10 @@ fn interaction_binding_matches_event(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "The test module stays beside its focused binding helper."
+)]
 mod interaction_event_binding_tests {
     use super::interaction_binding_matches_event;
     use crate::ids::{CommunityId, DeviceId, InstanceId};
@@ -163,7 +169,7 @@ pub(super) fn record_accepted(
     if !bot_identity::nonzero_ids(&bot_binding) || bot_binding.instance_id != own.instance_id {
         return Ok(());
     }
-    let binding: Option<(i64, Option<Vec<u8>>, Vec<u8>, i64)> = c
+    let binding: Option<GroupBindingRow> = c
         .query_row(
             "SELECT kind,community_id,target_id,state FROM app_groups WHERE group_id=?1",
             [group_id.as_slice()],
