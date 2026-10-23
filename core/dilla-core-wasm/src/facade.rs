@@ -717,6 +717,12 @@ impl CoreHandle {
     pub fn groups(&self) -> Result<Box<[u8]>, JsError> {
         self.with_core(|c| c.groups()).map(Vec::into_boxed_slice)
     }
+    /// Calls ClientCore::group_heal_snapshot; CBOR [GroupInfo bytes, empty tail, ratchet tree bytes].
+    pub fn group_heal_snapshot(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.group_heal_snapshot(&group_id))
+            .map(Vec::into_boxed_slice)
+    }
     /// Calls ClientCore::group_create; CBOR [group_id, binding, group_info, ratchet_tree]; community_id null for a DM.
     pub fn group_create(
         &self,

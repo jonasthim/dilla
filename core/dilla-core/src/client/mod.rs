@@ -12,6 +12,7 @@ mod calls;
 mod error;
 mod fold;
 mod groups;
+mod heal;
 mod human_interaction_events;
 mod identity;
 mod messages;

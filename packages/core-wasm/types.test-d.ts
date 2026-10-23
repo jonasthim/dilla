@@ -50,6 +50,7 @@ interface ExpectedCoreHandle {
   key_packages(count: number, last_resort: boolean): Uint8Array;
   sealed_objects(): Uint8Array;
   groups(): Uint8Array;
+  group_heal_snapshot(group_id: Uint8Array): Uint8Array;
   group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
   group_registered(group_id: Uint8Array, next_seq: bigint): void;
   group_discard(group_id: Uint8Array): void;
@@ -175,6 +176,7 @@ expectTrue<Equals<H['session_clear'], E['session_clear']>>();
 expectTrue<Equals<H['key_packages'], E['key_packages']>>();
 expectTrue<Equals<H['sealed_objects'], E['sealed_objects']>>();
 expectTrue<Equals<H['groups'], E['groups']>>();
+expectTrue<Equals<H['group_heal_snapshot'], E['group_heal_snapshot']>>();
 expectTrue<Equals<H['group_create'], E['group_create']>>();
 expectTrue<Equals<H['group_registered'], E['group_registered']>>();
 expectTrue<Equals<H['group_discard'], E['group_discard']>>();
