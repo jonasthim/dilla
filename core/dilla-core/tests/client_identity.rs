@@ -761,6 +761,8 @@ fn open_creates_app_schema_v11_and_reopens_idempotently() {
             "app_human_interaction_response_claims",
             "app_manual_removal_evidence",
             "app_manual_removal_evidence_pending",
+            "app_manual_warning_evidence",
+            "app_manual_warning_evidence_pending",
             "app_messages",
             "app_messages_by_msg",
             "app_messages_by_pin",
