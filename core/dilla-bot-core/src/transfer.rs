@@ -8,7 +8,7 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) const MAX_LOGICAL: usize = 32 * 1024 * 1024;
-const MAX_INTERACTION_SNAPSHOT: usize = 160 * 1024;
+pub(crate) const MAX_INTERACTION_SNAPSHOT: usize = 160 * 1024;
 pub(crate) const MAX_CHUNK: usize = 768 * 1024;
 const UPLOAD_TTL: Duration = Duration::from_secs(30);
 const RESULT_TTL: Duration = Duration::from_secs(30);
@@ -381,6 +381,33 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
         (22, 4) => {
             id(d)?; // group ID
             bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?; // signed context snapshot
+            d.array(11)?;
+            for _ in 0..8 {
+                id(d)?;
+            }
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            true
+        }
+        (24, 7) => {
+            id(d)?; // group ID
+            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
+            d.array(11)?;
+            for _ in 0..8 {
+                id(d)?;
+            }
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            nonzero(d.uint()?)?;
+            array_body(d)?;
+            array_body(d)?;
+            d.uint()?;
+            true
+        }
+        (25, 4) => {
+            id(d)?;
+            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
             d.array(11)?;
             for _ in 0..8 {
                 id(d)?;
@@ -792,7 +819,7 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=23 {
+        for sub in 0..=25 {
             let mut e = Encoder::new();
             match sub {
                 0 | 17 | 23 => {
@@ -895,6 +922,29 @@ mod tests {
                     }
                     e.uint(1).uint(1).uint(1);
                     body(&mut e);
+                }
+                24 => {
+                    e.array(7).uint(sub);
+                    id(&mut e, 1);
+                    body(&mut e);
+                    e.array(11);
+                    for byte in 2..=9 {
+                        id(&mut e, byte);
+                    }
+                    e.uint(1).uint(1).uint(1);
+                    body(&mut e);
+                    body(&mut e);
+                    e.uint(0);
+                }
+                25 => {
+                    e.array(4).uint(sub);
+                    id(&mut e, 1);
+                    body(&mut e);
+                    e.array(11);
+                    for byte in 2..=9 {
+                        id(&mut e, byte);
+                    }
+                    e.uint(1).uint(1).uint(1);
                 }
                 22 => {
                     e.array(4).uint(sub);

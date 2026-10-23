@@ -475,6 +475,46 @@ impl ClientCore {
         Ok(admission)
     }
 
+    /// Atomically apply interaction source rows after binding the request to a fresh, signed
+    /// admission snapshot and the authenticated persisted roster.
+    pub fn bot_apply_interaction_group(
+        &mut self,
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+        handshakes: &[u8],
+        messages: &[u8],
+        through: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
+        self.group_apply(group_id, handshakes, messages, through)
+    }
+
+    /// Read an interaction source cursor only after current admission and roster verification.
+    pub fn bot_interaction_group_cursor(
+        &self,
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
+        self.cursor_body(group_id)
+    }
+
+    /// Persist a server-accepted interaction cursor only after current admission and roster
+    /// verification. Replays are idempotent through `cursor_acked`.
+    pub fn bot_ack_interaction_group_cursor(
+        &mut self,
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+        sequence: u64,
+        epoch: u64,
+    ) -> Result<(), ClientError> {
+        self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
+        self.cursor_acked(group_id, sequence, epoch)
+    }
+
     /// Verify an already-authenticated snapshot against an OpenMLS group object. Creation code
     /// may call this inside its outer storage transaction before writing app rows or intents.
     /// `snapshot` must come from `bot_verify_interaction_snapshot`; this helper derives all member
@@ -1547,6 +1587,128 @@ mod interaction_snapshot_tests {
         ).unwrap();
         assert_eq!(rebuilt_state, (1, 1));
 
+        core.group_registered(renewed_expected.group.as_bytes(), 1)
+            .expect("registration activates interaction group");
+        let apply = core
+            .bot_apply_interaction_group(
+                renewed_expected.group.as_bytes(),
+                &renewed_wire,
+                &renewed_expected,
+                &[0x80],
+                &[0x80],
+                0,
+            )
+            .expect("freshly admitted kind-3 apply");
+        crate::cbor::decode_strict(&apply, |d| {
+            d.array(6)?;
+            assert_eq!(d.uint()?, 2, "group remains active after an empty apply");
+            assert_eq!(d.uint()?, 1, "epoch remains stable after an empty apply");
+            assert_eq!(d.uint()?, 1, "apply preserves the registration sequence");
+            d.array(0)?;
+            d.uint()?;
+            d.uint()?;
+            Ok(())
+        })
+        .expect("apply result");
+        let no_cursor = core
+            .bot_interaction_group_cursor(
+                renewed_expected.group.as_bytes(),
+                &renewed_wire,
+                &renewed_expected,
+            )
+            .expect("freshly admitted cursor read");
+        crate::cbor::decode_strict(&no_cursor, |d| {
+            assert!(d.try_null()?);
+            Ok(())
+        })
+        .expect("empty interaction cursor");
+
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_groups SET next_seq=2 WHERE group_id=?1",
+                rusqlite::params![renewed_expected.group.as_bytes().as_slice()],
+            )
+            .unwrap();
+        let cursor = core
+            .bot_interaction_group_cursor(
+                renewed_expected.group.as_bytes(),
+                &renewed_wire,
+                &renewed_expected,
+            )
+            .expect("persisted interaction cursor");
+        let (cursor_sequence, cursor_epoch) = crate::cbor::decode_strict(&cursor, |d| {
+            d.array(2)?;
+            Ok((d.uint()?, d.uint()?))
+        })
+        .expect("cursor pair");
+        assert_eq!((cursor_sequence, cursor_epoch), (1, 1));
+        core.bot_ack_interaction_group_cursor(
+            renewed_expected.group.as_bytes(),
+            &renewed_wire,
+            &renewed_expected,
+            cursor_sequence,
+            cursor_epoch,
+        )
+        .expect("ack server-accepted interaction cursor");
+
+        let stale_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut stale_expected = renewed_expected.clone();
+        stale_expected.server_now = stale_now.saturating_sub(100);
+        let stale_wire = make_snapshot(
+            &stale_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            stale_expected.server_now + 1,
+        );
+        assert!(
+            core.bot_interaction_group_cursor(
+                stale_expected.group.as_bytes(),
+                &stale_wire,
+                &stale_expected,
+            )
+            .is_err(),
+            "expired context must block cursor reads"
+        );
+        assert!(
+            core.bot_ack_interaction_group_cursor(
+                stale_expected.group.as_bytes(),
+                &stale_wire,
+                &stale_expected,
+                1,
+                1,
+            )
+            .is_err(),
+            "expired context must block cursor acknowledgement"
+        );
+
+        let mut foreign_expected = renewed_expected.clone();
+        foreign_expected.community = mid([0x23; 16]);
+        let foreign_wire = make_snapshot(
+            &foreign_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            foreign_expected.server_now + 8,
+        );
+        assert!(
+            core.bot_apply_interaction_group(
+                renewed_expected.group.as_bytes(),
+                &foreign_wire,
+                &renewed_expected,
+                &[0x80],
+                &[0x80],
+                0,
+            )
+            .is_err(),
+            "foreign community snapshot must block source apply"
+        );
+
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1741,6 +1903,82 @@ mod interaction_snapshot_tests {
             .is_err(),
             "a third OpenMLS leaf must be refused"
         );
+        assert!(
+            core.bot_interaction_group_cursor(
+                roster_check_expected.group.as_bytes(),
+                &roster_check_wire,
+                &roster_check_expected,
+            )
+            .is_err(),
+            "interaction cursor must reject a changed roster"
+        );
         assert_eq!(counts(&connection.lock().unwrap()), before);
+
+        group
+            .remove_members(
+                &core.provider,
+                core.signer.as_ref().unwrap(),
+                &[openmls::prelude::LeafNodeIndex::new(1)],
+            )
+            .unwrap();
+        group.merge_pending_commit(&core.provider).unwrap();
+        assert_eq!(group.members().count(), 2);
+        let removed_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut removed_expected = inspect_expected.clone();
+        removed_expected.server_now = removed_now;
+        let removed_wire = make_snapshot(
+            &removed_expected,
+            &bot_snapshot_list,
+            &participant_snapshot_list,
+            &instance_key,
+            removed_now + 8,
+        );
+        assert!(
+            core.bot_apply_interaction_group(
+                removed_expected.group.as_bytes(),
+                &removed_wire,
+                &removed_expected,
+                &[0x80],
+                &[0x80],
+                0,
+            )
+            .is_err(),
+            "apply must reject a group after its admitted participant was removed"
+        );
+
+        for (kind, group_byte, target_byte) in [(0, 0x8b, 0x8c), (1, 0x8d, 0x8e)] {
+            let ordinary_group = [group_byte; 16];
+            let target = [target_byte; 16];
+            core.group_create(
+                &ordinary_group,
+                Some(&COMMUNITY),
+                &target,
+                kind,
+                &[0x88; 32],
+            )
+            .expect("construct ordinary group fixture");
+            let kind_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut kind_expected = inspect_expected.clone();
+            kind_expected.group = mid(ordinary_group);
+            kind_expected.server_now = kind_now;
+            let kind_wire = make_snapshot(
+                &kind_expected,
+                &bot_snapshot_list,
+                &participant_snapshot_list,
+                &instance_key,
+                kind_now + 8,
+            );
+            assert!(
+                core.bot_interaction_group_cursor(&ordinary_group, &kind_wire, &kind_expected,)
+                    .is_err(),
+                "dedicated interaction cursor must refuse kind {kind}"
+            );
+        }
     }
 }

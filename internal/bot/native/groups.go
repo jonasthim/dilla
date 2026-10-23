@@ -1067,6 +1067,68 @@ func (c *Client) ApplyGroup(ctx context.Context, group id.ID, handshakes, messag
 	}
 	return v.(GroupApplyResult), nil
 }
+
+func validateInteractionSyncInput(expected InteractionGroupExpected, binding Binding, snapshotWire []byte) error {
+	if validateInteractionExpected(expected, binding, expected.Group) != nil || len(snapshotWire) == 0 ||
+		len(snapshotWire) > maxInteractionSnapshot || groupInputBody(snapshotWire, maxInteractionSnapshot) != nil {
+		return errors.New("invalid interaction sync input")
+	}
+	var snapshot []any
+	if err := cborx.Unmarshal(snapshotWire, &snapshot); err != nil || len(snapshot) != 2 {
+		return errors.New("invalid signed interaction snapshot wire")
+	}
+	payload, payloadOK := snapshot[0].([]byte)
+	signature, signatureOK := snapshot[1].([]byte)
+	if !payloadOK || len(payload) == 0 || !signatureOK || len(signature) != 64 {
+		return errors.New("invalid signed interaction snapshot wire")
+	}
+	return nil
+}
+
+// ApplyInteractionGroup applies source rows only after the native core revalidates the signed
+// admission snapshot and exact stored kind-3 roster at this operation boundary.
+func (c *Client) ApplyInteractionGroup(ctx context.Context, expected InteractionGroupExpected, snapshotWire, handshakes, messages []byte, through uint64) (GroupApplyResult, error) {
+	if validateInteractionSyncInput(expected, c.binding, snapshotWire) != nil ||
+		validateHandshakeRows(handshakes) != nil || validateMessageRows(messages) != nil || through >= math.MaxInt64 {
+		return GroupApplyResult{}, errors.New("invalid interaction group apply input")
+	}
+	v, err := c.groupCall(ctx, []any{uint64(24), expected.Group, append([]byte(nil), snapshotWire...), expectedTuple(expected),
+		groupBodyPayload(handshakes), groupBodyPayload(messages), through}, true, groupWrapped(decodeApply))
+	if err != nil {
+		return GroupApplyResult{}, err
+	}
+	return v.(GroupApplyResult), nil
+}
+
+// InteractionGroupCursor returns the local durable cursor only after current signed context and
+// exact persisted kind-3 roster verification.
+func (c *Client) InteractionGroupCursor(ctx context.Context, expected InteractionGroupExpected, snapshotWire []byte) (*GroupCursor, error) {
+	if validateInteractionSyncInput(expected, c.binding, snapshotWire) != nil {
+		return nil, errors.New("invalid interaction group cursor input")
+	}
+	v, err := c.groupCall(ctx, []any{uint64(25), expected.Group, append([]byte(nil), snapshotWire...), expectedTuple(expected)}, false,
+		groupWrapped(decodeCursor))
+	if err != nil {
+		return nil, err
+	}
+	return v.(*GroupCursor), nil
+}
+
+// AcknowledgeInteractionGroupCursor persists the server-accepted cursor only after revalidating
+// the same signed admission boundary. The helper distinguishes this payload from generic acks.
+func (c *Client) AcknowledgeInteractionGroupCursor(ctx context.Context, expected InteractionGroupExpected, snapshotWire []byte, cursor GroupCursor) error {
+	if validateInteractionSyncInput(expected, c.binding, snapshotWire) != nil || cursor.Sequence == 0 ||
+		cursor.Sequence > math.MaxInt64 || cursor.Epoch > math.MaxInt64 || groupInputBody(cursor.Body, 128) != nil {
+		return errors.New("invalid interaction cursor acknowledgement")
+	}
+	a, err := groupBodyArray(cursor.Body)
+	if err != nil || len(a) != 2 || a[0] != cursor.Sequence || a[1] != cursor.Epoch {
+		return errors.New("interaction cursor body mismatch")
+	}
+	_, err = c.call(ctx, protocol.HelperCursorAck, []any{expected.Group, cursor.Sequence, cursor.Epoch,
+		append([]byte(nil), snapshotWire...), expectedTuple(expected)}, true, voidResult)
+	return err
+}
 func decodeCommitBuild(b []byte) (any, error) {
 	a, e := groupBodyArray(b)
 	if e != nil || len(a) != 5 {

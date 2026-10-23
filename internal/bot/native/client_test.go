@@ -19,6 +19,7 @@ type fakeTransport struct {
 	statuses      []uint64
 	err           error
 	calls         []protocol.HelperOperation
+	callPayloads  [][]any
 	closed        int
 	groupApplies  int
 	groupPayloads [][]any
@@ -27,8 +28,9 @@ type fakeTransport struct {
 func (f *fakeTransport) Open(context.Context, id.ID, id.ID, id.ID, []byte) ([]any, error) {
 	return nil, errors.New("unexpected Open")
 }
-func (f *fakeTransport) Call(_ context.Context, op protocol.HelperOperation, _ []any) ([]any, error) {
+func (f *fakeTransport) Call(_ context.Context, op protocol.HelperOperation, payload []any) ([]any, error) {
 	f.calls = append(f.calls, op)
+	f.callPayloads = append(f.callPayloads, append([]any(nil), payload...))
 	if f.err != nil {
 		return nil, f.err
 	}

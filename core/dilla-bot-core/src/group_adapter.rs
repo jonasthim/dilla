@@ -1,6 +1,6 @@
 use crate::helper::{DispatchError, body, empty, map_client};
 use dilla_core::{
-    cbor::{Encoder, decode_strict},
+    cbor::{Decoder, Encoder, decode_strict},
     client::ClientCore,
 };
 use zeroize::Zeroizing;
@@ -80,8 +80,30 @@ pub(crate) fn dispatch(
         21 => interaction_create(core, payload),
         22 => interaction_inspect(core, payload),
         23 => interaction_groups(core, bind, payload),
+        24 => interaction_apply(core, payload),
+        25 => interaction_cursor(core, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+fn interaction_expected(
+    d: &mut Decoder<'_>,
+) -> Result<dilla_core::bot::interaction_admission::Expected, dilla_core::cbor::CborError> {
+    use dilla_core::{bot::interaction_admission::Expected, ids::MsgId};
+    d.array(11)?;
+    Ok(Expected {
+        instance: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        installation: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        community: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        bot_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        bot_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        participant_user: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        participant_device: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        group: MsgId::from_bytes(d.bytes_exact::<16>()?),
+        minimum_eligibility_revision: d.uint()?,
+        server_now: d.uint()?,
+        policy_version: d.uint()?,
+    })
 }
 
 fn interaction_groups(
@@ -250,6 +272,60 @@ fn interaction_create(
         .bot_interaction_group_create(&operation, &group, &snapshot, &expected, &key_package)
         .map_err(map_client)?;
     Ok(Zeroizing::new(body(result)))
+}
+
+fn interaction_apply(
+    core: &mut ClientCore,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let (group, snapshot, expected, handshakes, messages, through) = decode_strict(payload, |d| {
+        d.array(7)?;
+        let _ = d.uint()?;
+        let group = d.bytes_exact::<16>()?;
+        let snapshot = Zeroizing::new(d.bytes()?.to_vec());
+        let expected = interaction_expected(d)?;
+        let handshakes = Zeroizing::new(d.bytes()?.to_vec());
+        let messages = Zeroizing::new(d.bytes()?.to_vec());
+        let through = d.uint()?;
+        Ok((group, snapshot, expected, handshakes, messages, through))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if group == [0; 16] || group != *expected.group.as_bytes() || snapshot.is_empty() {
+        return Err(DispatchError::Invalid);
+    }
+    let result = core
+        .bot_apply_interaction_group(
+            &group,
+            &snapshot,
+            &expected,
+            &handshakes,
+            &messages,
+            through,
+        )
+        .map_err(map_client)?;
+    Ok(Zeroizing::new(body(result)))
+}
+
+fn interaction_cursor(
+    core: &ClientCore,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let (group, snapshot, expected) = decode_strict(payload, |d| {
+        d.array(4)?;
+        let _ = d.uint()?;
+        let group = d.bytes_exact::<16>()?;
+        let snapshot = Zeroizing::new(d.bytes()?.to_vec());
+        let expected = interaction_expected(d)?;
+        Ok((group, snapshot, expected))
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    if group == [0; 16] || group != *expected.group.as_bytes() || snapshot.is_empty() {
+        return Err(DispatchError::Invalid);
+    }
+    Ok(Zeroizing::new(body(
+        core.bot_interaction_group_cursor(&group, &snapshot, &expected)
+            .map_err(map_client)?,
+    )))
 }
 
 fn list_groups(
@@ -803,13 +879,38 @@ pub(crate) fn cursor_ack(
     payload: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
     validate_bot(core, bind)?;
-    let (group, seq, epoch) = decode_strict(payload, |d| {
-        d.array(3)?;
-        Ok((d.bytes_exact::<16>()?, d.uint()?, d.uint()?))
+    let (group, seq, epoch, proof) = decode_strict(payload, |d| match d.array_len()? {
+        3 => Ok((d.bytes_exact::<16>()?, d.uint()?, d.uint()?, None)),
+        5 => {
+            let group = d.bytes_exact::<16>()?;
+            let seq = d.uint()?;
+            let epoch = d.uint()?;
+            let snapshot = Zeroizing::new(d.bytes()?.to_vec());
+            if snapshot.is_empty() || snapshot.len() > crate::transfer::MAX_INTERACTION_SNAPSHOT {
+                return Err(dilla_core::cbor::CborError::TypeMismatch {
+                    expected: "bounded interaction snapshot",
+                    offset: 0,
+                });
+            }
+            let expected = interaction_expected(d)?;
+            Ok((group, seq, epoch, Some((snapshot, expected))))
+        }
+        _ => Err(dilla_core::cbor::CborError::TypeMismatch {
+            expected: "cursor acknowledgement",
+            offset: 0,
+        }),
     })
     .map_err(|_| DispatchError::Invalid)?;
-    group_scope(core, bind, &group)?;
-    core.cursor_acked(&group, seq, epoch).map_err(map_client)?;
+    if let Some((snapshot, expected)) = proof {
+        if group == [0; 16] || group != *expected.group.as_bytes() || snapshot.is_empty() {
+            return Err(DispatchError::Invalid);
+        }
+        core.bot_ack_interaction_group_cursor(&group, &snapshot, &expected, seq, epoch)
+            .map_err(map_client)?;
+    } else {
+        group_scope(core, bind, &group)?;
+        core.cursor_acked(&group, seq, epoch).map_err(map_client)?;
+    }
     Ok(empty())
 }
 
@@ -892,6 +993,54 @@ mod tests {
         })
         .expect("group response");
         assert_eq!(count, 1, "generic group list changed");
+    }
+
+    #[test]
+    fn proof_bearing_cursor_ack_refuses_ordinary_group_while_legacy_ack_remains_scoped() {
+        let mut core = bot();
+        let group = [0x71; 16];
+        core.group_create(&group, Some(&COMMUNITY), &[0x72; 16], 0, &[0x88; 32])
+            .expect("construct ordinary group");
+        core.group_registered(&group, 2)
+            .expect("activate ordinary group");
+
+        let mut snapshot = Encoder::new();
+        snapshot.array(2).bytes(&[0x80]).bytes(&[0; 64]);
+        let snapshot = snapshot.into_vec();
+        let mut expected = Encoder::new();
+        expected
+            .array(11)
+            .bytes(&INSTANCE)
+            .bytes(&INSTALLATION)
+            .bytes(&COMMUNITY)
+            .bytes(&USER)
+            .bytes(&[0x73; 16])
+            .bytes(&[0x74; 16])
+            .bytes(&[0x75; 16])
+            .bytes(&group)
+            .uint(1)
+            .uint(1)
+            .uint(1);
+
+        let mut proved_ack = Encoder::new();
+        proved_ack
+            .array(5)
+            .bytes(&group)
+            .uint(1)
+            .uint(0)
+            .bytes(&snapshot)
+            .raw(&expected.into_vec());
+        assert!(
+            cursor_ack(&mut core, BINDING, &proved_ack.into_vec()).is_err(),
+            "proof-bearing interaction ack must refuse kind 0 even when legacy ack is valid"
+        );
+
+        let mut legacy_ack = Encoder::new();
+        legacy_ack.array(3).bytes(&group).uint(1).uint(0);
+        assert!(
+            cursor_ack(&mut core, BINDING, &legacy_ack.into_vec()).is_ok(),
+            "legacy cursor ack remains available for its generic kind-0 scope"
+        );
     }
 
     #[test]

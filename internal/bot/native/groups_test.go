@@ -255,6 +255,50 @@ func TestNativeInteractionInspectReturnsAuthenticatedDevicesAndPersistedState(t 
 	}
 }
 
+func TestNativeInteractionSyncUsesDedicatedProofBoundOps(t *testing.T) {
+	b := testBinding()
+	expected := InteractionGroupExpected{
+		Instance: b.Instance, Installation: b.Installation, Community: b.Community,
+		BotUser: testID(4), BotDevice: testID(5), ParticipantUser: testID(6),
+		ParticipantDevice: testID(7), Group: testID(8), MinimumEligibilityRevision: 9,
+		ServerNow: 10, PolicyVersion: 11,
+	}
+	snapshot, err := cborx.Marshal([]any{[]byte{0x01}, make([]byte, 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyBody, _ := cborx.Marshal([]any{uint64(2), uint64(4), uint64(5), []any{uint64(4)}, uint64(0), uint64(1)})
+	f := &fakeTransport{responses: [][]any{{applyBody}, wrappedGroupBody(t, []any{uint64(4), uint64(2)}), {}, {[]byte{0x80}}}}
+	c := newFakeClient(t, f)
+	got, err := c.ApplyInteractionGroup(context.Background(), expected, snapshot, []byte{0x80}, []byte{0x80}, 4)
+	if err != nil || got.State != 2 || got.NextSequence != 5 {
+		t.Fatalf("apply=%#v err=%v", got, err)
+	}
+	cursor, err := c.InteractionGroupCursor(context.Background(), expected, snapshot)
+	if err != nil || cursor == nil || cursor.Sequence != 4 || cursor.Epoch != 2 {
+		t.Fatalf("cursor=%#v err=%v", cursor, err)
+	}
+	if err = c.AcknowledgeInteractionGroupCursor(context.Background(), expected, snapshot, *cursor); err != nil {
+		t.Fatal(err)
+	}
+	if f.groupApplies != 2 || f.groupPayloads[0][0] != uint64(24) || f.groupPayloads[0][1] != expected.Group ||
+		!reflect.DeepEqual(f.groupPayloads[0][2], snapshot) || !reflect.DeepEqual(f.groupPayloads[0][3], expectedTuple(expected)) {
+		t.Fatalf("proof-bound apply request=%#v", f.groupPayloads)
+	}
+	if f.groupPayloads[1][0] != uint64(25) || !reflect.DeepEqual(f.groupPayloads[1], []any{uint64(25), expected.Group, snapshot, expectedTuple(expected)}) {
+		t.Fatalf("proof-bound cursor request=%#v", f.groupPayloads[1])
+	}
+	if !reflect.DeepEqual(f.callPayloads[2], []any{expected.Group, uint64(4), uint64(2), snapshot, expectedTuple(expected)}) {
+		t.Fatalf("proof-bound cursor ack request=%#v", f.callPayloads[2])
+	}
+	if _, err = c.InteractionGroupCursor(context.Background(), expected, []byte{0x80}); err == nil || len(f.calls) != 3 {
+		t.Fatalf("malformed snapshot dispatched: err=%v calls=%v", err, f.calls)
+	}
+	if _, err = c.ApplyInteractionGroup(context.Background(), expected, snapshot, []byte{0x80}, []byte{0x80}, 4); err == nil || !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("failed interaction mutation missing uncertain outcome: %v", err)
+	}
+}
+
 func TestNativeGroupCursorAndIntentBodyRules(t *testing.T) {
 	group := testID(14)
 	// Cursor body is a nullable cursor body inside the usual body wrapper.
