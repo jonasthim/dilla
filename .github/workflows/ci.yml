@@ -891,10 +891,11 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    # internal/api under the race detector takes about 620 s on a 4-core machine and ran into a
-    # 20-minute package timeout on the runner (run 39486567482), so it has a job and a budget of its
-    # own; the go job leaves it out and the checker pins both halves.
+    timeout-minutes: 45
+    # internal/api under the race detector takes about 620 s on a 4-core machine. A loaded runner
+    # exceeded the 30-minute package timeout after 905 tests and was interrupted while the final
+    # test was setting up its SQLite fixture; allow additional package time while keeping the job
+    # timeout bounded. The go job leaves this package out and the checker pins both halves.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -907,7 +908,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The API package's tests with the race detector
-        run: go test -race -shuffle=on -timeout 30m ./internal/api/...
+        run: go test -race -shuffle=on -timeout 38m ./internal/api/...
         env:
           GORACE: halt_on_error=1
 
