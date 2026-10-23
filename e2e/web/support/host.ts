@@ -4,10 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
 import { parseInvite } from './driver.ts';
+import { verifyShippingCoreWasmInDist } from './shipping-wasm.mjs';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 
 /** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
- *  starts a host that offers 3 so the wire-2 client is refused. `keepData` leaves the host data directory in place at start and at stop,
+ *  starts a host that offers a version unsupported by the browser bundle. `keepData` leaves the host data directory in place at start and at stop,
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
@@ -25,15 +26,9 @@ const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${Strin
 function ensureShippingCoreWasm(): void {
   const artifact = join(REPO_ROOT, 'packages', 'core-wasm', 'pkg', 'dilla_core_wasm_bg.wasm');
   if (process.env.CI === 'true') {
-    // Chromium consumes the web-build artifact. Its checkout timestamps are newer than the
-    // downloaded artifact, so mtime cannot establish staleness here. Validate the module shape
-    // and use the artifact produced by that upstream build instead of requiring wasm-pack again.
-    if (!existsSync(artifact)) throw new Error('CI requires the verified web-build shipping core WASM artifact');
-    const bytes = readFileSync(artifact);
-    const wasmHeader = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-    if (bytes.length < wasmHeader.length || bytes.length > 3_500_000 || wasmHeader.some((byte, index) => bytes[index] !== byte)) {
-      throw new Error('CI web-build shipping core WASM artifact failed validation');
-    }
+    // CI downloads the verified dilla-web-dist artifact into packages/web/dist;
+    // the wasm-pack source package is intentionally absent from that artifact.
+    verifyShippingCoreWasmInDist(join(REPO_ROOT, 'packages', 'web', 'dist'));
     return;
   }
   const inputs = [join(REPO_ROOT, 'Cargo.toml'), join(REPO_ROOT, 'Cargo.lock')];
