@@ -555,6 +555,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														service.AnnouncementInteractions{Scheduler: scheduler, Authority: announcementAuthority, CommunityID: installation.CommunityID},
 														service.ModerationInteractions{Reader: caseReader, CommunityID: installation.CommunityID},
 														musicInteractions,
+														nativeClient,
 													)
 													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
 														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)

@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/community/welcome"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
 )
 
 func TestWelcomePreviewRequiresCurrentManagerAndOnlyRendersText(t *testing.T) {
@@ -32,3 +36,85 @@ func TestWelcomePreviewRequiresCurrentManagerAndOnlyRendersText(t *testing.T) {
 		t.Fatalf("foreign preview result=%+v err=%v", result, err)
 	}
 }
+
+type welcomeSettingsNative struct {
+	binding  native.Binding
+	state    native.StateValue
+	changes  []native.StateChange
+	writeErr error
+}
+
+func (n *welcomeSettingsNative) Binding() native.Binding { return n.binding }
+func (n *welcomeSettingsNative) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	if area != 8 || string(key) != "dilla.bot.welcome.config.v1" {
+		return native.StateValue{}, errors.New("unexpected welcome state key")
+	}
+	return n.state, nil
+}
+func (n *welcomeSettingsNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	n.changes = append(n.changes, changes...)
+	if n.writeErr != nil {
+		return nil, n.writeErr
+	}
+	if len(changes) != 1 || changes[0].ExpectedRevision != n.state.Revision {
+		return nil, errors.New("revision conflict")
+	}
+	n.state = native.StateValue{Revision: n.state.Revision + 1, Value: changes[0].Value}
+	return []uint64{n.state.Revision}, nil
+}
+
+func TestWelcomeSettingsGetAndPutUseEncryptedStateRevision(t *testing.T) {
+	h, auth := announcementInteractionsFixture(t)
+	n := &welcomeSettingsNative{binding: native.Binding{Instance: interactionID(1), Community: h.CommunityID, Installation: interactionID(3)}}
+	settings := WelcomeInteractions{Authority: auth, CommunityID: h.CommunityID, Native: n}
+	actor := InteractionActor{User: interactionID(6)}
+	get := settings.Handlers()[protocol.OpSettingsGet]
+	result, err := get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{uint64(welcomeSettingsSection)}})
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 0 || string(result.Data) != "\x80" {
+		t.Fatalf("empty welcome settings=%+v err=%v", result, err)
+	}
+	cfg := welcome.Config{ChannelID: interactionID(22), Template: "Welcome {member}", ServerName: "Dilla"}
+	change, err := welcome.ConfigStateChange(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestRevision, expires := uint64(0), uint64(120)
+	put := settings.Handlers()[protocol.OpSettingsPut]
+	result, err = put.Handle(context.Background(), actor, protocol.Request{RequestID: interactionID(30), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), change.Value}})
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || n.state.Revision != 1 {
+		t.Fatalf("welcome settings put=%+v stored=%+v err=%v", result, n.state, err)
+	}
+	result, err = get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{uint64(welcomeSettingsSection)}})
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || string(result.Data) != string(n.state.Value) {
+		t.Fatalf("configured welcome settings=%+v err=%v", result, err)
+	}
+	var fields []any
+	if err := cborx.Unmarshal(result.Data, &fields); err != nil || len(fields) != 4 || fields[2] != cfg.Template {
+		t.Fatalf("welcome settings document=%#v err=%v", fields, err)
+	}
+}
+
+func TestWelcomeSettingsPutRejectsStaleRevisionAndUnauthorizedActor(t *testing.T) {
+	h, auth := announcementInteractionsFixture(t)
+	n := &welcomeSettingsNative{binding: native.Binding{Instance: interactionID(1), Community: h.CommunityID, Installation: interactionID(3)}, state: native.StateValue{Revision: 4}}
+	settings := WelcomeInteractions{Authority: auth, CommunityID: h.CommunityID, Native: n}
+	cfg, err := welcome.ConfigStateChange(welcome.Config{ChannelID: interactionID(22), Template: "Welcome {member}", ServerName: "Dilla"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestRevision, expires := uint64(3), uint64(120)
+	request := protocol.Request{RequestID: interactionID(31), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), cfg.Value}}
+	put := settings.Handlers()[protocol.OpSettingsPut]
+	result, err := put.Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
+	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 4 || len(n.changes) != 0 {
+		t.Fatalf("stale welcome put=%+v writes=%d err=%v", result, len(n.changes), err)
+	}
+	auth.allowed = false
+	request.Revision = ptrUint64(4)
+	result, err = put.Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
+	if err != nil || result.Status != interactionStatusForbidden || len(n.changes) != 0 {
+		t.Fatalf("unauthorized welcome put=%+v writes=%d err=%v", result, len(n.changes), err)
+	}
+}
+
+func ptrUint64(v uint64) *uint64 { return &v }

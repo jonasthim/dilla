@@ -7,12 +7,12 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/service"
 )
 
-func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderation service.ModerationInteractions, music *service.MusicInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderation service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative) map[protocol.Operation]service.InteractionHandlerSpec {
 	handlers := overview.Handlers()
 	for operation, handler := range announcements.Handlers() {
 		handlers[operation] = handler
 	}
-	for operation, handler := range (service.WelcomeInteractions{Authority: announcements.Authority, CommunityID: announcements.CommunityID}).Handlers() {
+	for operation, handler := range (service.WelcomeInteractions{Authority: announcements.Authority, CommunityID: announcements.CommunityID, Native: nativeClient}).Handlers() {
 		handlers[operation] = handler
 	}
 	if cases, ok := moderation.Handlers()[protocol.OpModerationCases]; ok {

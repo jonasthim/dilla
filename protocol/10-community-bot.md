@@ -68,6 +68,16 @@ bytes); sections' actual fields are validated by feature dispatcher. They never
 contain generic SQL or executable code. Reject empty/whitespace-only query/input;
 control characters U+0000..001F and U+007F disallowed in those two inputs only.
 
+`settings.get` and `settings.put` section 5 address welcome configuration. The
+get response data is the encrypted configuration document
+`[1, channel_id, template, server_name]`, or the empty array when no configuration
+exists; its response revision is the native state revision read with that value.
+Both operations require current `manage_community`. The put document has the same four fields.
+The request revision is compared with welcome state area 8 and the state change
+uses that revision as its atomic expected revision. Success returns the new state
+revision and empty-array data; a stale write returns status 4 with the current
+revision. The template is validated by the same welcome renderer used by preview.
+
 Response CBOR (same body-prefix and encoded byte limit):
 `[1, request_id, community_id, status uint0..9, revision|null, data bstr(0..2400)]`.
 For `announcements.list`, data is `[1, offset, total, rows]` and response
