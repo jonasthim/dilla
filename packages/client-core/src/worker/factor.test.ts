@@ -40,7 +40,7 @@ const plain = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => (typ
 describe('the factor-setup phase (web3.6 C2)', () => {
   it('a signup owing a factor stops at factor-setup; factorSetupDone refuses while owed, then enters ready and joins', async () => {
     const w = world({ phase: 0, owed: true });
-    const negotiation = vi.fn(async () => ({ wire: 3, e2ee: 1, media: 1, botAvailable: true }));
+    const negotiation = vi.fn(() => Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true }));
     (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
     w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
     await toKeys(w);
