@@ -479,13 +479,15 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
-  it('fetches a late private Welcome before refusing an op64 manual evidence request', async () => {
+  it('retries Welcome catch-up until the late private interaction group is available', async () => {
     const w = world();
     await toReady(w);
     const groupId = new Uint8Array(16).fill(0x52);
     const requestId = new Uint8Array(16).fill(0x59);
+    let welcomePolls = 0;
     w.sync.pollWelcomes.mockImplementation(() => {
-      w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      welcomePolls++;
+      if (welcomePolls === 3) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
       return Promise.resolve();
     });
     w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
@@ -494,7 +496,7 @@ describe('Controller', () => {
     });
     w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(3);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 

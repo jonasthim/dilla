@@ -1394,6 +1394,21 @@ export class Controller {
     return row === null ? null : botInstallationView(row);
   }
 
+  private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
+    const core = this.requireCore();
+    const sync = this.requireSync();
+    const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
+      && row.communityId !== null && toHex(row.communityId) === communityHex);
+    let rows = activeGroups();
+    for (let attempt = 0; rows.length === 0 && attempt < 8; attempt++) {
+      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+      await sync.pollWelcomes();
+      rows = activeGroups();
+      if (rows.length === 0 && attempt < 7) await this.deps.sleep(500);
+    }
+    return rows;
+  }
+
   /** Sends a revision-bound built-in Bot request. The result describes ciphertext upload only. */
   private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>, reservedExpires?: bigint): Promise<{
     requestId: string; upload: 'accepted' | 'pending' | 'rejected' | 'unknown';
@@ -1411,13 +1426,7 @@ export class Controller {
     if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
     const communityId = fromHex(communityHex);
     const requestId = fromHex(requestHex);
-    const activeGroups = (): ReturnType<CorePort['groups']> => this.requireCore().groups().filter((row) => row.kind === 3 && row.state === 2
-      && row.communityId !== null && toHex(row.communityId) === communityHex);
-    let groupRows = activeGroups();
-    if (groupRows.length === 0) {
-      await this.requireSync().pollWelcomes();
-      groupRows = activeGroups();
-    }
+    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
@@ -1551,13 +1560,7 @@ export class Controller {
     const core = this.requireCore();
     const sync = this.requireSync();
     const communityId = fromHex(communityHex);
-    const activeGroups = (): ReturnType<CorePort['groups']> => core.groups().filter((row) => row.kind === 3 && row.state === 2
-      && row.communityId !== null && toHex(row.communityId) === communityHex);
-    let groupRows = activeGroups();
-    if (groupRows.length === 0) {
-      await sync.pollWelcomes();
-      groupRows = activeGroups();
-    }
+    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
     if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;

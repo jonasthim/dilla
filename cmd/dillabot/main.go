@@ -654,9 +654,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												if interactionErr == nil && eventResult.More {
 													logger.Info("bot interaction event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", eventResult.AcknowledgedThrough)
 												}
-												if interactionErr == nil && eventResult.Handled > 0 {
-													logger.Info("bot interaction event diagnostic handled", "installation_id", installation.ID.String(), "handled", eventResult.Handled, "acknowledged_through", eventResult.AcknowledgedThrough)
-												}
 											}
 										}
 									}
