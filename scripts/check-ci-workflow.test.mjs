@@ -70,6 +70,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 concurrency:
   group: \${{ github.workflow }}-\${{ github.ref }}
   cancel-in-progress: true
@@ -638,6 +640,11 @@ test('a job that lost a required step is reported', () => {
 test('a missing concurrency block is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/concurrency:[\s\S]*?cancel-in-progress: true\n/, '')));
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
+});
+
+test('a workflow token without read-only permissions is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('permissions:\n  contents: read\n', '')));
+  assert.ok(problems.some((p) => p.includes('permissions: contents: read')), problems.join('\n'));
 });
 
 test('a workflow-level RUSTFLAGS is reported', () => {

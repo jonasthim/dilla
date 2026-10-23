@@ -703,6 +703,9 @@ export function checkWorkflow(root) {
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
   }
+  if (!/^permissions:\n {2}contents: read$/m.test(text)) {
+    problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
+  }
   // gap-29 §4 ii: a workflow-level RUSTFLAGS overrides every target.*.rustflags outright.
   if (/^\s{2}RUSTFLAGS:/m.test(text)) {
     problems.push('ci.yml: workflow-level RUSTFLAGS overrides .cargo/config.toml — use cargo clippy -- -D warnings');
