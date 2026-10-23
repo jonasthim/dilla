@@ -316,7 +316,9 @@ impl TestClient {
                 )
                 .map_err(|e| TestkitError::Scenario(format!("trust identity: {e}")))?;
             for (id, group) in &self.groups {
-                let binding = group.binding();
+                let binding = group
+                    .binding()
+                    .map_err(|e| TestkitError::Scenario(format!("trust group binding: {e}")))?;
                 guard.execute(
                     "INSERT OR REPLACE INTO app_groups(group_id,kind,community_id,target_id,state,epoch) VALUES(?1,0,?2,?3,2,?4)",
                     rusqlite::params![id, binding.community_id.as_ref().map(|v| v.as_bytes().as_slice()), binding.target_id.as_slice(), group.epoch() as i64],

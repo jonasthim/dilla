@@ -5,18 +5,37 @@ instance with no real community members or provider credentials. The server arch
 instance keys and server-readable content; the Bot archive contains the runtime credential and the
 key that decrypts its local database. Store both as secrets.
 
-The offline Bot archive and queue evidence is `go test ./cmd/dillabot -run 'TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady|TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio|TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly' -count=1`. Server-side stale-snapshot send refusal is covered by `go test ./internal/ds -run '^TestManagedBotSendAcceptReplayAndResolveAreDurable$' -count=1`:
+Local evidence is partial. These commands check the server restore lifecycle, Bot local state and
+paused queue startup, and the server's stale-generation send refusal. They do not restore the server
+and a Bot archive from one installation together.
 
-- The cold archive round trip preserves `database.key`, `state.db`, and SQLite `-wal`, `-shm`, and
+- `go test ./cmd/dillad -run 'TestRestoreBumpsTheGenerationAndArmsTheHeal|TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart' -count=1` checks the server restore generation and heal window.
+- `go test ./cmd/dillabot -run 'TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady|TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio|TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly' -count=1` checks Bot archive files and paused queue startup.
+- `go test ./internal/ds -run '^TestManagedBotSendAcceptReplayAndResolveAreDurable$' -count=1` directly invokes the delivery service's restore hook and checks that a stale-generation Bot message is refused without adding an application message.
+
+The real local testhost path is `restore_heal_from_tail.scn`, run with `dilla-testhost` and
+`dilla-testkit` on disposable data. It writes and restores the server archive through the host's
+production backup/restore operations, then heals the group with an active member and verifies
+messages flow in both directions. That scenario uses human test clients, not a managed Bot.
+
+Run record, 2026-10-23: the testhost scenario passed on unique loopback ports `60527` and `51867`
+with data under a disk-backed `TMPDIR`. The focused Go commands above passed (`cmd/dillabot`,
+`internal/ds`, and `cmd/dillad`); `cargo test -p dilla-testkit --lib --locked` passed 95 tests.
+The generated testhost invite stayed in the local process environment and was not included in the
+record. The first Go attempt used `/tmp`, which was a full tmpfs; rerunning with disk-backed
+`TMPDIR` succeeded.
+
+The existing offline checks establish:
+
+- The cold archive fixture round trip preserves `database.key`, `state.db`, and SQLite `-wal`, `-shm`, and
   `-journal` files byte for byte with mode `0600`; the restored state directory remains `0700` and
   `dillabot doctor` accepts it.
-- Queue restoration retains the current track as paused and does not resolve or start a provider.
-- A managed Bot message encrypted at the restored epoch is refused while the group remains
-  `epoch_unknown`; the fixture verifies no additional application message was stored.
+- Queue tests retain the current track as paused and do not resolve or start a provider; they use an in-memory native-state seam.
+- The stale-send test refuses a Bot message request while the group is `epoch_unknown` and verifies no additional application message was stored. It calls `DS.OnRestore` directly; it does not submit from a restored Bot process.
 
-The round-trip test uses opaque fixture bytes, not a production encrypted database or real service
-account. The doctor checks local files and permissions; it does not contact dillad or prove the
-installation is reconciled.
+The cold archive test uses opaque fixture bytes, not a production encrypted database or real
+service account. The doctor checks local files and permissions; it does not contact dillad or prove
+the installation is reconciled. The queue fixture does not create a queue in that archive.
 
 ## Staging procedure
 
@@ -98,8 +117,10 @@ usable before testing an outbound Bot action. No outbound action may be observed
 
 ## Evidence boundary
 
-The offline fixture tests and this procedure do not establish that a live host's paired server and
-Bot archives are atomic, that a particular released schema restores successfully, or that a
-particular production Bot archive contains the stale MLS snapshot represented by the fixture. The
-live staging procedure above has not yet been run. Those remain release acceptance gaps; do not
-describe them as verified until the staging evidence is recorded.
+The local tests do not establish that a live host's paired server and Bot archives are atomic, that
+a particular released schema restores successfully, or that a production Bot process restored from
+that paired archive refrains from sending until the group's MLS state is reconciled. The testhost
+scenario proves the server group can heal and then carry traffic, but it does not use the Bot's
+restored MLS snapshot. There is currently no Bot action trigger in the local harness that submits an
+outbound message from that restored snapshot. The paired staging procedure above has not been run;
+keep this as an open release acceptance gate.
