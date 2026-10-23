@@ -503,3 +503,31 @@ func TestEvidenceListFailsClosedWhenScannedKeyDoesNotMatchStoredEvidenceID(t *te
 		t.Fatalf("mismatched scanned key error = %v", err)
 	}
 }
+
+func TestEvidenceListAndPurgeSkipMemberRegistrationCatchupState(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding, rows: map[string]native.StateValue{
+		memberRegistrationCatchupStateKey: {Revision: 1, Value: []byte{0xff}},
+	}}
+	input := validEvidenceInput()
+	input.Rule = RuleManual
+	input.CreatedAt = time.Now().UTC().Truncate(time.Second)
+	input.AcceptedActionID, input.AcceptedRevision = id.ID{10}, 1
+	input.ActorUserID, input.ActorDeviceID = id.ID{11}, id.ID{12}
+	input.GroupID, input.TargetSequence = id.ID{13}, 14
+	writer := NewEvidenceWriter(state)
+	if err := writer.Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	authority := &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true}
+	rows, _, err := NewEvidenceReader(state, authority).List(context.Background(), id.ID{15}, nil, 1)
+	if err != nil || len(rows) != 1 || rows[0].OperationID != input.OperationID {
+		t.Fatalf("manual evidence rows=%d err=%v", len(rows), err)
+	}
+	if _, err := writer.PurgeExpiredResumable(context.Background()); err != nil {
+		t.Fatalf("purge failed on member-registration cursor: %v", err)
+	}
+	if row := state.rows[memberRegistrationCatchupStateKey]; row.Tombstone || row.Revision != 1 {
+		t.Fatalf("member-registration cursor was changed: %+v", row)
+	}
+}

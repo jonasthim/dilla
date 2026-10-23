@@ -19,15 +19,16 @@ import (
 )
 
 const (
-	evidenceStateArea       = uint64(9)
-	evidencePurgeCursorArea = uint64(8)
-	evidenceVersion         = uint64(3)
-	evidenceScanLimit       = uint64(100)
-	evidenceCursorMax       = 128
-	permViewAuditLog        = uint64(1 << 17)
-	maxEvidenceBytes        = 4 << 10
-	MaxEvidenceReasonBytes  = 1024
-	EvidenceRetention       = 90 * 24 * time.Hour
+	evidenceStateArea                 = uint64(9)
+	memberRegistrationCatchupStateKey = "dilla.bot.member-registration-catchup.v1"
+	evidencePurgeCursorArea           = uint64(8)
+	evidenceVersion                   = uint64(3)
+	evidenceScanLimit                 = uint64(100)
+	evidenceCursorMax                 = 128
+	permViewAuditLog                  = uint64(1 << 17)
+	maxEvidenceBytes                  = 4 << 10
+	MaxEvidenceReasonBytes            = 1024
+	EvidenceRetention                 = 90 * 24 * time.Hour
 )
 
 var evidencePurgeCursorKey = []byte("dilla.bot.moderation.evidence.purge-cursor.v1")
@@ -309,6 +310,9 @@ func (r *EvidenceReader) List(ctx context.Context, actor id.ID, after []byte, li
 			return nil, nil, ErrEvidenceAccess
 		}
 		consumed = append(consumed[:0], entry.Key...)
+		if string(entry.Key) == memberRegistrationCatchupStateKey {
+			continue
+		}
 		if entry.Tombstone || entry.Revision == 0 {
 			continue
 		}
@@ -444,6 +448,9 @@ func (w *EvidenceWriter) PurgeExpired(ctx context.Context, after []byte) (int, [
 	now := time.Now().UTC().Unix()
 	removed := 0
 	for _, entry := range page.Entries {
+		if string(entry.Key) == memberRegistrationCatchupStateKey {
+			continue
+		}
 		if entry.Tombstone {
 			continue
 		}
