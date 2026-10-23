@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Final review S-I1: runs the whole workflow by hand, upgrade-e2e included.
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
@@ -845,6 +847,63 @@ jobs:
         if: failure()
         with:
           name: sfu-compat-results
+          path: e2e/test-results
+          if-no-files-found: error
+
+  # Final review S-I1 (ruling final-S-I1): the full calls-survive-an-upgrade acceptance run (e2e/voice/upgrade.spec.ts with
+  # DILLA_E2E_UPGRADE=1: B1, B2, A2 and A), Chromium and Firefox, on a push to main and on workflow_dispatch only. It is not
+  # in ci-ok's needs, so it never makes a pull request red: an upgrade regression shows after the merge, and a release
+  # still needs its quiet-machine run. The voice suites of chromium-web and firefox-web skip the spec (no opt-in), and
+  # sfu-compat runs only its compat leg. The spec's own timeout is 25 minutes; the job's budget is one runner's cap.
+  upgrade-e2e:
+    needs: [changes, rust-native, rust-wasi, web-build]
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.e2e != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      # Headless Firefox needs an audio server, or every AudioContext stays suspended.
+      - if: matrix.engine == 'firefox'
+        run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+          DILLA_E2E_UPGRADE: '1'
+      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: upgrade-e2e-results-${{ matrix.engine }}
           path: e2e/test-results
           if-no-files-found: error
 

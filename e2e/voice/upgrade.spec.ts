@@ -17,6 +17,9 @@
 //       10 min ahead.
 //   A   a full restart, no input: the API stops, the SFU restarts, the API starts with a new build; all three connected in
 //       the channel and hearing each other within 90 s of the API answering.
+// Final review S-I1 (ruling final-S-I1): the full run is opt-in, DILLA_E2E_UPGRADE=1, so the voice suites of chromium-web and
+// firefox-web skip it; ci.yml's upgrade-e2e job (Chromium and Firefox, on a push to main and on workflow_dispatch, not
+// required by ci-ok) sets it. The compat run below needs no opt-in.
 // compat (UP4's CI job): with DILLA_SFU_BIN set to the previous release's dillad, only B1 runs. That SFU (web3.12.3 and
 // earlier) serves no TURN, so the API serves the relay, and its restart drops carol's and refuses her earlier credential:
 // she is exempt from B1's uninterrupted checks and must be heard again within 90 s, by the fresh credential her page
@@ -46,11 +49,14 @@ const DIST = 'packages/web/dist';
 const NAMES = ['alice', 'bob', 'carol'] as const;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const COMPAT = process.env.DILLA_SFU_BIN !== undefined;
+/** Final review S-I1: the full run only with DILLA_E2E_UPGRADE=1 (ci.yml's upgrade-e2e job, or a local run). */
+const FULL = process.env.DILLA_E2E_UPGRADE === '1';
 
+test.skip(!COMPAT && !FULL, 'the full upgrade run is opt-in: DILLA_E2E_UPGRADE=1 (ci.yml upgrade-e2e)');
 test.use({ baseURL: BASE });
 watchContexts(test);
 // The tree's dillad is the SFU unless DILLA_SFU_BIN names another (UP4's compat run, the previous release).
-test.beforeAll(() => { if (process.env.DILLA_SFU_BIN === undefined) buildDillad(); });
+test.beforeAll(() => { if (process.env.DILLA_SFU_BIN === undefined && FULL) buildDillad(); });
 
 
 interface Peer { name: typeof NAMES[number]; person: Person; device: string; requests: UpgradeRecord['requests'] }

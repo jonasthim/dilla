@@ -48,7 +48,25 @@ export const REQUIRED_JOBS = [
   'webkit-web',
   // UP4 (calls survive an upgrade): the previous release's media server under this tree's API.
   'sfu-compat',
+  // Final review S-I1: the full upgrade acceptance run, Chromium and Firefox; never required (NOT_REQUIRED_JOBS).
+  'upgrade-e2e',
 ];
+
+/**
+ * Final review S-I1 (ruling final-S-I1): jobs ci-ok must NOT need, so they never make a pull request red, each with the
+ * event condition its job-level `if:` puts before its area gate. upgrade-e2e is the full calls-survive-an-upgrade run
+ * (e2e/voice/upgrade.spec.ts with DILLA_E2E_UPGRADE=1), which runs on a push to main and on workflow_dispatch only.
+ */
+export const NOT_REQUIRED_JOBS = { 'upgrade-e2e': "github.event_name != 'pull_request'" };
+
+/** The job-level `if:` a job must carry: its area gate, behind its event condition for a job ci-ok does not need. */
+export function jobIf(job) {
+  const event = NOT_REQUIRED_JOBS[job];
+  return event === undefined ? gateExpression(job) : `${event} && (${gateExpression(job)})`;
+}
+
+/** The opt-in env line of the full upgrade run: only upgrade-e2e's spec step carries it. */
+const UPGRADE_OPT_IN = "DILLA_E2E_UPGRADE: '1'";
 
 /**
  * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
@@ -276,6 +294,18 @@ const REQUIRED_STEPS = {
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // UP4. Which pairing is promised is decided by scripts/release-meta.mjs, shared with release.yml and check-release-meta;
   // checkSfuCompatSteps holds the order and the env of the steps.
+  // Final review S-I1: checkUpgradeSteps holds the spec step, its opt-in and the matrix.
+  'upgrade-e2e': [
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'npx playwright install --with-deps ${{ matrix.engine }}',
+    'if: failure()',
+    'name: upgrade-e2e-results-${{ matrix.engine }}',
+    'path: e2e/test-results',
+  ],
   'sfu-compat': [
     'timeout-minutes: 25',
     'name: dilla-core-wasi',
@@ -683,6 +713,37 @@ function checkSfuCompatSteps(jobs, problems) {
   }
 }
 
+/**
+ * Final review S-I1 (ruling final-S-I1): the full upgrade run is upgrade-e2e's alone. Its spec step is a `run:` step of
+ * its own for both engines, carrying the opt-in and the testkit, after Firefox's audio server; the workflow can be
+ * dispatched by hand; and no other job opts in (the voice suites skip the spec, sfu-compat runs its compat leg only).
+ */
+function checkUpgradeSteps(text, jobs, problems) {
+  if (!/^ {2}workflow_dispatch:\s*$/m.test(text.slice(0, text.indexOf('\njobs:')))) {
+    problems.push('ci.yml: on: must carry workflow_dispatch, so upgrade-e2e can be run by hand (final-S-I1)');
+  }
+  for (const [name, body] of Object.entries(jobs)) {
+    // Comments may name it (the job's own header comment sits at the end of the job before it).
+    const code = body.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    if (name !== 'upgrade-e2e' && code.includes('DILLA_E2E_UPGRADE')) {
+      problems.push(`ci.yml: job "${name}" sets DILLA_E2E_UPGRADE; only upgrade-e2e runs the full upgrade spec (final-S-I1)`);
+    }
+  }
+  if (!('upgrade-e2e' in jobs)) return;
+  const body = jobs['upgrade-e2e'];
+  if (!body.split('\n').includes('        engine: [chromium, firefox]')) problems.push('ci.yml: job "upgrade-e2e" must run on chromium and firefox (matrix engine: [chromium, firefox])');
+  const steps = jobSteps(body);
+  const specAt = steps.findIndex((s) => s[0] === 'run: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts');
+  if (specAt < 0) problems.push('ci.yml: job "upgrade-e2e" is missing: npm run test:e2e:voice:${{ matrix.engine }} -w @dilla/e2e -- upgrade.spec.ts (a run step of its own)');
+  else {
+    if (!steps[specAt].includes(UPGRADE_OPT_IN)) problems.push(`ci.yml: job "upgrade-e2e" runs the spec without ${UPGRADE_OPT_IN}: it would skip itself`);
+    if (!steps[specAt].includes(TESTKIT_ENV)) problems.push(`ci.yml: job "upgrade-e2e" runs the spec without its own env ${TESTKIT_ENV}`);
+  }
+  const audioAt = steps.findIndex((s) => s[0] === "if: matrix.engine == 'firefox'" && s.includes('run: sh scripts/ci-audio-server.sh'));
+  if (audioAt < 0) problems.push('ci.yml: job "upgrade-e2e" is missing the firefox audio server step (if: matrix.engine == \'firefox\', run: sh scripts/ci-audio-server.sh)');
+  else if (specAt >= 0 && audioAt > specAt) problems.push('ci.yml: upgrade-e2e audio server must start before the spec');
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -770,7 +831,10 @@ export function checkWorkflow(root) {
     if (name === 'ci-ok') {
       if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
       for (const other of Object.keys(jobs)) {
-        if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
+        if (other === 'ci-ok') continue;
+        if (other in NOT_REQUIRED_JOBS) {
+          if (needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must not list "${other}" in its needs: it is never required (final-S-I1)`);
+        } else if (!needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
       }
       continue;
     }
@@ -783,7 +847,7 @@ export function checkWorkflow(root) {
       continue;
     }
     if (!needList.includes('changes')) problems.push(`ci.yml: job "${name}" must list "changes" in its needs:`);
-    if (!body.split('\n').includes(`    if: ${gateExpression(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${gateExpression(name)}`);
+    if (!body.split('\n').includes(`    if: ${jobIf(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${jobIf(name)}`);
     // A job whose needs are skipped is skipped too, so its gate may not be true where a needed job's is false.
     for (const need of needList) {
       if (!(need in JOB_GATES)) continue;
@@ -881,6 +945,7 @@ export function checkWorkflow(root) {
 
   checkVoiceSteps(jobs, problems);
   checkSfuCompatSteps(jobs, problems);
+  checkUpgradeSteps(text, jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [

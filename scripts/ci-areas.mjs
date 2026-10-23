@@ -87,6 +87,9 @@ export const JOB_GATES = {
   'webkit-web': ['e2e'],
   // UP4: the previous release's media server under this tree's API (e2e/voice/upgrade.spec.ts, compat leg).
   'sfu-compat': ['e2e'],
+  // Final review S-I1: the full upgrade acceptance run; besides this gate it runs only off pull requests
+  // (scripts/check-ci-workflow.mjs NOT_REQUIRED_JOBS).
+  'upgrade-e2e': ['e2e'],
   deny: ['core'],
   go: ['go'],
   'go-ds': ['go'],
