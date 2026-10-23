@@ -265,13 +265,45 @@ func TestConfiguredLeaveAdvancesWithoutWelcomeDestination(t *testing.T) {
 func TestConfiguredEventHandlerAllowsReconciledStructuralEventsBeforeJoin(t *testing.T) {
 	n, _, _, community, user, episode, _ := fixture()
 	handler := ConfiguredEventHandler(n, nil)
-	for _, kind := range []protocol.EventKind{protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel} {
-		if err := handler(context.Background(), protocol.Event{CommunityID: community, Kind: kind}); err != nil {
-			t.Fatalf("reconciled event kind %d blocks later joins: %v", kind, err)
+	for _, event := range []protocol.Event{
+		{ID: testID(41), Sequence: 1, CommunityID: community, Timestamp: 100, Kind: protocol.EventInstallation,
+			Data: []any{testID(42), uint64(1), uint64(1)}},
+		{ID: testID(44), Sequence: 2, CommunityID: community, Timestamp: 100, Kind: protocol.EventPermission,
+			Data: []any{uint64(1), testID(45), uint64(1)}},
+		{ID: testID(47), Sequence: 3, CommunityID: community, Timestamp: 100, Kind: protocol.EventChannel,
+			Data: []any{testID(48), uint64(1), uint64(1)}},
+	} {
+		if err := handler(context.Background(), event); err != nil {
+			t.Fatalf("reconciled event kind %d blocks later joins: %v", event.Kind, err)
 		}
 	}
 	if err := handler(context.Background(), joinEvent(community, user, episode, 1_999_999)); err != nil {
 		t.Fatalf("unconfigured join after structural events: %v", err)
+	}
+}
+
+func TestConfiguredEventHandlerValidatesThenIgnoresOtherKnownStructuralEvents(t *testing.T) {
+	n, _, _, community, _, _, _ := fixture()
+	handler := ConfiguredEventHandler(n, nil)
+	for _, event := range []protocol.Event{
+		{ID: testID(21), Sequence: 1, CommunityID: community, Timestamp: 100, Kind: protocol.EventModeration,
+			Data: []any{testID(22), testID(23), testID(24), testID(25), testID(26), nil, nil, uint64(0), nil}},
+		{ID: testID(31), Sequence: 2, CommunityID: community, Timestamp: 101, Kind: protocol.EventRolePanel,
+			Data: []any{testID(32), uint64(1), uint64(0)}},
+	} {
+		if err := handler(context.Background(), event); err != nil {
+			t.Fatalf("known unrelated event kind %d blocked dispatch: %v", event.Kind, err)
+		}
+		foreign := event
+		foreign.CommunityID = testID(99)
+		if err := handler(context.Background(), foreign); !errors.Is(err, protocol.ErrContext) {
+			t.Fatalf("foreign event kind %d was ignored before context validation: %v", event.Kind, err)
+		}
+		malformed := event
+		malformed.Data = nil
+		if err := handler(context.Background(), malformed); !errors.Is(err, protocol.ErrInvalid) {
+			t.Fatalf("malformed event kind %d was ignored before codec validation: %v", event.Kind, err)
+		}
 	}
 }
 

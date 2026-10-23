@@ -88,22 +88,22 @@ func ConfiguredEventHandlerWithJoinRole(n Native, granter JoinRoleGranter, proce
 // join-role processing active while honoring a revoked Welcome capability.
 func ConfiguredEventHandlerWithCapabilities(n Native, granter JoinRoleGranter, welcomeEnabled bool, processor func(context.Context, Config) (*Processor, error)) func(context.Context, protocol.Event) error {
 	return func(ctx context.Context, event protocol.Event) error {
-		switch event.Kind {
-		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel:
-			// The service reconciles current installation and membership state
-			// before polling this durable stream. These older notifications
-			// therefore need no additional welcome action.
-			return nil
-		case protocol.EventMemberJoin, protocol.EventMemberLeave:
-			// Handled below.
-		default:
-			return fmt.Errorf("welcome handler does not own structural event kind %d", event.Kind)
-		}
 		if protocol.ValidateEventContext(event, n.Binding().Community) != nil {
 			return protocol.ErrContext
 		}
 		if _, err := protocol.EncodeEvent(event); err != nil {
 			return err
+		}
+		switch event.Kind {
+		case protocol.EventInstallation, protocol.EventPermission, protocol.EventChannel, protocol.EventModeration, protocol.EventRolePanel:
+			// The service reconciles current installation and membership state
+			// before polling this durable stream. These events belong to other
+			// handlers in the composed dispatcher or need no welcome action here.
+			return nil
+		case protocol.EventMemberJoin, protocol.EventMemberLeave:
+			// Handled below.
+		default:
+			return fmt.Errorf("welcome handler does not own structural event kind %d", event.Kind)
 		}
 		if event.Kind == protocol.EventMemberJoin && granter != nil {
 			member, okMember := event.Data[0].(id.ID)
