@@ -43,3 +43,30 @@ func (s *Session) IssueBotInteractionAdmission(ctx context.Context, installation
 	}
 	return append([]byte(nil), raw...), nil
 }
+
+// BotInteractionGroupAbsent asks for an absence proof bound to an active,
+// installation-scoped admission receipt. A malformed boolean is a protocol
+// error; callers must never infer absence from an HTTP refusal.
+func (s *Session) BotInteractionGroupAbsent(ctx context.Context, installation, requestID id.ID) (bool, error) {
+	if s == nil || s.c == nil || s.token == "" || requestID.IsZero() {
+		return false, ErrInvalidConfig
+	}
+	inst, err := pathID(installation)
+	if err != nil {
+		return false, err
+	}
+	request, err := pathID(requestID)
+	if err != nil {
+		return false, err
+	}
+	raw, _, err := s.c.do(ctx, s.token, http.MethodGet,
+		"bot-runtime/installations/"+inst+"/interaction-admissions/"+request+"/group-absence",
+		nil, nil, 16, false)
+	if err != nil {
+		return false, err
+	}
+	if len(raw) != 1 || raw[0] != 0xf4 && raw[0] != 0xf5 {
+		return false, ErrProtocol
+	}
+	return raw[0] == 0xf5, nil
+}

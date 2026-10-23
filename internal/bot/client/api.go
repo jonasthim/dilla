@@ -672,7 +672,8 @@ func (s *Session) KeyPackage(ctx context.Context, device id.ID) ([]byte, error) 
 	if e != nil {
 		return nil, e
 	}
-	if _, ok := asBytes(a[0], -1); !ok {
+	keyPackage, ok := asBytes(a[0], -1)
+	if !ok || len(keyPackage) == 0 || len(keyPackage) > 65505 {
 		return nil, ErrProtocol
 	}
 	if n, ok := asUint(a[1]); !ok || n > 1 {
@@ -681,7 +682,7 @@ func (s *Session) KeyPackage(ctx context.Context, device id.ID) ([]byte, error) 
 	if _, ok := asBytes(a[2], -1); !ok {
 		return nil, ErrProtocol
 	}
-	return raw, nil
+	return append([]byte(nil), keyPackage...), nil
 }
 func (s *Session) Welcomes(ctx context.Context, after uint64, limit uint64) ([]Welcome, error) {
 	if limit == 0 || limit > 64 {

@@ -496,6 +496,18 @@ server context was read together; it is not authorization to register a group.
 The registrar still checks current state and consumes the admission receipt
 atomically with registration.
 
+For the human participant, the Bot accepts either an already verified UMK pin or
+an unchanged first-seen pin. First-seen acceptance is limited to this operation:
+the pin must exist, its UMK must equal the snapshot UMK, and it must have no
+pending changed key; the snapshot's participant list must also be byte-for-byte
+equal to the list already ingested and cached by the native core, including its
+version and UMK/SSK. The snapshot signature and the device-list signatures and
+cross-signatures are still verified. A missing pin, changed key, or any mismatch
+between the signed snapshot and cached list refuses interaction. This lets a Bot
+serve a newly joined member under the existing first-seen trust model without
+marking that member verified. The Bot's own identity always requires its own
+verified pin.
+
 The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
 than authenticated server time, an admission replayed for another operation or
 group, or an `eligibility_revision` older than the latest admission known for
@@ -849,6 +861,7 @@ the old installation; a later installation does not inherit its policy.
 | `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` or kind-3 `[operation_id,expected_generation,registration_body,admission_request_id]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
+| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B, ready, wire 3 | — | CBOR boolean; true only while the matching admission is live and its exact group ID is absent |
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
 | `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B, ready, Music capability | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current approved DJ roles, `Cache-Control: no-store` |
 | `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |

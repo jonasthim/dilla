@@ -52,6 +52,7 @@ type interactionRegistrationSessionAPI interface {
 	BotInteractionContextSnapshot(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
 	RegisterBotGroupWithAdmissionRequest(context.Context, id.ID, id.ID, uint64, []byte, id.ID) (client.BotGroupRegistrationReceipt, error)
 	BotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (client.BotGroupRegistrationReceipt, error)
+	BotInteractionGroupAbsent(context.Context, id.ID, id.ID) (bool, error)
 	GroupInfo(context.Context, id.ID) (client.GroupInfo, error)
 	KeyPackage(context.Context, id.ID) ([]byte, error)
 }
@@ -442,12 +443,12 @@ func (c *InteractionRegistrationCoordinator) proveInteractionRetrySafe(ctx conte
 	if d.InstanceID != c.instance || d.Generation != in.Generation {
 		return ErrInteractionRegistrationOutcomeUnknown
 	}
-	_, err = c.session.GroupInfo(ctx, in.Group)
-	if err == nil {
-		return ErrInteractionRegistrationRecovery
-	}
-	if !apiNotFound(err) {
+	absent, err := c.session.BotInteractionGroupAbsent(ctx, c.installation, in.AdmissionRequest)
+	if err != nil {
 		return fmt.Errorf("%w: cannot prove group absence: %v", ErrInteractionRegistrationOutcomeUnknown, err)
+	}
+	if !absent {
+		return ErrInteractionRegistrationRecovery
 	}
 	return nil
 }

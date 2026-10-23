@@ -1246,6 +1246,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 	case "POST /v1/bot-runtime/installations/{installation}/interaction-admissions",
 		"POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context":
 		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence":
+		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/bot-runtime/installations/{installation}/music/dj-roles":
 		return ready && bot.Capabilities&botaccess.MusicCapability != 0 && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":

@@ -308,13 +308,27 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		}
 		return nil, resp.StatusCode, observation, nil
 	}
-	if len(b) == 0 || cborx.CheckDeterministic(b) != nil {
+	validStrictBoolean := method == http.MethodGet && botInteractionGroupAbsencePath(path) && len(b) == 1 && (b[0] == 0xf4 || b[0] == 0xf5)
+	if len(b) == 0 || cborx.CheckDeterministic(b) != nil && !validStrictBoolean {
 		if mutation {
 			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
 		return nil, resp.StatusCode, observation, ErrProtocol
 	}
 	return b, resp.StatusCode, observation, nil
+}
+
+func botInteractionGroupAbsencePath(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 6 || parts[0] != "bot-runtime" || parts[1] != "installations" || parts[2] == "" || parts[3] != "interaction-admissions" || parts[4] == "" || parts[5] != "group-absence" {
+		return false
+	}
+	_, err := id.Parse(parts[2])
+	if err != nil {
+		return false
+	}
+	_, err = id.Parse(parts[4])
+	return err == nil
 }
 
 func errorBodyLimit(path string) int64 {
@@ -501,6 +515,9 @@ func expectedStatus(method, path string) (int, bool) {
 			return 201, true
 		}
 		if len(parts) == 4 && parts[3] == "interaction-admissions" && method == http.MethodPost {
+			return 200, true
+		}
+		if len(parts) == 6 && parts[3] == "interaction-admissions" && parts[5] == "group-absence" && method == http.MethodGet {
 			return 200, true
 		}
 		if len(parts) == 5 && parts[3] == "interaction-admissions" && parts[4] == "context" && method == http.MethodPost {

@@ -591,7 +591,10 @@ impl ClientCore {
                     "interaction device-list pin is unavailable",
                 ));
             };
-            if verified != 1
+            // A first-seen participant pin is bounded TOFU: the signed snapshot below must
+            // match its exact ingested list and unchanged UMK. The Bot's own pin stays verified.
+            let is_bot = list.user.as_bytes() == &own.user_id;
+            if (is_bot && verified != 1)
                 || changed.is_some()
                 || umk.as_slice() != list.umk
                 || cached_umk.as_slice() != list.umk
@@ -1017,7 +1020,8 @@ mod interaction_snapshot_tests {
         let human_snapshot_list = signed_list(mid(HUMAN_USER), mid(HUMAN_DEVICE), 91, 92);
         {
             let c = connection.lock().unwrap();
-            c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,1,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.umk.as_slice()]).unwrap();
+            // A first-seen participant remains unverified until a human compares safety numbers.
+            c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,0,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.umk.as_slice()]).unwrap();
             c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.version as i64, human_snapshot_list.blob, human_snapshot_list.umk.as_slice(), human_snapshot_list.ssk.as_slice()]).unwrap();
         }
         let expected = Expected {
@@ -1045,6 +1049,29 @@ mod interaction_snapshot_tests {
             .bot_verify_interaction_snapshot(&wire, &expected)
             .unwrap();
         assert_eq!(accepted.admission_id, mid([1; 16]));
+        {
+            let c = connection.lock().unwrap();
+            c.execute("UPDATE app_trust_pins SET changed_umk=?1 WHERE user_id=?2", rusqlite::params![[0x55u8; 32].as_slice(), HUMAN_USER.as_slice()]).unwrap();
+        }
+        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "changed participant UMK must remain blocked");
+        {
+            let c = connection.lock().unwrap();
+            c.execute("UPDATE app_trust_pins SET changed_umk=NULL WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
+            c.execute("UPDATE app_device_lists SET version=version+1 WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
+        }
+        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "changed participant list must remain blocked");
+        {
+            let c = connection.lock().unwrap();
+            c.execute("UPDATE app_device_lists SET version=?1 WHERE user_id=?2", rusqlite::params![human_snapshot_list.version as i64, HUMAN_USER.as_slice()]).unwrap();
+            c.execute("DELETE FROM app_trust_pins WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
+        }
+        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "missing participant pin must remain blocked");
+        {
+            let c = connection.lock().unwrap();
+            c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,0,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.umk.as_slice()]).unwrap();
+            c.execute("UPDATE app_trust_pins SET verified=0 WHERE user_id=?1", [BOT_USER.as_slice()]).unwrap();
+        }
+        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "Bot own pin must still require verification");
         let mut bad = wire.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(

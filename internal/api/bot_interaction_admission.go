@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"math"
@@ -41,7 +42,79 @@ type botInteractionAdmissionPayload struct {
 func (d Deps) registerBotInteractionAdmissions(m *server.Mux) {
 	botSession := BotSessionRoute(d.Sessions, d.Limiter)
 	m.Handle("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", botSession("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", http.HandlerFunc(d.issueBotInteractionAdmission)))
+	m.Handle("GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence", botSession("GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence", http.HandlerFunc(d.proveBotInteractionGroupAbsent)))
 	d.registerBotInteractionContext(m)
+}
+
+// proveBotInteractionGroupAbsent is a narrowly scoped retry-safety proof. It is
+// available only for an unexpired admission issued to this exact Bot session,
+// and only reports whether that admission's exact group id is absent.
+func (d Deps) proveBotInteractionGroupAbsent(w http.ResponseWriter, r *http.Request) {
+	s, ok := session(r)
+	if !ok || s.Bot == nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "Bot session required"))
+		return
+	}
+	installationID, err := server.PathID(r, "installation")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	requestID, err := server.PathID(r, "request")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if installationID != s.Bot.InstallationID || s.Bot.State != store.BotInstallationReady {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "session is not bound to this ready Bot installation"))
+		return
+	}
+	installation, err := d.Repo.GetBotInstallation(r.Context(), installationID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if installation.CommunityID != s.Bot.CommunityID || installation.State != store.BotInstallationReady || installation.RemovedAt != nil || installation.UserID == nil || installation.DeviceID == nil || *installation.UserID != s.UserID || *installation.DeviceID != s.DeviceID || installation.CredentialVerifiedAt == nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "session is not bound to this current Bot installation"))
+		return
+	}
+	receipts, ok := d.Repo.(store.BotInteractionAdmissionReceipts)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "interaction admission receipts unavailable"))
+		return
+	}
+	receipt, err := receipts.GetBotInteractionAdmissionReceipt(r.Context(), installationID, requestID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	var proof botInteractionAdmissionPayload
+	if err := cborx.Unmarshal(receipt.Payload, &proof); err != nil || receipt.InstallationID != installationID || receipt.RequestID != requestID || len(receipt.Signature) != ed25519.SignatureSize || len(d.ExternalSenderPub) != ed25519.PublicKeySize || proof.Version != 1 || proof.AdmissionID.IsZero() || proof.InstanceID != d.Instance.InstanceID || proof.InstallationID != installationID || proof.CommunityID != installation.CommunityID || proof.BotUserID != s.UserID || proof.BotDeviceID != s.DeviceID || proof.NotAfter <= uint64(d.Clock.Now().Unix()) || receipt.NotAfter != int64(proof.NotAfter) || !ed25519.Verify(ed25519.PublicKey(d.ExternalSenderPub), append([]byte("dilla bot interaction admission v1\x00"), receipt.Payload...), receipt.Signature) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "interaction admission is unavailable or expired"))
+		return
+	}
+	tuple, err := cborx.Marshal([]any{proof.GroupID, proof.ParticipantUserID, proof.ParticipantDeviceID})
+	if err != nil {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "interaction admission validation unavailable"))
+		return
+	}
+	hash := sha256.Sum256(tuple)
+	if !bytes.Equal(hash[:], receipt.RequestHash) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "interaction admission binding is invalid"))
+		return
+	}
+	_, err = d.Repo.GetGroup(r.Context(), proof.GroupID)
+	if err == nil {
+		_ = server.EncodeBody(w, http.StatusOK, false)
+		return
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, true); err != nil {
+		server.WriteError(w, err)
+	}
 }
 
 func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Request) {

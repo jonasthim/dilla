@@ -504,8 +504,12 @@ func TestRepresentativeTypedRoutesMatchWireStatusesAndShapes(t *testing.T) {
 	if receipt, err := s.KeyPackagePublicationReceipt(context.Background(), testID(9), testID(10)); err != nil || receipt.Generation != 2 || receipt.Count != 1 {
 		t.Fatalf("publication receipt=%+v err=%v", receipt, err)
 	}
-	if _, err := s.KeyPackage(context.Background(), testID(2)); err != nil {
+	keyPackage, err := s.KeyPackage(context.Background(), testID(2))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Equal(keyPackage, []byte("kp")) {
+		t.Fatalf("KeyPackage returned %x, want exact TLS body %x", keyPackage, []byte("kp"))
 	}
 	if rows, err := s.Welcomes(context.Background(), 0, 10); err != nil || len(rows) != 1 {
 		t.Fatalf("welcomes=%v err=%v", rows, err)

@@ -835,6 +835,13 @@ func (s *interactionRegistrationSessionFake) BotGroupRegistrationReceipt(_ conte
 	}
 	return *s.receipt, nil
 }
+func (s *interactionRegistrationSessionFake) BotInteractionGroupAbsent(_ context.Context, _ id.ID, request id.ID) (bool, error) {
+	if s.currentTime == 0 {
+		s.currentTime = 100
+	}
+	notAfter, ok := s.admissions[request]
+	return ok && notAfter > s.currentTime, nil
+}
 func (s *interactionRegistrationSessionFake) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
 	return client.GroupInfo{}, &client.APIError{Status: http.StatusNotFound, Code: "E_NOT_FOUND"}
 }

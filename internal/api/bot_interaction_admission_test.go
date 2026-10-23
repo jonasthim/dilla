@@ -75,6 +75,7 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	verifier := &admissionListVerifier{}
 	h, deps := newTestAPIFull(t, nil, func(d *api.Deps) {
 		d.DeviceLists = verifier
+		d.ExternalSenderPub = append(ed25519.PublicKey(nil), private.Public().(ed25519.PublicKey)...)
 		d.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
 			if failSign {
 				return nil, errors.New("test signer failure")
@@ -102,7 +103,7 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	if err := deps.Repo.CreateBotRuntime(ctx, store.BotRuntimeRow{ID: runtime, TokenHash: make([]byte, 32), Created: now, Rotated: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: community, RuntimeID: &runtime, UserID: &bot, DeviceID: &botDevice, State: store.BotInstallationJoining, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: community, RuntimeID: &runtime, UserID: &bot, DeviceID: &botDevice, State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
 		t.Fatal(err)
 	}
 	participant, participantDevice := id.New(), id.New()
@@ -148,6 +149,26 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	signature, sOK := result[1].([]byte)
 	if !pOK || !sOK || len(signature) != ed25519.SignatureSize || !ed25519.Verify(private.Public().(ed25519.PublicKey), append([]byte("dilla bot interaction admission v1\x00"), payload...), signature) {
 		t.Fatalf("admission signature invalid: %#v", result)
+	}
+	absencePath := path + "/" + requestID.String() + "/group-absence"
+	absence := doCBORAuth(h, http.MethodGet, absencePath, nil, token)
+	if absence.Code != http.StatusOK || !bytes.Equal(absence.Body.Bytes(), []byte{0xf5}) {
+		t.Fatalf("candidate group absence proof = %d %x, want strict CBOR true", absence.Code, absence.Body.Bytes())
+	}
+	missingReceipt := doCBORAuth(h, http.MethodGet, path+"/"+id.New().String()+"/group-absence", nil, token)
+	if missingReceipt.Code != http.StatusNotFound {
+		t.Fatalf("absence proof without admission receipt = %d, want 404", missingReceipt.Code)
+	}
+	foreignInstallation := doCBORAuth(h, http.MethodGet, "/v1/bot-runtime/installations/"+id.New().String()+"/interaction-admissions/"+requestID.String()+"/group-absence", nil, token)
+	if foreignInstallation.Code != http.StatusForbidden {
+		t.Fatalf("absence proof for foreign installation = %d, want 403", foreignInstallation.Code)
+	}
+	if err := deps.Repo.CreateGroup(ctx, store.GroupRow{GroupID: group, Binding: []byte{0x80}, Kind: 0, CommunityID: &community, TargetID: id.New(), Ciphersuite: 1, Epoch: 1, GroupInfoBlob: []byte{1}, TreeHash: make([]byte, 32), PublicGroupState: []byte{1}, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	present := doCBORAuth(h, http.MethodGet, absencePath, nil, token)
+	if present.Code != http.StatusOK || !bytes.Equal(present.Body.Bytes(), []byte{0xf4}) {
+		t.Fatalf("existing candidate group absence proof = %d %x, want strict CBOR false", present.Code, present.Body.Bytes())
 	}
 	wrongListKey := append([]byte(nil), dsk...)
 	wrongListKey[0] ^= 0xff
@@ -213,6 +234,10 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	expiredConflict := postCBORAuth(h, path, mustCBOR(t, []any{failedID, id.New(), participant, participantDevice}), token)
 	if expiredConflict.Code != http.StatusConflict {
 		t.Fatalf("expired request ID reused for another group = %d %x, want 409", expiredConflict.Code, expiredConflict.Body.Bytes())
+	}
+	expiredAbsence := doCBORAuth(h, http.MethodGet, absencePath, nil, token)
+	if expiredAbsence.Code != http.StatusForbidden {
+		t.Fatalf("expired admission absence proof = %d %x, want 403", expiredAbsence.Code, expiredAbsence.Body.Bytes())
 	}
 	var currentPayload []any
 	if err := cborx.Unmarshal(renewed[0].([]byte), &currentPayload); err != nil || len(currentPayload) != 12 {
