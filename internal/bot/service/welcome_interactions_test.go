@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -38,10 +39,12 @@ func TestWelcomePreviewRequiresCurrentManagerAndOnlyRendersText(t *testing.T) {
 }
 
 type welcomeSettingsNative struct {
-	binding  native.Binding
-	state    native.StateValue
-	changes  []native.StateChange
-	writeErr error
+	binding   native.Binding
+	state     native.StateValue
+	changes   []native.StateChange
+	writeErr  error
+	receipts  map[id.ID]native.StateChange
+	revisions map[id.ID]uint64
 }
 
 func (n *welcomeSettingsNative) Binding() native.Binding { return n.binding }
@@ -51,15 +54,27 @@ func (n *welcomeSettingsNative) StateGet(_ context.Context, area uint64, key []b
 	}
 	return n.state, nil
 }
-func (n *welcomeSettingsNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+func (n *welcomeSettingsNative) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
 	n.changes = append(n.changes, changes...)
 	if n.writeErr != nil {
 		return nil, n.writeErr
+	}
+	if prior, ok := n.receipts[tx]; ok {
+		if len(changes) != 1 || prior.Area != changes[0].Area || prior.ExpectedRevision != changes[0].ExpectedRevision || string(prior.Key) != string(changes[0].Key) || !bytes.Equal(prior.Value, changes[0].Value) {
+			return nil, errors.New("transaction id reused with changed input")
+		}
+		return []uint64{n.revisions[tx]}, nil
 	}
 	if len(changes) != 1 || changes[0].ExpectedRevision != n.state.Revision {
 		return nil, errors.New("revision conflict")
 	}
 	n.state = native.StateValue{Revision: n.state.Revision + 1, Value: changes[0].Value}
+	if n.receipts == nil {
+		n.receipts = make(map[id.ID]native.StateChange)
+		n.revisions = make(map[id.ID]uint64)
+	}
+	n.receipts[tx] = changes[0]
+	n.revisions[tx] = n.state.Revision
 	return []uint64{n.state.Revision}, nil
 }
 
@@ -80,9 +95,14 @@ func TestWelcomeSettingsGetAndPutUseEncryptedStateRevision(t *testing.T) {
 	}
 	requestRevision, expires := uint64(0), uint64(120)
 	put := settings.Handlers()[protocol.OpSettingsPut]
-	result, err = put.Handle(context.Background(), actor, protocol.Request{RequestID: interactionID(30), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), change.Value}})
+	request := protocol.Request{RequestID: interactionID(30), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), change.Value}}
+	result, err = put.Handle(context.Background(), actor, request)
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || n.state.Revision != 1 {
 		t.Fatalf("welcome settings put=%+v stored=%+v err=%v", result, n.state, err)
+	}
+	replay, err := put.Handle(context.Background(), actor, request)
+	if err != nil || replay.Status != 0 || replay.Revision == nil || *replay.Revision != 1 || n.state.Revision != 1 {
+		t.Fatalf("welcome settings replay=%+v stored=%+v err=%v, want original receipt", replay, n.state, err)
 	}
 	result, err = get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{uint64(welcomeSettingsSection)}})
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || string(result.Data) != string(n.state.Value) {
@@ -106,14 +126,14 @@ func TestWelcomeSettingsPutRejectsStaleRevisionAndUnauthorizedActor(t *testing.T
 	request := protocol.Request{RequestID: interactionID(31), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), cfg.Value}}
 	put := settings.Handlers()[protocol.OpSettingsPut]
 	result, err := put.Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
-	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 4 || len(n.changes) != 0 {
-		t.Fatalf("stale welcome put=%+v writes=%d err=%v", result, len(n.changes), err)
+	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 4 || len(n.changes) != 1 || n.changes[0].ExpectedRevision != 3 {
+		t.Fatalf("stale welcome put=%+v transactions=%+v err=%v", result, n.changes, err)
 	}
 	auth.allowed = false
 	request.Revision = ptrUint64(4)
 	result, err = put.Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
-	if err != nil || result.Status != interactionStatusForbidden || len(n.changes) != 0 {
-		t.Fatalf("unauthorized welcome put=%+v writes=%d err=%v", result, len(n.changes), err)
+	if err != nil || result.Status != interactionStatusForbidden || len(n.changes) != 1 {
+		t.Fatalf("unauthorized welcome put=%+v transactions=%+v err=%v", result, n.changes, err)
 	}
 }
 

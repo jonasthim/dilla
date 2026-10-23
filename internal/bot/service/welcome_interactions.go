@@ -58,7 +58,7 @@ func (h WelcomeInteractions) authorizeSettings(ctx context.Context, actor Intera
 	if !allowed {
 		return false, InteractionResult{Status: interactionStatusForbidden}, nil
 	}
-	if mutation && (request.Revision == nil || *request.Revision > math.MaxInt64 || request.Expires == nil) {
+	if mutation && (request.Revision == nil || *request.Revision >= math.MaxInt64 || request.Expires == nil) {
 		return false, InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	return true, InteractionResult{}, nil
@@ -119,21 +119,21 @@ func (h WelcomeInteractions) putSettings(ctx context.Context, actor InteractionA
 	if state.Revision > math.MaxInt64 || state.Tombstone {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	if state.Revision != *request.Revision {
-		current := state.Revision
-		return InteractionResult{Status: interactionStatusConflict, Revision: &current}, nil
-	}
-	change.ExpectedRevision = state.Revision
+	change.ExpectedRevision = *request.Revision
 	revisions, txErr := h.Native.StateTransaction(ctx, request.RequestID, []native.StateChange{change})
 	if txErr != nil {
+		if state.Revision != *request.Revision {
+			current := state.Revision
+			return InteractionResult{Status: interactionStatusConflict, Revision: &current}, nil
+		}
 		latest, readErr := h.Native.StateGet(ctx, welcomeSettingsArea, []byte(welcomeSettingsKey))
-		if readErr == nil && latest.Revision != state.Revision {
+		if readErr == nil && latest.Revision != *request.Revision {
 			current := latest.Revision
 			return InteractionResult{Status: interactionStatusConflict, Revision: &current}, nil
 		}
 		return InteractionResult{}, txErr
 	}
-	if len(revisions) != 1 || revisions[0] != state.Revision+1 || revisions[0] > math.MaxInt64 {
+	if len(revisions) != 1 || revisions[0] != *request.Revision+1 || revisions[0] > math.MaxInt64 {
 		return InteractionResult{}, errors.New("invalid welcome settings revision")
 	}
 	revision := revisions[0]
