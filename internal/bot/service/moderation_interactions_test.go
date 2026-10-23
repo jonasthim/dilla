@@ -253,10 +253,17 @@ func TestModerationInteractionsFailClosedForMissingActorOrReaderError(t *testing
 	}
 }
 
-func TestModerationInteractionsDoNotRegisterEvidenceMutation(t *testing.T) {
+func TestModerationInteractionsEvidenceMutationFailsClosedWithoutReceiptLookup(t *testing.T) {
 	handlers := (ModerationInteractions{Reader: &moderationInteractionReaderFake{}, CommunityID: interactionID(2)}).Handlers()
-	if _, ok := handlers[protocol.OpModerationEvidence]; ok {
-		t.Fatal("evidence operation registered without accepted moderation action context")
+	handler, ok := handlers[protocol.OpModerationEvidence]
+	if !ok {
+		t.Fatal("manual evidence operation is not registered")
+	}
+	result, err := handler.Handle(context.Background(), InteractionActor{User: interactionID(3), Device: interactionID(4)}, protocol.Request{
+		CommunityID: interactionID(2), Args: []any{interactionID(5), "reason", "excerpt"},
+	})
+	if err != nil || result.Status == 0 {
+		t.Fatalf("unwired manual evidence handler result=%+v err=%v, want fail-closed refusal", result, err)
 	}
 }
 

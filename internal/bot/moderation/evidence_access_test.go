@@ -167,6 +167,34 @@ func TestEvidenceWriterRoundTripsOnlyInstallationBoundEncryptedState(t *testing.
 	}
 }
 
+func TestManualEvidencePersistsAcceptedReceiptAndActorBinding(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding}
+	input := EvidenceInput{OperationID: id.ID{7}, Action: ActionRemove, Rule: RuleManual,
+		Reason: "reviewed by moderator", Excerpt: "bounded excerpt", CreatedAt: time.Now().UTC(),
+		AcceptedActionID: id.ID{8}, AcceptedRevision: 12, ActorUserID: id.ID{9}, ActorDeviceID: id.ID{10}, GroupID: id.ID{11}, TargetSequence: 123}
+	writer := NewEvidenceWriter(state)
+	if !writer.BoundTo(binding.Installation, binding.Community) || writer.BoundTo(binding.Installation, id.ID{11}) {
+		t.Fatal("evidence writer reported an incorrect binding")
+	}
+	if err := writer.Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewEvidenceReader(state, &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true})
+	got, err := reader.Read(context.Background(), id.ID{6}, input.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rule != RuleManual || got.AcceptedActionID != input.AcceptedActionID || got.AcceptedRevision != input.AcceptedRevision ||
+		got.ActorUserID != input.ActorUserID || got.ActorDeviceID != input.ActorDeviceID || got.GroupID != input.GroupID || got.TargetSequence != input.TargetSequence || got.Reason != input.Reason || got.Excerpt != input.Excerpt {
+		t.Fatalf("manual accepted evidence round trip = %+v", got)
+	}
+	input.AcceptedActionID = id.ID{}
+	if err := writer.Save(context.Background(), input); !errors.Is(err, ErrEvidenceWrite) {
+		t.Fatalf("manual evidence without accepted action receipt = %v, want ErrEvidenceWrite", err)
+	}
+}
+
 func TestEvidenceReaderRejectsAnotherCommunityBinding(t *testing.T) {
 	storedBinding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
 	state := &evidenceState{binding: storedBinding, value: encodedEvidence(t, storedBinding, testEvidenceID)}

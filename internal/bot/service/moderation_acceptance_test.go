@@ -122,7 +122,7 @@ func TestModerationCaseRequiresMatchingServerAcceptance(t *testing.T) {
 				}
 			}
 			messageID := mustID(t, action.Message)
-			if len(evidence) != 13 || !bytes.Equal(evidence[4].([]byte), backend.accepted.operationID[:]) ||
+			if len(evidence) != 19 || !bytes.Equal(evidence[4].([]byte), backend.accepted.operationID[:]) ||
 				!bytes.Equal(evidence[6].([]byte), messageID[:]) ||
 				evidence[9] != "automatic moderation: mention_count" || evidence[10] != action.Excerpt {
 				t.Fatalf("evidence is not attached to the accepted request: %#v", evidence)

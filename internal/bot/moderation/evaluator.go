@@ -28,6 +28,7 @@ const (
 	RuleRate      Rule = "message_rate"
 	RuleDuplicate Rule = "duplicate_body"
 	RuleMentions  Rule = "mention_count"
+	RuleManual    Rule = "manual_moderator"
 )
 
 type Action string
