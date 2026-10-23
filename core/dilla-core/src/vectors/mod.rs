@@ -996,6 +996,16 @@ pub fn run_frames() -> SuiteReport {
             "rejected",
             if refused { "rejected" } else { "accepted" },
         ));
+        // Final review (core) Minor 4: the named code, as the client answers the row (wire.rs), where the
+        // client engine is built (not on wasm32-wasip1, whose core has no client).
+        #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
+        cases.push(CaseReport::compare(
+            format!("withdrawn reject {name}"),
+            "code",
+            expect_str(&reject["code"]),
+            crate::client::wire::decode_withdrawn_blob(&blob)
+                .map_or_else(|e| e.code.to_owned(), |_| "accepted".to_owned()),
+        ));
     }
     SuiteReport {
         name: "frames",

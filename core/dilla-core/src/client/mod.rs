@@ -13,7 +13,8 @@ mod search;
 mod settings;
 mod sync;
 mod trust;
-mod wire;
+// pub(crate): the vector runner checks the `withdrawn` blob rejects' codes through it.
+pub(crate) mod wire;
 
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};

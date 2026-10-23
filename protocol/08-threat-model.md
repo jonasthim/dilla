@@ -145,7 +145,9 @@ Stated plainly in the product's documentation and onboarding:
   removed within the normal sweep window, and it gets no new media without a token. A malicious
   member cannot withdraw and cannot block a `Remove`: committing stays open to every member, and a
   commit that omits a standing `Remove` is refused as before. A malicious instance could withdraw
-  its own absence `Remove`s, which it could equally never have issued: call presence is already the
+  any of its own `Remove`s, not only its absence `Remove`s (the `withdrawable` mark binds only an
+  honest instance; a client cannot tell a kick's, a ban's or a revocation's `Remove` from an
+  absence one), each of which it could equally never have issued: call presence is already the
   instance's word, and it gains no power over members' proposals, which clients never drop on its
   say-so.
 - A follower tab receives no group material, timeline/search slices, plaintext, or `base_key`.

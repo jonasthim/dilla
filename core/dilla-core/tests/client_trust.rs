@@ -1878,6 +1878,12 @@ fn sec_an_aborted_build_keeps_the_failed_add_a_peer_commits() {
         "Alice processes Xavier's commit of the Add: her state is not lost"
     );
     assert_eq!(after.epoch, epoch + 1);
+    // UP13 Minor 2: the failed leaf, now in the tree through Xavier's commit, still blocks sends.
+    assert_ne!(
+        sec_send(&mut alice),
+        "OK",
+        "a send to a group holding the failed leaf is refused"
+    );
 }
 
 /// Ruling 3, the usual order: the instance's Add reaches this device as a handshake row first

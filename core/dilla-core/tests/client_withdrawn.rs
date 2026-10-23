@@ -87,10 +87,13 @@ fn an_aborted_build_keeps_the_instance_remove_its_listing_lacked() {
         .commit_build(&GROUP, &empty.into_vec())
         .expect("commit_build");
     a.core.commit_abort(&GROUP).expect("commit_abort");
+    // UP13 Minor 1: `pending` counts the `app_proposals` rows, which the build's I4 drop never
+    // deletes, so this pins the row only. The OpenMLS queue entry the put-back restores is pinned
+    // by the state-4 assertion below: without it Bob's commit would not apply here.
     assert_eq!(
         pending(&a, &GROUP),
         1,
-        "the abort leaves the queue as it was"
+        "the abort keeps the app_proposals row of the Remove"
     );
 
     // Bob's commit of that Remove wins the epoch.

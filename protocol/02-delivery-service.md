@@ -474,8 +474,8 @@ A `withdrawn` row (kind 3) says that the instance has withdrawn one of its own a
 (invariant 6, "Withdrawal"). Its `sender` is null (the instance), its `epoch` is the withdrawn
 proposal's epoch, and its `blob` is the deterministic CBOR `[proposal_ref(bstr)]`: a one-element
 array holding the MLS `ProposalRef` of that instance-originated `Remove`. A kind-3 row with a
-non-null `sender`, or whose `blob` is anything but a one-element array of one byte string, is a
-shape error. A client that applies one takes the named proposal out of its pending queue, but only
+non-null `sender`, or whose `blob` is anything but a one-element array of one non-empty byte
+string, is a shape error. A client that applies one takes the named proposal out of its pending queue, but only
 when the proposal it holds under that reference is a `Remove` whose sender is the instance's
 external sender; for any other proposal (a member's proposal, an `Add`, an `Update`), an unknown
 reference or one already committed, the row is a no-op. Its cursor moves past the row either way.
@@ -483,7 +483,9 @@ reference or one already committed, the row is a no-op. Its cursor moves past th
 Kind 3 is **capability-gated**, and the wire version stays 2: a core before it refuses a whole page
 that carries a kind above 2. The instance serves kind-3 rows only to a client that asked for them:
 on the gateway, a connection whose `identify` set `caps` bit 0 (`withdrawn_rows`); over HTTP, a
-`GET /v1/groups/{id}/handshakes` whose query carries `kinds=3`. Every other client gets the stream
+`GET /v1/groups/{id}/handshakes` whose query carries `kinds=3`. `kinds` is a comma-separated list of
+the additional kinds the client applies (the parameter may also repeat); it never filters kinds 0
+to 2, which every client gets. Only `3` is defined; other values are ignored. Every other client gets the stream
 with that `seq` left out, on HTTP, in the `mls.handshake` fan-out and in its replay alike. The `seq`
 space stays one space: such a client sees a gap, which its catch-up carries over as it carries over
 a row it never asked for (`limit` counts only the rows served).
@@ -714,8 +716,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    which references the `Remove`. The same holds for every proposal a client leaves out of its own
    commit while another member may commit it: a proposed `Add` whose leaf fails this client's
    validation (`03` § Leaf validation) and, in a call rotation, its own self-`Remove` (`01`).
-   Leaving a proposal out never takes it out of the queue; only a merged commit or a `withdrawn`
-   row does. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
+   Leaving a proposal out of a commit never takes it out of the queue; a merged commit, a
+   `withdrawn` row, or the client's withdrawal of its own refused proposal (the `E_REMOVE_PENDING`
+   case above) does. A device that never asked for kind 3 (`caps` bit 0) keeps the reference
    queued: its commits in that group are refused until its next epoch, which is a safe refusal
    because other members commit, and the instance never elects it (invariant 7). The same `Remove`
    proposed again within 30 seconds of the withdrawal (the `admissionJoinWindow` of `09` § Voice)
