@@ -327,4 +327,3 @@ CONFIG
 	systemctl enable --now dillabot || die "dillabot service failed to start; inspect systemctl status dillabot and journalctl -u dillabot"
 	log "installation complete; use Server Settings > Bot to enable it for a community"
 fi
-

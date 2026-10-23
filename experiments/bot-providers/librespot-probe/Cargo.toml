@@ -17,4 +17,3 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util", "signal"] }
 url = "2"
 rand = "0.8"
-

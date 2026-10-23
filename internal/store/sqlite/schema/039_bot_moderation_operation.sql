@@ -15,4 +15,3 @@ INSERT INTO bot_operations_new SELECT community_id,request_id,installation_id,ac
 DROP TABLE bot_operations;
 ALTER TABLE bot_operations_new RENAME TO bot_operations;
 CREATE INDEX bot_operations_by_installation ON bot_operations(installation_id, created);
-

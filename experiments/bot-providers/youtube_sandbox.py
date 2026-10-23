@@ -824,4 +824,3 @@ def run_isolated(
             broker.close()
         if temp_root is not None:
             temp_root.cleanup()
-
