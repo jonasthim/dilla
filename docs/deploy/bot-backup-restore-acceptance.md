@@ -5,12 +5,14 @@ instance with no real community members or provider credentials. The server arch
 instance keys and server-readable content; the Bot archive contains the runtime credential and the
 key that decrypts its local database. Store both as secrets.
 
-The automated Bot-side evidence is `go test ./cmd/dillabot -run 'TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady|TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio|TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly' -count=1`:
+The offline Bot archive and queue evidence is `go test ./cmd/dillabot -run 'TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady|TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio|TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly' -count=1`. Server-side stale-snapshot send refusal is covered by `go test ./internal/ds -run '^TestManagedBotSendAcceptReplayAndResolveAreDurable$' -count=1`:
 
 - The cold archive round trip preserves `database.key`, `state.db`, and SQLite `-wal`, `-shm`, and
   `-journal` files byte for byte with mode `0600`; the restored state directory remains `0700` and
   `dillabot doctor` accepts it.
 - Queue restoration retains the current track as paused and does not resolve or start a provider.
+- A managed Bot message encrypted at the restored epoch is refused while the group remains
+  `epoch_unknown`; the fixture verifies no additional application message was stored.
 
 The round-trip test uses opaque fixture bytes, not a production encrypted database or real service
 account. The doctor checks local files and permissions; it does not contact dillad or prove the
@@ -97,7 +99,7 @@ usable before testing an outbound Bot action. No outbound action may be observed
 ## Evidence boundary
 
 The offline fixture tests and this procedure do not establish that a live host's paired server and
-Bot archives are atomic, that a particular released schema restores successfully, or that the Bot
-cannot emit an application message from a pre-restore MLS snapshot on a real server. The live
-staging procedure above has not yet been run. Those remain release acceptance gaps; do not describe
-them as verified until the staging evidence is recorded.
+Bot archives are atomic, that a particular released schema restores successfully, or that a
+particular production Bot archive contains the stale MLS snapshot represented by the fixture. The
+live staging procedure above has not yet been run. Those remain release acceptance gaps; do not
+describe them as verified until the staging evidence is recorded.

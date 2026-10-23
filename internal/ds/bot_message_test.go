@@ -236,6 +236,22 @@ func TestManagedBotSendAcceptReplayAndResolveAreDurable(t *testing.T) {
 	if err := delivery.OnRestore(ctx, instance.Generation+1); err != nil {
 		t.Fatalf("OnRestore: %v", err)
 	}
+	// A stale Bot snapshot still encrypts at the restored row's old epoch. It
+	// must not be allowed to send until an active member has healed the group.
+	staleSend := request
+	staleSend.OperationID, staleSend.AttemptID = id.New(), id.New()
+	staleSend.ExpectedGeneration = instance.Generation + 1
+	if _, sendErr := delivery.AcceptBotMessage(ctx, staleSend); sendErr == nil {
+		t.Fatal("stale MLS snapshot send was accepted after restore")
+	} else {
+		var refusal *ds.Error
+		if !errors.As(sendErr, &refusal) || refusal.Code != "E_LEAF_NOT_CURRENT" {
+			t.Fatalf("stale MLS snapshot refusal = %v, want E_LEAF_NOT_CURRENT", sendErr)
+		}
+	}
+	if rows, listErr := h.repo.ListAppMessages(ctx, registered.GroupID, 0, 10); listErr != nil || len(rows) != 1 {
+		t.Fatalf("application messages after blocked stale send = %d, err=%v; want only the pre-restore message", len(rows), listErr)
+	}
 	orphan, predecessor, unknownOp := id.New(), id.New(), id.New()
 	unknown, err := delivery.ResolveBotMessage(ctx, ds.BotMessageResolveRequest{
 		Session: session, InstallationID: installation.ID, OperationID: unknownOp, AttemptID: orphan,

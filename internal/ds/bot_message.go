@@ -116,6 +116,9 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 		if group.ClosedAt != nil || group.CommunityID == nil || *group.CommunityID != r.CommunityID {
 			return errNotFound("group")
 		}
+		if group.EpochUnknown {
+			return errLeafNotCurrent()
+		}
 		if err := d.requireGroupCapabilityTx(ctx, tx, r.Session, group); err != nil {
 			return err
 		}
