@@ -155,7 +155,7 @@ func TestReadableRolePanelReactionUsesAuthenticatedMemberAndExactPanel(t *testin
 	if err := e.Repo.CreateDevice(t.Context(), store.DeviceRow{ID: deviceID, UserID: botID, DSKPub: append([]byte{1}, make([]byte, 31)...), CredentialBlob: []byte{1}, VerifiedAt: &verified, Created: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Repo.CreateBotInstallation(t.Context(), store.BotInstallationRow{ID: installationID, CommunityID: f.cid, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, ApprovedBy: e.sess[f.ownerTok].UserID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
+	if err := e.Repo.CreateBotInstallation(t.Context(), store.BotInstallationRow{ID: installationID, CommunityID: f.cid, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, Capabilities: 1 << 2, ApprovedBy: e.sess[f.ownerTok].UserID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
 		t.Fatal(err)
 	}
 	seq, err := e.Repo.NextChannelSeq(t.Context(), channel)
