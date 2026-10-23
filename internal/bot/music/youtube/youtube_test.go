@@ -146,6 +146,9 @@ func TestIsolatedMetadataRunnerBoundsCapturedOutput(t *testing.T) {
 	}
 	runner := IsolatedMetadataRunner{Timeout: 5 * time.Second}
 	output, err := runner.Run(context.Background(), extractor, nil, 128)
+	if errors.Is(err, ErrSandboxUnavailable) {
+		t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+	}
 	if !errors.Is(err, ErrMetadataTooLarge) || len(output) != 0 {
 		t.Fatalf("bounded output = %d bytes, %v; want no output and ErrMetadataTooLarge", len(output), err)
 	}
