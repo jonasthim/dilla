@@ -747,8 +747,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     `POST /v1/groups/{id}/heal`, uploading its member-signed GroupInfo together with its handshake
     tail (at most **64** items). The instance rebuilds its `PublicGroup` from its own restored
     state blob and replays the tail through it; it adopts the result only when its own stored epoch
-    is **≤** the uploaded GroupInfo's epoch, the tail replays cleanly, and the GroupInfo's
-    `tree_hash` equals the rebuilt tree's. When the instance holds no usable state blob for the
+    is **≤** the uploaded GroupInfo's epoch, the tail replays cleanly, the GroupInfo's epoch
+    **equals the replayed group state epoch**, and its `tree_hash` equals the rebuilt tree's.
+    Epoch equality matters even when an empty commit leaves the tree hash unchanged. When the
+    instance holds no usable state blob for the
     group, the healing member additionally uploads the ratchet tree in the same request — the one
     upload where the tree is allowed, because the instance has none — and the instance reseeds from
     it; RFC 9420 §12.4.3.3's signed `tree_hash` ties that tree to the member-signed GroupInfo, and
@@ -762,8 +764,9 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     instance holds — the same `kind`, `community_id` and `target_id` as the binding stored with
     the group (`rule = "reseed"`); and its `external_senders`, as the tree stands after the
     replayed tail, must pass invariant 1's rule for the group's kind (`rule = "reseed"`). The
-    reseed does not bound which devices the tree holds beyond that: the commits after the backup
-    are already inside the uploaded tree. A device that is the target
+    reseed requires the uploaded tree's epoch to equal the restored epoch. An ahead tree is refused
+    even with a nonempty tail: its missing handshake history cannot be verified and published to
+    other members from that tree alone. A device that is the target
     of an outstanding non-void DS `Remove` at the restored epoch (`409 E_REMOVE_PENDING`, as for a
     resync), or that is quarantined (`403 E_FORBIDDEN`), cannot heal. The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
