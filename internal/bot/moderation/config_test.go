@@ -31,12 +31,12 @@ func (n *configNative) StateGet(_ context.Context, area uint64, key []byte) (nat
 	return n.value, nil
 }
 
-func TestConfigStorePreservesStateReadFailureCause(t *testing.T) {
+func TestConfigStoreClassifiesStateReadFailureWithoutLeakingDetails(t *testing.T) {
 	n := testConfigNative()
-	n.readErr = errors.New("native state read failed")
+	n.readErr = errors.New("private native state detail")
 	_, _, err := NewStore(n).Load(context.Background())
-	if err == nil || !errors.Is(err, ErrConfigState) || !strings.Contains(err.Error(), n.readErr.Error()) {
-		t.Fatalf("state read error = %v, want config-state sentinel and underlying cause", err)
+	if err == nil || !errors.Is(err, ErrConfigState) || !strings.Contains(err.Error(), "state read") || strings.Contains(err.Error(), n.readErr.Error()) {
+		t.Fatalf("state read error = %v, want a stage label without the underlying detail", err)
 	}
 }
 

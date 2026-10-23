@@ -62,7 +62,7 @@ func (s *Store) Load(ctx context.Context) (Config, uint64, error) {
 	}
 	v, err := s.native.StateGet(ctx, configStateArea, configKey(s.binding))
 	if err != nil {
-		return Config{}, 0, fmt.Errorf("%w: state read: %v", ErrConfigState, err)
+		return Config{}, 0, fmt.Errorf("%w: state read", ErrConfigState)
 	}
 	if v.Tombstone {
 		return Config{}, v.Revision, ErrConfigState
