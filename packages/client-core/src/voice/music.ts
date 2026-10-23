@@ -254,8 +254,8 @@ function decodeSnapshot(data: Uint8Array): { state: VoiceMusicState; revision: s
     return { id: decoded.id, track: decoded };
   });
   const repeat = uint(field(row, 8), 2);
-  // The snapshot protocol does not report the actor's DJ grants, so never claim control authority in the UI.
+  const canControl = uint(field(row, 9), 1) === 1;
   return { revision, state: { status: 'available', track: current, queue, positionMs: uint(field(row, 4)), paused: uint(field(row, 5), 1) === 1,
     volume: uint(field(row, 6), 100), shuffle: uint(field(row, 7), 1) === 1,
-    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: false, manageQueue: false } } };
+    repeat: repeat === 0 ? 'off' : repeat === 1 ? 'one' : 'all', permissions: { control: canControl, manageQueue: canControl } } };
 }

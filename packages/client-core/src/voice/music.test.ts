@@ -7,9 +7,9 @@ const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
 const ITEM = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
 
-function snapshot(revision: bigint, paused: boolean) {
+function snapshot(revision: bigint, paused: boolean, canControl = true) {
   return encode([1n, revision, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ITEM], [], 0n,
-    paused ? 1n : 0n, 75n, 0n, 0n, 0n]);
+    paused ? 1n : 0n, 75n, 0n, 0n, canControl ? 1n : 0n]);
 }
 
 function response(request: Record<string, unknown>, deliveryId: string, status: number, revision: string | null, data: Uint8Array) {
@@ -58,7 +58,7 @@ describe('authenticated voice music adapter', () => {
     const state = f.adapter.state(CHANNEL);
     expect(state).toMatchObject({ status: 'available', track: { id: 'ef'.repeat(16), title: 'Track', artist: 'Artist' },
       queue: [], positionMs: 0, volume: 75, paused: false, shuffle: false, repeat: 'off',
-      permissions: { control: false, manageQueue: false } });
+      permissions: { control: true, manageQueue: true } });
     unsubscribe();
   });
 
@@ -97,6 +97,16 @@ describe('authenticated voice music adapter', () => {
     f.answer(f.getRequest(13), 2, '1', encode([]));
     await expect(command).rejects.toThrow(/permission/);
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
+    unsubscribe();
+  });
+
+  it('keeps controls read-only when the authenticated snapshot denies the current actor DJ access', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available',
+      permissions: { control: false, manageQueue: false } }));
     unsubscribe();
   });
 

@@ -436,6 +436,40 @@ func TestMusicSearchRefusesSpotifyAndBoundsEncodedResults(t *testing.T) {
 	})
 }
 
+func TestMusicStateReportsCurrentDJControlGrant(t *testing.T) {
+	channel := id.New()
+	for _, test := range []struct {
+		name string
+		dj   bool
+		want uint64
+	}{{name: "DJ", dj: true, want: 1}, {name: "listener", dj: false, want: 0}} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+			authority := &musicInteractionAuthorityFake{
+				call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: test.dj,
+			}
+			h := MusicInteractions{Store: store, Authority: authority, CommunityID: id.New()}
+			result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, protocol.Request{
+				CommunityID: h.CommunityID, ChannelID: &channel,
+			}, protocol.OpMusicState)
+			if err != nil || result.Status != 0 {
+				t.Fatalf("state response=%+v err=%v", result, err)
+			}
+			var snapshot []any
+			if err := cborx.Unmarshal(result.Data, &snapshot); err != nil {
+				t.Fatalf("decode music snapshot: %v", err)
+			}
+			if len(snapshot) != 10 {
+				t.Fatalf("snapshot fields=%d, want 10", len(snapshot))
+			}
+			got, ok := snapshot[9].(uint64)
+			if !ok || got != test.want || authority.roleChecks != 1 {
+				t.Fatalf("control grant=%#v role checks=%d, want %d and one current authorization check", snapshot[9], authority.roleChecks, test.want)
+			}
+		})
+	}
+}
+
 func uint64Ptr(v uint64) *uint64 { return &v }
 
 func TestMusicMutationDefersRevisionCheckUntilAuthorization(t *testing.T) {

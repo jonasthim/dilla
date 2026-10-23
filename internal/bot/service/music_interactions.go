@@ -137,7 +137,11 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		snapshot.State = state
 	}
 	if op == protocol.OpMusicState {
-		data, err := encodeMusicSnapshot(snapshot.State)
+		canControl, err := h.Authority.CanDJ(ctx, actor, call)
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		data, err := encodeMusicSnapshot(snapshot.State, canControl)
 		if err != nil {
 			return InteractionResult{}, err
 		}
@@ -375,14 +379,16 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 	return operation, true
 }
 
-func encodeMusicSnapshot(state music.State) ([]byte, error) {
+func encodeMusicSnapshot(state music.State, canControl bool) ([]byte, error) {
 	queue := make([]any, 0, len(state.Queue))
 	for i := range state.Queue {
 		t := state.Queue[i]
 		queue = append(queue, encodeMusicTrack(&t))
 	}
 	current := encodeMusicTrack(state.Current)
-	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), false})
+	// The final slot is the current actor's DJ/call-membership affordance. Every
+	// mutation still rechecks authority at its own write boundary.
+	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl)})
 }
 
 func encodeMusicTrack(t *music.Track) any {
