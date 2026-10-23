@@ -508,7 +508,7 @@ func decodeInteractionGroupDescriptors(b []byte, binding Binding) (any, error) {
 		if d.Binding.MediaVersion, err = groupUint(row[10]); err != nil || d.Binding.MediaVersion != 0 {
 			return nil, errors.New("interaction descriptor media")
 		}
-		if d.Epoch, err = groupUint(row[11]); err != nil || d.Epoch == 0 {
+		if d.Epoch, err = groupUint(row[11]); err != nil {
 			return nil, errors.New("interaction descriptor epoch")
 		}
 		if d.State, err = groupUint(row[12]); err != nil || d.State >= 4 {

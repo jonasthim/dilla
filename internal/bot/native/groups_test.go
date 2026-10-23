@@ -89,6 +89,20 @@ func TestNativeInteractionGroupDiscoveryIsSeparateAndStrict(t *testing.T) {
 	}
 }
 
+func TestNativeInteractionGroupDiscoveryKeepsPendingEpochZero(t *testing.T) {
+	row := []any{testID(8), testID(1), testID(4), testID(5), testID(3), testBinding().Community,
+		testID(6), testID(7), uint64(11), uint64(1), uint64(0), uint64(0), uint64(1)}
+	body, err := cborx.Marshal([]any{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newFakeClient(t, &fakeTransport{responses: [][]any{{body}}})
+	groups, err := c.InteractionGroups(context.Background())
+	if err != nil || len(groups) != 1 || groups[0].Epoch != 0 || groups[0].State != 1 {
+		t.Fatalf("pending epoch-zero interaction group=%v err=%v", groups, err)
+	}
+}
+
 func TestNativeInteractionHealSnapshotDecodesBoundedComponents(t *testing.T) {
 	group := testID(8)
 	tail, err := cborx.Marshal([]any{})

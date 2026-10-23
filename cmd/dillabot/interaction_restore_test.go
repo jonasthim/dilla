@@ -87,3 +87,12 @@ func TestHealRestoredInteractionGroupsRefusesMismatchedNativeBinding(t *testing.
 		t.Fatalf("mismatched native binding reached network/helper: gets=%d exports=%d err=%v", s.gets, n.exports, err)
 	}
 }
+
+func TestHealRestoredInteractionGroupsSkipsPendingEpochZero(t *testing.T) {
+	n, s := restoreFixture()
+	n.groups[0].State, n.groups[0].Epoch = 1, 0
+	healed, err := healRestoredInteractionGroups(context.Background(), n, s)
+	if err != nil || healed != 0 || s.gets != 0 || n.exports != 0 {
+		t.Fatalf("pending group was healed: healed=%d gets=%d exports=%d err=%v", healed, s.gets, n.exports, err)
+	}
+}
