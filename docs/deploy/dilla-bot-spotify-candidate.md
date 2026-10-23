@@ -38,6 +38,7 @@ install -d -m 0700 "$candidate_dir"
 npm ci
 bash scripts/install-ci-tool.sh wasm-bindgen
 bash scripts/install-ci-tool.sh wasm-pack
+bash scripts/install-ci-tool.sh binaryen
 wasm-pack build core/dilla-core-wasm --target web --profile wasm-release \
   --mode no-install --out-dir ../../packages/core-wasm/pkg
 node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
