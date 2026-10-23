@@ -134,7 +134,7 @@ impl ClientCore {
         let mut out = Encoder::new();
         out.array(3)
             .bytes(&group_info)
-            .bytes(&[0x80])
+            .array(0)
             .bytes(&ratchet_tree);
         if out.as_slice().len() > crate::bot::HELPER_PAYLOAD_MAX {
             return Err(ClientError::new(
@@ -184,16 +184,14 @@ mod tests {
         let snapshot = core.group_heal_snapshot(&GROUP).expect("local snapshot");
         let fields = crate::cbor::decode_strict(&snapshot, |d| {
             d.array(3)?;
-            Ok((
-                d.bytes()?.to_vec(),
-                d.bytes()?.to_vec(),
-                d.bytes()?.to_vec(),
-            ))
+            let group_info = d.bytes()?.to_vec();
+            d.array(0)?;
+            let ratchet_tree = d.bytes()?.to_vec();
+            Ok((group_info, ratchet_tree))
         })
-        .expect("three CBOR byte strings");
+        .expect("GroupInfo, empty tail array, and ratchet tree");
         assert!(!fields.0.is_empty());
-        assert_eq!(fields.1, [0x80], "same-snapshot tail is empty CBOR array");
-        assert!(!fields.2.is_empty());
+        assert!(!fields.1.is_empty());
 
         conn.lock()
             .unwrap()
