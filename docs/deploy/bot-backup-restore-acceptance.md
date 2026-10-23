@@ -11,7 +11,7 @@ and a Bot archive from one installation together.
 
 - `go test ./cmd/dillad -run 'TestRestoreBumpsTheGenerationAndArmsTheHeal|TestServeAdmitsABackupRefusesARestoreAndFinishesOneAtStart' -count=1` checks the server restore generation and heal window.
 - `go test ./cmd/dillabot -run 'TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady|TestNewMusicSupervisorRestoresPersistedStateWithoutStartingAudio|TestRestoreMusicSupervisorsCreatesPausedVoiceQueuesOnly' -count=1` checks Bot archive files and paused queue startup.
-- `go test ./internal/ds -run '^TestManagedBotSendAcceptReplayAndResolveAreDurable$' -count=1` directly invokes the delivery service's restore hook and checks that a stale-generation Bot message is refused without adding an application message.
+- `go test ./internal/ds -run 'TestManagedBotSendAcceptReplayAndResolveAreDurable/stale_MLS_snapshot_send_is_refused_before_group_heal' -count=1` directly invokes the delivery service's restore hook and checks that stale-epoch ciphertext is refused without adding an application message.
 
 The real local testhost path is `restore_heal_from_tail.scn`, run with `dilla-testhost` and
 `dilla-testkit` on disposable data. It writes and restores the server archive through the host's
@@ -117,10 +117,25 @@ usable before testing an outbound Bot action. No outbound action may be observed
 
 ## Evidence boundary
 
-The local tests do not establish that a live host's paired server and Bot archives are atomic, that
-a particular released schema restores successfully, or that a production Bot process restored from
-that paired archive refrains from sending until the group's MLS state is reconciled. The testhost
-scenario proves the server group can heal and then carry traffic, but it does not use the Bot's
-restored MLS snapshot. There is currently no Bot action trigger in the local harness that submits an
-outbound message from that restored snapshot. The paired staging procedure above has not been run;
-keep this as an open release acceptance gate.
+The paired acceptance test is still open. The local harness has no disposable way to start a
+`dillabot` process from an extracted Bot archive and trigger one of its real outbound actions against
+the restored `dillad` instance. In particular:
+
+- `TestManagedBotSendAcceptReplayAndResolveAreDurable` calls `DS.OnRestore` and then invokes
+  `AcceptBotMessage` with ciphertext prepared before the restore. It proves the delivery service
+  refuses that stale epoch, but it does not exercise a send initiated by a restored Bot process.
+- `TestColdBotArchiveRoundTripKeepsKeyAndSQLiteSidecarsDoctorReady` archives fixture strings as
+  opaque file contents. Its doctor seam skips WASM validation, so the archive is not an encrypted
+  production Bot state database and cannot be used to trigger an MLS send.
+- `restore_heal_from_tail.scn` performs a real server backup, restore, and member-driven heal, but
+  its actors are human test clients. It neither restores a Bot archive alongside the server archive
+  nor starts a Bot action before or after healing.
+- Paused music queue restoration is tested independently with an in-memory native-state seam. The
+  test does not carry that queue through the paired restore or a post-heal Bot action.
+
+Closing this gate needs a disposable integration seam that creates a genuine Bot MLS snapshot,
+archives that state together with the server snapshot, restores both, invokes a real Bot outbound
+action while the restored group is still epoch-unknown, observes a refusal with no application
+message, heals the group with an active member, and then verifies the Bot can send while restored
+music queues remain paused. The operator procedure above is not a substitute for that automated
+test, and has not been run; keep this as an open release acceptance gate.
