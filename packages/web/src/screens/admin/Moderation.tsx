@@ -213,7 +213,7 @@ export function WarnFlow(props: ModFlowProps): React.JSX.Element {
     void (async () => {
       try {
         const result = await client.call({ m: 'warnMember', communityId: props.communityId, userId: target.userId,
-          requestId: request.current!, reason });
+          requestId: request.current!, reason }) as { evidence: 'accepted' | 'pending' };
         if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
         props.announce(result.evidence === 'accepted' ? t('mod.warn.done', vars) : t('mod.warn.evidencePending', vars));
         if (g.session.current === at) props.onDone();
