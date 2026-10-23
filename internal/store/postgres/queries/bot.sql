@@ -77,6 +77,9 @@ DELETE FROM bot_session_bindings WHERE installation_id = $1;
 -- name: UpdateDeviceCredential :execrows
 UPDATE devices SET credential_blob = $1 WHERE id = $2;
 
+-- name: FinalizeBotDeviceCredential :execrows
+UPDATE devices SET credential_blob = $1, verified_at = $2 WHERE id = $3;
+
 -- name: LockDeviceDSK :exec
 -- The 64-bit transaction advisory lock is derived from the DSK bytes. Every repository device
 -- insertion takes the same lock, so lookup plus insert is atomic without a global unique index.

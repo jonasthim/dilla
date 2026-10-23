@@ -77,6 +77,9 @@ DELETE FROM bot_session_bindings WHERE installation_id = ?;
 -- name: UpdateDeviceCredential :execrows
 UPDATE devices SET credential_blob = ? WHERE id = ?;
 
+-- name: FinalizeBotDeviceCredential :execrows
+UPDATE devices SET credential_blob = ?, verified_at = ? WHERE id = ?;
+
 -- name: LockDeviceDSK :exec
 -- The first DML statement in a deferred SQLite transaction reserves its single writer, serializing
 -- this key check and insert with every other device creation.

@@ -935,6 +935,10 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	if finalized.Code != http.StatusOK {
 		t.Fatalf("finalize assigned bot credential = %d (%x)", finalized.Code, finalized.Body.Bytes())
 	}
+	finalizedDevice, err := deps.Repo.GetDevice(context.Background(), deviceID)
+	if err != nil || finalizedDevice.VerifiedAt == nil || *finalizedDevice.VerifiedAt != deps.Clock.Now().Unix() {
+		t.Fatalf("finalized Bot device verified_at = %+v, %v; want the server verification time", finalizedDevice, err)
+	}
 	if retry := putCBORAuth(h, credentialPath, credentialBody, botToken); retry.Code != http.StatusOK {
 		t.Fatalf("matching final credential replay while joining = %d (%x)", retry.Code, retry.Body.Bytes())
 	}

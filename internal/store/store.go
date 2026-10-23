@@ -367,6 +367,9 @@ type Devices interface {
 	GetDevice(ctx context.Context, deviceID id.ID) (DeviceRow, error)
 	// UpdateDeviceCredential replaces only the validated final enrollment credential.
 	UpdateDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte) error
+	// FinalizeBotDeviceCredential stores the validated final credential and stamps the Bot
+	// native device as verified at the same server time used by credential finalization.
+	FinalizeBotDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte, verifiedAt int64) error
 	ListDevicesByUser(ctx context.Context, userID id.ID) ([]DeviceRow, error)
 	TouchDevice(ctx context.Context, deviceID id.ID, lastSeen int64) error
 	RevokeDevice(ctx context.Context, deviceID id.ID, at int64) error

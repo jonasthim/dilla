@@ -1158,7 +1158,7 @@ func (d Deps) FinalizeBotCredential(w http.ResponseWriter, r *http.Request) {
 		if _, err := d.BotIdentity.VerifyNativeBot(r.Context(), req.Credential, device.DSKPub, expected); err != nil {
 			return server.Errorf(server.CodeInvalidRequest, "final bot credential is invalid")
 		}
-		if err := tx.UpdateDeviceCredential(r.Context(), device.ID, req.Credential); err != nil {
+		if err := tx.FinalizeBotDeviceCredential(r.Context(), device.ID, req.Credential, now); err != nil {
 			return err
 		}
 		verified := now

@@ -336,3 +336,16 @@ func (r *Repo) UpdateDeviceCredential(ctx context.Context, deviceID id.ID, crede
 	}
 	return nil
 }
+
+func (r *Repo) FinalizeBotDeviceCredential(ctx context.Context, deviceID id.ID, credential []byte, verifiedAt int64) error {
+	n, err := r.w.FinalizeBotDeviceCredential(ctx, pgdb.FinalizeBotDeviceCredentialParams{
+		CredentialBlob: credential, VerifiedAt: nullInt64(&verifiedAt), ID: deviceID,
+	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}

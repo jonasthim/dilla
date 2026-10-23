@@ -113,6 +113,7 @@ type Querier interface {
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
+	FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeBotDeviceCredentialParams) (int64, error)
 	GetActiveBotInstallationByCommunity(ctx context.Context, arg GetActiveBotInstallationByCommunityParams) (BotInstallations, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
 	GetBackup(ctx context.Context, arg GetBackupParams) (Backups, error)

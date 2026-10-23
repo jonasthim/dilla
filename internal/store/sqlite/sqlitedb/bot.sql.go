@@ -201,6 +201,24 @@ func (q *Queries) DeviceDSKConflictCount(ctx context.Context, arg DeviceDSKConfl
 	return count, err
 }
 
+const finalizeBotDeviceCredential = `-- name: FinalizeBotDeviceCredential :execrows
+UPDATE devices SET credential_blob = ?, verified_at = ? WHERE id = ?
+`
+
+type FinalizeBotDeviceCredentialParams struct {
+	CredentialBlob []byte
+	VerifiedAt     sql.NullInt64
+	ID             id.ID
+}
+
+func (q *Queries) FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeBotDeviceCredentialParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finalizeBotDeviceCredential, arg.CredentialBlob, arg.VerifiedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getActiveBotInstallationByCommunity = `-- name: GetActiveBotInstallationByCommunity :one
 SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE community_id = ? AND removed_at IS NULL
 `
