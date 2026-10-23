@@ -6,10 +6,10 @@
 // Ada's account lives in /tmp/dw/host-8515, which the three hosts of this suite share (`keepData`).
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
-import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { hostArgs, removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
-const WIRE2: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist', keepData: true };
+const WIRE2: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist', keepData: true, wire: 2 };
 const WIRE3: HostConfig = { ...WIRE2, wire: 3 };
 const SERVER = 'Midgard Crew';
 const DRAFT = 'a half-written thought that must outlive the reload';
@@ -95,6 +95,8 @@ async function expectNoReconnect(page: Page, sockets: () => number): Promise<voi
 }
 
 test('a tab older than the host is refused two ways: banner, no reconnect, and Reload keeps the draft', async ({ page }) => {
+  expect(hostArgs(WIRE2, '/tmp/dilla-version-reload-wire2'), 'the baseline host offers only wire 2').toContain('-wire=2');
+  expect(hostArgs(WIRE3, '/tmp/dilla-version-reload-wire3'), 'the replacement host offers only wire 3').toContain('-wire=3');
   const h = host;
   if (h === null) throw new Error('the test host did not start');
   await page.setViewportSize({ width: 1280, height: 800 });
