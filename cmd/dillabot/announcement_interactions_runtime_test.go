@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -22,16 +23,16 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 	handlers := runtimeInteractionHandlers(
 		service.OverviewInteractions{CommunityID: community},
 		service.AnnouncementInteractions{Authority: runtimeWelcomeAuthority{}, CommunityID: community},
-		service.ModerationInteractions{CommunityID: community},
+		service.ModerationInteractions{CommunityID: community, InstallationID: id.New(), EvidenceReader: runtimeModerationEvidenceReader{}},
 		nil,
 		state,
 		nil,
 		unavailableRuntime,
 	)
-	if len(handlers) != 10 {
-		t.Fatalf("runtime handlers has %d operations, want overview, announcements, welcome, moderation cases, and automatic moderation settings", len(handlers))
+	if len(handlers) != 11 {
+		t.Fatalf("runtime handlers has %d operations, want overview, announcements, welcome, moderation reads, and automatic moderation settings", len(handlers))
 	}
-	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil || handlers[protocol.OpWelcomePreview].Handle == nil || handlers[protocol.OpModerationCases].Handle == nil || handlers[protocol.OpSettingsGet].Handle == nil || handlers[protocol.OpAutoModerationGet].Handle == nil {
+	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil || handlers[protocol.OpWelcomePreview].Handle == nil || handlers[protocol.OpModerationCases].Handle == nil || handlers[protocol.OpModerationEvidenceList].Handle == nil || handlers[protocol.OpSettingsGet].Handle == nil || handlers[protocol.OpAutoModerationGet].Handle == nil {
 		t.Fatalf("runtime handlers missing read operations: %v", handlers)
 	}
 	if put, ok := handlers[protocol.OpSettingsPut]; !ok || put.Handle == nil || !put.RevisionInHandler || put.CurrentRevision != nil {
@@ -49,10 +50,19 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 	if _, ok := handlers[protocol.OpModerationEvidence]; ok {
 		t.Fatal("runtime handlers registered moderation.evidence")
 	}
+	if _, ok := handlers[protocol.OpModerationEvidenceList]; !ok {
+		t.Fatal("runtime handlers omitted moderation.evidence.list")
+	}
 	result, err := handlers[protocol.OpSettingsGet].Handle(context.Background(), service.InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, Operation: protocol.OpSettingsGet, Args: []any{uint64(5)}})
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 0 || state.reads != 1 {
 		t.Fatalf("runtime welcome settings get=%+v reads=%d err=%v", result, state.reads, err)
 	}
+}
+
+type runtimeModerationEvidenceReader struct{}
+
+func (runtimeModerationEvidenceReader) List(context.Context, id.ID, []byte, uint64) ([]moderation.Evidence, []byte, error) {
+	return nil, nil, nil
 }
 
 func TestRuntimeRolePanelPublishRequiresRolesCapability(t *testing.T) {
