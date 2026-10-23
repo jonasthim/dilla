@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -19,7 +20,7 @@ const (
 	interactionResponseOutboxArea    = uint64(3)
 	interactionResponseOutboxVersion = uint64(1)
 	interactionResponseOutboxPrefix  = "dilla.bot.interaction-response.v1/"
-	maxInteractionResponseBody       = 64 << 10
+	maxInteractionResponseBody       = 4000
 )
 
 var (
@@ -120,7 +121,7 @@ type InteractionResponse struct {
 // response. Reuse of the event delivery ID for different event/request content
 // fails closed.
 func (o *InteractionResponseOutbox) Send(ctx context.Context, event native.GroupEvent, responseBody []byte, operationID, attemptID id.ID, originalNow, expectedGeneration uint64) (protocol.SendReceipt, error) {
-	if o == nil || ctx == nil || o.sendFn == nil || event.DeliveryID == 0 || event.Community != o.binding.Community || event.Group.IsZero() || event.Channel.IsZero() || event.SenderUser.IsZero() || event.SenderDevice.IsZero() || event.Body == nil || operationID.IsZero() || attemptID.IsZero() || len(responseBody) == 0 || len(responseBody) > maxInteractionResponseBody || originalNow > math.MaxInt64 || expectedGeneration == 0 || expectedGeneration > math.MaxInt64 {
+	if o == nil || ctx == nil || o.sendFn == nil || event.DeliveryID == 0 || event.Community != o.binding.Community || event.Group.IsZero() || event.Channel.IsZero() || event.SenderUser.IsZero() || event.SenderDevice.IsZero() || event.Body == nil || operationID.IsZero() || attemptID.IsZero() || len(responseBody) == 0 || len(responseBody) > maxInteractionResponseBody || !utf8.Valid(responseBody) || originalNow > math.MaxInt64 || expectedGeneration == 0 || expectedGeneration > math.MaxInt64 {
 		return protocol.SendReceipt{}, errors.New("invalid interaction response outbox input")
 	}
 	request, err := protocol.DecodeRequest(*event.Body)
@@ -147,7 +148,7 @@ func (o *InteractionResponseOutbox) Send(ctx context.Context, event native.Group
 		return protocol.SendReceipt{}, err
 	}
 	input := SendInput{OperationID: record.OperationID, AttemptID: record.AttemptID, GroupID: record.Group,
-		RequestBody: append([]byte(nil), record.ResponseBody...), OriginalNow: record.OriginalNow,
+		RequestBody: encodeInteractionResponseSendRequest(record.ResponseBody), OriginalNow: record.OriginalNow,
 		ExpectedGeneration: record.ExpectedGeneration}
 	return o.sendFn(ctx, input)
 }
@@ -172,7 +173,7 @@ func (o *InteractionResponseOutbox) ResumeWithPreflight(ctx context.Context, eve
 		return protocol.SendReceipt{}, found, err
 	}
 	input := SendInput{OperationID: record.OperationID, AttemptID: record.AttemptID, GroupID: record.Group,
-		RequestBody: append([]byte(nil), record.ResponseBody...), OriginalNow: record.OriginalNow,
+		RequestBody: encodeInteractionResponseSendRequest(record.ResponseBody), OriginalNow: record.OriginalNow,
 		ExpectedGeneration: record.ExpectedGeneration}
 	if o.resumeFn != nil {
 		receipt, err = o.resumeFn(ctx, input, preflight)
@@ -185,6 +186,17 @@ func (o *InteractionResponseOutbox) ResumeWithPreflight(ctx context.Context, eve
 		receipt, err = o.sendFn(ctx, input)
 	}
 	return receipt, true, err
+}
+
+func encodeInteractionResponseSendRequest(response []byte) []byte {
+	if len(response) == 0 || len(response) > maxInteractionResponseBody || !utf8.Valid(response) {
+		return nil
+	}
+	body, err := cborx.Marshal([]any{uint64(0), nil, string(response), []any{}})
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 // Lookup returns a previously committed response without sending it.

@@ -8,6 +8,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -87,7 +88,8 @@ func TestInteractionResponseOutboxRestartReusesExactPersistedResponseAndSendIden
 			return errors.New("send started before response was durably persisted")
 		}
 		saved, err := decodeInteractionResponseRecord(state.value.Value)
-		if err != nil || string(saved.ResponseBody) != string(in.RequestBody) || saved.OperationID != in.OperationID || saved.AttemptID != in.AttemptID {
+		request, decodeErr := decodeInteractionSendRequest(in.RequestBody)
+		if err != nil || decodeErr != nil || string(saved.ResponseBody) != "response-one" || request != "response-one" || saved.OperationID != in.OperationID || saved.AttemptID != in.AttemptID {
 			return errors.New("persisted response does not match send input")
 		}
 		return nil
@@ -109,9 +111,37 @@ func TestInteractionResponseOutboxRestartReusesExactPersistedResponseAndSendIden
 		t.Fatalf("restart sends=%d, want 1", len(secondSender.inputs))
 	}
 	got := secondSender.inputs[0]
-	if string(got.RequestBody) != "response-one" || got.OperationID != interactionID(30) || got.AttemptID != interactionID(31) || got.OriginalNow != 123 || got.ExpectedGeneration != 8 {
+	request, decodeErr := decodeInteractionSendRequest(got.RequestBody)
+	if decodeErr != nil || request != "response-one" || got.OperationID != interactionID(30) || got.AttemptID != interactionID(31) || got.OriginalNow != 123 || got.ExpectedGeneration != 8 {
 		t.Fatalf("restart changed persisted send: %#v", got)
 	}
+	if string(got.RequestBody) != string(encodeInteractionSendRequestForTest(t, "response-one")) {
+		t.Fatal("restart changed deterministic send request encoding")
+	}
+}
+
+func decodeInteractionSendRequest(body []byte) (string, error) {
+	var request []any
+	if err := cborx.Unmarshal(body, &request); err != nil {
+		return "", err
+	}
+	if len(request) != 4 || request[0] != uint64(0) || request[1] != nil || request[3] == nil {
+		return "", errors.New("unexpected send request envelope")
+	}
+	text, ok := request[2].(string)
+	if !ok || len(request[3].([]any)) != 0 {
+		return "", errors.New("unexpected send request fields")
+	}
+	return text, nil
+}
+
+func encodeInteractionSendRequestForTest(t *testing.T, text string) []byte {
+	t.Helper()
+	body, err := cborx.Marshal([]any{uint64(0), nil, text, []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestInteractionResponseOutboxKeepsRevokedPendingResponseUnsent(t *testing.T) {
@@ -169,6 +199,22 @@ func TestInteractionResponseOutboxCASFailureNeverSends(t *testing.T) {
 	}
 	if len(sender.inputs) != 0 {
 		t.Fatalf("CAS failure triggered %d sends", len(sender.inputs))
+	}
+}
+
+func TestInteractionResponseOutboxRejectsOversizedResponseBeforePersisting(t *testing.T) {
+	ctx := context.Background()
+	state, sender, event := responseOutboxFixture(t)
+	o := newResponseOutbox(t, state, sender)
+	response := make([]byte, maxInteractionResponseBody+1)
+	for i := range response {
+		response[i] = 'x'
+	}
+	if _, err := o.Send(ctx, event, response, interactionID(30), interactionID(31), 123, 8); err == nil {
+		t.Fatal("oversized response was accepted")
+	}
+	if state.value.Revision != 0 || len(sender.inputs) != 0 {
+		t.Fatalf("oversized response persisted revision=%d and sent=%d times", state.value.Revision, len(sender.inputs))
 	}
 }
 
