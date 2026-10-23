@@ -33,6 +33,15 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
   });
 
+  it('binds a response to the exact local request and community', () => {
+    const response: bot.BotResponse = {
+      requestId: id(1), communityId: id(2), status: 0, revision: null, data: new Uint8Array(),
+    };
+    expect(() => bot.validateBotResponseForRequest(response, id(2), id(1))).not.toThrow();
+    expect(() => bot.validateBotResponseForRequest(response, id(3), id(1))).toThrow(bot.BotError);
+    expect(() => bot.validateBotResponseForRequest(response, id(2), id(4))).toThrow(bot.BotError);
+  });
+
   it('encodes the strict raw request bytes required by the human interaction core boundary', () => {
     const raw = bot.encodeBotRequestBytes(request(60, [null]));
     expect(decode(raw)).toEqual([1n, id(1), id(2), null, 60n, null, null, [null]]);

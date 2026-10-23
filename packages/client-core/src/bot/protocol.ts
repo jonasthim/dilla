@@ -259,6 +259,12 @@ export function validateBotResponseContext(response: BotResponse, community: Uin
   if (!equalId(response.communityId, community)) fail('E_BOT_COMMUNITY');
 }
 
+/** Binds a decoded response to the exact local request that is awaiting it. */
+export function validateBotResponseForRequest(response: BotResponse, community: Uint8Array, requestId: Uint8Array): void {
+  validateBotResponseContext(response, community);
+  if (!equalId(response.requestId, requestId)) fail('E_BOT_REQUEST');
+}
+
 export interface RemovalProof {
   requestId: Uint8Array;
   actorUser: Uint8Array;
