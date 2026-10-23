@@ -30,6 +30,72 @@ type linuxExchange struct {
 	kill   time.Duration
 }
 
+// privateDiagnosticWriter forwards only the helper's fixed trust-refusal line. The normal
+// helper stderr remains discarded; this writer is installed only in an opted-in test process.
+type privateDiagnosticWriter struct {
+	mu      sync.Mutex
+	partial []byte
+	discard bool
+	out     io.Writer
+}
+
+func (w *privateDiagnosticWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	consumed := 0
+	for consumed < len(p) {
+		if w.discard {
+			for consumed < len(p) && p[consumed] != '\n' {
+				consumed++
+			}
+			if consumed < len(p) {
+				consumed++
+				w.discard = false
+			}
+			continue
+		}
+		start := consumed
+		for consumed < len(p) && p[consumed] != '\n' {
+			consumed++
+		}
+		lineLen := len(w.partial) + consumed - start
+		if lineLen > 256 {
+			w.partial = w.partial[:0]
+			w.discard = consumed == len(p)
+			if !w.discard {
+				consumed++
+			}
+			continue
+		}
+		w.partial = append(w.partial, p[start:consumed]...)
+		if consumed == len(p) {
+			break
+		}
+		consumed++ // newline
+		line := string(w.partial)
+		w.partial = w.partial[:0]
+		if isPrivateTrustDiagnostic(line) && w.out != nil {
+			if _, err := io.WriteString(w.out, line+"\n"); err != nil {
+				return len(p), nil
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func isPrivateTrustDiagnostic(line string) bool {
+	const prefix = "dilla_bot_helper trust_sender_refusal="
+	if len(line) <= len(prefix) || line[:len(prefix)] != prefix {
+		return false
+	}
+	switch line[len(prefix):] {
+	case "binding", "credential", "device_list_stale", "device_unlisted", "tier_mismatch", "umk_changed", "core_input", "core_state", "core_storage", "other":
+		return true
+	default:
+		return false
+	}
+}
+
 func launch(options Options) (exchange, error) {
 	if options.Executable == "" || options.StateDir == "" || !filepath.IsAbs(options.Executable) || !filepath.IsAbs(options.StateDir) {
 		return nil, errors.New("helper executable and state directory must be explicit absolute paths")
@@ -68,6 +134,10 @@ func launch(options Options) (exchange, error) {
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	if os.Getenv("DILLA_BOT_PRIVATE_DIAGNOSTICS") == "1" {
+		cmd.Env = append(cmd.Env, "DILLA_BOT_PRIVATE_DIAGNOSTICS=1")
+		cmd.Stderr = &privateDiagnosticWriter{out: os.Stderr}
+	}
 	cmd.ExtraFiles = []*os.File{childFile}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if options.launcher != nil {
