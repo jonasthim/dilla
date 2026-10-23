@@ -89,12 +89,28 @@ func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 	unlock := d.lock(groupID)
 	defer unlock()
 	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		// Match the repository lock order used by message uploads and permission mutations:
+		// community first, then group. This initial read only chooses the community fence; the
+		// group row is reloaded after both locks and must still have the same scope.
+		initial, err := tx.GetGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if initial.CommunityID == nil || initial.CommunityID.IsZero() {
+			return errors.New("ds: current kind-3 group has no community scope")
+		}
+		if err := tx.LockCommunity(ctx, *initial.CommunityID); err != nil {
+			return err
+		}
 		if err := tx.LockGroup(ctx, groupID); err != nil {
 			return err
 		}
 		row, err := tx.GetGroup(ctx, groupID)
 		if err != nil {
 			return err
+		}
+		if row.CommunityID == nil || *row.CommunityID != *initial.CommunityID {
+			return errors.New("ds: current kind-3 group community changed during read")
 		}
 		registration, err := tx.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
 		if err != nil {
@@ -121,12 +137,22 @@ func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 		if err != nil {
 			return err
 		}
-		defer instance.Release()
+		instanceHeld := true
+		defer func() {
+			if instanceHeld {
+				instance.Release()
+			}
+		}()
 		group, err := instance.PublicGroupImport(ctx, row.PublicGroupState, groupID[:])
 		if err != nil {
 			return errors.New("ds: current kind-3 public state cannot be imported")
 		}
-		defer group.Close(ctx)
+		groupOpen := true
+		defer func() {
+			if groupOpen {
+				_ = group.Close(ctx)
+			}
+		}()
 		state, err := group.State(ctx)
 		if err != nil {
 			return err
@@ -179,6 +205,12 @@ func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 				PolicyVersion: binding.PolicyVersion, E2EEVersion: binding.E2EEVersion, MediaVersion: binding.MediaVersion},
 			Epoch: state.Epoch, LeafCount: state.LeafCount, TreeHash: append([]byte(nil), state.TreeHash...), Roster: roster,
 		}
+		if err := group.Close(ctx); err != nil {
+			return err
+		}
+		groupOpen = false
+		instance.Release()
+		instanceHeld = false
 		return fn(out, tx)
 	})
 	return err

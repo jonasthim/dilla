@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/capability"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/mlswasi"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -121,6 +123,21 @@ func TestCurrentBotInteractionGroupReadFailsClosedAndFencesTransactionReads(t *t
 	if _, _, err := fixture.h.ds.RegisterBotInteractionGroup(ctx, fixture.request); err != nil {
 		t.Fatalf("register kind-3 group: %v", err)
 	}
+	// Registration uses multiple guest operations; after it completes, exercise the read
+	// primitive with an isolated one-instance WASI pool to prove its callback does not inherit it.
+	wasm, err := mlswasi.New(ctx, loadWasmForDS(t), mlswasi.Options{PoolSize: 1, CacheDir: sharedWasmCacheDir(t), Now: fixture.h.clk.Now})
+	if err != nil {
+		t.Fatalf("create one-instance WASI runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
+	fixture.h.wasm = wasm
+	botCapability := capability.New(fixture.h.repo)
+	fixture.h.ds, err = ds.New(ds.Options{Store: fixture.h.repo, BotCapability: botCapability, Wasm: wasm, Gateway: fixture.h.gw,
+		Clock: fixture.h.clk, Keys: testInstanceKeys(t), Policy: ds.DefaultPolicy(), Channels: fixture.h.channels,
+		ACL: fixture.h.acl, PostPolicy: fixture.h.postPolicy})
+	if err != nil {
+		t.Fatalf("rebuild DS with one-instance WASI runtime: %v", err)
+	}
 
 	called := false
 	if err := fixture.h.ds.WithCurrentBotInteractionGroupRead(ctx, id.New(), func(ds.CurrentBotInteractionGroupContext, store.Repository) error {
@@ -147,6 +164,15 @@ func TestCurrentBotInteractionGroupReadFailsClosedAndFencesTransactionReads(t *t
 			if row.ClosedAt != nil || row.Epoch != current.Epoch {
 				return fmt.Errorf("transaction group row differs from validated context")
 			}
+			// The callback needs WASI for its signed-list checks. It must be able to acquire
+			// the sole available pool slot after current-state validation releases it.
+			callbackCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			instance, err := fixture.h.wasm.Acquire(callbackCtx)
+			if err != nil {
+				return fmt.Errorf("callback could not acquire WASI after validation: %w", err)
+			}
+			instance.Release()
 			close(entered)
 			<-release
 			return nil
@@ -155,7 +181,12 @@ func TestCurrentBotInteractionGroupReadFailsClosedAndFencesTransactionReads(t *t
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("atomic read callback did not start")
+		select {
+		case err := <-readDone:
+			t.Fatalf("atomic read ended before callback: %v", err)
+		default:
+			t.Fatal("atomic read callback did not start")
+		}
 	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- fixture.h.ds.Close(ctx, groupID) }()
