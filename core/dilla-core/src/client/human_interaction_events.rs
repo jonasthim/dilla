@@ -55,6 +55,11 @@ fn response_matches_request(
             && request.revision.is_some()
             && request.expires.is_some()
             && matches!(request.args, RequestArgs::SettingsPut { .. }))
+        || (request.operation == 31
+            && request.channel_id.is_none()
+            && request.revision.is_some()
+            && request.expires.is_some()
+            && matches!(request.args, RequestArgs::RolePanel { .. }))
         || ((10..=11).contains(&request.operation)
             && request.channel_id.is_some()
             && request.revision.is_none()
@@ -555,8 +560,8 @@ mod tests {
                 .contains(&operation)
                 .then(|| crate::ids::ChannelId::from_bytes([3; 16])),
             operation,
-            revision: (operation == 13 || operation == 2).then_some(7),
-            expires: (operation == 13 || operation == 2).then_some(20),
+            revision: (operation == 13 || operation == 2 || operation == 31).then_some(7),
+            expires: (operation == 13 || operation == 2 || operation == 31).then_some(20),
             args,
         }
         .encode_body()
@@ -649,6 +654,41 @@ mod tests {
         assert!(!response_matches_request(
             response([1; 16], [4; 16]).as_bytes(),
             write.as_bytes(),
+            &[2; 16]
+        ));
+    }
+
+    #[test]
+    fn role_panel_response_requires_its_exact_local_request_and_community() {
+        let mut mappings = crate::cbor::Encoder::new();
+        mappings
+            .array(1)
+            .array(3)
+            .text("📚")
+            .bytes(&[5; 16])
+            .text("Readers");
+        let request_body = request(
+            [1; 16],
+            [2; 16],
+            31,
+            RequestArgs::RolePanel {
+                channel: crate::ids::ChannelId::from_bytes([3; 16]),
+                mappings: mappings.into_vec(),
+            },
+        );
+        assert!(response_matches_request(
+            response([1; 16], [2; 16]).as_bytes(),
+            request_body.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([3; 16], [2; 16]).as_bytes(),
+            request_body.as_bytes(),
+            &[2; 16]
+        ));
+        assert!(!response_matches_request(
+            response([1; 16], [4; 16]).as_bytes(),
+            request_body.as_bytes(),
             &[2; 16]
         ));
     }

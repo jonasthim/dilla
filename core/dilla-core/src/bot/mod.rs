@@ -11,6 +11,7 @@ pub mod keypackage;
 
 use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
 use crate::ids::{ChannelId, CommunityId, DeviceId, MsgId, UserId};
+use std::collections::BTreeSet;
 
 pub const BODY_PREFIX: &str = "dilla.bot/1:";
 pub const APP_BODY_MAX: usize = 4000;
@@ -145,6 +146,10 @@ pub enum RequestArgs {
         schedule: MsgId,
         expected_revision: u64,
     },
+    RolePanel {
+        channel: ChannelId,
+        mappings: Vec<u8>,
+    },
     Evidence {
         action: MsgId,
         reason: String,
@@ -270,7 +275,7 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|10..=23|30|40|50..=52|60..=63) {
+        if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=63) {
             return Err(CodecError::Operation);
         }
         if !args_match(self.operation, &self.args) {
@@ -321,14 +326,59 @@ impl Request {
                 }
             }
             RequestArgs::Evidence { action, .. } => check_id16(action.as_bytes())?,
+            RequestArgs::RolePanel { channel, mappings } => {
+                check_id16(channel.as_bytes())?;
+                check_role_panel_mappings(mappings)?;
+            }
             _ => {}
         }
         Ok(())
     }
 }
 
+fn check_role_panel_mappings(bytes: &[u8]) -> Result<(), CodecError> {
+    if bytes.is_empty() || bytes.len() > 2200 {
+        return Err(CodecError::Limit);
+    }
+    let mut emojis = BTreeSet::new();
+    let mut roles = BTreeSet::new();
+    decode_strict(bytes, |d| {
+        let len = d.array_len()?;
+        if !(1..=100).contains(&len) {
+            return Err(CborError::WrongArrayLen {
+                expected: 100,
+                actual: len,
+            });
+        }
+        for _ in 0..len {
+            d.array(3)?;
+            let emoji = d.text()?;
+            let role = d.bytes_exact::<16>()?;
+            let name = d.text()?;
+            if emoji.is_empty()
+                || emoji.len() > 32
+                || emoji.chars().any(|ch| ch < ' ' || ch == '\u{7f}')
+                || role.iter().all(|byte| *byte == 0)
+                || name.is_empty()
+                || name.len() > 100
+                || name.trim().is_empty()
+                || name.chars().any(|ch| ch < ' ' || ch == '\u{7f}')
+                || !emojis.insert(emoji.to_owned())
+                || !roles.insert(role)
+            {
+                return Err(CborError::TypeMismatch {
+                    expected: "role panel mapping",
+                    offset: d.position(),
+                });
+            }
+        }
+        Ok(())
+    })
+    .map_err(Into::into)
+}
+
 fn is_mutation(op: u64) -> bool {
-    matches!(op, 2 | 12..=23 | 51 | 52 | 61 | 63)
+    matches!(op, 2 | 12..=23 | 31 | 51 | 52 | 61 | 63)
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
@@ -343,6 +393,7 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         21 => matches!(a, RequestArgs::Id(_)),
         22 => matches!(a, RequestArgs::Move { .. }),
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
+        31 => matches!(a, RequestArgs::RolePanel { .. }),
         40 | 50 => matches!(a, RequestArgs::Number(_)),
         60 => {
             matches!(a, RequestArgs::Cursor(cursor) if cursor.as_ref().is_none_or(|v| (1..=256).contains(&v.len())))
@@ -426,6 +477,9 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
         } => {
             e.array(2).text(grant_token).bytes(document);
         }
+        RequestArgs::RolePanel { channel, mappings } => {
+            e.array(2).bytes(channel.as_bytes()).bytes(mappings);
+        }
     }
 }
 fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
@@ -459,6 +513,13 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
                 (1, 2000, false)
             };
             RequestArgs::Text(bounded_text(d, lo, hi, clean)?)
+        }
+        31 => {
+            d.array(2)?;
+            RequestArgs::RolePanel {
+                channel: read_channel(d)?,
+                mappings: bounded_bytes(d, 1, 2200, true)?,
+            }
         }
         17 | 18 | 20 | 40 | 50 => {
             d.array(1)?;

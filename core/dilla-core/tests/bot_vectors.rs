@@ -10,7 +10,7 @@ use dilla_core::bot::{
 };
 use dilla_core::bot::{Request, RequestArgs};
 use dilla_core::cbor::Encoder;
-use dilla_core::ids::{CommunityId, DeviceId, MsgId, UserId};
+use dilla_core::ids::{ChannelId, CommunityId, DeviceId, MsgId, UserId};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -51,6 +51,47 @@ fn application_context_is_checked_explicitly() {
             .validate_context(CommunityId::from_bytes([3; 16]), 100)
             .is_err()
     );
+}
+
+#[test]
+fn role_panel_publish_request_round_trips_and_requires_a_bounded_mapping_array() {
+    let mut mappings = Encoder::new();
+    mappings
+        .array(1)
+        .array(3)
+        .text("📚")
+        .bytes(&[5; 16])
+        .text("Readers");
+    let request = Request {
+        request_id: MsgId::from_bytes([1; 16]),
+        community_id: CommunityId::from_bytes([2; 16]),
+        channel_id: None,
+        operation: 31,
+        revision: Some(0),
+        expires: Some(120),
+        args: RequestArgs::RolePanel {
+            channel: ChannelId::from_bytes([4; 16]),
+            mappings: mappings.into_vec(),
+        },
+    };
+    let encoded = request
+        .encode_cbor()
+        .expect("role-panel publish is a valid mutation");
+    assert!(Request::decode_cbor(&encoded).unwrap() == request);
+    assert!(
+        request
+            .validate_context(CommunityId::from_bytes([2; 16]), 100)
+            .is_ok()
+    );
+
+    let mut missing_expiry = request.clone();
+    missing_expiry.expires = None;
+    assert!(missing_expiry.encode_cbor().is_err());
+    let mut empty_mappings = request;
+    if let RequestArgs::RolePanel { mappings, .. } = &mut empty_mappings.args {
+        *mappings = vec![0x80];
+    }
+    assert!(empty_mappings.encode_cbor().is_err());
 }
 
 #[test]
@@ -425,8 +466,8 @@ fn shared_bot_corpus_round_trips_and_rejects() {
     assert_eq!(
         operations,
         [
-            0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 30, 40, 50, 51, 52,
-            60, 61, 62, 63
+            0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 30, 31, 40, 50, 51,
+            52, 60, 61, 62, 63
         ]
         .into_iter()
         .collect()

@@ -8,7 +8,7 @@ const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
 const context = { community: hex(comm), now };
 const app = (op:number,args:unknown[],channel:boolean,mutation:boolean,name:string) => {
-  const val=[1,id(1+op%200),comm,channel?id(0x44):null,op,mutation?120n:null,mutation?120n:null,args];
+  const val=[1,id(1+op%200),comm,channel?id(0x44):null,op,mutation?(op===31?0n:120n):null,mutation?120n:null,args];
   const raw=encode(val as never); let bin=''; for(const b of raw)bin+=String.fromCharCode(b);
   const body='dilla.bot/1:'+btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');
   return {name,kind:'request',hex:hex(raw),body,context};
@@ -21,7 +21,7 @@ export async function botVectors() {
   [13,[],true,true,'music.pause'],[14,[],true,true,'music.resume'],[15,[],true,true,'music.skip'],[16,[],true,true,'music.stop'],
   [17,[18446744073709551615n],true,true,'music.seek uint64'],[18,[80n],true,true,'music.volume'],[19,[],true,true,'music.shuffle'],
   [20,[2n],true,true,'music.repeat'],[21,[id(0x55)],true,true,'music.remove'],[22,[id(0x55),null],true,true,'music.move'],[23,[],true,true,'music.clear'],
-  [30,['hello'],false,false,'welcome.preview'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
+  [30,['hello'],false,false,'welcome.preview'],[31,[id(0x44),encode([['👍',id(0x55),'Readers']])],false,true,'roles.panel.publish'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
   [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66),1n],false,true,'announcements.delete'],
   [60,[null],false,false,'moderation.cases'],[61,[id(0x77),'reason','excerpt'],false,true,'moderation.evidence'],
   [62,[],false,false,'automod.config.get'],[63,['grant-token',encode([1n,0n,'log','log','log',600000n,[]])],false,true,'automod.config.put'],

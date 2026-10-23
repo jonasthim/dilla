@@ -118,18 +118,25 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
     const requestGeneration = generation.current;
     const isCurrent = (): boolean => currentCommunity.current === requestCommunity && generation.current === requestGeneration;
     setBusy(true); setError(null); setPanelNotice(null);
+    let request: { requestId: string; upload: string };
     try {
-      const request = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId: current.requestId,
+      request = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId: current.requestId,
         operation: 31, args: [channelId, encodedMappings], revision: '0' }) as { requestId: string; upload: string };
+    } catch (e: unknown) {
       if (!isCurrent()) return;
-      if (request.requestId !== current.requestId || request.upload === 'rejected') throw new Error('upload rejected');
-      setPendingPanel({ ...current, uploadUncertain: request.upload !== 'accepted' });
-      setPanelNotice(t(request.upload === 'accepted' ? 'admin.bot.rolePanel.pending' : 'admin.bot.rolePanel.uncertain'));
-    } catch {
-      if (!isCurrent()) return;
-      setPendingPanel({ ...current, uploadUncertain: true });
-      setPanelNotice(t('admin.bot.rolePanel.uncertain'));
-    } finally { if (isCurrent()) setBusy(false); }
+      setError(t('admin.bot.rolePanel.error', { code: errorOf(e).code }));
+      setBusy(false);
+      return;
+    }
+    if (!isCurrent()) return;
+    if (request.requestId !== current.requestId || request.upload === 'rejected') {
+      setError(t('admin.bot.rolePanel.error', { code: 'E_UNKNOWN' }));
+      setBusy(false);
+      return;
+    }
+    setPendingPanel({ ...current, uploadUncertain: request.upload !== 'accepted' });
+    setPanelNotice(t(request.upload === 'accepted' ? 'admin.bot.rolePanel.pending' : 'admin.bot.rolePanel.uncertain'));
+    if (isCurrent()) setBusy(false);
   };
 
   useEffect(() => {
