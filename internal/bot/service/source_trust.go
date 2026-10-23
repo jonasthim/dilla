@@ -21,6 +21,48 @@ const (
 
 var ErrSenderHistoryStale = errors.New("sender device-list history is stale")
 
+// TrustPhase is a fixed, non-sensitive trust-refresh substage for diagnostics.
+type TrustPhase uint8
+
+const (
+	TrustPhaseUnknown TrustPhase = iota
+	TrustPhasePendingLeaves
+	TrustPhaseSenderHistory
+	TrustPhaseSenderTrust
+	TrustPhaseGroupRevalidation
+)
+
+func (p TrustPhase) String() string {
+	switch p {
+	case TrustPhasePendingLeaves:
+		return "pending_leaves"
+	case TrustPhaseSenderHistory:
+		return "sender_history"
+	case TrustPhaseSenderTrust:
+		return "sender_trust"
+	case TrustPhaseGroupRevalidation:
+		return "group_revalidation"
+	default:
+		return "unknown"
+	}
+}
+
+// TrustPhaseError preserves a cause for programmatic inspection but never formats it.
+type TrustPhaseError struct {
+	Phase TrustPhase
+	err   error
+}
+
+func (e *TrustPhaseError) Error() string { return "sender trust refresh failed" }
+func (e *TrustPhaseError) Unwrap() error { return e.err }
+
+func trustPhaseError(phase TrustPhase, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TrustPhaseError{Phase: phase, err: err}
+}
+
 type senderHistorySession interface {
 	OwnDeviceList(context.Context, id.ID) ([]byte, error)
 	DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error)
@@ -74,7 +116,7 @@ func (t *SourceTrust) TrustPendingLeaves(ctx context.Context, session *client.Se
 func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHistorySession) (uint32, error) {
 	leaves, err := t.native.PendingLeaves(ctx)
 	if err != nil {
-		return 0, err
+		return 0, trustPhaseError(TrustPhasePendingLeaves, err)
 	}
 	var recovered uint64
 	for _, leaf := range leaves {
@@ -108,16 +150,20 @@ func (t *SourceTrust) trustSender(ctx context.Context, session senderHistorySess
 	}
 	history, head, _, err := readSenderHistory(ctx, session, user, cachedVersion)
 	if err != nil {
-		return 0, err
+		return 0, trustPhaseError(TrustPhaseSenderHistory, err)
 	}
 	now := t.now().Unix()
 	if now <= 0 {
 		return 0, ErrSenderHistoryStale
 	}
 	if _, err = t.native.TrustSender(ctx, group, leaf, user, history, head, uint64(now)); err != nil {
-		return 0, err
+		return 0, trustPhaseError(TrustPhaseSenderTrust, err)
 	}
-	return t.native.RevalidateGroup(ctx, group, leaf, 256)
+	revalidated, err := t.native.RevalidateGroup(ctx, group, leaf, 256)
+	if err != nil {
+		return 0, trustPhaseError(TrustPhaseGroupRevalidation, err)
+	}
+	return revalidated, nil
 }
 
 // TrustProposedAdds validates each currently proposed Add against that user's signed list history.

@@ -119,3 +119,21 @@ func TestReadSenderHistoryRejectsRewindAndVersionBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestTrustPhaseErrorsExposeOnlyFixedPhaseAndPreserveCause(t *testing.T) {
+	cause := errors.New("private error detail")
+	err := trustPhaseError(TrustPhaseSenderTrust, cause)
+	var phaseErr *TrustPhaseError
+	if !errors.As(err, &phaseErr) || phaseErr.Phase != TrustPhaseSenderTrust {
+		t.Fatalf("phase error = %#v", phaseErr)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("phase wrapper did not preserve cause")
+	}
+	if got := err.Error(); got != "sender trust refresh failed" {
+		t.Fatalf("phase error leaked cause: %q", got)
+	}
+	if got := phaseErr.Phase.String(); got != "sender_trust" {
+		t.Fatalf("phase label = %q", got)
+	}
+}
