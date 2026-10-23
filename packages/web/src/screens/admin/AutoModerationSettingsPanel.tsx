@@ -57,7 +57,7 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
   const beginSave=():void=>{
     if(!loaded||revision===null||!botReady||!canManage)return;
     const exemptions=exemptText.split(/[\s,]+/u).filter(Boolean);
-    if(exemptions.length>64||exemptions.some(v=>!/^[0-9a-f]{32}$/u.test(v))||new Set(exemptions).size!==exemptions.length){setError(t('admin.bot.automod.invalidExemptions'));return;}
+    if(exemptions.length>256||exemptions.some(v=>!/^[0-9a-f]{32}$/u.test(v))||new Set(exemptions).size!==exemptions.length){setError(t('admin.bot.automod.invalidExemptions'));return;}
     if(!Number.isSafeInteger(config.timeout)||config.timeout<1||config.timeout>2419200000){setError(t('admin.bot.automod.prepareError'));return;}
     try { const raw=encode([1n,config.enabled?1n:0n,config.rate,config.duplicate,config.mention,BigInt(config.timeout),exemptions]);
       if(raw.length>2400)throw new Error('oversize'); setPendingConfig({...config,exempt:exemptions}); setPhase('stepup'); setError(null);
@@ -67,8 +67,10 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
     setRequest(retry.requestId);setRequestOp(63);setPhase('sending');setNotice(null);setError(null);
     void client.call({m:'humanInteractionRequest',communityId,channelId:null,requestId:retry.requestId,operation:63,args:['',retry.document],revision:retry.revision,stepUp:retry.stepUp}).then(result=>{
       if(current.current!==communityId)return; const status=(result as {upload:string}).upload;
-      if(status==='rejected'){setPhase('idle');setError(t('admin.bot.automod.saveError'));} else {setPhase('waiting');setNotice(t(status==='accepted'?'admin.bot.automod.waiting':'admin.bot.automod.uncertain'));}
-    }).catch(()=>{if(current.current===communityId){setPhase('waiting');setNotice(t('admin.bot.automod.uncertain'));}});
+      if(status==='accepted'||status==='pending'||status==='unknown'){
+        setPhase('waiting');setNotice(t(status==='accepted'?'admin.bot.automod.waiting':'admin.bot.automod.uncertain'));
+      } else {setPhase('idle');setError(t('admin.bot.automod.saveError'));}
+    }).catch(()=>{if(current.current===communityId){setPhase('idle');setError(t('admin.bot.automod.saveError'));}});
   };
   const save=(stepUp:string):void=>{
     const doc=pendingConfig; if(doc===null||revision===null)return;
