@@ -4974,7 +4974,8 @@ export class Controller {
       throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
     }
     const signed = core.prepareManualRemovalEvidence(requestId, evidenceRequestId, fromHex(communityId), group.groupId,
-      fromHex(channelId), fromHex(msgId), seq, reason, excerpt, now, now + 30n, now);
+      // Reserve five seconds of the server's 30-second acceptance window for client/server clock skew.
+      fromHex(channelId), fromHex(msgId), seq, reason, excerpt, now, now + 25n, now);
     // This durable transition precedes the request. A restart can now distinguish "never submitted"
     // from "POST may have succeeded" and only ever retries the same proof ID and signed bytes.
     core.markManualRemovalSubmitted(requestId);
