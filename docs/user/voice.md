@@ -331,12 +331,15 @@ play it with another program.
 
 When whoever runs your instance upgrades it (web3.13 and later), your call usually keeps going: the people in it stay
 connected while the server restarts. If the upgrade brings a new version of the page, dilla reloads the tab for you
-and puts you back in the call by itself, with no click, typically within a few seconds of audio. The call panel may say
+and puts you back in the call by itself, with no click; audio is back within a few seconds. The call panel may say
 "reconnecting" for a moment. You do not need to press **join voice**.
 
-If the upgrade restarts the media server itself, or everyone in the call drops at once, the call can take longer to
-come back. Everyone is put back in the same call on their own, up to about half a minute after the server answers. If
-your connection stays down for longer than the server's inactive timeout, you see "You left the call while away." and
+If everyone in the call drops at once because the server restarted, the call takes longer to come back: everyone is put
+back in the same call on their own, up to about half a minute after the server answers.
+
+If the upgrade restarts the media server itself, the call ends: a restart closes its rooms. A call in a direct message
+stays ended and has to be started again. A community voice channel usually reopens by itself during the update (for
+about two minutes after dilla detects the update); otherwise press **join voice**. If your connection stays down for longer than the server's inactive timeout, you see "You left the call while away." and
 press **join voice**, as before.
 
 ## When voice stops or pauses

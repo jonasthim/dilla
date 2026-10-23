@@ -83,7 +83,7 @@ With `doctor.udp_probe = false` the leg reads OK "skipped", and with `livekit.en
 with no media port to reach. Run it after every change, **as the `dillad` user**: the `turn` leg asks both
 control sockets in the state directory (`media.sock`, `api.sock`), which serve only that uid, and names who serves
 the relay (red when both or neither do). The `media_binary` leg is yellow while `dilla-media` runs an older binary
-than the API, which is normal until the refresh timer has moved it, and red when its media level is below the oldest
+(for a web3.11 or web3.12.x media server, which writes no `media.json`, it reads "build is unknown") than the API, which is normal until the refresh timer has moved it, and red when its media level is below the oldest
 the API works with. The `media_refresh` leg is yellow while `dilla-media` waits to become idle on an older binary and
 red after 24 hours; the restart is then your call: `dillad media --rooms`, then `systemctl restart dilla-media`.
 
@@ -181,7 +181,8 @@ on those addresses.
 
 A TLS-terminating proxy cannot forward the TURN traffic that shares 443, so in `behind_proxy` mode
 the relay has its own listener, `turn.listen`, and it is required while `turn.enabled` is true. Since
-web3.13 `dillad media` binds it (the same address; nothing to edit), so it survives an API restart.
+web3.13 `dillad media` binds it when `livekit.mode = "sidecar"` (the same address; nothing to edit), after the one-time handoff
+below (until then `dillad serve` keeps it), so it survives an API restart.
 Either the operator publishes a second TCP port straight to dillad for TURN, or the UI shows the
 explicit relay-unavailable dialog and the call is UDP-or-nothing. Decide this when you pick the
 mode: a proxy in front of dillad is a convenient way to share 443 with other sites, and the price
@@ -580,7 +581,9 @@ go back one release:
    For a rollback **below web3.13** (every web3.12.x and web3.11 included):
    - stop `dilla-media` first, because a media server from web3.13 holds `turn.listen` and the older `dillad serve` would bind it too;
    - remove `turn.listen` from `dilla.toml` first in every `tls.mode` but `behind_proxy` (an omitted `tls.mode` counts as
-     public), because web3.11 and web3.12.x refuse it; public-mode TURN goes back to 443;
+     public), because web3.11 and web3.12.x refuse it; public-mode TURN goes back to 443. Remove `turn.public_url` too if you
+     set it for the opt-in: web3.12.x hands clients that URL verbatim, so it would keep advertising the dead port while
+     `dillad doctor`, which probes 443, stays green;
    - disable the refresh timer: `systemctl disable --now dilla-media-refresh.timer`;
    - a web3.12.x or older release runs `dilla-media` as `Type=simple` and sends no `READY=1`, so set `Type=simple` in
      `/etc/systemd/system/dilla-media.service` (and delete `NotifyAccess=main`), then `systemctl daemon-reload`, before you
