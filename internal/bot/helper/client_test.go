@@ -87,8 +87,10 @@ func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
 
 func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
 	c := startFixture(t, "")
-	if _, err := c.Call(context.Background(), protocol.HelperOperation(21), []any{}); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("unknown operation error = %v, want ErrInvalidOperation", err)
+	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 21} {
+		if _, err := c.Call(context.Background(), operation, []any{}); !errors.Is(err, ErrInvalidOperation) {
+			t.Fatalf("operation %d error = %v, want ErrInvalidOperation", operation, err)
+		}
 	}
 }
 
