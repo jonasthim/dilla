@@ -27,9 +27,9 @@ import (
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
-// A reseed from an ahead snapshot with no tail can adopt the member's epoch while leaving the
-// instance handshake log without the commit that moved the group there.
-func TestAReseedAheadOfRestoredEpochNeedsAHandshakeTail(t *testing.T) {
+// A reseed from an ahead snapshot cannot prove that a nonempty tail contains the missing commits:
+// reseed replay skips items from epochs already baked into the uploaded tree.
+func TestAReseedAheadOfRestoredEpochIsRefusedEvenWithAnIncompleteTail(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.enrolledGroup(t)
 	ctx := context.Background()
@@ -67,9 +67,10 @@ func TestAReseedAheadOfRestoredEpochNeedsAHandshakeTail(t *testing.T) {
 	h.destroyStateBlob(t, g)
 	_, err = h.ds.Heal(ctx, g.session, g.id, ds.HealRequest{
 		GroupInfo: h.groupInfoAt(t, g, epoch), RatchetTree: tree,
+		Tail: h.proposalTail(t, g, 0),
 	})
 	if !hasRule(err, "reseed") {
-		t.Fatalf("ahead reseed with empty tail: got %v, want E_COMMIT_INVALID/reseed", err)
+		t.Fatalf("ahead reseed with incomplete tail: got %v, want E_COMMIT_INVALID/reseed", err)
 	}
 	if !h.epochUnknown(t, g.id) {
 		t.Fatal("refused ahead reseed cleared epoch_unknown")

@@ -271,6 +271,15 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// A reseeded tree already contains all of its prior commits, so replay cannot recover the
+	// handshakes between the restored epoch and an ahead snapshot. The uploaded tail does not prove
+	// completeness: replay deliberately skips earlier-epoch items because they are already in the
+	// tree. Refuse every ahead reseed, even with a nonempty tail, so adoption cannot leave the
+	// instance's catch-up log behind. A same-epoch reseed remains safe and may have an empty tail.
+	if reseeded && base.Epoch > row.Epoch {
+		return CommitResult{}, errCommitInvalid("reseed",
+			"the uploaded tree is ahead of the restored epoch and its missing handshake history cannot be verified")
+	}
 	// Replay the tail. Every item the rebuilt group does not already hold is processed, checked
 	// and merged (or queued) in order; a gap or a rejection is a refusal, not a partial adoption.
 	replayed, err := d.replayHealTail(ctx, groupID, group, healBase{
@@ -279,15 +288,6 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 	if err != nil {
 		return CommitResult{}, err
 	}
-	// A reseeded tree already contains its history, so there is no state from which to
-	// reconstruct and publish commits between the restored epoch and this snapshot. With no tail,
-	// accepting an ahead snapshot would clear epoch_unknown while leaving every other member's
-	// handshake log permanently behind.
-	if reseeded && base.Epoch > row.Epoch && len(h.Tail) == 0 {
-		return CommitResult{}, errCommitInvalid("reseed",
-			"an ahead reseed needs a handshake tail to reconcile the restored log")
-	}
-
 	state, err := group.State(ctx)
 	if err != nil {
 		return CommitResult{}, err
