@@ -33,6 +33,15 @@ type sendSession interface {
 	ResolveBotMessage(context.Context, id.ID, id.ID, client.BotMessageResolution) (protocol.SendReceipt, error)
 }
 
+type interactionSendSession interface {
+	IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
+	BotInteractionContextSnapshot(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
+}
+
+type interactionSendNative interface {
+	PrepareInteractionSend(context.Context, native.InteractionGroupExpected, []byte, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error)
+}
+
 // SendCoordinator serializes one bot send against the identity binding and the
 // server generation advertised by discovery. Calls with the same input are
 // safe to resume after restart because native PrepareSend returns its durable
@@ -129,7 +138,7 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 			return protocol.SendReceipt{}, err
 		}
 	}
-	group, err := s.inspectSendGroup(ctx, in.GroupID)
+	group, interaction, err := s.inspectSendGroup(ctx, in.GroupID)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -153,7 +162,12 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 		}
 	}
 
-	prepared, err := s.native.PrepareSend(ctx, in.OperationID, in.AttemptID, in.GroupID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
+	var prepared native.PreparedSend
+	if interaction == nil {
+		prepared, err = s.native.PrepareSend(ctx, in.OperationID, in.AttemptID, in.GroupID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
+	} else {
+		prepared, err = s.prepareInteractionSend(ctx, session, *interaction, in)
+	}
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -196,30 +210,30 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 
 // Ordinary groups use the generic helper inspection. A managed Bot interaction is listed only by
 // its dedicated native descriptor operation; the server still authorizes the actual message POST.
-func (s *SendCoordinator) inspectSendGroup(ctx context.Context, groupID id.ID) (native.GroupInfo, error) {
+func (s *SendCoordinator) inspectSendGroup(ctx context.Context, groupID id.ID) (native.GroupInfo, *native.InteractionGroupDescriptor, error) {
 	group, err := s.native.InspectGroup(ctx, groupID)
 	if err == nil {
-		return group, nil
+		return group, nil, nil
 	}
 	var status *helper.StatusError
 	if !errors.As(err, &status) || status.Status != 2 {
-		return native.GroupInfo{}, err
+		return native.GroupInfo{}, nil, err
 	}
 	descriptors, listErr := s.native.InteractionGroups(ctx)
 	if listErr != nil {
-		return native.GroupInfo{}, listErr
+		return native.GroupInfo{}, nil, listErr
 	}
 	var found *native.InteractionGroupDescriptor
 	for i := range descriptors {
 		if descriptors[i].Group == groupID {
 			if found != nil {
-				return native.GroupInfo{}, errors.New("duplicate native interaction send group")
+				return native.GroupInfo{}, nil, errors.New("duplicate native interaction send group")
 			}
 			found = &descriptors[i]
 		}
 	}
 	if found == nil {
-		return native.GroupInfo{}, err
+		return native.GroupInfo{}, nil, err
 	}
 	b := found.Binding
 	if found.Group.IsZero() || found.State != 2 || found.Epoch == 0 || found.BotDevice.IsZero() ||
@@ -227,11 +241,41 @@ func (s *SendCoordinator) inspectSendGroup(ctx context.Context, groupID id.ID) (
 		b.BotUser.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() ||
 		b.BotUser == b.ParticipantUser || found.BotDevice == b.ParticipantDevice ||
 		b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 {
-		return native.GroupInfo{}, errors.New("native interaction send group does not match installation")
+		return native.GroupInfo{}, nil, errors.New("native interaction send group does not match installation")
 	}
 	community := b.Community
 	return native.GroupInfo{ID: found.Group, Kind: 3, Community: &community, Target: b.ParticipantUser,
-		State: found.State, Epoch: found.Epoch}, nil
+		State: found.State, Epoch: found.Epoch}, found, nil
+}
+
+func (s *SendCoordinator) prepareInteractionSend(ctx context.Context, session sendSession, descriptor native.InteractionGroupDescriptor, in SendInput) (native.PreparedSend, error) {
+	remote, ok := session.(interactionSendSession)
+	if !ok {
+		return native.PreparedSend{}, errors.New("private send admission is unavailable")
+	}
+	local, ok := s.native.(interactionSendNative)
+	if !ok {
+		return native.PreparedSend{}, errors.New("native private send is unavailable")
+	}
+	b := descriptor.Binding
+	requestID := id.New()
+	if _, err := remote.IssueBotInteractionAdmission(ctx, s.binding.Installation, requestID, descriptor.Group, b.ParticipantUser, b.ParticipantDevice); err != nil {
+		return native.PreparedSend{}, err
+	}
+	wire, err := remote.BotInteractionContextSnapshot(ctx, s.binding.Installation, requestID, descriptor.Group, b.ParticipantUser, b.ParticipantDevice)
+	if err != nil {
+		return native.PreparedSend{}, err
+	}
+	details, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil || details.Request != requestID || details.Instance != b.Instance || details.Installation != b.Installation || details.Community != b.Community ||
+		details.BotUser != b.BotUser || details.BotDevice != descriptor.BotDevice || details.ParticipantUser != b.ParticipantUser || details.ParticipantDevice != b.ParticipantDevice ||
+		details.Group != descriptor.Group || details.PolicyVersion != b.PolicyVersion || details.E2EEVersion != b.E2EEVersion || details.MediaVersion != b.MediaVersion {
+		return native.PreparedSend{}, errors.New("private send admission does not match the installed group")
+	}
+	expected := native.InteractionGroupExpected{Instance: b.Instance, Installation: b.Installation, Community: b.Community,
+		BotUser: b.BotUser, BotDevice: descriptor.BotDevice, ParticipantUser: b.ParticipantUser, ParticipantDevice: b.ParticipantDevice,
+		Group: descriptor.Group, MinimumEligibilityRevision: details.MinimumRevision, ServerNow: details.Now, PolicyVersion: details.PolicyVersion}
+	return local.PrepareInteractionSend(ctx, expected, wire, in.OperationID, in.AttemptID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
 }
 
 func receiptMatchesInput(receipt protocol.SendReceipt, community id.ID, in SendInput) bool {
