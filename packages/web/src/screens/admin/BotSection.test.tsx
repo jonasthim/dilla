@@ -79,6 +79,26 @@ describe('the server bot settings', () => {
     expect(fake.callsOf('listModerationCases')).toHaveLength(1);
   });
 
+  it('renders a safe date fallback for an out-of-range received timestamp', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    const requestId = '54'.repeat(16);
+    fake.handler = command => {
+      if (command.m === 'getBotInstallation') return { ...ROW, state: 3 };
+      if (command.m === 'getBotJoinRole') return { roleId: null, installationId: ROW.id };
+      if (command.m === 'getBotDjRoles') return { roleIds: [], installationId: ROW.id };
+      if (command.m === 'listModerationCases') return { requestId, status: 'accepted' };
+      if (command.m === 'readHumanInteractionResponses') return { authorized: true, blocked: false, through: null, responses: [
+        { deliveryId: '3', requestId, status: 0, hasMore: false, cases: [{ key: 'a'.repeat(32) + ':1',
+          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
+          reason: 'duplicate', action: 'remove', excerpt: 'safe date fallback case', receivedAt: '8640000000000001' }] },
+      ] };
+      return command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null;
+    };
+    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    expect(await screen.findByText('safe date fallback case')).toBeInTheDocument();
+    expect(screen.getByText(/Date unavailable/)).toBeInTheDocument();
+  });
+
   it('manually refreshes installation status and capabilities from the server', async () => {
     const initial = { ...ROW, state: 2 as const, capabilities: 1 };
     const refreshed = { ...ROW, state: 3 as const, capabilities: 3 };

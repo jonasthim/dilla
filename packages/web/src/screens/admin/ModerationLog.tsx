@@ -108,8 +108,18 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
   const current = forCommunity === communityId;
   const currentResponses = current ? responses : [];
   const cases = currentResponses.flatMap(response => response.cases);
-  const date = (seconds: string): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-    .format(new Date(Number(seconds) * 1000));
+  const date = (seconds: string): string => {
+    const timestamp = Number(seconds);
+    if (!/^-?\d+$/u.test(seconds) || !Number.isSafeInteger(timestamp) || Math.abs(timestamp) > 8_640_000_000_000) {
+      return t('admin.bot.moderationLog.unknownDate');
+    }
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+        .format(new Date(timestamp * 1000));
+    } catch {
+      return t('admin.bot.moderationLog.unknownDate');
+    }
+  };
 
   return <section aria-labelledby={`${base}-title`}>
     <h3 id={`${base}-title`}>{t('admin.bot.moderationLog.title')}</h3>

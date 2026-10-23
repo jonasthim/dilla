@@ -119,6 +119,7 @@ export const admin = {
   'admin.bot.moderationLog.responseUnavailable': 'The bot could not load moderation cases. Try again.',
   'admin.bot.moderationLog.empty': 'No moderation cases were returned.',
   'admin.bot.moderationLog.caseMeta': '{action} · {reason} · {date}',
+  'admin.bot.moderationLog.unknownDate': 'Date unavailable',
   'admin.bot.moderationLog.more': 'Only the first page is shown; more cases are available.',
   'admin.afk.title': 'AFK channel',
   'admin.afk.hint': 'Idle people in voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel.',
