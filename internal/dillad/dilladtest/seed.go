@@ -339,6 +339,53 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /debug/group-state", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Target string `json:"target"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		target, err := id.Parse(body.Target)
+		if err != nil {
+			http.Error(w, "invalid target group id", http.StatusBadRequest)
+			return
+		}
+		repo := h.Server().Repo()
+		type groupState struct {
+			ID           string `json:"id"`
+			Epoch        uint64 `json:"epoch"`
+			Seq          uint64 `json:"seq"`
+			EpochUnknown bool   `json:"epoch_unknown"`
+			Messages     int    `json:"messages"`
+		}
+		states := make([]groupState, 0, 1)
+		var after id.ID
+		for {
+			groups, err := repo.ListGroupsForRetention(r.Context(), after, 256)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			for _, group := range groups {
+				after = group.GroupID
+				if group.TargetID != target || group.Kind != 0 || group.ClosedAt != nil {
+					continue
+				}
+				messages, err := repo.ListAppMessages(r.Context(), group.GroupID, 0, 512)
+				if err != nil {
+					writeError(w, err)
+					return
+				}
+				states = append(states, groupState{ID: group.GroupID.String(), Epoch: group.Epoch,
+					Seq: group.Seq, EpochUnknown: group.EpochUnknown, Messages: len(messages)})
+			}
+			if len(groups) < 256 {
+				break
+			}
+		}
+		writeJSON(w, map[string]any{"groups": states})
+	})
 	mux.HandleFunc("POST /debug/restore", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name string `json:"name"`
@@ -371,6 +418,32 @@ func ControlHandler(h *Host) http.Handler {
 			return
 		}
 		writeJSON(w, state)
+	})
+	mux.HandleFunc("GET /debug/bot-send-stats", func(w http.ResponseWriter, _ *http.Request) {
+		h.botSendMu.Lock()
+		attempts := append([]BotSendAttempt(nil), h.botSendAttempts...)
+		h.botSendMu.Unlock()
+		writeJSON(w, map[string]any{
+			"requests": h.botSendRequests.Load(),
+			"accepted": h.botSendAccepted.Load(),
+			"refused":  h.botSendRefused.Load(),
+			"attempts": attempts,
+		})
+	})
+	mux.HandleFunc("GET /debug/group-heal-attempts", func(w http.ResponseWriter, _ *http.Request) {
+		h.groupHealMu.Lock()
+		defer h.groupHealMu.Unlock()
+		writeJSON(w, map[string]any{"attempts": append([]GroupHealAttempt(nil), h.groupHealAttempts...)})
+	})
+	mux.HandleFunc("GET /debug/bot-interaction-heal-attempts", func(w http.ResponseWriter, _ *http.Request) {
+		h.botRuntimeMu.Lock()
+		defer h.botRuntimeMu.Unlock()
+		writeJSON(w, map[string]any{"attempts": append([]BotInteractionHealAttempt(nil), h.botInteractionHealAttempts...)})
+	})
+	mux.HandleFunc("GET /debug/bot-runtime-errors", func(w http.ResponseWriter, _ *http.Request) {
+		h.botRuntimeMu.Lock()
+		defer h.botRuntimeMu.Unlock()
+		writeJSON(w, map[string]any{"errors": append([]BotRuntimeError(nil), h.botRuntimeErrors...)})
 	})
 	mux.HandleFunc("GET /debug/conn", func(w http.ResponseWriter, r *http.Request) {
 		var ids [2]id.ID

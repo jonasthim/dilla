@@ -100,7 +100,9 @@ function stop(child: ChildProcess): Promise<void> {
 
 /** A started test host: its public origin, its control origin, the bootstrap invite it printed, and its stop. */
 export interface StartedHost { url: string; control: string; invite: string; runtimeCredentialFile?: string;
-  restartBotRuntime(): Promise<void>; stop(): Promise<void> }
+  restartBotRuntime(): Promise<void>; snapshotServer(name: string): Promise<void>; restoreServer(name: string): Promise<void>;
+  snapshotBotRuntime(name: string): Promise<void>; restoreBotRuntime(name: string): Promise<void>;
+  snapshotPair(name: string): Promise<void>; restorePair(name: string): Promise<void>; stop(): Promise<void> }
 
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
@@ -153,17 +155,76 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       }, 1_000);
     }
     if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
-    const restartBotRuntime = async (): Promise<void> => {
-      if (bot === null || c.botRuntime !== true) throw new Error('test host has no Bot runtime to restart');
+    const stopBot = async (): Promise<void> => {
+      if (bot === null || c.botRuntime !== true) throw new Error('test host has no Bot runtime to stop');
       await stop(bot);
       bot = null;
+    };
+    const startBot = async (): Promise<void> => {
+      if (bot !== null || c.botRuntime !== true) throw new Error('test host Bot runtime is already running or unavailable');
       rmSync(join(dataDir, 'bot.toml'), { force: true });
       bot = await startBotRuntime(url, dataDir, c.port,
         c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
     };
+    const restartBotRuntime = async (): Promise<void> => { await stopBot(); await startBot(); };
+    const snapshotServer = async (name: string): Promise<void> => postControl(c.control, '/debug/snapshot', { name });
+    const restoreServer = async (name: string): Promise<void> => postControl(c.control, '/debug/restore', { name });
+    const botArchive = (name: string): string => {
+      if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw new Error(`invalid Bot archive name: ${name}`);
+      const dir = join(dataDir, 'bot-archives');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return join(dir, `${name}.tar.gz`);
+    };
+    const snapshotBotRuntime = async (name: string): Promise<void> => {
+      await stopBot();
+      try {
+        execFileSync('tar', ['-C', dataDir, '-czf', botArchive(name), '--', 'bot.toml', 'bot-runtime.token', 'bot-state']);
+        chmodSync(botArchive(name), 0o600);
+      } finally {
+        await startBot();
+      }
+    };
+    const restoreBotRuntime = async (name: string): Promise<void> => {
+      await stopBot();
+      rmSync(join(dataDir, 'bot.toml'), { force: true });
+      rmSync(join(dataDir, 'bot-runtime.token'), { force: true });
+      rmSync(join(dataDir, 'bot-state'), { recursive: true, force: true });
+      execFileSync('tar', ['-C', dataDir, '-xzf', botArchive(name), '--no-same-owner']);
+      await startBot();
+    };
+    const snapshotPair = async (name: string): Promise<void> => {
+      await stopBot();
+      try {
+        execFileSync('tar', ['-C', dataDir, '-czf', botArchive(name), '--', 'bot.toml', 'bot-runtime.token', 'bot-state']);
+        chmodSync(botArchive(name), 0o600);
+        await postControl(c.control, '/debug/snapshot', { name });
+      } finally {
+        await startBot();
+      }
+    };
+    const restorePair = async (name: string): Promise<void> => {
+      await stopBot();
+      try {
+        await postControl(c.control, '/debug/restore', { name });
+        rmSync(join(dataDir, 'bot.toml'), { force: true });
+        rmSync(join(dataDir, 'bot-runtime.token'), { force: true });
+        rmSync(join(dataDir, 'bot-state'), { recursive: true, force: true });
+        execFileSync('tar', ['-C', dataDir, '-xzf', botArchive(name), '--no-same-owner']);
+      } finally {
+        await startBot();
+      }
+    };
     return { url, control: `http://127.0.0.1:${c.control}`, invite,
-      ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}), restartBotRuntime, stop: teardown };
+      ...(c.botRuntime === true ? { runtimeCredentialFile: join(dataDir, 'bot-runtime.token') } : {}),
+      restartBotRuntime, snapshotServer, restoreServer, snapshotBotRuntime, restoreBotRuntime, snapshotPair, restorePair, stop: teardown };
   } catch (e) { await teardown(); throw e; }
+}
+
+async function postControl(port: number, path: string, body: unknown): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (response.status !== 204) throw new Error(`${path} returned HTTP ${response.status}: ${await response.text()}`);
 }
 
 async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string): Promise<ChildProcess> {
