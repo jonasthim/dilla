@@ -185,8 +185,13 @@ describe('ThreadView (web3.7)', () => {
     await user.click(action);
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
     const dialog = screen.getByRole('dialog', { name: en['shell.moderation.removeTitle'] });
+    const reason = within(dialog).getByLabelText(en['shell.moderation.reason']);
+    expect(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] })).toHaveAttribute('aria-disabled', 'true');
+    await user.type(reason, 'reviewed by moderator');
+    expect(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] })).not.toHaveAttribute('aria-disabled', 'true');
     await user.click(within(dialog).getByRole('button', { name: en['shell.moderation.removeConfirm'] }));
-    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P2, seq: '2' }]);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P2, seq: '2',
+      reason: 'reviewed by moderator', excerpt: 'first reply' }]);
     expect(fake.callsOf('deleteMessage')).toEqual([]);
   });
   it('says there are no replies yet, but not while the thread is still being read', () => {

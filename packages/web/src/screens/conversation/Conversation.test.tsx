@@ -161,8 +161,13 @@ describe('moderator message removal', () => {
     await user.click(action);
     const dialog = screen.getByRole('dialog', { name: 'Remove this message for everyone?' });
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
+    const reason = within(dialog).getByLabelText(en['shell.moderation.reason']);
+    expect(within(dialog).getByRole('button', { name: 'Remove' })).toHaveAttribute('aria-disabled', 'true');
+    await user.type(reason, 'reviewed by moderator');
+    expect(within(dialog).getByRole('button', { name: 'Remove' })).not.toHaveAttribute('aria-disabled', 'true');
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
-    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P1, seq: '7' }]);
+    expect(fake.callsOf('moderateRemoveMessage')).toEqual([{ m: 'moderateRemoveMessage', channelId: GEN, msgId: P1, seq: '7',
+      reason: 'reviewed by moderator', excerpt: 'theirs' }]);
   });
 });
 

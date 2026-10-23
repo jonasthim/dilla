@@ -85,7 +85,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
   const [emojiFor, setEmojiFor] = useState<{ key: string; opener: HTMLElement } | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ key: string; msgId: string } | null>(null);
-  const [moderateFor, setModerateFor] = useState<{ key: string; msgId: string; seq: string } | null>(null);
+  const [moderateFor, setModerateFor] = useState<{ key: string; msgId: string; seq: string; reason: string; excerpt: string } | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
@@ -193,7 +193,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       case 'edit': if (msgId !== null) p.dispatch({ type: 'edit', msgId, value: editableText(item.body, p.book) }); break;
       case 'pin': if (msgId !== null) command({ m: 'pin', channelId: p.channelId, msgId, on: ev.on }); break;
       case 'delete': if (msgId !== null) setDeleteFor({ key: item.key, msgId }); break;
-      case 'moderateRemove': if (msgId !== null) setModerateFor({ key: item.key, msgId, seq: ev.seq }); break;
+      case 'moderateRemove': if (msgId !== null) setModerateFor({ key: item.key, msgId, seq: ev.seq, reason: '', excerpt: excerpt(plainBody(item.body, p.book)) }); break;
       case 'toggle': if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); break;
       case 'jump': jump(ev.msgId); break;
       case 'retry': command({ m: 'retrySend', msgId: ev.msgId }); break;
@@ -318,12 +318,19 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         setDeleteFor(null);
       }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
     <Dialog open={moderateFor !== null} title={t('shell.moderation.removeTitle')} closeLabel={t('shell.delete.cancel')}
-      onClose={() => setModerateFor(null)} footer={<Button variant="danger" onClick={() => {
-        if (moderateFor === null) return;
-        command({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: moderateFor.msgId, seq: moderateFor.seq });
+      onClose={() => setModerateFor(null)} footer={<Button variant="danger" aria-disabled={moderateFor === null || moderateFor.reason.trim().length === 0
+        || new TextEncoder().encode(moderateFor.reason).length > 1024 || undefined} onClick={() => {
+        if (moderateFor === null || moderateFor.reason.trim().length === 0 || new TextEncoder().encode(moderateFor.reason).length > 1024) return;
+        command({ m: 'moderateRemoveMessage', channelId: p.channelId, msgId: moderateFor.msgId, seq: moderateFor.seq,
+          reason: moderateFor.reason, excerpt: moderateFor.excerpt });
         rowEls.current.get(moderateFor.key)?.focus();
         setModerateFor(null);
-      }}>{t('shell.moderation.removeConfirm')}</Button>}>{t('shell.moderation.removeBody')}</Dialog>
+      }}>{t('shell.moderation.removeConfirm')}</Button>}>{<>
+        <p>{t('shell.moderation.removeBody')}</p>
+        <label>{t('shell.moderation.reason')}<textarea maxLength={1024} value={moderateFor?.reason ?? ''}
+          onChange={e => setModerateFor(current => current === null ? null : { ...current, reason: e.target.value })} /></label>
+        <p><strong>{t('shell.moderation.excerptLabel')}</strong> {moderateFor?.excerpt || t('shell.moderation.emptyExcerpt')}</p>
+      </>}</Dialog>
     <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} canUnpin={bits === null || (bits & PERM.pinMessages) !== 0} book={p.book} items={items} now={now}
       onClose={() => p.dispatch({ type: 'pins', open: false })} onJump={jump} onError={e => p.onError(e)} />
     {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}

@@ -377,17 +377,33 @@ describe('Controller', () => {
     await toReady(w);
     w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
-    w.state.groups.push(textGroup(2));
+    w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
+      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
+      return requestId;
+    });
     w.state.rows.push(strangerRow(3));
     const msgId = toHex(w.state.rows[0].msgId!);
-    w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3' });
+    w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_201)).toMatchObject({ ok: true, value: null }));
     expect(w.core.signRemoval).toHaveBeenCalledWith(expect.any(Uint8Array), GROUP, 3n, 1_700_000_030n, 1_700_000_000n);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
+    const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
+    const evidenceRequest = decode(prepared[3]) as unknown[];
+    expect(evidenceRequest[4]).toBe(61n);
+    expect(evidenceRequest[5]).toBe(0n);
+    expect(evidenceRequest[6]).toBe(1_700_000_030n);
+    expect(evidenceRequest[1]).toEqual(prepared[0]);
+    expect(evidenceRequest[1]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
+    expect(evidenceRequest[7]).toEqual([w.core.signRemoval.mock.calls[0][0], 'reviewed by moderator', 'bounded excerpt']);
+    expect(prepared[0]).not.toEqual(w.core.signRemoval.mock.calls[0][0]);
+    expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionSendPrepare.mock.invocationCallOrder[0]);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(new Uint8Array(16).fill(0x52), expect.any(Uint8Array));
 
     w.routes.postModerationRemoval.mockRejectedValue(refusal(403, 'E_FORBIDDEN'));
-    w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3' });
+    w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } }));
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -406,8 +422,22 @@ describe('Controller', () => {
     const actualMsgId = toHex(w.state.rows[0].msgId!);
     const request = label === 'mismatched sequence' ? { channelId: toHex(channelId), msgId: actualMsgId, seq: '4' }
       : { channelId: toHex(channelId), msgId: label === 'mismatched message id' ? 'ff'.repeat(16) : actualMsgId, seq: '3' };
-    w.call(10_211, { m: 'moderateRemoveMessage', ...request });
+    w.call(10_211, { m: 'moderateRemoveMessage', ...request, reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_211)).toMatchObject({ ok: false, error: { code } }));
+    expect(w.core.signRemoval).not.toHaveBeenCalled();
+    expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['reason', '🧪'.repeat(257), 'excerpt'],
+    ['excerpt', 'reviewed by moderator', '🧪'.repeat(129)],
+  ])('rejects a moderator removal with a %s over the UTF-8 byte limit before signing', async (_label, reason, excerpt) => {
+    const w = world();
+    await toReady(w);
+    w.state.groups.push(textGroup(2));
+    w.state.rows.push(strangerRow(3));
+    w.call(10_212, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason, excerpt });
+    await vi.waitFor(() => expect(w.ret(10_212)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
     expect(w.core.signRemoval).not.toHaveBeenCalled();
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
   });
@@ -425,7 +455,7 @@ describe('Controller', () => {
       w.call(10_220, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
       await vi.waitFor(() => expect(w.ret(10_220)).toMatchObject({ ok: true, value: null }));
     }
-    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3' });
+    w.call(10_221, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_221)).toMatchObject({ ok: false,
       error: { code: label === 'denied ManageMessages' ? 'E_FORBIDDEN' : 'E_NOT_READY' } }));
     expect(w.core.signRemoval).not.toHaveBeenCalled();
