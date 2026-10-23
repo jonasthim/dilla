@@ -636,11 +636,13 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot operator status
 
-The current `install.sh` release installs `dillad` and the optional Spotify PCM helper at
-`/usr/local/libexec/dilla-spotify-helper`. `deploy/dillabot.service` is a systemd unit fragment,
-not a Bot installer: no release flow currently creates the `dillabot` account, installs the Bot
-binary, native identity helper or WASI module, provisions `/etc/dilla/bot.toml` and its runtime
-credential, or enables the unit. Do not treat copying the unit as a supported Bot installation.
+The release workflow now attaches architecture-matched `dillabot` and `dilla-bot-core` binaries
+beside `dillad`, the WASI core and the Spotify PCM helper. The current `install.sh` installs
+`dillad` and the optional Spotify PCM helper at `/usr/local/libexec/dilla-spotify-helper`.
+`deploy/dillabot.service` is a systemd unit fragment, not a Bot installer: no guided flow yet
+creates the `dillabot` account, installs the Bot binaries and WASI module, provisions
+`/etc/dilla/bot.toml` and its runtime credential, or enables the unit. Do not treat copying the
+unit as a supported Bot installation.
 For an offline or locally built server install, pass `--spotify-helper FILE` with `--sums FILE`
 (or explicitly use `--insecure-skip-verify`) to install the architecture-matched helper. The
 installer places it at the same path.

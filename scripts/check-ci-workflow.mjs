@@ -841,8 +841,8 @@ export function checkWorkflow(root) {
  * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'bot-release', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -868,6 +868,15 @@ const RELEASE_STEPS = {
     'path: dist/dilla-spotify-helper-linux-${{ matrix.arch }}',
     'if-no-files-found: error',
   ],
+  'bot-release': [
+    'cargo test -p dilla-bot-core --locked',
+    'cargo build -p dilla-bot-core --release --locked',
+    'go test ./internal/bot/... ./cmd/dillabot',
+    "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot",
+    'install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}',
+    'name: dilla-bot-${{ matrix.arch }}',
+    'if-no-files-found: error',
+  ],
   'go-release': [
     // v0.1.0-web3.1: the tag job's version is stamped into main.Version, and the stamp is checked on both binaries.
     'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-amd64 ./cmd/dillad',
@@ -880,6 +889,7 @@ const RELEASE_STEPS = {
   release: [
     'cp deploy/install.sh release/install.sh',
     'pattern: dilla-spotify-helper-*',
+    'pattern: dilla-bot-*',
     'merge-multiple: true',
     // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
     `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
@@ -893,7 +903,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'bot-release': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
