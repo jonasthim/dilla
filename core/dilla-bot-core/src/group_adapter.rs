@@ -82,8 +82,52 @@ pub(crate) fn dispatch(
         23 => interaction_groups(core, bind, payload),
         24 => interaction_apply(core, payload),
         25 => interaction_cursor(core, payload),
+        26 => interaction_send_prepare(core, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+fn interaction_send_prepare(
+    core: &mut ClientCore,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let (expected, snapshot, operation, attempt, request, now, generation) =
+        decode_strict(payload, |d| {
+            d.array(8)?;
+            if d.uint()? != 26 {
+                return Err(dilla_core::cbor::CborError::TypeMismatch {
+                    expected: "interaction send prepare",
+                    offset: 0,
+                });
+            }
+            let expected = interaction_expected(d)?;
+            let snapshot = d.bytes()?.to_vec();
+            let operation = d.bytes_exact::<16>()?;
+            let attempt = d.bytes_exact::<16>()?;
+            let request = d.bytes()?.to_vec();
+            let now = d.uint()?;
+            let generation = d.uint()?;
+            Ok((
+                expected, snapshot, operation, attempt, request, now, generation,
+            ))
+        })
+        .map_err(|_| DispatchError::Invalid)?;
+    if snapshot.len() > 160 << 10 || request.len() > 32 << 20 {
+        return Err(DispatchError::Invalid);
+    }
+    let out = core
+        .bot_interaction_send_prepare(
+            &operation,
+            &attempt,
+            expected.group.as_bytes(),
+            &request,
+            now,
+            generation,
+            &snapshot,
+            &expected,
+        )
+        .map_err(map_client)?;
+    Ok(Zeroizing::new(out))
 }
 
 fn interaction_expected(

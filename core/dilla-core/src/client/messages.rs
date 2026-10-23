@@ -1213,6 +1213,52 @@ impl ClientCore {
         original_now: u64,
         expected_generation: u64,
     ) -> Result<Vec<u8>, ClientError> {
+        self.bot_send_prepare_scoped(
+            operation_id,
+            attempt_id,
+            group_id,
+            request_body,
+            original_now,
+            expected_generation,
+            None,
+        )
+    }
+
+    /// Prepare a Bot response for a kind-3 interaction only after revalidating the current signed
+    /// admission and the exact authenticated two-leaf roster.
+    pub fn bot_interaction_send_prepare(
+        &mut self,
+        operation_id: &[u8; 16],
+        attempt_id: &[u8; 16],
+        group_id: &[u8; 16],
+        request_body: &[u8],
+        original_now: u64,
+        expected_generation: u64,
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.bot_inspect_stored_interaction_group(group_id, snapshot_wire, expected)?;
+        self.bot_send_prepare_scoped(
+            operation_id,
+            attempt_id,
+            group_id,
+            request_body,
+            original_now,
+            expected_generation,
+            Some((snapshot_wire, expected)),
+        )
+    }
+
+    fn bot_send_prepare_scoped(
+        &mut self,
+        operation_id: &[u8; 16],
+        attempt_id: &[u8; 16],
+        group_id: &[u8; 16],
+        request_body: &[u8],
+        original_now: u64,
+        expected_generation: u64,
+        interaction_proof: Option<(&[u8], &crate::bot::interaction_admission::Expected)>,
+    ) -> Result<Vec<u8>, ClientError> {
         if operation_id == &[0; 16] || attempt_id == &[0; 16] || group_id == &[0; 16] {
             return Err(ClientError::new(
                 E_CORE_INPUT,
@@ -1227,7 +1273,7 @@ impl ClientCore {
         let scope = self
             .read(|c| group_row(c, group_id))?
             .ok_or_else(not_found)?;
-        if scope.kind != 0
+        if (scope.kind != 0 && !(scope.kind == 3 && interaction_proof.is_some()))
             || scope.state != STATE_ACTIVE
             || scope.community_id.as_deref() != Some(binding.community_id.as_slice())
         {
@@ -1235,6 +1281,17 @@ impl ClientCore {
                 E_CORE_STATE,
                 "bot send group is outside its installation scope",
             ));
+        }
+        if let Some((snapshot_wire, expected)) = interaction_proof {
+            if *group_id != *expected.group.as_bytes()
+                || scope.community_id.as_deref() != Some(expected.community.as_bytes().as_slice())
+            {
+                return Err(bot_send_conflict());
+            }
+            let loaded = self
+                .take_bot_interaction_group_verified(group_id, snapshot_wire, expected)?
+                .ok_or_else(not_found)?;
+            self.keep_group(*group_id, loaded);
         }
         let request_hash: [u8; 32] = Sha256::digest(request_body).into();
         let op_key = bot_send_op_key(operation_id);
@@ -1389,7 +1446,7 @@ impl ClientCore {
                 request_body,
                 original_now,
                 Some(attempt.message),
-                false,
+                interaction_proof.is_some(),
                 None,
             )?;
         } else if queued
@@ -1409,6 +1466,7 @@ impl ClientCore {
                 generation: expected_generation,
                 message: attempt.message,
             }),
+            interaction_proof,
         )?;
         let (encrypted_group, upload) = decode_strict(&encrypted, |d| {
             d.array(2)?;
@@ -1880,13 +1938,14 @@ impl ClientCore {
     }
 
     pub fn send_encrypt(&mut self, msg_id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
-        self.send_encrypt_inner(msg_id, None)
+        self.send_encrypt_inner(msg_id, None, None)
     }
 
     fn send_encrypt_inner(
         &mut self,
         msg_id: &[u8; 16],
         bot_intent: Option<BotSendEncryptIntent>,
+        interaction_proof: Option<(&[u8], &crate::bot::interaction_admission::Expected)>,
     ) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         let o = self
@@ -1927,7 +1986,12 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_STATE, "proposals are pending"));
         }
         self.retry_reload(&id, |this| {
-            let mut group = this.take_group(&id)?.ok_or_else(not_found)?;
+            let mut group = if let Some((snapshot_wire, expected)) = interaction_proof {
+                this.take_bot_interaction_group_verified(&id, snapshot_wire, expected)?
+            } else {
+                this.take_group(&id)?
+            }
+            .ok_or_else(not_found)?;
             if group.has_pending_commit() {
                 this.keep_group(id, group);
                 return Err(ClientError::new(E_CORE_STATE, "a commit is pending"));

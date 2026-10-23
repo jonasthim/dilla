@@ -475,6 +475,60 @@ impl ClientCore {
         Ok(admission)
     }
 
+    /// Load and authenticate the actual cached or persisted Bot interaction group against the
+    /// current signed context. Used at the encryption boundary so stale cached MLS state cannot
+    /// bypass the roster checks performed by inspection.
+    pub(super) fn take_bot_interaction_group_verified(
+        &mut self,
+        group_id: &[u8; 16],
+        snapshot_wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<Option<DillaGroup>, ClientError> {
+        if group_id != expected.group.as_bytes() {
+            return Err(binding_mismatch());
+        }
+        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        let local_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "interaction snapshot clock is unavailable")
+            })?
+            .as_secs();
+        if !super::bot_interaction_create::snapshot_is_fresh(
+            snapshot.now,
+            snapshot.not_after,
+            local_now,
+        ) {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "interaction snapshot is stale or from the future",
+            ));
+        }
+        let Some(group) = self.take_group_unchecked(group_id)? else {
+            return Ok(None);
+        };
+        let own = self.own()?;
+        verify_interaction_group_snapshot(
+            &group,
+            &snapshot,
+            expected,
+            &own.user_id,
+            &own.device_id,
+        )?;
+        let row = self
+            .read(|c| super::groups::group_row(c, group_id))?
+            .ok_or_else(binding_mismatch)?;
+        if row.kind != GroupKind::Interaction.as_u8() as i64
+            || row.state != super::groups::STATE_ACTIVE
+            || row.community_id.as_deref() != Some(expected.community.as_bytes().as_slice())
+            || row.target_id.as_slice() != expected.participant_user.as_bytes()
+            || !super::matches_bot_interaction_row(&group, group_id, &row, &own)
+        {
+            return Err(binding_mismatch());
+        }
+        Ok(Some(group))
+    }
+
     /// Atomically apply interaction source rows after binding the request to a fresh, signed
     /// admission snapshot and the authenticated persisted roster.
     pub fn bot_apply_interaction_group(
@@ -1656,6 +1710,51 @@ mod interaction_snapshot_tests {
             Ok(())
         })
         .expect("apply result");
+        let mut response_request = crate::cbor::Encoder::new();
+        response_request
+            .array(4)
+            .uint(0)
+            .null()
+            .text("private interaction response")
+            .array(0);
+        let response_request = response_request.into_vec();
+        let response_operation = [0xa1; 16];
+        let response_attempt = [0xa2; 16];
+        let mut wrong_device_expected = renewed_expected.clone();
+        wrong_device_expected.participant_device = mid([0x6b; 16]);
+        assert!(
+            core.bot_interaction_send_prepare(
+                &response_operation,
+                &response_attempt,
+                renewed_expected.group.as_bytes(),
+                &response_request,
+                renewed_now,
+                7,
+                &renewed_wire,
+                &wrong_device_expected,
+            )
+            .is_err(),
+            "interaction send must reject a participant device outside the signed context"
+        );
+        let response_upload = core
+            .bot_interaction_send_prepare(
+                &response_operation,
+                &response_attempt,
+                renewed_expected.group.as_bytes(),
+                &response_request,
+                renewed_now,
+                7,
+                &renewed_wire,
+                &renewed_expected,
+            )
+            .expect("proof-authorized Bot interaction response send");
+        crate::cbor::decode_strict(&response_upload, |d| {
+            d.array(2)?;
+            assert_ne!(d.bytes_exact::<16>()?, [0; 16]);
+            assert!(d.bytes()?.len() > 0);
+            Ok(())
+        })
+        .expect("encoded interaction response upload");
         let cursor = core
             .bot_interaction_group_cursor(
                 renewed_expected.group.as_bytes(),
