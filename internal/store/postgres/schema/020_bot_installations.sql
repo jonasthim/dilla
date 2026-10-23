@@ -54,7 +54,7 @@ CREATE TABLE bot_operations (
   actor_kind      BIGINT NOT NULL CHECK (actor_kind IN (0, 1, 2)),
   actor_id        BYTEA  NOT NULL CHECK (octet_length(actor_id) = 16),
   actor_device    BYTEA  CHECK (actor_device IS NULL OR octet_length(actor_device) = 16),
-  operation       BIGINT NOT NULL CHECK (operation BETWEEN 1 AND 8),
+  operation       BIGINT NOT NULL CHECK (operation BETWEEN 1 AND 7),
   payload_hash    BYTEA  NOT NULL CHECK (octet_length(payload_hash) = 32),
   result_cbor     BYTEA  NOT NULL CHECK (octet_length(result_cbor) <= 8192),
   created         BIGINT NOT NULL,
