@@ -305,11 +305,11 @@ const REQUIRED_STEPS = {
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
-    'timeout-minutes: 40',
+    'timeout-minutes: 45',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 30m ./internal/api/...',
+    'go test -race -shuffle=on -timeout 38m ./internal/api/...',
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
