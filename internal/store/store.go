@@ -733,6 +733,10 @@ type Communities interface {
 	// Callers hold LockCommunity in the same transaction.
 	SetSelfRolePolicy(ctx context.Context, communityID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
 	ListSelfRolePolicy(ctx context.Context, communityID id.ID) ([]SelfRolePolicyRow, error)
+	// SetDJRolePolicy atomically replaces the installation's approved DJ role IDs.
+	// Callers hold LockCommunity in the same transaction.
+	SetDJRolePolicy(ctx context.Context, installationID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
+	ListDJRolePolicy(ctx context.Context, installationID id.ID) ([]DJRolePolicyRow, error)
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
@@ -748,6 +752,14 @@ type SelfRolePolicyRow struct {
 	RoleID      id.ID
 	ApprovedBy  id.ID
 	ApprovedAt  int64
+}
+
+// DJRolePolicyRow is a manager-approved role in one installation's DJ authority allowlist.
+type DJRolePolicyRow struct {
+	InstallationID id.ID
+	RoleID         id.ID
+	ApprovedBy     id.ID
+	ApprovedAt     int64
 }
 
 const (
