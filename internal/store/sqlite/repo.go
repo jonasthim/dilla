@@ -110,6 +110,14 @@ func ptrInt64(v sql.NullInt64) *int64 {
 	return &n
 }
 
+// checkedInt64 rejects values that the signed database integer columns cannot represent.
+func checkedInt64(value uint64, field string) (int64, error) {
+	if value > math.MaxInt64 {
+		return 0, fmt.Errorf("store: %s exceeds int64 range", field)
+	}
+	return int64(value), nil
+}
+
 // ---------------------------------------------------------------- Instance
 
 func (r *Repo) CreateInstance(ctx context.Context, in store.InstanceRow) error {
@@ -160,8 +168,12 @@ func (r *Repo) BumpGeneration(ctx context.Context) (uint64, error) {
 // SetGeneration is monotone in SQL (`MAX(generation, ?)`), so a manifest older
 // than the instance's own generation is a no-op rather than a step backwards.
 func (r *Repo) SetGeneration(ctx context.Context, generation uint64) error {
+	generationInt, err := checkedInt64(generation, "generation")
+	if err != nil {
+		return err
+	}
 	return wrap(r.w.SetGeneration(ctx, sqlitedb.SetGenerationParams{
-		Generation: int64(generation),
+		Generation: generationInt,
 	}))
 }
 
@@ -1420,8 +1432,13 @@ func (r *Repo) AppendHandshake(ctx context.Context, h store.HandshakeRow) error 
 }
 
 func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "handshake sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListHandshakes(ctx, sqlitedb.ListHandshakesParams{
-		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+		GroupID: groupID, Seq: fromSeqInt, MaxRows: int64(limit),
 	})
 	if err != nil {
 		return nil, wrap(err)
@@ -1996,8 +2013,13 @@ func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
 }
 
 func (r *Repo) ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.AppMessageRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "app-message sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListAppMessages(ctx, sqlitedb.ListAppMessagesParams{
-		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
+		GroupID: groupID, Seq: fromSeqInt, MaxRows: int64(limit),
 	})
 	if err != nil {
 		return nil, wrap(err)
@@ -2010,7 +2032,12 @@ func (r *Repo) ListAppMessages(ctx context.Context, groupID id.ID, fromSeq uint6
 }
 
 func (r *Repo) GetAppMessage(ctx context.Context, groupID id.ID, seq uint64) (store.AppMessageRow, error) {
-	row, err := r.r.GetAppMessage(ctx, sqlitedb.GetAppMessageParams{GroupID: groupID, Seq: int64(seq)})
+	seqInt, err := checkedInt64(seq, "app-message sequence")
+	if err != nil {
+		return store.AppMessageRow{}, err
+	}
+
+	row, err := r.r.GetAppMessage(ctx, sqlitedb.GetAppMessageParams{GroupID: groupID, Seq: seqInt})
 	if err != nil {
 		return store.AppMessageRow{}, wrap(err)
 	}
@@ -3051,9 +3078,14 @@ func (r *Repo) PutReadableMessage(ctx context.Context, m store.ReadableMessageRo
 }
 
 func (r *Repo) ListReadableMessages(ctx context.Context, channelID id.ID, fromSeq uint64, limit int32) ([]store.ReadableMessageRow, error) {
+	fromSeqInt, err := checkedInt64(fromSeq, "readable-message sequence")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := r.r.ListReadableMessages(ctx, sqlitedb.ListReadableMessagesParams{
 		ChannelID: channelID,
-		Seq:       int64(fromSeq),
+		Seq:       fromSeqInt,
 		MaxRows:   int64(limit),
 	})
 	if err != nil {
