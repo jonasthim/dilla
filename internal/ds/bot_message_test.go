@@ -239,6 +239,12 @@ func TestManagedBotSendAcceptReplayAndResolveAreDurable(t *testing.T) {
 	t.Run("stale MLS snapshot send is refused before group heal", func(t *testing.T) {
 		// The snapshot's ciphertext and epoch are from before restore; only the
 		// expected server generation is current. No application message may land.
+		// The racing accept above is allowed to win, so compare against the actual
+		// pre-call count instead of assuming only the first message was accepted.
+		before, listErr := h.repo.ListAppMessages(ctx, registered.GroupID, 0, 10)
+		if listErr != nil {
+			t.Fatalf("application messages before blocked stale send: %v", listErr)
+		}
 		staleSend := request
 		staleSend.OperationID, staleSend.AttemptID = id.New(), id.New()
 		staleSend.ExpectedGeneration = instance.Generation + 1
@@ -250,8 +256,8 @@ func TestManagedBotSendAcceptReplayAndResolveAreDurable(t *testing.T) {
 				t.Fatalf("stale MLS snapshot refusal = %v, want E_LEAF_NOT_CURRENT", sendErr)
 			}
 		}
-		if rows, listErr := h.repo.ListAppMessages(ctx, registered.GroupID, 0, 10); listErr != nil || len(rows) != 1 {
-			t.Fatalf("application messages after blocked stale send = %d, err=%v; want only the pre-restore message", len(rows), listErr)
+		if rows, listErr := h.repo.ListAppMessages(ctx, registered.GroupID, 0, 10); listErr != nil || len(rows) != len(before) {
+			t.Fatalf("application messages after blocked stale send = %d, err=%v; want unchanged from pre-call count %d", len(rows), listErr, len(before))
 		}
 	})
 	orphan, predecessor, unknownOp := id.New(), id.New(), id.New()
