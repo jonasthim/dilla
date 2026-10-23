@@ -22,6 +22,7 @@ Run in the reviewed checkout with Bash. These commands create local assets only;
 ```sh
 set -eu
 git status --short --branch
+test -z "$(git status --porcelain)"
 commit="$(git rev-parse HEAD)"
 printf 'candidate commit: %s\n' "$commit"
 case "$(uname -m)" in
@@ -46,6 +47,7 @@ npm run typecheck -w @dilla/web
 DILLA_NOISE_MODE=beta npm run build -w @dilla/web
 test -s packages/web/dist/index.html
 ! grep -q 'content="placeholder"' packages/web/dist/index.html
+rm -rf internal/web/dist
 install -d -m 0755 internal/web/dist
 cp -a packages/web/dist/. internal/web/dist/
 DILLA_WEB_DIST="$PWD/internal/web/dist" go test -tags webdist ./internal/web/...
