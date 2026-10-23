@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"unicode/utf8"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -53,8 +54,17 @@ func (s *Session) CommunityMembersPage(ctx context.Context, community, after id.
 	last := after
 	for _, rawRow := range rows {
 		a, ok := rawRow.([]any)
-		if !ok || len(a) != 7 {
+		if !ok || (len(a) != 7 && len(a) != 9) {
 			return CommunityMemberPage{}, ErrProtocol
+		}
+		// Older servers returned seven fields. Current memberResp appends the
+		// account status message and bio after those fields.
+		if len(a) == 9 {
+			status, statusOK := a[7].(string)
+			bio, bioOK := a[8].(string)
+			if !statusOK || !bioOK || utf8.RuneCountInString(status) > 190 || utf8.RuneCountInString(bio) > 500 {
+				return CommunityMemberPage{}, ErrProtocol
+			}
 		}
 		member := CommunityMember{}
 		if member.UserID, ok = asID(a[0]); !ok || member.UserID.IsZero() || bytes.Compare(member.UserID[:], last[:]) <= 0 {
