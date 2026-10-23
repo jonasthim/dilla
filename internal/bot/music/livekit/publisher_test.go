@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/music/counter"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/sframe"
 )
 
 type epochStub struct {
@@ -67,6 +69,53 @@ func TestSenderForEpochAcceptsInitialEpochZero(t *testing.T) {
 	e := native.CallMediaEpoch{OwnLeaf: 0, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 0}}}
 	if _, err := senderForEpoch(e); err != nil {
 		t.Fatalf("initial MLS epoch zero rejected: %v", err)
+	}
+}
+
+type counterStateStub struct{ value native.StateValue }
+
+func (s *counterStateStub) StateGet(_ context.Context, _ uint64, _ []byte) (native.StateValue, error) {
+	return s.value, nil
+}
+
+func (s *counterStateStub) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	if tx.IsZero() || len(changes) != 1 || changes[0].ExpectedRevision != s.value.Revision {
+		return nil, errors.New("counter state revision conflict")
+	}
+	s.value = native.StateValue{Revision: s.value.Revision + 1, Value: append([]byte(nil), changes[0].Value...)}
+	return []uint64{s.value.Revision}, nil
+}
+
+func TestReservedSenderUsesDisjointCountersAcrossPublisherRestart(t *testing.T) {
+	state := &counterStateStub{}
+	group := testID(11)
+	epoch := native.CallMediaEpoch{Epoch: 9, OwnLeaf: 4, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 4}}}
+	first, err := senderForReservedEpoch(context.Background(), state, group, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFrame, err := first.Encrypt(sframe.Opus, sframe.Mic, 0, []byte{0xfc, 1, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := senderForReservedEpoch(context.Background(), state, group, epoch) // simulated new publisher/process
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFrame, err := second.Encrypt(sframe.Opus, sframe.Mic, 0, []byte{0xfc, 1, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, firstCounter, _, err := sframe.DecodeHeader(firstFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondCounter, _, err := sframe.DecodeHeader(secondFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstCounter != 0 || secondCounter != counter.BlockSize {
+		t.Fatalf("publisher counters = %d then %d, want 0 then %d", firstCounter, secondCounter, counter.BlockSize)
 	}
 }
 

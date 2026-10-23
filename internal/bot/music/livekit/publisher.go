@@ -12,6 +12,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/music/counter"
 	"github.com/jonasthim/dilla/internal/bot/music/runtime"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
@@ -67,7 +68,16 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		_ = source.Close()
 		return nil, errors.New("music livekit: call media key lookup failed")
 	}
-	sender, err := senderForEpoch(epoch)
+	if err := validateSenderEpoch(epoch); err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	state, ok := epochs.(counter.State)
+	if !ok {
+		_ = source.Close()
+		return nil, ErrBinding
+	}
+	sender, err := senderForReservedEpoch(ctx, state, boundGroup, epoch)
 	if err != nil {
 		_ = source.Close()
 		return nil, err
@@ -114,26 +124,51 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 }
 
 func senderForEpoch(epoch native.CallMediaEpoch) (*sframe.Sender, error) {
-	if epoch.OwnLeaf > uint64(^uint16(0)) || allZero(epoch.BaseKey[:]) {
-		return nil, ErrBinding
-	}
-	found := false
-	for _, member := range epoch.Roster {
-		if member.Leaf == epoch.OwnLeaf {
-			if found {
-				return nil, ErrBinding
-			}
-			found = true
-		}
-	}
-	if !found {
-		return nil, ErrBinding
+	if err := validateSenderEpoch(epoch); err != nil {
+		return nil, err
 	}
 	sender, err := sframe.NewSender(epoch.BaseKey, uint16(epoch.OwnLeaf), epoch.Epoch, epoch.Epoch)
 	if err != nil {
 		return nil, fmt.Errorf("music livekit: sender initialization failed: %w", err)
 	}
 	return sender, nil
+}
+
+func senderForReservedEpoch(ctx context.Context, state counter.State, group id.ID, epoch native.CallMediaEpoch) (*sframe.Sender, error) {
+	if ctx == nil || state == nil || group.IsZero() {
+		return nil, ErrBinding
+	}
+	if err := validateSenderEpoch(epoch); err != nil {
+		return nil, err
+	}
+	reserved, err := counter.Reserve(ctx, state, group, epoch.Epoch, uint16(epoch.OwnLeaf))
+	if err != nil {
+		return nil, errors.New("music livekit: sender counter reservation failed")
+	}
+	sender, err := sframe.NewSenderRange(epoch.BaseKey, uint16(epoch.OwnLeaf), epoch.Epoch, reserved.Start, reserved.End)
+	if err != nil {
+		return nil, fmt.Errorf("music livekit: sender range initialization failed: %w", err)
+	}
+	return sender, nil
+}
+
+func validateSenderEpoch(epoch native.CallMediaEpoch) error {
+	if epoch.OwnLeaf > uint64(^uint16(0)) || allZero(epoch.BaseKey[:]) {
+		return ErrBinding
+	}
+	found := false
+	for _, member := range epoch.Roster {
+		if member.Leaf == epoch.OwnLeaf {
+			if found {
+				return ErrBinding
+			}
+			found = true
+		}
+	}
+	if !found {
+		return ErrBinding
+	}
+	return nil
 }
 
 func (s *Session) monitor(ctx context.Context, groupID id.ID, epochs EpochSource, initial native.CallMediaEpoch, lifetime time.Duration) {
@@ -180,7 +215,7 @@ func epochStillBound(current, initial native.CallMediaEpoch) error {
 		subtle.ConstantTimeCompare(current.BaseKey[:], initial.BaseKey[:]) != 1 {
 		return ErrEpochChanged
 	}
-	if _, err := senderForEpoch(current); err != nil {
+	if err := validateSenderEpoch(current); err != nil {
 		return err
 	}
 	return nil
