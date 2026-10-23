@@ -47,16 +47,20 @@ Operation, arguments, channel requirement, mutation:
 - 23 music.clear: [], channel required, mutation
 - 30 welcome.preview: [template tstr(1..2000 UTF8 bytes)], no channel, read
 - 40 roles.list: [cursor uint], no channel, read (selections use human HTTP)
-- 50 announcements.list: [cursor uint], no channel, read
-- 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation
-- 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; the revision must be positive and match the stored schedule when the encrypted state transaction commits
+- 50 announcements.list: [cursor uint], no channel, read; response revision is the scheduler document revision from the same encrypted-state read as the page
+- 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation; request revision is the expected scheduler document revision, while the document carries its own per-schedule revision
+- 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; request revision is the expected scheduler document revision and the argument's positive revision must match the stored schedule
 - 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 61 moderation.evidence: [action_request_id, reason tstr(0..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)], no channel, mutation
 
 For no-channel operations channel MUST be null. For reads revision/expires MUST
 be null. For mutations both MUST be uint; expiry must satisfy now < expires <=
-now+30 (seconds), rejecting overflow; stale revisions are checked against current
-state by dispatcher. Do not enforce deadline during a structural encode/decode:
+now+30 (seconds), rejecting overflow. Feature handlers compare stale revisions
+against current state at their write boundary; announcement Put/Delete compare
+the scheduler document revision in the same encrypted transaction that stores
+the outcome receipt. The receipt binds the request ID to the complete canonical
+request and replays the same outcome for exact retries within its live expiry.
+Do not enforce deadline during a structural encode/decode:
 provide explicit validate_context(expected_community, now) that checks it. Decode
 must still enforce presence/types and args. Context mismatch/expiry refuse.
 Document bstr payloads must themselves be deterministic CBOR arrays (not arbitrary
@@ -66,6 +70,10 @@ control characters U+0000..001F and U+007F disallowed in those two inputs only.
 
 Response CBOR (same body-prefix and encoded byte limit):
 `[1, request_id, community_id, status uint0..9, revision|null, data bstr(0..2400)]`.
+For `announcements.list`, data is `[1, offset, total, rows]` and response
+revision is the scheduler document revision. A successful or conflicting
+announcement mutation returns the resulting document revision; a stale request
+returns status 4. Production currently registers only the list operation.
 For `moderation.cases`, data is `[1, rows, next_cursor|null]`; each row is
 `[source_community, group_id, channel_id, actor_id, message_id, source_revision,
 reason, action, excerpt, received_at_unix]`. The cursor is opaque deterministic
