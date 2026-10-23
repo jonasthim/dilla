@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
@@ -17,6 +18,7 @@ var ErrSendTerminal = errors.New("bot send attempt is already accepted or unknow
 type sendNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
+	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
 	PrepareSend(context.Context, id.ID, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error)
 	ConfirmSendReceipt(context.Context, id.ID, []byte) error
 }
@@ -127,7 +129,7 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 			return protocol.SendReceipt{}, err
 		}
 	}
-	group, err := s.native.InspectGroup(ctx, in.GroupID)
+	group, err := s.inspectSendGroup(ctx, in.GroupID)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -190,6 +192,46 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 		return protocol.SendReceipt{}, errors.Join(postErr, err)
 	}
 	return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
+}
+
+// Ordinary groups use the generic helper inspection. A managed Bot interaction is listed only by
+// its dedicated native descriptor operation; the server still authorizes the actual message POST.
+func (s *SendCoordinator) inspectSendGroup(ctx context.Context, groupID id.ID) (native.GroupInfo, error) {
+	group, err := s.native.InspectGroup(ctx, groupID)
+	if err == nil {
+		return group, nil
+	}
+	var status *helper.StatusError
+	if !errors.As(err, &status) || status.Status != 2 {
+		return native.GroupInfo{}, err
+	}
+	descriptors, listErr := s.native.InteractionGroups(ctx)
+	if listErr != nil {
+		return native.GroupInfo{}, listErr
+	}
+	var found *native.InteractionGroupDescriptor
+	for i := range descriptors {
+		if descriptors[i].Group == groupID {
+			if found != nil {
+				return native.GroupInfo{}, errors.New("duplicate native interaction send group")
+			}
+			found = &descriptors[i]
+		}
+	}
+	if found == nil {
+		return native.GroupInfo{}, err
+	}
+	b := found.Binding
+	if found.Group.IsZero() || found.State != 2 || found.Epoch == 0 || found.BotDevice.IsZero() ||
+		b.Instance != s.binding.Instance || b.Installation != s.binding.Installation || b.Community != s.binding.Community ||
+		b.BotUser.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() ||
+		b.BotUser == b.ParticipantUser || found.BotDevice == b.ParticipantDevice ||
+		b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 {
+		return native.GroupInfo{}, errors.New("native interaction send group does not match installation")
+	}
+	community := b.Community
+	return native.GroupInfo{ID: found.Group, Kind: 3, Community: &community, Target: b.ParticipantUser,
+		State: found.State, Epoch: found.Epoch}, nil
 }
 
 func receiptMatchesInput(receipt protocol.SendReceipt, community id.ID, in SendInput) bool {
