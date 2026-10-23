@@ -95,6 +95,12 @@ func announcementPayload(t *testing.T, announcementID id.ID, text string, revisi
 	return b
 }
 
+func announcementMutationRequest(t *testing.T, requestID id.ID, operation protocol.Operation, revision uint64, args ...any) protocol.Request {
+	t.Helper()
+	expires := uint64(time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC).Unix() + 20)
+	return protocol.Request{RequestID: requestID, CommunityID: interactionID(2), Operation: operation, Revision: &revision, Expires: &expires, Args: args}
+}
+
 func TestAnnouncementInteractionsPutUsesAuthenticatedActorAndScheduleCAS(t *testing.T) {
 	h, auth := announcementInteractionsFixture(t)
 	handlers := h.Handlers()
@@ -102,15 +108,58 @@ func TestAnnouncementInteractionsPutUsesAuthenticatedActorAndScheduleCAS(t *test
 		t.Fatalf("decode: %v", decodeErr)
 	}
 	revision := uint64(7)
-	request := protocol.Request{Revision: &revision, Args: []any{nil, announcementPayload(t, interactionID(20), "private schedule text", 1)}}
+	request := announcementMutationRequest(t, interactionID(31), protocol.OpAnnouncementsPut, 0, nil, announcementPayload(t, interactionID(20), "private schedule text", 1))
 	result, err := handlers[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
 	if err != nil || result.Status != 0 || auth.user != interactionID(6) || result.Revision == nil || *result.Revision != 1 {
 		t.Fatalf("put result=%+v auth user=%v err=%v", result, auth.user, err)
 	}
-	stale := protocol.Request{Revision: &revision, Args: []any{interactionID(20), announcementPayload(t, interactionID(20), "private schedule text", 1)}}
+	stale := announcementMutationRequest(t, interactionID(32), protocol.OpAnnouncementsPut, revision, interactionID(20), announcementPayload(t, interactionID(20), "private schedule text", 1))
 	result, err = handlers[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, stale)
-	if err != nil || result.Status != interactionStatusConflict {
+	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 2 {
 		t.Fatalf("stale put result=%+v err=%v, want conflict", result, err)
+	}
+	if !handlers[protocol.OpAnnouncementsPut].RevisionInHandler || handlers[protocol.OpAnnouncementsPut].CurrentRevision != nil {
+		t.Fatal("put handler must compare revision inside the atomic scheduler write path")
+	}
+}
+
+func TestAnnouncementMutationReceiptReplayFingerprintAndRevocation(t *testing.T) {
+	h, auth := announcementInteractionsFixture(t)
+	put := h.Handlers()[protocol.OpAnnouncementsPut].Handle
+	request := announcementMutationRequest(t, interactionID(60), protocol.OpAnnouncementsPut, 0, nil, announcementPayload(t, interactionID(20), "stable request", 1))
+	actor := InteractionActor{User: interactionID(6)}
+	first, err := put(context.Background(), actor, request)
+	if err != nil || first.Status != 0 || first.Revision == nil || *first.Revision != 1 {
+		t.Fatalf("first mutation result=%+v err=%v", first, err)
+	}
+	replay, err := put(context.Background(), actor, request)
+	if err != nil || replay.Status != first.Status || replay.Revision == nil || *replay.Revision != *first.Revision {
+		t.Fatalf("replayed mutation result=%+v err=%v, want %+v", replay, err, first)
+	}
+	changed := announcementMutationRequest(t, interactionID(60), protocol.OpAnnouncementsPut, 0, nil, announcementPayload(t, interactionID(22), "changed request", 1))
+	conflict, err := put(context.Background(), actor, changed)
+	if err != nil || conflict.Status != interactionStatusConflict || conflict.Revision != nil {
+		t.Fatalf("request ID reuse result=%+v err=%v, want conflict without write", conflict, err)
+	}
+	rows, err := h.Scheduler.List(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].ID != interactionID(20) {
+		t.Fatalf("request ID conflict changed schedules: rows=%+v err=%v", rows, err)
+	}
+	auth.allowed = false
+	revoked, err := put(context.Background(), actor, request)
+	if err != nil || revoked.Status != interactionStatusForbidden {
+		t.Fatalf("revoked receipt replay result=%+v err=%v, want forbidden", revoked, err)
+	}
+}
+
+func TestAnnouncementMutationRejectsExpiredRequest(t *testing.T) {
+	h, _ := announcementInteractionsFixture(t)
+	request := announcementMutationRequest(t, interactionID(61), protocol.OpAnnouncementsPut, 0, nil, announcementPayload(t, interactionID(20), "expired", 1))
+	expires := uint64(time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC).Unix())
+	request.Expires = &expires
+	result, err := h.Handlers()[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
+	if err != nil || result.Status != interactionStatusExpired {
+		t.Fatalf("expired mutation result=%+v err=%v, want expired", result, err)
 	}
 }
 
@@ -118,15 +167,18 @@ func TestAnnouncementInteractionsListIncludesTextAndPaginatesToFit(t *testing.T)
 	h, _ := announcementInteractionsFixture(t)
 	put := h.Handlers()[protocol.OpAnnouncementsPut].Handle
 	maxText := strings.Repeat("x", maxAnnouncementInteractionText)
-	for _, announcementID := range []id.ID{interactionID(20), interactionID(22)} {
-		result, err := put(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{nil, announcementPayload(t, announcementID, maxText, 1)}})
+	documentRevision := uint64(0)
+	for i, announcementID := range []id.ID{interactionID(20), interactionID(22)} {
+		request := announcementMutationRequest(t, interactionID(byte(40+i)), protocol.OpAnnouncementsPut, documentRevision, nil, announcementPayload(t, announcementID, maxText, 1))
+		result, err := put(context.Background(), InteractionActor{User: interactionID(6)}, request)
 		if err != nil || result.Status != 0 {
 			t.Fatalf("seed put result=%+v err=%v", result, err)
 		}
+		documentRevision = *result.Revision
 	}
 	list := h.Handlers()[protocol.OpAnnouncementsList].Handle
 	first, err := list(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: interactionID(2), Args: []any{uint64(0)}})
-	if err != nil || first.Status != 0 || len(first.Data) > announcementDataLimit {
+	if err != nil || first.Status != 0 || first.Revision == nil || *first.Revision != 2 || len(first.Data) > announcementDataLimit {
 		t.Fatalf("first list result=%+v err=%v", first, err)
 	}
 	var firstData []any
@@ -165,7 +217,7 @@ func TestAnnouncementInteractionsReadOnlyHandlersAuthorizeCurrentManagerAndScope
 	actor := InteractionActor{User: interactionID(6)}
 	request := protocol.Request{CommunityID: interactionID(2), Args: []any{uint64(0)}}
 	result, err := list(context.Background(), actor, request)
-	if err != nil || result.Status != 0 || auth.user != actor.User || auth.calls != 1 {
+	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 0 || auth.user != actor.User || auth.calls != 1 {
 		t.Fatalf("authorized list result=%+v auth user=%v calls=%d err=%v", result, auth.user, auth.calls, err)
 	}
 	auth.allowed = false
@@ -230,25 +282,26 @@ func TestAnnouncementListUsesFreshCommunityActorAuthority(t *testing.T) {
 func TestAnnouncementInteractionsRejectsMalformedPayloadAndDeletesAtScheduleRevision(t *testing.T) {
 	h, auth := announcementInteractionsFixture(t)
 	malformed, _ := cborx.Marshal([]any{uint64(1), interactionID(20), interactionID(21), uint64(99), "daily", "UTC", "", uint64(10), uint64(0), uint64(0), uint64(1), uint64(1)})
-	result, err := h.Handlers()[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{nil, malformed}})
+	result, err := h.Handlers()[protocol.OpAnnouncementsPut].Handle(context.Background(), InteractionActor{User: interactionID(6)}, announcementMutationRequest(t, interactionID(51), protocol.OpAnnouncementsPut, 0, nil, malformed))
 	if err != nil || result.Status != interactionStatusUnavailable {
 		t.Fatalf("malformed payload result=%+v err=%v", result, err)
 	}
 	put := h.Handlers()[protocol.OpAnnouncementsPut].Handle
-	if result, err := put(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{nil, announcementPayload(t, interactionID(20), "scheduled", 1)}}); err != nil || result.Status != 0 {
+	result, err = put(context.Background(), InteractionActor{User: interactionID(6)}, announcementMutationRequest(t, interactionID(52), protocol.OpAnnouncementsPut, 0, nil, announcementPayload(t, interactionID(20), "scheduled", 1)))
+	if err != nil || result.Status != 0 {
 		t.Fatalf("seed schedule result=%+v err=%v", result, err)
 	}
 	remove := h.Handlers()[protocol.OpAnnouncementsDelete].Handle
-	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(2)}})
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, announcementMutationRequest(t, interactionID(53), protocol.OpAnnouncementsDelete, 1, interactionID(20), uint64(2)))
 	if err != nil || result.Status != interactionStatusConflict {
 		t.Fatalf("stale delete result=%+v err=%v", result, err)
 	}
-	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(1)}})
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, announcementMutationRequest(t, interactionID(54), protocol.OpAnnouncementsDelete, 2, interactionID(20), uint64(1)))
 	if err != nil || result.Status != 0 {
 		t.Fatalf("delete result=%+v err=%v", result, err)
 	}
 	auth.allowed = false
-	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{Args: []any{interactionID(20), uint64(1)}})
+	result, err = remove(context.Background(), InteractionActor{User: interactionID(6)}, announcementMutationRequest(t, interactionID(55), protocol.OpAnnouncementsDelete, 3, interactionID(20), uint64(1)))
 	if err != nil || result.Status != interactionStatusForbidden {
 		t.Fatalf("unauthorized delete result=%+v err=%v", result, err)
 	}

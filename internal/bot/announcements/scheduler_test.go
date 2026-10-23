@@ -235,6 +235,55 @@ func TestSchedulerPutMutationReceiptSurvivesRestartAndEpochRetry(t *testing.T) {
 	}
 }
 
+func TestSchedulerPutWithReceiptChecksDocumentRevisionAndReplaysReceipt(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	s, n, _, _, destination := schedulerFixture(t, &now)
+	requestID := schedulerID(65)
+	fingerprint := [32]byte{13, 14, 15}
+	expires := uint64(now.Unix() + 20)
+	value := dailyAnnouncement(destination, "first", 1)
+	first, err := s.PutWithReceiptAtRevision(context.Background(), 0, requestID, fingerprint, expires, value)
+	if err != nil || first.Status != 0 || first.Revision == nil || *first.Revision != 1 || n.value.Revision != 1 {
+		t.Fatalf("first put result=%+v state revision=%d err=%v", first, n.value.Revision, err)
+	}
+
+	// A changed request with a stale document revision records a stable conflict
+	// without replacing the schedule.
+	staleID := schedulerID(66)
+	stale := dailyAnnouncement(destination, "stale", 1)
+	conflict, err := s.PutWithReceiptAtRevision(context.Background(), 0, staleID, [32]byte{1}, expires, stale)
+	if err != nil || conflict.Status != 4 || conflict.Revision == nil || *conflict.Revision != 2 {
+		t.Fatalf("stale put result=%+v state revision=%d err=%v", conflict, n.value.Revision, err)
+	}
+	restarted, err := NewScheduler(n, SchedulerOptions{
+		Destination: schedulerDestination{group: schedulerID(5)}, Authorization: schedulerAuthorization(true),
+		Sender: &schedulerSender{}, ReceiptLookup: &schedulerSender{}, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := restarted.PutWithReceiptAtRevision(context.Background(), 0, staleID, [32]byte{1}, expires, stale)
+	if err != nil || replay.Status != conflict.Status || replay.Revision == nil || *replay.Revision != *conflict.Revision || n.value.Revision != 2 {
+		t.Fatalf("stale retry result=%+v state revision=%d err=%v", replay, n.value.Revision, err)
+	}
+	rows, err := s.List(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].Text != "first" {
+		t.Fatalf("stale put changed schedules: %+v err=%v", rows, err)
+	}
+}
+
+func TestSchedulerListReturnsAuthoritativeDocumentRevisionWithRows(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	s, _, _, _, destination := schedulerFixture(t, &now)
+	if err := s.Put(context.Background(), dailyAnnouncement(destination, "one", 1)); err != nil {
+		t.Fatal(err)
+	}
+	rows, revision, err := s.ListAtRevision(context.Background())
+	if err != nil || revision != 1 || len(rows) != 1 || rows[0].Text != "one" {
+		t.Fatalf("list rows=%+v revision=%d err=%v, want document revision 1", rows, revision, err)
+	}
+}
+
 func TestSchedulerDeleteMutationReceiptSurvivesRestart(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 	s, n, _, _, destination := schedulerFixture(t, &now)
@@ -246,7 +295,7 @@ func TestSchedulerDeleteMutationReceiptSurvivesRestart(t *testing.T) {
 	fingerprint := [32]byte{4, 5, 6}
 	expires := uint64(now.Unix() + 20)
 	first, err := s.DeleteWithReceipt(context.Background(), requestID, fingerprint, expires, value.ID, 1)
-	if err != nil || first.Status != 0 || first.Revision != nil {
+	if err != nil || first.Status != 0 || first.Revision == nil || *first.Revision != 2 {
 		t.Fatalf("first delete result=%+v err=%v", first, err)
 	}
 	restarted, err := NewScheduler(n, SchedulerOptions{
@@ -257,7 +306,7 @@ func TestSchedulerDeleteMutationReceiptSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	replayed, err := restarted.DeleteWithReceipt(context.Background(), requestID, fingerprint, expires, value.ID, 1)
-	if err != nil || replayed.Status != first.Status || replayed.Revision != nil || string(replayed.Data) != string(first.Data) || n.value.Revision != 2 {
+	if err != nil || replayed.Status != first.Status || replayed.Revision == nil || *replayed.Revision != *first.Revision || string(replayed.Data) != string(first.Data) || n.value.Revision != 2 {
 		t.Fatalf("delete retry result=%+v state revision=%d err=%v", replayed, n.value.Revision, err)
 	}
 }
@@ -274,7 +323,7 @@ func TestSchedulerMutationReceiptReplaysOriginalConflictAfterStateChanges(t *tes
 	expires := uint64(now.Unix() + 20)
 	stale := dailyAnnouncement(destination, "revision three", 3)
 	first, err := s.PutWithReceipt(context.Background(), requestID, fingerprint, expires, stale)
-	if err != nil || first.Status != 4 || first.Revision != nil {
+	if err != nil || first.Status != 4 || first.Revision == nil || *first.Revision != 2 {
 		t.Fatalf("first stale put result=%+v err=%v, want conflict", first, err)
 	}
 	updated := dailyAnnouncement(destination, "revision two", 2)
@@ -282,7 +331,7 @@ func TestSchedulerMutationReceiptReplaysOriginalConflictAfterStateChanges(t *tes
 		t.Fatal(err)
 	}
 	retry, err := s.PutWithReceipt(context.Background(), requestID, fingerprint, expires, stale)
-	if err != nil || retry.Status != first.Status || retry.Revision != nil || string(retry.Data) != string(first.Data) {
+	if err != nil || retry.Status != first.Status || retry.Revision == nil || *retry.Revision != *first.Revision || string(retry.Data) != string(first.Data) {
 		t.Fatalf("retry result=%+v err=%v, want original conflict %+v", retry, err, first)
 	}
 	rows, err := s.List(context.Background())

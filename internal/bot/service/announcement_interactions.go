@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"math"
 	"strings"
@@ -21,11 +22,10 @@ const (
 	maxAnnouncementInteractionText = 1800
 )
 
-// AnnouncementInteractionAuthority resolves the current community operator
-// revision and the actor's current manage_community permission. Actor identity
-// always comes from InteractionDispatcher's authenticated native event.
+// AnnouncementInteractionAuthority resolves the actor's current
+// manage_community permission. Actor identity always comes from
+// InteractionDispatcher's authenticated native event.
 type AnnouncementInteractionAuthority interface {
-	CurrentRevision(context.Context, id.ID) (uint64, error)
 	CanManageCommunity(context.Context, id.ID, id.ID) (bool, error)
 }
 
@@ -35,17 +35,18 @@ type AnnouncementInteractions struct {
 	CommunityID id.ID
 }
 
-// Handlers returns protocol handlers for announcement operations. Put and
-// Delete use the schedule's own revision CAS in the encrypted scheduler.
+// Handlers returns callable announcement handlers. Put and Delete check the
+// protocol document revision in the scheduler transaction and also honor each
+// schedule's own revision.
 func (h AnnouncementInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	handlers := h.ReadOnlyHandlers()
 	handlers[protocol.OpAnnouncementsPut] = InteractionHandlerSpec{
-		CurrentRevision: h.currentRevision,
-		Handle:          h.put,
+		RevisionInHandler: true,
+		Handle:            h.put,
 	}
 	handlers[protocol.OpAnnouncementsDelete] = InteractionHandlerSpec{
-		CurrentRevision: h.currentRevision,
-		Handle:          h.delete,
+		RevisionInHandler: true,
+		Handle:            h.delete,
 	}
 	return handlers
 }
@@ -57,13 +58,6 @@ func (h AnnouncementInteractions) ReadOnlyHandlers() map[protocol.Operation]Inte
 	return map[protocol.Operation]InteractionHandlerSpec{
 		protocol.OpAnnouncementsList: {RecomputeOnReplay: true, Handle: h.list},
 	}
-}
-
-func (h AnnouncementInteractions) currentRevision(ctx context.Context, _ protocol.Request) (uint64, error) {
-	if h.Authority == nil || h.CommunityID.IsZero() {
-		return 0, errors.New("missing announcement interaction authority")
-	}
-	return h.Authority.CurrentRevision(ctx, h.CommunityID)
 }
 
 func (h AnnouncementInteractions) authorize(ctx context.Context, actor InteractionActor) (bool, error) {
@@ -91,7 +85,7 @@ func (h AnnouncementInteractions) list(ctx context.Context, actor InteractionAct
 	if !ok || offset > math.MaxInt32 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	rows, err := h.Scheduler.List(ctx)
+	rows, revision, err := h.Scheduler.ListAtRevision(ctx)
 	if err != nil {
 		return InteractionResult{}, err
 	}
@@ -123,16 +117,13 @@ func (h AnnouncementInteractions) list(ctx context.Context, actor InteractionAct
 			return InteractionResult{}, err
 		}
 	}
-	return InteractionResult{Status: 0, Data: data}, nil
+	return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 }
 
 func (h AnnouncementInteractions) put(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
-	allowed, err := h.authorize(ctx, actor)
-	if err != nil {
-		return InteractionResult{}, err
-	}
-	if !allowed {
-		return InteractionResult{Status: interactionStatusForbidden}, nil
+	fingerprint, valid := announcementMutationFingerprint(request, h.CommunityID, protocol.OpAnnouncementsPut)
+	if !valid {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if len(request.Args) != 2 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -156,23 +147,30 @@ func (h AnnouncementInteractions) put(ctx context.Context, actor InteractionActo
 	if value.Schedule.Revision == 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	if err := h.Scheduler.Put(ctx, value); err != nil {
-		if errors.Is(err, announcements.ErrSchedulerConflict) {
-			return InteractionResult{Status: interactionStatusConflict}, nil
-		}
-		return InteractionResult{}, err
-	}
-	revision := value.Schedule.Revision
-	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
-}
-
-func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	allowed, err := h.authorize(ctx, actor)
 	if err != nil {
 		return InteractionResult{}, err
 	}
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
+	}
+	outcome, err := h.Scheduler.PutWithReceiptAtRevision(ctx, *request.Revision, request.RequestID, fingerprint, *request.Expires, value)
+	if err != nil {
+		if errors.Is(err, announcements.ErrSchedulerConflict) || errors.Is(err, announcements.ErrMutationIDConflict) {
+			return InteractionResult{Status: interactionStatusConflict}, nil
+		}
+		if errors.Is(err, announcements.ErrMutationExpired) {
+			return InteractionResult{Status: interactionStatusExpired}, nil
+		}
+		return InteractionResult{}, err
+	}
+	return InteractionResult{Status: outcome.Status, Revision: outcome.Revision, Data: outcome.Data}, nil
+}
+
+func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
+	fingerprint, valid := announcementMutationFingerprint(request, h.CommunityID, protocol.OpAnnouncementsDelete)
+	if !valid {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	if len(request.Args) != 2 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -182,16 +180,35 @@ func (h AnnouncementInteractions) delete(ctx context.Context, actor InteractionA
 	if !idOK || announcementID.IsZero() || !revisionOK || expectedRevision == 0 || expectedRevision > math.MaxInt64 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	if err := h.Scheduler.Delete(ctx, announcementID, expectedRevision); err != nil {
-		if errors.Is(err, announcements.ErrSchedulerConflict) {
+	allowed, err := h.authorize(ctx, actor)
+	if err != nil {
+		return InteractionResult{}, err
+	}
+	if !allowed {
+		return InteractionResult{Status: interactionStatusForbidden}, nil
+	}
+	outcome, err := h.Scheduler.DeleteWithReceiptAtRevision(ctx, *request.Revision, request.RequestID, fingerprint, *request.Expires, announcementID, expectedRevision)
+	if err != nil {
+		if errors.Is(err, announcements.ErrSchedulerConflict) || errors.Is(err, announcements.ErrMutationIDConflict) {
 			return InteractionResult{Status: interactionStatusConflict}, nil
 		}
-		if errors.Is(err, announcements.ErrAnnouncementNotFound) {
-			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		if errors.Is(err, announcements.ErrMutationExpired) {
+			return InteractionResult{Status: interactionStatusExpired}, nil
 		}
 		return InteractionResult{}, err
 	}
-	return InteractionResult{Status: 0, Data: []byte{0x80}}, nil
+	return InteractionResult{Status: outcome.Status, Revision: outcome.Revision, Data: outcome.Data}, nil
+}
+
+func announcementMutationFingerprint(request protocol.Request, community id.ID, operation protocol.Operation) ([32]byte, bool) {
+	if request.RequestID.IsZero() || request.CommunityID != community || community.IsZero() || request.Operation != operation || request.Revision == nil || request.Expires == nil {
+		return [32]byte{}, false
+	}
+	canonical, err := protocol.EncodeRequest(request)
+	if err != nil {
+		return [32]byte{}, false
+	}
+	return sha256.Sum256([]byte(canonical)), true
 }
 
 // The versioned payload is [1, id, destination, text, kind, timezone, date,

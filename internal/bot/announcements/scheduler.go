@@ -108,7 +108,8 @@ type scheduledState struct {
 }
 
 // MutationOutcome is the stable application result of a schedule mutation.
-// Put returns the resulting schedule revision; Delete has no revision.
+// Revision is the encrypted scheduler document revision after storing the
+// outcome and its receipt.
 type MutationOutcome struct {
 	Status   uint64
 	Revision *uint64
@@ -177,6 +178,18 @@ func (s *Scheduler) Put(ctx context.Context, value Announcement) error {
 // canonical application request; MLS event epoch/delivery coordinates do not
 // participate, so retries carried by a later epoch return the original result.
 func (s *Scheduler) PutWithReceipt(ctx context.Context, requestID id.ID, fingerprint [32]byte, expires uint64, value Announcement) (MutationOutcome, error) {
+	return s.putWithReceipt(ctx, nil, requestID, fingerprint, expires, value)
+}
+
+// PutWithReceiptAtRevision applies a schedule mutation only when the encrypted
+// scheduler document still has expectedRevision. A mismatch is itself stored
+// as a durable conflict receipt, so retrying the same request returns the same
+// outcome without another state write.
+func (s *Scheduler) PutWithReceiptAtRevision(ctx context.Context, expectedRevision uint64, requestID id.ID, fingerprint [32]byte, expires uint64, value Announcement) (MutationOutcome, error) {
+	return s.putWithReceipt(ctx, &expectedRevision, requestID, fingerprint, expires, value)
+}
+
+func (s *Scheduler) putWithReceipt(ctx context.Context, expectedRevision *uint64, requestID id.ID, fingerprint [32]byte, expires uint64, value Announcement) (MutationOutcome, error) {
 	if s == nil {
 		return MutationOutcome{}, errors.New("missing announcement scheduler")
 	}
@@ -195,6 +208,9 @@ func (s *Scheduler) PutWithReceipt(ctx context.Context, requestID id.ID, fingerp
 	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
+	if expectedRevision != nil && revision != *expectedRevision {
+		return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 4, Data: []byte{0x80}})
+	}
 	states, err = putAnnouncement(states, value, s.now().UTC())
 	if err != nil {
 		if errors.Is(err, ErrSchedulerConflict) {
@@ -203,7 +219,7 @@ func (s *Scheduler) PutWithReceipt(ctx context.Context, requestID id.ID, fingerp
 		return MutationOutcome{}, err
 	}
 	return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires,
-		MutationOutcome{Revision: cloneUint64(&value.Schedule.Revision), Data: []byte{0x80}})
+		MutationOutcome{Data: []byte{0x80}})
 }
 
 func putAnnouncement(states []scheduledState, value Announcement, now time.Time) ([]scheduledState, error) {
@@ -268,6 +284,16 @@ func (s *Scheduler) Delete(ctx context.Context, announcementID id.ID, expectedRe
 // DeleteWithReceipt atomically stores the Delete outcome and its request
 // receipt in the same encrypted state transaction.
 func (s *Scheduler) DeleteWithReceipt(ctx context.Context, requestID id.ID, fingerprint [32]byte, expires uint64, announcementID id.ID, expectedRevision uint64) (MutationOutcome, error) {
+	return s.deleteWithReceipt(ctx, nil, requestID, fingerprint, expires, announcementID, expectedRevision)
+}
+
+// DeleteWithReceiptAtRevision adds an atomic scheduler-document revision check
+// to DeleteWithReceipt.
+func (s *Scheduler) DeleteWithReceiptAtRevision(ctx context.Context, documentRevision uint64, requestID id.ID, fingerprint [32]byte, expires uint64, announcementID id.ID, expectedRevision uint64) (MutationOutcome, error) {
+	return s.deleteWithReceipt(ctx, &documentRevision, requestID, fingerprint, expires, announcementID, expectedRevision)
+}
+
+func (s *Scheduler) deleteWithReceipt(ctx context.Context, documentRevision *uint64, requestID id.ID, fingerprint [32]byte, expires uint64, announcementID id.ID, expectedRevision uint64) (MutationOutcome, error) {
 	if s == nil || announcementID.IsZero() || expectedRevision == 0 {
 		return MutationOutcome{}, errors.New("invalid announcement ID or revision")
 	}
@@ -283,6 +309,9 @@ func (s *Scheduler) DeleteWithReceipt(ctx context.Context, requestID id.ID, fing
 	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
+	if documentRevision != nil && revision != *documentRevision {
+		return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 4, Data: []byte{0x80}})
+	}
 	i := findAnnouncement(states, announcementID)
 	if i < 0 {
 		return s.saveMutationOutcome(ctx, revision, states, requestID, fingerprint, expires, MutationOutcome{Status: 5, Data: []byte{0x80}})
@@ -295,6 +324,11 @@ func (s *Scheduler) DeleteWithReceipt(ctx context.Context, requestID id.ID, fing
 }
 
 func (s *Scheduler) saveMutationOutcome(ctx context.Context, revision uint64, states []scheduledState, requestID id.ID, fingerprint [32]byte, expires uint64, outcome MutationOutcome) (MutationOutcome, error) {
+	if revision >= math.MaxInt64 {
+		return MutationOutcome{}, errors.New("announcement state revision exhausted")
+	}
+	resultRevision := revision + 1
+	outcome.Revision = &resultRevision
 	receipts, err := s.nextMutationReceipts(requestID, fingerprint, expires, outcome)
 	if err != nil {
 		return MutationOutcome{}, err
@@ -355,21 +389,28 @@ func cloneUint64(value *uint64) *uint64 {
 
 // List returns the current bounded schedule set in stable ID order.
 func (s *Scheduler) List(ctx context.Context) ([]Announcement, error) {
+	rows, _, err := s.ListAtRevision(ctx)
+	return rows, err
+}
+
+// ListAtRevision returns schedules and the encrypted document revision from
+// the same native state read. Mutations use this revision as their request CAS.
+func (s *Scheduler) ListAtRevision(ctx context.Context) ([]Announcement, uint64, error) {
 	if s == nil {
-		return nil, errors.New("missing announcement scheduler")
+		return nil, 0, errors.New("missing announcement scheduler")
 	}
 	s.mu.Lock()
-	states, _, err := s.load(ctx)
+	states, revision, err := s.load(ctx)
 	s.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]Announcement, 0, len(states))
 	for _, state := range states {
 		out = append(out, state.Announcement)
 	}
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0 })
-	return out, nil
+	return out, revision, nil
 }
 
 // RunDue delivers due occurrences. It stores the operation ID inputs before
