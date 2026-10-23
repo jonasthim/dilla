@@ -30,6 +30,7 @@ use openmls::extensions::ExternalSendersExtension;
 use openmls::messages::group_info::VerifiableGroupInfo;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
+use openmls_traits::random::OpenMlsRand;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rusqlite::OptionalExtension;
@@ -862,6 +863,11 @@ impl TestClient {
         let mut msg_id = [0u8; 16];
         msg_id[..8].copy_from_slice(&self.next_msg.to_be_bytes());
         msg_id[8..].copy_from_slice(self.device_id.as_bytes()[..8].try_into().expect("8 bytes"));
+        let k_f = self
+            .provider
+            .rand()
+            .random_array::<32>()
+            .map_err(|_| TestkitError::Scenario("random failed".into()))?;
         let envelope = Envelope {
             v: 1,
             msg_id: MsgId::from_bytes(msg_id),
@@ -871,7 +877,7 @@ impl TestClient {
             body: body.to_owned(),
             attachments,
             previews: Vec::new(),
-            k_f: [0x06; 32],
+            k_f,
         };
         envelope.validate()?;
         // The commitment `C` travels in the message's `authenticated_data`, which is where the
@@ -1492,8 +1498,72 @@ fn is_removal_pending(e: &DsError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DsStub, InstanceConfig};
     use dilla_core::ids::InstanceId;
     use dilla_core::mls::GroupKind;
+
+    #[test]
+    fn each_sent_message_uses_a_distinct_franking_key() {
+        let mut ds = DsStub::new(InstanceConfig {
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            signing_key: [0x77; 32],
+            policy_version: 1,
+            k_frank: [0x09; 32],
+        });
+        let mut alice = TestClient::new(
+            "alice",
+            UserId::from_bytes([0xa1; 16]),
+            Tier::Native,
+            Kind::User,
+            1,
+        )
+        .expect("alice");
+        let mut bob = TestClient::new(
+            "bob",
+            UserId::from_bytes([0xb0; 16]),
+            Tier::Native,
+            Kind::User,
+            2,
+        )
+        .expect("bob");
+        let binding = DillaBinding {
+            v: 1,
+            instance_id: InstanceId::from_bytes([0x11; 16]),
+            community_id: None,
+            target_id: [0x33; 16],
+            kind: GroupKind::Text,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: 0,
+        };
+
+        ds.act_as(alice.device_id());
+        alice
+            .publish_key_packages(&mut ds, 2)
+            .expect("alice packages");
+        ds.act_as(bob.device_id());
+        bob.publish_key_packages(&mut ds, 2).expect("bob packages");
+        ds.act_as(alice.device_id());
+        let group = alice
+            .create_group(&mut ds, binding.clone())
+            .expect("create");
+        alice
+            .invite(&mut ds, &group, bob.device_id())
+            .expect("invite");
+        ds.act_as(bob.device_id());
+        bob.join_welcome(&mut ds, &group, &binding).expect("join");
+
+        ds.act_as(alice.device_id());
+        alice.send(&mut ds, &group, "first").expect("first send");
+        alice.send(&mut ds, &group, "second").expect("second send");
+        ds.act_as(bob.device_id());
+        let received = bob.sync(&mut ds).expect("sync");
+        assert_eq!(received.len(), 2);
+        assert_ne!(
+            received[0].envelope.k_f, received[1].envelope.k_f,
+            "the sender reused a per-envelope franking key"
+        );
+    }
 
     #[test]
     fn only_the_removal_pending_refusal_reads_as_being_removed() {
