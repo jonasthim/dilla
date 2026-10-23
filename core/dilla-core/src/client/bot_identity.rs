@@ -384,7 +384,7 @@ impl ClientCore {
                 ClientError::new(E_CORE_INPUT, "interaction group binding rejected")
             })?;
             if group.kind() != GroupKind::Interaction
-                || target != own.user_id
+                || target != binding.participant_user_id
                 || binding.instance_id.as_bytes() != expected_instance
                 || binding.community_id.as_bytes() != expected_community
                 || binding.installation_id != *expected_installation
@@ -1433,6 +1433,23 @@ mod interaction_snapshot_tests {
         assert_eq!(result_fields.0, expected.group.as_bytes());
         assert!(result_fields.1.len() > 0 && result_fields.2.len() > 0);
         assert!(result_fields.3.len() > 0 && result_fields.4.len() > 0);
+
+        let descriptors = core
+            .bot_interaction_group_descriptors(&INSTANCE, &COMMUNITY, &INSTALLATION)
+            .expect("discover freshly persisted interaction group");
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].group, *expected.group.as_bytes());
+        assert_eq!(descriptors[0].bot_user, *expected.bot_user.as_bytes());
+        assert_eq!(descriptors[0].bot_device, *expected.bot_device.as_bytes());
+        assert_eq!(
+            descriptors[0].participant_user,
+            *expected.participant_user.as_bytes()
+        );
+        assert_eq!(
+            descriptors[0].participant_device,
+            *expected.participant_device.as_bytes()
+        );
+        assert_eq!(descriptors[0].policy_version, expected.policy_version);
 
         std::thread::sleep(std::time::Duration::from_secs(14));
         let replay = core
