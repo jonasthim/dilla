@@ -242,6 +242,14 @@ pub(super) fn holder(
 /// cannot distinguish a second device for the same account.
 const MAX_INTERACTION_HOLDER_CANDIDATES: usize = 2048;
 
+struct InteractionScope<'a> {
+    installation: &'a [u8; 16],
+    community: &'a [u8; 16],
+    target: &'a [u8; 16],
+    participant: &'a [u8; 16],
+    device: &'a [u8; 16],
+}
+
 fn interaction_row_matches_binding(
     binding: &DillaInteractionBinding,
     community: &[u8; 16],
@@ -272,38 +280,30 @@ fn interaction_row_matches_binding(
 fn interaction_candidate_is_duplicate(
     binding: Option<&DillaInteractionBinding>,
     is_interaction: bool,
-    community: &[u8; 16],
-    target: &[u8; 16],
-    participant: &[u8; 16],
-    installation: &[u8; 16],
-    device: &[u8; 16],
+    scope: &InteractionScope<'_>,
     stored_installation: Option<&[u8]>,
     stored_device: Option<&[u8]>,
 ) -> Result<bool, ()> {
     let binding = binding.filter(|_| is_interaction).ok_or(())?;
     if !interaction_row_matches_binding(
         binding,
-        community,
-        target,
-        participant,
+        scope.community,
+        scope.target,
+        scope.participant,
         stored_installation,
         stored_device,
     ) {
         return Err(());
     }
     Ok(
-        binding.installation_id.as_slice() == installation.as_slice()
-            && binding.participant_device_id.as_bytes() == device,
+        binding.installation_id.as_slice() == scope.installation.as_slice()
+            && binding.participant_device_id.as_bytes() == scope.device,
     )
 }
 
 fn interaction_holder(
     core: &mut ClientCore,
-    installation: &[u8; 16],
-    community: &[u8; 16],
-    target: &[u8; 16],
-    participant: &[u8; 16],
-    device: &[u8; 16],
+    scope: &InteractionScope<'_>,
     except: &[u8; 16],
 ) -> Result<Option<[u8; 16]>, ClientError> {
     let candidates = core.read(|c| {
@@ -311,7 +311,7 @@ fn interaction_holder(
             "SELECT group_id,interaction_installation_id,interaction_device_id FROM app_groups WHERE kind=3 AND community_id=?1 AND target_id=?2 AND state<>4 AND group_id<>?3 ORDER BY group_id LIMIT ?4",
         )?;
         let rows = statement.query_map(
-            params![community.as_slice(), target.as_slice(), except.as_slice(), (MAX_INTERACTION_HOLDER_CANDIDATES + 1) as i64],
+            params![scope.community.as_slice(), scope.target.as_slice(), except.as_slice(), (MAX_INTERACTION_HOLDER_CANDIDATES + 1) as i64],
             |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, Option<Vec<u8>>>(2)?)),
         )?;
         rows.map(|row| {
@@ -343,11 +343,7 @@ fn interaction_holder(
         let duplicate = match interaction_candidate_is_duplicate(
             binding.as_ref(),
             group.kind() == GroupKind::Interaction,
-            community,
-            target,
-            participant,
-            installation,
-            device,
+            scope,
             stored_installation.as_deref(),
             stored_device.as_deref(),
         ) {
@@ -1171,11 +1167,13 @@ impl ClientCore {
                 } else if match human_interaction.as_ref() {
                     Some(human) => interaction_holder(
                         self,
-                        human.context.registration.installation.as_bytes(),
-                        human.context.binding.community_id.as_bytes(),
-                        &want.channel_id,
-                        &human.context.binding.participant_user_id,
-                        human.context.binding.participant_device_id.as_bytes(),
+                        &InteractionScope {
+                            installation: human.context.registration.installation.as_bytes(),
+                            community: human.context.binding.community_id.as_bytes(),
+                            target: &want.channel_id,
+                            participant: &human.context.binding.participant_user_id,
+                            device: human.context.binding.participant_device_id.as_bytes(),
+                        },
                         id,
                     )?,
                     None => self.read(|c| holder(c, &want.channel_id, row_kind(group_kind), id))?,
@@ -1836,11 +1834,13 @@ mod interaction_welcome_tests {
     fn legacy_v1_interaction_binding_fails_closed_for_duplicate_admission() {
         // A v1 kind-3 context has no authenticated participant device identity. Treat its
         // unavailable v2 binding as an error instead of admitting a potentially duplicate group.
-        assert!(
-            interaction_candidate_is_duplicate(
-                None, true, &[4; 16], &[2; 16], &[5; 16], &[3; 16], &[6; 16], None, None,
-            )
-            .is_err()
-        );
+        let scope = InteractionScope {
+            community: &[4; 16],
+            target: &[2; 16],
+            participant: &[5; 16],
+            installation: &[3; 16],
+            device: &[6; 16],
+        };
+        assert!(interaction_candidate_is_duplicate(None, true, &scope, None, None).is_err());
     }
 }
