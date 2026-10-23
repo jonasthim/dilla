@@ -515,6 +515,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 						}
 					}
 					if ensureErr == nil {
+						reconcileStage = "interaction_source_sync"
+						_, ensureErr = membership.ReconcileInteractionGroupsOnce(ctx, result.Session)
+					}
+					if ensureErr == nil {
 						reconcileStage = "readiness"
 						ready, ensureErr = markReadyAfterMembership(ctx, result.Session, result.Installation)
 						// A 409 means required MLS joins are still pending. Keep

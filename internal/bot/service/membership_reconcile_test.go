@@ -104,29 +104,30 @@ func (n *membershipFakeNative) StateTransaction(_ context.Context, _ id.ID, chan
 }
 
 type membershipFakeSession struct {
-	communities           []client.Community
-	community             client.Community
-	communityCalls        int
-	communitiesCalls      int
-	channels              []client.Channel
-	welcomes              []client.Welcome
-	acked                 []uint64
-	ackErr                error
-	channelsCalls         int
-	groupInfo             client.GroupInfo
-	groupPageErr          error
-	groupPageCalls        int
-	removeOnSecond        bool
-	changeGroupOnSecond   bool
-	interactionBinding    native.InteractionGroupBinding
-	interactionBotDevice  id.ID
-	interactionGroup      id.ID
-	interactionInfo       client.GroupInfo
-	interactionPages      map[sourcePageKey]client.Page
-	interactionPageErr    error
-	interactionPageCalls  []sourcePageKey
-	interactionAdmissions int
-	interactionSnapshots  int
+	communities            []client.Community
+	community              client.Community
+	communityCalls         int
+	communitiesCalls       int
+	channels               []client.Channel
+	welcomes               []client.Welcome
+	acked                  []uint64
+	ackErr                 error
+	channelsCalls          int
+	groupInfo              client.GroupInfo
+	groupPageErr           error
+	groupPageCalls         int
+	removeOnSecond         bool
+	changeGroupOnSecond    bool
+	interactionBinding     native.InteractionGroupBinding
+	interactionBotDevice   id.ID
+	interactionGroup       id.ID
+	interactionInfo        client.GroupInfo
+	interactionPages       map[sourcePageKey]client.Page
+	interactionPageErr     error
+	interactionSnapshotErr error
+	interactionPageCalls   []sourcePageKey
+	interactionAdmissions  int
+	interactionSnapshots   int
 }
 
 func (s *membershipFakeSession) Communities(context.Context) ([]client.Community, error) {
@@ -202,6 +203,9 @@ func (s *membershipFakeSession) IssueBotInteractionAdmission(_ context.Context, 
 }
 func (s *membershipFakeSession) BotInteractionContextSnapshot(_ context.Context, _, request, group, user, device id.ID) ([]byte, error) {
 	s.interactionSnapshots++
+	if s.interactionSnapshotErr != nil {
+		return nil, s.interactionSnapshotErr
+	}
 	b := s.interactionBinding
 	expected := []any{b.Instance, b.Installation, b.Community, b.BotUser, s.interactionBotDevice, user, device, group}
 	return makeSignedSnapshotFixtureFor(request, expected, 100)
@@ -288,9 +292,36 @@ func TestMembershipPhaseErrorsClassifyEachSourceSyncKind(t *testing.T) {
 		s.interactionInfo = client.GroupInfo{Epoch: 1, NextSequence: 2}
 		cause := &client.APIError{Status: 503, Code: "E_UNAVAILABLE"}
 		s.interactionPageErr = cause
-		_, err := r.reconcileOnce(context.Background(), s)
+		_, err := r.reconcileInteractionGroupsOnce(context.Background(), s)
 		requireMembershipPhase(t, err, MembershipPhaseInteractionSourceSync, cause)
 	})
+}
+
+func TestMembershipSourcePassDefersKind3SnapshotUntilAfterTrustRefresh(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	group, participant := membershipID(51), membershipID(52)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+		BotUser: membershipID(53), ParticipantUser: participant, ParticipantDevice: membershipID(54), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(55)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	s.interactionSnapshotErr = &client.APIError{Status: 403, Code: "E_FORBIDDEN"}
+
+	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatalf("ordinary membership/source sync must complete before the trust refresh: %v", err)
+	}
+	if s.interactionAdmissions != 0 || s.interactionSnapshots != 0 {
+		t.Fatalf("kind-3 proof was attempted before trust refresh: admissions=%d snapshots=%d", s.interactionAdmissions, s.interactionSnapshots)
+	}
+	// Model TrustPendingLeaves updating the trusted signed device-list version.
+	s.interactionSnapshotErr = nil
+	if _, err := r.reconcileInteractionGroupsOnce(context.Background(), s); err != nil {
+		t.Fatalf("kind-3 sync after trust refresh: %v", err)
+	}
+	if s.interactionAdmissions != 1 || s.interactionSnapshots != 1 {
+		t.Fatalf("kind-3 sync count after trust refresh: admissions=%d snapshots=%d", s.interactionAdmissions, s.interactionSnapshots)
+	}
 }
 
 func membershipFixture(t *testing.T) (*MembershipReconciler, *membershipFakeNative, *membershipFakeSession, id.ID, id.ID, id.ID) {
@@ -440,21 +471,21 @@ func TestMembershipSyncsActiveInteractionGroupsByExactNativeTarget(t *testing.T)
 	n.interactionGroups = []native.InteractionGroupDescriptor{descriptor}
 	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
 	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
-	result, err := r.reconcileOnce(context.Background(), s)
+	result, err := r.reconcileInteractionGroupsOnce(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.GroupsSynced != 1 || result.SourcePages != 0 || s.interactionAdmissions != 1 || s.interactionSnapshots != 1 || n.interactionCursorCalls != 1 {
 		t.Fatalf("sync result=%+v", result)
 	}
-	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+	if _, err = r.reconcileInteractionGroupsOnce(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
 	if s.interactionAdmissions != 1 || s.interactionSnapshots != 1 {
 		t.Fatal("unexpired current snapshot was unnecessarily reissued")
 	}
 	now = now.Add(16 * time.Second)
-	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+	if _, err = r.reconcileInteractionGroupsOnce(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
 	if s.interactionAdmissions != 2 || s.interactionSnapshots != 2 {
@@ -464,14 +495,14 @@ func TestMembershipSyncsActiveInteractionGroupsByExactNativeTarget(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = r.reconcileOnce(context.Background(), s); err != nil {
+	if _, err = r.reconcileInteractionGroupsOnce(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
 	if s.interactionAdmissions != 3 || s.interactionSnapshots != 3 {
 		t.Fatal("new reconciler reused an in-memory snapshot from before restart")
 	}
 	n.interactionGroups[0].Binding.ParticipantUser = membershipID(23)
-	if _, err = r.reconcileOnce(context.Background(), s); err == nil {
+	if _, err = r.reconcileInteractionGroupsOnce(context.Background(), s); err == nil {
 		t.Fatal("interaction group rebound to another participant was accepted")
 	}
 }

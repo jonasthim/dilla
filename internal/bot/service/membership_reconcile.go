@@ -304,38 +304,76 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
 	}
+	return out, nil
+}
+
+// ReconcileInteractionGroupsOnce catches up kind-3 interaction sources after the caller has
+// refreshed authenticated device-list trust. Keeping this pass separate prevents a stale
+// participant snapshot from blocking the membership pass that makes that snapshot current.
+func (r *MembershipReconciler) ReconcileInteractionGroupsOnce(ctx context.Context, session *client.Session) (MembershipResult, error) {
+	if session == nil {
+		return MembershipResult{}, errors.New("missing device session")
+	}
+	return r.reconcileInteractionGroupsOnce(ctx, session)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
+	var out MembershipResult
+	if r == nil || session == nil {
+		return out, errors.New("invalid interaction membership reconciliation")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
+	groups, err := r.native.Groups(ctx)
+	if err != nil {
+		return out, err
+	}
+	if len(groups) > maxMembershipGroups {
+		return out, errors.New("native membership group set exceeds bound")
+	}
+	seenGroups := make(map[id.ID]bool, len(groups))
+	for _, g := range groups {
+		if g.ID.IsZero() || seenGroups[g.ID] {
+			return out, client.ErrProtocol
+		}
+		seenGroups[g.ID] = true
+	}
 	interactionNative, ok := r.native.(interface {
 		InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
 	})
-	if ok {
-		interactionGroups, listErr := interactionNative.InteractionGroups(ctx)
-		if listErr != nil {
-			return out, listErr
+	if !ok {
+		return out, nil
+	}
+	interactionGroups, err := interactionNative.InteractionGroups(ctx)
+	if err != nil {
+		return out, err
+	}
+	if len(interactionGroups) > maxMembershipGroups {
+		return out, errors.New("native interaction group set exceeds bound")
+	}
+	for i, g := range interactionGroups {
+		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
+			return out, client.ErrProtocol
 		}
-		if len(interactionGroups) > maxMembershipGroups {
-			return out, errors.New("native interaction group set exceeds bound")
+		seenGroups[g.Group] = true
+		b := g.Binding
+		if b.Instance != r.binding.Instance || b.Installation != r.binding.Installation || b.Community != r.binding.Community ||
+			b.BotUser.IsZero() || g.BotDevice.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() || b.PolicyVersion == 0 ||
+			b.E2EEVersion != 1 || b.MediaVersion != 0 {
+			return out, client.ErrProtocol
 		}
-		for i, g := range interactionGroups {
-			if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
-				return out, client.ErrProtocol
-			}
-			seenGroups[g.Group] = true
-			b := g.Binding
-			if b.Instance != r.binding.Instance || b.Installation != r.binding.Installation || b.Community != r.binding.Community ||
-				b.BotUser.IsZero() || g.BotDevice.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() || b.PolicyVersion == 0 ||
-				b.E2EEVersion != 1 || b.MediaVersion != 0 {
-				return out, client.ErrProtocol
-			}
-			if g.State != 2 {
-				continue
-			}
-			res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
-			if syncErr != nil {
-				return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
-			}
-			out.GroupsSynced++
-			out.SourcePages += res.Pages
+		if g.State != 2 {
+			continue
 		}
+		res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
+		if syncErr != nil {
+			return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
+		}
+		out.GroupsSynced++
+		out.SourcePages += res.Pages
 	}
 	return out, nil
 }
