@@ -85,10 +85,19 @@ func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
 	}
 }
 
-func TestCallRejectsOperationOutsideFrozenEnum(t *testing.T) {
+func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
 	c := startFixture(t, "")
-	if _, err := c.Call(context.Background(), protocol.HelperOperation(17), []any{}); !errors.Is(err, ErrInvalidOperation) {
+	if _, err := c.Call(context.Background(), protocol.HelperOperation(21), []any{}); !errors.Is(err, ErrInvalidOperation) {
 		t.Fatalf("unknown operation error = %v, want ErrInvalidOperation", err)
+	}
+}
+
+func TestCallAcceptsCallGroupJoinOperations(t *testing.T) {
+	c := startFixture(t, "")
+	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget} {
+		if _, err := c.Call(context.Background(), operation, []any{fixtureID(9)}); err != nil {
+			t.Fatalf("helper operation %d: %v", operation, err)
+		}
 	}
 }
 

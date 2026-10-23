@@ -147,6 +147,7 @@ func (r installationSpotifyCatalogResolver) ResolveSpotify(ctx context.Context, 
 type musicRuntimeDeps struct {
 	Community, Channel id.ID
 	Calls              musicCallStarter
+	JoinCallGroup      func(context.Context) error
 	SpotifyPCM         session.PCMStarter
 	YouTubePCM         youtube.PCMSourceStarter
 	LeaseManager       *music.SpotifyLeaseManager
@@ -188,6 +189,11 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		if track.Provider == music.ProviderSpotify && deps.LeaseManager == nil {
 			return session.Options{}, session.ErrInvalid
 		}
+		if deps.JoinCallGroup != nil {
+			if err := deps.JoinCallGroup(ctx); err != nil {
+				return session.Options{}, err
+			}
+		}
 		call, err := deps.Calls.StartCall(ctx, deps.Channel)
 		if err != nil {
 			return session.Options{}, err
@@ -221,7 +227,7 @@ func newInstallationYouTubeQueueStarter(instance, installation, community, chann
 	return newInstallationMusicQueueStarter(instance, installation, community, channel, calls, source, nil, nil, nil)
 }
 
-func newInstallationMusicQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative, spotifyPCM session.PCMStarter, youtubeSource youtube.PCMSourceStarter, leases *music.SpotifyLeaseManager) (session.QueueStarter, error) {
+func newInstallationMusicQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative, spotifyPCM session.PCMStarter, youtubeSource youtube.PCMSourceStarter, leases *music.SpotifyLeaseManager, joinCallGroup ...func(context.Context) error) (session.QueueStarter, error) {
 	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil || calls.InstanceID() != instance {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
@@ -229,9 +235,17 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 	if binding.Instance != instance || binding.Installation != installation || binding.Community != community {
 		return session.QueueStarter{}, errors.New("music native binding does not match installation")
 	}
+	var join func(context.Context) error
+	if len(joinCallGroup) > 1 {
+		return session.QueueStarter{}, errors.New("music call-group join configuration is invalid")
+	}
+	if len(joinCallGroup) == 1 {
+		join = joinCallGroup[0]
+	}
 	return newMusicQueueStarter(musicRuntimeDeps{
 		Community: community, Channel: channel, Calls: calls,
-		SpotifyPCM: spotifyPCM,
+		JoinCallGroup: join,
+		SpotifyPCM:    spotifyPCM,
 		YouTubePCM: func() youtube.PCMSourceStarter {
 			if youtubeSource != nil {
 				return youtubeSource

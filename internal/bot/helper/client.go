@@ -122,11 +122,11 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 	return response, nil
 }
 
-// Call invokes one frozen non-transfer helper operation (2 through 14).
+// Call invokes one non-transfer helper operation.
 // Operation 6 is deliberately reserved for GroupApply, which always uses the
 // staged transfer path so a large result cannot be lost to a direct frame cap.
 func (c *Client) Call(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
-	if operation < protocol.HelperBootstrap || operation > protocol.HelperKeyPackagesUploaded || operation == protocol.HelperGroupApply {
+	if operation < protocol.HelperBootstrap || operation > protocol.HelperCallGroupForget || operation == protocol.HelperGroupApply {
 		return nil, ErrInvalidOperation
 	}
 	callCtx, cancel := boundedContext(ctx, c.callTime)

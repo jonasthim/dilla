@@ -696,6 +696,22 @@ func TestEventReceiptAndHelperRoundTrips(t *testing.T) {
 	}
 }
 
+func TestNewCallJoinHelperOperationsRoundTrip(t *testing.T) {
+	for _, operation := range []HelperOperation{HelperCallJoinCheck, HelperCallGroupForget} {
+		frame, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: operation, Payload: []any{fixtureID(3)}})
+		if err != nil {
+			t.Fatalf("encode helper operation %d: %v", operation, err)
+		}
+		got, err := DecodeHelperRequestFrame(frame)
+		if err != nil || got.Operation != operation {
+			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
+		}
+	}
+	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperCallGroupForget + 1, Payload: []any{}}); err == nil {
+		t.Fatal("helper operation after the frozen range accepted")
+	}
+}
+
 func TestSendReceiptEncoderRejectsInvalidTypedValues(t *testing.T) {
 	base := SendReceipt{OperationID: fixtureID(1), AttemptID: fixtureID(2), CommunityID: fixtureID(3), GroupID: fixtureID(4), CiphertextHash: make([]byte, 32), Outcome: ReceiptClosedNotAccepted}
 	validBody, err := cborx.Marshal([]any{uint64(1), make([]byte, 32), uint64(0)})

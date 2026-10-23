@@ -154,6 +154,8 @@ impl Helper {
             9 => self.call_media_epoch(payload),
             14 => self.keypackage_resolve(payload),
             16 => self.group_transfer(payload, request_id),
+            19 => self.call_join_check(payload),
+            20 => self.call_group_forget(payload),
             _ => Err(DispatchError::Invalid),
         }
     }
@@ -493,6 +495,32 @@ impl Helper {
             return Err(DispatchError::Unavailable);
         }
         Ok((Zeroizing::new(body(result)), false))
+    }
+
+    fn call_join_check(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let call = decode_call_epoch(payload)?;
+        self.core
+            .as_ref()
+            .expect("opened")
+            .call_join_check(&call)
+            .map_err(map_client)?;
+        Ok((empty(), false))
+    }
+
+    fn call_group_forget(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let call = decode_call_epoch(payload)?;
+        self.core
+            .as_mut()
+            .expect("opened")
+            .call_group_forget(&call)
+            .map_err(map_client)?;
+        Ok((empty(), false))
     }
 
     fn keypackage_resolve(

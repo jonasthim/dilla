@@ -50,7 +50,10 @@ export async function botVectors() {
  ];
  for(const [name,value] of receipts)cases.push({name,kind:'receipt',hex:cbor(value),context:receiptContext});
  for(const [kind,name,v] of [
-  ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],['helper_response','helper response',[1n,id(10),0n,encode([])]],
+  ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],
+  ['helper_request','helper ingest removals operation 17',[1n,id(15),17n,encode([])]],['helper_request','helper removal actor refresh operation 18',[1n,id(16),18n,encode([])]],
+  ['helper_request','call join check helper operation',[1n,id(11),19n,encode([id(12)])]],['helper_request','call group forget helper operation',[1n,id(13),20n,encode([id(14)])]],
+  ['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
  cases.push({name:'generic helper op5 payload remains opaque',kind:'helper_request',hex:cbor([1n,id(0x95),5n,encode([32n,1n])])});
  const rejects:any[]=[];
@@ -127,7 +130,7 @@ export async function botVectors() {
  rej('send receipt cross community context','receipt',receiptBase,{context:{...receiptContext,community:hex(id(0x23))}});
  rej('send receipt cross group context','receipt',receiptBase,{context:{...receiptContext,group:hex(id(0x34))}});
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
- rej('helper operation 17 is unknown','helper_request',[1n,id(1),17n,encode([])]);
+ rej('helper operation 21 is unknown','helper_request',[1n,id(1),21n,encode([])]);
  const oversizedPayload=encode([new Uint8Array(1_048_475)]);
  if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
  rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});

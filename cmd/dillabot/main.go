@@ -568,7 +568,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										}
 									}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
-										return newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases)
+										joinCallGroup := func(joinCtx context.Context) error {
+											communityRow, communityErr := result.Session.Community(joinCtx, installation.CommunityID)
+											if communityErr != nil {
+												return communityErr
+											}
+											return ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, installation.ID, installation.CommunityID, channel, communityRow.PolicyVersion)
+										}
+										return newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
 									}
 									musicOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}

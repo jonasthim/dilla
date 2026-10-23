@@ -1350,7 +1350,7 @@ fn helper_encode(id: MsgId, n: u64, p: &[u8], request: bool) -> Result<Vec<u8>, 
     check_id16(id.as_bytes())?;
     if p.is_empty()
         || p.len() > HELPER_PAYLOAD_MAX
-        || (request && !(1..=16).contains(&n))
+        || (request && !(1..=20).contains(&n))
         || (!request && n > 9)
     {
         return Err(CodecError::Value);
@@ -1375,7 +1375,7 @@ fn helper_decode(b: &[u8], request: bool) -> Result<(MsgId, u64, Vec<u8>), Codec
         let id = read_msg(d)?;
         let n = d.uint()?;
         let p = bounded_bytes(d, 1, HELPER_PAYLOAD_MAX, false)?;
-        if v != 1 || (request && !(1..=16).contains(&n)) || (!request && n > 9) {
+        if v != 1 || (request && !(1..=20).contains(&n)) || (!request && n > 9) {
             return Err(CborError::TypeMismatch {
                 expected: "helper envelope",
                 offset: 0,
@@ -1470,6 +1470,28 @@ fn b64url_decode(s: &[u8]) -> Result<Vec<u8>, CodecError> {
 mod tests {
     use super::*;
     use crate::cbor::Encoder;
+    #[test]
+    fn helper_protocol_accepts_call_group_operations_only_through_twenty() {
+        for operation in [19, 20] {
+            let request = HelperRequest {
+                request_id: MsgId::from_bytes([1; 16]),
+                operation,
+                payload: vec![0x80],
+            };
+            let encoded = request.encode().expect("encode helper call operation");
+            let decoded = HelperRequest::decode(&encoded).unwrap();
+            assert_eq!(decoded.request_id, request.request_id);
+            assert_eq!(decoded.operation, request.operation);
+            assert_eq!(decoded.payload, request.payload);
+        }
+        let unknown = HelperRequest {
+            request_id: MsgId::from_bytes([1; 16]),
+            operation: 21,
+            payload: vec![0x80],
+        };
+        assert!(unknown.encode().is_err());
+    }
+
     #[test]
     fn base64url_rejects_nonzero_unused_bits_and_padding() {
         assert!(b64url_decode(b"Zh").is_err());

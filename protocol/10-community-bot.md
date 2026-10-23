@@ -1340,3 +1340,17 @@ codecs. Cases roundtrip canonical bytes; rejection cases include malformed types
 wrong context, expired mutations and noncanonical encodings. Pure validation is
 not runtime authorization: enrollment, current permissions, account binding,
 provider authentication and store atomicity have independent integration tests.
+
+## Native helper call-join operations
+
+The local encrypted helper request envelope accepts operation codes 1 through 20.
+Codes 19 and 20 are private IPC operations, not Bot interaction operation codes:
+
+- 19 `call_join_check`: payload `[call_channel_id]`; checks a staged external call-group
+  join against the native media-key and trust gate before the commit is posted.
+- 20 `call_group_forget`: payload `[call_channel_id]`; forgets a gone local call group
+  so the same channel can be joined in a later call.
+
+Call-group membership still follows the normal external-join sequence. A helper check
+does not authorize a server request or mint media credentials; the server's current-leaf
+gate remains in force.

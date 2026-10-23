@@ -242,16 +242,6 @@
       }
     },
     {
-      "name": "moderation.evidence.list",
-      "kind": "request",
-      "hex": "880150414141414141414141414141414141415022222222222222222222222222222222f61840f6f681f6",
-      "body": "dilla.bot/1:iAFQQUFBQUFBQUFBQUFBQUFBQVAiIiIiIiIiIiIiIiIiIiIi9hhA9vaB9g",
-      "context": {
-        "community": "22222222222222222222222222222222",
-        "now": "100"
-      }
-    },
-    {
       "name": "moderation.evidence",
       "kind": "request",
       "hex": "8801503e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e5022222222222222222222222222222222f6183d1878187883507777777777777777777777777777777766726561736f6e6765786365727074",
@@ -416,6 +406,26 @@
       "name": "helper group_transfer operation 16",
       "kind": "helper_request",
       "hex": "8401500a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a104180"
+    },
+    {
+      "name": "helper ingest removals operation 17",
+      "kind": "helper_request",
+      "hex": "8401500f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f114180"
+    },
+    {
+      "name": "helper removal actor refresh operation 18",
+      "kind": "helper_request",
+      "hex": "84015010101010101010101010101010101010124180"
+    },
+    {
+      "name": "call join check helper operation",
+      "kind": "helper_request",
+      "hex": "8401500b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b135281500c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+    },
+    {
+      "name": "call group forget helper operation",
+      "kind": "helper_request",
+      "hex": "8401500d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d145281500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
     },
     {
       "name": "helper response",
@@ -889,9 +899,9 @@
       "hex": "8601500101010101010101010101010101010150222222222222222222222222222222220af640"
     },
     {
-      "name": "helper operation 17 is unknown",
+      "name": "helper operation 21 is unknown",
       "kind": "helper_request",
-      "hex": "84015001010101010101010101010101010101114180"
+      "hex": "84015001010101010101010101010101010101154180"
     },
     {
       "name": "helper payload one byte over bound",

@@ -62,15 +62,19 @@ func TestInstallationSpotifyCatalogResolverUsesCredentialAndActor(t *testing.T) 
 }
 
 type runtimeCalls struct {
-	call    client.Call
-	err     error
-	channel id.ID
-	starts  int
+	call      client.Call
+	err       error
+	channel   id.ID
+	starts    int
+	startHook func()
 }
 
 func (c *runtimeCalls) StartCall(_ context.Context, channel id.ID) (client.Call, error) {
 	c.channel = channel
 	c.starts++
+	if c.startHook != nil {
+		c.startHook()
+	}
 	return c.call, c.err
 }
 
@@ -465,6 +469,45 @@ func TestNewMusicQueueStarterResolvesTrackToRoomCallAndProvider(t *testing.T) {
 	}
 	if o.Community != community || o.Channel != channel || o.Provider != music.ProviderYouTube || o.Track != track.CanonicalID || o.Group != group || o.Call.CallID != calls.call.CallID || o.Epochs == nil || o.Encoder == nil || o.Publisher == nil {
 		t.Fatalf("incomplete runtime options: %#v", o)
+	}
+}
+
+func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.T) {
+	channel, community, group := id.New(), id.New(), id.New()
+	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}}
+	order := []string{}
+	calls.startHook = func() { order = append(order, "start-call") }
+	joinErr := errors.New("call group join failed")
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{
+		Community: community, Channel: channel, Calls: calls,
+		JoinCallGroup: func(context.Context) error { order = append(order, "join-group"); return joinErr },
+		YouTubePCM:    runtimePCM{}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
+	if !errors.Is(err, joinErr) {
+		t.Fatalf("OptionsFor error = %v, want call-group join error", err)
+	}
+	if calls.starts != 0 || len(order) != 1 || order[0] != "join-group" {
+		t.Fatalf("call credentials were requested before successful group join: starts=%d order=%v", calls.starts, order)
+	}
+
+	order = nil
+	starter, err = newMusicQueueStarter(musicRuntimeDeps{
+		Community: community, Channel: channel, Calls: calls,
+		JoinCallGroup: func(context.Context) error { order = append(order, "join-group"); return nil },
+		YouTubePCM:    runtimePCM{}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "join-group" || order[1] != "start-call" {
+		t.Fatalf("call-group join/start order = %v", order)
 	}
 }
 
