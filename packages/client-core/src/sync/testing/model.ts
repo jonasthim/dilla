@@ -1296,6 +1296,11 @@ export class ModelCore implements CorePort {
     throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
   }
 
+  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
+    void requestId; void communityId; void groupId; void requestBody; void now;
+    throw new CoreError('E_CORE_STATE', 'human interaction sends are not modelled');
+  }
+
   // --- ordered processing (L-CORE-08) ---
 
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult {

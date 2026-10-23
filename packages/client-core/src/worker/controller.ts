@@ -13,6 +13,7 @@ import { safeName } from '../attachments/name';
 import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
+import { encodeBotRequestBytes, validateBotContext } from '../bot/protocol';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
@@ -324,7 +325,7 @@ const UTF8 = new TextEncoder();
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
-  listModerationCases: ['communityId'],
+  listModerationCases: ['communityId', 'requestId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
   getBotDjRoles: ['communityId'],
@@ -597,6 +598,7 @@ function invalid(command: Record<string, unknown>): string | null {
     || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
     || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
   if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
+  if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -765,6 +767,7 @@ export class Controller {
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
+  private readonly acceptedHumanInteractionSends = new Set<string>();
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1169,7 +1172,7 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
-      case 'listModerationCases': return Promise.reject(new Refusal('E_UNAVAILABLE', 'authenticated encrypted interaction transport is unavailable'));
+      case 'listModerationCases': return this.listModerationCases(command);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
       case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
@@ -1285,6 +1288,63 @@ export class Controller {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.getBotInstallation(fromHex(communityId));
     return row === null ? null : botInstallationView(row);
+  }
+
+  /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
+   *  ciphertext stay inside the worker/core boundary; the page receives only the stable request id
+   *  and whether the upload was accepted, remains uncertain, was refused, or cannot be resolved. */
+  private async listModerationCases(command: Extract<Command, { m: 'listModerationCases' }>): Promise<{ requestId: string; status: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const acceptedKey = `${command.communityId}:${command.requestId}`;
+    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: command.requestId, status: 'accepted' };
+    const core = this.requireCore();
+    const communityId = fromHex(command.communityId);
+    const groupRows = core.groups().filter((row) => row.kind === 3 && row.state === 2
+      && row.communityId !== null && toHex(row.communityId) === command.communityId);
+    if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
+    const groupId = groupRows[0]!.groupId;
+    const requestId = fromHex(command.requestId);
+    const now = BigInt(Math.floor(this.deps.now() / 1000));
+    const request = { requestId, communityId, channelId: null, operation: 60, revision: null, expires: null, args: [null] };
+    // Structural encoding enforces operation 60, its sole null cursor, and read-only null
+    // revision/expiry. Context validation binds it to this community and the trusted clock.
+    validateBotContext(request, { community: communityId, now });
+    const requestBody = encodeBotRequestBytes(request);
+    const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
+    if (toHex(prepared) !== command.requestId) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
+
+    const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === command.requestId);
+    if (outbox === undefined) return { requestId: command.requestId, status: 'unknown' };
+    if (outbox.state === 1) return { requestId: command.requestId, status: 'pending' };
+    if (outbox.state === 2) core.sendRetry(prepared);
+
+    const encrypted = core.sendEncrypt(prepared);
+    if (toHex(encrypted.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
+    let receipt: Awaited<ReturnType<Routes['postMessage']>>;
+    try {
+      receipt = await this.routes.postMessage(groupId, encrypted.messageBody);
+    } catch (error) {
+      if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
+        core.sendFail(prepared, error.code);
+        return { requestId: command.requestId, status: 'rejected' };
+      }
+      // A timeout or server failure does not establish whether the upload committed. The durable
+      // in-flight outbox is retained and this command will report pending on an exact retry.
+      return { requestId: command.requestId, status: 'pending' };
+    }
+    try {
+      core.sendConfirm(prepared, receipt.raw);
+    } catch {
+      // The server accepted the ciphertext, but the local receipt commit did not complete.
+      return { requestId: command.requestId, status: 'pending' };
+    }
+    this.acceptedHumanInteractionSends.add(acceptedKey);
+    if (this.acceptedHumanInteractionSends.size > 128) {
+      const oldest = this.acceptedHumanInteractionSends.values().next().value as string | undefined;
+      if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
+    }
+    return { requestId: command.requestId, status: 'accepted' };
   }
 
   private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {

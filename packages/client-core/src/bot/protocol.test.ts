@@ -33,6 +33,15 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
   });
 
+  it('encodes the strict raw request bytes required by the human interaction core boundary', () => {
+    const raw = bot.encodeBotRequestBytes(request(60, [null]));
+    expect(decode(raw)).toEqual([1n, id(1), id(2), null, 60n, null, null, [null]]);
+    expect(() => bot.encodeBotRequestBytes(request(999, []))).toThrow(bot.BotError);
+    const mutation = { ...request(61, [id(3), '', '']), revision: 1n, expires: 110n };
+    const decoded = bot.decodeBotRequest(bot.encodeBotRequest(mutation));
+    expect(() => bot.validateBotContext(decoded, { community: id(2), now: 110n })).toThrow(bot.BotError);
+  });
+
   it('rejects noncanonical base64url even when it decodes to valid CBOR', () => {
     const good = bot.encodeBotRequest(request());
     expect(() => bot.decodeBotRequest(`${good}=`)).toThrow(bot.BotError);

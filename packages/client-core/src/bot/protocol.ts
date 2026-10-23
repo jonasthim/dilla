@@ -108,6 +108,7 @@ function readRequest(v: CborValue): BotRequest {
     revision:readOptU(a[5]),expires:readOptU(a[6]),args:arr(a[7])};
   requestValue(out); return out;
 }
+export function encodeBotRequestBytes(request: BotRequest): Uint8Array { return guarded(() => encode(requestValue(request))); }
 export function encodeBotRequest(request: BotRequest): string { return guarded(() => bodyEncode(requestValue(request))); }
 export function decodeBotRequest(body: string): BotRequest { return guarded(() => readRequest(bodyDecode(body))); }
 export function validateBotContext(request: BotRequest, context: BotContext): void {

@@ -116,14 +116,57 @@ describe('Controller', () => {
     expect(w.routes.postTicket).toHaveBeenCalledTimes(tickets);
   });
 
-  it('keeps moderation case listing typed but unavailable until an authenticated interaction transport exists', async () => {
+  it('sends a typed moderation request through the authenticated kind-3 group and returns only its id and status', async () => {
     const w = world();
     await toReady(w);
-    w.call(10_199, { m: 'listModerationCases', communityId: toHex(COMMUNITY), offset: 0 });
-    await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE' } }));
-    w.call(10_198, { m: 'listModerationCases', communityId: toHex(COMMUNITY), offset: 1 });
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_199, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'accepted' } }));
+    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledWith(requestId, COMMUNITY, groupId, expect.any(Uint8Array), NOW_S);
+    expect(w.core.sendEncrypt).toHaveBeenCalledWith(requestId);
+    expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
+    expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
+    const value = (w.ret(10_199) as { ok: true; value: object }).value;
+    expect(Object.keys(value).sort()).toEqual(['requestId', 'status']);
+    w.call(10_194, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_194)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'accepted' } }));
+    expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
+    w.call(10_198, { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: '54'.repeat(15), offset: 0 });
     await vi.waitFor(() => expect(w.ret(10_198)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
-    expect(w.routes.getBotInstallation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no kind-3 group', [], COMMUNITY],
+    ['wrong community', [{ ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, communityId: new Uint8Array(16).fill(0x77) }], COMMUNITY],
+  ] as const)('refuses a moderation request for %s before preparing or uploading', async (_label, groups, community) => {
+    const w = world();
+    await toReady(w);
+    w.state.groups.push(...groups);
+    w.call(10_197, { m: 'listModerationCases', communityId: toHex(community), requestId: '54'.repeat(16), offset: 0 });
+    await vi.waitFor(() => expect(w.ret(10_197)).toMatchObject({ ok: false, error: { code: 'E_CORE_STATE' } }));
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    expect(w.routes.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps an uncertain send pending on transport failure and never uploads it again on retry', async () => {
+    const w = world();
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'secret request', type: 0, replyTo: null, attachments: [] });
+    w.routes.postMessage.mockRejectedValueOnce(new Error('connection lost'));
+    const command = { m: 'listModerationCases', communityId: toHex(COMMUNITY), requestId: toHex(requestId), offset: 0 } as const;
+    w.call(10_196, command);
+    await vi.waitFor(() => expect(w.ret(10_196)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
+    w.state.outbox[0]!.state = 1;
+    w.call(10_195, command);
+    await vi.waitFor(() => expect(w.ret(10_195)).toMatchObject({ ok: true, value: { requestId: toHex(requestId), status: 'pending' } }));
+    expect(w.routes.postMessage).toHaveBeenCalledTimes(1);
+    expect(w.core.sendEncrypt).toHaveBeenCalledTimes(1);
   });
 
   it('signs a sequence confirmed in the active community timeline and preserves server moderation refusals', async () => {

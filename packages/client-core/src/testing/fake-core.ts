@@ -396,6 +396,9 @@ export class FakeCore implements CorePort {
   humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array): WelcomeOutcome[] {
     return this.notModelled('humanInteractionWelcomeApply', welcomesBody, currentContextProof);
   }
+  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
+    return this.notModelled('humanInteractionSendPrepare', requestId, communityId, groupId, requestBody, now);
+  }
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult { return this.notModelled('groupApply', groupId, handshakes, messages, through); }
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array { return this.notModelled('commitBuild', groupId, proposalsBody); }
   commitConfirm(groupId: Id): ApplyResult { return this.notModelled('commitConfirm', groupId); }

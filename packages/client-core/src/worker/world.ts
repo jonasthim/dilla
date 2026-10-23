@@ -251,6 +251,11 @@ export function world(opts: {
     timeline: (): TimelineRow[] => state.rows,
     signRemoval: vi.fn((_requestId: Uint8Array, _groupId: Uint8Array, _seq: bigint, _expires: bigint, _now: bigint) =>
       encode([new Uint8Array([1]), new Uint8Array(64).fill(7)])),
+    humanInteractionSendPrepare: vi.fn((requestId: Uint8Array) => requestId),
+    sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
+    sendConfirm: vi.fn((_msgId: Uint8Array, _response: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), seq: 1n })),
+    sendRetry: vi.fn((_msgId: Uint8Array) => {}),
+    sendFail: vi.fn((_msgId: Uint8Array, _error: string) => {}),
     instanceSignerKeyMatches: vi.fn((_key: Uint8Array): void => {}),
     threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
       const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
@@ -359,6 +364,7 @@ export function world(opts: {
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
     postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
+    postMessage: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve({ raw: encode([1n]), seq: 1n })),
     getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
     configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>
       Promise.resolve({ id: new Uint8Array(16).fill(0x73), communityId: COMMUNITY, state: 0 as const, revision: 1n,
