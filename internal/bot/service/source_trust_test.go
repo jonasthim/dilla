@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -14,6 +15,33 @@ type fakeDeviceListSession struct {
 	heads   [][]byte
 	rows    map[uint64][][]any
 	queries []uint64
+}
+
+type duplicatePendingTrustNative struct {
+	binding native.Binding
+	leaves  []native.GroupPendingLeaf
+	calls   int
+}
+
+func (n *duplicatePendingTrustNative) Binding() native.Binding { return n.binding }
+func (n *duplicatePendingTrustNative) PendingLeaves(context.Context) ([]native.GroupPendingLeaf, error) {
+	return append([]native.GroupPendingLeaf(nil), n.leaves...), nil
+}
+func (*duplicatePendingTrustNative) ProposedAdds(context.Context, id.ID, []byte) ([]native.GroupProposedAdd, error) {
+	return nil, nil
+}
+func (n *duplicatePendingTrustNative) TrustSender(context.Context, id.ID, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error) {
+	n.calls++
+	if n.calls > 1 {
+		return native.GroupTrustVerdict{}, ErrSenderHistoryStale
+	}
+	return native.GroupTrustVerdict{}, nil
+}
+func (*duplicatePendingTrustNative) TrustProposedAdd(context.Context, id.ID, []byte, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error) {
+	return native.GroupTrustVerdict{}, nil
+}
+func (*duplicatePendingTrustNative) RevalidateGroup(context.Context, id.ID, uint64, uint64) (uint32, error) {
+	return 1, nil
 }
 
 func (s *fakeDeviceListSession) OwnDeviceList(context.Context, id.ID) ([]byte, error) {
@@ -135,5 +163,29 @@ func TestTrustPhaseErrorsExposeOnlyFixedPhaseAndPreserveCause(t *testing.T) {
 	}
 	if got := phaseErr.Phase.String(); got != "sender_trust" {
 		t.Fatalf("phase label = %q", got)
+	}
+}
+
+func TestTrustPendingLeavesRefreshesEachUserOncePerBatch(t *testing.T) {
+	user := sid(25)
+	n := &duplicatePendingTrustNative{
+		binding: native.Binding{Instance: sid(26), Community: sid(27), Installation: sid(28)},
+		leaves: []native.GroupPendingLeaf{
+			{Group: sid(29), Leaf: 1, User: user, CachedVersion: 1},
+			{Group: sid(30), Leaf: 2, User: user, CachedVersion: 1},
+		},
+	}
+	trust, err := newSourceTrust(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := outerDeviceList(t, 1, []byte("signed-list"))
+	session := &fakeDeviceListSession{heads: [][]byte{head, head}}
+	recovered, err := trust.trustPendingLeaves(context.Background(), session)
+	if err != nil {
+		t.Fatalf("same-user stale batch row should be coalesced after first refresh: %v", err)
+	}
+	if recovered != 1 || n.calls != 1 {
+		t.Fatalf("recovered=%d trust calls=%d, want one user refresh", recovered, n.calls)
 	}
 }
