@@ -130,7 +130,10 @@ fn human_interaction_welcome_receipt(
 
 fn interaction_now(now: u64) -> Result<u64, ClientError> {
     if now == 0 || now > i64::MAX as u64 {
-        return Err(ClientError::new(E_CORE_INPUT, "interaction time is out of range"));
+        return Err(ClientError::new(
+            E_CORE_INPUT,
+            "interaction time is out of range",
+        ));
     }
     Ok(now)
 }
@@ -1511,7 +1514,10 @@ mod interaction_welcome_tests {
     fn interaction_welcome_clock_is_bounded_at_the_core_boundary() {
         assert_eq!(interaction_now(1).unwrap(), 1);
         assert_eq!(interaction_now(0).unwrap_err().code, E_CORE_INPUT);
-        assert_eq!(interaction_now(i64::MAX as u64 + 1).unwrap_err().code, E_CORE_INPUT);
+        assert_eq!(
+            interaction_now(i64::MAX as u64 + 1).unwrap_err().code,
+            E_CORE_INPUT
+        );
     }
 
     fn test_context() -> crate::bot::human_interaction_context::CurrentContext {

@@ -5200,7 +5200,7 @@ export class Controller {
   private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
 
   /** A timed-out member's owner-only DELETE path stays available. The server checks the uploader and emits the same
-   * replayable tombstone to every reader; ordinary deletes remain MLS type-2 folds. */
+   * replayable tombstone to every reader; ordinary deletes remain type-2 folds. */
   private async deleteMessage(channelId: string, msgId: string, seq: string): Promise<null> {
     const groupId = this.activeGroup(channelId);
     const known = this.channels.get(channelId);

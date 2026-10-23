@@ -669,7 +669,7 @@ export class Routes {
       throw new CborError('E_CBOR_SHAPE', 'invalid role panel acknowledgement');
     }
   }
-  /** Applies a human-authenticated role-panel action only after the matching encrypted event was accepted. */
+  /** Applies a human-authenticated role-panel action only after the matching panel event was accepted. */
   async applyRolePanelReaction(communityId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
     groupId: Uint8Array, eventSeq: bigint, emoji: string, enabled: boolean): Promise<void> {
     if (messageSeq < 1n || messageSeq > (1n << 63n) - 1n || eventSeq < 1n || eventSeq > (1n << 63n) - 1n

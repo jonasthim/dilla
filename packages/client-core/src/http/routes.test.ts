@@ -95,7 +95,7 @@ it('registers only bounded unique mappings against an accepted Bot message ident
   ])).rejects.toThrow(/duplicate role panel mapping/u);
 });
 
-it('submits only a bounded explicit panel action after an accepted encrypted event', async () => {
+it('submits only a bounded explicit panel action after an accepted panel event', async () => {
   const { routes, t, http } = setup();
   t.replies.push(noContent());
   await routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 11n, '✅', true);

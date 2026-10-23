@@ -1,6 +1,6 @@
-use crate::helper::{body, empty, map_client, DispatchError};
+use crate::helper::{DispatchError, body, empty, map_client};
 use dilla_core::{
-    cbor::{decode_strict, Decoder, Encoder},
+    cbor::{Decoder, Encoder, decode_strict},
     client::ClientCore,
 };
 use zeroize::Zeroizing;

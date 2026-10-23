@@ -802,8 +802,12 @@ impl ClientCore {
         }
         let r = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
         let is_interaction = r.kind == super::groups::row_kind(crate::mls::GroupKind::Interaction);
-        if (is_interaction && bot_interaction_roster.is_some() && own.kind != crate::identity::Kind::Bot.as_u8())
-            || (is_interaction && bot_interaction_roster.is_none() && own.kind != crate::identity::Kind::User.as_u8())
+        if (is_interaction
+            && bot_interaction_roster.is_some()
+            && own.kind != crate::identity::Kind::Bot.as_u8())
+            || (is_interaction
+                && bot_interaction_roster.is_none()
+                && own.kind != crate::identity::Kind::User.as_u8())
             || (!is_interaction && bot_interaction_roster.is_some())
         {
             return Err(super::mismatched());

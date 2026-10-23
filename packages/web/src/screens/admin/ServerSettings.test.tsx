@@ -137,7 +137,7 @@ describe('ServerSettings tabs', () => {
     expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(0);
     expect(fake.callsOf('registerRolePanel')).toHaveLength(0);
   });
-  it('shows a bounded error code when polling the encrypted response fails', async () => {
+  it('shows a bounded error code when polling the bot response fails', async () => {
     const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
     const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
       channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
