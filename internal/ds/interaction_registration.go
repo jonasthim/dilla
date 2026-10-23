@@ -80,6 +80,17 @@ func (d *DS) WithCurrentBotInteractionGroupContext(ctx context.Context, groupID 
 // same group state that was validated, before a concurrent commit or close can proceed. fn must
 // use tx for all repository reads and must not start another repository transaction.
 func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.ID, fn func(CurrentBotInteractionGroupContext, store.Repository) error) error {
+	return d.withCurrentBotInteractionGroupRead(ctx, groupID, false, fn)
+}
+
+// WithCurrentBotInteractionGroupHealRead validates the accepted private group roster for the Bot
+// heal endpoint while permitting the restored row's EpochUnknown marker. All other registration,
+// binding, public MLS state, and two-leaf roster checks remain identical to ordinary reads.
+func (d *DS) WithCurrentBotInteractionGroupHealRead(ctx context.Context, groupID id.ID, fn func(CurrentBotInteractionGroupContext, store.Repository) error) error {
+	return d.withCurrentBotInteractionGroupRead(ctx, groupID, true, fn)
+}
+
+func (d *DS) withCurrentBotInteractionGroupRead(ctx context.Context, groupID id.ID, allowEpochUnknown bool, fn func(CurrentBotInteractionGroupContext, store.Repository) error) error {
 	if d == nil || d.opts.Store == nil || d.opts.Wasm == nil || groupID.IsZero() {
 		return errors.New("ds: current kind-3 interaction context dependencies unavailable")
 	}
@@ -116,7 +127,8 @@ func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 		if err != nil {
 			return err
 		}
-		if !validCurrentInteractionRegistration(row, registration, d.opts.Keys.InstanceID) {
+		if !(validCurrentInteractionRegistration(row, registration, d.opts.Keys.InstanceID) ||
+			(allowEpochUnknown && row.EpochUnknown && validCurrentInteractionRegistrationAfterRestore(row, registration, d.opts.Keys.InstanceID))) {
 			return errors.New("ds: accepted kind-3 registration and current group row disagree")
 		}
 		var binding interactionBindingV2
@@ -214,6 +226,11 @@ func (d *DS) WithCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 		return fn(out, tx)
 	})
 	return err
+}
+
+func validCurrentInteractionRegistrationAfterRestore(row store.GroupRow, receipt store.BotGroupRegistrationReceipt, instanceID id.ID) bool {
+	row.EpochUnknown = false
+	return validCurrentInteractionRegistration(row, receipt, instanceID)
 }
 
 func validCurrentInteractionRegistration(row store.GroupRow, receipt store.BotGroupRegistrationReceipt, instanceID id.ID) bool {

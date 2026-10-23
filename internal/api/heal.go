@@ -13,6 +13,7 @@ import (
 // method on Groups for the reason the other three are separate — the delivery service's surface
 // grows one named group per task.
 func (h *Groups) RegisterHeal(mux *server.Mux, sessions *auth.Sessions) {
+	h.registerBotInteractionGroupHeal(mux, sessions)
 	enrolled := func(f http.HandlerFunc) http.Handler {
 		return sessions.Middleware(f, auth.ScopeEnrolled)
 	}

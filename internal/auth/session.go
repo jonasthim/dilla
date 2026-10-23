@@ -1277,7 +1277,9 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 	case "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
 		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
 		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor":
+		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor",
+		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
+		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal":
 		return interactionGroupPath()
 	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil

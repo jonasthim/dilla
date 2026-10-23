@@ -253,7 +253,7 @@ func TestEveryMemberSetWriterFlushesEvictionsAfterUnlocking(t *testing.T) {
 	for _, c := range []struct{ file, fn string }{
 		{"commit.go", "func (d *DS) commit("},
 		{"resync.go", "func (d *DS) Resync("},
-		{"heal.go", "func (d *DS) Heal("},
+		{"heal.go", "func (d *DS) HealWithGuard("},
 	} {
 		src, err := os.ReadFile(c.file)
 		if err != nil {

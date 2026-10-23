@@ -165,6 +165,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	groups.Register(mux, deps.Sessions)
 	groups.RegisterSequencer(mux, deps.Sessions)
 	groups.RegisterRecovery(mux, deps.Sessions)
+	groups.RegisterHeal(mux, deps.Sessions)
 	user, _, sessionToken := seedAPISession(t, deps)
 	h := &groupsAPI{mux: mux, deps: deps, ds: delivery, groups: groups, groupID: f.groupID, fixture: f,
 		session: sessionToken, user: user.ID, clk: clk, wasm: wasm, keys: keys, gw: gw}
@@ -447,6 +448,9 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	installationID := readyInstallationID
 	botGroupBase := "/v1/bot-runtime/installations/" + installationID.String() + "/interaction-groups/" + groupID.String()
 	botGroupInfoPath := botGroupBase + "/info"
+	if got := h.do(t, http.MethodGet, botGroupBase+"/heal", token, nil).Code; got != http.StatusOK {
+		t.Fatalf("same-install registered Bot heal status: %d", got)
+	}
 	if got := h.do(t, http.MethodGet, botGroupInfoPath, token, nil); got.Code != http.StatusOK {
 		t.Fatalf("current registered Bot interaction group read: %d, want 200: %x", got.Code, got.Body.Bytes())
 	}
@@ -471,11 +475,36 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if got := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+installationID.String()+"/interaction-groups/"+unregisteredGroup.String()+"/info", token, nil).Code; got < 400 {
 		t.Fatalf("unregistered kind-3 group read accepted: %d", got)
 	}
+	if got := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+installationID.String()+"/interaction-groups/"+unregisteredGroup.String()+"/heal", token, nil).Code; got < 400 {
+		t.Fatalf("unregistered kind-3 group heal accepted: %d", got)
+	}
 	if got := h.do(t, http.MethodGet, "/v1/groups/"+groupID.String()+"/info", token, nil).Code; got < 400 {
 		t.Fatalf("generic kind-3 read remained enabled: %d", got)
 	}
 	if got := h.do(t, http.MethodPost, "/v1/groups/"+groupID.String()+"/message", token, mustCBOR(t, []any{})).Code; got < 400 {
 		t.Fatalf("Bot wrote directly to private interaction group: %d", got)
+	}
+	if err := h.ds.OnRestore(ctx, instance.Generation+1); err != nil {
+		t.Fatalf("restore before Bot heal status: %v", err)
+	}
+	healStatus := h.do(t, http.MethodGet, botGroupBase+"/heal", token, nil)
+	if healStatus.Code != http.StatusOK {
+		t.Fatalf("same-install Bot could not read restored-group heal status: %d %x", healStatus.Code, healStatus.Body.Bytes())
+	}
+	var healFields []any
+	if err := cborx.Unmarshal(healStatus.Body.Bytes(), &healFields); err != nil || len(healFields) != 5 || healFields[4] != uint64(1) {
+		t.Fatalf("restored Bot heal status = %v, err=%v; want five fields with needs_heal=1", healFields, err)
+	}
+	if got := h.do(t, http.MethodGet, "/v1/bot-runtime/installations/"+id.New().String()+"/interaction-groups/"+groupID.String()+"/heal", token, nil).Code; got < 400 {
+		t.Fatalf("foreign installation heal status accepted: %d", got)
+	}
+	groupRow, err := h.deps.Repo.GetGroup(ctx, groupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healed := h.do(t, http.MethodPost, botGroupBase+"/heal", token, mustCBOR(t, []any{groupRow.GroupInfoBlob, []any{}, nil}))
+	if healed.Code != http.StatusOK {
+		t.Fatalf("same-install Bot heal: %d %x, want 200", healed.Code, healed.Body.Bytes())
 	}
 	if err := h.deps.Repo.DeleteMember(ctx, idFromHex(t, meta.CommunityID), idFromHex(t, meta.ParticipantUserID)); err != nil {
 		t.Fatal(err)

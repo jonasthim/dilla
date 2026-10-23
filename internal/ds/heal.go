@@ -179,6 +179,14 @@ func (d *DS) HealStatus(ctx context.Context, s Session, groupID id.ID) (HealStat
 // with a GroupInfo it signs itself for the result — every adoption check below only proves that
 // the member built the state it claims.
 func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) (CommitResult, error) {
+	return d.HealWithGuard(ctx, s, groupID, h, nil)
+}
+
+// HealWithGuard applies an optional acceptance-time authorization check inside the same
+// transaction that adopts the healed state. The guard runs after the restored group is fenced and
+// before any persisted heal state changes.
+func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h HealRequest,
+	guard func(context.Context, store.Repository, store.GroupRow) error) (CommitResult, error) {
 	if len(h.Tail) > maxHealTail {
 		return CommitResult{}, errInvalid("the handshake tail carries more than 64 items")
 	}
@@ -337,6 +345,11 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 	var high uint64
 	var members memberView
 	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+		if row.CommunityID != nil {
+			if err := tx.LockCommunity(ctx, *row.CommunityID); err != nil {
+				return err
+			}
+		}
 		if err := tx.LockGroup(ctx, groupID); err != nil {
 			return err
 		}
@@ -344,8 +357,15 @@ func (d *DS) Heal(ctx context.Context, s Session, groupID id.ID, h HealRequest) 
 		if err != nil {
 			return err
 		}
-		if lockedRow.ClosedAt != nil || !lockedRow.EpochUnknown || lockedRow.Epoch != row.Epoch {
+		if lockedRow.ClosedAt != nil || !lockedRow.EpochUnknown || lockedRow.Epoch != row.Epoch ||
+			(lockedRow.CommunityID == nil) != (row.CommunityID == nil) ||
+			(lockedRow.CommunityID != nil && *lockedRow.CommunityID != *row.CommunityID) {
 			return errCommitInvalid("heal_state", "the group changed while this heal was being prepared")
+		}
+		if guard != nil {
+			if err := guard(ctx, tx, lockedRow); err != nil {
+				return err
+			}
 		}
 		// Sequence-only writers may have committed while the guest replay was being
 		// prepared in another process. Continue from the fenced database high-water.

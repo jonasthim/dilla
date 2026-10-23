@@ -169,6 +169,29 @@ func TestAHealWhoseTailReplaysCleanlyIsAdopted(t *testing.T) {
 	}
 }
 
+func TestHealAcceptanceGuardRefusalLeavesTheRestoredGroupUnknown(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	if err := h.ds.OnRestore(context.Background(), h.generation(t)+1); err != nil {
+		t.Fatalf("OnRestore: %v", err)
+	}
+	guardCalled := false
+	_, err := h.ds.HealWithGuard(context.Background(), g.session, g.id, h.healAtEpoch(t, g, g.Epoch()),
+		func(context.Context, store.Repository, store.GroupRow) error {
+			guardCalled = true
+			return errors.New("Bot installation was disabled before heal acceptance")
+		})
+	if err == nil || err.Error() != "Bot installation was disabled before heal acceptance" {
+		t.Fatalf("HealWithGuard error = %v, want acceptance-time authorization refusal", err)
+	}
+	if !guardCalled {
+		t.Fatal("acceptance-time guard was not called")
+	}
+	if !h.epochUnknown(t, g.id) {
+		t.Fatal("refused heal cleared EpochUnknown")
+	}
+}
+
 // The rows a heal appends are what every other member's catch-up is served and what
 // E_COMMIT_CONFLICT names as a winning commit, so they carry what the replay DERIVED, never what
 // the uploading member claimed: the epoch the group actually reached, the kind the guest reported,
