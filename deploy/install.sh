@@ -1069,9 +1069,15 @@ doctor_and_report() {
 	printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
 	# Legs that need DNS for the domain, outbound HTTPS or the proxy: red until
 	# those exist, which is expected on a fresh install. The udp leg is never red:
-	# it reads WARN "not probed" by default and cannot prove the forward.
-	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
-	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "media_refresh") { printf "%s ", $2 }')"
+	# it reads WARN "not probed" by default and cannot prove the forward. The turn
+	# leg's ownership reds are not DNS (final review M3): TURN served by both
+	# processes, by neither, or by dilla-media while api.sock does not answer is a
+	# handoff that went wrong, so it counts as a problem with the install itself.
+	DOCTOR_LEGS='
+		function owner() { return $2 == "turn" && $0 ~ /^FAIL[[:space:]]+turn[[:space:]]+(TURN is served by (both|neither)|dilla-media serves TURN but)/ }
+		function pending() { return $2 == "clock" || $2 == "certificate" || ($2 == "turn" && !owner()) }'
+	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk "$DOCTOR_LEGS"' $1 == "FAIL" && pending() { printf "%s ", $2 }')"
+	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk "$DOCTOR_LEGS"' $1 == "FAIL" && !(pending() || $2 == "media_refresh") { printf "%s ", $2 }')"
 	# A dilla-media restart deferred for over 24 h is the operator's to decide, not the install's.
 	MR_RED=0
 	if printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && $2 == "media_refresh" { found = 1 } END { exit !found }'; then

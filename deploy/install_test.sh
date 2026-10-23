@@ -1058,6 +1058,26 @@ else
 	fail "doctor failing only on DNS and network legs does not fail the install, and shows them" "rc $RC" "out: $OUT" "stderr: $ERR"
 fi
 
+# Final review M3: the turn leg's ownership reds are not DNS: TURN served by both processes, by
+# neither, or by dilla-media while api.sock does not answer is a problem with the install itself.
+i=0
+for detail in 'TURN is served by both dilla-media and the API (media.sock: serving=true)' \
+	'TURN is served by neither process (media.sock: serving=false)' \
+	'dilla-media serves TURN but the API does not answer on api.sock: its barred lookups fail'; do
+	i=$((i + 1))
+	printf 'OK    config       parsed and validated\nFAIL  turn         %s\nWARN  udp          not probed\n' "$detail" >"$TMP/doctor-owner$i"
+	seed_root
+	# shellcheck disable=SC2086
+	FAKE_DOCTOR="$TMP/doctor-owner$i" FAKE_DOCTOR_EXIT=69 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+	problems=""
+	[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want a failure"
+	has "$ERR" "doctor found a problem with the install itself: turn" || problems="$problems|the turn leg is not named as an install problem"
+	! has "$ERR" "until DNS and the proxy are in place: turn" || problems="$problems|the turn leg is filed under DNS or the proxy"
+	if [ -z "$problems" ]; then pass "a turn ownership red ($detail) fails the install, not filed under DNS"; else
+		fail "a turn ownership red ($detail) fails the install, not filed under DNS" "$problems" "stderr: $ERR"
+	fi
+done
+
 printf 'OK    config       parsed and validated\nFAIL  wasi         dilla_core_wasi.wasm: bad magic\nWARN  udp          not probed\n' >"$TMP/doctor-wasi"
 seed_root
 # shellcheck disable=SC2086
