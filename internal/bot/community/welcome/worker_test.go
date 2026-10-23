@@ -17,7 +17,6 @@ type testNative struct {
 	binding      native.Binding
 	values       map[string]native.StateValue
 	transactions map[id.ID][]native.StateChange
-	failReadback bool
 }
 
 type receiptFirstNative struct {

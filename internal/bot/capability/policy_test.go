@@ -50,7 +50,7 @@ func TestEnabledMatchesLiveInstallationPredicate(t *testing.T) {
 
 func TestRequireCommunityBoundaryAndFailClosedErrors(t *testing.T) {
 	community := id.New()
-	state := uint8(store.BotInstallationPending)
+	state := store.BotInstallationPending
 	policy := New(sourceFunc(func(context.Context, id.ID) (store.BotInstallationRow, error) {
 		return store.BotInstallationRow{CommunityID: community, State: state}, nil
 	}))

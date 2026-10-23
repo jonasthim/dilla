@@ -56,7 +56,7 @@ func profileAt(ctx context.Context, endpoint string, httpClient *http.Client, ac
 	if err != nil {
 		return "", ErrProfile
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", ErrProfile
 	}
@@ -76,7 +76,7 @@ func profileAt(ctx context.Context, endpoint string, httpClient *http.Client, ac
 		return "", ErrProfile
 	}
 	var trailing any
-	if err = dec.Decode(&trailing); err != io.EOF {
+	if err = dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return "", ErrProfile
 	}
 	if !safeAccountID(profile.AccountID) {
@@ -90,9 +90,10 @@ func safeAccountID(id string) bool {
 		return false
 	}
 	for _, c := range id {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
-			return false
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+			continue
 		}
+		return false
 	}
 	return true
 }

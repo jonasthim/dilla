@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	// #nosec G101 -- this is the fixed public OAuth endpoint, not a credential.
 	tokenEndpoint    = "https://accounts.spotify.com/api/token"
 	maxTokenResponse = 32 << 10
 )
@@ -100,7 +101,7 @@ func postToken(ctx context.Context, endpoint string, httpClient *http.Client, fo
 	if err != nil {
 		return empty, ErrExchange
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return empty, ErrExchange
 	}
@@ -119,7 +120,7 @@ func postToken(ctx context.Context, endpoint string, httpClient *http.Client, fo
 		return empty, ErrExchange
 	}
 	var trailing any
-	if err = dec.Decode(&trailing); err != io.EOF {
+	if err = dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return empty, ErrExchange
 	}
 	if token.RefreshToken == "" {
@@ -136,9 +137,10 @@ func validVerifier(v string) bool {
 		return false
 	}
 	for _, c := range v {
-		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~", c)) {
-			return false
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~", c) {
+			continue
 		}
+		return false
 	}
 	return true
 }
