@@ -191,3 +191,42 @@ export function TimeoutFlow(props: ModFlowProps): React.JSX.Element {
     </ConfirmDialog>
   );
 }
+
+export function WarnFlow(props: ModFlowProps): React.JSX.Element {
+  const client = useCore();
+  const g = useGuarded(props.open);
+  const [reason, setReason] = useState('');
+  const request = useRef<string | null>(null);
+  const vars = { name: props.target?.name ?? '', server: props.serverName };
+  useEffect(() => { if (!props.open) { setReason(''); request.current = null; } }, [props.open]);
+  const confirm = () => {
+    const target = props.target;
+    if (target === null || g.running.current) return;
+    const problem = reasonProblem(reason);
+    if (problem !== null || reason.trim() === '') {
+      g.setError(t(problem === 'long' ? 'mod.warn.error.reasonLong' : problem === 'control' ? 'mod.warn.error.reasonControl' : 'mod.warn.error.reasonEmpty'));
+      g.setAttempt(a => a + 1); return;
+    }
+    request.current ??= requestId();
+    g.running.current = true; g.setBusy(true); g.setError(null);
+    const at = g.session.current;
+    void (async () => {
+      try {
+        const result = await client.call({ m: 'warnMember', communityId: props.communityId, userId: target.userId,
+          requestId: request.current!, reason });
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
+        props.announce(result.evidence === 'accepted' ? t('mod.warn.done', vars) : t('mod.warn.evidencePending', vars));
+        if (g.session.current === at) props.onDone();
+      } catch (e) {
+        const err = errorOf(e);
+        const message = err.code === 'E_FORBIDDEN' ? t('mod.warn.error.forbidden', vars) : t('mod.error.other', { code: err.code });
+        if (g.session.current === at) { g.setError(message); g.setAttempt(a => a + 1); g.running.current = false; g.setBusy(false); }
+      }
+    })();
+  };
+  return <ConfirmDialog open={props.open} title={t('mod.warn.title', vars)} body={t('mod.warn.body', vars)} confirmLabel={t('mod.warn.confirm')}
+    busyLabel={t('mod.warn.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
+    onConfirm={confirm} onClose={() => props.onClose()}>
+    <TextField id="mod-warn-reason" label={t('mod.warn.reason')} value={reason} onChange={value => { setReason(value); g.setError(null); }} disabled={g.busy || request.current !== null} />
+  </ConfirmDialog>;
+}

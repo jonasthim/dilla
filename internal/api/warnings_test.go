@@ -36,8 +36,13 @@ func TestHumanWarningRequiresModeratorAndReturnsAcceptedAction(t *testing.T) {
 	if !rok || !aok || !vok || !tok || string(request) != string(requestID[:]) || len(action) != 16 || revision == 0 || accepted == 0 {
 		t.Fatalf("warning receipt = %#v", receipt)
 	}
+	status, retryBody := e.Do(http.MethodPost, path, ownerTok, []any{requestID})
+	var retry []any
+	if status != http.StatusOK || cborx.Unmarshal(retryBody, &retry) != nil || len(retry) != 4 || retry[1] == nil || string(retry[1].([]byte)) != string(action) || retry[2] != revision || retry[3] != accepted {
+		t.Fatalf("identical warning retry = %d %#v", status, retry)
+	}
 	page, err := e.Repo.ListBotStructuralEvents(t.Context(), cid, 0, 10)
-	if err != nil || len(page.Events) == 0 {
+	if err != nil || len(page.Events) < 1 {
 		t.Fatalf("warning events = %d, %v", len(page.Events), err)
 	}
 	var actionID id.ID
@@ -53,8 +58,20 @@ func TestHumanWarningRequiresModeratorAndReturnsAcceptedAction(t *testing.T) {
 		t.Fatalf("warning event = %+v", event)
 	}
 	rows, err := e.Repo.ListAudit(t.Context(), 0, 20)
-	if err != nil || len(rows) == 0 || rows[0].Action != "member.warn" || rows[0].Target != target.String() {
-		t.Fatalf("warning audit = %+v, %v", rows, err)
+	count := 0
+	for _, row := range rows {
+		if row.Action == "member.warn" {
+			count++
+		}
+	}
+	if err != nil || count != 1 {
+		t.Fatalf("warning audit count = %d, %v; rows=%+v", count, err, rows)
+	}
+	other, otherToken := e.NewUser("warning-other")
+	joinCommunity(t, e, cid, otherToken)
+	otherPath := "/v1/communities/" + cid.String() + "/members/" + other.String() + "/warning"
+	if status, _ := e.Do(http.MethodPost, otherPath, ownerTok, []any{requestID}); status != http.StatusConflict {
+		t.Fatalf("reused request id for a different target = %d, want conflict", status)
 	}
 }
 

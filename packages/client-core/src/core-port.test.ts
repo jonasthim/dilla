@@ -90,6 +90,26 @@ it('passes moderator-removal signing inputs directly to ClientCore and returns o
     reason: 'why', excerpt: 'excerpt', signedBody: body, state: 1, createdAt: 100n, expires: 130n, evidenceExpires: 160n }]);
 });
 
+it('bridges the crash-safe manual-warning outbox and accepted action receipt', () => {
+  const request = new Uint8Array(16).fill(0x31); const evidence = new Uint8Array(16).fill(0x32);
+  const target = new Uint8Array(16).fill(0x33); const action = new Uint8Array(16).fill(0x34);
+  const row = [request, evidence, USER, DEV, COMM, target, 'warning reason', 1, 100n, action, 9n, 101n, 131n];
+  const s = stub({
+    prepare_manual_warning_evidence: (...args) => { expect(args).toEqual([request, evidence, COMM, target, 'warning reason', 100n, 100n]); },
+    manual_warning_evidence: () => encode([row]),
+    mark_manual_warning_accepted: (...args) => { expect(args).toEqual([request, action, 9n, 101n]); },
+    ensure_manual_warning_evidence_request: (...args) => { expect(args).toEqual([request, evidence, 102n]); return encode([evidence, 132n]); },
+    complete_manual_warning_evidence: (...args) => { expect(args).toEqual([request, 103n]); },
+  });
+  expect(s.port.prepareManualWarningEvidence?.(request, evidence, COMM, target, 'warning reason', 100n, 100n)).toBeUndefined();
+  expect(s.port.manualWarningEvidence?.()).toEqual([{ requestId: request, evidenceRequestId: evidence, actorUserId: USER,
+    actorDeviceId: DEV, communityId: COMM, targetUserId: target, reason: 'warning reason', state: 1,
+    createdAt: 100n, actionId: action, revision: 9n, acceptedAt: 101n, evidenceExpires: 131n }]);
+  s.port.markManualWarningAccepted?.(request, action, 9n, 101n);
+  expect(s.port.ensureManualWarningEvidenceRequest?.(request, evidence, 102n)).toEqual({ requestId: evidence, expires: 132n });
+  s.port.completeManualWarningEvidence?.(request, 103n);
+});
+
 it('bridges authoritative rejection of a submitted manual-removal proof', () => {
   const proof = new Uint8Array(16).fill(0x41);
   const s = stub({ reject_manual_removal: (...args) => { expect(args).toEqual([proof, 123n]); } });

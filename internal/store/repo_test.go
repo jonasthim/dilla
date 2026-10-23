@@ -375,6 +375,36 @@ func TestRepositoryConformance(t *testing.T) {
 	}
 }
 
+func TestManualWarningActionReceiptRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			actor := seedUser(ctx, t, repo)
+			target := seedUser(ctx, t, repo)
+			community := store.CommunityRow{ID: id.New(), Owner: actor.ID, Name: "warning receipt", PolicyJSON: []byte("{}"), PolicyVersion: 1, Created: 1}
+			if err := repo.CreateCommunity(ctx, community); err != nil {
+				t.Fatal(err)
+			}
+			device := store.DeviceRow{ID: id.New(), UserID: actor.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: 1}
+			if err := repo.CreateDevice(ctx, device); err != nil {
+				t.Fatal(err)
+			}
+			row := store.ManualWarningActionRow{CommunityID: community.ID, RequestID: id.New(), ActionID: id.New(),
+				ActorUserID: actor.ID, ActorDeviceID: device.ID, TargetUserID: target.ID, Revision: 4, AcceptedAt: 2}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutManualWarningAction(ctx, row) }); err != nil {
+				t.Fatalf("PutManualWarningAction: %v", err)
+			}
+			got, err := repo.GetManualWarningAction(ctx, community.ID, row.RequestID)
+			if err != nil || got != row {
+				t.Fatalf("GetManualWarningAction = %+v, %v; want %+v", got, err, row)
+			}
+			if err := repo.Tx(ctx, func(tx store.Repository) error { return tx.PutManualWarningAction(ctx, row) }); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate PutManualWarningAction = %v, want conflict", err)
+			}
+		})
+	}
+}
+
 func TestOneInviteWinsUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	for name, repo := range engines(t) {

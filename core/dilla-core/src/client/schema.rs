@@ -327,6 +327,22 @@ CREATE TABLE IF NOT EXISTS app_manual_removal_evidence (
   evidence_expires INTEGER NOT NULL DEFAULT 0 CHECK(evidence_expires>=0)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS app_manual_removal_evidence_pending ON app_manual_removal_evidence(state,created_at);
+CREATE TABLE IF NOT EXISTS app_manual_warning_evidence (
+  request_id BLOB PRIMARY KEY CHECK(length(request_id)=16 AND request_id != zeroblob(16)),
+  evidence_request_id BLOB NOT NULL CHECK(length(evidence_request_id)=16 AND evidence_request_id != zeroblob(16)),
+  actor_user_id BLOB NOT NULL CHECK(length(actor_user_id)=16 AND actor_user_id != zeroblob(16)),
+  actor_device_id BLOB NOT NULL CHECK(length(actor_device_id)=16 AND actor_device_id != zeroblob(16)),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16 AND community_id != zeroblob(16)),
+  target_user_id BLOB NOT NULL CHECK(length(target_user_id)=16 AND target_user_id != zeroblob(16)),
+  reason TEXT NOT NULL CHECK(length(CAST(reason AS BLOB)) BETWEEN 1 AND 1024),
+  state INTEGER NOT NULL CHECK(state IN (0,1,2)),
+  created_at INTEGER NOT NULL CHECK(created_at>=0),
+  action_id BLOB CHECK(action_id IS NULL OR (length(action_id)=16 AND action_id != zeroblob(16))),
+  revision INTEGER CHECK(revision IS NULL OR revision>0),
+  accepted_at INTEGER CHECK(accepted_at IS NULL OR accepted_at>0),
+  evidence_expires INTEGER NOT NULL DEFAULT 0 CHECK(evidence_expires>=0)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_manual_warning_evidence_pending ON app_manual_warning_evidence(state,created_at);
 ";
 
 /// Schema 5 (web3.7 public threads): the thread column, added to a store found at schema 4 or

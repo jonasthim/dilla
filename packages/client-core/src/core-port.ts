@@ -102,6 +102,11 @@ export interface ManualRemovalEvidence {
   channelId: Id; messageId: Id; targetSequence: bigint; reason: string; excerpt: string; signedBody: Uint8Array;
   state: 0 | 1 | 2; createdAt: bigint; expires: bigint; evidenceExpires: bigint;
 }
+/** Protected local outbox for a manual warning: the reason is staged before POST and tied to its accepted receipt. */
+export interface ManualWarningEvidence {
+  requestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; targetUserId: Id;
+  reason: string; state: 0 | 1; createdAt: bigint; actionId: Id; revision: bigint; acceptedAt: bigint; evidenceExpires: bigint;
+}
 export interface HumanInteractionEvent {
   deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
   senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
@@ -129,6 +134,12 @@ export interface CorePort {
   completeManualRemovalEvidence?(requestId: Id, now: bigint): void;
   rejectUnsubmittedManualRemoval?(requestId: Id, now: bigint): void;
   rejectManualRemoval?(requestId: Id, now: bigint): void;
+  prepareManualWarningEvidence?(requestId: Id, evidenceRequestId: Id, communityId: Id, targetUserId: Id,
+    reason: string, createdAt: bigint, now: bigint): void;
+  manualWarningEvidence?(): ManualWarningEvidence[];
+  markManualWarningAccepted?(requestId: Id, actionId: Id, revision: bigint, acceptedAt: bigint): void;
+  ensureManualWarningEvidenceRequest?(requestId: Id, candidateRequestId: Id, now: bigint): { requestId: Id; expires: bigint };
+  completeManualWarningEvidence?(requestId: Id, now: bigint): void;
   sessionStore(s: SessionRecord): void; session(): SessionRecord | null; sessionClear(): void;
   keyPackages(count: number, lastResort: boolean): Uint8Array;
   groups(): GroupInfo[];
@@ -282,6 +293,12 @@ export interface CoreHandle {
       complete_manual_removal_evidence?(request_id: Uint8Array, now: bigint): void;
       reject_unsubmitted_manual_removal?(request_id: Uint8Array, now: bigint): void;
       reject_manual_removal?(request_id: Uint8Array, now: bigint): void;
+      prepare_manual_warning_evidence?(request_id: Uint8Array, evidence_request_id: Uint8Array, community_id: Uint8Array,
+        target_user_id: Uint8Array, reason: string, created_at: bigint, now: bigint): void;
+      manual_warning_evidence?(): Uint8Array;
+      mark_manual_warning_accepted?(request_id: Uint8Array, action_id: Uint8Array, revision: bigint, accepted_at: bigint): void;
+      ensure_manual_warning_evidence_request?(request_id: Uint8Array, candidate_request_id: Uint8Array, now: bigint): Uint8Array;
+      complete_manual_warning_evidence?(request_id: Uint8Array, now: bigint): void;
       session_store(token: string, expires: bigint, idle_expires: bigint): void;
       session(): Uint8Array; session_clear(): void;
       key_packages(count: number, last_resort: boolean): Uint8Array;
@@ -568,6 +585,35 @@ export function wrapCore(handle: CoreHandle): CorePort {
     rejectManualRemoval: (requestId, now) => call(() => {
       if (handle.reject_manual_removal === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
       handle.reject_manual_removal(requestId, now);
+    }),
+    prepareManualWarningEvidence: (requestId, evidenceRequestId, communityId, targetUserId, reason, createdAt, now) => call(() => {
+      if (handle.prepare_manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.prepare_manual_warning_evidence(requestId, evidenceRequestId, communityId, targetUserId, reason, createdAt, now);
+    }),
+    manualWarningEvidence: () => call(() => {
+      if (handle.manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('manualWarningEvidence', handle.manual_warning_evidence(), (v) => arr(v).map((row) => {
+        const a = arr(row, 13); const state = u53(a[7] ?? null);
+        if (state > 1) throw new CoreError('E_CORE_DECODE', 'manual warning evidence state is invalid');
+        return { requestId: bin(a[0] ?? null, 16), evidenceRequestId: bin(a[1] ?? null, 16),
+          actorUserId: bin(a[2] ?? null, 16), actorDeviceId: bin(a[3] ?? null, 16), communityId: bin(a[4] ?? null, 16),
+          targetUserId: bin(a[5] ?? null, 16), reason: str(a[6] ?? null), state: state as 0 | 1, createdAt: u64(a[8] ?? null),
+          actionId: bin(a[9] ?? null, 16), revision: u64(a[10] ?? null), acceptedAt: u64(a[11] ?? null), evidenceExpires: u64(a[12] ?? null) };
+      }));
+    }),
+    markManualWarningAccepted: (requestId, actionId, revision, acceptedAt) => call(() => {
+      if (handle.mark_manual_warning_accepted === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.mark_manual_warning_accepted(requestId, actionId, revision, acceptedAt);
+    }),
+    ensureManualWarningEvidenceRequest: (requestId, candidateRequestId, now) => call(() => {
+      if (handle.ensure_manual_warning_evidence_request === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      return decoded('ensureManualWarningEvidenceRequest', handle.ensure_manual_warning_evidence_request(requestId, candidateRequestId, now), (v) => {
+        const a = arr(v, 2); return { requestId: bin(a[0] ?? null, 16), expires: u64(a[1] ?? null) };
+      });
+    }),
+    completeManualWarningEvidence: (requestId, now) => call(() => {
+      if (handle.complete_manual_warning_evidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+      handle.complete_manual_warning_evidence(requestId, now);
     }),
     sessionStore: (s) => call(() => handle.session_store(s.token, s.expires, s.idleExpires)),
     session: () => call(() => decoded('session', handle.session(), readSession)),

@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -232,6 +232,7 @@ export function world(opts: {
     session: null as SessionRecord | null, listPublished: null as boolean | null,
     outbox: [] as OutboxRow[], pins: [] as PinRow[], purges: [] as PurgeRow[], roleIds: [] as Uint8Array[],
     manualEvidence: [] as ManualRemovalEvidence[],
+    manualWarnings: [] as ManualWarningEvidence[],
     descriptors: new Map<string, AttachmentDescriptor>(), blobs: new Map<string, Uint8Array>(),
     // v0.1.0-web3.1: the servers and channels this account created, as the instance would list them after the create.
     created: [] as { id: Uint8Array; name: string }[],
@@ -286,6 +287,26 @@ export function world(opts: {
     }),
     rejectManualRemoval: vi.fn((requestId: Uint8Array) => {
       const index = state.manualEvidence.findIndex((item) => toHex(item.proofRequestId) === toHex(requestId) && item.state < 2); if (index >= 0) state.manualEvidence.splice(index, 1);
+    }),
+    prepareManualWarningEvidence: vi.fn((requestId: Uint8Array, evidenceRequestId: Uint8Array, communityId: Uint8Array, targetUserId: Uint8Array, reason: string, createdAt: bigint) => {
+      state.manualWarnings.push({ requestId, evidenceRequestId, actorUserId: USER, actorDeviceId: DEVICE, communityId, targetUserId,
+        reason, state: 0, createdAt, actionId: new Uint8Array(16), revision: 0n, acceptedAt: 0n, evidenceExpires: 0n });
+    }),
+    manualWarningEvidence: vi.fn(() => state.manualWarnings.filter(row => row.state < 2)),
+    markManualWarningAccepted: vi.fn((requestId: Uint8Array, actionId: Uint8Array, revision: bigint, acceptedAt: bigint) => {
+      const row = state.manualWarnings.find(item => toHex(item.requestId) === toHex(requestId));
+      if (row !== undefined) { row.actionId = actionId; row.revision = revision; row.acceptedAt = acceptedAt; row.state = 1; }
+    }),
+    ensureManualWarningEvidenceRequest: vi.fn((requestId: Uint8Array, candidateRequestId: Uint8Array, now: bigint) => {
+      const row = state.manualWarnings.find(item => toHex(item.requestId) === toHex(requestId));
+      if (row === undefined || row.state !== 1) throw new Error('missing accepted warning');
+      if (row.evidenceExpires === 0n) row.evidenceExpires = now + 30n;
+      else if (row.evidenceExpires <= now) { row.evidenceRequestId = candidateRequestId; row.evidenceExpires = now + 30n; }
+      return { requestId: row.evidenceRequestId, expires: row.evidenceExpires };
+    }),
+    completeManualWarningEvidence: vi.fn((requestId: Uint8Array) => {
+      const index = state.manualWarnings.findIndex(item => toHex(item.requestId) === toHex(requestId));
+      if (index >= 0) state.manualWarnings.splice(index, 1);
     }),
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array, _communityId: Uint8Array, _groupId: Uint8Array,
       _requestBody: Uint8Array, _now: bigint) => requestId),

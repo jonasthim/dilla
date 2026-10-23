@@ -701,11 +701,26 @@ describe('Controller', () => {
     const warnMember = vi.fn(() => Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 }));
     Object.assign(w.routes, { warnMember });
     await toReady(w);
-    w.call(996, { m: 'warnMember', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId) });
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    warnMember.mockImplementation(() => {
+      const row = w.state.manualWarnings[0];
+      if (row !== undefined) w.state.outbox.push({ msgId: row.evidenceRequestId, state: 0, error: '', created: NOW_S,
+        body: 'sealed interaction', type: 0, replyTo: null, attachments: [] });
+      return Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 });
+    });
+    w.call(996, { m: 'warnMember', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId), reason: 'follow the rules' });
     await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true, value: {
-      requestId: toHex(requestId), actionId: toHex(actionId), revision: '7', acceptedAt: 1_800_000_000,
+      requestId: toHex(requestId), actionId: toHex(actionId), revision: '7', acceptedAt: 1_800_000_000, evidence: 'accepted',
     } }));
+    expect(w.core.prepareManualWarningEvidence).toHaveBeenCalledWith(requestId, expect.any(Uint8Array), COMMUNITY, STRANGER, 'follow the rules', expect.any(BigInt), expect.any(BigInt));
+    expect(w.core.markManualWarningAccepted).toHaveBeenCalledWith(requestId, actionId, 7n, 1_800_000_000n);
     expect(warnMember).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
+    const requestBody = w.core.humanInteractionSendPrepare.mock.calls[0]?.[3];
+    expect(requestBody).toBeInstanceOf(Uint8Array);
+    if (requestBody === undefined) throw new Error('manual warning did not prepare an interaction request');
+    const wire = decode(requestBody) as unknown[];
+    expect(wire[7]).toEqual([requestId, 'warn', 'follow the rules', '']);
   });
 
   it('returns full AFK settings through the authenticated settings route', async () => {

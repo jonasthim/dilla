@@ -52,11 +52,11 @@ Operation, arguments, channel requirement, mutation:
 - 51 announcements.put: [schedule_id|null, document bstr(1..2200)], no channel, mutation; request revision is the expected scheduler document revision, while the document carries its own per-schedule revision
 - 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; request revision is the expected scheduler document revision and the argument's positive revision must match the stored schedule
 - 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
-- 61 moderation.evidence: [action_request_id, reason tstr(0..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)], no channel, mutation
+- 61 moderation.evidence: legacy removal `[action_request_id, reason tstr(1..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)]`, or manual warning `[action_request_id, "warn", reason tstr(1..1024 UTF8 bytes), ""]`; no channel, mutation. The warning form is accepted only after authoritative lookup of the matching human warning receipt.
 - 62 automod.config.get: [], no channel, read
 - 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
 
-Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). The handler resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. A missing or conflicting receipt refuses the write. The revision is checked by this handler because the evidence key is the immutable action request ID, not a shared settings revision.
+Operation 61 uses revision `0` and the standard mutation expiry (at most 30 seconds). Its legacy removal form resolves `action_request_id` against an accepted, signed human message-removal receipt, checks its community and authenticated actor/device, and stores the reason and excerpt in the Bot's encrypted state. The warning form resolves the request against the persisted human warning receipt and checks its community, target user, and authenticated actor/device before saving a manual warning case. A missing or conflicting receipt refuses the write. Both forms use the immutable action request ID as the evidence key; the revision is checked by this handler rather than against a shared settings revision. Evidence is encrypted in Bot state and retained for 90 days.
 
 For no-channel operations channel MUST be null. For reads revision/expires MUST
 be null. For mutations both MUST be uint; expiry must satisfy now < expires <=

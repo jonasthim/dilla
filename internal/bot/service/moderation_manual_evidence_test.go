@@ -32,6 +32,19 @@ type manualEvidenceWriterFake struct {
 	bound bool
 }
 
+type manualWarningLookupFake struct {
+	receipt               AcceptedManualWarningReceipt
+	err                   error
+	request, installation id.ID
+	calls                 int
+}
+
+func (f *manualWarningLookupFake) AcceptedManualWarning(_ context.Context, installation, request id.ID) (AcceptedManualWarningReceipt, error) {
+	f.calls++
+	f.installation, f.request = installation, request
+	return f.receipt, f.err
+}
+
 func (f *manualEvidenceWriterFake) BoundTo(id.ID, id.ID) bool { return f.bound }
 
 func (f *manualEvidenceWriterFake) Save(_ context.Context, input moderation.EvidenceInput) error {
@@ -59,6 +72,26 @@ func TestManualModerationEvidenceRequiresAcceptedActionAndBindsActorCommunity(t 
 	}
 	if writer.calls != 1 || writer.input.OperationID != request || !writer.input.MessageID.IsZero() || writer.input.Action != moderation.ActionRemove || writer.input.Reason != "reviewed by moderator" || writer.input.Excerpt != "quoted excerpt" || writer.input.AcceptedActionID != lookup.receipt.ActionID || writer.input.AcceptedRevision != lookup.receipt.Revision || writer.input.GroupID != group || writer.input.TargetSequence != 44 {
 		t.Fatalf("saved evidence=%+v calls=%d", writer.input, writer.calls)
+	}
+}
+
+func TestManualWarningEvidenceRequiresMatchingAcceptedWarningReceipt(t *testing.T) {
+	community, installation, request, actor, device, target := interactionID(2), interactionID(3), interactionID(4), interactionID(5), interactionID(6), interactionID(7)
+	lookup := &manualWarningLookupFake{receipt: AcceptedManualWarningReceipt{RequestID: request, ActionID: interactionID(8),
+		CommunityID: community, ActorUserID: actor, ActorDeviceID: device, TargetUserID: target, Revision: 12, AcceptedAt: time.Now().Unix()}}
+	writer := &manualEvidenceWriterFake{bound: true}
+	h := ModerationInteractions{CommunityID: community, InstallationID: installation, ManualWarningLookup: lookup, EvidenceWriter: writer}
+	handler := h.Handlers()[protocol.OpModerationEvidence]
+	result, err := handler.Handle(context.Background(), InteractionActor{User: actor, Device: device},
+		protocol.Request{CommunityID: community, Args: []any{request, "warn", "reason encrypted in Bot state", ""}})
+	if err != nil || result.Status != 0 || lookup.calls != 1 || lookup.installation != installation || lookup.request != request {
+		t.Fatalf("result=%+v lookup=%+v err=%v", result, lookup, err)
+	}
+	if writer.calls != 1 || writer.input.OperationID != request || writer.input.Action != moderation.ActionWarn ||
+		writer.input.Rule != moderation.RuleManual || writer.input.Reason != "reason encrypted in Bot state" || writer.input.AcceptedActionID != lookup.receipt.ActionID ||
+		writer.input.AcceptedRevision != lookup.receipt.Revision || writer.input.TargetUserID != target || writer.input.ActorUserID != actor ||
+		writer.input.ActorDeviceID != device || !writer.input.MessageID.IsZero() || !writer.input.GroupID.IsZero() || writer.input.TargetSequence != 0 {
+		t.Fatalf("saved warning evidence=%+v calls=%d", writer.input, writer.calls)
 	}
 }
 

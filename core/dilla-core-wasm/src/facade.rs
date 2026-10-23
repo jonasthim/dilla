@@ -4,7 +4,9 @@
 use std::cell::{Cell, RefCell, RefMut};
 
 use dilla_core::cbor::Encoder;
-use dilla_core::client::{ClientCore, ClientError, ManualRemovalEvidence, RemovalFeedEntry};
+use dilla_core::client::{
+    ClientCore, ClientError, ManualRemovalEvidence, ManualWarningEvidence, RemovalFeedEntry,
+};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -43,6 +45,28 @@ fn encode_manual_removal_evidence(rows: &[ManualRemovalEvidence]) -> Vec<u8> {
             .uint(u64::from(row.state))
             .uint(row.created_at)
             .uint(row.expires)
+            .uint(row.evidence_expires);
+    }
+    out.into_vec()
+}
+
+fn encode_manual_warning_evidence(rows: &[ManualWarningEvidence]) -> Vec<u8> {
+    let mut out = Encoder::new();
+    out.array(rows.len());
+    for row in rows {
+        out.array(13)
+            .bytes(&row.request_id)
+            .bytes(&row.evidence_request_id)
+            .bytes(&row.actor_user_id)
+            .bytes(&row.actor_device_id)
+            .bytes(&row.community_id)
+            .bytes(&row.target_user_id)
+            .text(&row.reason)
+            .uint(u64::from(row.state))
+            .uint(row.created_at)
+            .bytes(&row.action_id)
+            .uint(row.revision)
+            .uint(row.accepted_at)
             .uint(row.evidence_expires);
     }
     out.into_vec()
@@ -463,6 +487,77 @@ impl CoreHandle {
             .map(|rows| encode_manual_removal_evidence(&rows).into_boxed_slice())
     }
 
+    pub fn prepare_manual_warning_evidence(
+        &self,
+        request_id: &[u8],
+        evidence_request_id: &[u8],
+        community_id: &[u8],
+        target_user_id: &[u8],
+        reason: &str,
+        created_at: u64,
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let evidence_request_id = js_fixed_arg::<16>("evidence_request_id", evidence_request_id)?;
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let target_user_id = js_fixed_arg::<16>("target_user_id", target_user_id)?;
+        self.with_core(|c| {
+            c.prepare_manual_warning_evidence(
+                &request_id,
+                &evidence_request_id,
+                &community_id,
+                &target_user_id,
+                reason,
+                created_at,
+                now,
+            )
+        })
+    }
+
+    pub fn manual_warning_evidence(&self) -> Result<Box<[u8]>, JsError> {
+        self.with_core(|c| c.manual_warning_evidence())
+            .map(|rows| encode_manual_warning_evidence(&rows).into_boxed_slice())
+    }
+
+    pub fn mark_manual_warning_accepted(
+        &self,
+        request_id: &[u8],
+        action_id: &[u8],
+        revision: u64,
+        accepted_at: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let action_id = js_fixed_arg::<16>("action_id", action_id)?;
+        self.with_core(|c| {
+            c.mark_manual_warning_accepted(&request_id, &action_id, revision, accepted_at)
+        })
+    }
+
+    pub fn ensure_manual_warning_evidence_request(
+        &mut self,
+        request_id: &[u8],
+        candidate_request_id: &[u8],
+        now: u64,
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = fixed_arg::<16>("request_id", request_id)?;
+        let candidate_request_id = fixed_arg::<16>("candidate_request_id", candidate_request_id)?;
+        let (request, expires) = self.with_core(|c| {
+            c.ensure_manual_warning_evidence_request(&request_id, &candidate_request_id, now)
+        })?;
+        let mut out = Encoder::new();
+        out.array(2).bytes(&request).uint(expires);
+        Ok(out.into_vec().into_boxed_slice())
+    }
+
+    pub fn complete_manual_warning_evidence(
+        &self,
+        request_id: &[u8],
+        now: u64,
+    ) -> Result<(), JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        self.with_core(|c| c.complete_manual_warning_evidence(&request_id, now))
+    }
+
     pub fn ensure_manual_removal_evidence_request(
         &mut self,
         proof_request_id: &[u8],
@@ -765,8 +860,10 @@ impl CoreHandle {
         current_context_proof: &[u8],
         now: u64,
     ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now))
-            .map(Vec::into_boxed_slice)
+        self.with_core(|c| {
+            c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now)
+        })
+        .map(Vec::into_boxed_slice)
     }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].
     pub fn group_apply(

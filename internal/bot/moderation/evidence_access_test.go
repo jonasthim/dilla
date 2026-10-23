@@ -237,6 +237,28 @@ func TestManualEvidencePersistsAcceptedReceiptAndActorBinding(t *testing.T) {
 	}
 }
 
+func TestManualWarningEvidencePersistsTargetAndAuthoritativeReceipt(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	state := &evidenceState{binding: binding}
+	input := EvidenceInput{OperationID: id.ID{7}, Action: ActionWarn, Rule: RuleManual, Reason: "human warning reason",
+		CreatedAt: time.Now().UTC(), AcceptedActionID: id.ID{8}, AcceptedRevision: 12, ActorUserID: id.ID{9},
+		ActorDeviceID: id.ID{10}, TargetUserID: id.ID{11}}
+	if err := NewEvidenceWriter(state).Save(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewEvidenceReader(state, &evidenceAuthority{result: client.ActorAuthority{EffectiveBits: permViewAuditLog}, present: true})
+	got, err := reader.Read(context.Background(), id.ID{6}, input.OperationID)
+	if err != nil || got.Action != ActionWarn || got.Rule != RuleManual || got.TargetUserID != input.TargetUserID ||
+		got.AcceptedActionID != input.AcceptedActionID || got.AcceptedRevision != input.AcceptedRevision ||
+		got.ActorUserID != input.ActorUserID || got.ActorDeviceID != input.ActorDeviceID || got.Reason != input.Reason || got.MessageID != (id.ID{}) {
+		t.Fatalf("manual warning evidence=%+v err=%v", got, err)
+	}
+	input.TargetUserID = id.ID{}
+	if err := NewEvidenceWriter(state).Save(context.Background(), input); !errors.Is(err, ErrEvidenceWrite) {
+		t.Fatalf("warning evidence without target = %v, want ErrEvidenceWrite", err)
+	}
+}
+
 func TestEvidenceReaderRejectsAnotherCommunityBinding(t *testing.T) {
 	storedBinding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
 	state := &evidenceState{binding: storedBinding, value: encodedEvidence(t, storedBinding, testEvidenceID)}
@@ -307,6 +329,37 @@ func TestEvidenceRetentionNinetyDayBoundary(t *testing.T) {
 	}
 	if withinEvidenceRetention(boundary.Add(-time.Second), now) {
 		t.Fatal("evidence older than 90 days was accepted")
+	}
+}
+
+func TestEvidencePurgeAcceptsManualWarningV3Envelope(t *testing.T) {
+	binding := native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}
+	legacyV2ID := id.ID{29}
+	if _, err := evidenceExpiry(encodedEvidence(t, binding, legacyV2ID).Value, binding, evidenceKey(binding, legacyV2ID)); err != nil {
+		t.Fatalf("v2 removal expiry compatibility: %v", err)
+	}
+	state := &evidenceState{binding: binding, rows: make(map[string]native.StateValue)}
+	input := EvidenceInput{OperationID: id.ID{30}, Action: ActionWarn, Rule: RuleManual, Reason: "manual warning",
+		CreatedAt: time.Now().UTC().Truncate(time.Second), AcceptedActionID: id.ID{31}, AcceptedRevision: 2,
+		ActorUserID: id.ID{32}, ActorDeviceID: id.ID{33}, TargetUserID: id.ID{34}}
+	value, err := encodeEvidence(binding, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := evidenceKey(binding, input.OperationID)
+	if _, err := evidenceExpiry(value, binding, key); err != nil {
+		t.Fatalf("v3 warning expiry: %v", err)
+	}
+	state.rows[string(key)] = native.StateValue{Revision: 1, Value: value}
+	if _, err := NewEvidenceWriter(state).PurgeExpiredResumable(context.Background()); err != nil {
+		t.Fatalf("purge with live v3 warning: %v", err)
+	}
+}
+
+func TestEvidencePurgeFreshEmptyStateSucceeds(t *testing.T) {
+	state := &evidenceState{binding: native.Binding{Instance: id.ID{3}, Community: id.ID{4}, Installation: id.ID{5}}, rows: make(map[string]native.StateValue)}
+	if removed, err := NewEvidenceWriter(state).PurgeExpiredResumable(context.Background()); err != nil || removed != 0 {
+		t.Fatalf("empty-state purge removed=%d err=%v", removed, err)
 	}
 }
 

@@ -49,6 +49,7 @@ type Repository interface {
 	Overwrites  // Plan 2 task 3 (P2-D23) — 00006_overwrites.sql
 	Bans        // Plan 2 task 4 (P2-D23) — 00007_bans.sql
 	MemberTimeouts
+	ManualWarningActions
 	// Plan 2 task 6 (P2-D23) — 00008_channel_members.sql
 	ChannelMembers
 	// Plan 2 task 8 (P2-D23) — 00009_readable.sql

@@ -727,6 +727,13 @@ export class Routes {
     if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning response request id mismatch');
     return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), revision: u53(a[2]), acceptedAt: u53(a[3]) };
   }
+  /** GET authoritative accepted manual-warning receipt: [request, action, community, actor user, actor device, target, revision, acceptedAt]. */
+  async acceptedManualWarning(installationId: Uint8Array, requestId: Uint8Array): Promise<{ requestId: Uint8Array; actionId: Uint8Array; communityId: Uint8Array; actorUserId: Uint8Array; actorDeviceId: Uint8Array; targetUserId: Uint8Array; revision: number; acceptedAt: number }> {
+    const a = atLeast(decode(await this.body('GET', `/v1/bot-runtime/installations/${id('installationId', installationId)}/moderation/warnings/${id('requestId', requestId)}`, 'read', true)), 8);
+    if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning receipt request id mismatch');
+    return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), communityId: bin(a[2], 16), actorUserId: bin(a[3], 16),
+      actorDeviceId: bin(a[4], 16), targetUserId: bin(a[5], 16), revision: u53(a[6]), acceptedAt: u53(a[7]) };
+  }
   /** GET /v1/communities/{id}/bans: [[user_id, reason, by_user, created, expires|null, username, display]]; the last two
    *  are absent from an older instance and read as ''. */
   async listBans(communityId: Uint8Array): Promise<BanRow[]> {

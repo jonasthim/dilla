@@ -312,10 +312,16 @@ CBOR API request, not a public redirect endpoint.
 | `DELETE /v1/communities/{id}/members/{user_id}/timeout` | E (moderate_members) | `[request_id]` | `204` |
 | `GET /v1/communities/{id}/members/{user_id}/timeout` | E (member or moderate_members) | — | `[expires_unix|null]` |
 | `POST /v1/communities/{id}/members/{user_id}/warning` | E (moderate_members; actor must outrank target) | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
+| `GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}` | B (ready installation with warnings capability; owning session) | — | `[request_id, action_id, community_id, actor_user_id, actor_device_id, target_user_id, community_revision, accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
 
 The warning route writes an immutable warning action and audit metadata. It does
-not accept or store a plaintext reason. Encrypted warning-case submission is not
-defined by this endpoint.
+not accept or store a plaintext reason. The request ID is idempotent for the same
+actor, device, community, and target; reusing it for another action conflicts.
+The human client stages the reason in its encrypted local outbox before posting
+the action, then sends operation 61 over the installation's encrypted interaction
+group. The Bot attaches the case only when the authoritative receipt matches the
+request, actor, device, community, and target. The encrypted case expires after
+90 days; plaintext reason is never stored by the server.
 
 DJ role policy is retained when an installation is soft-disabled, but both
 routes return 404 while it is disabled or not ready. Explicitly re-enabling and

@@ -33,6 +33,14 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotRequest(request(60, [0n]))).toThrow(bot.BotError);
   });
 
+  it('accepts the action-discriminated manual warning evidence payload while preserving removal shape', () => {
+    const remove = { ...request(61, [id(3), 'manual removal', 'excerpt']), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(remove)).args).toEqual([id(3), 'manual removal', 'excerpt']);
+    const warn = { ...request(61, [id(3), 'warn', 'manual warning', '']), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(warn)).args).toEqual([id(3), 'warn', 'manual warning', '']);
+    expect(() => bot.encodeBotRequest({ ...warn, args: [id(3), 'warn', 'manual warning', 'excerpt'] })).toThrow(bot.BotError);
+  });
+
   it('accepts a bounded role-panel publish request and rejects invalid mappings', () => {
     const mappings = encode([['🎮', id(3), 'Gamers']]);
     const publish = { ...request(31, [id(4), mappings]), revision: 0n, expires: 110n };

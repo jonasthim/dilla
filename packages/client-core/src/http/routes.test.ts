@@ -1790,6 +1790,14 @@ describe('manual warning route', () => {
     t.replies.push(cborReply(200, [fill(16, 0x45), fill(16, 0x52), 7, 1_800_000_000]));
     await expect(routes.warnMember(COMMUNITY, PEER_USER, REQUEST)).rejects.toThrow('warning response request id mismatch');
   });
+  it('reads the exact accepted warning receipt for Bot evidence binding', async () => {
+    const { routes, t } = setup();
+    const action = fill(16, 0x52), actorDevice = fill(16, 0x53);
+    t.replies.push(cborReply(200, [REQUEST, action, COMMUNITY, USER, actorDevice, PEER_USER, 7, 1_800_000_000]));
+    await expect(routes.acceptedManualWarning(BOT, REQUEST)).resolves.toEqual({ requestId: REQUEST, actionId: action,
+      communityId: COMMUNITY, actorUserId: USER, actorDeviceId: actorDevice, targetUserId: PEER_USER, revision: 7, acceptedAt: 1_800_000_000 });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/bot-runtime/installations/${hex(BOT)}/moderation/warnings/${hex(REQUEST)}` });
+  });
 });
 
 describe('managed community bot installation routes', () => {

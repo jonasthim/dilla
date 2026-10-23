@@ -1243,7 +1243,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return interactionGroupPath()
 	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}":
+	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}",
+		"GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil

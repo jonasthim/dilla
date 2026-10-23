@@ -21,7 +21,7 @@ import (
 const (
 	evidenceStateArea       = uint64(9)
 	evidencePurgeCursorArea = uint64(8)
-	evidenceVersion         = uint64(2)
+	evidenceVersion         = uint64(3)
 	evidenceScanLimit       = uint64(100)
 	evidenceCursorMax       = 128
 	permViewAuditLog        = uint64(1 << 17)
@@ -53,6 +53,7 @@ type Evidence struct {
 	ActorUserID, ActorDeviceID id.ID
 	GroupID                    id.ID
 	TargetSequence             uint64
+	TargetUserID               id.ID
 	Action                     Action
 	Rule                       Rule
 	Reason                     string
@@ -77,6 +78,7 @@ type EvidenceInput struct {
 	ActorUserID, ActorDeviceID id.ID
 	GroupID                    id.ID
 	TargetSequence             uint64
+	TargetUserID               id.ID
 }
 
 // EvidenceWriter stores evidence under the installation's encrypted app state.
@@ -114,11 +116,15 @@ func (w *EvidenceWriter) Save(ctx context.Context, input EvidenceInput) error {
 		return ErrEvidenceWrite
 	}
 	if manual {
-		if input.Action != ActionRemove || input.AcceptedActionID.IsZero() || input.AcceptedRevision == 0 ||
-			input.ActorUserID.IsZero() || input.ActorDeviceID.IsZero() || input.GroupID.IsZero() || input.TargetSequence == 0 {
+		validRemoval := input.Action == ActionRemove && !input.AcceptedActionID.IsZero() && input.AcceptedRevision > 0 &&
+			!input.ActorUserID.IsZero() && !input.ActorDeviceID.IsZero() && !input.GroupID.IsZero() && input.TargetSequence > 0 && input.TargetUserID.IsZero()
+		validWarning := input.Action == ActionWarn && !input.AcceptedActionID.IsZero() && input.AcceptedRevision > 0 &&
+			!input.ActorUserID.IsZero() && !input.ActorDeviceID.IsZero() && !input.TargetUserID.IsZero() && input.GroupID.IsZero() &&
+			input.TargetSequence == 0 && input.MessageID.IsZero() && input.Excerpt == ""
+		if !validRemoval && !validWarning {
 			return ErrEvidenceWrite
 		}
-	} else if !input.AcceptedActionID.IsZero() || input.AcceptedRevision != 0 || !input.ActorUserID.IsZero() || !input.ActorDeviceID.IsZero() || !input.GroupID.IsZero() || input.TargetSequence != 0 {
+	} else if !input.AcceptedActionID.IsZero() || input.AcceptedRevision != 0 || !input.ActorUserID.IsZero() || !input.ActorDeviceID.IsZero() || !input.GroupID.IsZero() || input.TargetSequence != 0 || !input.TargetUserID.IsZero() {
 		return ErrEvidenceWrite
 	}
 	now := time.Now().UTC()
@@ -206,7 +212,7 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 		return Evidence{}, ErrEvidenceAccess
 	}
 	var row []any
-	if cborx.Unmarshal(value.Value, &row) != nil || (len(row) != 13 && len(row) != 19) {
+	if cborx.Unmarshal(value.Value, &row) != nil || (len(row) != 13 && len(row) != 19 && len(row) != 20) {
 		return Evidence{}, ErrEvidenceAccess
 	}
 	version, vok := row[0].(uint64)
@@ -226,8 +232,9 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 	var acceptedRevision uint64
 	var groupID id.ID
 	var targetSequence uint64
+	var targetUserID id.ID
 	metadataOK := true
-	if len(row) == 19 {
+	if len(row) >= 19 {
 		acceptedActionID, metadataOK = configID(row[13])
 		var ok bool
 		acceptedRevision, ok = row[14].(uint64)
@@ -240,14 +247,22 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 		metadataOK = metadataOK && ok
 		targetSequence, ok = row[18].(uint64)
 		metadataOK = metadataOK && ok
+		if len(row) == 20 {
+			targetUserID, ok = configID(row[19])
+			metadataOK = metadataOK && ok
+		}
 	} else {
 		metadataOK = version == 1
 	}
-	if !vok || (version != 1 && version != evidenceVersion) || !iok || !cok || !inok || !eok || !mok ||
+	if !vok || (version != 1 && version != 2 && version != evidenceVersion) || !iok || !cok || !inok || !eok || !mok ||
 		!ook || instance != r.binding.Instance || community != r.binding.Community || installation != r.binding.Installation || storedID != evidenceID || operationID != evidenceID ||
 		instance.IsZero() || (messageID.IsZero() && Rule(ruleText) != RuleManual) || !aok || !rok || !validEvidenceAction(Action(actionText)) || !validEvidenceRule(Rule(ruleText)) || !nok || len(reason) == 0 || len(reason) > MaxEvidenceReasonBytes || !utf8.ValidString(reason) || !xok || len(excerpt) > ExcerptMaxBytes || !utf8.ValidString(excerpt) || !tok || !exok || created == 0 || created > uint64(^uint64(0)>>1) ||
-		!metadataOK || (Rule(ruleText) == RuleManual && (len(row) != 19 || acceptedActionID.IsZero() || acceptedRevision == 0 || actorUserID.IsZero() || actorDeviceID.IsZero() || groupID.IsZero() || targetSequence == 0)) ||
-		(Rule(ruleText) != RuleManual && (!acceptedActionID.IsZero() || acceptedRevision != 0 || !actorUserID.IsZero() || !actorDeviceID.IsZero() || !groupID.IsZero() || targetSequence != 0)) {
+		!metadataOK || (len(row) == 13 && version != 1) || (len(row) == 19 && version != 2) || (len(row) == 20 && version != 3) ||
+		(Rule(ruleText) == RuleManual && (acceptedActionID.IsZero() || acceptedRevision == 0 || actorUserID.IsZero() || actorDeviceID.IsZero() ||
+			(Action(actionText) == ActionRemove && (len(row) < 19 || groupID.IsZero() || targetSequence == 0 || !targetUserID.IsZero())) ||
+			(Action(actionText) == ActionWarn && (len(row) != 20 || !groupID.IsZero() || targetSequence != 0 || targetUserID.IsZero() || !messageID.IsZero() || excerpt != "")) ||
+			(Action(actionText) != ActionRemove && Action(actionText) != ActionWarn))) ||
+		(Rule(ruleText) != RuleManual && (!acceptedActionID.IsZero() || acceptedRevision != 0 || !actorUserID.IsZero() || !actorDeviceID.IsZero() || !groupID.IsZero() || targetSequence != 0 || !targetUserID.IsZero())) {
 		return Evidence{}, ErrEvidenceAccess
 	}
 	createdAt := time.Unix(int64(created), 0).UTC()
@@ -256,7 +271,7 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 		return Evidence{}, ErrEvidenceAccess
 	}
 	return Evidence{ID: storedID, OperationID: operationID, MessageID: messageID, AcceptedActionID: acceptedActionID, AcceptedRevision: acceptedRevision,
-		ActorUserID: actorUserID, ActorDeviceID: actorDeviceID, GroupID: groupID, TargetSequence: targetSequence,
+		ActorUserID: actorUserID, ActorDeviceID: actorDeviceID, GroupID: groupID, TargetSequence: targetSequence, TargetUserID: targetUserID,
 		Action: Action(actionText), Rule: Rule(ruleText), Reason: reason, Excerpt: excerpt,
 		CreatedAt: createdAt, ExpiresAt: expiresAt}, nil
 }
@@ -265,7 +280,7 @@ func encodeEvidence(binding native.Binding, input EvidenceInput) ([]byte, error)
 	expires := input.CreatedAt.Add(EvidenceRetention)
 	return cborx.Marshal([]any{evidenceVersion, binding.Instance, binding.Community, binding.Installation, input.OperationID, input.OperationID,
 		input.MessageID, string(input.Action), string(input.Rule), input.Reason, input.Excerpt, uint64(input.CreatedAt.Unix()), uint64(expires.Unix()),
-		input.AcceptedActionID, input.AcceptedRevision, input.ActorUserID, input.ActorDeviceID, input.GroupID, input.TargetSequence})
+		input.AcceptedActionID, input.AcceptedRevision, input.ActorUserID, input.ActorDeviceID, input.GroupID, input.TargetSequence, input.TargetUserID})
 }
 
 func evidenceMatches(value native.StateValue, binding native.Binding, input EvidenceInput) bool {
@@ -273,7 +288,7 @@ func evidenceMatches(value native.StateValue, binding native.Binding, input Evid
 		return false
 	}
 	var row []any
-	if cborx.Unmarshal(value.Value, &row) != nil || (len(row) != 13 && len(row) != 19) {
+	if cborx.Unmarshal(value.Value, &row) != nil || (len(row) != 13 && len(row) != 19 && len(row) != 20) {
 		return false
 	}
 	instance, iok := configID(row[1])
@@ -288,6 +303,7 @@ func evidenceMatches(value native.StateValue, binding native.Binding, input Evid
 	var acceptedRevision uint64
 	var groupID id.ID
 	var targetSequence uint64
+	var targetUserID id.ID
 	metadataOK := false
 	if len(row) == 13 {
 		metadataOK = row[0] == uint64(1) && input.AcceptedActionID.IsZero() && input.AcceptedRevision == 0 && input.ActorUserID.IsZero() && input.ActorDeviceID.IsZero()
@@ -304,13 +320,17 @@ func evidenceMatches(value native.StateValue, binding native.Binding, input Evid
 		metadataOK = metadataOK && ok
 		targetSequence, ok = row[18].(uint64)
 		metadataOK = metadataOK && ok
+		if len(row) == 20 {
+			targetUserID, ok = configID(row[19])
+			metadataOK = metadataOK && ok
+		}
 	}
 	return iok && cok && inok && ook && eok && mok && tok && exok && metadataOK &&
 		instance == binding.Instance && community == binding.Community && installation == binding.Installation &&
 		operation == input.OperationID && storedID == input.OperationID && message == input.MessageID &&
-		((len(row) == 13 && row[0] == uint64(1)) || (len(row) == 19 && row[0] == evidenceVersion)) && row[7] == string(input.Action) && row[8] == string(input.Rule) &&
+		((len(row) == 13 && row[0] == uint64(1)) || (len(row) == 19 && row[0] == uint64(2)) || (len(row) == 20 && row[0] == evidenceVersion)) && row[7] == string(input.Action) && row[8] == string(input.Rule) &&
 		row[9] == input.Reason && row[10] == input.Excerpt && created == uint64(input.CreatedAt.Unix()) && expires == uint64(input.CreatedAt.Add(EvidenceRetention).Unix()) &&
-		(len(row) == 13 || acceptedActionID == input.AcceptedActionID && acceptedRevision == input.AcceptedRevision && actorUserID == input.ActorUserID && actorDeviceID == input.ActorDeviceID && groupID == input.GroupID && targetSequence == input.TargetSequence)
+		(len(row) == 13 || acceptedActionID == input.AcceptedActionID && acceptedRevision == input.AcceptedRevision && actorUserID == input.ActorUserID && actorDeviceID == input.ActorDeviceID && groupID == input.GroupID && targetSequence == input.TargetSequence && (len(row) == 19 || targetUserID == input.TargetUserID))
 }
 
 func validEvidenceAction(action Action) bool {
@@ -423,7 +443,7 @@ func evidenceExpiry(raw []byte, binding native.Binding, key []byte) (int64, erro
 		return 0, ErrEvidenceWrite
 	}
 	var row []any
-	if cborx.Unmarshal(raw, &row) != nil || len(row) != 13 && len(row) != 19 {
+	if cborx.Unmarshal(raw, &row) != nil || len(row) != 13 && len(row) != 19 && len(row) != 20 {
 		return 0, ErrEvidenceWrite
 	}
 	version, vok := row[0].(uint64)
@@ -434,7 +454,7 @@ func evidenceExpiry(raw []byte, binding native.Binding, key []byte) (int64, erro
 	storedID, sok := configID(row[5])
 	created, tok := row[11].(uint64)
 	expires, exok := row[12].(uint64)
-	if !vok || version != 1 && version != evidenceVersion || (version == 1 && len(row) != 13) || (version == evidenceVersion && len(row) != 19) ||
+	if !vok || version != 1 && version != 2 && version != evidenceVersion || (version == 1 && len(row) != 13) || (version == 2 && len(row) != 19) || (version == evidenceVersion && len(row) != 20) ||
 		!iok || !cok || !nok || !ook || !sok || !tok || !exok || instance != binding.Instance || community != binding.Community || installation != binding.Installation ||
 		operation.IsZero() || storedID != operation || (string(key) != string(evidenceKey(binding, operation)) && string(key) != string(legacyEvidenceKey(binding, operation))) ||
 		created == 0 || created > uint64(math.MaxInt64) || created > uint64(math.MaxInt64)-uint64(EvidenceRetention/time.Second) || expires != created+uint64(EvidenceRetention/time.Second) {

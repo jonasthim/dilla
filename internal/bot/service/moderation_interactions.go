@@ -36,6 +36,20 @@ type manualRemovalReceiptLookup interface {
 	AcceptedManualRemoval(context.Context, id.ID, id.ID) (AcceptedManualRemovalReceipt, error)
 }
 
+// AcceptedManualWarningReceipt is the authoritative, persisted metadata for a
+// human warning action. It contains no case text.
+type AcceptedManualWarningReceipt struct {
+	RequestID, ActionID, CommunityID id.ID
+	ActorUserID, ActorDeviceID       id.ID
+	TargetUserID                     id.ID
+	Revision                         uint64
+	AcceptedAt                       int64
+}
+
+type manualWarningReceiptLookup interface {
+	AcceptedManualWarning(context.Context, id.ID, id.ID) (AcceptedManualWarningReceipt, error)
+}
+
 type manualEvidenceWriter interface {
 	BoundTo(id.ID, id.ID) bool
 	Save(context.Context, moderation.EvidenceInput) error
@@ -48,6 +62,7 @@ type ModerationInteractions struct {
 	CommunityID         id.ID
 	InstallationID      id.ID
 	ManualRemovalLookup manualRemovalReceiptLookup
+	ManualWarningLookup manualWarningReceiptLookup
 	EvidenceWriter      manualEvidenceWriter
 }
 
@@ -60,31 +75,72 @@ func (h ModerationInteractions) Handlers() map[protocol.Operation]InteractionHan
 
 func (h ModerationInteractions) saveManualEvidence(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
 	if ctx == nil || h.CommunityID.IsZero() || request.CommunityID != h.CommunityID || actor.User.IsZero() || actor.Device.IsZero() ||
-		h.InstallationID.IsZero() || h.ManualRemovalLookup == nil || h.EvidenceWriter == nil ||
-		!h.EvidenceWriter.BoundTo(h.InstallationID, h.CommunityID) || len(request.Args) != 3 ||
+		h.InstallationID.IsZero() || h.EvidenceWriter == nil ||
+		!h.EvidenceWriter.BoundTo(h.InstallationID, h.CommunityID) ||
 		request.Revision != nil && *request.Revision != 0 {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	requestID, ok := request.Args[0].(id.ID)
-	reason, reasonOK := request.Args[1].(string)
-	excerpt, excerptOK := request.Args[2].(string)
+	var requestID id.ID
+	var reason, excerpt string
+	action := moderation.ActionRemove
+	if len(request.Args) == 3 {
+		requestID, _ = request.Args[0].(id.ID)
+		reason, _ = request.Args[1].(string)
+		excerpt, _ = request.Args[2].(string)
+	} else if len(request.Args) == 4 {
+		requestID, _ = request.Args[0].(id.ID)
+		actionText, actionOK := request.Args[1].(string)
+		reason, _ = request.Args[2].(string)
+		excerpt, _ = request.Args[3].(string)
+		if !actionOK || actionText != string(moderation.ActionWarn) {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		action = moderation.ActionWarn
+	} else {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	ok := !requestID.IsZero()
+	reasonOK, excerptOK := true, true
 	if !ok || requestID.IsZero() || !reasonOK || !excerptOK || !utf8.ValidString(reason) || len(reason) == 0 || len(reason) > moderation.MaxEvidenceReasonBytes ||
 		strings.TrimSpace(reason) == "" || !utf8.ValidString(excerpt) || len(excerpt) > moderation.ExcerptMaxBytes {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	receipt, err := h.ManualRemovalLookup.AcceptedManualRemoval(ctx, h.InstallationID, requestID)
-	if err != nil || receipt.ActionID.IsZero() || receipt.CommunityID != h.CommunityID || receipt.GroupID.IsZero() ||
-		receipt.ActorUserID != actor.User || receipt.ActorDeviceID != actor.Device || receipt.TargetSequence == 0 || receipt.TargetSequence > math.MaxInt64 ||
-		receipt.Revision == 0 || receipt.Revision > math.MaxInt64 || receipt.AcceptedAt <= 0 || receipt.AcceptedAt > time.Now().Add(5*time.Minute).Unix() {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
-	}
-	if err := h.EvidenceWriter.Save(ctx, moderation.EvidenceInput{
-		OperationID: requestID, Action: moderation.ActionRemove, Rule: moderation.RuleManual,
-		Reason: reason, Excerpt: excerpt, CreatedAt: time.Unix(receipt.AcceptedAt, 0).UTC(),
-		AcceptedActionID: receipt.ActionID, AcceptedRevision: receipt.Revision,
-		ActorUserID: receipt.ActorUserID, ActorDeviceID: receipt.ActorDeviceID, GroupID: receipt.GroupID, TargetSequence: receipt.TargetSequence,
-	}); err != nil {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	if action == moderation.ActionRemove {
+		if h.ManualRemovalLookup == nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		receipt, err := h.ManualRemovalLookup.AcceptedManualRemoval(ctx, h.InstallationID, requestID)
+		if err != nil || receipt.ActionID.IsZero() || receipt.CommunityID != h.CommunityID || receipt.GroupID.IsZero() ||
+			receipt.ActorUserID != actor.User || receipt.ActorDeviceID != actor.Device || receipt.TargetSequence == 0 || receipt.TargetSequence > math.MaxInt64 ||
+			receipt.Revision == 0 || receipt.Revision > math.MaxInt64 || receipt.AcceptedAt <= 0 || receipt.AcceptedAt > time.Now().Add(5*time.Minute).Unix() {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		if err := h.EvidenceWriter.Save(ctx, moderation.EvidenceInput{
+			OperationID: requestID, Action: moderation.ActionRemove, Rule: moderation.RuleManual,
+			Reason: reason, Excerpt: excerpt, CreatedAt: time.Unix(receipt.AcceptedAt, 0).UTC(),
+			AcceptedActionID: receipt.ActionID, AcceptedRevision: receipt.Revision,
+			ActorUserID: receipt.ActorUserID, ActorDeviceID: receipt.ActorDeviceID, GroupID: receipt.GroupID, TargetSequence: receipt.TargetSequence,
+		}); err != nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+	} else {
+		if h.ManualWarningLookup == nil || excerpt != "" {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		receipt, err := h.ManualWarningLookup.AcceptedManualWarning(ctx, h.InstallationID, requestID)
+		if err != nil || receipt.RequestID != requestID || receipt.ActionID.IsZero() || receipt.CommunityID != h.CommunityID ||
+			receipt.ActorUserID != actor.User || receipt.ActorDeviceID != actor.Device || receipt.TargetUserID.IsZero() ||
+			receipt.Revision == 0 || receipt.Revision > math.MaxInt64 || receipt.AcceptedAt <= 0 || receipt.AcceptedAt > time.Now().Add(5*time.Minute).Unix() {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		if err := h.EvidenceWriter.Save(ctx, moderation.EvidenceInput{
+			OperationID: requestID, Action: moderation.ActionWarn, Rule: moderation.RuleManual,
+			Reason: reason, CreatedAt: time.Unix(receipt.AcceptedAt, 0).UTC(), AcceptedActionID: receipt.ActionID,
+			AcceptedRevision: receipt.Revision, ActorUserID: receipt.ActorUserID, ActorDeviceID: receipt.ActorDeviceID,
+			TargetUserID: receipt.TargetUserID,
+		}); err != nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
 	}
 	return InteractionResult{Status: 0}, nil
 }

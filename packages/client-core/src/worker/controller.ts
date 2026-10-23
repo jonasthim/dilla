@@ -591,6 +591,11 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof reason !== 'string' || reason.trim().length === 0 || new TextEncoder().encode(reason).length > 1024
       || typeof excerpt !== 'string' || new TextEncoder().encode(excerpt).length > 512) return 'manual moderation reason or excerpt is invalid';
   }
+  if (m === 'warnMember') {
+    const reason = command.reason;
+    if (typeof reason !== 'string' || reason.trim().length === 0 || /[\u0000-\u0008\u000b\u000c\u000d\u000e-\u001f\u007f-\u009f]/.test(reason)
+      || new TextEncoder().encode(reason).length > 512) return 'manual warning reason is invalid';
+  }
   if (m === 'createCommunity') {
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, COMMUNITY_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
@@ -1736,10 +1741,33 @@ export class Controller {
     return null;
   }
 
-  private async warnMember(command: Extract<Command, { m: 'warnMember' }>): Promise<{ requestId: string; actionId: string; revision: string; acceptedAt: number }> {
+  private async warnMember(command: Extract<Command, { m: 'warnMember' }>): Promise<{ requestId: string; actionId: string; revision: string; acceptedAt: number; evidence: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const receipt = await this.routes.warnMember(fromHex(command.communityId), fromHex(command.userId), fromHex(command.requestId));
-    return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt };
+    const core = this.requireCore();
+    if (core.prepareManualWarningEvidence === undefined || core.markManualWarningAccepted === undefined
+      || core.manualWarningEvidence === undefined || core.ensureManualWarningEvidenceRequest === undefined
+      || core.completeManualWarningEvidence === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
+    const requestId = fromHex(command.requestId);
+    const now = BigInt(Math.floor(this.deps.now() / 1000));
+    const current = core.manualWarningEvidence().find(row => toHex(row.requestId) === command.requestId);
+    if (current !== undefined && (toHex(current.communityId) !== command.communityId || toHex(current.targetUserId) !== command.userId || current.reason !== command.reason)) {
+      throw new Refusal('E_CONFLICT', 'warning request id is already bound to another reason or member');
+    }
+    if (current === undefined) core.prepareManualWarningEvidence(requestId, crypto.getRandomValues(new Uint8Array(16)), fromHex(command.communityId),
+      fromHex(command.userId), command.reason, now, now);
+    const receipt = await this.routes.warnMember(fromHex(command.communityId), fromHex(command.userId), requestId);
+    core.markManualWarningAccepted(requestId, receipt.actionId, BigInt(receipt.revision), BigInt(receipt.acceptedAt));
+    let evidence: 'accepted' | 'pending' | 'rejected' | 'unknown' = 'unknown';
+    try {
+      const row = core.manualWarningEvidence().find(item => toHex(item.requestId) === command.requestId);
+      if (row === undefined) throw new CoreError('E_CORE_STATE', 'manual warning evidence was not staged');
+      const reserved = core.ensureManualWarningEvidenceRequest(requestId, crypto.getRandomValues(new Uint8Array(16)), BigInt(Math.floor(this.deps.now() / 1000)));
+      const sent = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: command.communityId, channelId: null,
+        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, 'warn', row.reason, ''], revision: '0' }, reserved.expires);
+      evidence = sent.upload;
+      if (evidence === 'accepted') core.completeManualWarningEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+    } catch { evidence = 'unknown'; }
+    return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt, evidence };
   }
 
   private async configureBotInstallation(command: Extract<Command, { m: 'configureBotInstallation' }>): Promise<ReturnType<typeof botInstallationView>> {
@@ -2091,6 +2119,7 @@ export class Controller {
     // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();
     void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
+    void this.barrier.track(this.resumeManualWarningEvidence()).catch(() => undefined);
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -5010,6 +5039,32 @@ export class Controller {
     const reserved = core.ensureManualRemovalEvidenceRequest(fromHex(input.proofRequestId), crypto.getRandomValues(new Uint8Array(16)), input.now);
     return this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: input.communityId, channelId: null,
       requestId: toHex(reserved.requestId), operation: 61, args: [input.proofRequestId, input.reason, input.excerpt], revision: '0' }, reserved.expires);
+  }
+
+  /** Replays the idempotent accepted warning and resumes its op61 case from the protected local outbox. */
+  private async resumeManualWarningEvidence(): Promise<void> {
+    const core = this.core;
+    if (core?.manualWarningEvidence === undefined || core.markManualWarningAccepted === undefined
+      || core.ensureManualWarningEvidenceRequest === undefined || core.completeManualWarningEvidence === undefined) return;
+    for (const saved of core.manualWarningEvidence()) {
+      if (this.revoked() || this.wiping || this.storeCleared) return;
+      if (!this.listed(toHex(saved.communityId))) continue;
+      try {
+        let row = saved;
+        if (row.state === 0) {
+          const receipt = await this.routes.warnMember(row.communityId, row.targetUserId, row.requestId);
+          core.markManualWarningAccepted(row.requestId, receipt.actionId, BigInt(receipt.revision), BigInt(receipt.acceptedAt));
+          row = core.manualWarningEvidence().find(item => toHex(item.requestId) === toHex(saved.requestId)) ?? row;
+        }
+        if (row.state !== 1) continue;
+        const now = BigInt(Math.floor(this.deps.now() / 1000));
+        const reserved = core.ensureManualWarningEvidenceRequest(row.requestId, crypto.getRandomValues(new Uint8Array(16)), now);
+        const result = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: toHex(row.communityId), channelId: null,
+          requestId: toHex(reserved.requestId), operation: 61,
+          args: [toHex(row.requestId), 'warn', row.reason, ''], revision: '0' }, reserved.expires);
+        if (result.upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+      } catch { /* retain the protected outbox row for the next ready */ }
+    }
   }
 
   /** Ruling 28: the worker does not de-duplicate reactions; the core folds them per user. */

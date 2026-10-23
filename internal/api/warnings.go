@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -53,11 +54,23 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "server clock is unavailable"))
 		return
 	}
-	actionID := id.New()
+	var actionID id.ID
 	var revision uint64
+	var acceptedAt int64
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
+		}
+		prior, priorErr := tx.GetManualWarningAction(r.Context(), m.community, req.RequestID)
+		if priorErr == nil {
+			if prior.ActorUserID != m.session.UserID || prior.ActorDeviceID != m.session.DeviceID || prior.TargetUserID != m.target {
+				return botConflict("warning request id was used for a different action")
+			}
+			actionID, revision, acceptedAt = prior.ActionID, prior.Revision, prior.AcceptedAt
+			return nil
+		}
+		if !errors.Is(priorErr, store.ErrNotFound) {
+			return priorErr
 		}
 		if err := stillModerates(r.Context(), tx, m, PermModerateMembers); err != nil {
 			return err
@@ -65,6 +78,7 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.GetMember(r.Context(), m.community, m.target); err != nil {
 			return notFound(err)
 		}
+		actionID = id.New()
 		event, err := tx.AppendBotStructuralEvent(r.Context(), protocol.Event{ID: actionID, CommunityID: m.community,
 			Timestamp: uint64(now), Kind: protocol.EventModeration,
 			Data: []any{actionID, req.RequestID, m.session.UserID, m.session.DeviceID, m.target, nil, nil, uint64(0), nil}})
@@ -72,11 +86,17 @@ func (h *MemberWarnings) post(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		revision = event.Sequence
+		acceptedAt = now
+		if err := tx.PutManualWarningAction(r.Context(), store.ManualWarningActionRow{CommunityID: m.community, RequestID: req.RequestID,
+			ActionID: actionID, ActorUserID: m.session.UserID, ActorDeviceID: m.session.DeviceID, TargetUserID: m.target,
+			Revision: revision, AcceptedAt: acceptedAt}); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{Actor: &m.session.UserID, Action: "member.warn", Target: m.target.String(),
 			Detail: fmt.Sprintf("%s %s %s", m.community, actionID, req.RequestID), At: now})
 	}); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, actionID, revision, uint64(now)})
+	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, actionID, revision, uint64(acceptedAt)})
 }

@@ -1,5 +1,17 @@
 // Flow 08 (docs/design/flows/08-server-admin.md): server admin and moderation copy. Keys: mod.*
 export const moderation = {
+  'mod.warn.menu': 'Warn member',
+  'mod.warn.title': 'Warn {name} in {server}',
+  'mod.warn.body': 'The warning will be added to the moderation log. Its case is private to moderators and retained for 90 days.',
+  'mod.warn.reason': 'Reason',
+  'mod.warn.confirm': 'Warn',
+  'mod.warn.busy': 'Sending warning…',
+  'mod.warn.done': 'Warning sent to the moderation log for {name}.',
+  'mod.warn.evidencePending': 'Warning accepted for {name}; case delivery is pending and will retry.',
+  'mod.warn.error.forbidden': 'You cannot warn {name}. Check your moderator permission and role rank.',
+  'mod.warn.error.reasonEmpty': 'Enter a reason for this warning.',
+  'mod.warn.error.reasonLong': 'That reason is too long. A reason is up to 512 characters (fewer for some letters).',
+  'mod.warn.error.reasonControl': 'A reason cannot hold control characters other than line breaks and tabs.',
   'mod.cancel': 'Cancel',
   'mod.kick.title': 'Kick {name} from {server}?',
   'mod.kick.body': '{name} leaves every channel and call of {server} at once. They can join again with an invite. Messages they already received stay on their devices.',

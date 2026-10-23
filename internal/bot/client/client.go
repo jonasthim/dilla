@@ -540,6 +540,9 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 6 && parts[3] == "moderation" && parts[4] == "removals" && method == http.MethodGet {
 			return 200, true
 		}
+		if len(parts) == 6 && parts[3] == "moderation" && parts[4] == "warnings" && method == http.MethodGet {
+			return 200, true
+		}
 		if len(parts) == 5 && parts[3] == "automod-grants" && parts[4] == "redeem" && method == http.MethodPost {
 			return 200, true
 		}

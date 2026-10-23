@@ -75,7 +75,7 @@ const ops: Record<number, { channel: boolean; mutation: boolean; count: number }
   62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},
 };
 function validateArgs(op: number, a: unknown[]): void {
-  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
+  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count && !(op === 61 && a.length === 4)) fail('E_BOT_SHAPE');
   const u = (i:number,min=0n,max=MAX) => { a[i]=uint(a[i],min,max); };
   const t = (i:number,min:number,max:number,ctrl=false) => { a[i]=text(a[i],min,max,ctrl); };
   const ident=(i:number)=>{a[i]=id(a[i]);};
@@ -101,7 +101,12 @@ function validateArgs(op: number, a: unknown[]): void {
     case 60: if (a[0] !== null) { const cursor = bytes(a[0]); if (cursor.length < 1 || cursor.length > 256) fail('E_BOT_RANGE'); } break;
     case 51: a[0]=nullable(a[0],id); a[1]=cborBytes(a[1],1,2200); break;
     case 52: ident(0); u(1,1n,(1n<<63n)-1n); break;
-    case 61: ident(0); t(1,0,1024); t(2,0,512); break;
+    case 61:
+      ident(0);
+      if (a.length === 3) { t(1,0,1024); t(2,0,512); }
+      else if (a.length === 4 && a[1] === 'warn') { t(2,1,1024); t(3,0,0); }
+      else fail('E_BOT_SHAPE');
+      break;
     case 63: t(0,1,512,true); a[1]=cborBytes(a[1],1,2400); break;
   }
 }

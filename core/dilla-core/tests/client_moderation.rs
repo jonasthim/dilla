@@ -182,6 +182,49 @@ fn manual_removal_evidence_is_durable_and_follows_the_acceptance_state() {
 }
 
 #[test]
+fn manual_warning_reason_is_durable_before_action_and_follows_its_receipt() {
+    let (mut core, _) = ready_core_with_key(0x4a, "moderator");
+    let evidence_id = [0x72; 16];
+    core.core
+        .prepare_manual_warning_evidence(
+            &REQUEST,
+            &evidence_id,
+            &COMMUNITY,
+            &[0x73; 16],
+            "reason saved before the action",
+            NOW,
+            NOW,
+        )
+        .expect("persist the reason before requesting warning");
+    let pending = core
+        .core
+        .manual_warning_evidence()
+        .expect("read warning outbox");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request_id, REQUEST);
+    assert_eq!(pending[0].target_user_id, [0x73; 16]);
+    assert_eq!(pending[0].reason, "reason saved before the action");
+    assert_eq!(pending[0].state, 0);
+
+    core.core
+        .mark_manual_warning_accepted(&REQUEST, &[0x74; 16], 9, NOW + 1)
+        .expect("bind exact server receipt");
+    let accepted = &core.core.manual_warning_evidence().unwrap()[0];
+    assert_eq!(accepted.state, 1);
+    assert_eq!(accepted.action_id, [0x74; 16]);
+    assert_eq!(accepted.revision, 9);
+    let (request, expires) = core
+        .core
+        .ensure_manual_warning_evidence_request(&REQUEST, &[0x75; 16], NOW + 2)
+        .unwrap();
+    assert_eq!((request, expires), (evidence_id, NOW + 32));
+    core.core
+        .complete_manual_warning_evidence(&REQUEST, NOW + 3)
+        .unwrap();
+    assert!(core.core.manual_warning_evidence().unwrap().is_empty());
+}
+
+#[test]
 fn removal_signing_rejects_invalid_window_unbound_and_interaction_groups() {
     let (mut core, _) = ready_core_with_key(0x42, "moderator");
     let instance = Instance::generate();
