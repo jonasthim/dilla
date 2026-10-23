@@ -31,17 +31,17 @@ func (s PCMStarter) startIsolated(ctx context.Context, source string) (io.ReadCl
 	if err != nil {
 		return nil, ErrSandboxUnavailable
 	}
-	ytdlp, err := resolveExecutable(s.YTDLP, "yt-dlp")
+	ytdlp, err := s.executable(s.YTDLP, "yt-dlp")
 	if err != nil {
 		return nil, ErrPCMStart
 	}
-	ffmpeg, err := resolveExecutable(s.FFmpeg, "ffmpeg")
+	ffmpeg, err := s.executable(s.FFmpeg, "ffmpeg")
 	if err != nil {
 		return nil, ErrPCMStart
 	}
 	var node string
 	if s.Node != "" {
-		node, err = resolveExecutable(s.Node, "node")
+		node, err = s.executable(s.Node, "node")
 		if err != nil {
 			return nil, ErrPCMStart
 		}
@@ -72,13 +72,13 @@ func (s PCMStarter) startIsolated(ctx context.Context, source string) (io.ReadCl
 
 func (s PCMStarter) executable(path, name string) (string, error) {
 	if path == "" {
-		var err error
-		path, err = exec.LookPath(name)
-		if err != nil {
-			return "", err
-		}
+		path = name
 	}
-	return resolveExecutable(path, name)
+	resolved, err := exec.LookPath(path)
+	if err != nil {
+		return "", err
+	}
+	return resolveExecutable(resolved, name)
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (*isolatedPCM, error) {

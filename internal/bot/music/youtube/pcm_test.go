@@ -28,6 +28,27 @@ func TestPCMStarterFailsClosedWithoutBubblewrap(t *testing.T) {
 	}
 }
 
+func TestPCMStarterExecutableResolvesBareNameAndRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := writeScript(t, dir, "ffmpeg-test", `exit 0`)
+	directory := filepath.Join(dir, "directory-tool")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	starter := PCMStarter{}
+	resolved, err := starter.executable("ffmpeg-test", "ffmpeg")
+	if err != nil || resolved != target {
+		t.Fatalf("bare executable resolution = (%q, %v), want (%q, nil)", resolved, err, target)
+	}
+	if _, err := starter.executable("directory-tool", "ffmpeg"); err == nil {
+		t.Fatal("directory accepted as an executable")
+	}
+}
+
 func TestSandboxCommandPointsTLSAtMountedResolvedCABundle(t *testing.T) {
 	if !strings.Contains(sandboxWorker, `"SSL_CERT_FILE": "/etc/ssl/cert.pem"`) {
 		t.Fatal("embedded worker does not point child tools at the mounted resolved CA bundle")
