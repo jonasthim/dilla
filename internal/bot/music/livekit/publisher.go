@@ -61,7 +61,7 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		boundGroup.IsZero() || call.GroupID != boundGroup || call.LiveKitURL == "" || call.Token == "" {
 		return nil, ErrBinding
 	}
-	epoch, err := epochs.CallMediaEpoch(ctx, call.CallID)
+	epoch, err := epochs.CallMediaEpoch(ctx, boundGroup)
 	if err != nil {
 		_ = source.Close()
 		return nil, errors.New("music livekit: call media key lookup failed")
@@ -89,7 +89,7 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		_ = source.Close()
 		return nil, err
 	}
-	if err := revalidateEpoch(runCtx, call.CallID, epochs, epoch); err != nil {
+	if err := revalidateEpoch(runCtx, boundGroup, epochs, epoch); err != nil {
 		room.Disconnect()
 		cancel()
 		_ = source.Close()
@@ -108,7 +108,7 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		return nil, err
 	}
 	s := &Session{room: room, source: source, cancel: cancel, done: make(chan struct{})}
-	go s.monitor(runCtx, call.CallID, epochs, epoch, lifetime)
+	go s.monitor(runCtx, boundGroup, epochs, epoch, lifetime)
 	return s, nil
 }
 
@@ -135,7 +135,7 @@ func senderForEpoch(epoch native.CallMediaEpoch) (*sframe.Sender, error) {
 	return sender, nil
 }
 
-func (s *Session) monitor(ctx context.Context, callID id.ID, epochs EpochSource, initial native.CallMediaEpoch, lifetime time.Duration) {
+func (s *Session) monitor(ctx context.Context, groupID id.ID, epochs EpochSource, initial native.CallMediaEpoch, lifetime time.Duration) {
 	defer close(s.done)
 	ticker := time.NewTicker(epochPollInterval)
 	defer ticker.Stop()
@@ -155,7 +155,7 @@ func (s *Session) monitor(ctx context.Context, callID id.ID, epochs EpochSource,
 			terminal = s.source.Wait()
 			finished = true
 		case <-ticker.C:
-			terminal = revalidateEpoch(ctx, callID, epochs, initial)
+			terminal = revalidateEpoch(ctx, groupID, epochs, initial)
 			finished = terminal != nil
 		}
 	}

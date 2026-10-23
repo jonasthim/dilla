@@ -13,13 +13,27 @@ import (
 
 type epochStub struct {
 	called bool
+	lastID id.ID
 	epoch  native.CallMediaEpoch
 	err    error
 }
 
-func (s *epochStub) CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error) {
+func (s *epochStub) CallMediaEpoch(_ context.Context, groupID id.ID) (native.CallMediaEpoch, error) {
 	s.called = true
+	s.lastID = groupID
 	return s.epoch, s.err
+}
+
+func TestEpochLookupUsesBoundGroupNotChannelID(t *testing.T) {
+	channelID, groupID := testID(3), testID(4)
+	initial := native.CallMediaEpoch{OwnLeaf: 0, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 0}}}
+	epochs := &epochStub{epoch: initial}
+	if err := revalidateEpoch(context.Background(), groupID, epochs, initial); err != nil {
+		t.Fatalf("revalidate epoch: %v", err)
+	}
+	if !epochs.called || epochs.lastID != groupID || epochs.lastID == channelID {
+		t.Fatalf("epoch lookup ID = %v, want group ID %v distinct from channel ID %v", epochs.lastID, groupID, channelID)
+	}
 }
 
 func TestStartRejectsCallOutsideBoundGroupBeforeReadingKeys(t *testing.T) {

@@ -53,7 +53,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 			continue
 		}
 		if existing.State == 2 {
-			_, err = core.CallMediaEpoch(ctx, channel)
+			_, err = core.CallMediaEpoch(ctx, group)
 			return musicCallJoinStageError("active_media_gate", err)
 		}
 		if existing.State != 1 {
@@ -108,7 +108,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	if err = refreshMusicCallJoinLeaves(ctx, calls, core, group); err != nil {
 		return musicCallJoinStageError("trust_refresh", err)
 	}
-	if err = core.CallJoinCheck(ctx, channel); err != nil {
+	if err = core.CallJoinCheck(ctx, group); err != nil {
 		return musicCallJoinStageError("staged_media_gate", err)
 	}
 	accepted, err := calls.Resync(ctx, group, joined.Commit, joined.GroupInfo)
@@ -133,7 +133,7 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	if err = core.GroupJoined(ctx, operation, group, accepted.Sequence); err != nil {
 		return musicCallJoinStageError("resolve_join_intent", err)
 	}
-	if _, err = core.CallMediaEpoch(ctx, channel); err != nil {
+	if _, err = core.CallMediaEpoch(ctx, group); err != nil {
 		return musicCallJoinStageError("joined_media_gate", err)
 	}
 	return nil
