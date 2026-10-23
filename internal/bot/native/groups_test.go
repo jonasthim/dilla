@@ -62,6 +62,33 @@ func TestNativeGroupListAndApplyDecodeStrictly(t *testing.T) {
 	}
 }
 
+func TestNativeInteractionGroupDiscoveryIsSeparateAndStrict(t *testing.T) {
+	first, second := testID(8), testID(9)
+	descriptor := func(group id.ID) []any {
+		return []any{group, testID(1), testID(4), testID(5), testID(3), testBinding().Community,
+			testID(6), testID(7), uint64(11), uint64(1), uint64(0), uint64(4), uint64(2)}
+	}
+	body, err := cborx.Marshal([]any{descriptor(first), descriptor(second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTransport{responses: [][]any{{body}}}
+	c := newFakeClient(t, f)
+	got, err := c.InteractionGroups(context.Background())
+	if err != nil || len(got) != 2 || got[0].Group != first || got[0].BotDevice != testID(5) || got[1].Group != second {
+		t.Fatalf("interaction groups=%v err=%v", got, err)
+	}
+	if len(f.groupPayloads) != 1 || !reflect.DeepEqual(f.groupPayloads[0], []any{uint64(23)}) {
+		t.Fatalf("interaction discovery request=%#v", f.groupPayloads)
+	}
+	malformed, _ := cborx.Marshal([]any{descriptor(second), descriptor(first)})
+	f = &fakeTransport{responses: [][]any{{malformed}}}
+	c = newFakeClient(t, f)
+	if _, err = c.InteractionGroups(context.Background()); err == nil || errors.Is(err, ErrOutcomeUnknown) || f.closed != 0 {
+		t.Fatalf("unsorted interaction groups accepted or quarantined: err=%v closed=%d", err, f.closed)
+	}
+}
+
 func TestNativeGroupRequestsValidateLocallyAndUseExactSuboperations(t *testing.T) {
 	g := testID(9)
 	channel := testID(10)
@@ -171,7 +198,7 @@ func TestNativeInteractionInspectReturnsAuthenticatedDevicesAndPersistedState(t 
 	}
 	resultBody, err := cborx.Marshal([]any{uint64(2), expected.Instance, expected.BotUser, expected.BotDevice,
 		expected.Installation, expected.Community, expected.ParticipantUser, expected.ParticipantDevice,
-		expected.PolicyVersion, uint64(1), uint64(0), uint64(4), uint64(2)})
+		expected.PolicyVersion, uint64(1), uint64(0), uint64(4), uint64(2), uint64(1), uint64(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +209,7 @@ func TestNativeInteractionInspectReturnsAuthenticatedDevicesAndPersistedState(t 
 	f := &fakeTransport{responses: [][]any{{resultBody}}}
 	c := newFakeClient(t, f)
 	got, err := c.InspectInteractionGroup(context.Background(), expected, snapshot)
-	if err != nil || got.Binding.ParticipantDevice != expected.ParticipantDevice || got.BotDevice != expected.BotDevice || got.Epoch != 4 || got.State != 2 {
+	if err != nil || got.Binding.ParticipantDevice != expected.ParticipantDevice || got.BotDevice != expected.BotDevice || got.Epoch != 4 || got.State != 2 || got.NextSequence != 1 || got.PendingCommit {
 		t.Fatalf("interaction inspect=%#v err=%v", got, err)
 	}
 	if f.groupApplies != 1 || len(f.groupPayloads) != 1 || f.groupPayloads[0][0] != uint64(22) ||
@@ -197,6 +224,8 @@ func TestNativeInteractionInspectReturnsAuthenticatedDevicesAndPersistedState(t 
 		"wrong participant device": func(a []any) { a[7] = testID(99) },
 		"wrong policy":             func(a []any) { a[8] = uint64(12) },
 		"gone state":               func(a []any) { a[12] = uint64(4) },
+		"zero next sequence":       func(a []any) { a[13] = uint64(0) },
+		"invalid pending commit":   func(a []any) { a[14] = uint64(2) },
 	} {
 		var values []any
 		if e := cborx.Unmarshal(resultBody, &values); e != nil {

@@ -6,6 +6,7 @@ use dilla_core::{
 use zeroize::Zeroizing;
 
 type Binding = ([u8; 16], [u8; 16], [u8; 16]);
+const MAX_INTERACTION_GROUP_DESCRIPTORS: usize = 2048;
 
 fn validate_bot(core: &ClientCore, bind: Binding) -> Result<(), DispatchError> {
     core.bot_validate_binding(&bind.0, &bind.1, &bind.2)
@@ -78,8 +79,52 @@ pub(crate) fn dispatch(
         20 => intent_result(core, bind, payload),
         21 => interaction_create(core, payload),
         22 => interaction_inspect(core, payload),
+        23 => interaction_groups(core, bind, payload),
         _ => Err(DispatchError::Invalid),
     }
+}
+
+fn interaction_groups(
+    core: &ClientCore,
+    bind: Binding,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    decode_strict(payload, |d| {
+        d.array(1)?;
+        if d.uint()? != 23 {
+            return Err(dilla_core::cbor::CborError::TypeMismatch {
+                expected: "interaction group discovery",
+                offset: 0,
+            });
+        }
+        Ok(())
+    })
+    .map_err(|_| DispatchError::Invalid)?;
+    let descriptors = core
+        .bot_interaction_group_descriptors(&bind.0, &bind.1, &bind.2)
+        .map_err(map_client)?;
+    if descriptors.len() > MAX_INTERACTION_GROUP_DESCRIPTORS {
+        return Err(DispatchError::Unavailable);
+    }
+    let mut e = Encoder::new();
+    e.array(descriptors.len());
+    for d in descriptors {
+        e.array(13)
+            .bytes(&d.group)
+            .bytes(&d.instance)
+            .bytes(&d.bot_user)
+            .bytes(&d.bot_device)
+            .bytes(&d.installation)
+            .bytes(&d.community)
+            .bytes(&d.participant_user)
+            .bytes(&d.participant_device)
+            .uint(d.policy_version)
+            .uint(d.e2ee_version)
+            .uint(d.media_version)
+            .uint(d.epoch)
+            .uint(d.state);
+    }
+    Ok(Zeroizing::new(body(e.into_vec())))
 }
 
 /// Inspect a persisted interaction group from its authenticated OpenMLS state and a fresh
@@ -120,7 +165,7 @@ fn interaction_inspect(
         .bot_inspect_stored_interaction_group(&group, &snapshot, &expected)
         .map_err(map_client)?;
     let row = core.group_row(&group).map_err(map_client)?;
-    let (state, epoch) = decode_strict(&row, |d| {
+    let (state, epoch, next_sequence, pending_commit) = decode_strict(&row, |d| {
         d.array(9)?;
         let id = d.bytes_exact::<16>()?;
         let kind = d.uint()?;
@@ -128,22 +173,28 @@ fn interaction_inspect(
         let _target = d.bytes_exact::<16>()?;
         let state = d.uint()?;
         let epoch = d.uint()?;
+        let next_sequence = d.uint()?;
         d.skip()?;
-        d.skip()?;
-        d.skip()?;
+        let pending_commit = d.uint()?;
+        if pending_commit > 1 {
+            return Err(dilla_core::cbor::CborError::TypeMismatch {
+                expected: "pending commit flag",
+                offset: 0,
+            });
+        }
         if id != group || kind != 3 {
             return Err(dilla_core::cbor::CborError::TypeMismatch {
                 expected: "interaction group row",
                 offset: 0,
             });
         }
-        Ok((state, epoch))
+        Ok((state, epoch, next_sequence, pending_commit))
     })
     .map_err(|_| DispatchError::Internal)?;
 
     let mut e = Encoder::new();
     // v2 binding, the exact two authenticated devices, then persisted MLS epoch and app state.
-    e.array(13)
+    e.array(15)
         .uint(2)
         .bytes(admission.instance.as_bytes())
         .bytes(admission.bot_user.as_bytes())
@@ -156,7 +207,9 @@ fn interaction_inspect(
         .uint(1)
         .uint(0)
         .uint(epoch)
-        .uint(state);
+        .uint(state)
+        .uint(next_sequence)
+        .uint(pending_commit);
     Ok(Zeroizing::new(body(e.into_vec())))
 }
 
@@ -797,6 +850,48 @@ mod tests {
             dispatch(&mut core, BINDING, &request.into_vec()),
             Err(DispatchError::Forbidden)
         ));
+    }
+
+    #[test]
+    fn interaction_discovery_does_not_widen_generic_group_scope() {
+        let mut core = bot();
+        let group = [0x61; 16];
+        core.group_create(&group, Some(&COMMUNITY), &[0x62; 16], 0, &[0x88; 32])
+            .expect("construct ordinary group");
+
+        let mut discover = Encoder::new();
+        discover.array(1).uint(23);
+        let discovered = dispatch(&mut core, BINDING, &discover.into_vec()).expect("discover");
+        let rows = decode_strict(&discovered, |d| {
+            d.array(1)?;
+            let bytes = d.bytes()?;
+            decode_strict(bytes, |nested| {
+                let n = nested.array_len()?;
+                for _ in 0..n {
+                    nested.skip()?;
+                }
+                Ok(n)
+            })
+        })
+        .expect("descriptor response");
+        assert_eq!(rows, 0, "ordinary group leaked into interaction discovery");
+
+        let mut generic = Encoder::new();
+        generic.array(1).uint(0);
+        let listed = dispatch(&mut core, BINDING, &generic.into_vec()).expect("generic list");
+        let count = decode_strict(&listed, |d| {
+            d.array(1)?;
+            let bytes = d.bytes()?;
+            decode_strict(bytes, |nested| {
+                let n = nested.array_len()?;
+                for _ in 0..n {
+                    nested.skip()?;
+                }
+                Ok(n)
+            })
+        })
+        .expect("group response");
+        assert_eq!(count, 1, "generic group list changed");
     }
 
     #[test]

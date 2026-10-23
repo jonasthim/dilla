@@ -350,7 +350,7 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
     let n = d.array_len()?;
     let sub = d.uint()?;
     let valid = match (sub, n) {
-        (0 | 17, 1) => true,
+        (0 | 17 | 23, 1) => true,
         (1 | 12, 2) => {
             id(d)?;
             true
@@ -777,6 +777,10 @@ mod tests {
         }
         interaction.uint(1).uint(100).uint(1).bytes(&[0x41]);
         assert!(validate_target_payload(&interaction.into_vec()).is_ok());
+
+        let mut interaction_discovery = Encoder::new();
+        interaction_discovery.array(1).uint(23);
+        assert!(validate_target_payload(&interaction_discovery.into_vec()).is_ok());
     }
 
     #[test]
@@ -788,10 +792,10 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=22 {
+        for sub in 0..=23 {
             let mut e = Encoder::new();
             match sub {
-                0 | 17 => {
+                0 | 17 | 23 => {
                     e.array(1).uint(sub);
                 }
                 1 | 12 => {

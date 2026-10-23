@@ -60,10 +60,18 @@ type InteractionGroupCreateResult struct {
 	Welcome, ResultBody                 []byte
 }
 type InteractionGroupInspectResult struct {
-	Binding   InteractionGroupBinding
-	BotDevice id.ID
-	Epoch     uint64
-	State     uint64
+	Binding       InteractionGroupBinding
+	BotDevice     id.ID
+	Epoch         uint64
+	State         uint64
+	NextSequence  uint64
+	PendingCommit bool
+}
+type InteractionGroupDescriptor struct {
+	Group        id.ID
+	BotDevice    id.ID
+	Binding      InteractionGroupBinding
+	Epoch, State uint64
 }
 type GroupExternalJoinResult struct{ Commit, GroupInfo []byte }
 type GroupCommitWelcome struct {
@@ -447,6 +455,67 @@ func decodeGroupList(b []byte, community id.ID) (any, error) {
 	}
 	return out, nil
 }
+func decodeInteractionGroupDescriptors(b []byte, binding Binding) (any, error) {
+	a, err := groupBodyArray(b)
+	if err != nil {
+		return nil, err
+	}
+	if len(a) > 2048 {
+		return nil, errors.New("interaction descriptor count limit")
+	}
+	out := make([]InteractionGroupDescriptor, 0, len(a))
+	for _, value := range a {
+		row, ok := value.([]any)
+		if !ok || len(row) != 13 {
+			return nil, errors.New("interaction descriptor shape")
+		}
+		var d InteractionGroupDescriptor
+		if d.Group, err = groupID(row[0]); err != nil {
+			return nil, err
+		}
+		if d.Binding.Instance, err = groupID(row[1]); err != nil || d.Binding.Instance != binding.Instance {
+			return nil, errors.New("interaction descriptor instance")
+		}
+		if d.Binding.BotUser, err = groupID(row[2]); err != nil || d.Binding.BotUser.IsZero() {
+			return nil, errors.New("interaction descriptor Bot user")
+		}
+		if d.BotDevice, err = groupID(row[3]); err != nil {
+			return nil, err
+		}
+		if d.Binding.Installation, err = groupID(row[4]); err != nil || d.Binding.Installation != binding.Installation {
+			return nil, errors.New("interaction descriptor installation")
+		}
+		if d.Binding.Community, err = groupID(row[5]); err != nil || d.Binding.Community != binding.Community {
+			return nil, errors.New("interaction descriptor community")
+		}
+		if d.Binding.ParticipantUser, err = groupID(row[6]); err != nil {
+			return nil, err
+		}
+		if d.Binding.ParticipantDevice, err = groupID(row[7]); err != nil {
+			return nil, err
+		}
+		if d.Binding.PolicyVersion, err = groupUint(row[8]); err != nil || d.Binding.PolicyVersion == 0 {
+			return nil, errors.New("interaction descriptor policy")
+		}
+		if d.Binding.E2EEVersion, err = groupUint(row[9]); err != nil || d.Binding.E2EEVersion != 1 {
+			return nil, errors.New("interaction descriptor E2EE")
+		}
+		if d.Binding.MediaVersion, err = groupUint(row[10]); err != nil || d.Binding.MediaVersion != 0 {
+			return nil, errors.New("interaction descriptor media")
+		}
+		if d.Epoch, err = groupUint(row[11]); err != nil || d.Epoch == 0 {
+			return nil, errors.New("interaction descriptor epoch")
+		}
+		if d.State, err = groupUint(row[12]); err != nil || d.State >= 4 {
+			return nil, errors.New("interaction descriptor state")
+		}
+		if len(out) > 0 && string(out[len(out)-1].Group[:]) >= string(d.Group[:]) {
+			return nil, errors.New("interaction descriptor order")
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
 func decodeOneGroup(b []byte, community id.ID) (any, error) {
 	a, e := groupBodyArray(b)
 	if e != nil {
@@ -471,6 +540,18 @@ func (c *Client) Groups(ctx context.Context) ([]GroupInfo, error) {
 		return nil, e
 	}
 	return v.([]GroupInfo), nil
+}
+
+// InteractionGroups discovers only locally persisted kind-3 groups. Its descriptor binding is
+// read from authenticated MLS context; inspection still requires a fresh signed server snapshot.
+func (c *Client) InteractionGroups(ctx context.Context) ([]InteractionGroupDescriptor, error) {
+	v, err := c.groupCall(ctx, []any{uint64(23)}, false, groupWrapped(func(b []byte) (any, error) {
+		return decodeInteractionGroupDescriptors(b, c.binding)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return v.([]InteractionGroupDescriptor), nil
 }
 func (c *Client) InspectGroup(ctx context.Context, group id.ID) (GroupInfo, error) {
 	if e := checkedGroupID(group); e != nil {
@@ -697,7 +778,7 @@ func (c *Client) CreateInteractionGroup(ctx context.Context, operation id.ID, ex
 
 func decodeInteractionGroupInspect(body []byte, binding Binding, expected InteractionGroupExpected) (any, error) {
 	a, err := groupBodyArray(body)
-	if err != nil || len(a) != 13 {
+	if err != nil || len(a) != 15 {
 		return nil, errors.New("interaction group inspect result shape")
 	}
 	version, err := groupUint(a[0])
@@ -748,6 +829,14 @@ func decodeInteractionGroupInspect(body []byte, binding Binding, expected Intera
 	if out.State, err = groupUint(a[12]); err != nil || out.State >= 4 {
 		return nil, errors.New("interaction group inspect state")
 	}
+	if out.NextSequence, err = groupUint(a[13]); err != nil || out.NextSequence == 0 {
+		return nil, errors.New("interaction group inspect next sequence")
+	}
+	pending, err := groupUint(a[14])
+	if err != nil || pending > 1 {
+		return nil, errors.New("interaction group inspect pending commit")
+	}
+	out.PendingCommit = pending == 1
 	if out.Binding.BotUser == out.Binding.ParticipantUser || out.BotDevice == out.Binding.ParticipantDevice || out.Epoch == 0 {
 		return nil, errors.New("interaction group inspect roster or epoch")
 	}

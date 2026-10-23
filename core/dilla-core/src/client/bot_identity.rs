@@ -35,6 +35,24 @@ pub(super) struct PendingBot {
     ssk_priv: Zeroizing<[u8; 32]>,
     k_backup: Zeroizing<[u8; 32]>,
 }
+
+/// Locally persisted kind-3 interaction group and its authenticated MLS context binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotInteractionGroupDescriptor {
+    pub group: [u8; 16],
+    pub instance: [u8; 16],
+    pub installation: [u8; 16],
+    pub community: [u8; 16],
+    pub bot_user: [u8; 16],
+    pub bot_device: [u8; 16],
+    pub participant_user: [u8; 16],
+    pub participant_device: [u8; 16],
+    pub policy_version: u64,
+    pub e2ee_version: u64,
+    pub media_version: u64,
+    pub epoch: u64,
+    pub state: u64,
+}
 impl core::fmt::Debug for PendingBot {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("PendingBot { binding, device_id, public_keys, signatures, secret_keys } ")
@@ -304,6 +322,85 @@ pub(super) fn validate_ready(rec: &IdentityRecord) -> Result<DeviceList, ClientE
 }
 
 impl ClientCore {
+    /// Discover locally persisted kind-3 groups and read their authenticated context binding.
+    /// Generic group enumeration remains deliberately unaware of kind-3 groups.
+    pub fn bot_interaction_group_descriptors(
+        &self,
+        expected_instance: &[u8; 16],
+        expected_community: &[u8; 16],
+        expected_installation: &[u8; 16],
+    ) -> Result<Vec<BotInteractionGroupDescriptor>, ClientError> {
+        let own = self.own()?;
+        if &own.instance_id != expected_instance {
+            return Err(binding_mismatch());
+        }
+        let groups = self.groups()?;
+        let rows = decode_strict(&groups, |d| {
+            let n = d.array_len()?;
+            let mut out = Vec::with_capacity(n);
+            for _ in 0..n {
+                d.array(9)?;
+                let group = d.bytes_exact::<16>()?;
+                let kind = d.uint()?;
+                let community = d.opt_bytes()?.map(|v| v.to_vec());
+                let target = d.bytes_exact::<16>()?;
+                let state = d.uint()?;
+                let epoch = d.uint()?;
+                d.skip()?;
+                d.skip()?;
+                d.skip()?;
+                out.push((group, kind, community, target, state, epoch));
+            }
+            Ok(out)
+        })
+        .map_err(|_| ClientError::new(E_CORE_STORAGE, "interaction group rows rejected"))?;
+        let mut out = Vec::new();
+        for (group_id, kind, community, target, state, epoch) in rows {
+            if kind != 3 || community.as_deref() != Some(expected_community.as_slice()) {
+                continue;
+            }
+            if state >= 4 {
+                continue;
+            }
+            let group = DillaGroup::load(&self.provider, &GroupId::from_slice(&group_id))
+                .map_err(|_| {
+                    ClientError::new(E_CORE_STATE, "interaction group could not be loaded")
+                })?
+                .ok_or_else(|| {
+                    ClientError::new(E_CORE_STATE, "interaction group is unavailable")
+                })?;
+            let binding = group.interaction_binding().map_err(|_| {
+                ClientError::new(E_CORE_INPUT, "interaction group binding rejected")
+            })?;
+            if group.kind() != GroupKind::Interaction
+                || target != own.user_id
+                || binding.instance_id.as_bytes() != expected_instance
+                || binding.community_id.as_bytes() != expected_community
+                || binding.installation_id != *expected_installation
+                || binding.bot_user_id != own.user_id
+            {
+                return Err(binding_mismatch());
+            }
+            out.push(BotInteractionGroupDescriptor {
+                group: group_id,
+                instance: *binding.instance_id.as_bytes(),
+                installation: binding.installation_id,
+                community: *binding.community_id.as_bytes(),
+                bot_user: binding.bot_user_id,
+                bot_device: own.device_id,
+                participant_user: binding.participant_user_id,
+                participant_device: *binding.participant_device_id.as_bytes(),
+                policy_version: binding.policy_version,
+                e2ee_version: binding.e2ee_version,
+                media_version: binding.media_version,
+                epoch,
+                state,
+            });
+        }
+        out.sort_by_key(|v| v.group);
+        Ok(out)
+    }
+
     /// Inspect an already-persisted interaction group using OpenMLS's authenticated GroupContext
     /// and member view, then bind that evidence to a verified signed snapshot. This is read-only
     /// and diagnostic: it creates no group, intent, or Welcome state and does not authorize
@@ -1051,27 +1148,67 @@ mod interaction_snapshot_tests {
         assert_eq!(accepted.admission_id, mid([1; 16]));
         {
             let c = connection.lock().unwrap();
-            c.execute("UPDATE app_trust_pins SET changed_umk=?1 WHERE user_id=?2", rusqlite::params![[0x55u8; 32].as_slice(), HUMAN_USER.as_slice()]).unwrap();
+            c.execute(
+                "UPDATE app_trust_pins SET changed_umk=?1 WHERE user_id=?2",
+                rusqlite::params![[0x55u8; 32].as_slice(), HUMAN_USER.as_slice()],
+            )
+            .unwrap();
         }
-        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "changed participant UMK must remain blocked");
+        assert!(
+            core.bot_verify_interaction_snapshot(&wire, &expected)
+                .is_err(),
+            "changed participant UMK must remain blocked"
+        );
         {
             let c = connection.lock().unwrap();
-            c.execute("UPDATE app_trust_pins SET changed_umk=NULL WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
-            c.execute("UPDATE app_device_lists SET version=version+1 WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
+            c.execute(
+                "UPDATE app_trust_pins SET changed_umk=NULL WHERE user_id=?1",
+                [HUMAN_USER.as_slice()],
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE app_device_lists SET version=version+1 WHERE user_id=?1",
+                [HUMAN_USER.as_slice()],
+            )
+            .unwrap();
         }
-        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "changed participant list must remain blocked");
+        assert!(
+            core.bot_verify_interaction_snapshot(&wire, &expected)
+                .is_err(),
+            "changed participant list must remain blocked"
+        );
         {
             let c = connection.lock().unwrap();
-            c.execute("UPDATE app_device_lists SET version=?1 WHERE user_id=?2", rusqlite::params![human_snapshot_list.version as i64, HUMAN_USER.as_slice()]).unwrap();
-            c.execute("DELETE FROM app_trust_pins WHERE user_id=?1", [HUMAN_USER.as_slice()]).unwrap();
+            c.execute(
+                "UPDATE app_device_lists SET version=?1 WHERE user_id=?2",
+                rusqlite::params![human_snapshot_list.version as i64, HUMAN_USER.as_slice()],
+            )
+            .unwrap();
+            c.execute(
+                "DELETE FROM app_trust_pins WHERE user_id=?1",
+                [HUMAN_USER.as_slice()],
+            )
+            .unwrap();
         }
-        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "missing participant pin must remain blocked");
+        assert!(
+            core.bot_verify_interaction_snapshot(&wire, &expected)
+                .is_err(),
+            "missing participant pin must remain blocked"
+        );
         {
             let c = connection.lock().unwrap();
             c.execute("INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,100,0,NULL)", rusqlite::params![HUMAN_USER.as_slice(), human_snapshot_list.umk.as_slice()]).unwrap();
-            c.execute("UPDATE app_trust_pins SET verified=0 WHERE user_id=?1", [BOT_USER.as_slice()]).unwrap();
+            c.execute(
+                "UPDATE app_trust_pins SET verified=0 WHERE user_id=?1",
+                [BOT_USER.as_slice()],
+            )
+            .unwrap();
         }
-        assert!(core.bot_verify_interaction_snapshot(&wire, &expected).is_err(), "Bot own pin must still require verification");
+        assert!(
+            core.bot_verify_interaction_snapshot(&wire, &expected)
+                .is_err(),
+            "Bot own pin must still require verification"
+        );
         let mut bad = wire.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(
