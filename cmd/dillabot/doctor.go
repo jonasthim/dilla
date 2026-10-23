@@ -122,7 +122,7 @@ func checkYouTubeDependencies(stdout io.Writer, lookPath func(string) (string, e
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, path, args...)
+		cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- executable is resolved by LookPath and arguments are fixed prerequisites.
 		out := &boundedVersionOutput{remaining: 2048}
 		cmd.Stdout, cmd.Stderr = out, out
 		if err := cmd.Run(); err != nil || ctx.Err() != nil {

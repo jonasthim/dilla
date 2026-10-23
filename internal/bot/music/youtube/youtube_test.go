@@ -93,6 +93,7 @@ func TestResolveRequiresSandboxedRunner(t *testing.T) {
 	if _, err := resolver.Resolve(context.Background(), "study music"); !errors.Is(err, ErrRunnerRequired) {
 		t.Fatalf("Resolve without runner error = %v", err)
 	}
+	//nolint:staticcheck // This assertion verifies that Resolve rejects a nil context.
 	if _, err := resolver.Resolve(nil, "study music"); !errors.Is(err, ErrExtractFailed) {
 		t.Fatalf("Resolve with nil context error = %v", err)
 	}

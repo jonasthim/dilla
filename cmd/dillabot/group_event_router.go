@@ -71,7 +71,14 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 		_, err := h.automoderation.Handle(ctx, event, replay, mentions)
 		var stageErr service.AutoModerationStageError
 		if errors.As(err, &stageErr) {
-			sourceAgeSeconds := int64(now/1000) - int64(event.ReceivedAt)
+			sourceAgeSeconds := int64(0)
+			nowSeconds := now / 1000
+			if nowSeconds >= 0 && event.ReceivedAt <= uint64(nowSeconds) {
+				ageSeconds := uint64(nowSeconds) - event.ReceivedAt
+				if ageSeconds <= math.MaxInt64 {
+					sourceAgeSeconds = int64(ageSeconds)
+				}
+			}
 			slog.Warn("automatic moderation event handling failed", "stage", stageErr.Stage,
 				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds)
 		}

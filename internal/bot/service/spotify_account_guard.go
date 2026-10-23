@@ -15,7 +15,7 @@ const spotifyAccountGuardFile = "spotify-account"
 
 var spotifyAccountGuardMu sync.Mutex
 
-var ErrSpotifyAccountMismatch = errors.New("Spotify account does not match the service account")
+var ErrSpotifyAccountMismatch = errors.New("spotify account does not match the service account")
 
 // SpotifyAccountGuard binds every installation under one state directory to
 // the same Spotify account. The account ID is stored in a private file.
@@ -40,7 +40,7 @@ func NewSpotifyAccountGuard(stateDir string) (*SpotifyAccountGuard, error) {
 		return nil, ErrSpotifyCredentials
 	}
 	if info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(stateDir, 0o700); err != nil {
+		if err := os.Chmod(stateDir, 0o700); err != nil { // #nosec G302 -- stateDir is a private directory and needs owner execute permission.
 			return nil, ErrSpotifyCredentials
 		}
 	}
@@ -95,7 +95,7 @@ func (g *SpotifyAccountGuard) Bind(accountID string) error {
 		}
 		return ErrSpotifyCredentials
 	}
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(dir); err == nil { // #nosec G304 -- dir comes from the validated private state path and fixed account filename.
 		err = d.Sync()
 		_ = d.Close()
 		if err != nil {

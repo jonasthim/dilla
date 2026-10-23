@@ -94,11 +94,12 @@ func (h ModerationInteractions) listManualEvidence(ctx context.Context, actor In
 	}
 	page := make([]any, 0, len(rows))
 	for _, row := range rows {
-		if row.Rule != moderation.RuleManual || row.ID.IsZero() || !moderationActionAllowed(row.Action) || row.CreatedAt.Unix() <= 0 ||
+		createdAt := row.CreatedAt.Unix()
+		if row.Rule != moderation.RuleManual || row.ID.IsZero() || !moderationActionAllowed(row.Action) || createdAt <= 0 ||
 			len(row.Reason) == 0 || len(row.Reason) > moderation.MaxEvidenceReasonBytes || len(row.Excerpt) > moderation.ExcerptMaxBytes {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
-		page = append(page, []any{row.ID, string(row.Action), row.Reason, row.Excerpt, uint64(row.CreatedAt.Unix())})
+		page = append(page, []any{row.ID, string(row.Action), row.Reason, row.Excerpt, uint64(createdAt)})
 	}
 	var cursor []byte
 	if len(next) > 0 {
@@ -237,11 +238,12 @@ func (h ModerationInteractions) listCases(ctx context.Context, actor Interaction
 	page := make([]any, 0, len(rows))
 	var data []byte
 	for i, row := range rows {
-		if row.SourceRevision > math.MaxInt64 || row.ReceivedAt.Unix() <= 0 || !moderationActionAllowed(row.Action) || len(row.Excerpt) > moderation.ExcerptMaxBytes {
+		receivedAt := row.ReceivedAt.Unix()
+		if row.SourceRevision > math.MaxInt64 || receivedAt <= 0 || !moderationActionAllowed(row.Action) || len(row.Excerpt) > moderation.ExcerptMaxBytes {
 			return InteractionResult{}, ErrModerationCaseState
 		}
 		candidate := append(page, []any{row.Community, row.Group, row.Channel, row.Actor, row.Message,
-			row.SourceRevision, row.Reason(), string(row.Action), row.Excerpt, uint64(row.ReceivedAt.Unix())})
+			row.SourceRevision, row.Reason(), string(row.Action), row.Excerpt, uint64(receivedAt)})
 		cursorAfter := next
 		if i < len(rows)-1 {
 			cursorAfter = moderationCaseKey(row.Message, row.SourceRevision)

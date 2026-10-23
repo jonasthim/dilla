@@ -388,7 +388,7 @@ func TestSupervisorPauseAndEmptyRoomClosePlayback(t *testing.T) {
 	if p.closed != 1 || !state.Paused || state.PositionMS != 1234 {
 		t.Fatalf("pause failed: closed=%d state=%+v", p.closed, state)
 	}
-	state, err = s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
+	_, err = s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestSupervisorAdvancesAfterTrackEOF(t *testing.T) {
 	defer s.Close()
 	tracks := []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}, {ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "member"}}
 	state, _ := s.Apply(context.Background(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
-	state, err := s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
+	_, err := s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestSupervisorEOFFailuresLeaveQueuePaused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			state, err = s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
+			_, err = s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
 			if err != nil {
 				t.Fatal(err)
 			}

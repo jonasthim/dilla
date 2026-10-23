@@ -490,8 +490,11 @@ func (p *Playback) control(ctx context.Context, value string) error {
 		return ErrInvalidConfig
 	}
 	b := []byte(value)
+	if len(b) > 1<<20 {
+		return ErrInvalidConfig
+	}
 	frame = make([]byte, 4+len(b))
-	binary.BigEndian.PutUint32(frame, uint32(len(b)))
+	binary.BigEndian.PutUint32(frame, uint32(len(b))) // #nosec G115 -- control frames are capped at 1 MiB above.
 	copy(frame[4:], b)
 	if !p.mu.TryLock() {
 		return ErrControlInProgress

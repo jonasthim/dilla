@@ -428,19 +428,19 @@ func validOpusTagsPacket(packet []byte) bool {
 	position := 8
 	vendorLength := uint64(binary.LittleEndian.Uint32(packet[position : position+4]))
 	position += 4
-	if vendorLength > uint64(len(packet)-position-4) {
+	if vendorLength > maxOpusTagsBytes || int(vendorLength) > len(packet)-position-4 {
 		return false
 	}
 	position += int(vendorLength)
 	commentCount := binary.LittleEndian.Uint32(packet[position : position+4])
 	position += 4
-	if uint64(commentCount) > uint64(len(packet)-position)/4 {
+	if commentCount > maxOpusTagsBytes/4 || int(commentCount) > (len(packet)-position)/4 {
 		return false
 	}
 	for i := uint32(0); i < commentCount; i++ {
 		commentLength := uint64(binary.LittleEndian.Uint32(packet[position : position+4]))
 		position += 4
-		if commentLength > uint64(len(packet)-position) {
+		if commentLength > maxOpusTagsBytes || int(commentLength) > len(packet)-position {
 			return false
 		}
 		position += int(commentLength)

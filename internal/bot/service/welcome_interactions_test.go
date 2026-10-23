@@ -84,7 +84,7 @@ func TestWelcomeSettingsGetAndPutUseEncryptedStateRevision(t *testing.T) {
 	settings := WelcomeInteractions{Authority: auth, CommunityID: h.CommunityID, Native: n}
 	actor := InteractionActor{User: interactionID(6)}
 	get := settings.Handlers()[protocol.OpSettingsGet]
-	result, err := get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{uint64(welcomeSettingsSection)}})
+	result, err := get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{welcomeSettingsSection}})
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 0 || string(result.Data) != "\x80" {
 		t.Fatalf("empty welcome settings=%+v err=%v", result, err)
 	}
@@ -95,7 +95,7 @@ func TestWelcomeSettingsGetAndPutUseEncryptedStateRevision(t *testing.T) {
 	}
 	requestRevision, expires := uint64(0), uint64(120)
 	put := settings.Handlers()[protocol.OpSettingsPut]
-	request := protocol.Request{RequestID: interactionID(30), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), change.Value}}
+	request := protocol.Request{RequestID: interactionID(30), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{welcomeSettingsSection, change.Value}}
 	result, err = put.Handle(context.Background(), actor, request)
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || n.state.Revision != 1 {
 		t.Fatalf("welcome settings put=%+v stored=%+v err=%v", result, n.state, err)
@@ -104,7 +104,7 @@ func TestWelcomeSettingsGetAndPutUseEncryptedStateRevision(t *testing.T) {
 	if err != nil || replay.Status != 0 || replay.Revision == nil || *replay.Revision != 1 || n.state.Revision != 1 {
 		t.Fatalf("welcome settings replay=%+v stored=%+v err=%v, want original receipt", replay, n.state, err)
 	}
-	result, err = get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{uint64(welcomeSettingsSection)}})
+	result, err = get.Handle(context.Background(), actor, protocol.Request{CommunityID: h.CommunityID, Operation: protocol.OpSettingsGet, Args: []any{welcomeSettingsSection}})
 	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 || string(result.Data) != string(n.state.Value) {
 		t.Fatalf("configured welcome settings=%+v err=%v", result, err)
 	}
@@ -123,7 +123,7 @@ func TestWelcomeSettingsPutRejectsStaleRevisionAndUnauthorizedActor(t *testing.T
 		t.Fatal(err)
 	}
 	requestRevision, expires := uint64(3), uint64(120)
-	request := protocol.Request{RequestID: interactionID(31), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{uint64(welcomeSettingsSection), cfg.Value}}
+	request := protocol.Request{RequestID: interactionID(31), CommunityID: h.CommunityID, Operation: protocol.OpSettingsPut, Revision: &requestRevision, Expires: &expires, Args: []any{welcomeSettingsSection, cfg.Value}}
 	put := settings.Handlers()[protocol.OpSettingsPut]
 	result, err := put.Handle(context.Background(), InteractionActor{User: interactionID(6)}, request)
 	if err != nil || result.Status != interactionStatusConflict || result.Revision == nil || *result.Revision != 4 || len(n.changes) != 1 || n.changes[0].ExpectedRevision != 3 {

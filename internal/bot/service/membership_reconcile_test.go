@@ -142,10 +142,10 @@ func (s *membershipFakeSession) Channels(context.Context, id.ID) ([]client.Chann
 		return nil, nil
 	}
 	if s.changeGroupOnSecond && s.channelsCalls > 1 {
-		copy := append([]client.Channel(nil), s.channels...)
+		channels := append([]client.Channel(nil), s.channels...)
 		other := membershipID(88)
-		copy[0].TextGroupID = &other
-		return copy, nil
+		channels[0].TextGroupID = &other
+		return channels, nil
 	}
 	return s.channels, nil
 }

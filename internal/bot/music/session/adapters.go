@@ -27,7 +27,7 @@ func (s YouTubePCM) Start(ctx context.Context, track string) (io.ReadCloser, err
 	}
 	for i := 0; i < len(track); i++ {
 		c := track[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			return nil, ErrInvalid
 		}
 	}

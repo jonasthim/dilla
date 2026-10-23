@@ -213,6 +213,9 @@ func encodeAutoModerationConfig(cfg moderation.Config) ([]byte, error) {
 	if !validAutoModerationConfig(cfg) {
 		return nil, moderation.ErrConfigState
 	}
+	if cfg.Timeout < 0 {
+		return nil, moderation.ErrConfigState
+	}
 	users := make([]any, len(cfg.ExemptUsers))
 	for i, user := range cfg.ExemptUsers {
 		users[i] = user

@@ -264,7 +264,7 @@ func (s *ModerationCaseSink) attachAcceptedEvidence(ctx context.Context, row Mod
 }
 
 func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error) {
-	if !a.runtimeGenerated || a.Community != s.binding.Community.String() || a.SourceRevision == 0 || a.ReceivedAt.IsZero() || a.ReceivedAt.UnixMilli() <= 0 || a.ReceivedAt.UnixMilli() > math.MaxInt64 || a.ReceivedAt.After(s.now().Add(time.Minute)) ||
+	if !a.runtimeGenerated || a.Community != s.binding.Community.String() || a.SourceRevision == 0 || a.ReceivedAt.IsZero() || a.ReceivedAt.UnixMilli() <= 0 || a.ReceivedAt.After(s.now().Add(time.Minute)) ||
 		!validModerationCaseID(a.Group) || !validModerationCaseID(a.Channel) || !validModerationCaseID(a.Actor) || !validModerationCaseID(a.Message) || len(a.Decision.Rules) == 0 {
 		return ModerationCase{}, ErrModerationCaseState
 	}
@@ -306,6 +306,9 @@ func moderationCaseKey(message string, revision uint64) []byte {
 }
 
 func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
+	if c.Timeout < 0 || c.ReceivedAt.UnixMilli() <= 0 {
+		return nil, ErrModerationCaseState
+	}
 	rules := make([]any, len(c.Rules))
 	for i, rule := range c.Rules {
 		rules[i] = string(rule)

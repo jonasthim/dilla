@@ -88,6 +88,7 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 		(action.Decision.Action == moderation.ActionTimeout && (action.Decision.Timeout <= 0 || action.Decision.Timeout > moderation.MaxTimeout)) {
 		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
+	receivedAt := action.ReceivedAt.Unix()
 	community, communityErr := id.Parse(action.Community)
 	group, groupErr := id.Parse(action.Group)
 	channel, channelErr := id.Parse(action.Channel)
@@ -96,7 +97,7 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 	if communityErr != nil || groupErr != nil || channelErr != nil || actorErr != nil || messageErr != nil ||
 		community.IsZero() || group.IsZero() || channel.IsZero() || actor.IsZero() || message.IsZero() || community != b.binding.Community ||
 		action.SourceRevision == 0 || action.SourceRevision > math.MaxInt64 || action.ReceivedAt.IsZero() ||
-		action.ReceivedAt.Unix() <= 0 || action.ReceivedAt.Unix() > math.MaxInt64-30 {
+		receivedAt <= 0 || receivedAt > math.MaxInt64-30 {
 		return AcceptedModerationAction{}, ErrModerationActionSource
 	}
 	if err := ctx.Err(); err != nil {
@@ -106,7 +107,7 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 	var accepted client.ModerationActionReceipt
 	if action.Decision.Action == moderation.ActionRemove {
 		request = moderationRemovalOperationID(group, message, action.SourceRevision)
-		now := uint64(action.ReceivedAt.Unix())
+		now := uint64(receivedAt)
 		expires := now + 30
 		signed, err := b.native.SignRemoval(ctx, request, group, action.SourceRevision, expires, now)
 		if err != nil {
@@ -167,7 +168,11 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 	}
 	var timeoutMillis uint64
 	if action.Decision.Action == moderation.ActionTimeout {
-		timeoutMillis = uint64(action.Decision.Timeout / time.Millisecond)
+		timeout := action.Decision.Timeout / time.Millisecond
+		if timeout < 0 {
+			return AcceptedModerationAction{}, ErrModerationActionSource
+		}
+		timeoutMillis = uint64(timeout)
 	}
 	accepted, err := b.session.AcceptBotModerationAction(ctx, b.binding.Installation, request, group, action.SourceRevision,
 		string(action.Decision.Action), rules, timeoutMillis, uint64(now+windowSeconds))
@@ -189,7 +194,7 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 func moderationRemovalOperationID(group, message id.ID, revision uint64) id.ID {
 	var encoded [8]byte
 	for i := range encoded {
-		encoded[7-i] = byte(revision >> (8 * i))
+		encoded[7-i] = byte((revision >> (8 * i)) & 0xff)
 	}
 	sum := sha256.Sum256(append(append(append([]byte("dilla:automod:remove:v1\x00"), group[:]...), message[:]...), encoded[:]...))
 	var operation id.ID

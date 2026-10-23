@@ -100,12 +100,12 @@ func (n *fakeLifecycleNative) KeyPackageIntent(_ context.Context, in protocol.Ke
 	refs := make([][32]byte, in.Count+in.LastResort)
 	for i := range ordinary {
 		ordinary[i] = []byte(fmt.Sprintf("public-kp-%d", i))
-		refs[i][0], refs[i][1] = byte(i+1), byte(in.OperationID[15])
+		refs[i][0], refs[i][1] = byte(i+1), in.OperationID[15]
 	}
 	var fallback any
 	if in.LastResort != 0 {
 		fallback = []byte("fallback")
-		refs[len(ordinary)][0], refs[len(ordinary)][1] = 0xff, byte(in.OperationID[15])
+		refs[len(ordinary)][0], refs[len(ordinary)][1] = 0xff, in.OperationID[15]
 	}
 	upload, _ := cborx.Marshal([]any{ordinary, fallback})
 	expiry := n.greatestExpiry

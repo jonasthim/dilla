@@ -23,11 +23,11 @@ const (
 )
 
 var (
-	ErrSpotifyCredentials    = errors.New("Spotify credentials unavailable")
-	ErrSpotifyState          = errors.New("invalid Spotify credential state")
-	ErrSpotifyConflict       = errors.New("Spotify credential state changed")
-	ErrSpotifyNoPending      = errors.New("no pending Spotify authorization")
-	ErrSpotifyRelinkRequired = errors.New("Spotify authorization was consumed; relink required")
+	ErrSpotifyCredentials    = errors.New("spotify credentials unavailable")
+	ErrSpotifyState          = errors.New("invalid spotify credential state")
+	ErrSpotifyConflict       = errors.New("spotify credential state changed")
+	ErrSpotifyNoPending      = errors.New("no pending spotify authorization")
+	ErrSpotifyRelinkRequired = errors.New("spotify authorization was consumed; relink required")
 )
 
 type spotifyCredentialRuntime interface {
@@ -279,6 +279,9 @@ func (s *SpotifyCredentials) fromToken(attempt id.ID, t spotifyauth.Token, accou
 }
 
 func (s *SpotifyCredentials) save(ctx context.Context, st *spotifyCredentialState, revision uint64) error {
+	if st == nil || st.expires <= 0 {
+		return ErrSpotifyState
+	}
 	body, err := cborx.Marshal([]any{spotifyCredentialVersion, s.binding.Instance, s.binding.Community, s.binding.Installation, st.attempt, st.access, st.refresh, st.accountID, uint64(st.expires)})
 	if err != nil || len(body) > maxSpotifyCredentialState {
 		return ErrSpotifyState

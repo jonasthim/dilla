@@ -234,8 +234,7 @@ func TestEgressBrokerReturns403ForDisallowedCONNECTWithoutDialing(t *testing.T) 
 func TestPCMStarterRejectsAnythingButCanonicalVideoBeforeStartingProcesses(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "invoked")
 	ytdlp := writeScript(t, t.TempDir(), "yt-dlp", `touch "$MARKER"`)
-	_ = os.Setenv("MARKER", marker)
-	t.Cleanup(func() { _ = os.Unsetenv("MARKER") })
+	t.Setenv("MARKER", marker)
 	for _, input := range []string{"ytsearch5:hello", "https://example.org/video", "file:///tmp/audio", "https://youtube.com/playlist?list=PLabc_123"} {
 		if _, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ytdlp}).Start(context.Background(), input); err == nil {
 			t.Errorf("Start(%q) succeeded", input)

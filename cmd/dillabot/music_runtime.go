@@ -356,14 +356,14 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 
 func (s runtimeMusicAuthorityStore) ListDJRolePolicy(ctx context.Context, installation id.ID) ([]store.DJRolePolicyRow, error) {
 	if s.session == nil || installation.IsZero() || installation != s.installation {
-		return nil, errors.New("Music DJ policy session unavailable")
+		return nil, errors.New("music DJ policy session unavailable")
 	}
 	policy, err := s.session.MusicDJRolePolicy(ctx, installation)
 	if err != nil {
 		return nil, err
 	}
 	if policy.CommunityID != s.community || policy.InstallationID != s.installation || policy.Capabilities&botMusicCapability == 0 {
-		return nil, errors.New("Music DJ policy binding changed")
+		return nil, errors.New("music DJ policy binding changed")
 	}
 	rows := make([]store.DJRolePolicyRow, len(policy.RoleIDs))
 	for i, role := range policy.RoleIDs {

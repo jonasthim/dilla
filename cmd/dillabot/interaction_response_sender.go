@@ -41,7 +41,7 @@ func (s durableInteractionResponseSender) SendInteractionResponse(ctx context.Co
 	if err != nil {
 		return false, err
 	}
-	receipt, err := s.outbox.Send(ctx, event, []byte(response), id.New(), id.New(), uint64(time.Now().Unix()), discovery.Generation)
+	receipt, err := s.outbox.Send(ctx, event, []byte(response), id.New(), id.New(), unixSecondsOrZero(time.Now()), discovery.Generation)
 	if err != nil {
 		return false, err
 	}

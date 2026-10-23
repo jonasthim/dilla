@@ -26,7 +26,7 @@ func (f *removalSignerFake) SignRemoval(_ context.Context, request, group id.ID,
 	f.groups = append(f.groups, group)
 	f.targets = append(f.targets, target)
 	f.expires = append(f.expires, expires)
-	return []byte{byte(request[0]), byte(group[0]), byte(target), byte(expires >> 24), byte(expires >> 16), byte(expires >> 8), byte(expires)}, nil
+	return []byte{request[0], group[0], byte(target), byte(expires >> 24), byte(expires >> 16), byte(expires >> 8), byte(expires)}, nil
 }
 
 type removalSessionFake struct {

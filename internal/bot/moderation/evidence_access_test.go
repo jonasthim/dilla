@@ -42,7 +42,7 @@ func (s *evidenceState) StateGet(_ context.Context, area uint64, key []byte) (na
 	return native.StateValue{}, nil
 }
 func (s *evidenceState) StateScan(_ context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
-	if area != evidenceStateArea || limit == 0 || limit > 100 || after != nil && len(after) > 128 {
+	if area != evidenceStateArea || limit == 0 || limit > 100 || len(after) > 128 {
 		return native.StatePage{}, errors.New("invalid evidence scan")
 	}
 	keys := make([]string, 0, len(s.rows))

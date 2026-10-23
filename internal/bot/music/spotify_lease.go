@@ -33,7 +33,7 @@ func NewSpotifyLeaseManager(stateDir string) (*SpotifyLeaseManager, error) {
 	}
 	info, err := os.Stat(stateDir)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("Spotify state directory must be private")
+		return nil, errors.New("spotify state directory must be private")
 	}
 	return &SpotifyLeaseManager{dir: filepath.Join(stateDir, "spotify-slot")}, nil
 }

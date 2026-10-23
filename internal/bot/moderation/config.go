@@ -140,6 +140,9 @@ func (s *Store) SaveWithID(ctx context.Context, transactionID id.ID, cfg Config,
 	if err != nil {
 		return err
 	}
+	if cfg.Timeout < 0 {
+		return ErrConfigState
+	}
 	users := make([]any, len(cfg.ExemptUsers))
 	for i, user := range cfg.ExemptUsers {
 		users[i] = user

@@ -65,7 +65,7 @@ func loadConfig(path string) (config, error) {
 	if !filepath.IsAbs(path) {
 		return c, errors.New("config path must be absolute")
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is the explicit absolute --config operator argument.
 	if err != nil {
 		return c, errors.New("config file is unavailable")
 	}
@@ -159,6 +159,14 @@ func readCredential(path string) ([]byte, error) {
 	return []byte(token), nil
 }
 
+func unixSecondsOrZero(now time.Time) uint64 {
+	seconds := now.Unix()
+	if seconds < 0 {
+		return 0
+	}
+	return uint64(seconds)
+}
+
 func loadDatabaseKey(root, installation string) ([]byte, string, error) {
 	if !filepath.IsAbs(root) || len(installation) != 32 {
 		return nil, "", errors.New("invalid state directory or installation ID")
@@ -222,7 +230,7 @@ func loadDatabaseKey(root, installation string) ([]byte, string, error) {
 		err = closeErr
 	}
 	if err == nil {
-		if dir, openErr := os.Open(installDir); openErr == nil {
+		if dir, openErr := os.Open(installDir); openErr == nil { // #nosec G304 -- installDir is derived under the private state directory.
 			err = dir.Sync()
 			_ = dir.Close()
 		} else {
@@ -249,7 +257,7 @@ func ensurePrivateDir(path string) error {
 		return errors.New("state directories must be owned by the service account and inaccessible to group/other")
 	}
 	if info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(path, 0o700); err != nil {
+		if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- this is a private directory and needs owner execute permission.
 			return errors.New("state directory permissions could not be secured")
 		}
 	}
@@ -275,7 +283,7 @@ func validateHelperExecutable(path string) error {
 
 func trustedLocalCode(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && (st.Uid == 0 || st.Uid == uint32(os.Geteuid())) && info.Mode().Perm()&0o022 == 0 && info.Mode()&(os.ModeSetuid|os.ModeSetgid) == 0
+	return ok && (st.Uid == 0 || int64(st.Uid) == int64(os.Geteuid())) && info.Mode().Perm()&0o022 == 0 && info.Mode()&(os.ModeSetuid|os.ModeSetgid) == 0
 }
 
 func serviceCanExecute(info os.FileInfo) bool {
@@ -287,10 +295,10 @@ func serviceCanExecute(info os.FileInfo) bool {
 	if os.Geteuid() == 0 {
 		return mode&0o111 != 0
 	}
-	if st.Uid == uint32(os.Geteuid()) {
+	if int64(st.Uid) == int64(os.Geteuid()) {
 		return mode&0o100 != 0
 	}
-	if st.Gid == uint32(os.Getegid()) {
+	if int64(st.Gid) == int64(os.Getegid()) {
 		return mode&0o010 != 0
 	}
 	groups, err := os.Getgroups()
@@ -298,7 +306,7 @@ func serviceCanExecute(info os.FileInfo) bool {
 		return false
 	}
 	for _, group := range groups {
-		if st.Gid == uint32(group) {
+		if int64(st.Gid) == int64(group) {
 			return mode&0o010 != 0
 		}
 	}
@@ -348,7 +356,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	defer clear(credential)
 	wasmBinary, err := readDoctorWASI(cfg.WASIModule)
 	if err != nil {
-		return errors.New("WASI identity module is unavailable")
+		return errors.New("wasi identity module is unavailable")
 	}
 	defer clear(wasmBinary)
 	if err := ensurePrivateDir(cfg.StateDir); err != nil {
@@ -359,20 +367,20 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 	if cfg.SpotifyHelperExecutable != "" {
 		if err := validateHelperExecutable(cfg.SpotifyHelperExecutable); err != nil {
-			return errors.New("Spotify PCM helper is unavailable")
+			return errors.New("spotify PCM helper is unavailable")
 		}
 	}
 	var spotifyLeases *music.SpotifyLeaseManager
 	if cfg.SpotifyHelperExecutable != "" {
 		spotifyLeases, err = music.NewSpotifyLeaseManager(cfg.StateDir)
 		if err != nil {
-			return errors.New("Spotify playback lease is unavailable")
+			return errors.New("spotify playback lease is unavailable")
 		}
 	}
 	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_interaction_and_moderation_dispatch", "music", "paused_restoration_with_configured_pcm_starters")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1})
 	if err != nil {
-		return errors.New("WASI identity module failed startup validation")
+		return errors.New("wasi identity module failed startup validation")
 	}
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -424,7 +432,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		var err error
 		spotifyGuard, err = service.NewSpotifyAccountGuard(cfg.StateDir)
 		if err != nil {
-			return errors.New("Spotify account guard unavailable")
+			return errors.New("spotify account guard unavailable")
 		}
 	}
 	installations, err := runtime.ListInstallations(ctx)
@@ -655,11 +663,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														handlers[operation] = handler
 													}
 													dispatcher, interactionErr = service.NewInteractionDispatcherWithSnapshots(nativeClient,
-														handlers, func() uint64 { return uint64(time.Now().Unix()) }, snapshots)
+														handlers, func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
 												}
 											}
 											if interactionErr == nil {
-												eventHandler := service.GroupEventHandler(newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox}))
+												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
 												eventHandler = newGroupEventRouter(nativeClient, eventHandler, moderationRuntime, replayThrough, replayReceivedThrough)
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												var eventResult service.GroupEventPollResult

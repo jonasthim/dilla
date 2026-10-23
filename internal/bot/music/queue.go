@@ -300,7 +300,7 @@ func shuffle(tracks []Track, seed uint64) {
 		return z ^ (z >> 31)
 	}
 	for i := len(tracks) - 1; i > 0; i-- {
-		j := int(next() % uint64(i+1))
+		j := int(next() % uint64(i+1)) // #nosec G115 -- modulo bounds the result below i+1, already an int.
 		tracks[i], tracks[j] = tracks[j], tracks[i]
 	}
 }
@@ -328,7 +328,7 @@ func validCanonicalID(provider Provider, id string) bool {
 		}
 		for i := 0; i < len(id); i++ {
 			c := id[i]
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 				return false
 			}
 		}
@@ -340,7 +340,7 @@ func validCanonicalID(provider Provider, id string) bool {
 		}
 		for i := len(prefix); i < len(id); i++ {
 			c := id[i]
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 				return false
 			}
 		}
@@ -350,8 +350,8 @@ func validCanonicalID(provider Provider, id string) bool {
 	}
 }
 
-func boundedString(value string, max int, allowEmpty bool) bool {
-	if !utf8.ValidString(value) || len(value) > max || (!allowEmpty && value == "") {
+func boundedString(value string, maxBytes int, allowEmpty bool) bool {
+	if !utf8.ValidString(value) || len(value) > maxBytes || (!allowEmpty && value == "") {
 		return false
 	}
 	return true

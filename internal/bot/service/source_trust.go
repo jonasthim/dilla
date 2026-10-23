@@ -110,7 +110,11 @@ func (t *SourceTrust) trustSender(ctx context.Context, session senderHistorySess
 	if err != nil {
 		return 0, err
 	}
-	if _, err = t.native.TrustSender(ctx, group, leaf, user, history, head, uint64(t.now().Unix())); err != nil {
+	now := t.now().Unix()
+	if now <= 0 {
+		return 0, ErrSenderHistoryStale
+	}
+	if _, err = t.native.TrustSender(ctx, group, leaf, user, history, head, uint64(now)); err != nil {
 		return 0, err
 	}
 	return t.native.RevalidateGroup(ctx, group, leaf, 256)
@@ -141,7 +145,11 @@ func (t *SourceTrust) trustProposedAdds(ctx context.Context, session senderHisto
 		if e != nil {
 			return e
 		}
-		if _, e = t.native.TrustProposedAdd(ctx, group, proposals, uint64(add.Index), add.User, history, head, uint64(t.now().Unix())); e != nil {
+		now := t.now().Unix()
+		if now <= 0 {
+			return ErrSenderHistoryStale
+		}
+		if _, e = t.native.TrustProposedAdd(ctx, group, proposals, uint64(add.Index), add.User, history, head, uint64(now)); e != nil {
 			return e
 		}
 	}

@@ -27,7 +27,7 @@ func NewAccessTokenFile(token string) (*os.File, error) {
 		return nil, errors.New("spotify: credential descriptor unavailable")
 	}
 	f := os.NewFile(uintptr(fd), "dilla-spotify-token")
-	body, err := json.Marshal(struct {
+	body, err := json.Marshal(struct { // #nosec G117 -- this access token is deliberately serialized only into a sealed memfd for descriptor 3.
 		AccessToken string `json:"access_token"`
 	}{AccessToken: token})
 	if err != nil {

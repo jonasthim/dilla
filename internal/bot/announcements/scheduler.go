@@ -205,7 +205,11 @@ func (s *Scheduler) putWithReceipt(ctx context.Context, expectedRevision *uint64
 	if err != nil {
 		return MutationOutcome{}, err
 	}
-	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
+	now := s.now().UTC().Unix()
+	if now < 0 {
+		return MutationOutcome{}, ErrMutationExpired
+	}
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(now)); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
 	if expectedRevision != nil && revision != *expectedRevision {
@@ -306,7 +310,11 @@ func (s *Scheduler) deleteWithReceipt(ctx context.Context, documentRevision *uin
 	if err != nil {
 		return MutationOutcome{}, err
 	}
-	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(s.now().UTC().Unix())); found || lookupErr != nil {
+	now := s.now().UTC().Unix()
+	if now < 0 {
+		return MutationOutcome{}, ErrMutationExpired
+	}
+	if outcome, found, lookupErr := findMutationReceipt(s.receipts, requestID, fingerprint, uint64(now)); found || lookupErr != nil {
 		return outcome, lookupErr
 	}
 	if documentRevision != nil && revision != *documentRevision {
@@ -351,7 +359,11 @@ func (s *Scheduler) validateMutationInput(requestID id.ID, expires uint64) error
 }
 
 func (s *Scheduler) nextMutationReceipts(requestID id.ID, fingerprint [32]byte, expires uint64, outcome MutationOutcome) ([]mutationReceipt, error) {
-	now := uint64(s.now().UTC().Unix())
+	nowSeconds := s.now().UTC().Unix()
+	if nowSeconds < 0 {
+		return nil, ErrMutationExpired
+	}
+	now := uint64(nowSeconds)
 	kept := make([]mutationReceipt, 0, len(s.receipts)+1)
 	for _, receipt := range s.receipts {
 		if receipt.Expires > now {
@@ -491,7 +503,10 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 						return err
 					}
 				}
-				req := s.sendRequest(state)
+				req, err := s.sendRequest(state)
+				if err != nil {
+					return err
+				}
 				receipt, found, lookupErr := s.receiptLookup.LookupAnnouncement(ctx, req)
 				if lookupErr != nil {
 					return lookupErr
@@ -553,7 +568,10 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			}
 			state = current
 		}
-		req := s.sendRequest(state)
+		req, err := s.sendRequest(state)
+		if err != nil {
+			return err
+		}
 		receipt, found, lookupErr := s.receiptLookup.LookupAnnouncement(ctx, req)
 		if lookupErr != nil {
 			return lookupErr
@@ -606,7 +624,10 @@ func (s *Scheduler) RunDue(ctx context.Context) error {
 			}
 			state = current
 		}
-		req = s.sendRequest(state)
+		req, err = s.sendRequest(state)
+		if err != nil {
+			return err
+		}
 		gate := make(chan struct {
 			allowed  bool
 			revision uint64
@@ -713,8 +734,12 @@ func (s *Scheduler) resolveUnstarted(ctx context.Context, state scheduledState, 
 	return err
 }
 
-func (s *Scheduler) sendRequest(state scheduledState) SendRequest {
-	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(state.Occurrence.At.Unix())}
+func (s *Scheduler) sendRequest(state scheduledState) (SendRequest, error) {
+	seconds := state.Occurrence.At.Unix()
+	if seconds < 0 {
+		return SendRequest{}, ErrInvalidSchedule
+	}
+	return SendRequest{OperationID: operationID(s.binding.Installation, state.Announcement.ID, state.Occurrence), AttemptID: attemptID(s.binding.Installation, state.Announcement.ID, state.Occurrence), CommunityID: s.binding.Community, InstallationID: s.binding.Installation, AnnouncementID: state.Announcement.ID, GroupID: state.GroupID, Text: state.Announcement.Text, OriginalNow: uint64(seconds)}, nil
 }
 
 func (s *Scheduler) snapshot(ctx context.Context) ([]scheduledState, uint64, error) {
@@ -880,7 +905,7 @@ func encodeStateDocument(states []scheduledState, receipts []mutationReceipt) ([
 		if s.Announcement.Enabled {
 			enabled = 1
 		}
-		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(sched.Hour), uint64(sched.Minute), uint64(sched.Weekday), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID}
+		row := []any{uint64(1), s.Announcement.ID, s.Announcement.DestinationID, s.Announcement.Text, string(sched.Kind), sched.Timezone, sched.Date, uint64(max(sched.Hour, 0)), uint64(max(sched.Minute, 0)), uint64(max(int(sched.Weekday), 0)), sched.Revision, enabled, occ, uint64(s.Status), s.GroupID}
 		a = append(a, row)
 	}
 	encodedReceipts := make([]any, 0, len(receipts))

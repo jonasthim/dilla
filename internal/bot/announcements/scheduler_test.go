@@ -152,9 +152,15 @@ func TestAnnouncementSendRequestTimestampIsStableAcrossRetry(t *testing.T) {
 	state := scheduledState{Announcement: Announcement{ID: schedulerID(9)}, Occurrence: Occurrence{
 		At: time.Date(2026, 10, 22, 11, 59, 0, 0, time.UTC), Key: "2026-10-22T11:59", Revision: 1,
 	}}
-	first := s.sendRequest(state)
+	first, err := s.sendRequest(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	now = now.Add(30 * time.Second)
-	second := s.sendRequest(state)
+	second, err := s.sendRequest(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first.OriginalNow != second.OriginalNow || first.OriginalNow != uint64(state.Occurrence.At.Unix()) {
 		t.Fatalf("retry changed original timestamp: first=%d second=%d", first.OriginalNow, second.OriginalNow)
 	}

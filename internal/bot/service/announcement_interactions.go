@@ -259,7 +259,14 @@ func decodeAnnouncementValue(raw []byte) (announcements.Announcement, error) {
 
 func announcementSummary(value announcements.Announcement) []any {
 	s := value.Schedule
-	return []any{value.ID, value.DestinationID, value.Text, string(s.Kind), s.Timezone, s.Date, uint64(s.Hour), uint64(s.Minute), uint64(s.Weekday), boolUint(value.Enabled), s.Revision}
+	return []any{value.ID, value.DestinationID, value.Text, string(s.Kind), s.Timezone, s.Date, nonnegativeUint64(s.Hour), nonnegativeUint64(s.Minute), nonnegativeUint64(int(s.Weekday)), boolUint(value.Enabled), s.Revision}
+}
+
+func nonnegativeUint64(value int) uint64 {
+	if value < 0 {
+		return 0
+	}
+	return uint64(value)
 }
 
 func announcementPayloadID(value any) (id.ID, bool) {

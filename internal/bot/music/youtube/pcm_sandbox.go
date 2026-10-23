@@ -87,7 +87,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 	if err != nil {
 		return nil, ErrSandboxUnavailable
 	}
-	if err := os.Chmod(root, 0700); err != nil {
+	if err := os.Chmod(root, 0700); err != nil { // #nosec G302 -- temporary directory is owner-only and requires execute permission.
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}

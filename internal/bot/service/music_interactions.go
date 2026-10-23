@@ -345,7 +345,7 @@ func validMusicCall(call MusicCallBinding, channel id.ID) bool {
 
 func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 	operation := music.Operation{}
-	uint := func(i int) (uint64, bool) {
+	uintArg := func(i int) (uint64, bool) {
 		if i >= len(args) {
 			return 0, false
 		}
@@ -371,13 +371,13 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 	case protocol.OpMusicClear:
 		operation.Kind = music.OpClear
 	case protocol.OpMusicSeek:
-		v, ok := uint(0)
+		v, ok := uintArg(0)
 		if !ok || v > math.MaxInt64 {
 			return operation, false
 		}
 		operation.Kind, operation.PositionMS = music.OpSeek, int64(v)
 	case protocol.OpMusicVolume:
-		v, ok := uint(0)
+		v, ok := uintArg(0)
 		if !ok || v > 100 {
 			return operation, false
 		}
@@ -385,7 +385,7 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 	case protocol.OpMusicShuffle:
 		operation.Kind, operation.Enabled = music.OpSetShuffle, true
 	case protocol.OpMusicRepeat:
-		v, ok := uint(0)
+		v, ok := uintArg(0)
 		if !ok || v > uint64(music.RepeatQueue) {
 			return operation, false
 		}
@@ -416,22 +416,35 @@ func musicOperation(op protocol.Operation, args []any) (music.Operation, bool) {
 }
 
 func encodeMusicSnapshot(state music.State, canControl bool) ([]byte, error) {
+	if state.PositionMS < 0 {
+		return nil, music.ErrInvalidOperation
+	}
 	queue := make([]any, 0, len(state.Queue))
 	for i := range state.Queue {
 		t := state.Queue[i]
-		queue = append(queue, encodeMusicTrack(&t))
+		row, err := encodeMusicTrack(&t)
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, row)
 	}
-	current := encodeMusicTrack(state.Current)
+	current, err := encodeMusicTrack(state.Current)
+	if err != nil {
+		return nil, err
+	}
 	// The final slot is the current actor's DJ/call-membership affordance. Every
 	// mutation still rechecks authority at its own write boundary.
 	return cborx.Marshal([]any{uint64(1), state.Revision, current, queue, uint64(state.PositionMS), boolUint(state.Paused), uint64(state.Volume), boolUint(state.Shuffle), uint64(state.Repeat), boolUint(canControl)})
 }
 
-func encodeMusicTrack(t *music.Track) any {
+func encodeMusicTrack(t *music.Track) (any, error) {
 	if t == nil {
-		return nil
+		return nil, nil
 	}
-	return []any{t.ID, string(t.Provider), t.CanonicalID, t.Title, t.Artist, t.Album, uint64(t.DurationMS), t.RequesterID}
+	if t.DurationMS < 0 {
+		return nil, music.ErrInvalidTrack
+	}
+	return []any{t.ID, string(t.Provider), t.CanonicalID, t.Title, t.Artist, t.Album, uint64(t.DurationMS), t.RequesterID}, nil
 }
 
 func encodeMusicSearchResults(tracks []music.Track) ([]byte, error) {
@@ -448,7 +461,11 @@ func encodeMusicSearchResults(tracks []music.Track) ([]byte, error) {
 		if _, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{validated}}); err != nil {
 			return nil, err
 		}
-		rows = append(rows, encodeMusicTrack(&track))
+		row, err := encodeMusicTrack(&track)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
 	}
 	for len(rows) > 0 {
 		data, err := cborx.Marshal([]any{uint64(1), rows})

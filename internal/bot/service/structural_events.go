@@ -181,7 +181,7 @@ func (p *StructuralEventPoller) pollOnce(ctx context.Context, session structural
 			result.AcknowledgedThrough = cursor.Sequence
 			after = cursor.Sequence
 		}
-		if after >= page.HighWater || page.NextSequence == after || len(page.Events) < int(p.pageLimit) {
+		if after >= page.HighWater || page.NextSequence == after || uint64(len(page.Events)) < p.pageLimit {
 			break
 		}
 	}

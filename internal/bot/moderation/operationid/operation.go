@@ -1,3 +1,4 @@
+// Package operationid derives stable, installation-scoped moderation operation IDs.
 package operationid
 
 import (

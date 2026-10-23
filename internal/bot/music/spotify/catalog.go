@@ -44,8 +44,8 @@ func NewCatalog(client *http.Client) *Catalog {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	} else {
-		copy := *client
-		client = &copy
+		clone := *client
+		client = &clone
 		if client.Timeout <= 0 {
 			client.Timeout = 10 * time.Second
 		}
@@ -163,7 +163,7 @@ func validSpotifyID(id string) bool {
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 			return false
 		}
 	}
