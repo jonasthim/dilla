@@ -6,6 +6,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,6 +88,15 @@ func TestWithdrawnProposalsAndRowsOnBothEngines(t *testing.T) {
 			without, err := repo.ListHandshakesWithoutWithdrawn(ctx, g.GroupID, 1, 2)
 			if err != nil || len(without) != 2 || without[0].Seq != 1 || without[1].Seq != 3 {
 				t.Fatalf("ListHandshakesWithoutWithdrawn(limit 2) = %+v, %v; want seqs 1 and 3", without, err)
+			}
+			// A from-seq above MaxInt64 matches no row: it must not wrap to a negative int64 and list them all.
+			for _, from := range []uint64{math.MaxInt64 + 1, math.MaxUint64} {
+				if got, err := repo.ListHandshakes(ctx, g.GroupID, from, 10); err != nil || got == nil || len(got) != 0 {
+					t.Fatalf("ListHandshakes(from %d) = %d rows (nil: %t), %v; want a non-nil empty slice", from, len(got), got == nil, err)
+				}
+				if got, err := repo.ListHandshakesWithoutWithdrawn(ctx, g.GroupID, from, 10); err != nil || got == nil || len(got) != 0 {
+					t.Fatalf("ListHandshakesWithoutWithdrawn(from %d) = %d rows (nil: %t), %v; want a non-nil empty slice", from, len(got), got == nil, err)
+				}
 			}
 		})
 	}

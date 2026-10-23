@@ -875,6 +875,7 @@ export function checkWorkflow(root) {
 
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
+  if (!/^permissions:\n {2}contents: read$/m.test(text)) problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
   assertWasmPackUsesTheSizeProfile(text, problems);
   assertWasmJobsUseClang23(text, jobs, problems);
 

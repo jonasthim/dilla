@@ -5,6 +5,10 @@ on:
   pull_request:
   # Final review S-I1: runs the whole workflow by hand, upgrade-e2e included.
   workflow_dispatch:
+# The token is read-only everywhere: no job writes to the repository. sfu-compat reads the previous release through
+# `gh release list/download` (contents: read); artifacts move through the run's own runtime token, not this one.
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true

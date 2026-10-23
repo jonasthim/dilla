@@ -1374,6 +1374,9 @@ func (r *Repo) AppendHandshake(ctx context.Context, h store.HandshakeRow) error 
 }
 
 func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	if fromSeq > math.MaxInt64 {
+		return []store.HandshakeRow{}, nil // no row has a seq above MaxInt64
+	}
 	rows, err := r.r.ListHandshakes(ctx, pgdb.ListHandshakesParams{
 		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
 	})
@@ -1384,6 +1387,9 @@ func (r *Repo) ListHandshakes(ctx context.Context, groupID id.ID, fromSeq uint64
 }
 
 func (r *Repo) ListHandshakesWithoutWithdrawn(ctx context.Context, groupID id.ID, fromSeq uint64, limit int32) ([]store.HandshakeRow, error) {
+	if fromSeq > math.MaxInt64 {
+		return []store.HandshakeRow{}, nil // no row has a seq above MaxInt64
+	}
 	rows, err := r.r.ListHandshakesWithoutWithdrawn(ctx, pgdb.ListHandshakesWithoutWithdrawnParams{
 		GroupID: groupID, Seq: int64(fromSeq), MaxRows: int64(limit),
 	})
