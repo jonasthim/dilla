@@ -41,10 +41,13 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
   const [pendingPanel, setPendingPanel] = useState<PendingPanel | null>(null);
   const [panelNotice, setPanelNotice] = useState<string | null>(null);
   const generation = useRef(0);
+  const currentCommunity = useRef(communityId);
+  currentCommunity.current = communityId;
 
   useEffect(() => {
     let live = true;
     setInstallation(null); setInstallationLoaded(false); setPendingPanel(null); setPanelNotice(null);
+    setBusy(false);
     void client.call({ m: 'getBotInstallation', communityId }).then(value => {
       if (!live) return;
       const row = value as Installation | null;
@@ -111,17 +114,22 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
       setError(t('admin.bot.rolePanel.invalid')); return;
     }
     const current = pendingPanel ?? { requestId: requestId(), channelId, roleIds, uploadUncertain: false };
+    const requestCommunity = communityId;
+    const requestGeneration = generation.current;
+    const isCurrent = (): boolean => currentCommunity.current === requestCommunity && generation.current === requestGeneration;
     setBusy(true); setError(null); setPanelNotice(null);
     try {
       const request = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId: current.requestId,
         operation: 31, args: [channelId, encodedMappings], revision: '0' }) as { requestId: string; upload: string };
+      if (!isCurrent()) return;
       if (request.requestId !== current.requestId || request.upload === 'rejected') throw new Error('upload rejected');
       setPendingPanel({ ...current, uploadUncertain: request.upload !== 'accepted' });
       setPanelNotice(t(request.upload === 'accepted' ? 'admin.bot.rolePanel.pending' : 'admin.bot.rolePanel.uncertain'));
     } catch {
+      if (!isCurrent()) return;
       setPendingPanel({ ...current, uploadUncertain: true });
       setPanelNotice(t('admin.bot.rolePanel.uncertain'));
-    } finally { setBusy(false); }
+    } finally { if (isCurrent()) setBusy(false); }
   };
 
   useEffect(() => {

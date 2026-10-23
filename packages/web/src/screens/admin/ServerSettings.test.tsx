@@ -11,10 +11,13 @@ import { en } from '../../strings/index.ts';
 import { ServerSettings, type AdminTab } from './ServerSettings.tsx';
 
 const SERVER = 'a1'.repeat(16);
+const OTHER_SERVER = 'b2'.repeat(16);
 const BOB = '28'.repeat(16);
 const CAROL = '3c'.repeat(16);
 const NAME = 'Björn';
 const NFD = 'Björn';
+type FakeInstallation = { id: string; communityId: string; state: number; revision: string; userId: string | null; deviceId: string | null;
+  capabilities: number; updatedAt: string };
 
 export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
   banMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
@@ -22,14 +25,16 @@ const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: 
   banMembers: false, createInvite: false, manageRoles: false };
 
 function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null;
-  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[]; roles?: RoleSummary[];
-  channels?: ChannelSummary[]; installation?: unknown; interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown' } = {}) {
+  selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
+  roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
+  interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
+  uploadHandler?: (requestId: string) => Promise<unknown> } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
-  fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (over.selfRoles ?? [])
-    : command.m === 'getBotInstallation' ? (over.installation ?? null)
-    : command.m === 'humanInteractionRequest' ? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
+  fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (typeof over.selfRoles === 'function' ? over.selfRoles(command.communityId) : over.selfRoles ?? [])
+    : command.m === 'getBotInstallation' ? (typeof over.installation === 'function' ? over.installation(command.communityId) : over.installation ?? null)
+    : command.m === 'humanInteractionRequest' ? over.uploadHandler?.(command.requestId) ?? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
     : command.m === 'readBotInteractionResponses' ? (() => {
       const sent = fake.callsOf('humanInteractionRequest').at(-1);
       const sentChannel = sent?.args[0];
@@ -115,6 +120,39 @@ describe('ServerSettings tabs', () => {
     await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
     expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
     expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+  });
+  it('does not restore a delayed upload into a different community or retry it there', async () => {
+    const roleId = 'c3'.repeat(16); const channelA = 'd4'.repeat(16); const channelB = 'd5'.repeat(16);
+    let resolveUpload!: (value: { requestId: string; upload: 'pending' }) => void;
+    const { fake, user, view } = setup(FULL, { tab: 'selfRoles',
+      selfRoles: () => [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+      channels: [{ id: channelA, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' }],
+      installation: communityId => ({ id: 'f6'.repeat(16), communityId, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' }),
+      uploadHandler: requestId => new Promise(resolve => { resolveUpload = value => resolve({ ...value, requestId }); }) });
+    fake.publish(`communities`, [{ id: SERVER, name: NAME, owner: ME.id }, { id: OTHER_SERVER, name: 'Other', owner: ME.id }]);
+    fake.set(`permissions:${OTHER_SERVER}`, FULL);
+    fake.set(`roles:${OTHER_SERVER}`, [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }]);
+    fake.set(`channels:${OTHER_SERVER}`, [{ id: channelB, communityId: OTHER_SERVER, name: 'other-general', kind: 0, mode: 0, topic: '', parentId: null,
+      position: 0, slowmode: 0, announcement: false, group: 'active' }]);
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelA);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1));
+    const oldRequestId = fake.callsOf('humanInteractionRequest')[0].requestId;
+    view.rerender(<div className="d-root"><CoreProvider client={fake}>
+      <ServerSettings communityId={OTHER_SERVER} tab="selfRoles" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
+    </CoreProvider></div>);
+    resolveUpload({ requestId: oldRequestId, upload: 'pending' });
+    await screen.findByRole('heading', { name: en['admin.bot.rolePanel.title'] });
+    expect(screen.queryByRole('button', { name: 'Retry publishing' })).not.toBeInTheDocument();
+    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '🖋️');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelB);
+    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(2));
+    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ communityId: OTHER_SERVER });
+    expect(fake.callsOf('humanInteractionRequest')[1].args[0]).toBe(channelB);
+    expect(fake.callsOf('humanInteractionRequest')[1].requestId).not.toBe(oldRequestId);
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
